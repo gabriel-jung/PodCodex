@@ -1,0 +1,60 @@
+[project]
+name = "podcodex"
+version = "0.1.0"
+description = "Podcast transcription, translation, and voice synthesis pipeline"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Gabriel Jung", email = "gabriel.jung@protonmail.com" }]
+requires-python = ">=3.12"
+keywords = ["podcast", "transcription", "diarization", "translation", "tts", "voice-cloning", "whisperx", "speech-to-text"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "librosa>=0.11.0",
+    "loguru>=0.7.3",
+    "ollama>=0.6.1",
+    "onnxruntime>=1.24.2",
+    "openai>=2.23.0",
+    "pandas>=2.0.0",
+    "pyannote-audio>=4.0.4",
+    "pyarrow>=23.0.0",
+    "python-dotenv>=1.2.1",
+    "soundfile>=0.13.1",
+    "torch>=2.8.0",
+    "tqdm>=4.67.3",
+    "whisperx>=3.8.1",
+]
+
+[project.optional-dependencies]
+app = [
+    "streamlit>=1.54.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/gabriel-jung/podcodex"
+Repository = "https://github.com/gabriel-jung/podcodex"
+
+[dependency-groups]
+dev = [
+    "accelerate>=1.12.0",
+    "ipykernel>=7.1.0",
+    "jupyter>=1.1.1",
+    "nbstripout>=0.9.0",
+    "pre-commit>=4.5.1",
+    "qwen-tts>=0.1.1",
+    "soundfile>=0.13.1",
+    "sox>=1.5.0",
+    "watchdog>=6.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
