@@ -199,6 +199,27 @@ class QdrantStore:
 
         logger.success(f"Upserted {len(points)} points into '{collection}'")
 
+    def fetch_episode_chunks(self, collection: str, episode: str) -> list[dict]:
+        """
+        Fetch all chunks for a given episode, sorted by start time.
+
+        Used by the Discord bot's "Show more" button to retrieve surrounding context.
+        """
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        results, _ = self._client.scroll(
+            collection_name=collection,
+            scroll_filter=Filter(
+                must=[FieldCondition(key="episode", match=MatchValue(value=episode))]
+            ),
+            limit=10_000,
+            with_payload=True,
+            with_vectors=False,
+        )
+        chunks = [dict(r.payload) for r in results]
+        chunks.sort(key=lambda c: c.get("start", 0.0))
+        return chunks
+
 
 # ──────────────────────────────────────────────
 # Internal helpers

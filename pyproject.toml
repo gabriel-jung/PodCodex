@@ -41,9 +41,13 @@ dependencies = [
 app = [
     "streamlit>=1.54.0",
 ]
+bot = [
+    "discord.py>=2.5.0",
+]
 
 [project.scripts]
-podcodex = "podcodex.cli:main"
+podcodex     = "podcodex.cli:main"
+podcodex-bot = "podcodex.bot.bot:main"
 
 [project.urls]
 Homepage = "https://github.com/gabriel-jung/podcodex"
