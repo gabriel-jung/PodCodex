@@ -1,16 +1,24 @@
 # podcodex
 
-A podcast transcription and translation pipeline. Transcribes audio using WhisperX + pyannote diarization, translates to any language via LLM, and optionally re-voices episodes using Qwen3-TTS voice cloning.
+AI tools for podcast production — transcription, translation, voice synthesis, and semantic search.
+
+## Modules
+
+| Module | Description |
+|--------|-------------|
+| `podcodex.core.transcribe` | WhisperX transcription + phonetic alignment + speaker diarization |
+| `podcodex.core.translate` | LLM-based transcript translation (Ollama, OpenAI-compatible API, or manual) |
+| `podcodex.core.synthesize` | Qwen3-TTS voice cloning + episode assembly |
+| `podcodex.rag` | Chunking, embedding, vector storage, and hybrid retrieval |
+| `podcodex.ingest` | Scan a show folder and report per-episode processing status |
 
 ## Pipeline
 
 ```
-Audio → transcribe.py → translate.py → synthesize.py
+Audio → transcribe → translate → synthesize
+                ↓
+           vectorize → query
 ```
-
-1. **Transcribe** — WhisperX transcription + phonetic alignment + speaker diarization
-2. **Translate** — LLM-based correction + translation (Ollama, OpenAI-compatible API, or manual)
-3. **Synthesize** — Qwen3-TTS voice cloning per speaker + episode assembly
 
 ## System Requirements
 
@@ -37,6 +45,7 @@ Create a `.env` file at the root:
 ```env
 HF_TOKEN=your_huggingface_token   # required for pyannote diarization
 API_KEY=your_api_key              # any OpenAI-compatible provider (Mistral, OpenAI, etc.)
+QDRANT_URL=http://localhost:6333  # optional, defaults to localhost:6333
 ```
 
 `HF_TOKEN` requires accepting the pyannote model terms on Hugging Face:
@@ -50,23 +59,21 @@ API_KEY=your_api_key              # any OpenAI-compatible provider (Mistral, Ope
 ```python
 from podcodex.core import transcribe
 
-# Full pipeline
-transcribe.transcribe_file("episode.mp3", output_dir="Transcriptions")
-transcribe.diarize_file("episode.mp3", output_dir="Transcriptions")
-transcribe.assign_speakers_to_file("episode.mp3", output_dir="Transcriptions")
+transcribe.transcribe_file("episode.mp3", output_dir="ep01/")
+transcribe.diarize_file("episode.mp3", output_dir="ep01/")
+transcribe.assign_speakers_to_file("episode.mp3", output_dir="ep01/")
 
-# Map speaker labels to names
 transcribe.save_speaker_map("episode.mp3", {
     "SPEAKER_00": "Alice",
     "SPEAKER_01": "Bob",
-}, output_dir="Transcriptions")
+}, output_dir="ep01/")
 
-# Export final transcript
-transcript = transcribe.export_transcript("episode.mp3", output_dir="Transcriptions")
+transcript = transcribe.export_transcript("episode.mp3", output_dir="ep01/",
+                                          show="Total Trax", episode="ep01")
 print(transcribe.transcript_to_text(transcript[:5]))
 
 # Check pipeline status
-transcribe.processing_status("episode.mp3", output_dir="Transcriptions")
+transcribe.processing_status("episode.mp3", output_dir="ep01/")
 ```
 
 ### Translation
@@ -74,13 +81,11 @@ transcribe.processing_status("episode.mp3", output_dir="Transcriptions")
 ```python
 from podcodex.core import translate
 
-# Load transcript
-segments = transcribe.load_transcript("episode.mp3", output_dir="Transcriptions")
-simplified = transcribe.simplify_transcript(segments)
+segments = transcribe.load_transcript("episode.mp3", output_dir="ep01/")
 
-# Translate via API (Mistral, OpenAI, or any compatible provider)
+# Via API (Mistral, OpenAI, or any compatible provider)
 translated = translate.translate_segments(
-    simplified,
+    segments,
     mode="api",
     context="French podcast about film music",
     source_lang="French",
@@ -89,23 +94,19 @@ translated = translate.translate_segments(
     api_base_url="https://api.mistral.ai/v1",
 )
 
-# Or via Ollama (local — works best with 14B+ models)
+# Via Ollama (local — works best with 14B+ models)
 translated = translate.translate_segments(
-    simplified,
+    segments,
     mode="ollama",
     model="qwen3:14b",
     context="French podcast about film music",
 )
 
-# Or manually via a LLM UI (copy/paste workflow)
-print(translate.build_manual_prompt(simplified, context="French podcast about film music"))
-# → paste output into your LLM UI, paste result back as JSON
+# Manual copy/paste workflow
+print(translate.build_manual_prompt(segments, context="French podcast about film music"))
 translated = translate.translate_segments(json_from_llm, mode="manual")
 
-# Save
-translate.save_translation("episode.mp3", translated, output_dir="Transcriptions")
-
-# Review
+translate.save_translation("episode.mp3", translated, output_dir="ep01/")
 print(translate.translation_to_text(translated[:5], lang="both"))
 ```
 
@@ -114,55 +115,98 @@ print(translate.translation_to_text(translated[:5], lang="both"))
 ```python
 from podcodex.core import synthesize
 
-# Extract voice samples for cloning (one per speaker)
 voice_samples = synthesize.extract_voice_samples(
-    "episode.mp3",
-    translated,
-    output_dir="Transcriptions",
-    min_duration=5.0,
-    top_k=3,
+    "episode.mp3", translated, output_dir="ep01/", min_duration=5.0, top_k=3,
 )
 
-# Generate TTS audio for each segment
 generated = synthesize.generate_segments(
-    "episode.mp3",
-    translated,
-    voice_samples,
-    output_dir="Transcriptions",
-    model_size="1.7B",
-    sample_index={"Alice": 0, "Bob": 1},  # pick best voice sample per speaker
+    "episode.mp3", translated, voice_samples, output_dir="ep01/",
+    model_size="1.7B", sample_index={"Alice": 0, "Bob": 1},
 )
 
-# Assemble final episode
 episode = synthesize.assemble_episode(
-    generated,
-    "episode.mp3",
-    output_dir="Transcriptions",
-    strategy="original_timing",  # or "silence"
+    generated, "episode.mp3", output_dir="ep01/", strategy="original_timing",
 )
 ```
+
+### RAG — vectorize & query
+
+Requires Qdrant running locally (`docker run -p 6333:6333 qdrant/qdrant`) or set `QDRANT_URL`.
+
+```bash
+# Embed and store a transcript
+podcodex vectorize ep01/ep01.transcript.json --show "Total Trax" --strategy bge_speaker
+
+# Semantic search
+podcodex query "film music composer" --show "Total Trax" --strategy bge_speaker
+podcodex query "film music composer" --show "Total Trax" --strategy bge_speaker --top-k 3
+
+# Manage collections
+podcodex list --show "Total Trax"
+podcodex delete total_trax__bge_speaker
+```
+
+#### Embedding strategies
+
+| Strategy | Chunker | Embedder | Search |
+|----------|---------|----------|--------|
+| `bge_speaker` | speaker turns | BAAI/bge-m3 (1024-dim) | hybrid RRF |
+| `bge_semantic` | semantic | BAAI/bge-m3 (1024-dim) | hybrid RRF |
+| `e5_semantic` | semantic | multilingual-e5-small (384-dim) | dense cosine |
+| `pplx_context` | speaker turns | pplx-embed-context (1024-dim) | dense cosine |
+
+#### In Python
+
+```python
+from podcodex.rag.store import QdrantStore, collection_name
+from podcodex.rag.retriever import Retriever
+
+store = QdrantStore()                          # connects to QDRANT_URL or localhost:6333
+store = QdrantStore(in_memory=True)            # no server needed, for notebooks
+
+col = collection_name("Total Trax", "bge_speaker")   # → "total_trax__bge_speaker"
+store.create_collection(col, "bge_speaker")
+
+retriever = Retriever("bge_speaker", store=store)
+results = retriever.retrieve("film music", col, top_k=5)
+```
+
+### Streamlit app
+
+```bash
+# Single-episode view
+streamlit run streamlit/app.py
+
+# Show-level view — folder of episodes with processing status
+streamlit run streamlit/show_app.py
+```
+
+The show-level view scans a folder of audio files and displays per-episode status
+(`🔴 Pending` / `🟡 Transcribed` / `🟢 Indexed`). Opening an episode loads it into
+the full pipeline tabs (Transcribe → Translate → Synthesize).
 
 ## Output Files
 
-All outputs are saved relative to the audio file, in `output_dir` (default: same folder as audio).
+Outputs are organised per episode under the show folder:
 
 ```
-Transcriptions/
-├── episode.segments.parquet
-├── episode.segments.meta.json
-├── episode.diarization.parquet
-├── episode.diarization.meta.json
-├── episode.diarized_segments.parquet
-├── episode.speaker_map.json
-├── episode.transcript.json
-├── episode.translated.json
-├── episode.synthesized.wav
-├── voice_samples/
-│   ├── Alice_00.wav
-│   └── Bob_00.wav
-└── tts_segments/
-    ├── 0000_Alice.wav
-    ├── 0001_Bob.wav
+/shows/total_trax/
+├── ep01.mp3
+├── ep02.mp3
+├── ep01/
+│   ├── ep01.segments.parquet
+│   ├── ep01.segments.meta.json
+│   ├── ep01.diarization.parquet
+│   ├── ep01.diarization.meta.json
+│   ├── ep01.diarized_segments.parquet
+│   ├── ep01.speaker_map.json
+│   ├── ep01.transcript.json
+│   ├── ep01.translated.json
+│   ├── ep01.synthesized.wav
+│   ├── .rag_indexed              ← marker set by `podcodex vectorize`
+│   ├── voice_samples/
+│   └── tts_segments/
+└── ep02/
     └── ...
 ```
 

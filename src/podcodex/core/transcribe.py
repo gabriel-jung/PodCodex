@@ -381,15 +381,27 @@ def simplify_transcript(segments: list[dict]) -> list[dict]:
 
 
 def export_transcript(
-    audio_path: Path | str, output_dir: str | Path = ""
+    audio_path: Path | str,
+    output_dir: str | Path = "",
+    show: str = "",
+    episode: str = "",
 ) -> list[dict]:
     """
     Generate the final JSON transcript with resolved speaker names.
     Requires diarized_segments.parquet + speaker_map.json.
     Saves transcript.json in output_dir (relative to audio).
 
+    The file format is:
+        {"meta": {show, episode, speakers, duration, word_count}, "segments": [...]}
+
+    Args:
+        audio_path : source audio file
+        output_dir : directory relative to audio_path for outputs
+        show       : podcast show name (stored in meta, defaults to "")
+        episode    : episode name (stored in meta, defaults to "")
+
     Returns:
-        List of final segments [{start, end, speaker_id, speaker_name, text}]
+        List of final segments [{start, end, speaker, text}]
     """
     audio_path = Path(audio_path)
     p = _EpisodePaths.from_audio(audio_path, output_dir=output_dir)
@@ -410,17 +422,45 @@ def export_transcript(
     ]
     export = simplify_transcript(resolved)
 
+    meta = {
+        "show": show,
+        "episode": episode,
+        "speakers": sorted({seg["speaker"] for seg in export}),
+        "duration": round(max((seg["end"] for seg in export), default=0.0), 3),
+        "word_count": sum(len(seg["text"].split()) for seg in export),
+    }
+
     p.transcript.write_text(
-        json.dumps(export, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps({"meta": meta, "segments": export}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
     logger.success(f"Export done — {len(export)} segments → {p.transcript.name}")
     return export
 
 
 def load_transcript(audio_path: Path | str, output_dir: str | Path = "") -> list[dict]:
-    """Load the final transcript."""
+    """Load the final transcript segments as a plain list.
+
+    Handles both old format (plain list) and new format (dict with meta + segments).
+    Returns only the segments list for backward compatibility.
+    """
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    return json.loads(p.transcript.read_text(encoding="utf-8"))
+    data = json.loads(p.transcript.read_text(encoding="utf-8"))
+    return data["segments"] if isinstance(data, dict) else data
+
+
+def load_transcript_full(audio_path: Path | str, output_dir: str | Path = "") -> dict:
+    """Load the final transcript with metadata.
+
+    Returns:
+        {"meta": {show, episode, speakers, duration, word_count}, "segments": [...]}
+        If the file is in old list format, meta will be an empty dict.
+    """
+    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
+    data = json.loads(p.transcript.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        return data
+    return {"meta": {}, "segments": data}
 
 
 # ──────────────────────────────────────────────
