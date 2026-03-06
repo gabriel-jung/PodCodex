@@ -69,7 +69,7 @@ transcribe.save_speaker_map("episode.mp3", {
 }, output_dir="ep01/")
 
 transcript = transcribe.export_transcript("episode.mp3", output_dir="ep01/",
-                                          show="Total Trax", episode="ep01")
+                                          show="My Podcast", episode="ep01")
 print(transcribe.transcript_to_text(transcript[:5]))
 
 # Check pipeline status
@@ -135,15 +135,15 @@ Requires Qdrant running locally (`docker run -p 6333:6333 qdrant/qdrant`) or set
 
 ```bash
 # Embed and store a transcript
-podcodex vectorize ep01/ep01.transcript.json --show "Total Trax" --strategy bge_speaker
+podcodex vectorize ep01/ep01.transcript.json --show "My Podcast" --strategy bge_speaker
 
 # Semantic search
-podcodex query "film music composer" --show "Total Trax" --strategy bge_speaker
-podcodex query "film music composer" --show "Total Trax" --strategy bge_speaker --top-k 3
+podcodex query "film music composer" --show "My Podcast" --strategy bge_speaker
+podcodex query "film music composer" --show "My Podcast" --strategy bge_speaker --top-k 3
 
 # Manage collections
-podcodex list --show "Total Trax"
-podcodex delete total_trax__bge_speaker
+podcodex list --show "My Podcast"
+podcodex delete my_podcast__bge_speaker
 ```
 
 #### Embedding strategies
@@ -164,7 +164,7 @@ from podcodex.rag.retriever import Retriever
 store = QdrantStore()                          # connects to QDRANT_URL or localhost:6333
 store = QdrantStore(in_memory=True)            # no server needed, for notebooks
 
-col = collection_name("Total Trax", "bge_speaker")   # → "total_trax__bge_speaker"
+col = collection_name("My Podcast", "bge_speaker")   # → "my_podcast__bge_speaker"
 store.create_collection(col, "bge_speaker")
 
 retriever = Retriever("bge_speaker", store=store)
@@ -190,7 +190,7 @@ the full pipeline tabs (Transcribe → Translate → Synthesize).
 Outputs are organised per episode under the show folder:
 
 ```
-/shows/total_trax/
+/shows/my_podcast/
 ├── ep01.mp3
 ├── ep02.mp3
 ├── ep01/

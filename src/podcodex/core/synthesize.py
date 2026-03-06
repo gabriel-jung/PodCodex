@@ -13,13 +13,52 @@ Files produced in output_dir:
 """
 
 import math
+import re
 import numpy as np
 import subprocess
 import soundfile as sf
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Literal, Optional
 
 from loguru import logger
+
+
+# ──────────────────────────────────────────────
+# Hallucination detection
+# ──────────────────────────────────────────────
+
+# Patterns Whisper commonly generates on music/silence instead of real speech.
+_HALLUCINATION_RE = re.compile(
+    r"(?i)"
+    r"sous-titrag"  # "Sous-titrage FR", "Sous-titrage MFP", etc.
+    r"|subtitl"  # English equivalents
+    r"|merci d'avoir"  # filler sign-off
+    r"|transcription\s+réalis"
+    r"|www\."  # URLs hallucinated on silence
+)
+
+
+def is_hallucination(text: str) -> bool:
+    """Return True if *text* looks like a Whisper hallucination rather than real speech.
+
+    Catches the most common artifacts produced on music or silence:
+    repeated punctuation (``... ...``), very short strings, and
+    known French/English subtitle watermarks.
+    """
+    t = text.strip()
+    if not t:
+        return False
+    # Only punctuation / dots / ellipses
+    if re.fullmatch(r"[\s.…\-_,;:!?/|]+", t):
+        return True
+    # Very short (single word or less, likely a stutter artifact)
+    if len(t) <= 3:
+        return True
+    # Known watermark / filler patterns
+    if _HALLUCINATION_RE.search(t):
+        return True
+    return False
 
 
 # ──────────────────────────────────────────────
@@ -69,66 +108,100 @@ def extract_voice_samples(
         duration = seg["end"] - seg["start"]
         by_speaker.setdefault(speaker, []).append({**seg, "duration": duration})
 
-    results: dict[str, list[dict]] = {}
+    _INVALID_SPEAKERS = {None, "", "UNKNOWN", "UNK", "None", "none"}
 
+    # Build the full extraction plan: (speaker, index, seg, output_path)
+    plan: list[tuple[str, int, dict, Path]] = []
+    speaker_candidate_counts: dict[str, int] = {}
     for speaker, segs in by_speaker.items():
-        # Filter by duration range if specified
+        if speaker in _INVALID_SPEAKERS:
+            logger.warning(
+                f"Skipping speaker {speaker!r} — likely music or noise region ({len(segs)} segments)"
+            )
+            continue
         candidates = segs
         if min_duration is not None:
             candidates = [s for s in candidates if s["duration"] >= min_duration]
         if max_duration is not None:
             candidates = [s for s in candidates if s["duration"] <= max_duration]
 
-        # Fallback to all segments if filters leave nothing
         if not candidates:
             logger.warning(
                 f"No segments in duration range for {speaker} — using all segments"
             )
             candidates = segs
 
-        # Sort by duration descending and take top_k
+        # Drop candidates whose text is a known Whisper hallucination artifact
+        before = len(candidates)
+        candidates = [s for s in candidates if not is_hallucination(s.get("text", ""))]
+        dropped = before - len(candidates)
+        if dropped:
+            logger.warning(
+                f"Dropped {dropped} hallucinated-text segment(s) for {speaker}"
+            )
+
+        if not candidates:
+            logger.warning(
+                f"All candidates for {speaker} are music/hallucination — skipping"
+            )
+            continue
+
         candidates = sorted(candidates, key=lambda s: s["duration"], reverse=True)[
             :top_k
         ]
-
-        speaker_samples = []
+        speaker_candidate_counts[speaker] = len(candidates)
         for i, seg in enumerate(candidates):
-            output_path = samples_dir / f"{speaker}_{i:02d}.wav"
+            plan.append((speaker, i, seg, samples_dir / f"{speaker}_{i:02d}.wav"))
 
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(audio_path),
-                    "-ss",
-                    str(seg["start"]),
-                    "-to",
-                    str(seg["end"]),
-                    "-ar",
-                    "16000",
-                    "-ac",
-                    "1",
-                    str(output_path),
-                ],
-                check=True,
-                capture_output=True,
-            )
+    def _extract_clip(speaker: str, i: int, seg: dict, output_path: Path) -> dict:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(audio_path),
+                "-ss",
+                str(seg["start"]),
+                "-to",
+                str(seg["end"]),
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                str(output_path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        logger.info(
+            f"{speaker} [{i + 1}/{speaker_candidate_counts[speaker]}] — {seg['duration']:.1f}s → {output_path.name}"
+        )
+        return {
+            "speaker": speaker,
+            "idx": i,
+            "file": output_path,
+            "start": seg["start"],
+            "end": seg["end"],
+            "duration": seg["duration"],
+            "text": seg["text"],
+        }
 
-            speaker_samples.append(
-                {
-                    "file": output_path,
-                    "start": seg["start"],
-                    "end": seg["end"],
-                    "duration": seg["duration"],
-                    "text": seg["text"],
-                }
-            )
-            logger.info(
-                f"{speaker} [{i + 1}/{len(candidates)}] — {seg['duration']:.1f}s → {output_path.name}"
-            )
+    # Run all ffmpeg extractions in parallel (I/O-bound, safe to thread)
+    results: dict[str, list[dict]] = {}
+    with ThreadPoolExecutor(max_workers=min(len(plan), 8)) as executor:
+        futures = {
+            executor.submit(_extract_clip, sp, i, seg, out): (sp, i)
+            for sp, i, seg, out in plan
+        }
+        for future in as_completed(futures):
+            entry = future.result()  # raises on ffmpeg failure
+            speaker = entry.pop("speaker")
+            entry.pop("idx")
+            results.setdefault(speaker, []).append(entry)
 
-        results[speaker] = speaker_samples
+    # Restore per-speaker order (sorted by duration descending, matching plan order)
+    for speaker in results:
+        results[speaker].sort(key=lambda e: e["duration"], reverse=True)
 
     return results
 

@@ -19,7 +19,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Self
+from typing import Self
 
 import pandas as pd
 import torch
@@ -128,8 +128,8 @@ def transcribe_file(
     model_size: str = "large-v3",
     language: str = "fr",
     batch_size: int = 4,
-    compute_type: Optional[str] = None,
-    device: Optional[str] = None,
+    compute_type: str | None = None,
+    device: str | None = None,
     force: bool = False,
     output_dir: str | Path = "",
 ) -> dict:
@@ -193,11 +193,11 @@ def load_transcription(audio_path: Path | str, output_dir: str | Path = "") -> d
 
 def diarize_file(
     audio_path: Path | str,
-    hf_token: Optional[str] = None,
-    min_speakers: Optional[int] = None,
-    max_speakers: Optional[int] = None,
-    num_speakers: Optional[int] = None,
-    device: Optional[str] = None,
+    hf_token: str | None = None,
+    min_speakers: int | None = None,
+    max_speakers: int | None = None,
+    num_speakers: int | None = None,
+    device: str | None = None,
     force: bool = False,
     output_dir: str | Path = "",
 ) -> dict:
@@ -365,7 +365,7 @@ def simplify_transcript(segments: list[dict]) -> list[dict]:
     """
     result = []
     for seg in segments:
-        speaker = seg.get("speaker_name") or seg.get("speaker", "UNKNOWN")
+        speaker = seg.get("speaker_name") or seg.get("speaker") or "UNKNOWN"
         entry = {
             "speaker": speaker,
             "start": round(float(seg["start"]), 3),
@@ -413,9 +413,8 @@ def export_transcript(
         {
             "start": round(float(seg["start"]), 3),
             "end": round(float(seg["end"]), 3),
-            "speaker": mapping.get(
-                seg.get("speaker", ""), seg.get("speaker", "UNKNOWN")
-            ),
+            "speaker": mapping.get(seg.get("speaker") or "", seg.get("speaker") or "")
+            or "UNKNOWN",
             "text": str(seg.get("text", "")).strip(),
         }
         for seg in segments
@@ -430,8 +429,10 @@ def export_transcript(
         "word_count": sum(len(seg["text"].split()) for seg in export),
     }
 
+    out_data: dict = {"meta": meta, "segments": export}
+
     p.transcript.write_text(
-        json.dumps({"meta": meta, "segments": export}, indent=2, ensure_ascii=False),
+        json.dumps(out_data, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     logger.success(f"Export done — {len(export)} segments → {p.transcript.name}")
@@ -484,9 +485,7 @@ def transcript_to_text(segments: list[dict]) -> str:
     """
     lines = []
     for seg in segments:
-        speaker = seg.get(
-            "speaker_name", seg.get("speaker_id", seg.get("speaker", "UNKNOWN"))
-        )
+        speaker = seg.get("speaker", "UNKNOWN")
         start = seg["start"]
         end = seg["end"]
         text = str(seg.get("text", "")).strip()

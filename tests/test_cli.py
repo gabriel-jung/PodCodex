@@ -297,7 +297,7 @@ def test_cmd_query_normalizes_show_name():
 
     args = MagicMock()
     args.query = "something"
-    args.show = "Total Trax"
+    args.show = "My Podcast"
     args.strategy = "bge_speaker"
     args.top_k = 5
 
@@ -308,7 +308,7 @@ def test_cmd_query_normalizes_show_name():
         cmd_query(args)
 
     mock_retriever.retrieve.assert_called_once_with(
-        "something", "total_trax__bge_speaker", top_k=5
+        "something", "my_podcast__bge_speaker", top_k=5
     )
 
 
@@ -454,11 +454,11 @@ def test_parser_query_required_args():
 
     parser = _build_parser()
     args = parser.parse_args(
-        ["query", "film music", "--show", "Total Trax", "--strategy", "bge_speaker"]
+        ["query", "film music", "--show", "My Podcast", "--strategy", "bge_speaker"]
     )
     assert args.command == "query"
     assert args.query == "film music"
-    assert args.show == "Total Trax"
+    assert args.show == "My Podcast"
     assert args.strategy == "bge_speaker"
     assert args.top_k == 5  # default
 

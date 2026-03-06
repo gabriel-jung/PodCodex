@@ -2,7 +2,7 @@
 podcodex.rag.store — Qdrant storage layer for podcast RAG.
 
 One Qdrant collection per (show, strategy).
-Collection naming: "{show}__{strategy}" (e.g. "total_trax__bge_semantic").
+Collection naming: "{show}__{strategy}" (e.g. "my_podcast__bge_semantic").
 
 Supported strategies and their vector configs:
     pplx_context — dense 1024-dim (cosine)
@@ -46,8 +46,8 @@ def _normalize_show(show: str) -> str:
 def collection_name(show: str, strategy: str) -> str:
     """Build the canonical collection name for a (show, strategy) pair.
 
-    Normalizes the show name so "Total Trax" and "total_trax" resolve to
-    the same collection: ``total_trax__bge_speaker``.
+    Normalizes the show name so "My Podcast" and "my_podcast" resolve to
+    the same collection: ``my_podcast__bge_speaker``.
     """
     return f"{_normalize_show(show)}__{strategy}"
 

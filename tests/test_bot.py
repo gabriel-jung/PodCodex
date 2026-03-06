@@ -121,7 +121,7 @@ def test_score_bar_half():
 # ──────────────────────────────────────────────
 
 _CHUNK = {
-    "show": "Total Trax",
+    "show": "My Podcast",
     "episode": "ep01",
     "speaker": "Alice",
     "start": 83.0,
@@ -133,9 +133,9 @@ _CHUNK = {
 
 def test_result_embed_show_as_author_episode_as_title():
     embed, _ = _result_embed(
-        _CHUNK, rank=1, collection="total_trax__bge_speaker", label="α=0.50"
+        _CHUNK, rank=1, collection="my_podcast__bge_speaker", label="α=0.50"
     )
-    assert embed.author.name == "🎙 Total Trax"
+    assert embed.author.name == "🎙 My Podcast"
     assert embed.title == "ep01"
 
 
@@ -213,9 +213,9 @@ def test_format_context_chunk_not_found():
 
 def test_format_context_header_shows_show_and_episode():
     content, _ = _format_context(
-        _NEIGHBORS, start=10.0, n=2, show="Total Trax", episode="ep01"
+        _NEIGHBORS, start=10.0, n=2, show="My Podcast", episode="ep01"
     )
-    assert "Total Trax" in content
+    assert "My Podcast" in content
     assert "ep01" in content
 
 

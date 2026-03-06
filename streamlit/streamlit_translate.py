@@ -161,7 +161,7 @@ def render():
             help="'API' uses a remote LLM. 'Ollama' runs a model locally. 'Manual' lets you use any external tool.",
         )
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
             source_lang = st.text_input(
                 "Source language",
@@ -175,12 +175,12 @@ def render():
                 disabled=task == "polish",
                 help="Full language name to translate into. Not used in Polish only mode.",
             )
-        with col3:
-            context = st.text_input(
-                "Context",
-                placeholder="e.g. French podcast about film music",
-                help="Optional hint for the LLM — improves translation quality for domain-specific vocabulary and proper nouns.",
-            )
+        context = st.text_area(
+            "Context",
+            placeholder="e.g. French podcast about film music, hosted by Alice and Bob. Technical vocabulary around orchestration and film scoring.",
+            help="Optional hint for the LLM — improves translation quality for domain-specific vocabulary and proper nouns.",
+            height=100,
+        )
 
     # ── Section 2: Mode-specific settings ──
     with st.container(border=True):
@@ -619,6 +619,34 @@ def _render_translation_preview(audio_path: Path, output_dir: str):
                 st.success("Translation saved!")
                 st.session_state.requested_tab = "translate"
                 st.rerun()
+
+        st.divider()
+        stem = Path(audio_path).stem
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.download_button(
+                "📄 Export source",
+                data=translate.translation_to_text(translation, lang="source"),
+                file_name=f"{stem}_source.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+        with col_b:
+            st.download_button(
+                "📄 Export translation",
+                data=translate.translation_to_text(translation, lang="trad"),
+                file_name=f"{stem}_translation.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+        with col_c:
+            st.download_button(
+                "📄 Export both",
+                data=translate.translation_to_text(translation, lang="both"),
+                file_name=f"{stem}_bilingual.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
 
         if st.button("→ Go to Synthesis", use_container_width=True):
             st.session_state.requested_tab = "synthesize"
