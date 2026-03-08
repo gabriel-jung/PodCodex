@@ -8,6 +8,7 @@ import warnings
 import streamlit as st
 from pathlib import Path
 from dotenv import load_dotenv
+from utils import normalize_path
 
 load_dotenv()
 
@@ -133,7 +134,7 @@ def _render_sidebar() -> None:
             placeholder="/path/to/show/folder",
             help="Folder containing your audio files. Outputs for each episode are saved in a subfolder named after the episode.",
         )
-        folder_input = folder_input.strip().strip("'\"")
+        folder_input = normalize_path(folder_input)
         st.session_state.show_folder = folder_input
 
         default_name = st.session_state.show_name or (
@@ -172,6 +173,7 @@ def _render_sidebar() -> None:
                 value=str(Path.cwd() / "Transcriptions"),
                 help="Where to save the episode folder and all outputs.",
             )
+            dest_dir = normalize_path(dest_dir)
             if uploaded and st.session_state.get("audio_filename") != uploaded.name:
                 stem = Path(uploaded.name).stem
                 save_dir = Path(dest_dir)
