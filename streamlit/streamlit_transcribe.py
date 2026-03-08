@@ -2,13 +2,14 @@
 podcodex.ui.streamlit_transcribe — Transcription tab
 """
 
-import json
 from pathlib import Path
 
 import streamlit as st
 
 from podcodex.core import transcribe
+from podcodex.core.transcribe import save_transcript
 from podcodex.core.synthesize import is_hallucination
+from streamlit_editor import render_segment_editor, audio_slice_bytes
 
 
 def render():
@@ -537,20 +538,33 @@ def _render_speaker_map(audio_path: Path, output_dir: str):
         if n_clean < len(top_segs):
             label += f" — ⚠️ {len(top_segs) - n_clean} suspect segment(s)"
         with st.expander(label, expanded=False):
+            top_audio_key = f"top_audio_{speaker_id}"
+            show_top_audio = st.session_state.get(top_audio_key, False)
+            if not show_top_audio:
+                if st.button(
+                    "🔊 Load previews",
+                    key=f"btn_top_{speaker_id}",
+                    use_container_width=True,
+                ):
+                    st.session_state[top_audio_key] = True
+                    st.rerun()
             cols = st.columns(len(top_segs)) if top_segs else []
             for i, (col, seg) in enumerate(zip(cols, top_segs)):
                 dur = float(seg["end"]) - float(seg["start"])
                 hallu, text = _seg_flags(seg)
                 with col:
-                    try:
-                        st.audio(
-                            _audio_slice_bytes(
-                                str(audio_path), float(seg["start"]), float(seg["end"])
-                            ),
-                            format="audio/wav",
-                        )
-                    except Exception:
-                        st.caption("Preview unavailable")
+                    if show_top_audio:
+                        try:
+                            st.audio(
+                                audio_slice_bytes(
+                                    str(audio_path),
+                                    float(seg["start"]),
+                                    float(seg["end"]),
+                                ),
+                                format="audio/wav",
+                            )
+                        except Exception:
+                            st.caption("Preview unavailable")
                     st.caption(
                         f"#{i + 1} · {dur:.1f}s · `{seg['start']:.1f}→{seg['end']:.1f}s`"
                     )
@@ -570,7 +584,7 @@ def _render_speaker_map(audio_path: Path, output_dir: str):
                 with col_btn:
                     if not show_audio:
                         if st.button(
-                            "🔊 Load audio",
+                            "🔊 Load more",
                             key=f"btn_load_{speaker_id}",
                             use_container_width=True,
                         ):
@@ -596,7 +610,7 @@ def _render_speaker_map(audio_path: Path, output_dir: str):
                         if show_audio:
                             try:
                                 st.audio(
-                                    _audio_slice_bytes(
+                                    audio_slice_bytes(
                                         str(audio_path),
                                         float(seg["start"]),
                                         float(seg["end"]),
@@ -618,46 +632,8 @@ def _load_diarized_segments_cached(audio_path: str, output_dir: str) -> list:
     return transcribe.load_diarized_segments(Path(audio_path), output_dir=output_dir)
 
 
-@st.cache_data(show_spinner=False)
-def _audio_slice_bytes(audio_path: str, start: float, end: float) -> bytes:
-    """Read a [start, end] slice from audio_path and return it as WAV bytes.
-
-    Result is cached by Streamlit so repeated rerenders don't re-read the file.
-    Note: audio_path must be a str (not Path) for cache key hashing.
-    """
-    import io
-    import soundfile as sf
-
-    info = sf.info(audio_path)
-    sr = info.samplerate
-    s_idx = int(start * sr)
-    e_idx = int(end * sr)
-    audio, _ = sf.read(
-        audio_path, start=s_idx, stop=e_idx, dtype="float32", always_2d=False
-    )
-    buf = io.BytesIO()
-    sf.write(buf, audio, sr, format="WAV")
-    buf.seek(0)
-    return buf.read()
-
-
-def _segment_density_warning(text: str, dur: float) -> str | None:
-    """Return a warning message if chars/sec ratio looks suspicious, else None."""
-    chars = len(text.strip())
-    if dur < 0.5:
-        return None
-    density = chars / dur
-    if density < 2.0:
-        return f"Low speech density ({density:.1f} chars/s over {dur:.1f}s) — may be music, noise, or a subtitle artifact."
-    return None
-
-
-_EDITOR_PAGE_SIZE = 20
-_UNKNOWN_SPEAKERS = {"UNKNOWN", "UNK", "None", "none"}
-
-
-def _render_transcript_editor(audio_path: Path, output_dir: str):
-    # Cache transcript in session_state — only reload from disk after save
+def _render_transcript_editor(audio_path, output_dir: str):
+    audio_path = Path(audio_path)
     t_key = f"editor_transcript_{audio_path}"
     if t_key not in st.session_state:
         st.session_state[t_key] = transcribe.load_transcript(
@@ -671,217 +647,22 @@ def _render_transcript_editor(audio_path: Path, output_dir: str):
         )
         return
 
-    del_key = f"deleted_segs_{audio_path}"
-    if del_key not in st.session_state:
-        st.session_state[del_key] = set()
-    deleted: set[int] = st.session_state[del_key]
+    def _on_save(merged):
+        save_transcript(audio_path, merged, output_dir=output_dir)
+        st.session_state[t_key] = merged
+        st.session_state.transcript = merged
+        st.toast("Transcript saved!")
 
-    page_key = f"editor_page_{audio_path}"
-    if page_key not in st.session_state:
-        st.session_state[page_key] = 0
-
-    filter_key = f"editor_filter_{audio_path}"
-
-    def _is_flagged(i):
-        seg = transcript[i]
-        speaker = seg.get("speaker", "")
-        text = seg.get("text", "")
-        dur = float(seg["end"]) - float(seg["start"])
-        return (not speaker or speaker in _UNKNOWN_SPEAKERS) or bool(
-            _segment_density_warning(text, dur)
-        )
-
-    all_active = [i for i in range(len(transcript)) if i not in deleted]
-    flagged = [i for i in all_active if _is_flagged(i)]
-
-    col_cap, col_filter, col_prev, col_next = st.columns([3, 2, 1, 1])
-    with col_filter:
-        show_flagged_only = st.toggle(
-            f"⚠️ Flagged only ({len(flagged)})", key=filter_key
-        )
-        if (
-            show_flagged_only
-            and st.session_state.get(f"{filter_key}_prev") != show_flagged_only
-        ):
-            st.session_state[page_key] = 0
-    st.session_state[f"{filter_key}_prev"] = show_flagged_only
-
-    active_indices = flagged if show_flagged_only else all_active
-    n_pages = max(1, (len(active_indices) + _EDITOR_PAGE_SIZE - 1) // _EDITOR_PAGE_SIZE)
-    page = min(st.session_state[page_key], n_pages - 1)
-
-    with col_cap:
-        st.caption(
-            f"{len(transcript)} segments · {len(deleted)} deleted · page {page + 1}/{n_pages}"
-        )
-    with col_prev:
-        if st.button("← Prev", disabled=page == 0, use_container_width=True):
-            st.session_state[page_key] = page - 1
-            st.rerun()
-    with col_next:
-        if st.button("Next →", disabled=page == n_pages - 1, use_container_width=True):
-            st.session_state[page_key] = page + 1
-            st.rerun()
-
-    page_indices = active_indices[
-        page * _EDITOR_PAGE_SIZE : (page + 1) * _EDITOR_PAGE_SIZE
-    ]
-
-    edited_on_page = {}
-    for i in page_indices:
-        seg = transcript[i]
-        speaker = seg.get("speaker", "")
-        text = seg.get("text", "")
-        start = float(seg["start"])
-        end = float(seg["end"])
-        dur = end - start
-
-        is_unknown = not speaker or speaker in _UNKNOWN_SPEAKERS
-        density_warn = _segment_density_warning(text, dur)
-        speaker_label = f"⚠️ {speaker or 'None'}" if is_unknown else speaker
-        density_flag = " 🟡" if density_warn else ""
-
-        with st.expander(
-            f"[{start:.1f}s → {end:.1f}s] **{speaker_label}**{density_flag} — {text[:60]}{'...' if len(text) > 60 else ''}",
-            expanded=False,
-        ):
-            if density_warn:
-                st.warning(density_warn)
-
-            seg_audio_key = f"editor_audio_{audio_path}_{i}"
-            if st.session_state.get(seg_audio_key):
-                try:
-                    st.audio(
-                        _audio_slice_bytes(str(audio_path), start, end),
-                        format="audio/wav",
-                    )
-                except Exception:
-                    st.caption("Preview unavailable")
-            else:
-                if st.button(
-                    "🔊 Load audio", key=f"load_audio_{i}", use_container_width=True
-                ):
-                    st.session_state[seg_audio_key] = True
-                    st.rerun()
-
-            new_text = st.text_area(
-                "Text",
-                value=text,
-                key=f"edit_seg_{i}",
-                label_visibility="collapsed",
-                height=80,
-            )
-            col_s, col_e, col_del = st.columns([2, 2, 1])
-            with col_s:
-                new_start = st.number_input(
-                    "Start (s)",
-                    value=start,
-                    min_value=0.0,
-                    step=0.1,
-                    format="%.1f",
-                    key=f"start_{i}",
-                )
-            with col_e:
-                new_end = st.number_input(
-                    "End (s)",
-                    value=end,
-                    min_value=0.0,
-                    step=0.1,
-                    format="%.1f",
-                    key=f"end_{i}",
-                )
-            with col_del:
-                if st.button("🗑️ Delete", key=f"del_{i}", use_container_width=True):
-                    st.session_state[del_key] = st.session_state[del_key] | {i}
-                    st.rerun()
-
-            edited_on_page[i] = {
-                **seg,
-                "text": new_text,
-                "start": new_start,
-                "end": new_end,
-            }
-
-    # ── Delete all flagged ──
-    if flagged:
-        st.divider()
-        confirm_key = f"confirm_delete_flagged_{audio_path}"
-        if not st.session_state.get(confirm_key):
-            if st.button(
-                f"🗑️ Delete all flagged segments ({len(flagged)})",
-                use_container_width=True,
-            ):
-                st.session_state[confirm_key] = True
-                st.rerun()
-        else:
-            st.warning(
-                f"Delete all **{len(flagged)}** flagged segments? This cannot be undone until you save."
-            )
-            col_yes, col_no = st.columns(2)
-            with col_yes:
-                if st.button(
-                    "✅ Yes, delete all", use_container_width=True, type="primary"
-                ):
-                    st.session_state[del_key] = st.session_state[del_key] | set(flagged)
-                    st.session_state.pop(confirm_key, None)
-                    st.session_state[page_key] = 0
-                    st.rerun()
-            with col_no:
-                if st.button("✖ Cancel", use_container_width=True):
-                    st.session_state.pop(confirm_key, None)
-                    st.rerun()
-
-    st.divider()
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("💾 Save edits", use_container_width=True, type="primary"):
-            # Collect edits from all pages via session state widget keys,
-            # falling back to the cached transcript for unvisited pages.
-            merged = []
-            for i in range(len(transcript)):
-                if i in deleted:
-                    continue
-                seg = transcript[i]
-                merged.append(
-                    {
-                        **seg,
-                        "text": st.session_state.get(
-                            f"edit_seg_{i}", seg.get("text", "")
-                        ),
-                        "start": st.session_state.get(
-                            f"start_{i}", float(seg["start"])
-                        ),
-                        "end": st.session_state.get(f"end_{i}", float(seg["end"])),
-                    }
-                )
-            p = transcribe._EpisodePaths.from_audio(audio_path, output_dir=output_dir)
-            full = transcribe.load_transcript_full(audio_path, output_dir=output_dir)
-            full["segments"] = merged
-            p.transcript.write_text(
-                json.dumps(full, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
-            st.session_state[t_key] = merged
-            st.session_state.transcript = merged
-            st.session_state.pop(del_key, None)
-            st.session_state[page_key] = 0
-            st.success("Transcript saved!")
-    with col2:
-        txt = transcribe.transcript_to_text(
-            [
-                edited_on_page.get(i, transcript[i])
-                for i in range(len(transcript))
-                if i not in deleted
-            ]
-        )
-        audio_stem = Path(audio_path).stem
-        st.download_button(
-            "📄 Export as text",
-            data=txt,
-            file_name=f"{audio_stem}_transcript.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
-    with col3:
-        if st.button("→ Go to Polish", use_container_width=True):
-            st.session_state.requested_tab = "polish"
-            st.rerun()
+    render_segment_editor(
+        transcript,
+        editor_key=f"transcript_{audio_path}",
+        on_save=_on_save,
+        audio_path=audio_path,
+        show_timestamps=True,
+        show_delete=True,
+        show_flags=True,
+        export_fn=transcribe.transcript_to_text,
+        export_filename=f"{audio_path.stem}_transcript.txt",
+        next_tab="polish",
+        next_tab_label="→ Go to Polish",
+    )

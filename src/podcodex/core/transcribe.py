@@ -477,6 +477,85 @@ def _free_vram(model) -> None:
         torch.cuda.empty_cache()
 
 
+_UNKNOWN_SPEAKERS = {"UNKNOWN", "UNK", "None", "none"}
+
+
+def segment_speech_density(seg: dict) -> float | None:
+    """Return chars/second for a segment, or None if duration is too short to measure."""
+    text = str(seg.get("text", "")).strip()
+    dur = float(seg.get("end", 0)) - float(seg.get("start", 0))
+    if dur < 0.5:
+        return None
+    return len(text) / dur
+
+
+def is_segment_flagged(seg: dict) -> bool:
+    """Return True if a segment is suspicious and should be reviewed or removed.
+
+    A segment is flagged when:
+    - speaker is missing or an unresolved placeholder (UNKNOWN, UNK, …)
+    - speech density is abnormally low (< 2 chars/s), indicating music, noise,
+      or a Whisper hallucination artifact
+    """
+    speaker = seg.get("speaker", "")
+    if not speaker or speaker in _UNKNOWN_SPEAKERS:
+        return True
+    density = segment_speech_density(seg)
+    return density is not None and density < 2.0
+
+
+def clean_transcript(
+    segments: list[dict],
+    *,
+    remove_unknown_speakers: bool = True,
+    remove_low_density: bool = True,
+) -> list[dict]:
+    """Remove flagged segments from a transcript.
+
+    Args:
+        segments               : list of segment dicts (from load_transcript)
+        remove_unknown_speakers: drop segments with missing/unresolved speaker
+        remove_low_density     : drop segments with < 2 chars/s (hallucinations)
+
+    Returns:
+        Filtered list of segments.
+    """
+    result = []
+    for seg in segments:
+        speaker = seg.get("speaker", "")
+        if remove_unknown_speakers and (not speaker or speaker in _UNKNOWN_SPEAKERS):
+            continue
+        if remove_low_density:
+            density = segment_speech_density(seg)
+            if density is not None and density < 2.0:
+                continue
+        result.append(seg)
+    logger.debug(f"clean_transcript: {len(segments)} → {len(result)} segments")
+    return result
+
+
+def save_transcript(
+    audio_path: Path | str,
+    segments: list[dict],
+    output_dir: str | Path = "",
+) -> None:
+    """Save an edited segment list back to transcript.json, preserving metadata.
+
+    Args:
+        audio_path : source audio file (used to locate transcript.json)
+        segments   : updated segment list
+        output_dir : same output_dir used when the transcript was created
+    """
+    audio_path = Path(audio_path)
+    p = _EpisodePaths.from_audio(audio_path, output_dir=output_dir)
+    full = load_transcript_full(audio_path, output_dir=output_dir)
+    full["segments"] = segments
+    p.transcript.write_text(
+        json.dumps(full, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    logger.info(f"Transcript saved → {p.transcript.name} ({len(segments)} segments)")
+
+
 def transcript_to_text(segments: list[dict]) -> str:
     """Format transcript segments as plain readable text for quick review.
 

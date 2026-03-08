@@ -135,6 +135,11 @@ def _render_sidebar() -> None:
             help="Folder containing your audio files. Outputs for each episode are saved in a subfolder named after the episode.",
         )
         folder_input = normalize_path(folder_input)
+
+        # Reset show name when folder changes
+        if folder_input != st.session_state.get("_prev_show_folder", ""):
+            st.session_state.show_name = ""
+        st.session_state["_prev_show_folder"] = folder_input
         st.session_state.show_folder = folder_input
 
         default_name = st.session_state.show_name or (
@@ -192,18 +197,24 @@ def _render_sidebar() -> None:
                 st.rerun()
 
 
-def _render_episode_list(folder: Path) -> None:
+@st.cache_data(ttl=60, show_spinner=False)
+def _scan_folder_cached(folder: str) -> list:
     from podcodex.ingest.folder import scan_folder
 
-    episodes = scan_folder(folder)
+    return scan_folder(Path(folder))
+
+
+def _render_episode_list(folder: Path) -> None:
+    episodes = _scan_folder_cached(str(folder))
     if not episodes:
         st.info("No audio files found.")
         return
 
-    n_transcribed = sum(1 for e in episodes if e.transcribed)
+    n_polished = sum(1 for e in episodes if e.polished)
+    n_transcribed = sum(1 for e in episodes if e.transcribed and not e.polished)
     n_indexed = sum(1 for e in episodes if e.indexed)
-    n_pending = len(episodes) - n_transcribed
-    summary = f"{len(episodes)} episodes — 🟢 {n_transcribed} · 🔴 {n_pending}"
+    n_pending = len(episodes) - sum(1 for e in episodes if e.transcribed)
+    summary = f"{len(episodes)} episodes — 🟢 {n_polished} · 🟡 {n_transcribed} · 🔴 {n_pending}"
     if n_indexed:
         summary += f" · ⚡ {n_indexed} indexed"
     st.caption(summary)
@@ -213,7 +224,12 @@ def _render_episode_list(folder: Path) -> None:
         is_active = bool(active_path and Path(active_path) == ep.path)
         col_info, col_btn = st.columns([3, 1])
         with col_info:
-            badge = "🟢" if ep.transcribed else "🔴"
+            if ep.polished:
+                badge = "🟢"
+            elif ep.transcribed:
+                badge = "🟡"
+            else:
+                badge = "🔴"
             indexed_mark = " ⚡" if ep.indexed else ""
             label = f"**{ep.stem}**" if is_active else ep.stem
             st.markdown(f"{badge} {label}{indexed_mark}")

@@ -10,6 +10,7 @@ import streamlit as st
 from podcodex.core import transcribe
 from podcodex.core import polish as polish_mod
 from utils import fmt_time
+from streamlit_editor import render_segment_editor
 
 # OpenAI-compatible provider presets
 _PROVIDERS = {
@@ -356,9 +357,28 @@ def render():
                 except Exception as e:
                     st.error(f"Import failed: {e}")
 
-    # ── Section 4: Preview ──
+    # ── Section 4: Editor ──
     if polish_mod.polished_exists(audio_path, output_dir=output_dir):
-        _render_polish_preview(audio_path, output_dir)
+        polished = polish_mod.load_polished(audio_path, output_dir=output_dir)
+        st.session_state.polished = polished
+        with st.container(border=True):
+            st.markdown("### ✏️ Review & Edit Polished Transcript")
+
+            def _on_save(merged):
+                polish_mod.save_polished(audio_path, merged, output_dir=output_dir)
+                st.session_state.polished = merged
+                st.toast("Polished transcript saved!")
+
+            render_segment_editor(
+                polished,
+                editor_key=f"polish_{audio_path}",
+                on_save=_on_save,
+                audio_path=audio_path,
+                export_fn=polish_mod.polished_to_text,
+                export_filename=f"{Path(audio_path).stem}.polished.txt",
+                next_tab="translate",
+                next_tab_label="→ Go to Translate",
+            )
 
 
 def _build_kwargs(mode: str, source_lang: str, context: str) -> dict:
@@ -376,68 +396,3 @@ def _build_kwargs(mode: str, source_lang: str, context: str) -> dict:
     elif mode == "ollama":
         kwargs["model"] = st.session_state.get("polish_ollama_model", "qwen3:14b")
     return kwargs
-
-
-def _render_polish_preview(audio_path, output_dir: str):
-    polished = polish_mod.load_polished(audio_path, output_dir=output_dir)
-    st.session_state.polished = polished
-
-    with st.container(border=True):
-        col_title, col_edit = st.columns([4, 1])
-        with col_title:
-            st.markdown("### 👁️ Preview")
-        with col_edit:
-            edit_mode = st.checkbox("Edit mode", key="polish_edit_mode", value=False)
-
-        if not edit_mode:
-            preview = polish_mod.polished_to_text(polished[:10])
-            st.text_area(
-                "First 10 segments",
-                value=preview,
-                height=300,
-                disabled=True,
-                label_visibility="collapsed",
-            )
-            st.caption(f"{len(polished)} segments total")
-        else:
-            st.caption(
-                f"{len(polished)} segments — expand a segment to edit, then save."
-            )
-            edited = []
-            for i, seg in enumerate(polished):
-                lbl = f"[{seg['start']:.1f}s] **{seg.get('speaker', '?')}** — {seg.get('text', '')[:50]}..."
-                with st.expander(lbl, expanded=False):
-                    new_text = st.text_area(
-                        "Text",
-                        value=seg.get("text", ""),
-                        key=f"polish_edit_{i}",
-                        height=80,
-                    )
-                    edited.append({**seg, "text": new_text})
-
-            if st.button(
-                "💾 Save edits",
-                use_container_width=True,
-                type="primary",
-                key="polish_save_edits",
-            ):
-                polish_mod.save_polished(audio_path, edited, output_dir=output_dir)
-                st.session_state.polished = edited
-                st.success("Saved!")
-                st.rerun()
-
-        st.divider()
-        stem = Path(audio_path).stem
-        st.download_button(
-            "📄 Export polished",
-            data=polish_mod.polished_to_text(polished),
-            file_name=f"{stem}.polished.txt",
-            mime="text/plain",
-            use_container_width=True,
-            key="polish_download",
-        )
-
-        st.divider()
-        if st.button("→ Go to Translate", use_container_width=True):
-            st.session_state.requested_tab = "translate"
-            st.rerun()

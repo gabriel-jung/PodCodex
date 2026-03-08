@@ -11,6 +11,7 @@ from podcodex.core import transcribe
 from podcodex.core import translate as translate_mod
 from podcodex.core import polish as polish_mod
 from utils import fmt_time
+from streamlit_editor import render_segment_editor
 
 # OpenAI-compatible provider presets
 _PROVIDERS = {
@@ -430,10 +431,10 @@ def render():
                 except Exception as e:
                     st.error(f"Import failed: {e}")
 
-    # ── Section 4: Preview ──
+    # ── Section 4: Editor ──
     langs = translate_mod.list_translations(audio_path, output_dir=output_dir)
     if langs:
-        _render_translation_preview(audio_path, output_dir, langs)
+        _render_translation_editor(audio_path, output_dir, langs, segments)
 
 
 # ──────────────────────────────────────────────
@@ -493,73 +494,38 @@ def _reload_translations(audio_path, output_dir: str) -> None:
     )
 
 
-def _render_translation_preview(audio_path, output_dir: str, langs: list[str]):
+def _render_translation_editor(
+    audio_path, output_dir: str, langs: list[str], source_segments: list[dict]
+):
+    stem = Path(audio_path).stem
     with st.container(border=True):
-        col_title, col_edit = st.columns([4, 1])
-        with col_title:
-            st.markdown("### 👁️ Translations")
-        with col_edit:
-            edit_mode = st.checkbox("Edit mode", key="trad_edit_mode", value=False)
-
+        st.markdown("### ✏️ Translations")
         tabs = st.tabs([lang.capitalize() for lang in langs])
 
         for tab, lang in zip(tabs, langs):
-            segments = translate_mod.load_translation(
+            translation = translate_mod.load_translation(
                 audio_path, lang, output_dir=output_dir
             )
-            stem = Path(audio_path).stem
+
+            def _make_save(lang=lang):
+                def _on_save(merged):
+                    translate_mod.save_translation(
+                        audio_path, merged, lang, output_dir=output_dir
+                    )
+                    _reload_translations(audio_path, output_dir)
+                    st.toast(f"{lang.capitalize()} translation saved!")
+
+                return _on_save
 
             with tab:
-                if not edit_mode:
-                    preview = translate_mod.translation_to_text(segments[:10])
-                    st.text_area(
-                        "First 10 segments",
-                        value=preview,
-                        height=300,
-                        disabled=True,
-                        label_visibility="collapsed",
-                    )
-                    st.caption(f"{len(segments)} segments total")
-                else:
-                    st.caption(
-                        f"{len(segments)} segments — expand a segment to edit, then save."
-                    )
-                    edited = []
-                    for i, seg in enumerate(segments):
-                        lbl = f"[{seg['start']:.1f}s] **{seg.get('speaker', '?')}** — {seg.get('text', '')[:50]}..."
-                        with st.expander(lbl, expanded=False):
-                            new_text = st.text_area(
-                                "Text",
-                                value=seg.get("text", ""),
-                                key=f"trad_edit_{lang}_{i}",
-                                height=80,
-                            )
-                            edited.append({**seg, "text": new_text})
-
-                    if st.button(
-                        "💾 Save edits",
-                        key=f"trad_save_{lang}",
-                        use_container_width=True,
-                        type="primary",
-                    ):
-                        translate_mod.save_translation(
-                            audio_path, edited, lang, output_dir=output_dir
-                        )
-                        _reload_translations(audio_path, output_dir)
-                        st.success("Saved!")
-                        st.rerun()
-
-                st.divider()
-                st.download_button(
-                    f"📄 Export {lang}",
-                    data=translate_mod.translation_to_text(segments),
-                    file_name=f"{stem}.{lang}.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                    key=f"trad_dl_{lang}",
+                render_segment_editor(
+                    translation,
+                    editor_key=f"translate_{audio_path}_{lang}",
+                    on_save=_make_save(),
+                    audio_path=audio_path,
+                    reference_segments=source_segments,
+                    export_fn=translate_mod.translation_to_text,
+                    export_filename=f"{stem}.{lang}.txt",
+                    next_tab="synthesize" if lang == langs[-1] else None,
+                    next_tab_label="→ Go to Synthesis",
                 )
-
-        st.divider()
-        if st.button("→ Go to Synthesis", use_container_width=True):
-            st.session_state.requested_tab = "synthesize"
-            st.rerun()
