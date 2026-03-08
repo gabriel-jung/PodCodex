@@ -390,7 +390,7 @@ def render():
             pool_labels = [e["label"] for e in pool]
 
             for i, seg in enumerate(generated):
-                label = f"[{seg['start']:.1f}s] **{seg.get('speaker', '?')}** — {seg.get('text_trad', '')[:60]}..."
+                label = f"[{seg['start']:.1f}s] **{seg.get('speaker', '?')}** — {(seg.get('text_trad') or seg.get('text', ''))[:60]}..."
                 with st.expander(label, expanded=False):
                     col1, col2 = st.columns(2)
                     with col1:
@@ -399,7 +399,7 @@ def render():
                     with col2:
                         new_text = st.text_area(
                             "Synthesized text",
-                            value=seg.get("text_trad", ""),
+                            value=seg.get("text_trad") or seg.get("text", ""),
                             key=f"edit_trad_{i}",
                             height=80,
                             help="Edit the text and click Regenerate to re-synthesize this segment.",

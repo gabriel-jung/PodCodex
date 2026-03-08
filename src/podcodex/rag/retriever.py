@@ -1,78 +1,56 @@
 """
-podcodex.rag.retriever — Query retriever for RAG strategies.
+podcodex.rag.retriever — Hybrid retriever for podcast RAG.
 
-Loads the correct embedder at init and queries Qdrant using the
-search method appropriate for the strategy and the requested alpha:
+Hybrid search = alpha * dense_vector_search + (1 - alpha) * BM25_text_search
 
     alpha=1.0 — dense vector search only
-    alpha=0.0 — BM25 keyword search only  (BGE strategies only)
-    0 < alpha < 1 — linear fusion: alpha*dense + (1-alpha)*BM25  (BGE only)
+    alpha=0.0 — BM25 keyword search only
+    0 < alpha < 1 — linear blend (default: 0.5)
 
-For dense-only strategies (e5_semantic, pplx_context), alpha is ignored
-and dense search is always used.
+BM25 is computed client-side via bm25s, independently of the embedding
+model. This means ALL models support hybrid search.
 """
 
 from __future__ import annotations
 
 from loguru import logger
 
-from podcodex.rag.store import STRATEGIES, QdrantStore
+from podcodex.rag.store import QdrantStore
 
-_DENSE_STRATEGIES = {"pplx_context", "e5_semantic"}
-_HYBRID_STRATEGIES = {"bge_speaker", "bge_semantic"}
-
-
-# ──────────────────────────────────────────────
-# Embedder factory
-# ──────────────────────────────────────────────
-
-
-def _load_embedder(strategy: str):
-    if strategy == "pplx_context":
-        from podcodex.rag.embedder import PplxEmbedder
-
-        return PplxEmbedder()
-    elif strategy == "e5_semantic":
-        from podcodex.rag.embedder import E5Embedder
-
-        return E5Embedder()
-    elif strategy in _HYBRID_STRATEGIES:
-        from podcodex.rag.embedder import BGEEmbedder
-
-        return BGEEmbedder()
-    else:
-        raise ValueError(f"Unknown strategy {strategy!r}. Choose from {STRATEGIES}.")
-
-
-# ──────────────────────────────────────────────
-# Retriever
-# ──────────────────────────────────────────────
+try:
+    import bm25s
+except ImportError:  # pragma: no cover
+    bm25s = None  # type: ignore[assignment]
 
 
 class Retriever:
     """
-    Combines embedder + Qdrant client for a given vectorizing strategy.
+    Combines an embedding model + Qdrant dense search + bm25s text search.
 
     Args:
-        strategy   : one of pplx_context / e5_semantic / bge_speaker / bge_semantic
+        model      : model key from MODELS registry (default: "bge-m3")
         qdrant_url : Qdrant server URL (defaults to QDRANT_URL env or localhost:6333)
         store      : optional pre-built QdrantStore
     """
 
     def __init__(
         self,
-        strategy: str,
+        model: str = "bge-m3",
         qdrant_url: str | None = None,
         store: QdrantStore | None = None,
     ):
-        if strategy not in STRATEGIES:
-            raise ValueError(
-                f"Unknown strategy {strategy!r}. Choose from {STRATEGIES}."
-            )
-        self._strategy = strategy
-        self._embedder = _load_embedder(strategy)
+        from podcodex.rag.defaults import MODELS
+        from podcodex.rag.embedder import get_embedder
+
+        spec = MODELS.get(model)
+        if spec is None:
+            valid = ", ".join(MODELS.keys())
+            raise ValueError(f"Unknown model '{model}'. Valid: {valid}")
+
+        self._model_key = model
+        self._embedder = get_embedder(model)
         self._store = store or QdrantStore(url=qdrant_url)
-        logger.info(f"Retriever ready (strategy={strategy})")
+        logger.info(f"Retriever ready (model={model})")
 
     def retrieve(
         self,
@@ -88,13 +66,12 @@ class Retriever:
             query      : natural language query
             collection : Qdrant collection name
             top_k      : number of results to return
-            alpha      : blend between BM25 (0.0) and dense vector (1.0).
-                         Ignored for dense-only strategies (always 1.0).
+            alpha      : blend between BM25 (0.0) and dense vector (1.0)
 
         Returns:
             List of payload dicts with an added 'score' key.
         """
-        if self._strategy in _DENSE_STRATEGIES or alpha >= 1.0:
+        if alpha >= 1.0:
             return self._dense_search(query, collection, top_k)
         if alpha <= 0.0:
             return self._bm25_search(query, collection, top_k)
@@ -104,44 +81,47 @@ class Retriever:
 
     def _dense_search(self, query: str, collection: str, top_k: int) -> list[dict]:
         query_vec = self._embedder.encode_query(query)
-        vec = query_vec["dense"] if isinstance(query_vec, dict) else query_vec
-        named = isinstance(query_vec, dict)
         results = self._store._client.query_points(
             collection_name=collection,
-            query=vec.tolist(),
-            using="dense" if named else None,
+            query=query_vec.tolist(),
             limit=top_k,
         ).points
         return [_result_to_dict(r) for r in results]
 
     def _bm25_search(self, query: str, collection: str, top_k: int) -> list[dict]:
-        from qdrant_client.models import SparseVector
-
-        query_emb = self._embedder.encode_query(query)
-        sv = query_emb["sparse"]
-        results = self._store._client.query_points(
+        results, _ = self._store._client.scroll(
             collection_name=collection,
-            query=SparseVector(indices=sv["indices"], values=sv["values"]),
-            using="sparse",
-            limit=top_k,
-        ).points
-        return [_result_to_dict(r) for r in results]
+            limit=10_000,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not results:
+            return []
+
+        chunks = [dict(r.payload) for r in results]
+        texts = [c.get("text", "") for c in chunks]
+
+        corpus_tokens = bm25s.tokenize(texts)
+        retriever = bm25s.BM25()
+        retriever.index(corpus_tokens)
+
+        query_tokens = bm25s.tokenize(query)
+        k = min(top_k, len(chunks))
+        indices, scores = retriever.retrieve(query_tokens, k=k)
+
+        hits = [
+            {**chunks[int(idx)], "score": float(score)}
+            for idx, score in zip(indices[0], scores[0])
+        ]
+        return _normalize(hits)
 
     def _weighted_search(
         self, query: str, collection: str, top_k: int, alpha: float
     ) -> list[dict]:
-        """Linear combination: score = alpha*dense + (1-alpha)*bm25."""
+        """Linear combination: score = alpha * dense + (1 - alpha) * bm25."""
         k = top_k * 4
-        dense_hits = _normalize(
-            _result_to_dict(r)
-            for r in self._store._client.query_points(
-                collection_name=collection,
-                query=self._embedder.encode_query(query)["dense"].tolist(),
-                using="dense",
-                limit=k,
-            ).points
-        )
-        bm25_hits = _normalize(self._bm25_search(query, collection, k))
+        dense_hits = _normalize(self._dense_search(query, collection, k))
+        bm25_hits = self._bm25_search(query, collection, k)  # already normalized
 
         combined: dict[str, float] = {}
         payloads: dict[str, dict] = {}
@@ -169,16 +149,18 @@ def _chunk_key(chunk: dict) -> str:
     return f"{chunk.get('episode', '')}|{chunk.get('start', 0)}"
 
 
-def _normalize(results) -> list[dict]:
-    """Min-max normalize scores within a result set."""
-    results = list(results)
+def _normalize(results: list[dict]) -> list[dict]:
+    """Min-max normalize scores within a result set to [0, 1]."""
     if not results:
         return results
     scores = [r["score"] for r in results]
     lo, hi = min(scores), max(scores)
     rng = hi - lo
     if rng == 0:
-        return [{**r, "score": 1.0} for r in results]
+        # All scores identical: if all zero → no match at all → 0.0
+        #                       if all same positive value → tied → 1.0
+        val = 0.0 if lo == 0 else 1.0
+        return [{**r, "score": val} for r in results]
     return [{**r, "score": (r["score"] - lo) / rng} for r in results]
 
 

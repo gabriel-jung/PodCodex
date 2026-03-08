@@ -2,16 +2,15 @@
 podcodex.bot.bot — Discord bot for podcast transcript search.
 
 Usage:
-    podcodex-bot [--strategy bge_speaker] [--top-k 5] [--qdrant-url URL]
+    podcodex-bot [--model bge-m3] [--top-k 5] [--qdrant-url URL]
                  [--server-config server_config.json]
 
 Slash commands:
-    /search <question> [show] [alpha=0.5]  — vector/hybrid search
-    /exact  <question> [show]              — BM25 keyword search
-    /setup  [strategy] [top_k]            — admin: configure per-server defaults
+    /search <question> [show] [alpha=0.5] [model] [top_k]
+    /exact  <question> [show] [model] [top_k]
+    /setup  [model] [top_k]  — admin: configure per-server defaults
 
-Per-server settings (strategy, top_k) are stored in a JSON file on disk and
-override the global CLI defaults for that server.
+Per-server settings are stored in a JSON file on disk.
 """
 
 from __future__ import annotations
@@ -28,8 +27,9 @@ from discord import app_commands
 from loguru import logger
 
 from podcodex.bot.config import BotConfig
+from podcodex.rag.defaults import ALPHA, DEFAULT_MODEL, MODELS, TOP_K
 from podcodex.rag.retriever import Retriever
-from podcodex.rag.store import QdrantStore
+from podcodex.rag.store import QdrantStore, collection_name
 
 
 # ──────────────────────────────────────────────
@@ -39,8 +39,18 @@ from podcodex.rag.store import QdrantStore
 
 @dataclass
 class ServerSettings:
-    strategy: str = "bge_speaker"
-    top_k: int = 5
+    model: str = DEFAULT_MODEL
+    top_k: int = TOP_K
+
+
+# ──────────────────────────────────────────────
+# Model choices (generated from registry — never hardcode here)
+# ──────────────────────────────────────────────
+
+_MODEL_CHOICES = [
+    app_commands.Choice(name=spec.description, value=spec.key)
+    for spec in MODELS.values()
+]
 
 
 # ──────────────────────────────────────────────
@@ -68,20 +78,13 @@ def _score_bar(score: float, width: int = 8) -> str:
 # Context formatting
 # ──────────────────────────────────────────────
 
-_MAX_CONTEXT_N = 8  # max chunks each side
-_MAX_CHARS = 1900  # Discord message limit with some headroom
+_MAX_CONTEXT_N = 8
+_MAX_CHARS = 1900
 
 
 def _format_context(
     neighbors: list[dict], start: float, n: int, show: str, episode: str
 ) -> tuple[str, bool]:
-    """
-    Format surrounding chunks as a Discord message.
-
-    Returns:
-        (content, has_more) — has_more is True when there are chunks
-        beyond the current window that a further expansion would reveal.
-    """
     pos = next(
         (i for i, c in enumerate(neighbors) if abs(c.get("start", -1) - start) < 0.1),
         None,
@@ -114,19 +117,17 @@ def _format_context(
     content = "\n\n".join(lines)
     if len(content) > _MAX_CHARS:
         content = content[:_MAX_CHARS] + "\n\n*…(truncated)*"
-        has_more = False  # no point expanding if we're already hitting the limit
+        has_more = False
 
     return content, has_more
 
 
 # ──────────────────────────────────────────────
-# Context UI — initial button on result embed
+# Context UI
 # ──────────────────────────────────────────────
 
 
 class _ExpandButton(discord.ui.Button):
-    """Button on the result embed that opens the context window (±2 turns)."""
-
     def __init__(self, collection: str, episode: str, show: str, start: float):
         super().__init__(label="Show context ↕", style=discord.ButtonStyle.secondary)
         self._collection = collection
@@ -157,21 +158,12 @@ class _ExpandButton(discord.ui.Button):
 
 
 class _ExpandView(discord.ui.View):
-    """View attached to each result embed (holds the initial Show context button)."""
-
     def __init__(self, collection: str, episode: str, show: str, start: float):
         super().__init__(timeout=300)
         self.add_item(_ExpandButton(collection, episode, show, start))
 
 
-# ──────────────────────────────────────────────
-# Context UI — expandable context message
-# ──────────────────────────────────────────────
-
-
 class _ExpandMoreButton(discord.ui.Button):
-    """Button inside the context window that widens the visible window."""
-
     def __init__(
         self,
         collection: str,
@@ -208,8 +200,6 @@ class _ExpandMoreButton(discord.ui.Button):
 
 
 class _ContextView(discord.ui.View):
-    """View for the ephemeral context message — offers further expansion."""
-
     def __init__(
         self,
         collection: str,
@@ -260,18 +250,6 @@ def _result_embed(
 
 
 # ──────────────────────────────────────────────
-# Strategy choices (shared across commands)
-# ──────────────────────────────────────────────
-
-_STRATEGY_CHOICES = [
-    app_commands.Choice(name="BGE speaker turns — hybrid", value="bge_speaker"),
-    app_commands.Choice(name="BGE semantic chunks — hybrid", value="bge_semantic"),
-    app_commands.Choice(name="E5 semantic — dense", value="e5_semantic"),
-    app_commands.Choice(name="Pplx context — dense", value="pplx_context"),
-]
-
-
-# ──────────────────────────────────────────────
 # Bot
 # ──────────────────────────────────────────────
 
@@ -285,7 +263,7 @@ class PodCodexBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
         self._store: QdrantStore | None = None
-        self._retrievers: dict[str, Retriever] = {}  # strategy → Retriever
+        self._retrievers: dict[str, Retriever] = {}
         self._server_cfg: dict[int, ServerSettings] = self._load_server_config()
 
         self._register_commands()
@@ -308,15 +286,14 @@ class PodCodexBot(discord.Client):
     def _server_settings(self, server_id: int | None) -> ServerSettings:
         if server_id and server_id in self._server_cfg:
             return self._server_cfg[server_id]
-        return ServerSettings(strategy=self.config.strategy, top_k=self.config.top_k)
+        return ServerSettings(model=self.config.model, top_k=self.config.top_k)
 
     def _effective_settings(
-        self, server_id: int | None, strategy: str = "", top_k: int = 0
+        self, server_id: int | None, model: str = "", top_k: int = 0
     ) -> ServerSettings:
-        """Server defaults overridden by any per-query values that were explicitly set."""
         base = self._server_settings(server_id)
         return ServerSettings(
-            strategy=strategy or base.strategy,
+            model=model or base.model,
             top_k=top_k or base.top_k,
         )
 
@@ -328,10 +305,10 @@ class PodCodexBot(discord.Client):
             self._store = QdrantStore(url=self.config.qdrant_url)
         return self._store
 
-    def retriever(self, strategy: str) -> Retriever:
-        if strategy not in self._retrievers:
-            self._retrievers[strategy] = Retriever(strategy, store=self.store)
-        return self._retrievers[strategy]
+    def retriever(self, model: str) -> Retriever:
+        if model not in self._retrievers:
+            self._retrievers[model] = Retriever(model=model, store=self.store)
+        return self._retrievers[model]
 
     # ── Lifecycle ─────────────────────────────
 
@@ -353,45 +330,43 @@ class PodCodexBot(discord.Client):
             question="What are you looking for?",
             show="Restrict to a specific show (leave empty for all)",
             alpha="0 = keywords only → 1 = semantic only  (default 0.5)",
-            strategy="Embedding model — overrides server default for this query",
+            model="Embedding model — overrides server default for this query",
             top_k="Number of results (overrides server default)",
         )
-        @app_commands.choices(strategy=_STRATEGY_CHOICES)
+        @app_commands.choices(model=_MODEL_CHOICES)
         async def search(
             interaction: discord.Interaction,
             question: str,
             show: str = "",
-            alpha: app_commands.Range[float, 0.0, 1.0] = 0.5,
-            strategy: str = "",
+            alpha: app_commands.Range[float, 0.0, 1.0] = ALPHA,
+            model: str = "",
             top_k: app_commands.Range[int, 1, 25] = 0,
         ) -> None:
             await self._handle_search(
-                interaction, question, show or None, alpha, strategy, top_k
+                interaction, question, show or None, alpha, model, top_k
             )
 
         search.autocomplete("show")(self._show_autocomplete)
 
         # /exact
         @self.tree.command(
-            name="exact", description="Keyword search in podcast transcripts (BM25)"
+            name="exact", description="Keyword (BM25) search in podcast transcripts"
         )
         @app_commands.describe(
             question="Keywords to search for",
             show="Restrict to a specific show (leave empty for all)",
-            strategy="Embedding model — overrides server default for this query",
+            model="Embedding model — overrides server default for this query",
             top_k="Number of results (overrides server default)",
         )
-        @app_commands.choices(strategy=_STRATEGY_CHOICES)
+        @app_commands.choices(model=_MODEL_CHOICES)
         async def exact(
             interaction: discord.Interaction,
             question: str,
             show: str = "",
-            strategy: str = "",
+            model: str = "",
             top_k: app_commands.Range[int, 1, 25] = 0,
         ) -> None:
-            await self._handle_exact(
-                interaction, question, show or None, strategy, top_k
-            )
+            await self._handle_exact(interaction, question, show or None, model, top_k)
 
         exact.autocomplete("show")(self._show_autocomplete)
 
@@ -401,32 +376,31 @@ class PodCodexBot(discord.Client):
         )
         @app_commands.default_permissions(manage_guild=True)
         @app_commands.describe(
-            strategy="Embedding strategy / model to use",
+            model="Default embedding model",
             top_k="Number of results returned per query",
         )
-        @app_commands.choices(strategy=_STRATEGY_CHOICES)
+        @app_commands.choices(model=_MODEL_CHOICES)
         async def setup(
             interaction: discord.Interaction,
-            strategy: str = "",
+            model: str = "",
             top_k: app_commands.Range[int, 1, 25] = 0,
         ) -> None:
-            await self._handle_setup(interaction, strategy or None, top_k or None)
+            await self._handle_setup(interaction, model or None, top_k or None)
 
     # ── Autocomplete ───────────────────────────
 
     async def _show_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
-        # Use strategy from the interaction namespace if the user already picked one
-        strategy = (
-            getattr(interaction.namespace, "strategy", "")
-            or self._server_settings(interaction.guild_id).strategy
+        model = (
+            getattr(interaction.namespace, "model", "")
+            or self._server_settings(interaction.guild_id).model
         )
         loop = asyncio.get_event_loop()
         collections = await loop.run_in_executor(
-            None, lambda: self._indexed_collections(strategy)
+            None, lambda: self.store.list_collections(model=model)
         )
-        suffix = f"__{strategy}"
+        suffix = f"__{model}"
         shows = [c.removesuffix(suffix) for c in collections]
         return [
             app_commands.Choice(name=s, value=s)
@@ -442,11 +416,11 @@ class PodCodexBot(discord.Client):
         question: str,
         show: str | None,
         alpha: float,
-        strategy: str,
+        model: str,
         top_k: int,
     ) -> None:
-        settings = self._effective_settings(interaction.guild_id, strategy, top_k)
-        label = f"α={alpha:.2f}  •  {settings.strategy}"
+        settings = self._effective_settings(interaction.guild_id, model, top_k)
+        label = f"α={alpha:.2f}  •  {MODELS[settings.model].label}"
         await self._run_query(
             interaction, question, show, settings, alpha=alpha, label=label
         )
@@ -458,25 +432,13 @@ class PodCodexBot(discord.Client):
         interaction: discord.Interaction,
         question: str,
         show: str | None,
-        strategy: str,
+        model: str,
         top_k: int,
     ) -> None:
-        settings = self._effective_settings(interaction.guild_id, strategy, top_k)
-        if not settings.strategy.startswith("bge"):
-            await interaction.response.send_message(
-                f"BM25 search requires a BGE strategy. "
-                f"Current: `{settings.strategy}`. "
-                f"Pick a BGE strategy or ask an admin to run `/setup`.",
-                ephemeral=True,
-            )
-            return
+        settings = self._effective_settings(interaction.guild_id, model, top_k)
+        label = f"exact / BM25  •  {MODELS[settings.model].label}"
         await self._run_query(
-            interaction,
-            question,
-            show,
-            settings,
-            alpha=0.0,
-            label=f"exact / BM25  •  {settings.strategy}",
+            interaction, question, show, settings, alpha=0.0, label=label
         )
 
     # ── /setup handler ─────────────────────────
@@ -484,23 +446,23 @@ class PodCodexBot(discord.Client):
     async def _handle_setup(
         self,
         interaction: discord.Interaction,
-        strategy: str | None,
+        model: str | None,
         top_k: int | None,
     ) -> None:
         guild_id = interaction.guild_id
         current = self._server_settings(guild_id)
 
-        if strategy is None and top_k is None:
+        if model is None and top_k is None:
             await interaction.response.send_message(
                 f"**Current settings for this server**\n"
-                f"Strategy: `{current.strategy}`\n"
+                f"Model: `{current.model}`\n"
                 f"Top-k: `{current.top_k}`",
                 ephemeral=True,
             )
             return
 
         updated = ServerSettings(
-            strategy=strategy or current.strategy,
+            model=model or current.model,
             top_k=top_k or current.top_k,
         )
         self._server_cfg[guild_id] = updated
@@ -508,9 +470,7 @@ class PodCodexBot(discord.Client):
         logger.info(f"Guild {guild_id} config updated: {updated}")
 
         await interaction.response.send_message(
-            f"✅ Settings updated\n"
-            f"Strategy: `{updated.strategy}`\n"
-            f"Top-k: `{updated.top_k}`",
+            f"✅ Settings updated\nModel: `{updated.model}`\nTop-k: `{updated.top_k}`",
             ephemeral=True,
         )
 
@@ -547,10 +507,6 @@ class PodCodexBot(discord.Client):
 
     # ── Search logic ───────────────────────────
 
-    def _indexed_collections(self, strategy: str) -> list[str]:
-        suffix = f"__{strategy}"
-        return [c for c in self.store.list_collections() if c.endswith(suffix)]
-
     def _search(
         self,
         question: str,
@@ -558,18 +514,18 @@ class PodCodexBot(discord.Client):
         settings: ServerSettings,
         alpha: float,
     ) -> list[tuple[dict, str]]:
-        suffix = f"__{settings.strategy}"
+        model = settings.model
         collections = (
-            [f"{show}{suffix}"]
+            [collection_name(show, model)]
             if show
-            else self._indexed_collections(settings.strategy)
+            else self.store.list_collections(model=model)
         )
 
         if not collections:
-            logger.warning(f"No collections found for strategy '{settings.strategy}'")
+            logger.warning(f"No collections found for model '{model}'")
             return []
 
-        ret = self.retriever(settings.strategy)
+        ret = self.retriever(model)
         all_results: list[tuple[dict, str]] = []
         for col in collections:
             hits = ret.retrieve(question, col, top_k=settings.top_k, alpha=alpha)
@@ -591,12 +547,16 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(prog="podcodex-bot")
     parser.add_argument(
-        "--strategy",
-        default="bge_speaker",
-        help="Default embedding strategy (default: bge_speaker)",
+        "--model",
+        default=DEFAULT_MODEL,
+        choices=list(MODELS.keys()),
+        help=f"Default embedding model (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
-        "--top-k", default=5, type=int, help="Default results per query (default: 5)"
+        "--top-k",
+        default=TOP_K,
+        type=int,
+        help=f"Default results per query (default: {TOP_K})",
     )
     parser.add_argument(
         "--qdrant-url",
@@ -618,14 +578,12 @@ def main() -> None:
 
     config = BotConfig(
         token=token,
-        strategy=args.strategy,
+        model=args.model,
         top_k=args.top_k,
         qdrant_url=args.qdrant_url,
     )
     bot = PodCodexBot(config, server_config_path=Path(args.server_config))
-    logger.info(
-        f"Starting PodCodex bot (strategy={config.strategy}, top_k={config.top_k})…"
-    )
+    logger.info(f"Starting PodCodex bot (model={config.model}, top_k={config.top_k})…")
     bot.run(config.token, log_handler=None)
 
 

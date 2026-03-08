@@ -5,7 +5,7 @@ description = "AI tools for podcast production"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Gabriel Jung", email = "gabriel.jung@protonmail.com" }]
-requires-python = ">=3.12"
+requires-python = ">=3.12, <3.13"
 keywords = ["podcast", "transcription", "diarization", "translation", "tts", "voice-cloning", "whisperx", "speech-to-text"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -30,9 +30,11 @@ dependencies = [
     "pyarrow>=23.0.0",
     "python-dotenv>=1.2.1",
     "qdrant-client>=1.17.0",
+    "bm25s>=0.2.0",
     "qwen-tts>=0.1.1",
     "sentence-transformers>=5.2.3",
     "soundfile>=0.13.1",
+    "streamlit>=1.55.0",
     "torch>=2.8.0",
     "whisperx>=3.8.1",
 ]

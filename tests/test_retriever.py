@@ -11,12 +11,8 @@ import pytest
 # ──────────────────────────────────────────────
 
 
-def _dense_query_vec(dim: int = 1024) -> np.ndarray:
+def _dense_vec(dim: int = 1024) -> np.ndarray:
     return np.random.rand(dim).astype(np.float32)
-
-
-def _sparse_query_vec() -> dict:
-    return {"indices": [1, 5, 10], "values": [0.8, 0.4, 0.2]}
 
 
 def _make_scored_point(payload: dict, score: float = 0.9) -> MagicMock:
@@ -27,72 +23,28 @@ def _make_scored_point(payload: dict, score: float = 0.9) -> MagicMock:
 
 
 def _query_points_return(points: list) -> MagicMock:
-    """Build the mock return value for client.query_points()."""
     rv = MagicMock()
     rv.points = points
     return rv
 
 
-def _patch_store_and_qdrant():
+def _make_retriever(model: str = "bge-m3"):
+    """Return (retriever, mock_embedder, mock_client)."""
+    mock_emb = MagicMock()
+    mock_emb.encode_query.return_value = _dense_vec()
     mock_store = MagicMock()
     mock_client = MagicMock()
     mock_store._client = mock_client
-    return (
+
+    with (
+        patch("podcodex.rag.embedder.get_embedder", return_value=mock_emb),
         patch("podcodex.rag.retriever.QdrantStore", return_value=mock_store),
-        mock_store,
-        mock_client,
-    )
+    ):
+        from podcodex.rag.retriever import Retriever
 
+        retriever = Retriever(model=model)
 
-# ──────────────────────────────────────────────
-# _load_embedder dispatch
-# ──────────────────────────────────────────────
-
-
-def test_load_embedder_pplx_context():
-    mock_cls = MagicMock()
-    with patch("podcodex.rag.embedder.PplxEmbedder", mock_cls):
-        from importlib import reload
-        import podcodex.rag.retriever as ret_mod
-
-        reload(ret_mod)
-        with patch("podcodex.rag.embedder.PplxEmbedder", mock_cls):
-            ret_mod._load_embedder("pplx_context")
-    mock_cls.assert_called_once()
-
-
-def test_load_embedder_e5_semantic():
-    mock_cls = MagicMock()
-    with patch("podcodex.rag.embedder.E5Embedder", mock_cls):
-        from podcodex.rag.retriever import _load_embedder
-
-        _load_embedder("e5_semantic")
-    mock_cls.assert_called_once()
-
-
-def test_load_embedder_bge_speaker():
-    mock_cls = MagicMock()
-    with patch("podcodex.rag.embedder.BGEEmbedder", mock_cls):
-        from podcodex.rag.retriever import _load_embedder
-
-        _load_embedder("bge_speaker")
-    mock_cls.assert_called_once()
-
-
-def test_load_embedder_bge_semantic():
-    mock_cls = MagicMock()
-    with patch("podcodex.rag.embedder.BGEEmbedder", mock_cls):
-        from podcodex.rag.retriever import _load_embedder
-
-        _load_embedder("bge_semantic")
-    mock_cls.assert_called_once()
-
-
-def test_load_embedder_unknown_raises():
-    from podcodex.rag.retriever import _load_embedder
-
-    with pytest.raises(ValueError, match="Unknown strategy"):
-        _load_embedder("bad_strategy")
+    return retriever, mock_emb, mock_client
 
 
 # ──────────────────────────────────────────────
@@ -100,189 +52,174 @@ def test_load_embedder_unknown_raises():
 # ──────────────────────────────────────────────
 
 
-def test_retriever_unknown_strategy_raises():
-    store_patch, _, _ = _patch_store_and_qdrant()
-    with store_patch:
-        with patch("podcodex.rag.retriever._load_embedder"):
-            from podcodex.rag.retriever import Retriever
+def test_retriever_unknown_model_raises():
+    with pytest.raises(ValueError, match="Unknown model"):
+        from podcodex.rag.retriever import Retriever
 
-            with pytest.raises(ValueError, match="Unknown strategy"):
-                Retriever("bad_strategy")
+        Retriever(model="bad_model")
 
 
-# ──────────────────────────────────────────────
-# Dense search (dense-only strategies)
-# ──────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("strategy,dim", [("pplx_context", 1024), ("e5_semantic", 384)])
-def test_dense_search_calls_query_points(strategy, dim):
-    vec = _dense_query_vec(dim)
-    scored = _make_scored_point(
-        {"text": "hello", "episode": "E1", "start": 0.0}, score=0.85
-    )
-
+def test_retriever_uses_get_embedder():
     mock_emb = MagicMock()
-    mock_emb.encode_query.return_value = vec  # plain ndarray for dense-only
-
+    mock_emb.encode_query.return_value = _dense_vec()
     mock_store = MagicMock()
-    mock_client = MagicMock()
-    mock_store._client = mock_client
-    mock_client.query_points.return_value = _query_points_return([scored])
+    mock_store._client = MagicMock()
 
+    mock_factory = MagicMock(return_value=mock_emb)
     with (
+        patch("podcodex.rag.embedder.get_embedder", mock_factory),
         patch("podcodex.rag.retriever.QdrantStore", return_value=mock_store),
-        patch("podcodex.rag.retriever._load_embedder", return_value=mock_emb),
     ):
         from podcodex.rag.retriever import Retriever
 
-        retriever = Retriever(strategy)
-        results = retriever.retrieve("my query", "col", top_k=3)
+        Retriever(model="e5-small")
 
-    mock_client.query_points.assert_called_once_with(
-        collection_name="col",
-        query=vec.tolist(),
-        using=None,
-        limit=3,
-    )
+    mock_factory.assert_called_once_with("e5-small")
+
+
+def test_retriever_accepts_prebuilt_store():
+    mock_emb = MagicMock()
+    mock_store = MagicMock()
+    mock_store._client = MagicMock()
+
+    with patch("podcodex.rag.embedder.get_embedder", return_value=mock_emb):
+        from podcodex.rag.retriever import Retriever
+
+        r = Retriever(model="bge-m3", store=mock_store)
+
+    assert r._store is mock_store
+
+
+# ──────────────────────────────────────────────
+# Dense search (alpha=1.0)
+# ──────────────────────────────────────────────
+
+
+def test_dense_search_calls_query_points():
+    retriever, _, mock_client = _make_retriever()
+    scored = _make_scored_point({"text": "hello", "episode": "E1", "start": 0.0}, 0.85)
+    mock_client.query_points.return_value = _query_points_return([scored])
+
+    results = retriever.retrieve("my query", "col", top_k=3, alpha=1.0)
+
+    mock_client.query_points.assert_called_once()
+    kw = mock_client.query_points.call_args.kwargs
+    assert kw["collection_name"] == "col"
+    assert kw["limit"] == 3
     assert len(results) == 1
     assert results[0]["score"] == pytest.approx(0.85)
     assert results[0]["text"] == "hello"
 
 
 def test_dense_search_result_has_payload_fields():
-    vec = _dense_query_vec()
+    retriever, _, mock_client = _make_retriever()
     pt = _make_scored_point({"episode": "E1", "start": 5.0}, score=0.77)
-
-    mock_emb = MagicMock()
-    mock_emb.encode_query.return_value = vec
-
-    store_patch, mock_store, mock_client = _patch_store_and_qdrant()
     mock_client.query_points.return_value = _query_points_return([pt])
 
-    with (
-        store_patch,
-        patch("podcodex.rag.retriever._load_embedder", return_value=mock_emb),
-    ):
-        from podcodex.rag.retriever import Retriever
-
-        r = Retriever("pplx_context")
-        r._store = mock_store
-        results = r.retrieve("q", "col")
+    results = retriever.retrieve("q", "col", alpha=1.0)
 
     assert results[0]["score"] == pytest.approx(0.77)
     assert results[0]["episode"] == "E1"
 
 
 # ──────────────────────────────────────────────
-# Hybrid / alpha-weighted search (BGE strategies)
+# BM25 search (alpha=0.0)
 # ──────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("strategy", ["bge_speaker", "bge_semantic"])
-def test_weighted_search_calls_query_points_twice(strategy):
-    """alpha=0.5 (default) → one dense call + one BM25 call."""
-    dense_vec = _dense_query_vec()
-    sparse_vec = _sparse_query_vec()
-    query_emb = {"dense": dense_vec, "sparse": sparse_vec}
+def test_bm25_search_uses_bm25s():
+    retriever, _, mock_client = _make_retriever()
 
-    mock_emb = MagicMock()
-    mock_emb.encode_query.return_value = query_emb
+    chunk_payload = {"text": "hello podcast world", "episode": "E1", "start": 0.0}
+    scroll_pt = MagicMock()
+    scroll_pt.payload = chunk_payload
+    mock_client.scroll.return_value = ([scroll_pt], None)
+
+    mock_bm25_inst = MagicMock()
+    mock_bm25_inst.retrieve.return_value = ([[0]], [[0.8]])
+
+    mock_bm25s = MagicMock()
+    mock_bm25s.BM25.return_value = mock_bm25_inst
+
+    with patch("podcodex.rag.retriever.bm25s", mock_bm25s):
+        results = retriever.retrieve("podcast", "col", top_k=5, alpha=0.0)
+
+    mock_client.scroll.assert_called_once()
+    assert len(results) == 1
+    assert results[0]["text"] == "hello podcast world"
+
+
+def test_bm25_search_empty_collection():
+    retriever, _, mock_client = _make_retriever()
+    mock_client.scroll.return_value = ([], None)
+
+    with patch("podcodex.rag.retriever.bm25s"):
+        results = retriever.retrieve("q", "col", alpha=0.0)
+
+    assert results == []
+
+
+# ──────────────────────────────────────────────
+# Hybrid / alpha-weighted search (default alpha=0.5)
+# ──────────────────────────────────────────────
+
+
+def test_weighted_search_calls_both_dense_and_bm25():
+    """alpha=0.5 → calls query_points (dense) and scroll (BM25)."""
+    retriever, _, mock_client = _make_retriever()
 
     chunk = {"text": "hello", "episode": "E1", "start": 0.0}
     scored = _make_scored_point(chunk, score=0.6)
-
-    mock_store = MagicMock()
-    mock_client = MagicMock()
-    mock_store._client = mock_client
-    # Both dense and BM25 calls return the same point
     mock_client.query_points.return_value = _query_points_return([scored])
 
-    mock_qdrant_models = MagicMock()
+    scroll_pt = MagicMock()
+    scroll_pt.payload = chunk
+    mock_client.scroll.return_value = ([scroll_pt], None)
 
-    with (
-        patch("podcodex.rag.retriever.QdrantStore", return_value=mock_store),
-        patch("podcodex.rag.retriever._load_embedder", return_value=mock_emb),
-        patch.dict("sys.modules", {"qdrant_client.models": mock_qdrant_models}),
-    ):
-        from podcodex.rag.retriever import Retriever
+    mock_bm25_inst = MagicMock()
+    mock_bm25_inst.retrieve.return_value = ([[0]], [[0.5]])
 
-        retriever = Retriever(strategy)
-        results = retriever.retrieve("my query", "col", top_k=5)
+    mock_bm25s = MagicMock()
+    mock_bm25s.BM25.return_value = mock_bm25_inst
 
-    assert mock_client.query_points.call_count == 2
-    calls = mock_client.query_points.call_args_list
-    # First call: dense (using="dense")
-    assert calls[0].kwargs["using"] == "dense"
-    assert calls[0].kwargs["collection_name"] == "col"
-    # Second call: sparse (using="sparse")
-    assert calls[1].kwargs["using"] == "sparse"
-    assert calls[1].kwargs["collection_name"] == "col"
+    with patch("podcodex.rag.retriever.bm25s", mock_bm25s):
+        results = retriever.retrieve("hello", "col", top_k=5)
 
-    assert len(results) == 1
-    assert results[0]["text"] == "hello"
+    mock_client.query_points.assert_called()
+    mock_client.scroll.assert_called()
+    assert len(results) >= 1
 
 
 def test_weighted_search_alpha_1_uses_dense_only():
-    """alpha=1.0 → pure dense, only one query_points call."""
-    vec = _dense_query_vec()
-    query_emb = {"dense": vec, "sparse": _sparse_query_vec()}
-
-    mock_emb = MagicMock()
-    mock_emb.encode_query.return_value = query_emb
-
-    scored = _make_scored_point(
-        {"text": "hi", "episode": "E1", "start": 0.0}, score=0.9
-    )
-    mock_store = MagicMock()
-    mock_client = MagicMock()
-    mock_store._client = mock_client
+    """alpha=1.0 → only query_points, no scroll."""
+    retriever, _, mock_client = _make_retriever()
+    scored = _make_scored_point({"text": "hi", "episode": "E1", "start": 0.0}, 0.9)
     mock_client.query_points.return_value = _query_points_return([scored])
 
-    with (
-        patch("podcodex.rag.retriever.QdrantStore", return_value=mock_store),
-        patch("podcodex.rag.retriever._load_embedder", return_value=mock_emb),
-    ):
-        from podcodex.rag.retriever import Retriever
-
-        r = Retriever("bge_speaker")
-        r._store = mock_store
-        results = r.retrieve("q", "col", alpha=1.0)
+    results = retriever.retrieve("q", "col", alpha=1.0)
 
     mock_client.query_points.assert_called_once()
+    mock_client.scroll.assert_not_called()
     assert results[0]["score"] == pytest.approx(0.9)
 
 
 def test_weighted_search_alpha_0_uses_bm25_only():
-    """alpha=0.0 → pure BM25, sparse vector used."""
-    query_emb = {"dense": _dense_query_vec(), "sparse": _sparse_query_vec()}
+    """alpha=0.0 → only scroll, no query_points."""
+    retriever, _, mock_client = _make_retriever()
+    scroll_pt = MagicMock()
+    scroll_pt.payload = {"text": "kw", "episode": "E1", "start": 0.0}
+    mock_client.scroll.return_value = ([scroll_pt], None)
 
-    mock_emb = MagicMock()
-    mock_emb.encode_query.return_value = query_emb
+    mock_bm25_inst = MagicMock()
+    mock_bm25_inst.retrieve.return_value = ([[0]], [[0.5]])
 
-    scored = _make_scored_point(
-        {"text": "kw", "episode": "E1", "start": 0.0}, score=0.5
-    )
-    mock_store = MagicMock()
-    mock_client = MagicMock()
-    mock_store._client = mock_client
-    mock_client.query_points.return_value = _query_points_return([scored])
+    mock_bm25s = MagicMock()
+    mock_bm25s.BM25.return_value = mock_bm25_inst
 
-    mock_qdrant_models = MagicMock()
-    with (
-        patch("podcodex.rag.retriever.QdrantStore", return_value=mock_store),
-        patch("podcodex.rag.retriever._load_embedder", return_value=mock_emb),
-        patch.dict("sys.modules", {"qdrant_client.models": mock_qdrant_models}),
-    ):
-        from podcodex.rag.retriever import Retriever
+    with patch("podcodex.rag.retriever.bm25s", mock_bm25s):
+        results = retriever.retrieve("q", "col", alpha=0.0)
 
-        r = Retriever("bge_speaker")
-        r._store = mock_store
-        results = r.retrieve("q", "col", alpha=0.0)
-
-    mock_client.query_points.assert_called_once()
-    call_kwargs = mock_client.query_points.call_args.kwargs
-    assert call_kwargs["using"] == "sparse"
+    mock_client.query_points.assert_not_called()
     assert results[0]["text"] == "kw"
 
 
@@ -322,11 +259,21 @@ def test_normalize_empty():
     assert _normalize([]) == []
 
 
-def test_normalize_single_result_scores_to_one():
+def test_normalize_single_nonzero_result_scores_to_one():
     from podcodex.rag.retriever import _normalize
 
     result = _normalize([{"score": 0.3, "text": "a"}])
     assert result[0]["score"] == pytest.approx(1.0)
+
+
+def test_normalize_all_zero_scores_to_zero():
+    """All-zero BM25 scores (no query term match) must not inflate to 1.0."""
+    from podcodex.rag.retriever import _normalize
+
+    results = [{"score": 0.0, "text": "a"}, {"score": 0.0, "text": "b"}]
+    normed = _normalize(results)
+    assert normed[0]["score"] == pytest.approx(0.0)
+    assert normed[1]["score"] == pytest.approx(0.0)
 
 
 def test_normalize_preserves_order_and_fields():

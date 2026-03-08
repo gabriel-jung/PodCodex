@@ -20,17 +20,14 @@ from podcodex.bot.bot import (
 
 def test_botconfig_defaults():
     cfg = BotConfig(token="tok")
-    assert cfg.strategy == "bge_speaker"
     assert cfg.top_k == 5
     assert cfg.qdrant_url is None
 
 
 def test_botconfig_custom():
-    cfg = BotConfig(
-        token="tok", strategy="e5_semantic", top_k=3, qdrant_url="http://qdrant:6333"
-    )
-    assert cfg.strategy == "e5_semantic"
+    cfg = BotConfig(token="tok", top_k=3, qdrant_url="http://qdrant:6333")
     assert cfg.top_k == 3
+    assert cfg.qdrant_url == "http://qdrant:6333"
 
 
 # ──────────────────────────────────────────────
@@ -40,13 +37,11 @@ def test_botconfig_custom():
 
 def test_guild_settings_defaults():
     g = ServerSettings()
-    assert g.strategy == "bge_speaker"
     assert g.top_k == 5
 
 
 def test_guild_settings_custom():
-    g = ServerSettings(strategy="e5_semantic", top_k=3)
-    assert g.strategy == "e5_semantic"
+    g = ServerSettings(top_k=3)
     assert g.top_k == 3
 
 
@@ -132,9 +127,7 @@ _CHUNK = {
 
 
 def test_result_embed_show_as_author_episode_as_title():
-    embed, _ = _result_embed(
-        _CHUNK, rank=1, collection="my_podcast__bge_speaker", label="α=0.50"
-    )
+    embed, _ = _result_embed(_CHUNK, rank=1, collection="my_podcast", label="α=0.50")
     assert embed.author.name == "🎙 My Podcast"
     assert embed.title == "ep01"
 

@@ -130,53 +130,6 @@ def test_resolve_chunk_metadata_no_overlap_returns_none():
 
 
 # ──────────────────────────────────────────────
-# speaker_chunks
-# ──────────────────────────────────────────────
-
-
-def test_speaker_chunks_filters_noise():
-    chunks = speaker_chunks(_TRANSCRIPT, min_chars=30)
-    texts = [c["text"] for c in chunks]
-    assert "..." not in texts
-
-
-def test_speaker_chunks_attaches_metadata():
-    chunks = speaker_chunks(_TRANSCRIPT, min_chars=5)
-    for c in chunks:
-        assert c["show"] == "My Show"
-        assert c["episode"] == "Episode 1"
-        assert "start" in c and "end" in c and "speaker" in c and "text" in c
-
-
-def test_speaker_chunks_empty_transcript():
-    assert speaker_chunks({"meta": {}, "segments": []}) == []
-
-
-def test_speaker_chunks_all_noise_filtered():
-    t = {
-        "meta": {},
-        "segments": [{"start": 0.0, "end": 1.0, "speaker": "A", "text": "..."}],
-    }
-    assert speaker_chunks(t, min_chars=30) == []
-
-
-def test_speaker_chunks_missing_meta_defaults_empty_strings():
-    t = {
-        "segments": [
-            {
-                "start": 0.0,
-                "end": 5.0,
-                "speaker": "A",
-                "text": "Hello world this is fine",
-            }
-        ]
-    }
-    chunks = speaker_chunks(t, min_chars=5)
-    assert chunks[0]["show"] == ""
-    assert chunks[0]["episode"] == ""
-
-
-# ──────────────────────────────────────────────
 # semantic_chunks — mocked (no model loading)
 # ──────────────────────────────────────────────
 
@@ -260,6 +213,58 @@ def test_semantic_chunks_filters_noise_before_chunking():
 
     called_text = instance.chunk.call_args[0][0]
     assert "..." not in called_text
+
+
+# ──────────────────────────────────────────────
+# speaker_chunks
+# ──────────────────────────────────────────────
+
+
+def test_speaker_chunks_filters_noise():
+    chunks = speaker_chunks(_TRANSCRIPT, min_chars=30)
+    texts = [c["text"] for c in chunks]
+    assert "..." not in texts
+
+
+def test_speaker_chunks_attaches_metadata():
+    chunks = speaker_chunks(_TRANSCRIPT, min_chars=5)
+    for c in chunks:
+        assert c["show"] == "My Show"
+        assert c["episode"] == "Episode 1"
+        assert "start" in c and "end" in c and "speaker" in c and "text" in c
+
+
+def test_speaker_chunks_empty_transcript():
+    assert speaker_chunks({"meta": {}, "segments": []}) == []
+
+
+def test_speaker_chunks_all_noise_filtered():
+    t = {
+        "meta": {},
+        "segments": [{"start": 0.0, "end": 1.0, "speaker": "A", "text": "..."}],
+    }
+    assert speaker_chunks(t, min_chars=30) == []
+
+
+def test_speaker_chunks_missing_meta_defaults_empty_strings():
+    t = {
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 5.0,
+                "speaker": "A",
+                "text": "Hello world this is fine",
+            }
+        ]
+    }
+    chunks = speaker_chunks(t, min_chars=5)
+    assert chunks[0]["show"] == ""
+    assert chunks[0]["episode"] == ""
+
+
+# ──────────────────────────────────────────────
+# semantic_chunks — mocked (no model loading)
+# ──────────────────────────────────────────────
 
 
 def test_semantic_chunks_empty_after_filter_returns_empty():

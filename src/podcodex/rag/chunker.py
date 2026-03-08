@@ -2,8 +2,7 @@
 podcodex.rag.chunker — Chunking strategies for transcript segments.
 
 Two strategies:
-    speaker_chunks  — one chunk per (filtered) speaker turn. Segments are already
-                      speaker-merged by export_transcript(). Fast, no extra deps.
+    speaker_chunks  — one chunk per (filtered) speaker turn. Fast, no extra deps.
     semantic_chunks — full-episode text chunked by semantic similarity via
                       Chonkie SemanticChunker, then mapped back to timing metadata.
 
@@ -63,7 +62,7 @@ def _resolve_chunk_metadata(
     Map chunk character offsets back to timing + speaker metadata.
 
     Returns dominant speaker (by character coverage) and the full list of
-    overlapping turns (useful for attribution and agentic routing).
+    overlapping turns.
     """
     overlapping = [
         t
@@ -150,7 +149,7 @@ def semantic_chunks(
         transcript : output of load_transcript_full()
         chunk_size : max tokens per chunk (default 256)
         threshold  : semantic similarity threshold for splitting (default 0.5)
-        min_chars  : minimum chars to keep a turn before chunking (default 30)
+        min_chars  : minimum chars to keep a segment before chunking (default 30)
 
     Returns:
         List of {show, episode, start, end, dominant_speaker, speakers, text, token_count}
@@ -170,8 +169,10 @@ def semantic_chunks(
 
     full_text, offset_map = _build_episode_text(segments)
 
+    from podcodex.rag.defaults import CHUNKER_MODEL
+
     chunker = SemanticChunker(
-        embedding_model="intfloat/multilingual-e5-small",
+        embedding_model=CHUNKER_MODEL,
         chunk_size=chunk_size,
         threshold=threshold,
         skip_window=1,
@@ -180,17 +181,17 @@ def semantic_chunks(
 
     chunks = []
     for raw in raw_chunks:
-        meta = _resolve_chunk_metadata(raw.start_index, raw.end_index, offset_map)
-        if meta is None:
+        meta_chunk = _resolve_chunk_metadata(raw.start_index, raw.end_index, offset_map)
+        if meta_chunk is None:
             continue
         chunks.append(
             {
                 "show": show,
                 "episode": episode,
-                "start": meta["start"],
-                "end": meta["end"],
-                "dominant_speaker": meta["dominant_speaker"],
-                "speakers": meta["speakers"],
+                "start": meta_chunk["start"],
+                "end": meta_chunk["end"],
+                "dominant_speaker": meta_chunk["dominant_speaker"],
+                "speakers": meta_chunk["speakers"],
                 "text": raw.text,
                 "token_count": raw.token_count,
             }

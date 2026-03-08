@@ -12,7 +12,6 @@ import numpy as np
 
 
 def _mock_modules(*names):
-    """Patch sys.modules with MagicMocks for the given module names."""
     return patch.dict("sys.modules", {name: MagicMock() for name in names})
 
 
@@ -21,43 +20,19 @@ def _chunks(texts: list[str], episode: str = "E1") -> list[dict]:
 
 
 # ──────────────────────────────────────────────
-# _to_qdrant_sparse
-# ──────────────────────────────────────────────
-
-
-def test_to_qdrant_sparse_basic():
-    from podcodex.rag.embedder import _to_qdrant_sparse
-
-    result = _to_qdrant_sparse({"10": 0.5, "200": 0.3})
-    assert set(result["indices"]) == {10, 200}
-    assert len(result["values"]) == 2
-    assert all(isinstance(v, float) for v in result["values"])
-
-
-def test_to_qdrant_sparse_empty():
-    from podcodex.rag.embedder import _to_qdrant_sparse
-
-    result = _to_qdrant_sparse({})
-    assert result == {"indices": [], "values": []}
-
-
-# ──────────────────────────────────────────────
 # PplxEmbedder
 # ──────────────────────────────────────────────
 
 
 def _make_pplx_mocks():
-    """Return (transformers_mock, st_mock) with sensible defaults."""
     transformers_mock = MagicMock()
     st_mock = MagicMock()
 
-    # ctx model: encode([[text1, text2]]) → [np.array shape (2, 1024)]
     def ctx_encode(episodes, **kwargs):
         n = len(episodes[0])
         return [np.zeros((n, 1024), dtype=np.float32)]
 
     transformers_mock.AutoModel.from_pretrained.return_value.encode = ctx_encode
-    # query model: encode(text) → (1024,)
     st_mock.SentenceTransformer.return_value.encode.return_value = np.zeros(
         1024, dtype=np.float32
     )
@@ -107,9 +82,7 @@ def test_pplx_encode_passages_episode_grouping():
         embedder = emb_mod.PplxEmbedder()
         result = embedder.encode_passages(chunks)
 
-    # Two episodes → two encode() calls
     assert len(call_log) == 2
-    # E1 had 2 chunks, E2 had 1
     assert sorted(call_log) == [1, 2]
     assert result.shape == (3, 1024)
 
@@ -139,8 +112,7 @@ def _make_e5_mock():
 
     def encode(texts, **kwargs):
         n = len(texts) if isinstance(texts, list) else 1
-        dim = 384
-        return np.zeros((n, dim) if isinstance(texts, list) else dim, dtype=np.float32)
+        return np.zeros((n, 384), dtype=np.float32)
 
     st_mock.SentenceTransformer.return_value.encode.side_effect = encode
     return st_mock
@@ -154,7 +126,7 @@ def test_e5_encode_passages_shape():
         import podcodex.rag.embedder as emb_mod
 
         reload(emb_mod)
-        embedder = emb_mod.E5Embedder()
+        embedder = emb_mod.E5Embedder(model_key="e5-small")
         result = embedder.encode_passages(_chunks(["a", "b"]))
     assert result.shape == (2, 384)
     assert result.dtype == np.float32
@@ -168,7 +140,7 @@ def test_e5_encode_passages_uses_passage_prefix():
         import podcodex.rag.embedder as emb_mod
 
         reload(emb_mod)
-        embedder = emb_mod.E5Embedder()
+        embedder = emb_mod.E5Embedder(model_key="e5-small")
         embedder.encode_passages(_chunks(["Hello"]))
     call_args = st_mock.SentenceTransformer.return_value.encode.call_args
     texts_passed = call_args[0][0]
@@ -183,11 +155,25 @@ def test_e5_encode_query_uses_query_prefix():
         import podcodex.rag.embedder as emb_mod
 
         reload(emb_mod)
-        embedder = emb_mod.E5Embedder()
+        embedder = emb_mod.E5Embedder(model_key="e5-small")
         embedder.encode_query("my question")
     call_args = st_mock.SentenceTransformer.return_value.encode.call_args
     text_passed = call_args[0][0]
     assert text_passed.startswith("query: ")
+
+
+def test_e5_encode_query_shape():
+    st_mock = _make_e5_mock()
+    with _mock_modules("sentence_transformers"):
+        sys.modules["sentence_transformers"] = st_mock
+        from importlib import reload
+        import podcodex.rag.embedder as emb_mod
+
+        reload(emb_mod)
+        embedder = emb_mod.E5Embedder(model_key="e5-small")
+        result = embedder.encode_query("test")
+    assert result.shape == (384,)
+    assert result.dtype == np.float32
 
 
 # ──────────────────────────────────────────────
@@ -200,16 +186,13 @@ def _make_bge_mock():
 
     def bge_encode(texts, **kwargs):
         n = len(texts)
-        return {
-            "dense_vecs": np.zeros((n, 1024), dtype=np.float32),
-            "lexical_weights": [{"10": 0.5, "20": 0.3}] * n,
-        }
+        return {"dense_vecs": np.zeros((n, 1024), dtype=np.float32)}
 
     flag_mock.BGEM3FlagModel.return_value.encode.side_effect = bge_encode
     return flag_mock
 
 
-def test_bge_encode_passages_dense_shape():
+def test_bge_encode_passages_shape():
     flag_mock = _make_bge_mock()
     with _mock_modules("FlagEmbedding"):
         sys.modules["FlagEmbedding"] = flag_mock
@@ -219,28 +202,11 @@ def test_bge_encode_passages_dense_shape():
         reload(emb_mod)
         embedder = emb_mod.BGEEmbedder()
         result = embedder.encode_passages(_chunks(["a", "b", "c"]))
-    assert result["dense"].shape == (3, 1024)
-    assert result["dense"].dtype == np.float32
+    assert result.shape == (3, 1024)
+    assert result.dtype == np.float32
 
 
-def test_bge_encode_passages_sparse_format():
-    flag_mock = _make_bge_mock()
-    with _mock_modules("FlagEmbedding"):
-        sys.modules["FlagEmbedding"] = flag_mock
-        from importlib import reload
-        import podcodex.rag.embedder as emb_mod
-
-        reload(emb_mod)
-        embedder = emb_mod.BGEEmbedder()
-        result = embedder.encode_passages(_chunks(["a", "b"]))
-    assert len(result["sparse"]) == 2
-    for sv in result["sparse"]:
-        assert "indices" in sv and "values" in sv
-        assert all(isinstance(i, int) for i in sv["indices"])
-        assert all(isinstance(v, float) for v in sv["values"])
-
-
-def test_bge_encode_query_structure():
+def test_bge_encode_query_shape():
     flag_mock = _make_bge_mock()
     with _mock_modules("FlagEmbedding"):
         sys.modules["FlagEmbedding"] = flag_mock
@@ -250,6 +216,18 @@ def test_bge_encode_query_structure():
         reload(emb_mod)
         embedder = emb_mod.BGEEmbedder()
         result = embedder.encode_query("test")
-    assert "dense" in result and "sparse" in result
-    assert result["dense"].shape == (1024,)
-    assert "indices" in result["sparse"] and "values" in result["sparse"]
+    assert result.shape == (1024,)
+    assert result.dtype == np.float32
+
+
+# ──────────────────────────────────────────────
+# get_embedder factory
+# ──────────────────────────────────────────────
+
+
+def test_get_embedder_unknown_raises():
+    import pytest
+    from podcodex.rag.embedder import get_embedder
+
+    with pytest.raises(ValueError, match="Unknown model"):
+        get_embedder("bad_model")

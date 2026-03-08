@@ -1,5 +1,5 @@
 """
-podcodex.ui.streamlit_translate — Translation tab
+podcodex.ui.streamlit_translate — Translate tab
 """
 
 import json
@@ -7,7 +7,10 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.core import transcribe, translate
+from podcodex.core import transcribe
+from podcodex.core import translate as translate_mod
+from podcodex.core import polish as polish_mod
+from utils import fmt_time
 
 # OpenAI-compatible provider presets
 _PROVIDERS = {
@@ -18,17 +21,17 @@ _PROVIDERS = {
 
 
 def _on_provider_change():
-    provider = st.session_state.get("api_provider", "Mistral")
+    provider = st.session_state.get("trad_api_provider", "Mistral")
     preset = _PROVIDERS.get(provider, {})
-    if preset["url"]:  # don't overwrite when Custom is selected
-        st.session_state["api_base_url"] = preset["url"]
-        st.session_state["api_model"] = preset["model"]
+    if preset["url"]:
+        st.session_state["trad_api_base_url"] = preset["url"]
+        st.session_state["trad_api_model"] = preset["model"]
 
 
 def render():
-    st.header("Translation")
+    st.header("Translate")
     st.caption(
-        "Translate your transcript into a target language using an LLM or manual copy/paste."
+        "Translate a transcript to another language. Use the ✨ Polish tab first to correct the source."
     )
 
     # ── Import transcript (standalone mode) ──
@@ -36,15 +39,14 @@ def render():
         with st.container(border=True):
             st.markdown("### 📥 Import Transcript")
             st.caption(
-                "No transcript loaded. Upload an existing transcript JSON or complete the **Transcribe** step first."
+                "No transcript loaded. Upload a transcript JSON or complete the **Transcribe** step first."
             )
-
             col1, col2 = st.columns(2)
             with col1:
                 uploaded_transcript = st.file_uploader(
                     "Upload transcript JSON",
                     type=["json"],
-                    help="JSON array with 'speaker', 'start', 'end', 'text' fields per segment. Compatible with podcodex transcript.json format.",
+                    help="JSON array with 'speaker', 'start', 'end', 'text' fields.",
                     label_visibility="collapsed",
                 )
                 if uploaded_transcript:
@@ -54,11 +56,10 @@ def render():
                         st.error(f"Invalid JSON: {e}")
                         data = None
                     if data is not None:
-                        err = _validate_segments_json(data, required=("text",))
+                        err = _validate_segments(data)
                         if err:
                             st.error(f"Format error — {err}")
                         else:
-                            # Set a dummy audio_path and output_dir if not already set
                             if not st.session_state.get("audio_path"):
                                 out = Path(
                                     st.session_state.get(
@@ -82,18 +83,8 @@ def render():
                             st.rerun()
             with col2:
                 st.info(
-                    "💡 Or go to the **🎙️ Transcribe** tab to generate a transcript from an audio file."
+                    "💡 Or go to the **🎙️ Transcribe** tab to generate a transcript."
                 )
-                with st.expander("📋 Expected JSON format", expanded=False):
-                    st.code(
-                        "[{\n"
-                        '  "speaker": "Alice",\n'
-                        '  "start": 0.0,\n'
-                        '  "end": 5.2,\n'
-                        '  "text": "Original text."\n'
-                        "}, ...]",
-                        language="json",
-                    )
 
         if not st.session_state.get("transcript"):
             return
@@ -102,35 +93,48 @@ def render():
     output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
 
     if not audio_path:
-        st.warning(
-            "Session lost — please reload the page and re-import your transcript."
-        )
-        # Clear transcript so import section shows again
+        st.warning("Session lost — please reload the page.")
         st.session_state.transcript = None
-        st.session_state.requested_tab = "translate"
         st.rerun()
 
-    # Load from disk if not in session
-    if not st.session_state.get("transcript") and st.session_state.get("audio_path"):
-        if transcribe.processing_status(audio_path, output_dir=output_dir)["exported"]:
-            st.session_state.transcript = transcribe.load_transcript(
-                audio_path, output_dir=output_dir
-            )
-
     transcript = st.session_state.transcript
-    simplified = transcribe.simplify_transcript(transcript)
 
-    # ── Section 1: Configuration ──
+    # ── Section 1: Source selection ──
     with st.container(border=True):
-        col_title, col_force = st.columns([4, 1])
-        with col_title:
-            st.markdown("### ⚙️ Configuration")
+        st.markdown("### ⚙️ Configuration")
+
+        # Offer polished as source if available
+        has_polished = polish_mod.polished_exists(audio_path, output_dir=output_dir)
+        if has_polished:
+            source_choice = st.radio(
+                "Source",
+                ["polished", "raw"],
+                format_func=lambda x: {
+                    "polished": "✨ Polished transcript (recommended)",
+                    "raw": "🎙️ Raw transcript",
+                }[x],
+                horizontal=True,
+                key="trad_source_choice",
+                help="Use the polished transcript if you've already corrected the source.",
+            )
+            if source_choice == "polished":
+                segments = polish_mod.load_polished(audio_path, output_dir=output_dir)
+                st.caption(f"Using polished transcript — {len(segments)} segments")
+            else:
+                segments = transcribe.simplify_transcript(transcript)
+                st.caption(
+                    f"Using raw transcript — {len(segments)} segments (after merging)"
+                )
+        else:
+            segments = transcribe.simplify_transcript(transcript)
             n_orig = len(transcript)
-            n_simplified = len(simplified)
+            n_simplified = len(segments)
             if n_simplified < n_orig:
                 st.caption(
                     f"**{n_orig}** segments → **{n_simplified}** after merging consecutive same-speaker segments"
                 )
+
+        col_force, _ = st.columns([1, 3])
         with col_force:
             force = st.checkbox(
                 "Force",
@@ -139,16 +143,6 @@ def render():
                 help="Re-run translation even if a translation file already exists.",
             )
 
-        task = st.radio(
-            "Task",
-            options=["translate", "polish"],
-            format_func=lambda x: {
-                "translate": "🌍 Translate — correct + translate",
-                "polish": "✨ Polish only — correct without translating",
-            }[x],
-            horizontal=True,
-            help="'Translate' corrects the source text and adds a translation. 'Polish only' corrects the source text without translating.",
-        )
         mode = st.radio(
             "Backend",
             options=["api", "ollama", "manual"],
@@ -158,7 +152,7 @@ def render():
                 "manual": "✍️ Manual",
             }[x],
             horizontal=True,
-            help="'API' uses a remote LLM. 'Ollama' runs a model locally. 'Manual' lets you use any external tool.",
+            key="trad_mode",
         )
 
         col1, col2 = st.columns(2)
@@ -166,145 +160,116 @@ def render():
             source_lang = st.text_input(
                 "Source language",
                 value="French",
-                help="Full language name of the original podcast (e.g. 'French', 'Spanish').",
+                key="trad_source_lang",
+                help="Full language name of the original podcast.",
             )
         with col2:
             target_lang = st.text_input(
                 "Target language",
                 value="English",
-                disabled=task == "polish",
-                help="Full language name to translate into. Not used in Polish only mode.",
+                key="trad_target_lang",
+                help="Full language name to translate into.",
             )
+        if "trad_context" not in st.session_state:
+            show_name = st.session_state.get("show_name", "")
+            if show_name:
+                st.session_state.trad_context = f"Podcast: {show_name}"
         context = st.text_area(
             "Context",
-            placeholder="e.g. French podcast about film music, hosted by Alice and Bob. Technical vocabulary around orchestration and film scoring.",
-            help="Optional hint for the LLM — improves translation quality for domain-specific vocabulary and proper nouns.",
+            placeholder="e.g. French podcast about film music, hosted by Alice and Bob.",
+            help="Optional hint for the LLM.",
             height=100,
+            key="trad_context",
         )
 
     # ── Section 2: Mode-specific settings ──
     with st.container(border=True):
-        if mode == "api":
-            col_title, _ = st.columns([4, 1])
-            with col_title:
-                st.markdown("### 🌐 API Settings")
+        already_done = translate_mod.translation_exists(
+            audio_path, target_lang, output_dir=output_dir
+        )
+        btn_disabled = already_done and not force
+        if already_done and not force:
+            st.info("Translation already exists. Check **Force** to redo it.")
 
+        if mode == "api":
+            st.markdown("### 🌐 API Settings")
             st.selectbox(
                 "Provider",
                 list(_PROVIDERS.keys()),
-                key="api_provider",
+                key="trad_api_provider",
                 on_change=_on_provider_change,
-                help="Select a provider to auto-fill the base URL and a suggested model. Choose Custom to enter values manually.",
             )
             col1, col2 = st.columns(2)
             with col1:
                 st.text_input(
                     "Model",
                     value=st.session_state.get(
-                        "api_model", _PROVIDERS["Mistral"]["model"]
+                        "trad_api_model", _PROVIDERS["Mistral"]["model"]
                     ),
-                    key="api_model",
-                    help="Model identifier for the selected provider.",
+                    key="trad_api_model",
                 )
             with col2:
                 st.text_input(
                     "API base URL",
                     value=st.session_state.get(
-                        "api_base_url", _PROVIDERS["Mistral"]["url"]
+                        "trad_api_base_url", _PROVIDERS["Mistral"]["url"]
                     ),
-                    key="api_base_url",
-                    help="Base URL of the OpenAI-compatible API endpoint.",
+                    key="trad_api_base_url",
                 )
             st.text_input(
                 "API key",
                 type="password",
-                key="api_key_input",
+                key="trad_api_key_input",
                 placeholder="Leave empty to use API_KEY from .env",
-                help="Optional override. If empty, API_KEY from your .env file will be used.",
             )
 
-            already_done = translate.translation_exists(
-                audio_path, output_dir=output_dir
-            )
-            btn_disabled = already_done and not force
-            if already_done and not force:
-                st.info("Translation already exists. Check **Force** to redo it.")
-
-            action_label = "🚀 Translate" if task == "translate" else "✨ Polish"
             if st.button(
-                action_label,
+                "🌍 Translate",
                 use_container_width=True,
                 type="primary",
                 disabled=btn_disabled,
             ):
-                kwargs = _build_translate_kwargs(
-                    mode, source_lang, target_lang, context, task=task
-                )
-                action = "Translating" if task == "translate" else "Polishing"
-                with st.spinner(f"{action} {len(simplified)} segments..."):
+                kwargs = _build_kwargs(mode, source_lang, target_lang, context)
+                with st.spinner(f"Processing {len(segments)} segments..."):
                     try:
-                        translated = translate.translate_segments(simplified, **kwargs)
-                        translate.save_translation(
-                            audio_path, translated, output_dir=output_dir
-                        )
-                        st.session_state.translation = translated
-                        st.success(f"Done — {len(translated)} segments processed.")
-                        st.session_state.requested_tab = "translate"
+                        result = translate_mod.translate_segments(segments, **kwargs)
+                        _save_translation(audio_path, output_dir, result, target_lang)
+                        st.success(f"Done — {len(result)} segments translated.")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Failed: {e}")
 
         elif mode == "ollama":
-            col_title, _ = st.columns([4, 1])
-            with col_title:
-                st.markdown("### 🖥️ Ollama Settings")
-
+            st.markdown("### 🖥️ Ollama Settings")
             st.text_input(
                 "Ollama model",
                 value="qwen3:14b",
-                key="ollama_model",
-                help="Name of the locally installed Ollama model. Run `ollama list` to see available models.",
+                key="trad_ollama_model",
+                help="Run `ollama list` to see available models.",
             )
             st.caption("⚠️ Reliable JSON output requires models ≥ 14B parameters.")
 
-            already_done = translate.translation_exists(
-                audio_path, output_dir=output_dir
-            )
-            btn_disabled = already_done and not force
-            if already_done and not force:
-                st.info("Translation already exists. Check **Force** to redo it.")
-
-            action_label = "🚀 Translate" if task == "translate" else "✨ Polish"
             if st.button(
-                action_label,
+                "🌍 Translate",
                 use_container_width=True,
                 type="primary",
                 disabled=btn_disabled,
             ):
-                kwargs = _build_translate_kwargs(
-                    mode, source_lang, target_lang, context, task=task
-                )
-                action = "Translating" if task == "translate" else "Polishing"
-                with st.spinner(f"{action} {len(simplified)} segments..."):
+                kwargs = _build_kwargs(mode, source_lang, target_lang, context)
+                with st.spinner(f"Processing {len(segments)} segments..."):
                     try:
-                        translated = translate.translate_segments(simplified, **kwargs)
-                        translate.save_translation(
-                            audio_path, translated, output_dir=output_dir
-                        )
-                        st.session_state.translation = translated
-                        st.success(f"Done — {len(translated)} segments processed.")
-                        st.session_state.requested_tab = "translate"
+                        result = translate_mod.translate_segments(segments, **kwargs)
+                        _save_translation(audio_path, output_dir, result, target_lang)
+                        st.success(f"Done — {len(result)} segments translated.")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Failed: {e}")
 
         elif mode == "manual":
-            col_title, _ = st.columns([4, 1])
-            with col_title:
-                st.markdown("### ✍️ Manual Translation")
-                st.caption(
-                    "Copy each prompt into any LLM (ChatGPT, Claude, etc.), paste the JSON result back, then move to the next batch."
-                )
+            st.markdown("### ✍️ Manual Translation")
+            st.caption(
+                "Copy each prompt into any LLM (ChatGPT, Claude, etc.), paste the JSON result back."
+            )
 
             batch_minutes = st.slider(
                 "Max duration per batch (minutes)",
@@ -312,65 +277,57 @@ def render():
                 max_value=30,
                 value=15,
                 step=5,
-                help="Each batch will cover at most this many minutes of audio. Larger batches = fewer copy/pastes but higher risk of truncation. 15 min works well with most models, 30 min for GPT-4o / Claude.",
+                key="trad_batch_minutes",
             )
 
-            batches = translate.build_manual_prompts_batched(
-                simplified,
+            batches = translate_mod.build_manual_translate_prompts_batched(
+                segments,
                 batch_minutes=batch_minutes,
                 context=context,
                 source_lang=source_lang,
                 target_lang=target_lang,
-                task=task,
             )
             n_batches = len(batches)
 
-            # Batch stepper state
-            if "manual_batch_idx" not in st.session_state:
-                st.session_state.manual_batch_idx = 0
-            if "manual_batch_results" not in st.session_state:
-                st.session_state.manual_batch_results = {}
+            if "trad_batch_idx" not in st.session_state:
+                st.session_state.trad_batch_idx = 0
+            if "trad_batch_results" not in st.session_state:
+                st.session_state.trad_batch_results = {}
 
-            # Reset stepper if batching changed
-            if st.session_state.get("manual_n_batches") != n_batches:
-                st.session_state.manual_batch_idx = 0
-                st.session_state.manual_batch_results = {}
-                st.session_state.manual_n_batches = n_batches
+            if st.session_state.get("trad_n_batches") != n_batches:
+                st.session_state.trad_batch_idx = 0
+                st.session_state.trad_batch_results = {}
+                st.session_state.trad_n_batches = n_batches
 
-            idx = st.session_state.manual_batch_idx
-            done_batches = len(st.session_state.manual_batch_results)
+            idx = st.session_state.trad_batch_idx
+            done_batches = len(st.session_state.trad_batch_results)
 
-            # Progress indicator — show duration of each batch
             cols_prog = st.columns(n_batches)
             for b, col in enumerate(cols_prog):
                 batch_segs, _ = batches[b]
                 dur = sum(s.get("end", 0) - s.get("start", 0) for s in batch_segs)
-                dur_label = f"{int(dur // 60)}:{int(dur % 60):02d}"
                 with col:
-                    if b in st.session_state.manual_batch_results:
+                    if b in st.session_state.trad_batch_results:
                         st.markdown(f"✅ **{b + 1}**")
                     elif b == idx:
                         st.markdown(f"▶ **{b + 1}**")
                     else:
                         st.markdown(f"⬜ {b + 1}")
-                    st.caption(dur_label)
+                    st.caption(fmt_time(dur))
 
             st.divider()
-
-            # Current batch info
             batch_segs, prompt = batches[idx]
             batch_dur = sum(s.get("end", 0) - s.get("start", 0) for s in batch_segs)
             st.markdown(
                 f"**Batch {idx + 1} / {n_batches}** — "
-                f"{len(batch_segs)} segments · "
-                f"{int(batch_dur // 60)}:{int(batch_dur % 60):02d} of audio"
+                f"{len(batch_segs)} segments · {fmt_time(batch_dur)} of audio"
             )
             st.text_area(
                 "Prompt to copy",
                 value=prompt,
                 height=280,
                 label_visibility="collapsed",
-                help="Copy this into your LLM, paste the JSON result below.",
+                key=f"trad_prompt_{idx}",
             )
 
             st.markdown("**Paste the JSON result:**")
@@ -378,15 +335,15 @@ def render():
                 "JSON result",
                 value="",
                 height=180,
-                key=f"manual_paste_{idx}",
-                placeholder='[{"index": 0, "text": "...", "text_trad": "..."}, ...]',
+                key=f"trad_paste_{idx}",
+                placeholder='[{"index": 0, "text": "translated text..."}, ...]',
                 label_visibility="collapsed",
             )
 
             col_prev, col_validate, col_next = st.columns([1, 3, 1])
             with col_prev:
                 if st.button("← Prev", disabled=idx == 0, use_container_width=True):
-                    st.session_state.manual_batch_idx -= 1
+                    st.session_state.trad_batch_idx -= 1
                     st.rerun()
             with col_validate:
                 if st.button(
@@ -397,16 +354,15 @@ def render():
                 ):
                     try:
                         data = json.loads(pasted)
-                        validated = translate.translate_segments(
-                            data, mode="manual", task=task
+                        validated = translate_mod.translate_segments(
+                            data, mode="manual", original_segments=batch_segs
                         )
-                        st.session_state.manual_batch_results[idx] = validated
+                        st.session_state.trad_batch_results[idx] = validated
                         st.success(
                             f"Batch {idx + 1} validated — {len(validated)} segments."
                         )
-                        # Auto-advance to next batch
                         if idx < n_batches - 1:
-                            st.session_state.manual_batch_idx += 1
+                            st.session_state.trad_batch_idx += 1
                         st.rerun()
                     except json.JSONDecodeError as e:
                         st.error(f"Invalid JSON: {e}")
@@ -416,238 +372,194 @@ def render():
                 if st.button(
                     "Next →", disabled=idx == n_batches - 1, use_container_width=True
                 ):
-                    st.session_state.manual_batch_idx += 1
+                    st.session_state.trad_batch_idx += 1
                     st.rerun()
 
-            # Save all when all batches done
             if done_batches == n_batches:
                 st.divider()
                 st.success(
-                    f"All {n_batches} batches validated ({len(simplified)} segments total)."
+                    f"All {n_batches} batches validated ({len(segments)} segments total)."
                 )
-                if st.button(
-                    "💾 Save translation", use_container_width=True, type="primary"
-                ):
+                if st.button("💾 Save", use_container_width=True, type="primary"):
                     all_results = []
                     for b in range(n_batches):
-                        all_results.extend(st.session_state.manual_batch_results[b])
-                    translate.save_translation(
-                        audio_path, all_results, output_dir=output_dir
-                    )
-                    st.session_state.translation = all_results
-                    st.session_state.manual_batch_idx = 0
-                    st.session_state.manual_batch_results = {}
+                        all_results.extend(st.session_state.trad_batch_results[b])
+                    _save_translation(audio_path, output_dir, all_results, target_lang)
+                    st.session_state.trad_batch_idx = 0
+                    st.session_state.trad_batch_results = {}
                     st.success(f"Saved — {len(all_results)} segments.")
-                    st.session_state.requested_tab = "translate"
                     st.rerun()
 
     # ── Section 3: Import existing translation ──
     with st.container(border=True):
         st.markdown("### 📂 Import Existing Translation")
-        st.caption(
-            "Already have a translated JSON file? Import it directly to skip the translation step."
-        )
+        st.caption("Already have a translated JSON? Import it directly.")
 
+        import_lang = st.text_input(
+            "Language",
+            value="English",
+            key="trad_import_lang",
+            help="Language name used in the filename, e.g. 'English' → episode.english.json.",
+        )
         uploaded_json = st.file_uploader(
             "Upload translation JSON",
             type=["json"],
-            help="Must be a JSON array with 'speaker', 'text', and 'text_trad' fields per segment.",
+            help="JSON array with 'speaker', 'start', 'end', 'text' fields (text = translation).",
             label_visibility="collapsed",
+            key="trad_upload",
         )
         with st.expander("📋 Expected JSON format", expanded=False):
             st.code(
-                "[{\n"
-                '  "speaker": "Alice",\n'
-                '  "start": 0.0,\n'
-                '  "end": 5.2,\n'
-                '  "text": "Original text (corrected).",\n'
-                '  "text_trad": "Translated text."\n'
-                "}, ...]",
+                '[{\n  "speaker": "Alice",\n  "start": 0.0,\n  "end": 5.2,\n  "text": "Translated text."\n}, ...]',
                 language="json",
             )
         if uploaded_json:
-            if st.button("Import", use_container_width=True):
+            if st.button("Import", use_container_width=True, key="trad_import_btn"):
                 try:
                     data = json.loads(uploaded_json.read().decode("utf-8"))
-                except Exception as e:
-                    st.error(f"Invalid JSON: {e}")
-                    data = None
-                if data is not None:
-                    err = _validate_segments_json(data, required=("text",))
+                    err = _validate_segments(data)
                     if err:
                         st.error(f"Format error — {err}")
                     else:
-                        try:
-                            translate.save_translation(
-                                audio_path, data, output_dir=output_dir
-                            )
-                            st.session_state.translation = data
-                            st.success(f"Imported — {len(data)} segments.")
-                            st.session_state.requested_tab = "translate"
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Import failed: {e}")
+                        translate_mod.save_translation(
+                            audio_path, data, import_lang, output_dir=output_dir
+                        )
+                        _reload_translations(audio_path, output_dir)
+                        st.success(f"Imported — {len(data)} segments.")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Import failed: {e}")
 
     # ── Section 4: Preview ──
-    if translate.translation_exists(audio_path, output_dir=output_dir):
-        _render_translation_preview(audio_path, output_dir)
+    langs = translate_mod.list_translations(audio_path, output_dir=output_dir)
+    if langs:
+        _render_translation_preview(audio_path, output_dir, langs)
 
 
-def _validate_segments_json(data, required: tuple[str, ...]) -> str | None:
-    """
-    Return a human-readable error string if data doesn't look like a valid
-    segments array, or None if it passes basic validation.
-    """
+# ──────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────
+
+
+def _validate_segments(data) -> str | None:
     if not isinstance(data, list):
-        if isinstance(data, dict):
-            keys = list(data.keys())[:6]
-            hint = (
-                " Looks like a raw Whisper output — use the 🎙️ Transcribe tab to export it first."
-                if "segments" in data or "text" in data
-                else ""
-            )
-            return f"Expected a JSON array but got an object with keys {keys}.{hint}"
         return f"Expected a JSON array, got {type(data).__name__}."
     if not data:
         return "The JSON array is empty."
     if not isinstance(data[0], dict):
         return f"Expected each element to be an object, got {type(data[0]).__name__}."
-    missing = [f for f in required if f not in data[0]]
-    if missing:
+    if "text" not in data[0]:
         found = list(data[0].keys())
-        return (
-            f"Missing required field(s) {missing} in the first segment. "
-            f"Fields found: {found}. Check the format hint above."
-        )
+        return f"Missing 'text' field. Fields found: {found}."
     return None
 
 
-def _build_translate_kwargs(
-    mode, source_lang, target_lang, context, task="translate"
-) -> dict:
+def _build_kwargs(mode: str, source_lang: str, target_lang: str, context: str) -> dict:
     kwargs = dict(
-        mode=mode,
-        task=task,
-        source_lang=source_lang,
-        target_lang=target_lang,
-        context=context,
+        mode=mode, source_lang=source_lang, target_lang=target_lang, context=context
     )
     if mode == "api":
         kwargs["model"] = st.session_state.get(
-            "api_model", _PROVIDERS["Mistral"]["model"]
+            "trad_api_model", _PROVIDERS["Mistral"]["model"]
         )
         kwargs["api_base_url"] = st.session_state.get(
-            "api_base_url", _PROVIDERS["Mistral"]["url"]
+            "trad_api_base_url", _PROVIDERS["Mistral"]["url"]
         )
-        api_key = st.session_state.get("api_key_input", "").strip()
+        api_key = st.session_state.get("trad_api_key_input", "").strip()
         if api_key:
             kwargs["api_key"] = api_key
     elif mode == "ollama":
-        kwargs["model"] = st.session_state.get("ollama_model", "qwen3:14b")
+        kwargs["model"] = st.session_state.get("trad_ollama_model", "qwen3:14b")
     return kwargs
 
 
-def _render_translation_preview(audio_path: Path, output_dir: str):
-    translation = translate.load_translation(audio_path, output_dir=output_dir)
-    st.session_state.translation = translation
+def _save_translation(
+    audio_path, output_dir: str, segments: list[dict], target_lang: str
+) -> None:
+    translate_mod.save_translation(
+        audio_path, segments, target_lang, output_dir=output_dir
+    )
+    _reload_translations(audio_path, output_dir)
 
+
+def _reload_translations(audio_path, output_dir: str) -> None:
+    langs = translate_mod.list_translations(audio_path, output_dir=output_dir)
+    st.session_state.translations = {
+        lang: translate_mod.load_translation(audio_path, lang, output_dir=output_dir)
+        for lang in langs
+    }
+    st.session_state.translation = next(
+        iter(st.session_state.translations.values()), None
+    )
+
+
+def _render_translation_preview(audio_path, output_dir: str, langs: list[str]):
     with st.container(border=True):
         col_title, col_edit = st.columns([4, 1])
         with col_title:
-            st.markdown("### 👁️ Translation Preview")
+            st.markdown("### 👁️ Translations")
         with col_edit:
-            edit_mode = st.checkbox(
-                "Edit mode",
-                key="translation_edit_mode",
-                value=False,
-                help="Enable editing of translated segments directly.",
-            )
+            edit_mode = st.checkbox("Edit mode", key="trad_edit_mode", value=False)
 
-        if not edit_mode:
-            lang = st.radio(
-                "Display",
-                ["both", "source", "trad"],
-                format_func=lambda x: {
-                    "both": "Both languages",
-                    "source": "Source only",
-                    "trad": "Translation only",
-                }[x],
-                horizontal=True,
-                label_visibility="collapsed",
-                help="Choose which text to display in the preview.",
-            )
-            preview = translate.translation_to_text(translation[:10], lang=lang)
-            st.text_area(
-                "First 10 segments",
-                value=preview,
-                height=300,
-                disabled=True,
-                label_visibility="collapsed",
-            )
-            st.caption(f"{len(translation)} segments total")
+        tabs = st.tabs([lang.capitalize() for lang in langs])
 
-        else:
-            st.caption(
-                f"{len(translation)} segments — expand a segment to edit, then save."
+        for tab, lang in zip(tabs, langs):
+            segments = translate_mod.load_translation(
+                audio_path, lang, output_dir=output_dir
             )
-            edited = []
-            for i, seg in enumerate(translation):
-                label = f"[{seg['start']:.1f}s] **{seg.get('speaker', '?')}** — {seg.get('text', '')[:50]}..."
-                with st.expander(label, expanded=False):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        new_text = st.text_area(
-                            "Source",
-                            value=seg.get("text", ""),
-                            key=f"trad_src_{i}",
-                            height=80,
-                            help="Source text in the translation file — edit if needed.",
+            stem = Path(audio_path).stem
+
+            with tab:
+                if not edit_mode:
+                    preview = translate_mod.translation_to_text(segments[:10])
+                    st.text_area(
+                        "First 10 segments",
+                        value=preview,
+                        height=300,
+                        disabled=True,
+                        label_visibility="collapsed",
+                    )
+                    st.caption(f"{len(segments)} segments total")
+                else:
+                    st.caption(
+                        f"{len(segments)} segments — expand a segment to edit, then save."
+                    )
+                    edited = []
+                    for i, seg in enumerate(segments):
+                        lbl = f"[{seg['start']:.1f}s] **{seg.get('speaker', '?')}** — {seg.get('text', '')[:50]}..."
+                        with st.expander(lbl, expanded=False):
+                            new_text = st.text_area(
+                                "Text",
+                                value=seg.get("text", ""),
+                                key=f"trad_edit_{lang}_{i}",
+                                height=80,
+                            )
+                            edited.append({**seg, "text": new_text})
+
+                    if st.button(
+                        "💾 Save edits",
+                        key=f"trad_save_{lang}",
+                        use_container_width=True,
+                        type="primary",
+                    ):
+                        translate_mod.save_translation(
+                            audio_path, edited, lang, output_dir=output_dir
                         )
-                    with col2:
-                        new_trad = st.text_area(
-                            "Translation",
-                            value=seg.get("text_trad", ""),
-                            key=f"trad_edit_{i}",
-                            height=80,
-                            help="Translated text — edit if needed.",
-                        )
-                    edited.append({**seg, "text": new_text, "text_trad": new_trad})
+                        _reload_translations(audio_path, output_dir)
+                        st.success("Saved!")
+                        st.rerun()
 
-            if st.button("💾 Save edits", use_container_width=True, type="primary"):
-                translate.save_translation(audio_path, edited, output_dir=output_dir)
-                st.session_state.translation = edited
-                st.success("Translation saved!")
-                st.session_state.requested_tab = "translate"
-                st.rerun()
+                st.divider()
+                st.download_button(
+                    f"📄 Export {lang}",
+                    data=translate_mod.translation_to_text(segments),
+                    file_name=f"{stem}.{lang}.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                    key=f"trad_dl_{lang}",
+                )
 
         st.divider()
-        stem = Path(audio_path).stem
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            st.download_button(
-                "📄 Export source",
-                data=translate.translation_to_text(translation, lang="source"),
-                file_name=f"{stem}_source.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-        with col_b:
-            st.download_button(
-                "📄 Export translation",
-                data=translate.translation_to_text(translation, lang="trad"),
-                file_name=f"{stem}_translation.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-        with col_c:
-            st.download_button(
-                "📄 Export both",
-                data=translate.translation_to_text(translation, lang="both"),
-                file_name=f"{stem}_bilingual.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-
         if st.button("→ Go to Synthesis", use_container_width=True):
             st.session_state.requested_tab = "synthesize"
             st.rerun()

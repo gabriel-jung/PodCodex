@@ -18,11 +18,14 @@ class EpisodeInfo:
     stem: str  # filename without extension
     output_dir: Path  # show_folder / stem  (where all processing outputs live)
     transcribed: bool  # status["exported"] — transcript.json exists
+    polished: bool  # polished.json exists
     indexed: bool  # (output_dir / ".rag_indexed").exists()
 
 
 def scan_folder(show_folder: Path) -> list[EpisodeInfo]:
     """Return a sorted list of EpisodeInfo for every audio file in show_folder."""
+    from podcodex.core.polish import polished_exists
+
     show_folder = Path(show_folder)
     episodes = []
     for audio in sorted(show_folder.iterdir()):
@@ -30,14 +33,14 @@ def scan_folder(show_folder: Path) -> list[EpisodeInfo]:
             continue
         output_dir = show_folder / audio.stem
         status = processing_status(audio, output_dir=output_dir)
-        indexed = (output_dir / ".rag_indexed").exists()
         episodes.append(
             EpisodeInfo(
                 path=audio,
                 stem=audio.stem,
                 output_dir=output_dir,
                 transcribed=status["exported"],
-                indexed=indexed,
+                polished=polished_exists(audio, output_dir=output_dir),
+                indexed=(output_dir / ".rag_indexed").exists(),
             )
         )
     return episodes

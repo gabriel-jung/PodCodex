@@ -1,14 +1,11 @@
 """
 podcodex.rag.store — Qdrant storage layer for podcast RAG.
 
-One Qdrant collection per (show, strategy).
-Collection naming: "{show}__{strategy}" (e.g. "my_podcast__bge_semantic").
+One collection per (show, model) pair.
+Collection naming: "{normalized_show}__{model_key}"  e.g. "my_podcast__bge-m3"
 
-Supported strategies and their vector configs:
-    pplx_context — dense 1024-dim (cosine)
-    e5_semantic  — dense 384-dim  (cosine)
-    bge_speaker  — dense 1024-dim (cosine) + sparse (native hybrid)
-    bge_semantic — dense 1024-dim (cosine) + sparse (native hybrid)
+Each collection stores dense float32 vectors; vector size comes from the
+model's spec in podcodex.rag.defaults.MODELS.
 
 The Qdrant URL defaults to QDRANT_URL env var, falling back to localhost:6333.
 """
@@ -18,24 +15,9 @@ from __future__ import annotations
 import os
 import re
 import uuid
-from typing import Union
 
 import numpy as np
 from loguru import logger
-
-
-# ──────────────────────────────────────────────
-# Strategy definitions
-# ──────────────────────────────────────────────
-
-STRATEGIES = ("pplx_context", "e5_semantic", "bge_speaker", "bge_semantic")
-
-_STRATEGY_CONFIG: dict[str, dict] = {
-    "pplx_context": {"type": "dense", "dim": 1024},
-    "e5_semantic": {"type": "dense", "dim": 384},
-    "bge_speaker": {"type": "hybrid", "dim": 1024},
-    "bge_semantic": {"type": "hybrid", "dim": 1024},
-}
 
 
 def _normalize_show(show: str) -> str:
@@ -43,18 +25,9 @@ def _normalize_show(show: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", show.lower()).strip("_")
 
 
-def collection_name(show: str, strategy: str) -> str:
-    """Build the canonical collection name for a (show, strategy) pair.
-
-    Normalizes the show name so "My Podcast" and "my_podcast" resolve to
-    the same collection: ``my_podcast__bge_speaker``.
-    """
-    return f"{_normalize_show(show)}__{strategy}"
-
-
-# ──────────────────────────────────────────────
-# QdrantStore
-# ──────────────────────────────────────────────
+def collection_name(show: str, model: str) -> str:
+    """Build the canonical collection name: {normalized_show}__{model_key}."""
+    return f"{_normalize_show(show)}__{model}"
 
 
 class QdrantStore:
@@ -67,15 +40,11 @@ class QdrantStore:
 
     DEFAULT_URL = "http://localhost:6333"
 
-    def __init__(self, url: str | None = None, in_memory: bool = False):
+    def __init__(self, url: str | None = None):
         from qdrant_client import QdrantClient
 
-        if in_memory:
-            self._client = QdrantClient(":memory:")
-            self._url = ":memory:"
-        else:
-            self._url = url or os.environ.get("QDRANT_URL", self.DEFAULT_URL)
-            self._client = QdrantClient(url=self._url)
+        self._url = url or os.environ.get("QDRANT_URL", self.DEFAULT_URL)
+        self._client = QdrantClient(url=self._url)
         logger.info(f"QdrantStore connected to {self._url}")
 
     # ── Collection management ──────────────────
@@ -84,22 +53,24 @@ class QdrantStore:
         return self._client.collection_exists(name)
 
     def create_collection(
-        self, name: str, strategy: str, overwrite: bool = False
+        self, name: str, model: str = "bge-m3", overwrite: bool = False
     ) -> None:
         """
-        Create a Qdrant collection configured for the given strategy.
+        Create a Qdrant collection for the given model.
+
+        Vector size is taken from MODELS[model].dim.
 
         Args:
             name      : collection name (use collection_name() helper)
-            strategy  : one of STRATEGIES
+            model     : model key from MODELS registry (default: "bge-m3")
             overwrite : if True, delete and recreate an existing collection
         """
-        if strategy not in _STRATEGY_CONFIG:
-            raise ValueError(
-                f"Unknown strategy {strategy!r}. Choose from {STRATEGIES}."
-            )
+        from podcodex.rag.defaults import MODELS
 
-        cfg = _STRATEGY_CONFIG[strategy]
+        spec = MODELS.get(model)
+        if spec is None:
+            valid = ", ".join(MODELS.keys())
+            raise ValueError(f"Unknown model '{model}'. Valid: {valid}")
 
         if self.collection_exists(name):
             if overwrite:
@@ -109,49 +80,34 @@ class QdrantStore:
                 logger.info(f"Collection '{name}' already exists — skipping creation")
                 return
 
-        from qdrant_client.models import (
-            Distance,
-            SparseIndexParams,
-            SparseVectorParams,
-            VectorParams,
+        from qdrant_client.models import Distance, VectorParams
+
+        self._client.create_collection(
+            collection_name=name,
+            vectors_config=VectorParams(size=spec.dim, distance=Distance.COSINE),
         )
-
-        if cfg["type"] == "dense":
-            self._client.create_collection(
-                collection_name=name,
-                vectors_config=VectorParams(size=cfg["dim"], distance=Distance.COSINE),
-            )
-        else:  # hybrid
-            self._client.create_collection(
-                collection_name=name,
-                vectors_config={
-                    "dense": VectorParams(size=cfg["dim"], distance=Distance.COSINE)
-                },
-                sparse_vectors_config={
-                    "sparse": SparseVectorParams(
-                        index=SparseIndexParams(full_scan_threshold=5000)
-                    )
-                },
-            )
-
-        logger.success(f"Created collection '{name}' ({strategy})")
+        logger.success(f"Created collection '{name}' ({spec.label}, dim={spec.dim})")
 
     def delete_collection(self, name: str) -> None:
         """Delete a collection by name."""
         self._client.delete_collection(name)
         logger.info(f"Deleted collection '{name}'")
 
-    def list_collections(self, show: str = "") -> list[str]:
+    def list_collections(self, show: str = "", model: str = "") -> list[str]:
         """
-        List all collection names, optionally filtered by show prefix.
+        List collection names, optionally filtered by show prefix or model suffix.
 
         Args:
-            show : if provided, only return collections for this show
+            show  : if provided, only return collections for this show
+            model : if provided, only return collections using this model
         """
         all_names = [c.name for c in self._client.get_collections().collections]
         if show:
-            prefix = f"{_normalize_show(show)}__"
-            return [n for n in all_names if n.startswith(prefix)]
+            prefix = _normalize_show(show) + "__"
+            all_names = [n for n in all_names if n.startswith(prefix)]
+        if model:
+            suffix = f"__{model}"
+            all_names = [n for n in all_names if n.endswith(suffix)]
         return all_names
 
     # ── Upsert ────────────────────────────────
@@ -160,50 +116,40 @@ class QdrantStore:
         self,
         collection: str,
         chunks: list[dict],
-        embeddings: Union[np.ndarray, dict],
+        embeddings: np.ndarray,
         batch_size: int = 64,
     ) -> None:
         """
-        Upsert chunks with their embeddings into a collection.
+        Upsert chunks with their dense embeddings into a collection.
 
         Args:
-            collection : target collection name
-            chunks     : list of chunk dicts (payload stored as-is)
-            embeddings : np.ndarray (dense-only) or dict {"dense": ..., "sparse": [...]}
-            batch_size : number of points per upsert request
+            collection  : target collection name
+            chunks      : list of chunk dicts (stored as payload)
+            embeddings  : np.ndarray of shape (n, dim), float32
+            batch_size  : number of points per upsert request
         """
-        from qdrant_client.models import PointStruct, SparseVector
+        from qdrant_client.models import PointStruct
 
-        is_hybrid = isinstance(embeddings, dict)
         points = []
-
         for i, chunk in enumerate(chunks):
-            payload = _serialize_payload(chunk)
-            point_id = str(uuid.uuid4())
-
-            if is_hybrid:
-                dense = embeddings["dense"][i].tolist()
-                sv = embeddings["sparse"][i]
-                vector = {
-                    "dense": dense,
-                    "sparse": SparseVector(indices=sv["indices"], values=sv["values"]),
-                }
-            else:
-                vector = embeddings[i].tolist()
-
-            points.append(PointStruct(id=point_id, vector=vector, payload=payload))
+            points.append(
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=embeddings[i].tolist(),
+                    payload=_serialize_payload(chunk),
+                )
+            )
 
         for start in range(0, len(points), batch_size):
-            batch = points[start : start + batch_size]
-            self._client.upsert(collection_name=collection, points=batch)
+            self._client.upsert(
+                collection_name=collection, points=points[start : start + batch_size]
+            )
 
         logger.success(f"Upserted {len(points)} points into '{collection}'")
 
     def fetch_episode_chunks(self, collection: str, episode: str) -> list[dict]:
         """
         Fetch all chunks for a given episode, sorted by start time.
-
-        Used by the Discord bot's "Show more" button to retrieve surrounding context.
         """
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
@@ -227,10 +173,7 @@ class QdrantStore:
 
 
 def _serialize_payload(chunk: dict) -> dict:
-    """
-    Convert a chunk dict to a JSON-safe payload for Qdrant.
-    Converts numpy scalars/arrays to Python native types.
-    """
+    """Convert a chunk dict to a JSON-safe payload for Qdrant."""
     out = {}
     for k, v in chunk.items():
         if isinstance(v, np.integer):

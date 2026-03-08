@@ -27,7 +27,9 @@ def render():
 
         col1, col2 = st.columns(2)
         with col1:
-            default_output = str(Path.cwd() / "Transcriptions")
+            default_output = st.session_state.get("show_folder") or str(
+                Path.cwd() / "Transcriptions"
+            )
             if st.session_state.get("audio_path"):
                 output_dir = st.session_state.get("output_dir", default_output)
                 st.text_input(
@@ -56,17 +58,18 @@ def render():
         # Save uploaded file into base_output_dir/{stem}/
         if uploaded and st.session_state.get("audio_filename") != uploaded.name:
             stem = Path(uploaded.name).stem
-            # Always use the base output dir (not the previous episode subdir)
             base_output = st.session_state.get(
                 "base_output_dir", str(Path(output_dir).resolve())
             )
-            episode_dir = Path(base_output) / stem
-            episode_dir.mkdir(parents=True, exist_ok=True)
-            audio_dest = episode_dir / uploaded.name
+            save_dir = Path(base_output)
+            save_dir.mkdir(parents=True, exist_ok=True)
+            audio_dest = save_dir / uploaded.name
             audio_dest.write_bytes(uploaded.read())
+            ep_output_dir = save_dir / stem
+            ep_output_dir.mkdir(parents=True, exist_ok=True)
             st.session_state.audio_path = audio_dest
             st.session_state.audio_filename = uploaded.name
-            st.session_state.output_dir = str(episode_dir)
+            st.session_state.output_dir = str(ep_output_dir)
             st.session_state.base_output_dir = base_output
             # Reset any previous trim when a new file is loaded
             st.session_state.pop("trim_applied", None)
@@ -879,6 +882,6 @@ def _render_transcript_editor(audio_path: Path, output_dir: str):
             use_container_width=True,
         )
     with col3:
-        if st.button("→ Go to Translation", use_container_width=True):
-            st.session_state.requested_tab = "translate"
+        if st.button("→ Go to Polish", use_container_width=True):
+            st.session_state.requested_tab = "polish"
             st.rerun()
