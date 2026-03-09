@@ -2,6 +2,8 @@
 
 import pytest
 
+pytest.importorskip("discord")
+
 from podcodex.bot.config import BotConfig
 from podcodex.bot.bot import (
     ServerSettings,

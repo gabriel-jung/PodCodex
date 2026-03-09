@@ -216,8 +216,10 @@ def test_export_transcript_meta(tmp_path):
             "text": "Hi there how are you",
         },
     ]
+    ep_dir = tmp_path / "ep"
+    ep_dir.mkdir()
     pd.DataFrame(diarized).to_parquet(
-        tmp_path / "ep.diarized_segments.parquet", index=False
+        ep_dir / "ep.diarized_segments.parquet", index=False
     )
     save_speaker_map(audio, {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"})
 
@@ -242,8 +244,10 @@ def test_export_transcript_defaults_empty_show_episode(tmp_path):
 
     audio = tmp_path / "ep.mp3"
     diarized = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_00", "text": "Hello"}]
+    ep_dir = tmp_path / "ep"
+    ep_dir.mkdir()
     pd.DataFrame(diarized).to_parquet(
-        tmp_path / "ep.diarized_segments.parquet", index=False
+        ep_dir / "ep.diarized_segments.parquet", index=False
     )
     save_speaker_map(audio, {"SPEAKER_00": "Alice"})
 

@@ -526,6 +526,7 @@ def assemble_episode(
         )
 
     episode = np.concatenate(chunks)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(out_path), episode, sr)
     duration = len(episode) / sr
     logger.success(f"Episode assembled — {duration:.1f}s → {out_path.name}")

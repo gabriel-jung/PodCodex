@@ -2,8 +2,11 @@
 podcodex.cli — Command-line interface.
 
     podcodex vectorize <transcript.json> --show <name>
-                       [--chunking semantic|speaker] [--chunk-size N] [--threshold F]
+                       [--model bge-m3] [--chunking semantic|speaker]
+                       [--chunk-size N] [--threshold F]
                        [--episode <name>] [--overwrite]
+    podcodex sync      --show <name> [--episode <name>] [--overwrite]
+                       [--qdrant-url URL] [--db PATH]
     podcodex query     <QUERY> --show <name> [--top-k N] [--alpha F]
     podcodex list      [--show <name>]
     podcodex delete    <collection>
@@ -24,6 +27,8 @@ from podcodex.rag.defaults import (
     CHUNK_THRESHOLD,
     CHUNKING_STRATEGIES,
     DEFAULT_CHUNKING,
+    DEFAULT_MODEL,
+    MODELS,
     TOP_K,
 )
 
@@ -63,9 +68,11 @@ def _resolve_source(transcript_path: Path, source: str) -> Path:
 
 
 def cmd_vectorize(args: argparse.Namespace) -> None:
+    import numpy as np
+
     from podcodex.rag.chunker import semantic_chunks
-    from podcodex.rag.embedder import BGEEmbedder
-    from podcodex.rag.store import QdrantStore, _normalize_show
+    from podcodex.rag.localstore import LocalStore
+    from podcodex.rag.store import QdrantStore, collection_name
 
     transcript_path = Path(args.transcript)
     if not transcript_path.exists():
@@ -81,40 +88,113 @@ def cmd_vectorize(args: argparse.Namespace) -> None:
     meta = transcript.get("meta", {})
     episode = args.episode or meta.get("episode") or transcript_path.stem
     show = args.show
+    model_key = args.model
 
     # Inject episode/show into meta so chunker picks them up
     transcript.setdefault("meta", {})
     transcript["meta"].setdefault("show", show)
     transcript["meta"].setdefault("episode", episode)
 
-    logger.info(f"Vectorizing '{episode}' for show '{show}'")
+    logger.info(f"Vectorizing '{episode}' for show '{show}' with model '{model_key}'")
 
-    if args.chunking == "speaker":
-        from podcodex.rag.chunker import speaker_chunks
+    col = collection_name(show, model_key)
+    dim = MODELS[model_key].dim
 
-        chunks = speaker_chunks(transcript)
-    else:
-        chunks = semantic_chunks(
-            transcript,
-            chunk_size=args.chunk_size,
-            threshold=args.threshold,
+    # ── LocalStore: skip re-embed if already indexed ───────────────────
+    db_path = transcript_path.parent / "vectors.db"
+    local = LocalStore(db_path=db_path)
+    local.ensure_collection(col, show=show, model=model_key, dim=dim)
+
+    if local.episode_is_indexed(col, episode) and not args.overwrite:
+        logger.info(
+            f"[SKIP] '{episode}' already indexed in local store — loading cached"
         )
-    if not chunks:
-        logger.warning("No chunks produced — nothing to vectorize.")
-        return
+        cached = local.load_chunks(col, episode)
+        chunks = [{k: v for k, v in c.items() if k != "embedding"} for c in cached]
+        embeddings = np.stack([c["embedding"] for c in cached])
+    else:
+        if args.overwrite and local.episode_is_indexed(col, episode):
+            local.delete_episode(col, episode)
 
-    embedder = BGEEmbedder()
-    embeddings = embedder.encode_passages(chunks)
+        if args.chunking == "speaker":
+            from podcodex.rag.chunker import speaker_chunks
 
-    store = QdrantStore()
-    col = _normalize_show(show)
-    store.create_collection(col, overwrite=args.overwrite)
+            chunks = speaker_chunks(transcript)
+        else:
+            chunks = semantic_chunks(
+                transcript,
+                chunk_size=args.chunk_size,
+                threshold=args.threshold,
+            )
+        if not chunks:
+            logger.warning("No chunks produced — nothing to vectorize.")
+            return
+
+        from podcodex.rag.embedder import get_embedder
+
+        embedder = get_embedder(model_key)
+        embeddings = embedder.encode_passages(chunks)
+        local.save_chunks(col, episode, chunks, embeddings)
+
+    # ── Push to Qdrant ─────────────────────────────────────────────────
+    qdrant_url = getattr(args, "qdrant_url", None)
+    store = QdrantStore(url=qdrant_url)
+    store.create_collection(col, model=model_key, overwrite=args.overwrite)
     store.upsert(col, chunks, embeddings)
 
     marker = transcript_path.parent / ".rag_indexed"
     marker.touch()
 
     logger.success(f"Vectorized {len(chunks)} chunks into '{col}'")
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    """Push all episodes from LocalStore into Qdrant (no re-embedding)."""
+    import numpy as np
+
+    from podcodex.rag.localstore import LocalStore
+    from podcodex.rag.store import QdrantStore
+
+    db_path = getattr(args, "db", None)
+    local = LocalStore(db_path=db_path)
+    qdrant_url = getattr(args, "qdrant_url", None)
+    store = QdrantStore(url=qdrant_url)
+
+    show_filter = args.show or ""
+    episode_filter = getattr(args, "episode", None)
+
+    if episode_filter and not show_filter:
+        logger.error("--episode requires --show")
+        sys.exit(1)
+
+    collections = local.list_collections(show=show_filter)
+    if not collections:
+        logger.warning("No collections found in local store.")
+        return
+
+    total_chunks = 0
+    for col in collections:
+        info = local.get_collection_info(col)
+        if info is None:
+            continue
+
+        store.create_collection(col, model=info["model"], overwrite=args.overwrite)
+
+        episodes = local.list_episodes(col)
+        if episode_filter:
+            episodes = [ep for ep in episodes if ep == episode_filter]
+
+        for ep in episodes:
+            cached = local.load_chunks(col, ep)
+            if not cached:
+                continue
+            chunks = [{k: v for k, v in c.items() if k != "embedding"} for c in cached]
+            embeddings = np.stack([c["embedding"] for c in cached])
+            store.upsert(col, chunks, embeddings)
+            total_chunks += len(chunks)
+            logger.info(f"Synced '{ep}' → '{col}' ({len(chunks)} chunks)")
+
+    logger.success(f"Sync complete — {total_chunks} chunks pushed to Qdrant")
 
 
 def cmd_query(args: argparse.Namespace) -> None:
@@ -182,6 +262,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_vec.add_argument("--show", required=True, help="Show name.")
     p_vec.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        choices=list(MODELS.keys()),
+        help=f"Embedding model (default: {DEFAULT_MODEL}).",
+    )
+    p_vec.add_argument(
         "--chunking",
         default=DEFAULT_CHUNKING,
         choices=list(CHUNKING_STRATEGIES.keys()),
@@ -218,6 +304,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "--overwrite",
         action="store_true",
         help="Delete and recreate the collection if it already exists.",
+    )
+
+    # sync
+    p_sync = sub.add_parser(
+        "sync", help="Push episodes from local SQLite store into Qdrant."
+    )
+    p_sync.add_argument("--show", default=None, help="Filter by show name.")
+    p_sync.add_argument(
+        "--episode", default=None, help="Sync a single episode (requires --show)."
+    )
+    p_sync.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Recreate Qdrant collections before pushing.",
+    )
+    p_sync.add_argument(
+        "--qdrant-url",
+        default=None,
+        dest="qdrant_url",
+        help="Qdrant server URL (default: QDRANT_URL env var or localhost:6333).",
+    )
+    p_sync.add_argument(
+        "--db",
+        default=None,
+        metavar="PATH",
+        help="Path to local SQLite database (default: PODCODEX_DB env var or global default).",
     )
 
     # query
@@ -260,6 +372,8 @@ def main() -> None:
 
     if args.command == "vectorize":
         cmd_vectorize(args)
+    elif args.command == "sync":
+        cmd_sync(args)
     elif args.command == "query":
         cmd_query(args)
     elif args.command == "list":
