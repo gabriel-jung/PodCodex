@@ -20,6 +20,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from podcodex.core._paths import episode_output_dir
+
 
 # ──────────────────────────────────────────────
 # Paths
@@ -30,20 +32,15 @@ _INTERNAL_SUFFIXES = frozenset(
 )
 
 
-def _output_root(audio_path: Path, output_dir: str | Path = "") -> Path:
-    if output_dir:
-        p = Path(output_dir)
-        return p if p.is_absolute() else audio_path.parent / p
-    return audio_path.parent
-
-
 def _lang_norm(lang: str) -> str:
     return lang.lower().strip().replace(" ", "_")
 
 
-def _translation_json(audio_path: Path, lang: str, output_dir: str | Path = "") -> Path:
+def _translation_json(
+    audio_path: Path, lang: str, output_dir: str | Path | None = None
+) -> Path:
     return (
-        _output_root(audio_path, output_dir)
+        episode_output_dir(audio_path, output_dir)
         / f"{audio_path.stem}.{_lang_norm(lang)}.json"
     )
 
@@ -309,7 +306,7 @@ def save_translation(
     audio_path: Path | str,
     segments: list[dict],
     lang: str,
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
 ) -> Path:
     """
     Save translated segments to {stem}.{lang_norm}.json.
@@ -332,7 +329,7 @@ def save_translation(
 
 
 def load_translation(
-    audio_path: Path | str, lang: str, output_dir: str | Path = ""
+    audio_path: Path | str, lang: str, output_dir: str | Path | None = None
 ) -> list[dict]:
     """Load translated segments from {stem}.{lang_norm}.json."""
     return json.loads(
@@ -343,12 +340,14 @@ def load_translation(
 
 
 def translation_exists(
-    audio_path: Path | str, lang: str, output_dir: str | Path = ""
+    audio_path: Path | str, lang: str, output_dir: str | Path | None = None
 ) -> bool:
     return _translation_json(Path(audio_path), lang, output_dir=output_dir).exists()
 
 
-def list_translations(audio_path: Path | str, output_dir: str | Path = "") -> list[str]:
+def list_translations(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> list[str]:
     """
     Return sorted list of available translation language names for this episode.
 
@@ -356,7 +355,7 @@ def list_translations(audio_path: Path | str, output_dir: str | Path = "") -> li
     Returns normalised language names, e.g. ["english", "spanish"].
     """
     audio_path = Path(audio_path)
-    root = _output_root(audio_path, output_dir)
+    root = episode_output_dir(audio_path, output_dir)
     langs = []
     for f in sorted(root.glob(f"{audio_path.stem}.*.json")):
         suffix = f.stem[len(audio_path.stem) + 1 :]

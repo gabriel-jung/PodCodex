@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
+from podcodex.core._paths import episode_output_dir
+
 import pandas as pd
 import torch
 import warnings
@@ -42,19 +44,11 @@ warnings.filterwarnings("ignore", message=".*Lightning automatically upgraded.*"
 class _EpisodePaths:
     """All derived file paths for a given audio episode."""
 
-    base: Path  # audio_path.parent / output_dir / stem — no extension
+    base: Path  # output_root / stem — no extension
 
     @classmethod
-    def from_audio(cls, audio_path: Path, output_dir: str | Path = "") -> Self:
-        if output_dir:
-            output_dir = Path(output_dir)
-            root = (
-                output_dir
-                if output_dir.is_absolute()
-                else audio_path.parent / output_dir
-            )
-        else:
-            root = audio_path.parent
+    def from_audio(cls, audio_path: Path, output_dir: str | Path | None = None) -> Self:
+        root = episode_output_dir(audio_path, output_dir)
         base = root / audio_path.stem
         base.parent.mkdir(parents=True, exist_ok=True)
         return cls(base=base)
@@ -88,7 +82,9 @@ class _EpisodePaths:
         return self.base.with_suffix(".transcript.json")
 
 
-def processing_status(audio_path: Path, output_dir: str | Path = "") -> dict[str, bool]:
+def processing_status(
+    audio_path: Path, output_dir: str | Path | None = None
+) -> dict[str, bool]:
     """Return the processing state of an audio file."""
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
     return {
@@ -131,7 +127,7 @@ def transcribe_file(
     compute_type: str | None = None,
     device: str | None = None,
     force: bool = False,
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
 ) -> dict:
     """
     Transcribe an audio file with WhisperX + phonetic alignment.
@@ -178,7 +174,9 @@ def transcribe_file(
     return {"segments": segments, **meta}
 
 
-def load_transcription(audio_path: Path | str, output_dir: str | Path = "") -> dict:
+def load_transcription(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> dict:
     """Load transcription from parquet + meta.json."""
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
     segments = pd.read_parquet(p.segments).to_dict("records")
@@ -199,7 +197,7 @@ def diarize_file(
     num_speakers: int | None = None,
     device: str | None = None,
     force: bool = False,
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
 ) -> dict:
     """
     Diarize an audio file using whisperx.DiarizationPipeline (pyannote).
@@ -265,7 +263,9 @@ def diarize_file(
     return {"speakers": speakers, **meta}
 
 
-def load_diarization(audio_path: Path | str, output_dir: str | Path = "") -> dict:
+def load_diarization(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> dict:
     """Load diarization from parquet + meta.json."""
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
     speakers = pd.read_parquet(p.diarization).to_dict("records")
@@ -281,7 +281,7 @@ def load_diarization(audio_path: Path | str, output_dir: str | Path = "") -> dic
 def assign_speakers_to_file(
     audio_path: Path | str,
     force: bool = False,
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
 ) -> list[dict]:
     """
     Assign SPEAKER_XX labels to segments via whisperx.assign_word_speakers.
@@ -317,7 +317,7 @@ def assign_speakers_to_file(
 
 
 def load_diarized_segments(
-    audio_path: Path | str, output_dir: str | Path = ""
+    audio_path: Path | str, output_dir: str | Path | None = None
 ) -> list[dict]:
     """Load diarized segments from parquet."""
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
@@ -330,7 +330,7 @@ def load_diarized_segments(
 
 
 def load_speaker_map(
-    audio_path: Path | str, output_dir: str | Path = ""
+    audio_path: Path | str, output_dir: str | Path | None = None
 ) -> dict[str, str]:
     """Load SPEAKER_XX → name mapping. Returns {} if file does not exist."""
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
@@ -340,7 +340,9 @@ def load_speaker_map(
 
 
 def save_speaker_map(
-    audio_path: Path | str, mapping: dict[str, str], output_dir: str | Path = ""
+    audio_path: Path | str,
+    mapping: dict[str, str],
+    output_dir: str | Path | None = None,
 ) -> None:
     """Save SPEAKER_XX → name mapping."""
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
@@ -382,7 +384,7 @@ def simplify_transcript(segments: list[dict]) -> list[dict]:
 
 def export_transcript(
     audio_path: Path | str,
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
     show: str = "",
     episode: str = "",
 ) -> list[dict]:
@@ -439,7 +441,9 @@ def export_transcript(
     return export
 
 
-def load_transcript(audio_path: Path | str, output_dir: str | Path = "") -> list[dict]:
+def load_transcript(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> list[dict]:
     """Load the final transcript segments as a plain list.
 
     Handles both old format (plain list) and new format (dict with meta + segments).
@@ -450,7 +454,9 @@ def load_transcript(audio_path: Path | str, output_dir: str | Path = "") -> list
     return data["segments"] if isinstance(data, dict) else data
 
 
-def load_transcript_full(audio_path: Path | str, output_dir: str | Path = "") -> dict:
+def load_transcript_full(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> dict:
     """Load the final transcript with metadata.
 
     Returns:
@@ -537,7 +543,7 @@ def clean_transcript(
 def save_transcript(
     audio_path: Path | str,
     segments: list[dict],
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
 ) -> None:
     """Save an edited segment list back to transcript.json, preserving metadata.
 

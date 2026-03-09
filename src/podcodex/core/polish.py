@@ -18,21 +18,18 @@ from pathlib import Path
 
 from loguru import logger
 
+from podcodex.core._paths import episode_output_dir
+
 
 # ──────────────────────────────────────────────
 # Paths
 # ──────────────────────────────────────────────
 
 
-def _output_root(audio_path: Path, output_dir: str | Path = "") -> Path:
-    if output_dir:
-        p = Path(output_dir)
-        return p if p.is_absolute() else audio_path.parent / p
-    return audio_path.parent
-
-
-def _polished_json(audio_path: Path, output_dir: str | Path = "") -> Path:
-    return _output_root(audio_path, output_dir) / f"{audio_path.stem}.polished.json"
+def _polished_json(audio_path: Path, output_dir: str | Path | None = None) -> Path:
+    return (
+        episode_output_dir(audio_path, output_dir) / f"{audio_path.stem}.polished.json"
+    )
 
 
 # ──────────────────────────────────────────────
@@ -268,7 +265,7 @@ def polish_segments(
 def save_polished(
     audio_path: Path | str,
     segments: list[dict],
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
 ) -> Path:
     """Save polished segments to {stem}.polished.json (strips text_trad if present)."""
     audio_path = Path(audio_path)
@@ -280,7 +277,9 @@ def save_polished(
     return out
 
 
-def load_polished(audio_path: Path | str, output_dir: str | Path = "") -> list[dict]:
+def load_polished(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> list[dict]:
     """Load polished segments from {stem}.polished.json."""
     return json.loads(
         _polished_json(Path(audio_path), output_dir=output_dir).read_text(
@@ -289,7 +288,9 @@ def load_polished(audio_path: Path | str, output_dir: str | Path = "") -> list[d
     )
 
 
-def polished_exists(audio_path: Path | str, output_dir: str | Path = "") -> bool:
+def polished_exists(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> bool:
     return _polished_json(Path(audio_path), output_dir=output_dir).exists()
 
 

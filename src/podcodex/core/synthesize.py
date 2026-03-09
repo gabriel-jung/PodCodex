@@ -23,6 +23,8 @@ from typing import Literal, Optional
 
 from loguru import logger
 
+from podcodex.core._paths import episode_output_dir
+
 
 # ──────────────────────────────────────────────
 # Hallucination detection
@@ -69,7 +71,7 @@ def is_hallucination(text: str) -> bool:
 def extract_voice_samples(
     audio_path: Path | str,
     segments: list[dict],
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
     min_duration: Optional[float] = None,
     max_duration: Optional[float] = None,
     top_k: int = 3,
@@ -94,11 +96,7 @@ def extract_voice_samples(
         sorted by duration descending
     """
     audio_path = Path(audio_path)
-    samples_dir = (
-        (audio_path.parent / output_dir / "voice_samples")
-        if output_dir
-        else (audio_path.parent / "voice_samples")
-    )
+    samples_dir = episode_output_dir(audio_path, output_dir) / "voice_samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
 
     # Group segments by speaker with their duration
@@ -409,7 +407,7 @@ def generate_segments(
     audio_path: Path | str,
     segments: list[dict],
     voice_samples: dict[str, list[dict]],
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
     model_size: str = "1.7B",
     language: str = "English",
     sample_index: dict[str, int] | int = 0,
@@ -435,11 +433,7 @@ def generate_segments(
         List of segments with added "audio_file" and "sample_rate" fields
     """
     audio_path = Path(audio_path)
-    segments_dir = (
-        (audio_path.parent / output_dir / "tts_segments")
-        if output_dir
-        else (audio_path.parent / "tts_segments")
-    )
+    segments_dir = episode_output_dir(audio_path, output_dir) / "tts_segments"
     segments_dir.mkdir(parents=True, exist_ok=True)
 
     model = load_tts_model(model_size=model_size)
@@ -473,7 +467,7 @@ def generate_segments(
 def assemble_episode(
     generated: list[dict],
     audio_path: Path | str,
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
     strategy: Literal["silence", "original_timing"] = "original_timing",
     silence_duration: float = 0.5,
 ) -> Path:
@@ -498,9 +492,8 @@ def assemble_episode(
 
     audio_path = Path(audio_path)
     out_path = (
-        (audio_path.parent / output_dir / f"{audio_path.stem}.synthesized.wav")
-        if output_dir
-        else (audio_path.parent / f"{audio_path.stem}.synthesized.wav")
+        episode_output_dir(audio_path, output_dir)
+        / f"{audio_path.stem}.synthesized.wav"
     )
 
     if not generated:
