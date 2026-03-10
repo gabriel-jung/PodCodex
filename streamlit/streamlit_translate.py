@@ -10,6 +10,11 @@ import streamlit as st
 from podcodex.core import transcribe
 from podcodex.core import translate as translate_mod
 from podcodex.core import polish as polish_mod
+from podcodex.core.translate import (
+    _translation_json,
+    has_raw_translation,
+    is_validated_translation,
+)
 from utils import fmt_time
 from streamlit_editor import render_segment_editor
 
@@ -97,6 +102,11 @@ def render():
         st.warning("Session lost — please reload the page.")
         st.session_state.transcript = None
         st.rerun()
+
+    # ── Episode header ──
+    with st.container(border=True):
+        st.markdown(f"**{Path(str(audio_path)).name}**")
+        st.caption(str(output_dir))
 
     transcript = st.session_state.transcript
 
@@ -422,7 +432,7 @@ def render():
                     if err:
                         st.error(f"Format error — {err}")
                     else:
-                        translate_mod.save_translation(
+                        translate_mod.save_translation_raw(
                             audio_path, data, import_lang, output_dir=output_dir
                         )
                         _reload_translations(audio_path, output_dir)
@@ -440,6 +450,10 @@ def render():
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
+
+
+def _reset_translation(audio_path, lang: str, output_dir: str) -> None:
+    _translation_json(Path(audio_path), lang, output_dir).unlink(missing_ok=True)
 
 
 def _validate_segments(data) -> str | None:
@@ -477,7 +491,7 @@ def _build_kwargs(mode: str, source_lang: str, target_lang: str, context: str) -
 def _save_translation(
     audio_path, output_dir: str, segments: list[dict], target_lang: str
 ) -> None:
-    translate_mod.save_translation(
+    translate_mod.save_translation_raw(
         audio_path, segments, target_lang, output_dir=output_dir
     )
     _reload_translations(audio_path, output_dir)
@@ -518,12 +532,25 @@ def _render_translation_editor(
                 return _on_save
 
             with tab:
+                col_title, col_badge = st.columns([5, 1])
+                with col_title:
+                    st.caption(f"{len(translation)} segments")
+                with col_badge:
+                    if is_validated_translation(
+                        audio_path, lang, output_dir=output_dir
+                    ):
+                        st.success("✅ Saved")
+                    elif has_raw_translation(audio_path, lang, output_dir=output_dir):
+                        st.warning("⚠️ Raw")
                 render_segment_editor(
                     translation,
                     editor_key=f"translate_{audio_path}_{lang}",
                     on_save=_make_save(),
                     audio_path=audio_path,
                     reference_segments=source_segments,
+                    is_saved=is_validated_translation(
+                        audio_path, lang, output_dir=output_dir
+                    ),
                     export_fn=translate_mod.translation_to_text,
                     export_filename=f"{stem}.{lang}.txt",
                     next_tab="synthesize" if lang == langs[-1] else None,

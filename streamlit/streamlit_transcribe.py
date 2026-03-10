@@ -7,7 +7,11 @@ from pathlib import Path
 import streamlit as st
 
 from podcodex.core import transcribe
-from podcodex.core.transcribe import save_transcript
+from podcodex.core.transcribe import (
+    save_transcript,
+    has_raw_transcript,
+    is_validated_transcript,
+)
 from podcodex.core.synthesize import is_hallucination
 from streamlit_editor import render_segment_editor, audio_slice_bytes
 
@@ -17,29 +21,37 @@ def render():
     st.caption("Transcribe, diarize and prepare your podcast episode for translation.")
 
     # ── Section 1: Audio & Config ──
-    with st.container(border=True):
-        st.markdown("### 📁 Audio File")
+    if st.session_state.get("audio_path"):
+        # Episode loaded from sidebar — just show language param
+        audio_path_loaded = st.session_state.audio_path
+        output_dir = st.session_state.get("output_dir", "")
+        with st.container(border=True):
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.markdown(f"**{Path(str(audio_path_loaded)).name}**")
+                st.caption(str(output_dir))
+            with col2:
+                language = st.text_input(
+                    "Language",
+                    value=st.session_state.get("transcribe_language", "fr"),
+                    key="transcribe_language",
+                    help="ISO 639-1 language code (e.g. 'fr', 'en').",
+                )
+    else:
+        with st.container(border=True):
+            st.markdown("### 📁 Audio File")
 
-        uploaded = st.file_uploader(
-            "Upload audio file",
-            type=["mp3", "wav", "m4a", "ogg", "flac"],
-            help="Supported formats: MP3, WAV, M4A, OGG, FLAC. The file will be saved to the output directory.",
-        )
+            uploaded = st.file_uploader(
+                "Upload audio file",
+                type=["mp3", "wav", "m4a", "ogg", "flac"],
+                help="Supported formats: MP3, WAV, M4A, OGG, FLAC. The file will be saved to the output directory.",
+            )
 
-        col1, col2 = st.columns(2)
-        with col1:
             default_output = st.session_state.get("show_folder") or str(
                 Path.cwd() / "Transcriptions"
             )
-            if st.session_state.get("audio_path"):
-                output_dir = st.session_state.get("output_dir", default_output)
-                st.text_input(
-                    "Output directory",
-                    value=output_dir,
-                    disabled=True,
-                    help="Output directory is locked once an audio file is loaded. Reload the page to change it.",
-                )
-            else:
+            col1, col2 = st.columns(2)
+            with col1:
                 output_dir = st.text_input(
                     "Output directory",
                     value=default_output,
@@ -48,34 +60,34 @@ def render():
                 output_dir = str(Path(output_dir).resolve())
                 st.session_state.output_dir = output_dir
                 st.session_state.base_output_dir = output_dir
+            with col2:
+                language = st.text_input(
+                    "Audio language",
+                    value="fr",
+                    key="transcribe_language",
+                    help="ISO 639-1 language code of the podcast (e.g. 'fr' for French, 'en' for English). Used by WhisperX for transcription.",
+                )
 
-        with col2:
-            language = st.text_input(
-                "Audio language",
-                value="fr",
-                help="ISO 639-1 language code of the podcast (e.g. 'fr' for French, 'en' for English). Used by WhisperX for transcription.",
-            )
-
-        # Save uploaded file into base_output_dir/{stem}/
-        if uploaded and st.session_state.get("audio_filename") != uploaded.name:
-            stem = Path(uploaded.name).stem
-            base_output = st.session_state.get(
-                "base_output_dir", str(Path(output_dir).resolve())
-            )
-            save_dir = Path(base_output)
-            save_dir.mkdir(parents=True, exist_ok=True)
-            audio_dest = save_dir / uploaded.name
-            audio_dest.write_bytes(uploaded.read())
-            ep_output_dir = save_dir / stem
-            ep_output_dir.mkdir(parents=True, exist_ok=True)
-            st.session_state.audio_path = audio_dest
-            st.session_state.audio_filename = uploaded.name
-            st.session_state.output_dir = str(ep_output_dir)
-            st.session_state.base_output_dir = base_output
-            # Reset any previous trim when a new file is loaded
-            st.session_state.pop("trim_applied", None)
-            st.session_state.requested_tab = "transcribe"
-            st.rerun()
+            # Save uploaded file into base_output_dir/{stem}/
+            if uploaded and st.session_state.get("audio_filename") != uploaded.name:
+                stem = Path(uploaded.name).stem
+                base_output = st.session_state.get(
+                    "base_output_dir", str(Path(output_dir).resolve())
+                )
+                save_dir = Path(base_output)
+                save_dir.mkdir(parents=True, exist_ok=True)
+                audio_dest = save_dir / uploaded.name
+                audio_dest.write_bytes(uploaded.read())
+                ep_output_dir = save_dir / stem
+                ep_output_dir.mkdir(parents=True, exist_ok=True)
+                st.session_state.audio_path = audio_dest
+                st.session_state.audio_filename = uploaded.name
+                st.session_state.output_dir = str(ep_output_dir)
+                st.session_state.base_output_dir = base_output
+                # Reset any previous trim when a new file is loaded
+                st.session_state.pop("trim_applied", None)
+                st.session_state.requested_tab = "transcribe"
+                st.rerun()
 
     # ── Audio range selector ──
     # Shown after upload, before any processing. Trimming replaces audio_path
@@ -225,12 +237,21 @@ def render():
     # ── Section 4: Speaker map ──
     if status["assigned"]:
         with st.container(border=True):
-            st.markdown("### 🏷️ Step 4 — Name Speakers")
-            st.caption(
-                "Listen to each speaker's segments and enter their name. "
-                "Voice sample extraction happens in the Synthesis tab."
-            )
-            _render_speaker_map(audio_path, output_dir)
+            col_title, col_force = st.columns([4, 1])
+            with col_title:
+                st.markdown("### 🏷️ Step 4 — Name Speakers")
+                st.caption(
+                    "Listen to each speaker's segments and enter their name. "
+                    "Use 🗑️ to flag all segments for a speaker for removal."
+                )
+            with col_force:
+                force_map = st.checkbox(
+                    "Force",
+                    key="force_speaker_map",
+                    value=False,
+                    help="Re-save the speaker map even if one already exists.",
+                )
+            _render_speaker_map(audio_path, output_dir, force=force_map)
 
     # ── Section 5: Export ──
     with st.container(border=True):
@@ -268,10 +289,17 @@ def render():
     # ── Section 7: Transcript editor ──
     if st.session_state.get("transcript"):
         with st.container(border=True):
-            st.markdown("### ✏️ Step 6 — Review & Edit Transcript")
-            st.caption(
-                "Correct transcription errors directly. Changes are saved to the transcript file and will be used for translation."
-            )
+            col_title, col_badge = st.columns([5, 1])
+            with col_title:
+                st.markdown("### ✏️ Step 6 — Review & Edit Transcript")
+                st.caption(
+                    "Correct transcription errors directly. Changes are saved to the transcript file and will be used for translation."
+                )
+            with col_badge:
+                if is_validated_transcript(audio_path, output_dir=output_dir):
+                    st.success("✅ Saved")
+                elif has_raw_transcript(audio_path, output_dir=output_dir):
+                    st.warning("⚠️ Raw")
             _render_transcript_editor(audio_path, output_dir)
 
 
@@ -493,7 +521,7 @@ def _render_status(status: dict):
             st.markdown(f"{icon} {labels[key]}")
 
 
-def _render_speaker_map(audio_path: Path, output_dir: str):
+def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
     diarization = transcribe.load_diarization(audio_path, output_dir=output_dir)
     existing_map = transcribe.load_speaker_map(audio_path, output_dir=output_dir)
     speaker_ids = diarization["speakers_found"]
@@ -510,50 +538,99 @@ def _render_speaker_map(audio_path: Path, output_dir: str):
 
     new_map = {}
     for speaker_id in speaker_ids:
-        st.markdown(f"---\n**{speaker_id}**")
-
         all_speaker_segs = sorted(
             segs_by_speaker.get(speaker_id, []),
             key=lambda s: float(s["end"]) - float(s["start"]),
             reverse=True,
         )
         clean = [s for s in all_speaker_segs if not _seg_flags(s)[0]]
-        flagged = [s for s in all_speaker_segs if _seg_flags(s)[0]]
-        top_segs = (clean + flagged)[:3]
+        flagged_segs = [s for s in all_speaker_segs if _seg_flags(s)[0]]
+        top_segs = (clean + flagged_segs)[:3]
+        n_flagged = len(flagged_segs)
 
-        # Name input — always visible, no audio loading
-        name = st.text_input(
-            "Speaker name",
-            value=existing_map.get(speaker_id, ""),
-            key=f"speaker_{speaker_id}",
-            placeholder="Enter name...",
-            help=f"Name to use for {speaker_id} in the transcript and synthesis.",
-            label_visibility="collapsed",
-        )
+        # ── Three-column row: ID | name input | remove button ──
+        # col_del is rendered before col_name so the button can set the text_input's
+        # session state key before the widget is instantiated (Streamlit restriction).
+        col_id, col_name, col_del = st.columns([2, 4, 1])
+        with col_id:
+            flag_mark = f" ⚠️ {n_flagged}" if n_flagged else ""
+            st.markdown(
+                f"**{speaker_id}**{flag_mark}  \n`{len(all_speaker_segs)} segs`"
+            )
+        with col_del:
+            if st.button(
+                "🗑️", key=f"remove_{speaker_id}", help="Fill [remove] in name field"
+            ):
+                st.session_state[f"speaker_{speaker_id}"] = "[remove]"
+                st.rerun()
+        with col_name:
+            name = st.text_input(
+                "Name",
+                value=existing_map.get(speaker_id, ""),
+                key=f"speaker_{speaker_id}",
+                placeholder="Enter name…",
+                label_visibility="collapsed",
+            )
         new_map[speaker_id] = name or speaker_id
 
-        # Audio previews — collapsed by default, load on demand
+        # ── Audio previews — collapsed ──
+        # Only one speaker's audio is active at a time to avoid Streamlit media file limits.
+        top_seg_ids = {id(s) for s in top_segs}
+        remaining_segs = [s for s in all_speaker_segs if id(s) not in top_seg_ids]
         n_clean = len(clean)
-        label = f"🎧 Listen to {speaker_id}"
+        label = f"🎧 {speaker_id}"
         if n_clean < len(top_segs):
-            label += f" — ⚠️ {len(top_segs) - n_clean} suspect segment(s)"
+            label += f" — ⚠️ {len(top_segs) - n_clean} suspect"
         with st.expander(label, expanded=False):
-            top_audio_key = f"top_audio_{speaker_id}"
-            show_top_audio = st.session_state.get(top_audio_key, False)
-            if not show_top_audio:
-                if st.button(
-                    "🔊 Load previews",
-                    key=f"btn_top_{speaker_id}",
-                    use_container_width=True,
-                ):
-                    st.session_state[top_audio_key] = True
-                    st.rerun()
+            active = st.session_state.get("_active_speaker_audio")
+            show_top_audio = active == f"top_{speaker_id}"
+            show_audio = active == f"all_{speaker_id}"
+
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                if not show_top_audio:
+                    if st.button(
+                        "🔊 Load previews",
+                        key=f"btn_top_{speaker_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["_active_speaker_audio"] = f"top_{speaker_id}"
+                        st.rerun()
+                else:
+                    if st.button(
+                        "✖ Unload",
+                        key=f"btn_top_{speaker_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.pop("_active_speaker_audio", None)
+                        st.rerun()
+            with col_btn2:
+                if remaining_segs:
+                    if not show_audio:
+                        if st.button(
+                            "🔊 Load all",
+                            key=f"btn_load_{speaker_id}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["_active_speaker_audio"] = (
+                                f"all_{speaker_id}"
+                            )
+                            st.rerun()
+                    else:
+                        if st.button(
+                            "✖ Unload all",
+                            key=f"btn_load_{speaker_id}",
+                            use_container_width=True,
+                        ):
+                            st.session_state.pop("_active_speaker_audio", None)
+                            st.rerun()
+
             cols = st.columns(len(top_segs)) if top_segs else []
             for i, (col, seg) in enumerate(zip(cols, top_segs)):
                 dur = float(seg["end"]) - float(seg["start"])
                 hallu, text = _seg_flags(seg)
                 with col:
-                    if show_top_audio:
+                    if show_top_audio or show_audio:
                         try:
                             st.audio(
                                 audio_slice_bytes(
@@ -575,22 +652,9 @@ def _render_speaker_map(audio_path: Path, output_dir: str):
                     else:
                         st.caption(f"_{text[:70]}{'…' if len(text) > 70 else ''}_")
 
-            if all_speaker_segs:
-                load_key = f"load_all_audio_{speaker_id}"
-                show_audio = st.session_state.get(load_key, False)
-                col_hdr, col_btn = st.columns([3, 2])
-                with col_hdr:
-                    st.markdown("**Browse all segments:**")
-                with col_btn:
-                    if not show_audio:
-                        if st.button(
-                            "🔊 Load more",
-                            key=f"btn_load_{speaker_id}",
-                            use_container_width=True,
-                        ):
-                            st.session_state[load_key] = True
-                            st.rerun()
-                for j, seg in enumerate(all_speaker_segs[:30]):
+            if remaining_segs and show_audio:
+                st.markdown(f"**Remaining {len(remaining_segs)} segments:**")
+                for j, seg in enumerate(remaining_segs[:30]):
                     dur = float(seg["end"]) - float(seg["start"])
                     hallu, text = _seg_flags(seg)
                     flags = "⚠️ " if hallu else ""
@@ -620,16 +684,84 @@ def _render_speaker_map(audio_path: Path, output_dir: str):
                             except Exception:
                                 st.caption("—")
 
-    if st.button("💾 Save speaker map", use_container_width=True, type="primary"):
+    unnamed = [
+        sp
+        for sp in speaker_ids
+        if not new_map.get(sp, "").strip() or new_map.get(sp) == sp
+    ]
+    if unnamed:
+        st.caption(f"⚠️ {len(unnamed)} speaker(s) not yet named: {', '.join(unnamed)}")
+    already_saved = transcribe.processing_status(audio_path, output_dir=output_dir)[
+        "mapped"
+    ]
+    if st.button(
+        "💾 Save speaker map",
+        use_container_width=True,
+        type="primary",
+        disabled=bool(unnamed) or (already_saved and not force),
+    ):
         transcribe.save_speaker_map(audio_path, new_map, output_dir=output_dir)
         st.success("Speaker map saved! You can now export the transcript.")
         st.session_state.requested_tab = "transcribe"
         st.rerun()
 
 
+def _reset_transcript(audio_path, output_dir: str) -> None:
+    from podcodex.core.transcribe import _EpisodePaths
+
+    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
+    p.transcript.unlink(missing_ok=True)
+
+
 @st.cache_data(show_spinner=False)
 def _load_diarized_segments_cached(audio_path: str, output_dir: str) -> list:
     return transcribe.load_diarized_segments(Path(audio_path), output_dir=output_dir)
+
+
+def _render_validate_status(
+    audio_path,
+    output_dir: str,
+    raw_check,
+    validated_check,
+    promote_fn,
+    reset_fn,
+    label: str,
+    key_prefix: str,
+) -> None:
+    """Shared promote/validate status bar for transcript, polished, and translations."""
+    is_raw_only = raw_check(audio_path, output_dir=output_dir)
+    is_validated = validated_check(audio_path, output_dir=output_dir)
+    if is_raw_only:
+        col_msg, col_btn = st.columns([4, 1])
+        with col_msg:
+            st.warning(
+                f"⚠️ This {label} is unvalidated (raw pipeline output). "
+                "Review it below, then promote when ready."
+            )
+        with col_btn:
+            if st.button(
+                "Save",
+                key=f"promote_{key_prefix}",
+                type="primary",
+                use_container_width=True,
+                help=f"Save as validated — copies {label}.raw.json → {label}.json",
+            ):
+                promote_fn(audio_path, output_dir=output_dir)
+                st.toast(f"{label.capitalize()} saved as validated.")
+                st.rerun()
+    elif is_validated:
+        col_badge, col_reset = st.columns([4, 1])
+        with col_badge:
+            st.success(f"✓ Validated {label}")
+        with col_reset:
+            if st.button(
+                "Reset to raw",
+                key=f"reset_{key_prefix}",
+                use_container_width=True,
+                help=f"Delete validated {label} — raw file is kept",
+            ):
+                reset_fn(audio_path, output_dir=output_dir)
+                st.rerun()
 
 
 def _render_transcript_editor(audio_path, output_dir: str):
@@ -661,6 +793,7 @@ def _render_transcript_editor(audio_path, output_dir: str):
         show_timestamps=True,
         show_delete=True,
         show_flags=True,
+        is_saved=is_validated_transcript(audio_path, output_dir=output_dir),
         export_fn=transcribe.transcript_to_text,
         export_filename=f"{audio_path.stem}_transcript.txt",
         next_tab="polish",

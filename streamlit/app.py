@@ -158,6 +158,27 @@ def _render_sidebar() -> None:
             if not folder.is_dir():
                 st.warning("Folder not found.")
             else:
+                col_overview, col_refresh = st.columns([3, 1])
+                with col_overview:
+                    if st.session_state.get("audio_path"):
+                        if st.button("← Show overview", use_container_width=True):
+                            for key in (
+                                "audio_path",
+                                "transcript",
+                                "polished",
+                                "translation",
+                                "generated",
+                            ):
+                                st.session_state[key] = None
+                            st.session_state.translations = {}
+                            _scan_folder_cached.clear()
+                            st.rerun()
+                with col_refresh:
+                    if st.button(
+                        "🔄", help="Refresh episode status", use_container_width=True
+                    ):
+                        _scan_folder_cached.clear()
+                        st.rerun()
                 _render_sidebar_search(show_name_input)
                 _render_episode_list(folder)
 
@@ -224,15 +245,21 @@ def _render_episode_list(folder: Path) -> None:
         is_active = bool(active_path and Path(active_path) == ep.path)
         col_info, col_btn = st.columns([3, 1])
         with col_info:
-            if ep.polished:
+            if ep.validated_polished:
                 badge = "🟢"
+            elif ep.polished:  # raw polished exists
+                badge = "🟡"
             elif ep.transcribed:
                 badge = "🟡"
             else:
                 badge = "🔴"
+            has_unvalidated = (
+                ep.raw_transcript or ep.raw_polished or bool(ep.raw_translations)
+            )
+            warn_mark = " ⚠️" if has_unvalidated else ""
             indexed_mark = " ⚡" if ep.indexed else ""
             label = f"**{ep.stem}**" if is_active else ep.stem
-            st.markdown(f"{badge} {label}{indexed_mark}")
+            st.markdown(f"{badge} {label}{warn_mark}{indexed_mark}")
         with col_btn:
             if is_active:
                 st.button("Open", key=f"open_{ep.stem}", disabled=True)
@@ -260,6 +287,78 @@ def _render_sidebar_search(show_name: str) -> None:
             st.session_state.requested_tab = "rag"
             st.rerun()
     st.divider()
+
+
+# ──────────────────────────────────────────────
+# Show overview dashboard
+# ──────────────────────────────────────────────
+
+
+def _render_show_overview() -> None:
+    folder = st.session_state.get("show_folder", "")
+    show_name = st.session_state.get("show_name") or Path(folder).name
+    episodes = _scan_folder_cached(folder)
+
+    n_transcribed = sum(1 for e in episodes if e.transcribed)
+    n_polished = sum(1 for e in episodes if e.polished)
+    n_indexed = sum(1 for e in episodes if e.indexed)
+
+    st.markdown(
+        f"**{show_name}** — {len(episodes)} episode{'s' if len(episodes) != 1 else ''} · "
+        f"📝 {n_transcribed} transcribed · ✨ {n_polished} polished · ⚡ {n_indexed} indexed"
+    )
+    st.divider()
+
+    if not episodes:
+        st.info("No audio files found in this folder.")
+        return
+
+    # Header row
+    cols = st.columns([4, 3, 1, 3, 1, 1])
+    for col, label in zip(
+        cols, ["Episode", "Transcribing", "Polishing", "Translating", "Indexing", ""]
+    ):
+        col.markdown(f"**{label}**")
+
+    active_path = st.session_state.get("audio_path")
+    for ep in episodes:
+        cols = st.columns([4, 3, 1, 3, 1, 1])
+        is_active = bool(active_path and Path(active_path) == ep.path)
+        label = f"**{ep.stem}**" if is_active else ep.stem
+        cols[0].markdown(label)
+
+        # Pipeline progress: segments → diarized → assigned → mapped → exported
+        if ep.transcribed:
+            pipeline = "✅ Done"
+        elif ep.mapped:
+            pipeline = "🟡 Ready to export"
+        elif ep.assigned:
+            pipeline = "🟡 Needs speaker map"
+        elif ep.diarized:
+            pipeline = "🟠 Needs assignment"
+        elif ep.segments_ready:
+            pipeline = "🟠 Needs diarization"
+        else:
+            pipeline = "⬜ Not started"
+        cols[1].markdown(pipeline)
+
+        if ep.validated_polished:
+            cols[2].markdown("✅")
+        elif ep.raw_polished:
+            cols[2].markdown("⚠️ Raw")
+        else:
+            cols[2].markdown("⬜")
+        if ep.translations:
+            cols[3].markdown(", ".join(lang.capitalize() for lang in ep.translations))
+        else:
+            cols[3].markdown("—")
+        cols[4].markdown("⚡" if ep.indexed else "—")
+        with cols[5]:
+            if is_active:
+                st.button("Open", key=f"ov_open_{ep.stem}", disabled=True)
+            else:
+                if st.button("Open", key=f"ov_open_{ep.stem}"):
+                    _select_episode(ep)
 
 
 # ──────────────────────────────────────────────
@@ -317,7 +416,10 @@ def main():
             st.session_state.get("translation"),
         ]
     )
-    if nothing_loaded:
+    if st.session_state.get("show_folder") and nothing_loaded:
+        _render_show_overview()
+        st.divider()
+    elif nothing_loaded:
         _render_getting_started()
         st.divider()
     elif st.session_state.get("audio_path"):

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.core import transcribe
 from podcodex.core import polish as polish_mod
+from podcodex.core.polish import _polished_json, has_raw_polished, is_validated_polished
 from utils import fmt_time
 from streamlit_editor import render_segment_editor
 
@@ -32,34 +32,51 @@ def render():
     st.header("Polish")
     st.caption("Correct transcription errors and proper nouns in the source language.")
 
-    if not st.session_state.get("transcript"):
-        st.info(
-            "No transcript loaded. Go to the **🎙️ Transcribe** tab first, or load an episode from the sidebar."
-        )
-        return
-
     audio_path = st.session_state.get("audio_path")
     output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
 
     if not audio_path:
-        st.warning("Session lost — please reload the page.")
-        st.session_state.transcript = None
-        st.rerun()
+        st.info(
+            "No episode loaded. Load one from the sidebar or go to the **🎙️ Transcribe** tab."
+        )
+        return
+
+    # ── Episode header ──
+    with st.container(border=True):
+        st.markdown(f"**{Path(str(audio_path)).name}**")
+        st.caption(str(output_dir))
+
+    if not st.session_state.get("transcript"):
+        with st.container(border=True):
+            st.markdown("### 📄 Load Transcript")
+            st.caption("No transcript in session. Upload a JSON transcript to proceed.")
+            uploaded_json = st.file_uploader(
+                "Upload transcript JSON",
+                type=["json"],
+                key="polish_transcript_upload",
+                label_visibility="collapsed",
+            )
+            if uploaded_json:
+                try:
+                    data = json.loads(uploaded_json.read().decode("utf-8"))
+                    segs = data["segments"] if isinstance(data, dict) else data
+                    if not segs or "text" not in segs[0]:
+                        st.error("Missing 'text' field in segments.")
+                    else:
+                        st.session_state.transcript = segs
+                        st.success(f"Loaded {len(segs)} segments.")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+        return
 
     transcript = st.session_state.transcript
-    simplified = transcribe.simplify_transcript(transcript)
 
     # ── Section 1: Configuration ──
     with st.container(border=True):
         col_title, col_force = st.columns([4, 1])
         with col_title:
             st.markdown("### ⚙️ Configuration")
-            n_orig = len(transcript)
-            n_simplified = len(simplified)
-            if n_simplified < n_orig:
-                st.caption(
-                    f"**{n_orig}** segments → **{n_simplified}** after merging consecutive same-speaker segments"
-                )
         with col_force:
             force = st.checkbox(
                 "Force",
@@ -102,8 +119,6 @@ def render():
     with st.container(border=True):
         already_done = polish_mod.polished_exists(audio_path, output_dir=output_dir)
         btn_disabled = already_done and not force
-        if already_done and not force:
-            st.info("Polished file already exists. Check **Force** to redo it.")
 
         if mode == "api":
             st.markdown("### 🌐 API Settings")
@@ -144,10 +159,10 @@ def render():
                 disabled=btn_disabled,
             ):
                 kwargs = _build_kwargs(mode, source_lang, context)
-                with st.spinner(f"Processing {len(simplified)} segments..."):
+                with st.spinner(f"Processing {len(transcript)} segments..."):
                     try:
-                        result = polish_mod.polish_segments(simplified, **kwargs)
-                        polish_mod.save_polished(
+                        result = polish_mod.polish_segments(transcript, **kwargs)
+                        polish_mod.save_polished_raw(
                             audio_path, result, output_dir=output_dir
                         )
                         st.session_state.polished = polish_mod.load_polished(
@@ -175,10 +190,10 @@ def render():
                 disabled=btn_disabled,
             ):
                 kwargs = _build_kwargs(mode, source_lang, context)
-                with st.spinner(f"Processing {len(simplified)} segments..."):
+                with st.spinner(f"Processing {len(transcript)} segments..."):
                     try:
-                        result = polish_mod.polish_segments(simplified, **kwargs)
-                        polish_mod.save_polished(
+                        result = polish_mod.polish_segments(transcript, **kwargs)
+                        polish_mod.save_polished_raw(
                             audio_path, result, output_dir=output_dir
                         )
                         st.session_state.polished = polish_mod.load_polished(
@@ -205,7 +220,7 @@ def render():
             )
 
             batches = polish_mod.build_manual_polish_prompts_batched(
-                simplified,
+                transcript,
                 batch_minutes=batch_minutes,
                 context=context,
                 source_lang=source_lang,
@@ -301,13 +316,13 @@ def render():
             if done_batches == n_batches:
                 st.divider()
                 st.success(
-                    f"All {n_batches} batches validated ({len(simplified)} segments total)."
+                    f"All {n_batches} batches validated ({len(transcript)} segments total)."
                 )
                 if st.button("💾 Save", use_container_width=True, type="primary"):
                     all_results = []
                     for b in range(n_batches):
                         all_results.extend(st.session_state.polish_batch_results[b])
-                    polish_mod.save_polished(
+                    polish_mod.save_polished_raw(
                         audio_path, all_results, output_dir=output_dir
                     )
                     st.session_state.polished = polish_mod.load_polished(
@@ -346,7 +361,7 @@ def render():
                     elif "text" not in data[0]:
                         st.error("Missing 'text' field in segments.")
                     else:
-                        polish_mod.save_polished(
+                        polish_mod.save_polished_raw(
                             audio_path, data, output_dir=output_dir
                         )
                         st.session_state.polished = polish_mod.load_polished(
@@ -362,7 +377,14 @@ def render():
         polished = polish_mod.load_polished(audio_path, output_dir=output_dir)
         st.session_state.polished = polished
         with st.container(border=True):
-            st.markdown("### ✏️ Review & Edit Polished Transcript")
+            col_title, col_badge = st.columns([5, 1])
+            with col_title:
+                st.markdown("### ✏️ Review & Edit Polished Transcript")
+            with col_badge:
+                if is_validated_polished(audio_path, output_dir=output_dir):
+                    st.success("✅ Saved")
+                elif has_raw_polished(audio_path, output_dir=output_dir):
+                    st.warning("⚠️ Raw")
 
             def _on_save(merged):
                 polish_mod.save_polished(audio_path, merged, output_dir=output_dir)
@@ -374,11 +396,17 @@ def render():
                 editor_key=f"polish_{audio_path}",
                 on_save=_on_save,
                 audio_path=audio_path,
+                reference_segments=transcript,
+                is_saved=is_validated_polished(audio_path, output_dir=output_dir),
                 export_fn=polish_mod.polished_to_text,
                 export_filename=f"{Path(audio_path).stem}.polished.txt",
                 next_tab="translate",
                 next_tab_label="→ Go to Translate",
             )
+
+
+def _reset_polished(audio_path, output_dir: str) -> None:
+    _polished_json(Path(audio_path), output_dir).unlink(missing_ok=True)
 
 
 def _build_kwargs(mode: str, source_lang: str, context: str) -> dict:

@@ -28,7 +28,19 @@ from podcodex.core._paths import episode_output_dir
 # ──────────────────────────────────────────────
 
 _INTERNAL_SUFFIXES = frozenset(
-    {"transcript", "polished", "words", "diar", "assigned", "speaker_map", "imported"}
+    {
+        "transcript",
+        "transcript.raw",
+        "polished",
+        "polished.raw",
+        "words",
+        "diar",
+        "assigned",
+        "speaker_map",
+        "imported",
+        "segments.meta",
+        "diarization.meta",
+    }
 )
 
 
@@ -42,6 +54,15 @@ def _translation_json(
     return (
         episode_output_dir(audio_path, output_dir)
         / f"{audio_path.stem}.{_lang_norm(lang)}.json"
+    )
+
+
+def _translation_raw_json(
+    audio_path: Path, lang: str, output_dir: str | Path | None = None
+) -> Path:
+    return (
+        episode_output_dir(audio_path, output_dir)
+        / f"{audio_path.stem}.{_lang_norm(lang)}.raw.json"
     )
 
 
@@ -302,17 +323,39 @@ def translate_segments(
 # ──────────────────────────────────────────────
 
 
+def save_translation_raw(
+    audio_path: Path | str,
+    segments: list[dict],
+    lang: str,
+    output_dir: str | Path | None = None,
+) -> Path:
+    """Save pipeline-generated translation to {stem}.{lang_norm}.raw.json.
+
+    Use this for LLM/pipeline output. The user can then review and promote
+    to the validated {stem}.{lang_norm}.json via promote_translation().
+    """
+    audio_path = Path(audio_path)
+    trans = [
+        {
+            **{k: v for k, v in s.items() if k != "text_trad"},
+            "text": s.get("text_trad", s["text"]),
+        }
+        for s in segments
+    ]
+    out = _translation_raw_json(audio_path, lang, output_dir=output_dir)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(trans, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.success(f"Translation ({lang}) saved — {len(trans)} segments → {out.name}")
+    return out
+
+
 def save_translation(
     audio_path: Path | str,
     segments: list[dict],
     lang: str,
     output_dir: str | Path | None = None,
 ) -> Path:
-    """
-    Save translated segments to {stem}.{lang_norm}.json.
-
-    Promotes text_trad to text, drops the text_trad key.
-    """
+    """Save validated/edited translation to {stem}.{lang_norm}.json."""
     audio_path = Path(audio_path)
     trans = [
         {
@@ -331,37 +374,86 @@ def save_translation(
 def load_translation(
     audio_path: Path | str, lang: str, output_dir: str | Path | None = None
 ) -> list[dict]:
-    """Load translated segments from {stem}.{lang_norm}.json."""
-    return json.loads(
-        _translation_json(Path(audio_path), lang, output_dir=output_dir).read_text(
-            encoding="utf-8"
-        )
-    )
+    """Load translated segments. Prefers validated .json, falls back to .raw.json."""
+    audio_path = Path(audio_path)
+    validated = _translation_json(audio_path, lang, output_dir=output_dir)
+    raw = _translation_raw_json(audio_path, lang, output_dir=output_dir)
+    path = validated if validated.exists() else raw
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def translation_exists(
     audio_path: Path | str, lang: str, output_dir: str | Path | None = None
 ) -> bool:
-    return _translation_json(Path(audio_path), lang, output_dir=output_dir).exists()
+    """True if either validated or raw translation file exists."""
+    audio_path = Path(audio_path)
+    return (
+        _translation_json(audio_path, lang, output_dir=output_dir).exists()
+        or _translation_raw_json(audio_path, lang, output_dir=output_dir).exists()
+    )
 
 
 def list_translations(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> list[str]:
-    """
-    Return sorted list of available translation language names for this episode.
+    """Return sorted list of available translation language names for this episode.
 
     Scans for {stem}.*.json files in output_dir, excluding internal suffixes.
-    Returns normalised language names, e.g. ["english", "spanish"].
+    Merges raw and validated: english.json and english.raw.json both contribute
+    "english" once. Returns normalised language names, e.g. ["english", "spanish"].
     """
     audio_path = Path(audio_path)
     root = episode_output_dir(audio_path, output_dir)
-    langs = []
+    langs: set[str] = set()
     for f in sorted(root.glob(f"{audio_path.stem}.*.json")):
         suffix = f.stem[len(audio_path.stem) + 1 :]
-        if suffix not in _INTERNAL_SUFFIXES:
-            langs.append(suffix)
-    return langs
+        if suffix in _INTERNAL_SUFFIXES:
+            continue
+        if suffix.endswith(".raw"):
+            base = suffix[:-4]  # strip ".raw"
+            if base not in _INTERNAL_SUFFIXES:
+                langs.add(base)
+        else:
+            langs.add(suffix)
+    return sorted(langs)
+
+
+def has_raw_translation(
+    audio_path: Path | str, lang: str, output_dir: str | Path | None = None
+) -> bool:
+    """True if {lang}.raw.json exists but {lang}.json (validated) does not."""
+    audio_path = Path(audio_path)
+    return (
+        _translation_raw_json(audio_path, lang, output_dir=output_dir).exists()
+        and not _translation_json(audio_path, lang, output_dir=output_dir).exists()
+    )
+
+
+def is_validated_translation(
+    audio_path: Path | str, lang: str, output_dir: str | Path | None = None
+) -> bool:
+    """True if the validated {lang}.json exists."""
+    return _translation_json(Path(audio_path), lang, output_dir=output_dir).exists()
+
+
+def promote_translation(
+    audio_path: Path | str, lang: str, output_dir: str | Path | None = None
+) -> Path:
+    """Copy {lang}.raw.json → {lang}.json (promote to validated).
+
+    Raises FileNotFoundError if no raw file exists.
+    Returns the path of the validated file.
+    """
+    import shutil
+
+    audio_path = Path(audio_path)
+    raw = _translation_raw_json(audio_path, lang, output_dir=output_dir)
+    validated = _translation_json(audio_path, lang, output_dir=output_dir)
+    if not raw.exists():
+        raise FileNotFoundError(f"No raw translation ({lang}): {raw}")
+    shutil.copy2(raw, validated)
+    logger.info(f"Translation ({lang}) promoted: {raw.name} → {validated.name}")
+    return validated
 
 
 # ──────────────────────────────────────────────

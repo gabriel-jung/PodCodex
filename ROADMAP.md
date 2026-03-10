@@ -112,6 +112,26 @@ make build   # production .app bundle
 
 ---
 
+## RSS Ingest
+
+**Goal:** handle shows at the RSS feed level — fetch episodes directly from a feed URL instead of managing audio files manually.
+
+### What this enables
+- Auto-discover new episodes from a feed, download audio, queue for transcription
+- Populate episode metadata (title, date, description, guests) from RSS tags
+- Pre-fill `show_name`, `episode` fields used in transcript metadata and RAG
+- Potentially auto-trigger the pipeline for new episodes (background job)
+
+### What needs to be built (`core/rss.py` or `ingest/rss.py`)
+- Feed fetch + parse (title, enclosure URL, pub date, description, guid)
+- Episode download with resume support (large audio files)
+- Deduplication by guid against already-downloaded episodes
+- Integration with `scan_folder()` / `EpisodeInfo` so the dashboard reflects RSS state
+
+**Design not settled yet — discuss before implementing.**
+
+---
+
 ## RAG Layer Polish (lower priority)
 
 - **Multi-episode deduplication** — same content in polished + translated files both indexed; need a strategy

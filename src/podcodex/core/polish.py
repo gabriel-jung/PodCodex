@@ -8,8 +8,9 @@ Modes:
     - ollama  : local LLM via Ollama
     - api     : external API (OpenAI, Anthropic, etc.)
 
-Output file:
-    {stem}.polished.json  — corrected source-language segments (merged, text field only)
+Output files:
+    {stem}.polished.raw.json  — pipeline output (unvalidated)
+    {stem}.polished.json      — validated/edited polished transcript
 """
 
 import json
@@ -29,6 +30,13 @@ from podcodex.core._paths import episode_output_dir
 def _polished_json(audio_path: Path, output_dir: str | Path | None = None) -> Path:
     return (
         episode_output_dir(audio_path, output_dir) / f"{audio_path.stem}.polished.json"
+    )
+
+
+def _polished_raw_json(audio_path: Path, output_dir: str | Path | None = None) -> Path:
+    return (
+        episode_output_dir(audio_path, output_dir)
+        / f"{audio_path.stem}.polished.raw.json"
     )
 
 
@@ -58,7 +66,8 @@ Your task: transcript correction only — do NOT translate.
 - NEVER shorten, summarize or omit any part of the original text — every word matters
 
 Output format:
-Return a JSON array with exactly the same elements, with the corrected text field.
+Return a JSON array with EXACTLY the same number of elements as the input — never merge, split, or drop segments.
+Each output element must have the corrected text field for the corresponding input element.
 Reply ONLY with valid JSON, no surrounding text, no markdown.
 Format: [{{"index": 0, "text": "..."}}]  — include only index and text fields."""
 
@@ -262,12 +271,31 @@ def polish_segments(
 # ──────────────────────────────────────────────
 
 
+def save_polished_raw(
+    audio_path: Path | str,
+    segments: list[dict],
+    output_dir: str | Path | None = None,
+) -> Path:
+    """Save pipeline-generated polished segments to {stem}.polished.raw.json.
+
+    Use this for LLM/pipeline output. The user can then review and promote
+    to the validated {stem}.polished.json via promote_polished().
+    """
+    audio_path = Path(audio_path)
+    clean = [{k: v for k, v in s.items() if k != "text_trad"} for s in segments]
+    out = _polished_raw_json(audio_path, output_dir=output_dir)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(clean, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.success(f"Polished transcript saved — {len(clean)} segments → {out.name}")
+    return out
+
+
 def save_polished(
     audio_path: Path | str,
     segments: list[dict],
     output_dir: str | Path | None = None,
 ) -> Path:
-    """Save polished segments to {stem}.polished.json (strips text_trad if present)."""
+    """Save validated/edited polished segments to {stem}.polished.json."""
     audio_path = Path(audio_path)
     clean = [{k: v for k, v in s.items() if k != "text_trad"} for s in segments]
     out = _polished_json(audio_path, output_dir=output_dir)
@@ -280,18 +308,61 @@ def save_polished(
 def load_polished(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> list[dict]:
-    """Load polished segments from {stem}.polished.json."""
-    return json.loads(
-        _polished_json(Path(audio_path), output_dir=output_dir).read_text(
-            encoding="utf-8"
-        )
-    )
+    """Load polished segments. Prefers validated .polished.json, falls back to .polished.raw.json."""
+    audio_path = Path(audio_path)
+    validated = _polished_json(audio_path, output_dir=output_dir)
+    raw = _polished_raw_json(audio_path, output_dir=output_dir)
+    path = validated if validated.exists() else raw
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def polished_exists(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> bool:
+    """True if either validated or raw polished file exists."""
+    audio_path = Path(audio_path)
+    return (
+        _polished_json(audio_path, output_dir=output_dir).exists()
+        or _polished_raw_json(audio_path, output_dir=output_dir).exists()
+    )
+
+
+def has_raw_polished(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> bool:
+    """True if polished.raw.json exists but polished.json (validated) does not."""
+    audio_path = Path(audio_path)
+    return (
+        _polished_raw_json(audio_path, output_dir=output_dir).exists()
+        and not _polished_json(audio_path, output_dir=output_dir).exists()
+    )
+
+
+def is_validated_polished(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> bool:
+    """True if the validated polished.json exists."""
     return _polished_json(Path(audio_path), output_dir=output_dir).exists()
+
+
+def promote_polished(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> Path:
+    """Copy polished.raw.json → polished.json (promote to validated).
+
+    Raises FileNotFoundError if no raw file exists.
+    Returns the path of the validated file.
+    """
+    import shutil
+
+    audio_path = Path(audio_path)
+    raw = _polished_raw_json(audio_path, output_dir=output_dir)
+    validated = _polished_json(audio_path, output_dir=output_dir)
+    if not raw.exists():
+        raise FileNotFoundError(f"No raw polished file: {raw}")
+    shutil.copy2(raw, validated)
+    logger.info(f"Polished promoted: {raw.name} → {validated.name}")
+    return validated
 
 
 # ──────────────────────────────────────────────
@@ -322,6 +393,7 @@ def build_manual_polish_prompt(
     segments_json = json.dumps(segments, ensure_ascii=False, indent=2)
     instruction = (
         f"Correct the transcription errors in the {len(segments)} segments below.\n"
+        f"Return EXACTLY {len(segments)} elements — never merge, split, or drop segments. "
         "Return the SAME JSON array with only the 'text' field corrected. "
         "Keep all other fields (speaker, start, end, etc.) exactly as-is. "
         "Do not add, remove, or rename any fields. "

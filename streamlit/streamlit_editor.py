@@ -8,7 +8,11 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.core.transcribe import is_segment_flagged, _UNKNOWN_SPEAKERS
+from podcodex.core.transcribe import (
+    is_segment_flagged,
+    _UNKNOWN_SPEAKERS,
+    _REMOVE_SPEAKERS,
+)
 
 _PAGE_SIZE = 20
 
@@ -23,6 +27,8 @@ def render_segment_editor(
     show_timestamps: bool = False,
     show_delete: bool = False,
     show_flags: bool = False,
+    show_speaker: bool = True,
+    is_saved: bool = False,
     export_fn=None,
     export_filename: str | None = None,
     next_tab: str | None = None,
@@ -63,14 +69,20 @@ def render_segment_editor(
 
     # ── Index sets ──
     all_active = [i for i in range(len(segments)) if i not in deleted]
-    flagged = (
-        [i for i in all_active if is_segment_flagged(segments[i])] if show_flags else []
-    )
+    # [remove] speakers are always flagged regardless of show_flags
+    remove_flagged = {
+        i for i in all_active if segments[i].get("speaker", "") in _REMOVE_SPEAKERS
+    }
+    if show_flags:
+        flagged = [i for i in all_active if is_segment_flagged(segments[i])]
+    else:
+        flagged = sorted(remove_flagged)
     all_speakers = sorted({segments[i].get("speaker", "") for i in all_active} - {""})
 
     # ── Filter / navigation bar ──
+    show_flag_toggle = show_flags or bool(remove_flagged)
     col_widths = [3]
-    if show_flags:
+    if show_flag_toggle:
         col_widths.append(2)
     col_widths += [3, 1, 1]
     bar = st.columns(col_widths)
@@ -79,7 +91,7 @@ def render_segment_editor(
     cap_col = bar[ci]
     ci += 1
 
-    if show_flags:
+    if show_flag_toggle:
         with bar[ci]:
             ci += 1
             show_flagged_only = st.toggle(
@@ -155,8 +167,21 @@ def render_segment_editor(
         end = float(seg.get("end", 0))
 
         density_warn = _density_warning(seg) if show_flags else None
-        is_unknown = show_flags and (not speaker or speaker in _UNKNOWN_SPEAKERS)
-        speaker_label = (f"⚠️ {speaker or 'None'}" if is_unknown else speaker) or "?"
+        # Use current selectbox value for the title so it updates before save
+        display_speaker = (
+            st.session_state.get(f"{editor_key}_speaker_{i}", speaker)
+            if show_speaker
+            else speaker
+        )
+        is_unknown = show_flags and (
+            not display_speaker or display_speaker in _UNKNOWN_SPEAKERS
+        )
+        is_remove = display_speaker in _REMOVE_SPEAKERS
+        speaker_label = (
+            f"⚠️ {display_speaker or 'None'}"
+            if (is_unknown or is_remove)
+            else display_speaker
+        ) or "?"
         density_flag = " 🟡" if density_warn else ""
         ref_seg = (
             reference_segments[i]
@@ -164,8 +189,9 @@ def render_segment_editor(
             else None
         )
 
+        display_text = st.session_state.get(f"{editor_key}_text_{i}", text)
         with st.expander(
-            f"[{start:.1f}s → {end:.1f}s] **{speaker_label}**{density_flag} — {text[:60]}{'...' if len(text) > 60 else ''}",
+            f"[{start:.1f}s → {end:.1f}s] **{speaker_label}**{density_flag} — {display_text[:60]}{'...' if len(display_text) > 60 else ''}",
             expanded=False,
         ):
             if density_warn:
@@ -192,6 +218,19 @@ def render_segment_editor(
 
             if ref_seg is not None:
                 st.caption(f"**Original:** {ref_seg.get('text', '')}")
+
+            if show_speaker:
+                options = (
+                    all_speakers
+                    if speaker in all_speakers
+                    else ([speaker] + all_speakers if speaker else all_speakers)
+                )
+                st.selectbox(
+                    "Speaker",
+                    options=options,
+                    index=options.index(speaker) if speaker in options else 0,
+                    key=f"{editor_key}_speaker_{i}",
+                )
 
             st.text_area(
                 "Text",
@@ -282,7 +321,7 @@ def render_segment_editor(
         if st.button(
             "💾 Save edits",
             use_container_width=True,
-            type="primary",
+            type="secondary" if is_saved else "primary",
             key=f"{editor_key}_save",
         ):
             merged = []
@@ -296,6 +335,10 @@ def render_segment_editor(
                         f"{editor_key}_text_{i}", seg.get("text", "")
                     ),
                 }
+                if show_speaker:
+                    updated["speaker"] = st.session_state.get(
+                        f"{editor_key}_speaker_{i}", seg.get("speaker", "")
+                    )
                 if show_timestamps:
                     updated["start"] = st.session_state.get(
                         f"{editor_key}_start_{i}", float(seg.get("start", 0))

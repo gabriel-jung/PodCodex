@@ -11,7 +11,8 @@ Files produced alongside the MP3:
     {stem}.diarization.meta.json     — num speakers, etc.
     {stem}.diarized_segments.parquet — segments with SPEAKER_XX assigned
     {stem}.speaker_map.json          — {SPEAKER_00: "Claude", ...}  (filled by UI)
-    {stem}.transcript.json           — final export with resolved speaker names
+    {stem}.transcript.raw.json       — pipeline export (unvalidated)
+    {stem}.transcript.json           — validated/edited transcript
 """
 
 import gc
@@ -78,6 +79,10 @@ class _EpisodePaths:
         return self.base.with_suffix(".speaker_map.json")
 
     @property
+    def transcript_raw(self) -> Path:
+        return self.base.with_suffix(".transcript.raw.json")
+
+    @property
     def transcript(self) -> Path:
         return self.base.with_suffix(".transcript.json")
 
@@ -92,7 +97,7 @@ def processing_status(
         "diarized": p.diarization.exists() and p.diarization_meta.exists(),
         "assigned": p.diarized_segments.exists(),
         "mapped": p.speaker_map.exists(),
-        "exported": p.transcript.exists(),
+        "exported": p.transcript.exists() or p.transcript_raw.exists(),
     }
 
 
@@ -433,12 +438,17 @@ def export_transcript(
 
     out_data: dict = {"meta": meta, "segments": export}
 
-    p.transcript.write_text(
+    p.transcript_raw.write_text(
         json.dumps(out_data, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    logger.success(f"Export done — {len(export)} segments → {p.transcript.name}")
+    logger.success(f"Export done — {len(export)} segments → {p.transcript_raw.name}")
     return export
+
+
+def _resolve_transcript_path(p: "_EpisodePaths") -> Path:
+    """Return the validated transcript path if it exists, else the raw path."""
+    return p.transcript if p.transcript.exists() else p.transcript_raw
 
 
 def load_transcript(
@@ -446,11 +456,12 @@ def load_transcript(
 ) -> list[dict]:
     """Load the final transcript segments as a plain list.
 
+    Prefers the validated transcript.json; falls back to transcript.raw.json.
     Handles both old format (plain list) and new format (dict with meta + segments).
     Returns only the segments list for backward compatibility.
     """
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    data = json.loads(p.transcript.read_text(encoding="utf-8"))
+    data = json.loads(_resolve_transcript_path(p).read_text(encoding="utf-8"))
     return data["segments"] if isinstance(data, dict) else data
 
 
@@ -459,15 +470,50 @@ def load_transcript_full(
 ) -> dict:
     """Load the final transcript with metadata.
 
+    Prefers the validated transcript.json; falls back to transcript.raw.json.
     Returns:
         {"meta": {show, episode, speakers, duration, word_count}, "segments": [...]}
         If the file is in old list format, meta will be an empty dict.
     """
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    data = json.loads(p.transcript.read_text(encoding="utf-8"))
+    data = json.loads(_resolve_transcript_path(p).read_text(encoding="utf-8"))
     if isinstance(data, dict):
         return data
     return {"meta": {}, "segments": data}
+
+
+def has_raw_transcript(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> bool:
+    """True if transcript.raw.json exists but transcript.json (validated) does not."""
+    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
+    return p.transcript_raw.exists() and not p.transcript.exists()
+
+
+def is_validated_transcript(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> bool:
+    """True if the validated transcript.json exists."""
+    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
+    return p.transcript.exists()
+
+
+def promote_transcript(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> Path:
+    """Copy transcript.raw.json → transcript.json (promote to validated).
+
+    Raises FileNotFoundError if no raw file exists.
+    Returns the path of the validated file.
+    """
+    import shutil
+
+    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
+    if not p.transcript_raw.exists():
+        raise FileNotFoundError(f"No raw transcript: {p.transcript_raw}")
+    shutil.copy2(p.transcript_raw, p.transcript)
+    logger.info(f"Transcript promoted: {p.transcript_raw.name} → {p.transcript.name}")
+    return p.transcript
 
 
 # ──────────────────────────────────────────────
@@ -485,6 +531,9 @@ def _free_vram(model) -> None:
 
 _UNKNOWN_SPEAKERS = {"UNKNOWN", "UNK", "None", "none"}
 
+# Segments assigned to this name are intentionally excluded at export.
+_REMOVE_SPEAKERS = {"[remove]"}
+
 
 def segment_speech_density(seg: dict) -> float | None:
     """Return chars/second for a segment, or None if duration is too short to measure."""
@@ -500,11 +549,14 @@ def is_segment_flagged(seg: dict) -> bool:
 
     A segment is flagged when:
     - speaker is missing or an unresolved placeholder (UNKNOWN, UNK, …)
+    - speaker is a reserved remove marker ([remove], [music], …)
     - speech density is abnormally low (< 2 chars/s), indicating music, noise,
       or a Whisper hallucination artifact
     """
     speaker = seg.get("speaker", "")
     if not speaker or speaker in _UNKNOWN_SPEAKERS:
+        return True
+    if speaker in _REMOVE_SPEAKERS:
         return True
     density = segment_speech_density(seg)
     return density is not None and density < 2.0
@@ -555,11 +607,14 @@ def save_transcript(
     audio_path = Path(audio_path)
     p = _EpisodePaths.from_audio(audio_path, output_dir=output_dir)
     full = load_transcript_full(audio_path, output_dir=output_dir)
-    full["segments"] = segments
+    merged = simplify_transcript(segments)
+    full["segments"] = merged
     p.transcript.write_text(
         json.dumps(full, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    logger.info(f"Transcript saved → {p.transcript.name} ({len(segments)} segments)")
+    logger.info(
+        f"Transcript saved → {p.transcript.name} ({len(segments)} → {len(merged)} segments)"
+    )
 
 
 def transcript_to_text(segments: list[dict]) -> str:
