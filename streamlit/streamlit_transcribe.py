@@ -11,6 +11,9 @@ from podcodex.core.transcribe import (
     save_transcript,
     has_raw_transcript,
     is_validated_transcript,
+    transcript_raw_exists,
+    load_transcript_raw,
+    load_transcript_validated,
 )
 from podcodex.core.synthesize import is_hallucination
 from streamlit_editor import render_segment_editor, audio_slice_bytes
@@ -296,10 +299,14 @@ def render():
                     "Correct transcription errors directly. Changes are saved to the transcript file and will be used for translation."
                 )
             with col_badge:
-                if is_validated_transcript(audio_path, output_dir=output_dir):
+                _dirty = st.session_state.get(f"transcript_{audio_path}_dirty", False)
+                if (
+                    is_validated_transcript(audio_path, output_dir=output_dir)
+                    and not _dirty
+                ):
                     st.success("✅ Saved")
-                elif has_raw_transcript(audio_path, output_dir=output_dir):
-                    st.warning("⚠️ Raw")
+                elif has_raw_transcript(audio_path, output_dir=output_dir) or _dirty:
+                    st.warning("⚠️ Unsaved")
             _render_transcript_editor(audio_path, output_dir)
 
 
@@ -525,6 +532,7 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
     diarization = transcribe.load_diarization(audio_path, output_dir=output_dir)
     existing_map = transcribe.load_speaker_map(audio_path, output_dir=output_dir)
     speaker_ids = diarization["speakers_found"]
+    ep = Path(audio_path).stem  # namespace all keys by episode
 
     all_segs = _load_diarized_segments_cached(str(audio_path), output_dir)
     segs_by_speaker: dict[str, list[dict]] = {}
@@ -559,19 +567,21 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
             )
         with col_del:
             if st.button(
-                "🗑️", key=f"remove_{speaker_id}", help="Fill [remove] in name field"
+                "🗑️", key=f"remove_{ep}_{speaker_id}", help="Fill [remove] in name field"
             ):
-                st.session_state[f"speaker_{speaker_id}"] = "[remove]"
+                st.session_state[f"speaker_{ep}_{speaker_id}"] = "[remove]"
                 st.rerun()
         with col_name:
             name = st.text_input(
                 "Name",
                 value=existing_map.get(speaker_id, ""),
-                key=f"speaker_{speaker_id}",
+                key=f"speaker_{ep}_{speaker_id}",
                 placeholder="Enter name…",
                 label_visibility="collapsed",
             )
-        new_map[speaker_id] = name or speaker_id
+        new_map[speaker_id] = (
+            st.session_state.get(f"speaker_{ep}_{speaker_id}", name) or speaker_id
+        )
 
         # ── Audio previews — collapsed ──
         # Only one speaker's audio is active at a time to avoid Streamlit media file limits.
@@ -583,23 +593,25 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
             label += f" — ⚠️ {len(top_segs) - n_clean} suspect"
         with st.expander(label, expanded=False):
             active = st.session_state.get("_active_speaker_audio")
-            show_top_audio = active == f"top_{speaker_id}"
-            show_audio = active == f"all_{speaker_id}"
+            show_top_audio = active == f"top_{ep}_{speaker_id}"
+            show_audio = active == f"all_{ep}_{speaker_id}"
 
             col_btn1, col_btn2 = st.columns(2)
             with col_btn1:
                 if not show_top_audio:
                     if st.button(
                         "🔊 Load previews",
-                        key=f"btn_top_{speaker_id}",
+                        key=f"btn_top_{ep}_{speaker_id}",
                         use_container_width=True,
                     ):
-                        st.session_state["_active_speaker_audio"] = f"top_{speaker_id}"
+                        st.session_state["_active_speaker_audio"] = (
+                            f"top_{ep}_{speaker_id}"
+                        )
                         st.rerun()
                 else:
                     if st.button(
                         "✖ Unload",
-                        key=f"btn_top_{speaker_id}",
+                        key=f"btn_top_{ep}_{speaker_id}",
                         use_container_width=True,
                     ):
                         st.session_state.pop("_active_speaker_audio", None)
@@ -609,17 +621,17 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
                     if not show_audio:
                         if st.button(
                             "🔊 Load all",
-                            key=f"btn_load_{speaker_id}",
+                            key=f"btn_load_{ep}_{speaker_id}",
                             use_container_width=True,
                         ):
                             st.session_state["_active_speaker_audio"] = (
-                                f"all_{speaker_id}"
+                                f"all_{ep}_{speaker_id}"
                             )
                             st.rerun()
                     else:
                         if st.button(
                             "✖ Unload all",
-                            key=f"btn_load_{speaker_id}",
+                            key=f"btn_load_{ep}_{speaker_id}",
                             use_container_width=True,
                         ):
                             st.session_state.pop("_active_speaker_audio", None)
@@ -772,6 +784,29 @@ def _render_transcript_editor(audio_path, output_dir: str):
             audio_path, output_dir=output_dir
         )
     transcript = st.session_state[t_key]
+
+    has_raw = transcript_raw_exists(audio_path, output_dir=output_dir)
+    has_validated = is_validated_transcript(audio_path, output_dir=output_dir)
+    if has_raw or has_validated:
+        cols = st.columns(2)
+        with cols[0]:
+            if st.button(
+                "↩ Load original", use_container_width=True, disabled=not has_raw
+            ):
+                st.session_state[t_key] = load_transcript_raw(
+                    audio_path, output_dir=output_dir
+                )
+                st.session_state[f"transcript_{audio_path}_dirty"] = False
+                st.rerun()
+        with cols[1]:
+            if st.button(
+                "✏️ Load edits", use_container_width=True, disabled=not has_validated
+            ):
+                st.session_state[t_key] = load_transcript_validated(
+                    audio_path, output_dir=output_dir
+                )
+                st.session_state[f"transcript_{audio_path}_dirty"] = False
+                st.rerun()
 
     if not transcript or not transcript[0].get("speaker"):
         st.warning(

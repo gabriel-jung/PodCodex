@@ -8,7 +8,14 @@ from pathlib import Path
 import streamlit as st
 
 from podcodex.core import polish as polish_mod
-from podcodex.core.polish import _polished_json, has_raw_polished, is_validated_polished
+from podcodex.core.polish import (
+    _polished_json,
+    has_raw_polished,
+    is_validated_polished,
+    polished_raw_exists,
+    load_polished_raw,
+    load_polished_validated,
+)
 from utils import fmt_time
 from streamlit_editor import render_segment_editor
 
@@ -267,7 +274,6 @@ def render():
                 value=prompt,
                 height=280,
                 label_visibility="collapsed",
-                key=f"polish_prompt_{idx}",
             )
 
             st.markdown("**Paste the JSON result:**")
@@ -374,20 +380,58 @@ def render():
 
     # ── Section 4: Editor ──
     if polish_mod.polished_exists(audio_path, output_dir=output_dir):
-        polished = polish_mod.load_polished(audio_path, output_dir=output_dir)
+        p_key = f"editor_polished_{audio_path}"
+        if p_key not in st.session_state:
+            st.session_state[p_key] = polish_mod.load_polished(
+                audio_path, output_dir=output_dir
+            )
+        polished = st.session_state[p_key]
         st.session_state.polished = polished
         with st.container(border=True):
             col_title, col_badge = st.columns([5, 1])
             with col_title:
                 st.markdown("### ✏️ Review & Edit Polished Transcript")
             with col_badge:
-                if is_validated_polished(audio_path, output_dir=output_dir):
+                _dirty = st.session_state.get(f"polish_{audio_path}_dirty", False)
+                if (
+                    is_validated_polished(audio_path, output_dir=output_dir)
+                    and not _dirty
+                ):
                     st.success("✅ Saved")
-                elif has_raw_polished(audio_path, output_dir=output_dir):
-                    st.warning("⚠️ Raw")
+                elif has_raw_polished(audio_path, output_dir=output_dir) or _dirty:
+                    st.warning("⚠️ Unsaved")
+
+            has_raw = polished_raw_exists(audio_path, output_dir=output_dir)
+            has_validated = is_validated_polished(audio_path, output_dir=output_dir)
+            cols = st.columns(2)
+            with cols[0]:
+                if st.button(
+                    "↩ Load original",
+                    key="load_raw_polished",
+                    use_container_width=True,
+                    disabled=not has_raw,
+                ):
+                    st.session_state[p_key] = load_polished_raw(
+                        audio_path, output_dir=output_dir
+                    )
+                    st.session_state[f"polish_{audio_path}_dirty"] = False
+                    st.rerun()
+            with cols[1]:
+                if st.button(
+                    "✏️ Load edits",
+                    key="load_edited_polished",
+                    use_container_width=True,
+                    disabled=not has_validated,
+                ):
+                    st.session_state[p_key] = load_polished_validated(
+                        audio_path, output_dir=output_dir
+                    )
+                    st.session_state[f"polish_{audio_path}_dirty"] = False
+                    st.rerun()
 
             def _on_save(merged):
                 polish_mod.save_polished(audio_path, merged, output_dir=output_dir)
+                st.session_state[p_key] = merged
                 st.session_state.polished = merged
                 st.toast("Polished transcript saved!")
 

@@ -87,6 +87,7 @@ Your task: translation only.
 - Preserve the oral tone and style of the podcast
 - Do not translate proper nouns (people, films, places)
 - Translate the full text — never truncate or summarize
+- Segments with speaker "[BREAK]" are music or jingle breaks — copy them to the output exactly as-is, do not translate their text
 
 Output format:
 Return a JSON array with one entry per segment, containing only the index and translated text.
@@ -382,6 +383,28 @@ def load_translation(
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def load_translation_raw(
+    audio_path: Path | str, lang: str, output_dir: str | Path | None = None
+) -> list[dict]:
+    """Load specifically from .{lang}.raw.json (pipeline output)."""
+    return json.loads(
+        _translation_raw_json(Path(audio_path), lang, output_dir=output_dir).read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def load_translation_validated(
+    audio_path: Path | str, lang: str, output_dir: str | Path | None = None
+) -> list[dict]:
+    """Load specifically from .{lang}.json (user-validated)."""
+    return json.loads(
+        _translation_json(Path(audio_path), lang, output_dir=output_dir).read_text(
+            encoding="utf-8"
+        )
+    )
+
+
 def translation_exists(
     audio_path: Path | str, lang: str, output_dir: str | Path | None = None
 ) -> bool:
@@ -416,6 +439,13 @@ def list_translations(
         else:
             langs.add(suffix)
     return sorted(langs)
+
+
+def translation_raw_exists(
+    audio_path: Path | str, lang: str, output_dir: str | Path | None = None
+) -> bool:
+    """True if {lang}.raw.json exists (regardless of validated state)."""
+    return _translation_raw_json(Path(audio_path), lang, output_dir=output_dir).exists()
 
 
 def has_raw_translation(
@@ -497,6 +527,7 @@ def build_manual_translate_prompt(
     instruction = (
         f"Translate the {len(segments)} segments below from {source_lang} to {target_lang}.\n"
         "Return a JSON array with only the index and translated text — no other fields.\n"
+        "Segments marked [BREAK] are music breaks — return them with an empty text string.\n"
         "Reply ONLY with valid JSON, no surrounding text, no markdown.\n"
         'Format: [{"index": 0, "text": "translated text..."}]'
     )

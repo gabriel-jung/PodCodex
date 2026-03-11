@@ -64,6 +64,7 @@ Your task: transcript correction only — do NOT translate.
 - If a sentence is incomprehensible and unrecoverable, write [inaudible]
 - Do NOT correct style, hesitations, or natural repetitions
 - NEVER shorten, summarize or omit any part of the original text — every word matters
+- Segments with speaker "[BREAK]" are music or jingle breaks — copy them to the output exactly as-is, do not modify their text
 
 Output format:
 Return a JSON array with EXACTLY the same number of elements as the input — never merge, split, or drop segments.
@@ -316,6 +317,28 @@ def load_polished(
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def load_polished_raw(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> list[dict]:
+    """Load specifically from .polished.raw.json (pipeline output)."""
+    return json.loads(
+        _polished_raw_json(Path(audio_path), output_dir=output_dir).read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def load_polished_validated(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> list[dict]:
+    """Load specifically from .polished.json (user-validated)."""
+    return json.loads(
+        _polished_json(Path(audio_path), output_dir=output_dir).read_text(
+            encoding="utf-8"
+        )
+    )
+
+
 def polished_exists(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> bool:
@@ -325,6 +348,13 @@ def polished_exists(
         _polished_json(audio_path, output_dir=output_dir).exists()
         or _polished_raw_json(audio_path, output_dir=output_dir).exists()
     )
+
+
+def polished_raw_exists(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> bool:
+    """True if polished.raw.json exists (regardless of validated state)."""
+    return _polished_raw_json(Path(audio_path), output_dir=output_dir).exists()
 
 
 def has_raw_polished(
@@ -396,6 +426,7 @@ def build_manual_polish_prompt(
         f"Return EXACTLY {len(segments)} elements — never merge, split, or drop segments. "
         "Return the SAME JSON array with only the 'text' field corrected. "
         "Keep all other fields (speaker, start, end, etc.) exactly as-is. "
+        'Segments with speaker "[BREAK]" are music breaks — copy them unchanged. '
         "Do not add, remove, or rename any fields. "
         "Reply ONLY with valid JSON, no surrounding text, no markdown."
     )

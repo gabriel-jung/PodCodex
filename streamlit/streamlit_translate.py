@@ -14,6 +14,9 @@ from podcodex.core.translate import (
     _translation_json,
     has_raw_translation,
     is_validated_translation,
+    translation_raw_exists,
+    load_translation_raw,
+    load_translation_validated,
 )
 from utils import fmt_time
 from streamlit_editor import render_segment_editor
@@ -517,15 +520,19 @@ def _render_translation_editor(
         tabs = st.tabs([lang.capitalize() for lang in langs])
 
         for tab, lang in zip(tabs, langs):
-            translation = translate_mod.load_translation(
-                audio_path, lang, output_dir=output_dir
-            )
+            t_key = f"editor_translate_{audio_path}_{lang}"
+            if t_key not in st.session_state:
+                st.session_state[t_key] = translate_mod.load_translation(
+                    audio_path, lang, output_dir=output_dir
+                )
+            translation = st.session_state[t_key]
 
-            def _make_save(lang=lang):
+            def _make_save(lang=lang, t_key=t_key):
                 def _on_save(merged):
                     translate_mod.save_translation(
                         audio_path, merged, lang, output_dir=output_dir
                     )
+                    st.session_state[t_key] = merged
                     _reload_translations(audio_path, output_dir)
                     st.toast(f"{lang.capitalize()} translation saved!")
 
@@ -536,12 +543,54 @@ def _render_translation_editor(
                 with col_title:
                     st.caption(f"{len(translation)} segments")
                 with col_badge:
-                    if is_validated_translation(
-                        audio_path, lang, output_dir=output_dir
+                    _dirty = st.session_state.get(
+                        f"translate_{audio_path}_{lang}_dirty", False
+                    )
+                    if (
+                        is_validated_translation(
+                            audio_path, lang, output_dir=output_dir
+                        )
+                        and not _dirty
                     ):
                         st.success("✅ Saved")
-                    elif has_raw_translation(audio_path, lang, output_dir=output_dir):
-                        st.warning("⚠️ Raw")
+                    elif (
+                        has_raw_translation(audio_path, lang, output_dir=output_dir)
+                        or _dirty
+                    ):
+                        st.warning("⚠️ Unsaved")
+
+                has_raw = translation_raw_exists(
+                    audio_path, lang, output_dir=output_dir
+                )
+                has_validated = is_validated_translation(
+                    audio_path, lang, output_dir=output_dir
+                )
+                cols = st.columns(2)
+                with cols[0]:
+                    if st.button(
+                        "↩ Load original",
+                        key=f"load_raw_{lang}",
+                        use_container_width=True,
+                        disabled=not has_raw,
+                    ):
+                        st.session_state[t_key] = load_translation_raw(
+                            audio_path, lang, output_dir=output_dir
+                        )
+                        st.session_state[f"translate_{audio_path}_{lang}_dirty"] = False
+                        st.rerun()
+                with cols[1]:
+                    if st.button(
+                        "✏️ Load edits",
+                        key=f"load_edited_{lang}",
+                        use_container_width=True,
+                        disabled=not has_validated,
+                    ):
+                        st.session_state[t_key] = load_translation_validated(
+                            audio_path, lang, output_dir=output_dir
+                        )
+                        st.session_state[f"translate_{audio_path}_{lang}_dirty"] = False
+                        st.rerun()
+
                 render_segment_editor(
                     translation,
                     editor_key=f"translate_{audio_path}_{lang}",

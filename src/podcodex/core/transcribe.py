@@ -379,10 +379,16 @@ def save_speaker_map(
 # ──────────────────────────────────────────────
 
 
-def simplify_transcript(segments: list[dict]) -> list[dict]:
+def simplify_transcript(segments: list[dict], max_gap: float = 10.0) -> list[dict]:
     """
     Merge consecutive segments from the same speaker into single entries.
+    Segments are only merged if the gap between them is <= max_gap seconds,
+    preventing merges across music breaks or long silences.
     Called automatically by export_transcript().
+
+    Args:
+        segments: raw diarized segments
+        max_gap: maximum silence gap (seconds) to merge across (default: 10s)
 
     Returns:
         List of simplified segments [{speaker, start, end, text}]
@@ -396,10 +402,23 @@ def simplify_transcript(segments: list[dict]) -> list[dict]:
             "end": round(float(seg["end"]), 3),
             "text": str(seg.get("text", "")).strip(),
         }
-        if result and result[-1]["speaker"] == entry["speaker"]:
+        if (
+            result
+            and result[-1]["speaker"] == entry["speaker"]
+            and entry["start"] - result[-1]["end"] <= max_gap
+        ):
             result[-1]["end"] = entry["end"]
             result[-1]["text"] += " " + entry["text"]
         else:
+            if result and entry["start"] - result[-1]["end"] > max_gap:
+                result.append(
+                    {
+                        "speaker": "[BREAK]",
+                        "start": result[-1]["end"],
+                        "end": entry["start"],
+                        "text": "",
+                    }
+                )
             result.append(entry)
     return result
 
@@ -459,7 +478,9 @@ def export_transcript(
         json.dumps(out_data, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    logger.success(f"Export done — {len(export)} segments → {p.transcript_raw.name}")
+    logger.success(
+        f"Export done — {len(resolved)} → {len(export)} segments (merged) → {p.transcript_raw.name}"
+    )
     return export
 
 
@@ -479,6 +500,24 @@ def load_transcript(
     """
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
     data = json.loads(_resolve_transcript_path(p).read_text(encoding="utf-8"))
+    return data["segments"] if isinstance(data, dict) else data
+
+
+def load_transcript_raw(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> list[dict]:
+    """Load segments specifically from transcript.raw.json (pipeline output)."""
+    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
+    data = json.loads(p.transcript_raw.read_text(encoding="utf-8"))
+    return data["segments"] if isinstance(data, dict) else data
+
+
+def load_transcript_validated(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> list[dict]:
+    """Load segments specifically from transcript.json (user-validated)."""
+    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
+    data = json.loads(p.transcript.read_text(encoding="utf-8"))
     return data["segments"] if isinstance(data, dict) else data
 
 
@@ -505,6 +544,15 @@ def has_raw_transcript(
     """True if transcript.raw.json exists but transcript.json (validated) does not."""
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
     return p.transcript_raw.exists() and not p.transcript.exists()
+
+
+def transcript_raw_exists(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> bool:
+    """True if transcript.raw.json exists (regardless of validated state)."""
+    return _EpisodePaths.from_audio(
+        Path(audio_path), output_dir=output_dir
+    ).transcript_raw.exists()
 
 
 def is_validated_transcript(

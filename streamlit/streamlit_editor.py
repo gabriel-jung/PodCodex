@@ -60,6 +60,10 @@ def render_segment_editor(
     page_key = f"{editor_key}_page"
     flag_filter_key = f"{editor_key}_filter_flagged"
     speaker_filter_key = f"{editor_key}_filter_speaker"
+    dirty_key = f"{editor_key}_dirty"
+
+    def _mark_dirty():
+        st.session_state[dirty_key] = True
 
     if del_key not in st.session_state:
         st.session_state[del_key] = set()
@@ -74,7 +78,18 @@ def render_segment_editor(
         i for i in all_active if segments[i].get("speaker", "") in _REMOVE_SPEAKERS
     }
     if show_flags:
-        flagged = [i for i in all_active if is_segment_flagged(segments[i])]
+
+        def _live_seg(i):
+            seg = segments[i]
+            return {
+                **seg,
+                "start": st.session_state.get(
+                    f"{editor_key}_start_{i}", seg.get("start", 0)
+                ),
+                "end": st.session_state.get(f"{editor_key}_end_{i}", seg.get("end", 0)),
+            }
+
+        flagged = [i for i in all_active if is_segment_flagged(_live_seg(i))]
     else:
         flagged = sorted(remove_flagged)
     all_speakers = sorted({segments[i].get("speaker", "") for i in all_active} - {""})
@@ -166,7 +181,10 @@ def render_segment_editor(
         start = float(seg.get("start", 0))
         end = float(seg.get("end", 0))
 
-        density_warn = _density_warning(seg) if show_flags else None
+        live_start = st.session_state.get(f"{editor_key}_start_{i}", start)
+        live_end = st.session_state.get(f"{editor_key}_end_{i}", end)
+        live_seg = {**seg, "start": live_start, "end": live_end}
+        density_warn = _density_warning(live_seg) if show_flags else None
         # Use current selectbox value for the title so it updates before save
         display_speaker = (
             st.session_state.get(f"{editor_key}_speaker_{i}", speaker)
@@ -230,6 +248,7 @@ def render_segment_editor(
                     options=options,
                     index=options.index(speaker) if speaker in options else 0,
                     key=f"{editor_key}_speaker_{i}",
+                    on_change=_mark_dirty,
                 )
 
             st.text_area(
@@ -238,6 +257,7 @@ def render_segment_editor(
                 key=f"{editor_key}_text_{i}",
                 label_visibility="collapsed",
                 height=80,
+                on_change=_mark_dirty,
             )
 
             if show_timestamps or show_delete:
@@ -253,6 +273,7 @@ def render_segment_editor(
                             step=0.1,
                             format="%.1f",
                             key=f"{editor_key}_start_{i}",
+                            on_change=_mark_dirty,
                         )
                     ri += 1
                     with row[ri]:
@@ -263,6 +284,7 @@ def render_segment_editor(
                             step=0.1,
                             format="%.1f",
                             key=f"{editor_key}_end_{i}",
+                            on_change=_mark_dirty,
                         )
                     ri += 1
                 if show_delete:
@@ -273,6 +295,7 @@ def render_segment_editor(
                             use_container_width=True,
                         ):
                             st.session_state[del_key] = st.session_state[del_key] | {i}
+                            st.session_state[dirty_key] = True
                             st.rerun()
 
     # ── Bulk delete flagged ──
@@ -300,6 +323,7 @@ def render_segment_editor(
                     key=f"{editor_key}_del_yes",
                 ):
                     st.session_state[del_key] = st.session_state[del_key] | set(flagged)
+                    st.session_state[dirty_key] = True
                     st.session_state.pop(confirm_key, None)
                     st.session_state[page_key] = 0
                     st.rerun()
@@ -321,7 +345,9 @@ def render_segment_editor(
         if st.button(
             "💾 Save edits",
             use_container_width=True,
-            type="secondary" if is_saved else "primary",
+            type="secondary"
+            if (is_saved and not st.session_state.get(dirty_key, False))
+            else "primary",
             key=f"{editor_key}_save",
         ):
             merged = []
@@ -348,6 +374,7 @@ def render_segment_editor(
                     )
                 merged.append(updated)
             on_save(merged)
+            st.session_state[dirty_key] = False
             st.session_state.pop(del_key, None)
             st.session_state[page_key] = 0
             st.rerun()
@@ -401,17 +428,23 @@ def _density_warning(seg: dict) -> str | None:
 
 
 @st.cache_data(show_spinner=False)
-def audio_slice_bytes(audio_path: str, start: float, end: float) -> bytes:
-    """Read a [start, end] slice from audio_path and return WAV bytes. Cached."""
+def audio_slice_bytes(
+    audio_path: str, start: float, end: float, pad: float = 0.3
+) -> bytes:
+    """Read a [start, end] slice from audio_path and return WAV bytes. Cached.
+
+    pad: seconds of context added before and after the segment (default 0.3s).
+    """
     import io
     import soundfile as sf
 
     info = sf.info(audio_path)
     sr = info.samplerate
+    total_frames = info.frames
     audio, _ = sf.read(
         audio_path,
-        start=int(start * sr),
-        stop=int(end * sr),
+        start=max(0, int((start - pad) * sr)),
+        stop=min(total_frames, int((end + pad) * sr)),
         dtype="float32",
         always_2d=False,
     )
