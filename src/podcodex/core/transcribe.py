@@ -182,7 +182,12 @@ def transcribe_file(
 def load_transcription(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> dict:
-    """Load transcription from parquet + meta.json."""
+    """Load transcription from parquet + meta.json.
+
+    Words with null timestamps (numbers, punctuation, special chars that the
+    French phoneme aligner cannot place) are stripped from each segment's word
+    list before return.  Segment-level start/end are unaffected.
+    """
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
     segments = pd.read_parquet(p.segments).to_dict("records")
     meta = json.loads(p.segments_meta.read_text(encoding="utf-8"))
@@ -306,11 +311,23 @@ def assign_speakers_to_file(
         return load_diarized_segments(audio_path, output_dir=output_dir)
 
     transcription = load_transcription(audio_path, output_dir=output_dir)
+    for s in transcription["segments"]:
+        if "words" in s and s["words"] is not None:
+            s["words"] = [
+                w
+                for w in s["words"]
+                if w.get("start") is not None and w.get("end") is not None
+            ]
     diarization = load_diarization(audio_path, output_dir=output_dir)
 
-    df_diarize = pd.DataFrame(diarization["speakers"])
+    df_diarize = pd.DataFrame(diarization["speakers"]).dropna(subset=["start", "end"])
+    transcription_segments = [
+        s
+        for s in transcription["segments"]
+        if s.get("start") is not None and s.get("end") is not None
+    ]
     result = whisperx.assign_word_speakers(
-        df_diarize, {"segments": transcription["segments"]}
+        df_diarize, {"segments": transcription_segments}
     )
     segments = result["segments"]
 
