@@ -6,7 +6,7 @@ serving layer but not the source of truth. Enables re-indexing without
 re-embedding.
 
 Schema (3 tables):
-    collections  — one row per (show, model) pair
+    collections  — one row per (show, model, chunker) triple
     chunks       — text + meta per chunk, ordered by chunk_index
     embeddings   — float32 blob, one row per chunk (separate to allow
                    metadata queries without pulling large blobs)
@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS collections (
     name       TEXT PRIMARY KEY,
     show       TEXT NOT NULL,
     model      TEXT NOT NULL,
+    chunker    TEXT NOT NULL DEFAULT 'semantic',
     dim        INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
@@ -85,19 +86,23 @@ class LocalStore:
         cur = self._conn.execute("SELECT 1 FROM collections WHERE name=?", (name,))
         return cur.fetchone() is not None
 
-    def ensure_collection(self, name: str, show: str, model: str, dim: int) -> None:
+    def ensure_collection(
+        self, name: str, show: str, model: str, chunker: str, dim: int
+    ) -> None:
         """Create collection row if it does not already exist (idempotent)."""
         self._conn.execute(
             """
-            INSERT OR IGNORE INTO collections(name, show, model, dim, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO collections(name, show, model, chunker, dim, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (name, show, model, dim, datetime.now(timezone.utc).isoformat()),
+            (name, show, model, chunker, dim, datetime.now(timezone.utc).isoformat()),
         )
         self._conn.commit()
 
-    def list_collections(self, show: str = "", model: str = "") -> list[str]:
-        """List collection names, optionally filtered by show and/or model."""
+    def list_collections(
+        self, show: str = "", model: str = "", chunker: str = ""
+    ) -> list[str]:
+        """List collection names, optionally filtered by show, model, and/or chunker."""
         q = "SELECT name FROM collections WHERE 1=1"
         params: list = []
         if show:
@@ -106,6 +111,9 @@ class LocalStore:
         if model:
             q += " AND model=?"
             params.append(model)
+        if chunker:
+            q += " AND chunker=?"
+            params.append(chunker)
         q += " ORDER BY name"
         return [r[0] for r in self._conn.execute(q, params).fetchall()]
 
@@ -131,13 +139,13 @@ class LocalStore:
         self._conn.commit()
 
     def get_collection_info(self, name: str) -> dict | None:
-        """Return {show, model, dim} for a collection, or None if not found."""
+        """Return {show, model, chunker, dim} for a collection, or None if not found."""
         row = self._conn.execute(
-            "SELECT show, model, dim FROM collections WHERE name=?", (name,)
+            "SELECT show, model, chunker, dim FROM collections WHERE name=?", (name,)
         ).fetchone()
         if row is None:
             return None
-        return {"show": row[0], "model": row[1], "dim": row[2]}
+        return {"show": row[0], "model": row[1], "chunker": row[2], "dim": row[3]}
 
     def list_episodes(self, collection: str) -> list[str]:
         rows = self._conn.execute(

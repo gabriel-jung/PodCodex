@@ -25,9 +25,9 @@ def _normalize_show(show: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", show.lower()).strip("_")
 
 
-def collection_name(show: str, model: str) -> str:
-    """Build the canonical collection name: {normalized_show}__{model_key}."""
-    return f"{_normalize_show(show)}__{model}"
+def collection_name(show: str, model: str, chunker: str = "semantic") -> str:
+    """Build the canonical collection name: {normalized_show}__{model}__{chunker}."""
+    return f"{_normalize_show(show)}__{model}__{chunker}"
 
 
 class QdrantStore:
@@ -55,17 +55,8 @@ class QdrantStore:
     def create_collection(
         self, name: str, model: str = "bge-m3", overwrite: bool = False
     ) -> None:
-        """
-        Create a Qdrant collection for the given model.
-
-        Vector size is taken from MODELS[model].dim.
-
-        Args:
-            name      : collection name (use collection_name() helper)
-            model     : model key from MODELS registry (default: "bge-m3")
-            overwrite : if True, delete and recreate an existing collection
-        """
         from podcodex.rag.defaults import MODELS
+        from qdrant_client.models import Distance, VectorParams, PayloadSchemaType
 
         spec = MODELS.get(model)
         if spec is None:
@@ -80,12 +71,18 @@ class QdrantStore:
                 logger.info(f"Collection '{name}' already exists — skipping creation")
                 return
 
-        from qdrant_client.models import Distance, VectorParams
-
         self._client.create_collection(
             collection_name=name,
             vectors_config=VectorParams(size=spec.dim, distance=Distance.COSINE),
         )
+
+        # Full-text index on 'text' enables /find (case-insensitive MatchText)
+        self._client.create_payload_index(
+            collection_name=name,
+            field_name="text",
+            field_schema=PayloadSchemaType.TEXT,
+        )
+
         logger.success(f"Created collection '{name}' ({spec.label}, dim={spec.dim})")
 
     def delete_collection(self, name: str) -> None:
@@ -93,21 +90,22 @@ class QdrantStore:
         self._client.delete_collection(name)
         logger.info(f"Deleted collection '{name}'")
 
-    def list_collections(self, show: str = "", model: str = "") -> list[str]:
+    def list_collections(
+        self, show: str = "", model: str = "", chunker: str = ""
+    ) -> list[str]:
         """
-        List collection names, optionally filtered by show prefix or model suffix.
+        List collection names, optionally filtered by show, model, or chunker.
 
-        Args:
-            show  : if provided, only return collections for this show
-            model : if provided, only return collections using this model
+        Collection format: {show}__{model}__{chunker}
         """
         all_names = [c.name for c in self._client.get_collections().collections]
         if show:
             prefix = _normalize_show(show) + "__"
             all_names = [n for n in all_names if n.startswith(prefix)]
         if model:
-            suffix = f"__{model}"
-            all_names = [n for n in all_names if n.endswith(suffix)]
+            all_names = [n for n in all_names if f"__{model}__" in n]
+        if chunker:
+            all_names = [n for n in all_names if n.endswith(f"__{chunker}")]
         return all_names
 
     # ── Upsert ────────────────────────────────
@@ -165,6 +163,38 @@ class QdrantStore:
         chunks = [dict(r.payload) for r in results]
         chunks.sort(key=lambda c: c.get("start", 0.0))
         return chunks
+
+    def get_episode_stats(self, collection: str) -> list[dict]:
+        """
+        Aggregate per-episode stats by scrolling all points in a collection.
+        Returns list of {episode, chunk_count, duration} sorted by episode.
+        Uses paginated scroll to handle arbitrarily large collections.
+        """
+        stats: dict[str, dict] = {}
+        offset = None
+
+        while True:
+            batch, next_offset = self._client.scroll(
+                collection_name=collection,
+                limit=1_000,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for point in batch:
+                p = point.payload or {}
+                ep = p.get("episode", "(unknown)")
+                end = float(p.get("end", 0.0))
+                if ep not in stats:
+                    stats[ep] = {"episode": ep, "chunk_count": 0, "duration": 0.0}
+                stats[ep]["chunk_count"] += 1
+                stats[ep]["duration"] = max(stats[ep]["duration"], end)
+
+            if next_offset is None:
+                break
+            offset = next_offset
+
+        return sorted(stats.values(), key=lambda x: x["episode"])
 
 
 # ──────────────────────────────────────────────

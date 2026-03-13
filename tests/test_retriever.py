@@ -266,14 +266,15 @@ def test_normalize_single_nonzero_result_scores_to_one():
     assert result[0]["score"] == pytest.approx(1.0)
 
 
-def test_normalize_all_zero_scores_to_zero():
-    """All-zero BM25 scores (no query term match) must not inflate to 1.0."""
+def test_normalize_rank_based_scores():
+    """Rank-based normalization: first gets 1.0, last gets 1/n."""
     from podcodex.rag.retriever import _normalize
 
     results = [{"score": 0.0, "text": "a"}, {"score": 0.0, "text": "b"}]
     normed = _normalize(results)
-    assert normed[0]["score"] == pytest.approx(0.0)
-    assert normed[1]["score"] == pytest.approx(0.0)
+    # Rank-based: 1.0 - (0/2) = 1.0, 1.0 - (1/2) = 0.5
+    assert normed[0]["score"] == pytest.approx(1.0)
+    assert normed[1]["score"] == pytest.approx(0.5)
 
 
 def test_normalize_preserves_order_and_fields():
@@ -281,7 +282,8 @@ def test_normalize_preserves_order_and_fields():
 
     results = [{"score": 0.2, "x": 1}, {"score": 0.8, "x": 2}]
     normed = _normalize(results)
-    assert normed[0]["score"] == pytest.approx(0.0)
-    assert normed[1]["score"] == pytest.approx(1.0)
+    # Rank-based: position 0 → 1.0, position 1 → 0.5
+    assert normed[0]["score"] == pytest.approx(1.0)
+    assert normed[1]["score"] == pytest.approx(0.5)
     assert normed[0]["x"] == 1
     assert normed[1]["x"] == 2

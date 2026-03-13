@@ -59,25 +59,34 @@ def _chunks(n: int = 3, episode: str = "E1") -> list[dict]:
 def test_collection_name_basic():
     from podcodex.rag.store import collection_name
 
-    assert collection_name("my_podcast", "bge-m3") == "my_podcast__bge-m3"
+    assert collection_name("my_podcast", "bge-m3") == "my_podcast__bge-m3__semantic"
+
+
+def test_collection_name_with_chunker():
+    from podcodex.rag.store import collection_name
+
+    assert (
+        collection_name("my_podcast", "bge-m3", "speaker")
+        == "my_podcast__bge-m3__speaker"
+    )
 
 
 def test_collection_name_normalizes_spaces():
     from podcodex.rag.store import collection_name
 
-    assert collection_name("My Podcast", "e5-small") == "my_podcast__e5-small"
+    assert collection_name("My Podcast", "e5-small") == "my_podcast__e5-small__semantic"
 
 
 def test_collection_name_normalizes_mixed_case():
     from podcodex.rag.store import collection_name
 
-    assert collection_name("MyPodcast", "e5-large") == "mypodcast__e5-large"
+    assert collection_name("MyPodcast", "e5-large") == "mypodcast__e5-large__semantic"
 
 
 def test_collection_name_normalizes_special_chars():
     from podcodex.rag.store import collection_name
 
-    assert collection_name("My Podcast!", "bge-m3") == "my_podcast__bge-m3"
+    assert collection_name("My Podcast!", "bge-m3") == "my_podcast__bge-m3__semantic"
 
 
 def test_collection_name_idempotent():
@@ -203,24 +212,35 @@ def test_list_collections_filtered_by_show():
 def test_list_collections_filtered_by_model():
     mock_mod, mock_client = _make_qdrant_mock()
     col_a, col_b = MagicMock(), MagicMock()
-    col_a.name = "show_a__bge-m3"
-    col_b.name = "show_b__bge-m3"
+    col_a.name = "show_a__bge-m3__semantic"
+    col_b.name = "show_b__bge-m3__semantic"
     col_c = MagicMock()
-    col_c.name = "show_a__e5-small"
+    col_c.name = "show_a__e5-small__semantic"
     mock_client.get_collections.return_value.collections = [col_a, col_b, col_c]
     store, _ = _make_store(mock_mod)
     result = store.list_collections(model="bge-m3")
-    assert set(result) == {"show_a__bge-m3", "show_b__bge-m3"}
+    assert set(result) == {"show_a__bge-m3__semantic", "show_b__bge-m3__semantic"}
+
+
+def test_list_collections_filtered_by_chunker():
+    mock_mod, mock_client = _make_qdrant_mock()
+    col_a, col_b = MagicMock(), MagicMock()
+    col_a.name = "show__bge-m3__semantic"
+    col_b.name = "show__bge-m3__speaker"
+    mock_client.get_collections.return_value.collections = [col_a, col_b]
+    store, _ = _make_store(mock_mod)
+    result = store.list_collections(chunker="speaker")
+    assert result == ["show__bge-m3__speaker"]
 
 
 def test_list_collections_normalizes_show_name():
     mock_mod, mock_client = _make_qdrant_mock()
     col = MagicMock()
-    col.name = "my_podcast__bge-m3"
+    col.name = "my_podcast__bge-m3__semantic"
     mock_client.get_collections.return_value.collections = [col]
     store, _ = _make_store(mock_mod)
     result = store.list_collections(show="My Podcast")
-    assert result == ["my_podcast__bge-m3"]
+    assert result == ["my_podcast__bge-m3__semantic"]
 
 
 def test_delete_collection_calls_client():

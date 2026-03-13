@@ -33,6 +33,7 @@ def _make_vectorize_args(
     transcript,
     show,
     model="bge-m3",
+    chunking="semantic",
     episode=None,
     chunk_size=256,
     threshold=0.5,
@@ -43,6 +44,7 @@ def _make_vectorize_args(
     args.transcript = str(transcript)
     args.show = show
     args.model = model
+    args.chunking = chunking
     args.episode = episode
     args.chunk_size = chunk_size
     args.threshold = threshold
@@ -78,18 +80,18 @@ def test_cmd_vectorize_calls_store_methods(tmp_path):
     mock_local = _mock_local_not_indexed()
 
     with (
-        patch("podcodex.rag.chunker.semantic_chunks", return_value=mock_chunks),
-        patch("podcodex.rag.embedder.get_embedder", return_value=mock_embedder),
-        patch("podcodex.rag.store.QdrantStore", return_value=mock_store),
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.semantic_chunks", return_value=mock_chunks),
+        patch("podcodex.cli.get_embedder", return_value=mock_embedder),
+        patch("podcodex.cli.QdrantStore", return_value=mock_store),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
     mock_store.create_collection.assert_called_once_with(
-        "my_show__bge-m3", model="bge-m3", overwrite=False
+        "my_show__bge-m3__semantic", model="bge-m3", overwrite=False
     )
     mock_store.upsert.assert_called_once_with(
-        "my_show__bge-m3", mock_chunks, mock_embeddings
+        "my_show__bge-m3__semantic", mock_chunks, mock_embeddings
     )
 
 
@@ -101,7 +103,7 @@ def test_cmd_vectorize_episode_from_args(tmp_path):
 
     mock_local = _mock_local_not_indexed()
     with (
-        patch("podcodex.rag.chunker.semantic_chunks", return_value=[{"text": "t"}]),
+        patch("podcodex.cli.semantic_chunks", return_value=[{"text": "t"}]),
         patch(
             "podcodex.rag.embedder.get_embedder",
             return_value=MagicMock(
@@ -110,8 +112,8 @@ def test_cmd_vectorize_episode_from_args(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.rag.store.QdrantStore", return_value=MagicMock()),
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)  # should not raise
 
@@ -130,7 +132,7 @@ def test_cmd_vectorize_episode_falls_back_to_meta(tmp_path):
 
     mock_local = _mock_local_not_indexed()
     with (
-        patch("podcodex.rag.chunker.semantic_chunks", side_effect=fake_semantic_chunks),
+        patch("podcodex.cli.semantic_chunks", side_effect=fake_semantic_chunks),
         patch(
             "podcodex.rag.embedder.get_embedder",
             return_value=MagicMock(
@@ -139,8 +141,8 @@ def test_cmd_vectorize_episode_falls_back_to_meta(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.rag.store.QdrantStore", return_value=MagicMock()),
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
@@ -169,7 +171,7 @@ def test_cmd_vectorize_episode_falls_back_to_filename(tmp_path):
     mock_store = MagicMock()
     mock_local = _mock_local_not_indexed()
     with (
-        patch("podcodex.rag.chunker.semantic_chunks", return_value=[{"text": "t"}]),
+        patch("podcodex.cli.semantic_chunks", return_value=[{"text": "t"}]),
         patch(
             "podcodex.rag.embedder.get_embedder",
             return_value=MagicMock(
@@ -178,8 +180,8 @@ def test_cmd_vectorize_episode_falls_back_to_filename(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.rag.store.QdrantStore", return_value=mock_store),
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.QdrantStore", return_value=mock_store),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
@@ -195,9 +197,9 @@ def test_cmd_vectorize_no_chunks_returns_early(tmp_path):
     mock_store = MagicMock()
     mock_local = _mock_local_not_indexed()
     with (
-        patch("podcodex.rag.chunker.semantic_chunks", return_value=[]),
-        patch("podcodex.rag.store.QdrantStore", return_value=mock_store),
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.semantic_chunks", return_value=[]),
+        patch("podcodex.cli.QdrantStore", return_value=mock_store),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
@@ -231,8 +233,8 @@ def test_cmd_vectorize_touches_rag_indexed_marker(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.rag.store.QdrantStore", return_value=MagicMock()),
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
@@ -249,7 +251,7 @@ def test_cmd_vectorize_overwrite_flag(tmp_path):
     mock_store = MagicMock()
     mock_local = _mock_local_not_indexed()
     with (
-        patch("podcodex.rag.chunker.semantic_chunks", return_value=[{"text": "x"}]),
+        patch("podcodex.cli.semantic_chunks", return_value=[{"text": "x"}]),
         patch(
             "podcodex.rag.embedder.get_embedder",
             return_value=MagicMock(
@@ -258,13 +260,13 @@ def test_cmd_vectorize_overwrite_flag(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.rag.store.QdrantStore", return_value=mock_store),
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.QdrantStore", return_value=mock_store),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
     mock_store.create_collection.assert_called_once_with(
-        "s__bge-m3", model="bge-m3", overwrite=True
+        "s__bge-m3__semantic", model="bge-m3", overwrite=True
     )
 
 
@@ -286,9 +288,9 @@ def test_cmd_vectorize_skips_embed_when_cached(tmp_path):
     mock_embedder = MagicMock()
 
     with (
-        patch("podcodex.rag.embedder.get_embedder", return_value=mock_embedder),
-        patch("podcodex.rag.store.QdrantStore", return_value=mock_store),
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.get_embedder", return_value=mock_embedder),
+        patch("podcodex.cli.QdrantStore", return_value=mock_store),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
@@ -307,7 +309,7 @@ def test_cmd_vectorize_overwrite_deletes_local_episode(tmp_path):
     mock_local.episode_is_indexed.return_value = True
 
     with (
-        patch("podcodex.rag.chunker.semantic_chunks", return_value=[{"text": "t"}]),
+        patch("podcodex.cli.semantic_chunks", return_value=[{"text": "t"}]),
         patch(
             "podcodex.rag.embedder.get_embedder",
             return_value=MagicMock(
@@ -316,8 +318,8 @@ def test_cmd_vectorize_overwrite_deletes_local_episode(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.rag.store.QdrantStore", return_value=MagicMock()),
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
@@ -349,7 +351,7 @@ def test_cmd_sync_pushes_all_episodes():
     ]
 
     mock_local = MagicMock()
-    mock_local.list_collections.return_value = ["my_show__bge-m3"]
+    mock_local.list_collections.return_value = ["my_show__bge-m3__semantic"]
     mock_local._conn.execute.return_value.fetchone.return_value = (
         "My Show",
         "bge-m3",
@@ -362,8 +364,8 @@ def test_cmd_sync_pushes_all_episodes():
     args = _make_sync_args()
 
     with (
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
-        patch("podcodex.rag.store.QdrantStore", return_value=mock_store),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.QdrantStore", return_value=mock_store),
     ):
         cmd_sync(args)
 
@@ -378,8 +380,8 @@ def test_cmd_sync_filters_by_show():
     args = _make_sync_args(show="My Show")
 
     with (
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
-        patch("podcodex.rag.store.QdrantStore", return_value=MagicMock()),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
     ):
         cmd_sync(args)
 
@@ -391,8 +393,8 @@ def test_cmd_sync_episode_without_show_exits():
 
     args = _make_sync_args(show=None, episode="ep1")
     with (
-        patch("podcodex.rag.localstore.LocalStore", return_value=MagicMock()),
-        patch("podcodex.rag.store.QdrantStore", return_value=MagicMock()),
+        patch("podcodex.cli.LocalStore", return_value=MagicMock()),
+        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
         pytest.raises(SystemExit),
     ):
         cmd_sync(args)
@@ -407,8 +409,8 @@ def test_cmd_sync_no_collections_warns():
     args = _make_sync_args()
 
     with (
-        patch("podcodex.rag.localstore.LocalStore", return_value=mock_local),
-        patch("podcodex.rag.store.QdrantStore", return_value=mock_store),
+        patch("podcodex.cli.LocalStore", return_value=mock_local),
+        patch("podcodex.cli.QdrantStore", return_value=mock_store),
     ):
         cmd_sync(args)
 
@@ -426,6 +428,8 @@ def test_cmd_query_calls_retriever(capsys):
     args = MagicMock()
     args.query = "film music"
     args.show = "my_show"
+    args.model = "bge-m3"
+    args.chunking = "semantic"
     args.top_k = 3
     args.alpha = 0.5
 
@@ -441,11 +445,11 @@ def test_cmd_query_calls_retriever(capsys):
         },
     ]
 
-    with patch("podcodex.rag.retriever.Retriever", return_value=mock_retriever):
+    with patch("podcodex.cli.Retriever", return_value=mock_retriever):
         cmd_query(args)
 
     mock_retriever.retrieve.assert_called_once_with(
-        "film music", "my_show", top_k=3, alpha=0.5
+        "film music", "my_show__bge-m3__semantic", top_k=3, alpha=0.5
     )
     out = capsys.readouterr().out
     assert "Hello world" in out
@@ -458,17 +462,19 @@ def test_cmd_query_normalizes_show_name():
     args = MagicMock()
     args.query = "something"
     args.show = "My Podcast"
+    args.model = "bge-m3"
+    args.chunking = "semantic"
     args.top_k = 5
     args.alpha = 0.5
 
     mock_retriever = MagicMock()
     mock_retriever.retrieve.return_value = []
 
-    with patch("podcodex.rag.retriever.Retriever", return_value=mock_retriever):
+    with patch("podcodex.cli.Retriever", return_value=mock_retriever):
         cmd_query(args)
 
     mock_retriever.retrieve.assert_called_once_with(
-        "something", "my_podcast", top_k=5, alpha=0.5
+        "something", "my_podcast__bge-m3__semantic", top_k=5, alpha=0.5
     )
 
 
@@ -478,13 +484,15 @@ def test_cmd_query_no_results(capsys):
     args = MagicMock()
     args.query = "q"
     args.show = "s"
+    args.model = "bge-m3"
+    args.chunking = "semantic"
     args.top_k = 5
     args.alpha = 0.5
 
     mock_retriever = MagicMock()
     mock_retriever.retrieve.return_value = []
 
-    with patch("podcodex.rag.retriever.Retriever", return_value=mock_retriever):
+    with patch("podcodex.cli.Retriever", return_value=mock_retriever):
         cmd_query(args)
 
     out = capsys.readouterr().out
@@ -505,7 +513,7 @@ def test_cmd_list_no_filter(capsys):
     mock_store = MagicMock()
     mock_store.list_collections.return_value = ["show_a", "show_b"]
 
-    with patch("podcodex.rag.store.QdrantStore", return_value=mock_store):
+    with patch("podcodex.cli.QdrantStore", return_value=mock_store):
         cmd_list(args)
 
     mock_store.list_collections.assert_called_once_with(show="")
@@ -523,7 +531,7 @@ def test_cmd_list_filtered_by_show(capsys):
     mock_store = MagicMock()
     mock_store.list_collections.return_value = ["my_show"]
 
-    with patch("podcodex.rag.store.QdrantStore", return_value=mock_store):
+    with patch("podcodex.cli.QdrantStore", return_value=mock_store):
         cmd_list(args)
 
     mock_store.list_collections.assert_called_once_with(show="my_show")
@@ -538,7 +546,7 @@ def test_cmd_list_empty(capsys):
     mock_store = MagicMock()
     mock_store.list_collections.return_value = []
 
-    with patch("podcodex.rag.store.QdrantStore", return_value=mock_store):
+    with patch("podcodex.cli.QdrantStore", return_value=mock_store):
         cmd_list(args)
 
     out = capsys.readouterr().out
@@ -557,7 +565,7 @@ def test_cmd_delete_calls_store(capsys):
     args.collection = "my_show"
 
     mock_store = MagicMock()
-    with patch("podcodex.rag.store.QdrantStore", return_value=mock_store):
+    with patch("podcodex.cli.QdrantStore", return_value=mock_store):
         cmd_delete(args)
 
     mock_store.delete_collection.assert_called_once_with("my_show")

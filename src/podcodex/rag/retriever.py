@@ -109,10 +109,13 @@ class Retriever:
         k = min(top_k, len(chunks))
         indices, scores = retriever.retrieve(query_tokens, k=k)
 
+        # ↓ only change: filter zero-padded results before normalizing
         hits = [
             {**chunks[int(idx)], "score": float(score)}
             for idx, score in zip(indices[0], scores[0])
+            if float(score) > 1e-6
         ]
+
         return _normalize(hits)
 
     def _weighted_search(
@@ -139,6 +142,27 @@ class Retriever:
         sorted_keys = sorted(combined, key=combined.__getitem__, reverse=True)[:top_k]
         return [{**payloads[k], "score": combined[k]} for k in sorted_keys]
 
+    def find(self, query: str, collection: str, top_k: int = 25) -> list[dict]:
+        """
+        True substring search — case-insensitive, no scoring.
+        Requires a full-text payload index on 'text' (see QdrantStore.ensure_text_index).
+        Results sorted by start time, all scored 1.0.
+        """
+        from qdrant_client.models import FieldCondition, Filter, MatchText
+
+        results, _ = self._store._client.scroll(
+            collection_name=collection,
+            scroll_filter=Filter(
+                must=[FieldCondition(key="text", match=MatchText(text=query))]
+            ),
+            limit=top_k,
+            with_payload=True,
+            with_vectors=False,
+        )
+        chunks = [dict(r.payload) for r in results]
+        chunks.sort(key=lambda c: c.get("start", 0.0))
+        return [{**c, "score": 1.0} for c in chunks]
+
 
 # ──────────────────────────────────────────────
 # Internal helpers
@@ -149,19 +173,31 @@ def _chunk_key(chunk: dict) -> str:
     return f"{chunk.get('episode', '')}|{chunk.get('start', 0)}"
 
 
+# def _normalize(results: list[dict]) -> list[dict]:
+#     """Min-max normalize scores within a result set to [0, 1]."""
+#     if not results:
+#         return results
+#     scores = [r["score"] for r in results]
+#     lo, hi = min(scores), max(scores)
+#     rng = hi - lo
+#     if rng == 0:
+#         # All scores identical: if all zero → no match at all → 0.0
+#         #                       if all same positive value → tied → 1.0
+#         val = 0.0 if lo == 0 else 1.0
+#         return [{**r, "score": val} for r in results]
+#     return [{**r, "score": (r["score"] - lo) / rng} for r in results]
+
+
 def _normalize(results: list[dict]) -> list[dict]:
-    """Min-max normalize scores within a result set to [0, 1]."""
-    if not results:
+    """
+    Rank-based normalization to [1/n ... 1.0].
+    Ensures no result ever scores 0 — every retrieved chunk
+    gets a meaningful position-based score.
+    """
+    n = len(results)
+    if n == 0:
         return results
-    scores = [r["score"] for r in results]
-    lo, hi = min(scores), max(scores)
-    rng = hi - lo
-    if rng == 0:
-        # All scores identical: if all zero → no match at all → 0.0
-        #                       if all same positive value → tied → 1.0
-        val = 0.0 if lo == 0 else 1.0
-        return [{**r, "score": val} for r in results]
-    return [{**r, "score": (r["score"] - lo) / rng} for r in results]
+    return [{**r, "score": 1.0 - (i / n)} for i, r in enumerate(results)]
 
 
 def _result_to_dict(result) -> dict:

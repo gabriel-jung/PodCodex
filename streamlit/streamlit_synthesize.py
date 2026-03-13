@@ -7,7 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.core import synthesize
+from podcodex.core import synthesize, validate_segments_json
 
 
 @st.cache_resource
@@ -66,7 +66,7 @@ def render():
                     st.error(f"Invalid JSON: {e}")
                     data = None
                 if data is not None:
-                    err = _validate_segments_json(data, required=("text",))
+                    err = validate_segments_json(data, required=("text",))
                     if err:
                         st.error(f"Format error — {err}")
                     else:
@@ -815,35 +815,6 @@ def _load_generated_from_disk(output_dir: str, translation: list) -> list:
         except Exception:
             return []
     return result
-
-
-def _validate_segments_json(data, required: tuple[str, ...]) -> str | None:
-    """
-    Return a human-readable error string if data doesn't look like a valid
-    segments array, or None if it passes basic validation.
-    """
-    if not isinstance(data, list):
-        if isinstance(data, dict):
-            keys = list(data.keys())[:6]
-            hint = (
-                " Looks like a raw Whisper output — use the 🎙️ Transcribe tab to export it first."
-                if "segments" in data or "text" in data
-                else ""
-            )
-            return f"Expected a JSON array but got an object with keys {keys}.{hint}"
-        return f"Expected a JSON array, got {type(data).__name__}."
-    if not data:
-        return "The JSON array is empty."
-    if not isinstance(data[0], dict):
-        return f"Expected each element to be an object, got {type(data[0]).__name__}."
-    missing = [f for f in required if f not in data[0]]
-    if missing:
-        found = list(data[0].keys())
-        return (
-            f"Missing required field(s) {missing} in the first segment. "
-            f"Fields found: {found}. Check the format hint above."
-        )
-    return None
 
 
 def _wav_duration(path: Path) -> float:

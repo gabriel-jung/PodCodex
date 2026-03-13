@@ -18,23 +18,9 @@ from podcodex.core.translate import (
     load_translation_raw,
     load_translation_validated,
 )
-from utils import fmt_time
+from podcodex.core import validate_segments_json
+from utils import PROVIDERS, build_llm_kwargs, fmt_time, on_provider_change
 from streamlit_editor import render_segment_editor
-
-# OpenAI-compatible provider presets
-_PROVIDERS = {
-    "Mistral": {"url": "https://api.mistral.ai/v1", "model": "mistral-small-latest"},
-    "OpenAI": {"url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
-    "Custom": {"url": "", "model": ""},
-}
-
-
-def _on_provider_change():
-    provider = st.session_state.get("trad_api_provider", "Mistral")
-    preset = _PROVIDERS.get(provider, {})
-    if preset["url"]:
-        st.session_state["trad_api_base_url"] = preset["url"]
-        st.session_state["trad_api_model"] = preset["model"]
 
 
 def render():
@@ -65,7 +51,7 @@ def render():
                         st.error(f"Invalid JSON: {e}")
                         data = None
                     if data is not None:
-                        err = _validate_segments(data)
+                        err = validate_segments_json(data)
                         if err:
                             st.error(f"Format error — {err}")
                         else:
@@ -209,16 +195,16 @@ def render():
             st.markdown("### 🌐 API Settings")
             st.selectbox(
                 "Provider",
-                list(_PROVIDERS.keys()),
+                list(PROVIDERS.keys()),
                 key="trad_api_provider",
-                on_change=_on_provider_change,
+                on_change=lambda: on_provider_change("trad"),
             )
             col1, col2 = st.columns(2)
             with col1:
                 st.text_input(
                     "Model",
                     value=st.session_state.get(
-                        "trad_api_model", _PROVIDERS["Mistral"]["model"]
+                        "trad_api_model", PROVIDERS["Mistral"]["model"]
                     ),
                     key="trad_api_model",
                 )
@@ -226,7 +212,7 @@ def render():
                 st.text_input(
                     "API base URL",
                     value=st.session_state.get(
-                        "trad_api_base_url", _PROVIDERS["Mistral"]["url"]
+                        "trad_api_base_url", PROVIDERS["Mistral"]["url"]
                     ),
                     key="trad_api_base_url",
                 )
@@ -243,7 +229,13 @@ def render():
                 type="primary",
                 disabled=btn_disabled,
             ):
-                kwargs = _build_kwargs(mode, source_lang, target_lang, context)
+                kwargs = build_llm_kwargs(
+                    "trad",
+                    mode,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    context=context,
+                )
                 with st.spinner(f"Processing {len(segments)} segments..."):
                     try:
                         result = translate_mod.translate_segments(segments, **kwargs)
@@ -269,7 +261,13 @@ def render():
                 type="primary",
                 disabled=btn_disabled,
             ):
-                kwargs = _build_kwargs(mode, source_lang, target_lang, context)
+                kwargs = build_llm_kwargs(
+                    "trad",
+                    mode,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    context=context,
+                )
                 with st.spinner(f"Processing {len(segments)} segments..."):
                     try:
                         result = translate_mod.translate_segments(segments, **kwargs)
@@ -431,7 +429,7 @@ def render():
             if st.button("Import", use_container_width=True, key="trad_import_btn"):
                 try:
                     data = json.loads(uploaded_json.read().decode("utf-8"))
-                    err = _validate_segments(data)
+                    err = validate_segments_json(data)
                     if err:
                         st.error(f"Format error — {err}")
                     else:
@@ -457,38 +455,6 @@ def render():
 
 def _reset_translation(audio_path, lang: str, output_dir: str) -> None:
     _translation_json(Path(audio_path), lang, output_dir).unlink(missing_ok=True)
-
-
-def _validate_segments(data) -> str | None:
-    if not isinstance(data, list):
-        return f"Expected a JSON array, got {type(data).__name__}."
-    if not data:
-        return "The JSON array is empty."
-    if not isinstance(data[0], dict):
-        return f"Expected each element to be an object, got {type(data[0]).__name__}."
-    if "text" not in data[0]:
-        found = list(data[0].keys())
-        return f"Missing 'text' field. Fields found: {found}."
-    return None
-
-
-def _build_kwargs(mode: str, source_lang: str, target_lang: str, context: str) -> dict:
-    kwargs = dict(
-        mode=mode, source_lang=source_lang, target_lang=target_lang, context=context
-    )
-    if mode == "api":
-        kwargs["model"] = st.session_state.get(
-            "trad_api_model", _PROVIDERS["Mistral"]["model"]
-        )
-        kwargs["api_base_url"] = st.session_state.get(
-            "trad_api_base_url", _PROVIDERS["Mistral"]["url"]
-        )
-        api_key = st.session_state.get("trad_api_key_input", "").strip()
-        if api_key:
-            kwargs["api_key"] = api_key
-    elif mode == "ollama":
-        kwargs["model"] = st.session_state.get("trad_ollama_model", "qwen3:14b")
-    return kwargs
 
 
 def _save_translation(

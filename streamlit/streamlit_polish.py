@@ -16,23 +16,8 @@ from podcodex.core.polish import (
     load_polished_raw,
     load_polished_validated,
 )
-from utils import fmt_time
+from utils import PROVIDERS, build_llm_kwargs, fmt_time, on_provider_change
 from streamlit_editor import render_segment_editor
-
-# OpenAI-compatible provider presets
-_PROVIDERS = {
-    "Mistral": {"url": "https://api.mistral.ai/v1", "model": "mistral-small-latest"},
-    "OpenAI": {"url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
-    "Custom": {"url": "", "model": ""},
-}
-
-
-def _on_provider_change():
-    provider = st.session_state.get("polish_api_provider", "Mistral")
-    preset = _PROVIDERS.get(provider, {})
-    if preset["url"]:
-        st.session_state["polish_api_base_url"] = preset["url"]
-        st.session_state["polish_api_model"] = preset["model"]
 
 
 def render():
@@ -131,16 +116,16 @@ def render():
             st.markdown("### 🌐 API Settings")
             st.selectbox(
                 "Provider",
-                list(_PROVIDERS.keys()),
+                list(PROVIDERS.keys()),
                 key="polish_api_provider",
-                on_change=_on_provider_change,
+                on_change=lambda: on_provider_change("polish"),
             )
             col1, col2 = st.columns(2)
             with col1:
                 st.text_input(
                     "Model",
                     value=st.session_state.get(
-                        "polish_api_model", _PROVIDERS["Mistral"]["model"]
+                        "polish_api_model", PROVIDERS["Mistral"]["model"]
                     ),
                     key="polish_api_model",
                 )
@@ -148,7 +133,7 @@ def render():
                 st.text_input(
                     "API base URL",
                     value=st.session_state.get(
-                        "polish_api_base_url", _PROVIDERS["Mistral"]["url"]
+                        "polish_api_base_url", PROVIDERS["Mistral"]["url"]
                     ),
                     key="polish_api_base_url",
                 )
@@ -165,7 +150,9 @@ def render():
                 type="primary",
                 disabled=btn_disabled,
             ):
-                kwargs = _build_kwargs(mode, source_lang, context)
+                kwargs = build_llm_kwargs(
+                    "polish", mode, source_lang=source_lang, context=context
+                )
                 with st.spinner(f"Processing {len(transcript)} segments..."):
                     try:
                         result = polish_mod.polish_segments(transcript, **kwargs)
@@ -196,7 +183,9 @@ def render():
                 type="primary",
                 disabled=btn_disabled,
             ):
-                kwargs = _build_kwargs(mode, source_lang, context)
+                kwargs = build_llm_kwargs(
+                    "polish", mode, source_lang=source_lang, context=context
+                )
                 with st.spinner(f"Processing {len(transcript)} segments..."):
                     try:
                         result = polish_mod.polish_segments(transcript, **kwargs)
@@ -451,20 +440,3 @@ def render():
 
 def _reset_polished(audio_path, output_dir: str) -> None:
     _polished_json(Path(audio_path), output_dir).unlink(missing_ok=True)
-
-
-def _build_kwargs(mode: str, source_lang: str, context: str) -> dict:
-    kwargs = dict(mode=mode, source_lang=source_lang, context=context)
-    if mode == "api":
-        kwargs["model"] = st.session_state.get(
-            "polish_api_model", _PROVIDERS["Mistral"]["model"]
-        )
-        kwargs["api_base_url"] = st.session_state.get(
-            "polish_api_base_url", _PROVIDERS["Mistral"]["url"]
-        )
-        api_key = st.session_state.get("polish_api_key_input", "").strip()
-        if api_key:
-            kwargs["api_key"] = api_key
-    elif mode == "ollama":
-        kwargs["model"] = st.session_state.get("polish_ollama_model", "qwen3:14b")
-    return kwargs

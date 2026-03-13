@@ -22,7 +22,8 @@ try:
         MODELS,
         TOP_K,
     )
-    from podcodex.rag.store import _normalize_show
+    from podcodex.rag.localstore import LocalStore
+    from podcodex.rag.store import collection_name
 
     _RAG_AVAILABLE = True
 except ImportError:
@@ -60,12 +61,6 @@ def render():
 
 def _render_index_section(audio_path: str, output_dir: str, show_name: str):
     output_dir_path = Path(output_dir)
-    is_indexed = (output_dir_path / ".rag_indexed").exists()
-
-    if is_indexed:
-        st.success("Episode is indexed.")
-    else:
-        st.info("Episode is not yet indexed.")
 
     col_source, col_lang = st.columns(2)
     with col_source:
@@ -86,35 +81,36 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
     if custom_lang.strip():
         source = custom_lang.strip()
 
-    col_show, col_model = st.columns(2)
-    with col_show:
-        show_input = st.text_input(
-            "Show name",
-            value=show_name,
-            key="rag_index_show",
-            help="All episodes from this show share one vector collection.",
-        )
-    with col_model:
-        model_labels = {k: v.label for k, v in MODELS.items()}
-        model_key = st.selectbox(
-            "Embedding model",
+    show_input = st.text_input(
+        "Show name",
+        value=show_name,
+        key="rag_index_show",
+        help="All episodes from this show share one vector collection.",
+    )
+
+    model_labels = {k: v.label for k, v in MODELS.items()}
+    col_models, col_chunkers = st.columns(2)
+    with col_models:
+        model_keys = st.multiselect(
+            "Embedding models",
             options=list(MODELS.keys()),
-            index=list(MODELS.keys()).index(DEFAULT_MODEL),
+            default=[DEFAULT_MODEL],
             format_func=lambda k: model_labels[k],
-            key="rag_model",
+            key="rag_models",
             help="\n".join(f"**{v.label}**: {v.description}" for v in MODELS.values()),
         )
-
-    with st.expander("Chunking settings", expanded=False):
-        chunking = st.radio(
-            "Strategy",
+    with col_chunkers:
+        chunkings = st.multiselect(
+            "Chunking strategies",
             options=list(CHUNKING_STRATEGIES.keys()),
-            index=list(CHUNKING_STRATEGIES.keys()).index(DEFAULT_CHUNKING),
+            default=[DEFAULT_CHUNKING],
             format_func=lambda k: CHUNKING_STRATEGIES[k],
-            horizontal=True,
-            key="rag_chunking",
+            key="rag_chunkings",
         )
-        if chunking == "semantic":
+
+    # Semantic params (shown when "semantic" is selected)
+    if "semantic" in chunkings:
+        with st.expander("Semantic chunking settings", expanded=False):
             col_cs, col_ct = st.columns(2)
             with col_cs:
                 chunk_size = st.number_input(
@@ -135,9 +131,38 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
                     key="rag_chunk_threshold",
                     help="Lower = more chunks (more splits). Higher = fewer, larger chunks.",
                 )
-        else:
-            chunk_size = CHUNK_SIZE
-            chunk_threshold = CHUNK_THRESHOLD
+    else:
+        chunk_size = CHUNK_SIZE
+        chunk_threshold = CHUNK_THRESHOLD
+
+    # Check indexed status for each (model, chunker) combination
+    episode_stem = output_dir_path.name
+    db_path = output_dir_path / "vectors.db"
+    indexed: set[str] = set()
+    pending: list[str] = []
+    if show_input.strip() and model_keys and chunkings:
+        try:
+            local = LocalStore(db_path=db_path)
+            for mk in model_keys:
+                for ck in chunkings:
+                    col = collection_name(show_input, model=mk, chunker=ck)
+                    if local.episode_is_indexed(col, episode_stem):
+                        indexed.add(f"{model_labels[mk]} / {ck}")
+                    else:
+                        pending.append(f"{model_labels[mk]} / {ck}")
+        except Exception:
+            pending = [
+                f"{model_labels[mk]} / {ck}" for mk in model_keys for ck in chunkings
+            ]
+
+    if indexed and not pending:
+        st.success(f"All {len(indexed)} combination(s) indexed.")
+    elif indexed:
+        st.info(
+            f"{len(indexed)} indexed, {len(pending)} pending: " + ", ".join(pending)
+        )
+    elif model_keys and chunkings:
+        st.info("Episode is not yet indexed.")
 
     col_btn, col_force = st.columns([4, 1])
     with col_force:
@@ -145,15 +170,18 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
             "Overwrite",
             key="rag_overwrite",
             value=False,
-            help="Delete and recreate the collection if it already exists.",
+            help="Delete and recreate existing collections.",
         )
 
+    all_done = indexed and not pending
     with col_btn:
         if st.button(
             "🗂️ Index episode",
             use_container_width=True,
             type="primary",
-            disabled=bool(is_indexed and not overwrite),
+            disabled=not model_keys
+            or not chunkings
+            or bool(all_done and not overwrite),
         ):
             if not show_input.strip():
                 st.error("Show name is required.")
@@ -163,8 +191,8 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
                 output_dir,
                 show_input,
                 source,
-                model_key,
-                chunking,
+                model_keys,
+                chunkings,
                 chunk_size,
                 chunk_threshold,
                 overwrite,
@@ -176,16 +204,14 @@ def _run_indexing(
     output_dir: str,
     show: str,
     source: str,
-    model_key: str,
-    chunking: str,
+    model_keys: list[str],
+    chunkings: list[str],
     chunk_size: int,
     chunk_threshold: float,
     overwrite: bool,
 ):
-    from podcodex.cli import _resolve_source
-    from podcodex.rag.chunker import semantic_chunks, speaker_chunks
-    from podcodex.rag.embedder import get_embedder
-    from podcodex.rag.store import QdrantStore, _normalize_show
+    from podcodex.cli import _resolve_source, vectorize_batch
+    from podcodex.rag.store import QdrantStore
 
     output_dir_path = Path(output_dir)
     episode_stem = output_dir_path.name
@@ -207,32 +233,37 @@ def _run_indexing(
     transcript["meta"].setdefault("show", show)
     transcript["meta"].setdefault("episode", episode)
 
-    with st.spinner(f"Embedding '{episode}' ({source}, {model_key})…"):
-        try:
-            if chunking == "speaker":
-                chunks = speaker_chunks(transcript)
-            else:
-                chunks = semantic_chunks(
-                    transcript, chunk_size=chunk_size, threshold=chunk_threshold
-                )
-            if not chunks:
-                st.warning("No chunks produced — check the source file.")
-                return
+    db_path = output_dir_path / "vectors.db"
+    local = LocalStore(db_path=db_path)
+    store = QdrantStore()
 
-            embedder = get_embedder(model_key)
-            embeddings = embedder.encode_passages(chunks)
+    total = len(model_keys) * len(chunkings)
+    progress = st.progress(0, text="Indexing…")
 
-            store = QdrantStore()
-            col = _normalize_show(show)
-            store.create_collection(col, model=model_key, overwrite=overwrite)
-            store.upsert(col, chunks, embeddings)
+    def on_progress(step: int, total: int, label: str) -> None:
+        progress.progress(step / max(total, 1), text=f"{label}…")
 
-            (output_dir_path / ".rag_indexed").touch()
-        except Exception as e:
-            st.error(f"Indexing failed: {e}")
-            return
+    try:
+        n = vectorize_batch(
+            transcript,
+            show,
+            episode,
+            model_keys,
+            chunkings,
+            local,
+            store,
+            chunk_size=chunk_size,
+            threshold=chunk_threshold,
+            overwrite=overwrite,
+            on_progress=on_progress,
+        )
+    except Exception as e:
+        progress.empty()
+        st.error(f"Indexing failed: {e}")
+        return
 
-    st.toast(f"Indexed {len(chunks)} chunks into '{col}'.", icon="✅")
+    progress.empty()
+    st.toast(f"Indexed {total} combination(s) ({n} chunks embedded).", icon="✅")
     st.rerun()
 
 
@@ -249,7 +280,7 @@ def _render_search_section(show_name: str):
         key="rag_search_query",
     )
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
     with col1:
         top_k = st.slider(
             "Results", min_value=1, max_value=20, value=TOP_K, key="rag_top_k"
@@ -265,6 +296,22 @@ def _render_search_section(show_name: str):
             key="rag_alpha",
             help="0 = keyword (BM25) · 1 = semantic (vector) · 0.5 = hybrid",
         )
+    with col3:
+        model_labels = {k: v.label for k, v in MODELS.items()}
+        model_key = st.selectbox(
+            "Model",
+            options=list(MODELS.keys()),
+            index=list(MODELS.keys()).index(DEFAULT_MODEL),
+            format_func=lambda k: model_labels[k],
+            key="rag_search_model",
+        )
+    with col4:
+        chunking = st.selectbox(
+            "Chunker",
+            options=list(CHUNKING_STRATEGIES.keys()),
+            index=list(CHUNKING_STRATEGIES.keys()).index(DEFAULT_CHUNKING),
+            key="rag_search_chunking",
+        )
 
     if st.button(
         "🔍 Search",
@@ -272,7 +319,7 @@ def _render_search_section(show_name: str):
         type="primary",
         disabled=not query.strip() or not show_input.strip(),
     ):
-        _run_search(query, show_input, top_k, alpha)
+        _run_search(query, show_input, top_k, alpha, model_key, chunking)
 
     results = st.session_state.get("rag_results")
     if results is not None:
@@ -282,13 +329,15 @@ def _render_search_section(show_name: str):
             st.info("No results. Make sure the show is indexed.")
 
 
-def _run_search(query: str, show: str, top_k: int, alpha: float):
+def _run_search(
+    query: str, show: str, top_k: int, alpha: float, model_key: str, chunking: str
+):
     from podcodex.rag.retriever import Retriever
 
     with st.spinner("Searching…"):
         try:
-            col = _normalize_show(show)
-            retriever = Retriever()
+            col = collection_name(show, model=model_key, chunker=chunking)
+            retriever = Retriever(model=model_key)
             results = retriever.retrieve(query, col, top_k=top_k, alpha=alpha)
             st.session_state.rag_results = results
         except Exception as e:

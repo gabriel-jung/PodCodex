@@ -4,14 +4,12 @@ import pytest
 
 pytest.importorskip("discord")
 
-from podcodex.bot.config import BotConfig
-from podcodex.bot.bot import (
-    ServerSettings,
-    _fmt_time,
-    _speaker,
-    _result_embed,
-    _score_bar,
-    _format_context,
+from podcodex.bot.bot import BotConfig, ServerSettings, _result_embed
+from podcodex.bot.formatting import (
+    fmt_time as _fmt_time,
+    speaker as _speaker,
+    score_bar as _score_bar,
+    format_context as _format_context,
 )
 
 
@@ -21,15 +19,17 @@ from podcodex.bot.bot import (
 
 
 def test_botconfig_defaults():
-    cfg = BotConfig(token="tok")
+    cfg = BotConfig()
     assert cfg.top_k == 5
     assert cfg.qdrant_url is None
+    assert cfg.chunker == "semantic"
 
 
 def test_botconfig_custom():
-    cfg = BotConfig(token="tok", top_k=3, qdrant_url="http://qdrant:6333")
+    cfg = BotConfig(top_k=3, qdrant_url="http://qdrant:6333", chunker="speaker")
     assert cfg.top_k == 3
     assert cfg.qdrant_url == "http://qdrant:6333"
+    assert cfg.chunker == "speaker"
 
 
 # ──────────────────────────────────────────────
@@ -129,24 +129,28 @@ _CHUNK = {
 
 
 def test_result_embed_show_as_author_episode_as_title():
-    embed, _ = _result_embed(_CHUNK, rank=1, collection="my_podcast", label="α=0.50")
+    embed, _ = _result_embed(
+        _CHUNK, rank=1, total=5, collection="my_podcast", label="α=0.50"
+    )
     assert embed.author.name == "🎙 My Podcast"
     assert embed.title == "ep01"
 
 
 def test_result_embed_footer_has_rank_and_label():
-    embed, _ = _result_embed(_CHUNK, rank=2, collection="col", label="exact / BM25")
+    embed, _ = _result_embed(
+        _CHUNK, rank=2, total=5, collection="col", label="exact / BM25"
+    )
     assert "#2" in embed.footer.text
     assert "exact / BM25" in embed.footer.text
 
 
 def test_result_embed_description_has_text():
-    embed, _ = _result_embed(_CHUNK, rank=1, collection="col", label="α=0.50")
+    embed, _ = _result_embed(_CHUNK, rank=1, total=5, collection="col", label="α=0.50")
     assert "The composer came in on day one." in embed.description
 
 
 def test_result_embed_fields():
-    embed, _ = _result_embed(_CHUNK, rank=1, collection="col", label="α=0.50")
+    embed, _ = _result_embed(_CHUNK, rank=1, total=5, collection="col", label="α=0.50")
     fields = {f.name: f.value for f in embed.fields}
     assert fields["Speaker"] == "Alice"
     assert "01:23" in fields["Timestamp"]
@@ -156,7 +160,7 @@ def test_result_embed_fields():
 
 def test_result_embed_no_show_has_no_author():
     chunk = {**_CHUNK, "show": ""}
-    embed, _ = _result_embed(chunk, rank=1, collection="col", label="α=0.50")
+    embed, _ = _result_embed(chunk, rank=1, total=5, collection="col", label="α=0.50")
     assert embed.author.name is None
 
 
@@ -217,7 +221,7 @@ def test_format_context_header_shows_show_and_episode():
 def test_result_embed_returns_expand_view():
     import discord
 
-    _, view = _result_embed(_CHUNK, rank=1, collection="col", label="α=0.50")
+    _, view = _result_embed(_CHUNK, rank=1, total=5, collection="col", label="α=0.50")
     assert isinstance(view, discord.ui.View)
     buttons = [c for c in view.children if isinstance(c, discord.ui.Button)]
     assert len(buttons) == 1

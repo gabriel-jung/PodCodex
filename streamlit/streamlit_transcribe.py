@@ -16,6 +16,7 @@ from podcodex.core.transcribe import (
     load_transcript_validated,
 )
 from podcodex.core.synthesize import is_hallucination
+from utils import fmt_time
 from streamlit_editor import render_segment_editor, audio_slice_bytes
 
 
@@ -237,12 +238,12 @@ def render():
                 if len(segs) > 20:
                     st.caption(f"... {len(segs) - 20} more segments not shown")
 
-    # ── Section 4: Speaker map ──
+    # ── Section 3: Speaker map ──
     if status["assigned"]:
         with st.container(border=True):
             col_title, col_force = st.columns([4, 1])
             with col_title:
-                st.markdown("### 🏷️ Step 4 — Name Speakers")
+                st.markdown("### 🏷️ Step 3 — Name Speakers")
                 st.caption(
                     "Listen to each speaker's segments and enter their name. "
                     "Use 🗑️ to flag all segments for a speaker for removal."
@@ -256,11 +257,11 @@ def render():
                 )
             _render_speaker_map(audio_path, output_dir, force=force_map)
 
-    # ── Section 5: Export ──
+    # ── Section 4: Export ──
     with st.container(border=True):
         col_title, col_force = st.columns([4, 1])
         with col_title:
-            st.markdown("### 📝 Step 5 — Export Transcript")
+            st.markdown("### 📝 Step 4 — Export Transcript")
             st.caption(
                 "Generate the final JSON transcript with resolved speaker names. Requires the speaker map to be saved first."
             )
@@ -289,12 +290,12 @@ def render():
         if not status["mapped"] and not status["exported"]:
             st.info("Save the speaker map above before exporting.")
 
-    # ── Section 7: Transcript editor ──
+    # ── Section 5: Transcript editor ──
     if st.session_state.get("transcript"):
         with st.container(border=True):
             col_title, col_badge = st.columns([5, 1])
             with col_title:
-                st.markdown("### ✏️ Step 6 — Review & Edit Transcript")
+                st.markdown("### ✏️ Step 5 — Review & Edit Transcript")
                 st.caption(
                     "Correct transcription errors directly. Changes are saved to the transcript file and will be used for translation."
                 )
@@ -330,7 +331,7 @@ def _render_audio_trim(output_dir: str):
             if trim_applied:
                 st.caption(
                     f"Working on trimmed clip: **{audio_path.name}** "
-                    f"({_fmt_mmss(trim_applied['start'])} → {_fmt_mmss(trim_applied['end'])})"
+                    f"({fmt_time(trim_applied['start'])} → {fmt_time(trim_applied['end'])})"
                 )
             else:
                 st.caption(
@@ -350,7 +351,7 @@ def _render_audio_trim(output_dir: str):
         duration = _audio_duration_tc(audio_path)
         if duration:
             st.audio(str(audio_path))
-            st.caption(f"Duration: **{_fmt_mmss(duration)}**")
+            st.caption(f"Duration: **{fmt_time(duration)}**")
 
             if not trim_applied:
                 col_s, col_e, col_btn = st.columns([2, 2, 1])
@@ -401,8 +402,8 @@ def _render_audio_trim(output_dir: str):
 
                 if t_end > t_start:
                     st.caption(
-                        f"▶ Selected: **{_fmt_mmss(t_start)}** → **{_fmt_mmss(t_end)}** "
-                        f"({_fmt_mmss(t_end - t_start)})"
+                        f"▶ Selected: **{fmt_time(t_start)}** → **{fmt_time(t_end)}** "
+                        f"({fmt_time(t_end - t_start)})"
                     )
 
                 if do_trim:
@@ -455,12 +456,6 @@ def _audio_duration_tc(path: Path) -> float | None:
         return float(json.loads(out)["format"]["duration"])
     except Exception:
         return None
-
-
-def _fmt_mmss(seconds: float) -> str:
-    m = int(seconds) // 60
-    s = int(seconds) % 60
-    return f"{m}:{s:02d}"
 
 
 def _trim_audio(audio_path: Path, start: float, end: float, output_dir: str) -> Path:
