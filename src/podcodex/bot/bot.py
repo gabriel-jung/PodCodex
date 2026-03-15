@@ -27,6 +27,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -685,8 +686,6 @@ class PodCodexBot(discord.Client):
 
 
 def main() -> None:
-    import sys
-
     logger.remove()
     logger.add(sys.stderr, level="DEBUG")
 

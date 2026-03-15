@@ -4,6 +4,7 @@ podcodex.ui.streamlit_editor — Shared paginated segment editor.
 Used by Transcribe, Polish and Translate tabs.
 """
 
+import io
 from pathlib import Path
 
 import streamlit as st
@@ -14,7 +15,8 @@ from podcodex.core.transcribe import (
     _REMOVE_SPEAKERS,
 )
 
-_PAGE_SIZE = 20
+_PAGE_SIZES = [10, 20, 50]
+_DEFAULT_PAGE_SIZE = 20
 
 
 def render_segment_editor(
@@ -99,7 +101,7 @@ def render_segment_editor(
     col_widths = [3]
     if show_flag_toggle:
         col_widths.append(2)
-    col_widths += [3, 1, 1]
+    col_widths += [3, 1, 1, 1]
     bar = st.columns(col_widths)
     ci = 0
 
@@ -144,7 +146,20 @@ def render_segment_editor(
             if segments[i].get("speaker", "") in selected_speakers
         ]
 
-    n_pages = max(1, (len(active_indices) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    page_size_key = f"{editor_key}_page_size"
+    with bar[ci]:
+        ci += 1
+        page_size = st.selectbox(
+            "Per page",
+            options=_PAGE_SIZES,
+            index=_PAGE_SIZES.index(
+                st.session_state.get(page_size_key, _DEFAULT_PAGE_SIZE)
+            ),
+            key=page_size_key,
+            label_visibility="collapsed",
+        )
+
+    n_pages = max(1, (len(active_indices) + page_size - 1) // page_size)
     page = min(st.session_state[page_key], n_pages - 1)
 
     with cap_col:
@@ -172,7 +187,7 @@ def render_segment_editor(
             st.rerun()
 
     # ── Segments ──
-    page_indices = active_indices[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
+    page_indices = active_indices[page * page_size : (page + 1) * page_size]
 
     for i in page_indices:
         seg = segments[i]
@@ -336,12 +351,9 @@ def render_segment_editor(
 
     # ── Bottom action bar ──
     st.divider()
-    n_btns = 1 + bool(export_fn and export_filename) + bool(next_tab and next_tab_label)
-    btn_cols = st.columns([1] * n_btns)
-    bi = 0
+    col_save, col_export, col_nav = st.columns(3)
 
-    with btn_cols[bi]:
-        bi += 1
+    with col_save:
         if st.button(
             "💾 Save edits",
             use_container_width=True,
@@ -379,9 +391,8 @@ def render_segment_editor(
             st.session_state[page_key] = 0
             st.rerun()
 
-    if export_fn and export_filename:
-        with btn_cols[bi]:
-            bi += 1
+    with col_export:
+        if export_fn and export_filename:
             export_segs = [
                 {
                     **segments[i],
@@ -401,8 +412,8 @@ def render_segment_editor(
                 key=f"{editor_key}_download",
             )
 
-    if next_tab and next_tab_label:
-        with btn_cols[bi]:
+    with col_nav:
+        if next_tab and next_tab_label:
             if st.button(
                 next_tab_label, use_container_width=True, key=f"{editor_key}_nav"
             ):
@@ -435,7 +446,6 @@ def audio_slice_bytes(
 
     pad: seconds of context added before and after the segment (default 0.3s).
     """
-    import io
     import soundfile as sf
 
     info = sf.info(audio_path)

@@ -58,6 +58,7 @@ class Retriever:
         collection: str,
         top_k: int = 5,
         alpha: float = 0.5,
+        episode: str | None = None,
     ) -> list[dict]:
         """
         Retrieve the top_k most relevant chunks for the query.
@@ -67,30 +68,55 @@ class Retriever:
             collection : Qdrant collection name
             top_k      : number of results to return
             alpha      : blend between BM25 (0.0) and dense vector (1.0)
+            episode    : if set, restrict search to this episode
 
         Returns:
             List of payload dicts with an added 'score' key.
         """
         if alpha >= 1.0:
-            return self._dense_search(query, collection, top_k)
+            return self._dense_search(query, collection, top_k, episode=episode)
         if alpha <= 0.0:
-            return self._bm25_search(query, collection, top_k)
-        return self._weighted_search(query, collection, top_k, alpha)
+            return self._bm25_search(query, collection, top_k, episode=episode)
+        return self._weighted_search(query, collection, top_k, alpha, episode=episode)
 
     # ── Private search methods ─────────────────
 
-    def _dense_search(self, query: str, collection: str, top_k: int) -> list[dict]:
+    def _dense_search(
+        self, query: str, collection: str, top_k: int, *, episode: str | None = None
+    ) -> list[dict]:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
         query_vec = self._embedder.encode_query(query)
+        query_filter = (
+            Filter(
+                must=[FieldCondition(key="episode", match=MatchValue(value=episode))]
+            )
+            if episode
+            else None
+        )
         results = self._store._client.query_points(
             collection_name=collection,
             query=query_vec.tolist(),
             limit=top_k,
+            query_filter=query_filter,
         ).points
         return [_result_to_dict(r) for r in results]
 
-    def _bm25_search(self, query: str, collection: str, top_k: int) -> list[dict]:
+    def _bm25_search(
+        self, query: str, collection: str, top_k: int, *, episode: str | None = None
+    ) -> list[dict]:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        scroll_filter = (
+            Filter(
+                must=[FieldCondition(key="episode", match=MatchValue(value=episode))]
+            )
+            if episode
+            else None
+        )
         results, _ = self._store._client.scroll(
             collection_name=collection,
+            scroll_filter=scroll_filter,
             limit=10_000,
             with_payload=True,
             with_vectors=False,
@@ -119,12 +145,22 @@ class Retriever:
         return _normalize(hits)
 
     def _weighted_search(
-        self, query: str, collection: str, top_k: int, alpha: float
+        self,
+        query: str,
+        collection: str,
+        top_k: int,
+        alpha: float,
+        *,
+        episode: str | None = None,
     ) -> list[dict]:
         """Linear combination: score = alpha * dense + (1 - alpha) * bm25."""
         k = top_k * 4
-        dense_hits = _normalize(self._dense_search(query, collection, k))
-        bm25_hits = self._bm25_search(query, collection, k)  # already normalized
+        dense_hits = _normalize(
+            self._dense_search(query, collection, k, episode=episode)
+        )
+        bm25_hits = self._bm25_search(
+            query, collection, k, episode=episode
+        )  # already normalized
 
         combined: dict[str, float] = {}
         payloads: dict[str, dict] = {}
@@ -142,19 +178,25 @@ class Retriever:
         sorted_keys = sorted(combined, key=combined.__getitem__, reverse=True)[:top_k]
         return [{**payloads[k], "score": combined[k]} for k in sorted_keys]
 
-    def find(self, query: str, collection: str, top_k: int = 25) -> list[dict]:
+    def find(
+        self, query: str, collection: str, top_k: int = 25, episode: str | None = None
+    ) -> list[dict]:
         """
         True substring search — case-insensitive, no scoring.
         Requires a full-text payload index on 'text' (see QdrantStore.ensure_text_index).
         Results sorted by start time, all scored 1.0.
         """
-        from qdrant_client.models import FieldCondition, Filter, MatchText
+        from qdrant_client.models import FieldCondition, Filter, MatchText, MatchValue
+
+        conditions = [FieldCondition(key="text", match=MatchText(text=query))]
+        if episode:
+            conditions.append(
+                FieldCondition(key="episode", match=MatchValue(value=episode))
+            )
 
         results, _ = self._store._client.scroll(
             collection_name=collection,
-            scroll_filter=Filter(
-                must=[FieldCondition(key="text", match=MatchText(text=query))]
-            ),
+            scroll_filter=Filter(must=conditions),
             limit=top_k,
             with_payload=True,
             with_vectors=False,

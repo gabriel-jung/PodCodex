@@ -12,6 +12,7 @@ Files produced in output_dir:
     {stem}.synthesized.wav              — final merged podcast
 """
 
+import json
 import math
 import re
 import numpy as np
@@ -277,8 +278,6 @@ def _split_text(text: str, n_chunks: int) -> list[str]:
     When there are fewer natural breakpoints than n_chunks, returns as many
     pieces as are available rather than forcing artificial splits.
     """
-    import re
-
     text = text.strip()
     if not text or n_chunks <= 1:
         return [text] if text else []
@@ -531,3 +530,104 @@ def assemble_episode(
     duration = len(episode) / sr
     logger.success(f"Episode assembled — {duration:.1f}s → {out_path.name}")
     return out_path
+
+
+# ──────────────────────────────────────────────
+# Disk loaders (voice samples & generated segments)
+# ──────────────────────────────────────────────
+
+
+def _wav_duration(path: Path) -> float:
+    """Return WAV duration in seconds, or 0.0 on error."""
+    try:
+        return sf.info(str(path)).duration
+    except Exception:
+        return 0.0
+
+
+def load_voice_samples(
+    output_dir: str | Path,
+    speakers: list[str],
+    speaker_map: dict[str, str] | None = None,
+) -> dict[str, list[dict]]:
+    """Load previously extracted voice samples from disk.
+
+    Args:
+        output_dir   : episode output directory containing ``voice_samples/``
+        speakers     : ordered list of speaker names to look for
+        speaker_map  : optional {SPEAKER_XX: human_name} map for fallback matching
+
+    Returns:
+        {speaker: [{"file": Path, "duration": float, "text": ""}, ...]}
+    """
+    samples_dir = Path(output_dir) / "voice_samples"
+    if not samples_dir.exists():
+        return {}
+
+    inv_map = {v: k for k, v in (speaker_map or {}).items()}
+
+    result: dict[str, list[dict]] = {}
+    for speaker in speakers:
+        files = sorted(
+            f for f in samples_dir.glob(f"{speaker}_*.wav") if "_custom_" not in f.name
+        )
+        if not files:
+            speaker_id = inv_map.get(speaker)
+            if speaker_id:
+                files = sorted(
+                    f
+                    for f in samples_dir.glob(f"{speaker_id}_*.wav")
+                    if "_custom_" not in f.name
+                )
+        if files:
+            result[speaker] = [
+                {"file": f, "duration": _wav_duration(f), "text": ""} for f in files
+            ]
+    return result
+
+
+def load_generated_segments(
+    output_dir: str | Path,
+    translation: list[dict],
+) -> list[dict]:
+    """Load previously generated TTS segments from disk.
+
+    Args:
+        output_dir  : episode output directory containing ``tts_segments/``
+        translation : segment list (used to match filenames and merge metadata)
+
+    Returns:
+        List of segment dicts with ``audio_file`` and ``sample_rate`` fields,
+        or an empty list if any segment file is missing.
+    """
+    segments_dir = Path(output_dir) / "tts_segments"
+    if not segments_dir.exists():
+        return []
+    result = []
+    for i, seg in enumerate(translation):
+        speaker = seg.get("speaker", "UNK")
+        wav_path = segments_dir / f"{i:04d}_{speaker}.wav"
+        if not wav_path.exists():
+            return []
+        try:
+            info = sf.info(str(wav_path))
+            result.append(
+                {**seg, "audio_file": wav_path, "sample_rate": info.samplerate}
+            )
+        except Exception:
+            return []
+    return result
+
+
+def load_speaker_map_from_dir(output_dir: str | Path) -> dict[str, str]:
+    """Load {SPEAKER_XX: human_name} from the first speaker_map.json in output_dir.
+
+    Unlike ``transcribe.load_speaker_map``, this doesn't require knowing the
+    audio path — useful when only the output directory is available.
+    """
+    for p in Path(output_dir).glob("*.speaker_map.json"):
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}

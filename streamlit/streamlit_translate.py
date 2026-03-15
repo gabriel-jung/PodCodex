@@ -11,7 +11,6 @@ from podcodex.core import transcribe
 from podcodex.core import translate as translate_mod
 from podcodex.core import polish as polish_mod
 from podcodex.core.translate import (
-    _translation_json,
     has_raw_translation,
     is_validated_translation,
     translation_raw_exists,
@@ -99,9 +98,59 @@ def render():
 
     transcript = st.session_state.transcript
 
+    # ── Import existing translation ──
+    existing_langs = translate_mod.list_translations(audio_path, output_dir=output_dir)
+    with st.expander(
+        "📂 **Import existing translation** — skip the translation step",
+        expanded=not existing_langs,
+    ):
+        import_lang = st.text_input(
+            "Language",
+            value="English",
+            key="trad_import_lang",
+            help="Language name used in the filename, e.g. 'English' → episode.english.json.",
+        )
+        uploaded_json = st.file_uploader(
+            "Upload translation JSON",
+            type=["json"],
+            help="JSON array with 'speaker', 'start', 'end', 'text' fields (text = translation).",
+            label_visibility="collapsed",
+            key="trad_upload",
+        )
+        with st.expander("📋 Expected JSON format", expanded=False):
+            st.code(
+                '[{\n  "speaker": "Alice",\n  "start": 0.0,\n  "end": 5.2,\n  "text": "Translated text."\n}, ...]',
+                language="json",
+            )
+        if uploaded_json:
+            if st.button("Import", use_container_width=True, key="trad_import_btn"):
+                try:
+                    data = json.loads(uploaded_json.read().decode("utf-8"))
+                    err = validate_segments_json(data)
+                    if err:
+                        st.error(f"Format error — {err}")
+                    else:
+                        translate_mod.save_translation_raw(
+                            audio_path, data, import_lang, output_dir=output_dir
+                        )
+                        _reload_translations(audio_path, output_dir)
+                        st.success(f"Imported — {len(data)} segments.")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Import failed: {e}")
+
     # ── Section 1: Source selection ──
     with st.container(border=True):
-        st.markdown("### ⚙️ Configuration")
+        col_title, col_force = st.columns([4, 1])
+        with col_title:
+            st.markdown("### ⚙️ Step 1 — Configuration")
+        with col_force:
+            force = st.checkbox(
+                "Force",
+                key="force_translate",
+                value=False,
+                help="Re-run translation even if a translation file already exists.",
+            )
 
         # Offer polished as source if available
         has_polished = polish_mod.polished_exists(audio_path, output_dir=output_dir)
@@ -133,15 +182,6 @@ def render():
                 st.caption(
                     f"**{n_orig}** segments → **{n_simplified}** after merging consecutive same-speaker segments"
                 )
-
-        col_force, _ = st.columns([1, 3])
-        with col_force:
-            force = st.checkbox(
-                "Force",
-                key="force_translate",
-                value=False,
-                help="Re-run translation even if a translation file already exists.",
-            )
 
         mode = st.radio(
             "Backend",
@@ -192,7 +232,7 @@ def render():
             st.info("Translation already exists. Check **Force** to redo it.")
 
         if mode == "api":
-            st.markdown("### 🌐 API Settings")
+            st.markdown("### 🌐 Step 2 — API Translation")
             st.selectbox(
                 "Provider",
                 list(PROVIDERS.keys()),
@@ -228,6 +268,9 @@ def render():
                 use_container_width=True,
                 type="primary",
                 disabled=btn_disabled,
+                help="Already translated. Check 'Force' to re-run."
+                if btn_disabled
+                else None,
             ):
                 kwargs = build_llm_kwargs(
                     "trad",
@@ -246,7 +289,7 @@ def render():
                         st.error(f"Failed: {e}")
 
         elif mode == "ollama":
-            st.markdown("### 🖥️ Ollama Settings")
+            st.markdown("### 🖥️ Step 2 — Ollama Translation")
             st.text_input(
                 "Ollama model",
                 value="qwen3:14b",
@@ -260,6 +303,9 @@ def render():
                 use_container_width=True,
                 type="primary",
                 disabled=btn_disabled,
+                help="Already translated. Check 'Force' to re-run."
+                if btn_disabled
+                else None,
             ):
                 kwargs = build_llm_kwargs(
                     "trad",
@@ -278,7 +324,7 @@ def render():
                         st.error(f"Failed: {e}")
 
         elif mode == "manual":
-            st.markdown("### ✍️ Manual Translation")
+            st.markdown("### ✍️ Step 2 — Manual Translation")
             st.caption(
                 "Copy each prompt into any LLM (ChatGPT, Claude, etc.), paste the JSON result back."
             )
@@ -402,47 +448,7 @@ def render():
                     st.success(f"Saved — {len(all_results)} segments.")
                     st.rerun()
 
-    # ── Section 3: Import existing translation ──
-    with st.container(border=True):
-        st.markdown("### 📂 Import Existing Translation")
-        st.caption("Already have a translated JSON? Import it directly.")
-
-        import_lang = st.text_input(
-            "Language",
-            value="English",
-            key="trad_import_lang",
-            help="Language name used in the filename, e.g. 'English' → episode.english.json.",
-        )
-        uploaded_json = st.file_uploader(
-            "Upload translation JSON",
-            type=["json"],
-            help="JSON array with 'speaker', 'start', 'end', 'text' fields (text = translation).",
-            label_visibility="collapsed",
-            key="trad_upload",
-        )
-        with st.expander("📋 Expected JSON format", expanded=False):
-            st.code(
-                '[{\n  "speaker": "Alice",\n  "start": 0.0,\n  "end": 5.2,\n  "text": "Translated text."\n}, ...]',
-                language="json",
-            )
-        if uploaded_json:
-            if st.button("Import", use_container_width=True, key="trad_import_btn"):
-                try:
-                    data = json.loads(uploaded_json.read().decode("utf-8"))
-                    err = validate_segments_json(data)
-                    if err:
-                        st.error(f"Format error — {err}")
-                    else:
-                        translate_mod.save_translation_raw(
-                            audio_path, data, import_lang, output_dir=output_dir
-                        )
-                        _reload_translations(audio_path, output_dir)
-                        st.success(f"Imported — {len(data)} segments.")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Import failed: {e}")
-
-    # ── Section 4: Editor ──
+    # ── Section 3: Editor ──
     langs = translate_mod.list_translations(audio_path, output_dir=output_dir)
     if langs:
         _render_translation_editor(audio_path, output_dir, langs, segments)
@@ -451,10 +457,6 @@ def render():
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
-
-
-def _reset_translation(audio_path, lang: str, output_dir: str) -> None:
-    _translation_json(Path(audio_path), lang, output_dir).unlink(missing_ok=True)
 
 
 def _save_translation(
@@ -482,7 +484,7 @@ def _render_translation_editor(
 ):
     stem = Path(audio_path).stem
     with st.container(border=True):
-        st.markdown("### ✏️ Translations")
+        st.markdown("### ✏️ Step 3 — Review & Edit")
         tabs = st.tabs([lang.capitalize() for lang in langs])
 
         for tab, lang in zip(tabs, langs):

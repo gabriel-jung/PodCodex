@@ -15,11 +15,14 @@ Output files:
 
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 
 from loguru import logger
 
 from podcodex.core._paths import episode_output_dir
+from podcodex.core._utils import simplify_transcript
 
 
 # ──────────────────────────────────────────────
@@ -88,8 +91,6 @@ def _polish_batch(
     Polish a single batch of segments using the provided call function.
     call_fn(messages) -> raw response string
     """
-    import re
-
     user_content = "\n\n".join(f"[{i}] {seg['text']}" for i, seg in enumerate(batch))
     user_content += f"\n\nCorrect all {len(batch)} numbered segments above."
 
@@ -224,12 +225,13 @@ def polish_segments(
     api_base_url: str = "https://api.openai.com/v1",
     api_key: str | None = None,
     batch_size: int = 10,
+    simplify: bool = True,
 ) -> list[dict]:
     """
     Correct transcription errors in segments without translating.
 
     Args:
-        segments    : output of simplify_transcript()
+        segments    : transcript segments (will be simplified unless simplify=False)
         mode        : "manual", "ollama", or "api"
         context     : podcast context to guide the LLM
         source_lang : source language (e.g. "French")
@@ -237,13 +239,18 @@ def polish_segments(
         api_base_url: base URL for OpenAI-compatible API
         api_key     : API key (None reads from API_KEY env variable)
         batch_size  : number of segments per LLM call
+        simplify    : merge consecutive same-speaker segments before processing (default True)
 
     Returns:
         List of segments with corrected text field.
     """
     if mode == "manual":
         return _validate_manual_polish(segments)
-    elif mode == "ollama":
+
+    if simplify:
+        segments = simplify_transcript(segments)
+
+    if mode == "ollama":
         return _polish_ollama(
             segments,
             context=context,
@@ -383,8 +390,6 @@ def promote_polished(
     Raises FileNotFoundError if no raw file exists.
     Returns the path of the validated file.
     """
-    import shutil
-
     audio_path = Path(audio_path)
     raw = _polished_raw_json(audio_path, output_dir=output_dir)
     validated = _polished_json(audio_path, output_dir=output_dir)

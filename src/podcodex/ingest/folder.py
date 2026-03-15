@@ -138,3 +138,20 @@ def scan_folder(show_folder: Path) -> list[EpisodeInfo]:
             )
         )
     return episodes
+
+
+def find_audio(show_folder: str | Path, episode: str) -> Path | None:
+    """Locate the audio file for a given episode stem in a show folder.
+
+    Tries each known audio extension in order. Returns None if not found.
+    """
+    if not show_folder or not episode:
+        return None
+    folder = Path(show_folder)
+    if not folder.is_dir():
+        return None
+    for ext in AUDIO_EXTENSIONS:
+        candidate = folder / f"{episode}{ext}"
+        if candidate.exists():
+            return candidate
+    return None

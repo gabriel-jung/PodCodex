@@ -9,6 +9,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from podcodex.ingest.folder import find_audio
 from utils import fmt_time
 
 try:
@@ -268,24 +269,56 @@ def _run_indexing(
 
 
 def _render_search_section(show_name: str):
-    show_input = st.text_input(
-        "Show name",
-        value=show_name,
-        key="rag_search_show",
-        help="Name of the show collection to search.",
-    )
-    query = st.text_input(
-        "Query",
-        placeholder="What was said about neural networks?",
-        key="rag_search_query",
-    )
+    audio_path = st.session_state.get("audio_path")
+    episode_stem = Path(audio_path).stem if audio_path else None
 
-    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
-    with col1:
-        top_k = st.slider(
-            "Results", min_value=1, max_value=20, value=TOP_K, key="rag_top_k"
+    if show_name:
+        show_input = show_name
+    else:
+        show_input = st.text_input(
+            "Show name",
+            value="",
+            key="rag_search_show",
+            help="Name of the show collection to search.",
         )
-    with col2:
+
+    if episode_stem:
+        episode_only = st.toggle(
+            f"This episode only ({episode_stem})",
+            value=True,
+            key="rag_episode_only",
+        )
+        scope = (
+            f"**{episode_stem}**"
+            if episode_only
+            else f"all episodes in **{show_input}**"
+        )
+    else:
+        episode_only = False
+        scope = f"all episodes in **{show_input}**" if show_input else ""
+
+    if scope:
+        st.caption(f"Searching in {scope}")
+
+    col_query, col_btn = st.columns([6, 1])
+    with col_query:
+        query = st.text_input(
+            "Query",
+            placeholder="What was said about neural networks?",
+            key="rag_search_query",
+        )
+    with col_btn:
+        st.markdown("<br>", unsafe_allow_html=True)
+        search_clicked = st.button(
+            "🔍",
+            use_container_width=True,
+            type="primary",
+            disabled=not query.strip() or not show_input.strip(),
+            help="Search",
+        )
+
+    col_alpha, col_model, col_chunking, col_topk = st.columns([2, 2, 2, 1])
+    with col_alpha:
         alpha = st.slider(
             "Search mode",
             min_value=0.0,
@@ -296,7 +329,7 @@ def _render_search_section(show_name: str):
             key="rag_alpha",
             help="0 = keyword (BM25) · 1 = semantic (vector) · 0.5 = hybrid",
         )
-    with col3:
+    with col_model:
         model_labels = {k: v.label for k, v in MODELS.items()}
         model_key = st.selectbox(
             "Model",
@@ -305,21 +338,23 @@ def _render_search_section(show_name: str):
             format_func=lambda k: model_labels[k],
             key="rag_search_model",
         )
-    with col4:
+    with col_chunking:
         chunking = st.selectbox(
             "Chunker",
             options=list(CHUNKING_STRATEGIES.keys()),
             index=list(CHUNKING_STRATEGIES.keys()).index(DEFAULT_CHUNKING),
             key="rag_search_chunking",
         )
+    with col_topk:
+        top_k = st.slider(
+            "Results", min_value=1, max_value=20, value=TOP_K, key="rag_top_k"
+        )
 
-    if st.button(
-        "🔍 Search",
-        use_container_width=True,
-        type="primary",
-        disabled=not query.strip() or not show_input.strip(),
-    ):
-        _run_search(query, show_input, top_k, alpha, model_key, chunking)
+    if search_clicked:
+        ep_filter = episode_stem if episode_only else None
+        _run_search(
+            query, show_input, top_k, alpha, model_key, chunking, episode=ep_filter
+        )
 
     results = st.session_state.get("rag_results")
     if results is not None:
@@ -330,7 +365,13 @@ def _render_search_section(show_name: str):
 
 
 def _run_search(
-    query: str, show: str, top_k: int, alpha: float, model_key: str, chunking: str
+    query: str,
+    show: str,
+    top_k: int,
+    alpha: float,
+    model_key: str,
+    chunking: str,
+    episode: str | None = None,
 ):
     from podcodex.rag.retriever import Retriever
 
@@ -338,7 +379,9 @@ def _run_search(
         try:
             col = collection_name(show, model=model_key, chunker=chunking)
             retriever = Retriever(model=model_key)
-            results = retriever.retrieve(query, col, top_k=top_k, alpha=alpha)
+            results = retriever.retrieve(
+                query, col, top_k=top_k, alpha=alpha, episode=episode
+            )
             st.session_state.rag_results = results
         except Exception as e:
             st.error(f"Search failed: {e}")
@@ -358,8 +401,9 @@ def _render_results(results: list[dict]):
         speakers_turns = res.get("speakers", [])
 
         with st.container(border=True):
+            score_dot = "🟢" if score > 0.8 else "🟡" if score > 0.5 else "⚪"
             st.markdown(
-                f"**{episode}** · {fmt_time(start)}–{fmt_time(end)}"
+                f"{score_dot} **{episode}** · {fmt_time(start)}–{fmt_time(end)}"
                 f" <span style='float:right;color:gray'>{score:.2f}</span>",
                 unsafe_allow_html=True,
             )
@@ -373,22 +417,6 @@ def _render_results(results: list[dict]):
             else:
                 st.write(res.get("text", ""))
 
-            audio_path = _find_audio(show_folder, episode)
+            audio_path = find_audio(show_folder, episode)
             if audio_path:
                 st.audio(str(audio_path), start_time=int(start))
-
-
-def _find_audio(show_folder: str, episode: str) -> "Path | None":
-    """Locate the audio file for a given episode stem in the show folder."""
-    if not show_folder or not episode:
-        return None
-    from podcodex.ingest.folder import AUDIO_EXTENSIONS
-
-    folder = Path(show_folder)
-    if not folder.is_dir():
-        return None
-    for ext in AUDIO_EXTENSIONS:
-        candidate = folder / f"{episode}{ext}"
-        if candidate.exists():
-            return candidate
-    return None

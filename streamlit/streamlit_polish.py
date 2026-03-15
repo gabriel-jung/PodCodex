@@ -9,7 +9,6 @@ import streamlit as st
 
 from podcodex.core import polish as polish_mod
 from podcodex.core.polish import (
-    _polished_json,
     has_raw_polished,
     is_validated_polished,
     polished_raw_exists,
@@ -64,11 +63,49 @@ def render():
 
     transcript = st.session_state.transcript
 
+    # ── Import existing polished file ──
+    already_polished = polish_mod.polished_exists(audio_path, output_dir=output_dir)
+    with st.expander(
+        "📂 **Import existing polished file** — skip the correction step",
+        expanded=not already_polished and not st.session_state.get("polished"),
+    ):
+        uploaded_json = st.file_uploader(
+            "Upload polished JSON",
+            type=["json"],
+            help="JSON array with 'speaker', 'start', 'end', 'text' fields per segment.",
+            label_visibility="collapsed",
+            key="polish_upload",
+        )
+        with st.expander("📋 Expected JSON format", expanded=False):
+            st.code(
+                '[{\n  "speaker": "Alice",\n  "start": 0.0,\n  "end": 5.2,\n  "text": "Corrected text."\n}, ...]',
+                language="json",
+            )
+        if uploaded_json:
+            if st.button("Import", use_container_width=True, key="polish_import_btn"):
+                try:
+                    data = json.loads(uploaded_json.read().decode("utf-8"))
+                    if not isinstance(data, list) or not data:
+                        st.error("Expected a non-empty JSON array.")
+                    elif "text" not in data[0]:
+                        st.error("Missing 'text' field in segments.")
+                    else:
+                        polish_mod.save_polished_raw(
+                            audio_path, data, output_dir=output_dir
+                        )
+                        st.session_state.polished = polish_mod.load_polished(
+                            audio_path, output_dir=output_dir
+                        )
+                        st.success(f"Imported — {len(data)} segments.")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Import failed: {e}")
+
     # ── Section 1: Configuration ──
     with st.container(border=True):
         col_title, col_force = st.columns([4, 1])
         with col_title:
-            st.markdown("### ⚙️ Configuration")
+            st.markdown("### ⚙️ Step 1 — Configuration")
         with col_force:
             force = st.checkbox(
                 "Force",
@@ -113,7 +150,7 @@ def render():
         btn_disabled = already_done and not force
 
         if mode == "api":
-            st.markdown("### 🌐 API Settings")
+            st.markdown("### 🌐 Step 2 — API Polish")
             st.selectbox(
                 "Provider",
                 list(PROVIDERS.keys()),
@@ -149,6 +186,9 @@ def render():
                 use_container_width=True,
                 type="primary",
                 disabled=btn_disabled,
+                help="Already polished. Check 'Force' to re-run."
+                if btn_disabled
+                else None,
             ):
                 kwargs = build_llm_kwargs(
                     "polish", mode, source_lang=source_lang, context=context
@@ -168,7 +208,7 @@ def render():
                         st.error(f"Failed: {e}")
 
         elif mode == "ollama":
-            st.markdown("### 🖥️ Ollama Settings")
+            st.markdown("### 🖥️ Step 2 — Ollama Polish")
             st.text_input(
                 "Ollama model",
                 value="qwen3:14b",
@@ -182,6 +222,9 @@ def render():
                 use_container_width=True,
                 type="primary",
                 disabled=btn_disabled,
+                help="Already polished. Check 'Force' to re-run."
+                if btn_disabled
+                else None,
             ):
                 kwargs = build_llm_kwargs(
                     "polish", mode, source_lang=source_lang, context=context
@@ -201,7 +244,7 @@ def render():
                         st.error(f"Failed: {e}")
 
         elif mode == "manual":
-            st.markdown("### ✍️ Manual Correction")
+            st.markdown("### ✍️ Step 2 — Manual Correction")
             st.caption(
                 "Copy each prompt into any LLM (ChatGPT, Claude, etc.), paste the JSON result back."
             )
@@ -328,46 +371,7 @@ def render():
                     st.success(f"Saved — {len(all_results)} segments.")
                     st.rerun()
 
-    # ── Section 3: Import existing polished file ──
-    with st.container(border=True):
-        st.markdown("### 📂 Import Existing Polished File")
-        st.caption(
-            "Already have a polished JSON? Import it to skip the correction step."
-        )
-
-        uploaded_json = st.file_uploader(
-            "Upload polished JSON",
-            type=["json"],
-            help="JSON array with 'speaker', 'start', 'end', 'text' fields per segment.",
-            label_visibility="collapsed",
-            key="polish_upload",
-        )
-        with st.expander("📋 Expected JSON format", expanded=False):
-            st.code(
-                '[{\n  "speaker": "Alice",\n  "start": 0.0,\n  "end": 5.2,\n  "text": "Corrected text."\n}, ...]',
-                language="json",
-            )
-        if uploaded_json:
-            if st.button("Import", use_container_width=True, key="polish_import_btn"):
-                try:
-                    data = json.loads(uploaded_json.read().decode("utf-8"))
-                    if not isinstance(data, list) or not data:
-                        st.error("Expected a non-empty JSON array.")
-                    elif "text" not in data[0]:
-                        st.error("Missing 'text' field in segments.")
-                    else:
-                        polish_mod.save_polished_raw(
-                            audio_path, data, output_dir=output_dir
-                        )
-                        st.session_state.polished = polish_mod.load_polished(
-                            audio_path, output_dir=output_dir
-                        )
-                        st.success(f"Imported — {len(data)} segments.")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Import failed: {e}")
-
-    # ── Section 4: Editor ──
+    # ── Section 3: Editor ──
     if polish_mod.polished_exists(audio_path, output_dir=output_dir):
         p_key = f"editor_polished_{audio_path}"
         if p_key not in st.session_state:
@@ -379,7 +383,7 @@ def render():
         with st.container(border=True):
             col_title, col_badge = st.columns([5, 1])
             with col_title:
-                st.markdown("### ✏️ Review & Edit Polished Transcript")
+                st.markdown("### ✏️ Step 3 — Review & Edit")
             with col_badge:
                 _dirty = st.session_state.get(f"polish_{audio_path}_dirty", False)
                 if (
@@ -436,7 +440,3 @@ def render():
                 next_tab="translate",
                 next_tab_label="→ Go to Translate",
             )
-
-
-def _reset_polished(audio_path, output_dir: str) -> None:
-    _polished_json(Path(audio_path), output_dir).unlink(missing_ok=True)

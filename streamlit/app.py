@@ -31,7 +31,7 @@ TAB_CONFIG = {
 
 TAB_DESCRIPTIONS = {
     "transcribe": "Transcribe an audio file, diarize speakers, and export a clean transcript.",
-    "polish": "Correct transcription errors and proper nouns in the source language.",
+    "polish": "Fix transcription errors, proper nouns, and spelling using LLMs.",
     "translate": "Translate a transcript (raw or polished) to another language.",
     "synthesize": "Clone speaker voices and synthesize a translated podcast episode.",
     "rag": "Index episodes for semantic search and query across your show.",
@@ -211,9 +211,11 @@ def _render_sidebar() -> None:
                 st.session_state.audio_path = str(audio_dest)
                 st.session_state.audio_filename = uploaded.name
                 st.session_state.output_dir = str(ep_output_dir)
+                st.session_state.base_output_dir = str(save_dir)
                 st.session_state.transcript = None
                 st.session_state.translation = None
                 st.session_state.generated = None
+                st.session_state.pop("trim_applied", None)
                 st.session_state.current_tab = "transcribe"
                 st.rerun()
 
@@ -241,31 +243,32 @@ def _render_episode_list(folder: Path) -> None:
     st.caption(summary)
 
     active_path = st.session_state.get("audio_path")
-    for ep in episodes:
-        is_active = bool(active_path and Path(active_path) == ep.path)
-        col_info, col_btn = st.columns([3, 1])
-        with col_info:
-            if ep.validated_polished:
-                badge = "🟢"
-            elif ep.polished:  # raw polished exists
-                badge = "🟡"
-            elif ep.transcribed:
-                badge = "🟡"
-            else:
-                badge = "🔴"
-            has_unvalidated = (
-                ep.raw_transcript or ep.raw_polished or bool(ep.raw_translations)
-            )
-            warn_mark = " ⚠️" if has_unvalidated else ""
-            indexed_mark = " ⚡" if ep.indexed else ""
-            label = f"**{ep.stem}**" if is_active else ep.stem
-            st.markdown(f"{badge} {label}{warn_mark}{indexed_mark}")
-        with col_btn:
-            if is_active:
-                st.button("Open", key=f"open_{ep.stem}", disabled=True)
-            else:
-                if st.button("Open", key=f"open_{ep.stem}"):
-                    _select_episode(ep)
+    with st.container(height=400, border=False):
+        for ep in episodes:
+            is_active = bool(active_path and Path(active_path) == ep.path)
+            col_info, col_btn = st.columns([3, 1])
+            with col_info:
+                if ep.validated_polished:
+                    badge = "🟢"
+                elif ep.polished:  # raw polished exists
+                    badge = "🟡"
+                elif ep.transcribed:
+                    badge = "🟡"
+                else:
+                    badge = "🔴"
+                has_unvalidated = (
+                    ep.raw_transcript or ep.raw_polished or bool(ep.raw_translations)
+                )
+                warn_mark = " ⚠️" if has_unvalidated else ""
+                indexed_mark = " ⚡" if ep.indexed else ""
+                label = f"**{ep.stem}**" if is_active else ep.stem
+                st.markdown(f"{badge} {label}{warn_mark}{indexed_mark}")
+            with col_btn:
+                if is_active:
+                    st.button("Open", key=f"open_{ep.stem}", disabled=True)
+                else:
+                    if st.button("Open", key=f"open_{ep.stem}"):
+                        _select_episode(ep)
 
 
 def _render_sidebar_search(show_name: str) -> None:
@@ -400,6 +403,19 @@ def _render_getting_started():
 
 def main():
     st.set_page_config(layout="wide", page_title="podcodex")
+
+    st.markdown(
+        """<style>
+        /* Tighten vertical spacing between containers */
+        div[data-testid="stVerticalBlock"] > div { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+        /* Reduce top padding in main content area */
+        .block-container { padding-top: 2rem; }
+        /* Compact expander headers */
+        details[data-testid="stExpander"] summary { padding: 0.4rem 0.6rem; }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+
     init_session_state()
 
     _render_sidebar()

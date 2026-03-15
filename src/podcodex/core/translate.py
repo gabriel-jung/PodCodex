@@ -16,11 +16,14 @@ Output files:
 
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 
 from loguru import logger
 
 from podcodex.core._paths import episode_output_dir
+from podcodex.core._utils import simplify_transcript
 
 
 # ──────────────────────────────────────────────
@@ -112,7 +115,6 @@ def _translate_batch(
     LLM returns [{"index": i, "text": "translated"}]; result stored in text_trad.
     Source text is kept unchanged in the entry.
     """
-    import re
 
     user_content = "\n\n".join(f"[{i}] {seg['text']}" for i, seg in enumerate(batch))
     user_content += f"\n\nTranslate all {len(batch)} numbered segments above."
@@ -268,6 +270,7 @@ def translate_segments(
     api_key: str | None = None,
     batch_size: int = 10,
     original_segments: list[dict] | None = None,
+    simplify: bool = True,
 ) -> list[dict]:
     """
     Translate transcript segments to the target language.
@@ -286,6 +289,7 @@ def translate_segments(
         api_key           : API key (None reads from API_KEY env variable)
         batch_size        : number of segments per LLM call
         original_segments : required for manual mode — the source segments being translated
+        simplify          : merge consecutive same-speaker segments before processing (default True)
 
     Returns:
         List of segments with text (unchanged) and text_trad (translation) fields.
@@ -293,7 +297,11 @@ def translate_segments(
     if mode == "manual":
         orig = original_segments if original_segments is not None else segments
         return _validate_manual_translate(segments, orig)
-    elif mode == "ollama":
+
+    if simplify:
+        segments = simplify_transcript(segments)
+
+    if mode == "ollama":
         return _translate_ollama(
             segments,
             context=context,
@@ -474,7 +482,6 @@ def promote_translation(
     Raises FileNotFoundError if no raw file exists.
     Returns the path of the validated file.
     """
-    import shutil
 
     audio_path = Path(audio_path)
     raw = _translation_raw_json(audio_path, lang, output_dir=output_dir)

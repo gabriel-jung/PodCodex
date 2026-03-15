@@ -18,11 +18,14 @@ Files produced alongside the MP3:
 import gc
 import json
 import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
 from podcodex.core._paths import episode_output_dir
+from podcodex.core._utils import simplify_transcript
 
 import pandas as pd
 import torch
@@ -379,48 +382,8 @@ def save_speaker_map(
 # ──────────────────────────────────────────────
 
 
-def simplify_transcript(segments: list[dict], max_gap: float = 10.0) -> list[dict]:
-    """
-    Merge consecutive segments from the same speaker into single entries.
-    Segments are only merged if the gap between them is <= max_gap seconds,
-    preventing merges across music breaks or long silences.
-    Called automatically by export_transcript().
-
-    Args:
-        segments: raw diarized segments
-        max_gap: maximum silence gap (seconds) to merge across (default: 10s)
-
-    Returns:
-        List of simplified segments [{speaker, start, end, text}]
-    """
-    result = []
-    for seg in segments:
-        speaker = seg.get("speaker_name") or seg.get("speaker") or "UNKNOWN"
-        entry = {
-            "speaker": speaker,
-            "start": round(float(seg["start"]), 3),
-            "end": round(float(seg["end"]), 3),
-            "text": str(seg.get("text", "")).strip(),
-        }
-        if (
-            result
-            and result[-1]["speaker"] == entry["speaker"]
-            and entry["start"] - result[-1]["end"] <= max_gap
-        ):
-            result[-1]["end"] = entry["end"]
-            result[-1]["text"] += " " + entry["text"]
-        else:
-            if result and entry["start"] - result[-1]["end"] > max_gap:
-                result.append(
-                    {
-                        "speaker": "[BREAK]",
-                        "start": result[-1]["end"],
-                        "end": entry["start"],
-                        "text": "",
-                    }
-                )
-            result.append(entry)
-    return result
+# simplify_transcript is imported from _utils and re-exported here for backward compat
+# (see top-level import above)
 
 
 def export_transcript(
@@ -571,7 +534,6 @@ def promote_transcript(
     Raises FileNotFoundError if no raw file exists.
     Returns the path of the validated file.
     """
-    import shutil
 
     p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
     if not p.transcript_raw.exists():
@@ -619,6 +581,8 @@ def is_segment_flagged(seg: dict) -> bool:
       or a Whisper hallucination artifact
     """
     speaker = seg.get("speaker", "")
+    if speaker == "[BREAK]":
+        return False
     if not speaker or speaker in _UNKNOWN_SPEAKERS:
         return True
     if speaker in _REMOVE_SPEAKERS:
@@ -680,6 +644,86 @@ def save_transcript(
     logger.info(
         f"Transcript saved → {p.transcript.name} ({len(segments)} → {len(merged)} segments)"
     )
+
+
+def audio_duration(path: Path | str) -> float | None:
+    """Return audio duration in seconds, trying soundfile then ffprobe.
+
+    Returns None if neither method is available.
+    """
+    path = Path(path)
+    try:
+        import soundfile as sf
+
+        return sf.info(str(path)).duration
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_format",
+                str(path),
+            ],
+            stderr=subprocess.DEVNULL,
+        )
+        return float(json.loads(out)["format"]["duration"])
+    except Exception:
+        return None
+
+
+def trim_audio(
+    audio_path: Path | str,
+    start: float,
+    end: float,
+    output_dir: str | Path | None = None,
+) -> Path:
+    """Cut audio_path to [start, end] and save as a new file.
+
+    The trimmed file is placed in a sibling directory named
+    ``{stem}_trim_{start}_{end}/`` next to output_dir, keeping the original
+    filename so downstream pipeline outputs have clean names.
+
+    Returns the path to the trimmed audio file (skips if it already exists).
+    """
+    audio_path = Path(audio_path)
+    out = episode_output_dir(audio_path, output_dir)
+
+    def _mmss(s: float) -> str:
+        return f"{int(s) // 60}m{int(s) % 60:02d}s"
+
+    # Place trim dir next to output_dir, not inside it
+    parent = out.parent
+    trim_dir = parent / f"{audio_path.stem}_trim_{_mmss(start)}_{_mmss(end)}"
+    trim_dir.mkdir(parents=True, exist_ok=True)
+    dest = trim_dir / audio_path.name
+    if dest.exists():
+        return dest
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(audio_path),
+            "-ss",
+            str(start),
+            "-to",
+            str(end),
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            str(dest),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    logger.info(f"Trimmed audio → {dest.name} ({_mmss(start)} → {_mmss(end)})")
+    return dest
 
 
 def transcript_to_text(segments: list[dict]) -> str:
