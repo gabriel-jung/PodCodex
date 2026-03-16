@@ -6,11 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from podcodex.core._utils import merge_consecutive_segments, segments_to_text
 from podcodex.core.transcribe import (
     load_transcript,
     load_transcript_full,
-    simplify_transcript,
-    transcript_to_text,
 )
 
 # ──────────────────────────────────────────────
@@ -39,17 +38,17 @@ def _write_transcript(path: Path, data) -> None:
 
 
 # ──────────────────────────────────────────────
-# simplify_transcript
+# merge_consecutive_segments
 # ──────────────────────────────────────────────
 
 
 def test_simplify_empty():
-    assert simplify_transcript([]) == []
+    assert merge_consecutive_segments([]) == []
 
 
 def test_simplify_single_segment():
     seg = [{"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "Hello"}]
-    result = simplify_transcript(seg)
+    result = merge_consecutive_segments(seg)
     assert result == [{"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "Hello"}]
 
 
@@ -59,7 +58,7 @@ def test_simplify_merges_consecutive_same_speaker():
         {"speaker": "Alice", "start": 2.0, "end": 4.0, "text": "world"},
         {"speaker": "Bob", "start": 4.0, "end": 6.0, "text": "Hi"},
     ]
-    result = simplify_transcript(segments)
+    result = merge_consecutive_segments(segments)
     assert len(result) == 2
     assert result[0]["speaker"] == "Alice"
     assert result[0]["text"] == "Hello world"
@@ -74,13 +73,13 @@ def test_simplify_does_not_merge_alternating_speakers():
         {"speaker": "Bob", "start": 2.0, "end": 4.0, "text": "Hi"},
         {"speaker": "Alice", "start": 4.0, "end": 6.0, "text": "How are you"},
     ]
-    result = simplify_transcript(segments)
+    result = merge_consecutive_segments(segments)
     assert len(result) == 3
 
 
 def test_simplify_falls_back_to_unknown_speaker():
     segments = [{"start": 0.0, "end": 2.0, "text": "No speaker key"}]
-    result = simplify_transcript(segments)
+    result = merge_consecutive_segments(segments)
     assert result[0]["speaker"] == "UNKNOWN"
 
 
@@ -94,46 +93,46 @@ def test_simplify_prefers_speaker_name_over_id():
             "text": "Hi",
         }
     ]
-    result = simplify_transcript(segments)
+    result = merge_consecutive_segments(segments)
     assert result[0]["speaker"] == "Alice"
 
 
 def test_simplify_strips_whitespace_from_text():
     segments = [{"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "  Hello  "}]
-    result = simplify_transcript(segments)
+    result = merge_consecutive_segments(segments)
     assert result[0]["text"] == "Hello"
 
 
 # ──────────────────────────────────────────────
-# transcript_to_text
+# segments_to_text
 # ──────────────────────────────────────────────
 
 
-def test_transcript_to_text_contains_speaker_and_text():
+def test_segments_to_text_contains_speaker_and_text():
     segments = [{"speaker": "Alice", "start": 1.0, "end": 3.0, "text": "Hello"}]
-    out = transcript_to_text(segments)
+    out = segments_to_text(segments)
     assert "Alice" in out
     assert "Hello" in out
 
 
-def test_transcript_to_text_contains_timestamps():
+def test_segments_to_text_contains_timestamps():
     segments = [{"speaker": "Alice", "start": 1.0, "end": 3.5, "text": "Hi"}]
-    out = transcript_to_text(segments)
+    out = segments_to_text(segments)
     assert "1.000s" in out
     assert "3.500s" in out
 
 
-def test_transcript_to_text_multiple_segments_separated():
+def test_segments_to_text_multiple_segments_separated():
     segments = [
         {"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "Hello"},
         {"speaker": "Bob", "start": 2.0, "end": 4.0, "text": "Hi"},
     ]
-    out = transcript_to_text(segments)
+    out = segments_to_text(segments)
     assert out.index("Alice") < out.index("Bob")
 
 
-def test_transcript_to_text_empty():
-    assert transcript_to_text([]) == ""
+def test_segments_to_text_empty():
+    assert segments_to_text([]) == ""
 
 
 # ──────────────────────────────────────────────

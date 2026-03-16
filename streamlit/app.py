@@ -24,17 +24,19 @@ warnings.filterwarnings("ignore", message=".*Lightning automatically upgraded.*"
 TAB_CONFIG = {
     "transcribe": ("🎙️ Transcribe", "transcript"),
     "polish": ("✨ Polish", "polished"),
+    "index": ("🗂️ Index", "indexed"),
     "translate": ("🌍 Translate", "translation"),
     "synthesize": ("🔊 Synthesize", "generated"),
-    "rag": ("🔍 Search", ""),
+    "search": ("🔍 Search", ""),
 }
 
 TAB_DESCRIPTIONS = {
     "transcribe": "Transcribe an audio file, diarize speakers, and export a clean transcript.",
     "polish": "Fix transcription errors, proper nouns, and spelling using LLMs.",
+    "index": "Vectorize episodes for semantic search.",
     "translate": "Translate a transcript (raw or polished) to another language.",
     "synthesize": "Clone speaker voices and synthesize a translated podcast episode.",
-    "rag": "Index episodes for semantic search and query across your show.",
+    "search": "Query across your indexed episodes using hybrid semantic search.",
 }
 
 WORKFLOWS = [
@@ -62,12 +64,14 @@ WORKFLOWS = [
 
 
 def get_tab_label(tab_id: str) -> str:
+    """Return the tab display label, prefixed with ✅ if the tab's data is loaded."""
     name, state_key = TAB_CONFIG[tab_id]
     is_complete = bool(state_key and st.session_state.get(state_key))
     return f"{'✅ ' if is_complete else ''}{name}"
 
 
 def init_session_state():
+    """Initialize all session-state keys with their defaults (no-op if already set)."""
     defaults = {
         # show-level
         "show_folder": "",
@@ -80,6 +84,7 @@ def init_session_state():
         "translations": {},
         "translation": None,
         "generated": None,
+        "indexed": None,
         "current_tab": "transcribe",
     }
     for key, value in defaults.items():
@@ -92,6 +97,7 @@ def init_session_state():
 
 
 def _select_episode(episode) -> None:
+    """Load an episode's data into session state and switch to the transcribe tab."""
     from podcodex.core.transcribe import load_transcript
     from podcodex.core.polish import load_polished
     from podcodex.core.translate import load_translation, list_translations
@@ -99,6 +105,7 @@ def _select_episode(episode) -> None:
     st.session_state.audio_path = str(episode.path)
     st.session_state.output_dir = str(episode.output_dir)
     st.session_state.generated = None
+    st.session_state.indexed = episode.indexed if episode.indexed else None
     st.session_state.current_tab = "transcribe"
 
     st.session_state.transcript = (
@@ -125,6 +132,7 @@ def _select_episode(episode) -> None:
 
 
 def _render_sidebar() -> None:
+    """Render the sidebar: show folder, episode list, search, and single-file upload."""
     with st.sidebar:
         st.markdown("## 📂 Show")
 
@@ -222,12 +230,14 @@ def _render_sidebar() -> None:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def _scan_folder_cached(folder: str) -> list:
+    """Cached wrapper for ``scan_folder`` — refreshes every 60s or on manual clear."""
     from podcodex.ingest.folder import scan_folder
 
     return scan_folder(Path(folder))
 
 
 def _render_episode_list(folder: Path) -> None:
+    """Render the scrollable episode list in the sidebar with status badges."""
     episodes = _scan_folder_cached(str(folder))
     if not episodes:
         st.info("No audio files found.")
@@ -272,6 +282,7 @@ def _render_episode_list(folder: Path) -> None:
 
 
 def _render_sidebar_search(show_name: str) -> None:
+    """Render the sidebar search form that redirects to the RAG search tab."""
     with st.form("sidebar_search_form", clear_on_submit=False):
         col_input, col_btn = st.columns([4, 1])
         with col_input:
@@ -287,7 +298,7 @@ def _render_sidebar_search(show_name: str) -> None:
             )
         if submitted and search_q.strip():
             st.session_state["rag_search_query"] = search_q.strip()
-            st.session_state.requested_tab = "rag"
+            st.session_state.requested_tab = "search"
             st.rerun()
     st.divider()
 
@@ -298,6 +309,7 @@ def _render_sidebar_search(show_name: str) -> None:
 
 
 def _render_show_overview() -> None:
+    """Render the show dashboard table with per-episode pipeline status."""
     folder = st.session_state.get("show_folder", "")
     show_name = st.session_state.get("show_name") or Path(folder).name
     episodes = _scan_folder_cached(folder)
@@ -370,6 +382,7 @@ def _render_show_overview() -> None:
 
 
 def _render_getting_started():
+    """Render the onboarding panel with workflow options and entry points."""
     with st.expander("🚀 Getting started", expanded=True):
         st.caption(
             "podcodex supports several workflows depending on what you already have."
@@ -470,6 +483,10 @@ def main():
         import streamlit_polish as ui
 
         ui.render()
+    elif current_tab == "index":
+        import streamlit_index as ui
+
+        ui.render()
     elif current_tab == "translate":
         import streamlit_translate as ui
 
@@ -478,8 +495,8 @@ def main():
         import streamlit_synthesize as ui
 
         ui.render()
-    elif current_tab == "rag":
-        import streamlit_rag as ui
+    elif current_tab == "search":
+        import streamlit_search as ui
 
         ui.render()
 

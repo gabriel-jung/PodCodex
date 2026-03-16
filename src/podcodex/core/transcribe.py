@@ -15,22 +15,24 @@ Files produced alongside the MP3:
     {stem}.transcript.json           — validated/edited transcript
 """
 
-import gc
 import json
 import os
-import shutil
 import subprocess
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Self
-
-from podcodex.core._paths import episode_output_dir
-from podcodex.core._utils import simplify_transcript
-
-import pandas as pd
-import torch
 import warnings
+from pathlib import Path
+
 from loguru import logger
+
+from podcodex.core._utils import (
+    UNKNOWN_SPEAKERS,
+    AudioPaths,
+    free_vram,
+    merge_consecutive_segments,
+    read_json,
+    read_parquet,
+    write_json,
+    write_parquet,
+)
 
 # Suppress known harmless warnings from third-party libraries
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
@@ -39,62 +41,11 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 warnings.filterwarnings("ignore", message=".*Lightning automatically upgraded.*")
 
 
-# ──────────────────────────────────────────────
-# Paths
-# ──────────────────────────────────────────────
-
-
-@dataclass
-class _EpisodePaths:
-    """All derived file paths for a given audio episode."""
-
-    base: Path  # output_root / stem — no extension
-
-    @classmethod
-    def from_audio(cls, audio_path: Path, output_dir: str | Path | None = None) -> Self:
-        root = episode_output_dir(audio_path, output_dir)
-        base = root / audio_path.stem
-        base.parent.mkdir(parents=True, exist_ok=True)
-        return cls(base=base)
-
-    @property
-    def segments(self) -> Path:
-        return self.base.with_suffix(".segments.parquet")
-
-    @property
-    def segments_meta(self) -> Path:
-        return self.base.with_suffix(".segments.meta.json")
-
-    @property
-    def diarization(self) -> Path:
-        return self.base.with_suffix(".diarization.parquet")
-
-    @property
-    def diarization_meta(self) -> Path:
-        return self.base.with_suffix(".diarization.meta.json")
-
-    @property
-    def diarized_segments(self) -> Path:
-        return self.base.with_suffix(".diarized_segments.parquet")
-
-    @property
-    def speaker_map(self) -> Path:
-        return self.base.with_suffix(".speaker_map.json")
-
-    @property
-    def transcript_raw(self) -> Path:
-        return self.base.with_suffix(".transcript.raw.json")
-
-    @property
-    def transcript(self) -> Path:
-        return self.base.with_suffix(".transcript.json")
-
-
 def processing_status(
-    audio_path: Path, output_dir: str | Path | None = None
+    audio_path: Path | str, output_dir: str | Path | None = None
 ) -> dict[str, bool]:
     """Return the processing state of an audio file."""
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     return {
         "transcribed": p.segments.exists() and p.segments_meta.exists(),
         "diarized": p.diarization.exists() and p.diarization_meta.exists(),
@@ -117,6 +68,8 @@ def get_device() -> tuple[str, str]:
     Returns:
         (device, compute_type) — e.g. ("cuda", "float16") or ("cpu", "int8")
     """
+    import torch
+
     if torch.cuda.is_available():
         return "cuda", "float16"
     return "cpu", "int8"
@@ -139,61 +92,65 @@ def transcribe_file(
 ) -> dict:
     """
     Transcribe an audio file with WhisperX + phonetic alignment.
-    Saves segments.parquet + segments.meta.json in output_dir (relative to audio).
+    Saves segments.parquet + segments.meta.json in output_dir.
+
+    Args:
+        audio_path   : source audio file
+        model_size   : Whisper model size (default "large-v3")
+        language     : ISO language code (default "fr")
+        batch_size   : transcription batch size (default 4)
+        compute_type : "float16", "int8", etc. (auto-detected if None)
+        device       : "cuda" or "cpu" (auto-detected if None)
+        force        : re-run even if output files already exist
+        output_dir   : output directory (see AudioPaths.output_dir for resolution rules)
 
     Returns:
         dict with keys 'segments', 'language', 'duration', 'num_segments'
     """
     import whisperx
 
-    audio_path = Path(audio_path)
-    p = _EpisodePaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     if not force and p.segments.exists() and p.segments_meta.exists():
         logger.info(f"[SKIP] Transcription already exists: {p.segments.name}")
-        return load_transcription(audio_path, output_dir=output_dir)
+        return load_segments(audio_path, output_dir=output_dir)
 
     dev, ctype = get_device()
     device = device or dev
     compute_type = compute_type or ctype
 
-    logger.info(f"Transcribing {audio_path.name} ({device}, {compute_type})")
+    logger.info(f"Transcribing {p.audio_path.name} ({device}, {compute_type})")
 
-    audio = whisperx.load_audio(str(audio_path))
+    audio = whisperx.load_audio(str(p.audio_path))
 
     model = whisperx.load_model(model_size, device, compute_type=compute_type)
     result = model.transcribe(audio, batch_size=batch_size, language=language)
-    _free_vram(model)
+    free_vram(model)
 
     model_a, metadata = whisperx.load_align_model(language_code=language, device=device)
     result = whisperx.align(result["segments"], model_a, metadata, audio, device)
-    _free_vram(model_a)
+    free_vram(model_a)
 
     segments = result["segments"]
     duration = float(audio.shape[0]) / 16000
     meta = {"language": language, "duration": duration, "num_segments": len(segments)}
 
-    pd.DataFrame(segments).to_parquet(p.segments, index=False)
-    p.segments_meta.write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    write_parquet(p.segments, segments)
+    write_json(p.segments_meta, meta)
 
     logger.success(f"Transcription done — {len(segments)} segments → {p.segments.name}")
     return {"segments": segments, **meta}
 
 
-def load_transcription(
-    audio_path: Path | str, output_dir: str | Path | None = None
-) -> dict:
-    """Load transcription from parquet + meta.json.
+def load_segments(audio_path: Path | str, output_dir: str | Path | None = None) -> dict:
+    """Load raw WhisperX segments from parquet + meta.json.
 
-    Words with null timestamps (numbers, punctuation, special chars that the
-    French phoneme aligner cannot place) are stripped from each segment's word
-    list before return.  Segment-level start/end are unaffected.
+    Returns:
+        dict with keys 'segments', 'language', 'duration', 'num_segments'
     """
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    segments = pd.read_parquet(p.segments).to_dict("records")
-    meta = json.loads(p.segments_meta.read_text(encoding="utf-8"))
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    segments = read_parquet(p.segments)
+    meta = read_json(p.segments_meta)
     return {"segments": segments, **meta}
 
 
@@ -214,18 +171,24 @@ def diarize_file(
 ) -> dict:
     """
     Diarize an audio file using whisperx.DiarizationPipeline (pyannote).
-    Saves diarization.parquet + diarization.meta.json in output_dir (relative to audio).
+    Saves diarization.parquet + diarization.meta.json in output_dir.
 
-    hf_token is read from HF_TOKEN env variable if not provided.
+    Args:
+        audio_path   : source audio file
+        hf_token     : HuggingFace token for pyannote (reads HF_TOKEN env var if None)
+        min_speakers : minimum expected speakers (optional)
+        max_speakers : maximum expected speakers (optional)
+        num_speakers : exact number of speakers, if known (optional)
+        device       : "cuda" or "cpu" (auto-detected if None)
+        force        : re-run even if output files already exist
+        output_dir   : output directory (see AudioPaths.output_dir for resolution rules)
 
     Returns:
         dict with keys 'speakers' (list of {start, end, speaker} dicts), 'num_speakers'
     """
     import whisperx
-    from whisperx.diarize import DiarizationPipeline
 
-    audio_path = Path(audio_path)
-    p = _EpisodePaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     if not force and p.diarization.exists() and p.diarization_meta.exists():
         logger.info(f"[SKIP] Diarization already exists: {p.diarization.name}")
@@ -240,10 +203,10 @@ def diarize_file(
     dev, _ = get_device()
     device = device or dev
 
-    logger.info(f"Diarizing {audio_path.name}")
+    logger.info(f"Diarizing {p.audio_path.name}")
 
-    audio = whisperx.load_audio(str(audio_path))
-    pipeline = DiarizationPipeline(token=token, device=device)
+    audio = whisperx.load_audio(str(p.audio_path))
+    pipeline = whisperx.DiarizationPipeline(token=token, device=device)
     diarize_segments = pipeline(
         audio,
         num_speakers=num_speakers,
@@ -267,10 +230,8 @@ def diarize_file(
     unique = sorted({s["speaker"] for s in speakers})
     meta = {"num_speakers": len(unique), "speakers_found": unique}
 
-    pd.DataFrame(speakers).to_parquet(p.diarization, index=False)
-    p.diarization_meta.write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    write_parquet(p.diarization, speakers)
+    write_json(p.diarization_meta, meta)
 
     logger.success(f"Diarization done — {len(unique)} speakers → {p.diarization.name}")
     return {"speakers": speakers, **meta}
@@ -280,9 +241,9 @@ def load_diarization(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> dict:
     """Load diarization from parquet + meta.json."""
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    speakers = pd.read_parquet(p.diarization).to_dict("records")
-    meta = json.loads(p.diarization_meta.read_text(encoding="utf-8"))
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    speakers = read_parquet(p.diarization)
+    meta = read_json(p.diarization_meta)
     return {"speakers": speakers, **meta}
 
 
@@ -291,7 +252,7 @@ def load_diarization(
 # ──────────────────────────────────────────────
 
 
-def assign_speakers_to_file(
+def assign_speakers(
     audio_path: Path | str,
     force: bool = False,
     output_dir: str | Path | None = None,
@@ -299,42 +260,41 @@ def assign_speakers_to_file(
     """
     Assign SPEAKER_XX labels to segments via whisperx.assign_word_speakers.
     Requires transcribe_file() and diarize_file() to have already run.
-    Saves diarized_segments.parquet in output_dir (relative to audio).
+    Saves diarized_segments.parquet in output_dir.
+
+    Args:
+        audio_path : source audio file
+        force      : re-run even if output file already exists
+        output_dir : output directory (see AudioPaths.output_dir for resolution rules)
 
     Returns:
         List of segments with 'speaker' key.
     """
+    import pandas as pd
     import whisperx
 
-    audio_path = Path(audio_path)
-    p = _EpisodePaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     if not force and p.diarized_segments.exists():
         logger.info(f"[SKIP] Assignment already exists: {p.diarized_segments.name}")
         return load_diarized_segments(audio_path, output_dir=output_dir)
 
-    transcription = load_transcription(audio_path, output_dir=output_dir)
+    def _has_timestamps(d: dict) -> bool:
+        return d.get("start") is not None and d.get("end") is not None
+
+    diarization = load_diarization(audio_path, output_dir=output_dir)
+    df_diarize = pd.DataFrame(diarization["speakers"]).dropna(subset=["start", "end"])
+
+    transcription = load_segments(audio_path, output_dir=output_dir)
     for s in transcription["segments"]:
         if "words" in s and s["words"] is not None:
-            s["words"] = [
-                w
-                for w in s["words"]
-                if w.get("start") is not None and w.get("end") is not None
-            ]
-    diarization = load_diarization(audio_path, output_dir=output_dir)
+            s["words"] = [w for w in s["words"] if _has_timestamps(w)]
+    filtered = [s for s in transcription["segments"] if _has_timestamps(s)]
 
-    df_diarize = pd.DataFrame(diarization["speakers"]).dropna(subset=["start", "end"])
-    transcription_segments = [
-        s
-        for s in transcription["segments"]
-        if s.get("start") is not None and s.get("end") is not None
-    ]
-    result = whisperx.assign_word_speakers(
-        df_diarize, {"segments": transcription_segments}
-    )
+    result = whisperx.assign_word_speakers(df_diarize, {"segments": filtered})
     segments = result["segments"]
 
-    pd.DataFrame(segments).to_parquet(p.diarized_segments, index=False)
+    write_parquet(p.diarized_segments, segments)
     logger.success(
         f"Assignment done — {len(segments)} segments → {p.diarized_segments.name}"
     )
@@ -345,12 +305,12 @@ def load_diarized_segments(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> list[dict]:
     """Load diarized segments from parquet."""
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    return pd.read_parquet(p.diarized_segments).to_dict("records")
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    return read_parquet(p.diarized_segments)
 
 
 # ──────────────────────────────────────────────
-# STEP 4 — Speaker map (filled by UI)
+# STEP 4 — Speaker map
 # ──────────────────────────────────────────────
 
 
@@ -358,10 +318,10 @@ def load_speaker_map(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> dict[str, str]:
     """Load SPEAKER_XX → name mapping. Returns {} if file does not exist."""
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     if not p.speaker_map.exists():
         return {}
-    return json.loads(p.speaker_map.read_text(encoding="utf-8"))
+    return read_json(p.speaker_map)
 
 
 def save_speaker_map(
@@ -369,11 +329,18 @@ def save_speaker_map(
     mapping: dict[str, str],
     output_dir: str | Path | None = None,
 ) -> None:
-    """Save SPEAKER_XX → name mapping."""
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    p.speaker_map.write_text(
-        json.dumps(mapping, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    """Save SPEAKER_XX → human name mapping.
+
+    The mapping keys must match the speaker labels from diarization
+    (e.g. "SPEAKER_00", "SPEAKER_01"). Values are display names used
+    in the exported transcript.
+
+    Example::
+
+        save_speaker_map(audio, {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"})
+    """
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    write_json(p.speaker_map, mapping)
     logger.info(f"Speaker map saved → {p.speaker_map.name}")
 
 
@@ -382,20 +349,17 @@ def save_speaker_map(
 # ──────────────────────────────────────────────
 
 
-# simplify_transcript is imported from _utils and re-exported here for backward compat
-# (see top-level import above)
-
-
 def export_transcript(
     audio_path: Path | str,
     output_dir: str | Path | None = None,
     show: str = "",
     episode: str = "",
+    max_gap: float = 10.0,
 ) -> list[dict]:
     """
     Generate the final JSON transcript with resolved speaker names.
     Requires diarized_segments.parquet + speaker_map.json.
-    Saves transcript.json in output_dir (relative to audio).
+    Saves transcript.raw.json in output_dir (pipeline output, unvalidated).
 
     The file format is:
         {"meta": {show, episode, speakers, duration, word_count}, "segments": [...]}
@@ -405,12 +369,13 @@ def export_transcript(
         output_dir : directory relative to audio_path for outputs
         show       : podcast show name (stored in meta, defaults to "")
         episode    : episode name (stored in meta, defaults to "")
+        max_gap    : maximum silence gap (seconds) to merge across (default 10s);
+                     0 disables merging
 
     Returns:
         List of final segments [{start, end, speaker, text}]
     """
-    audio_path = Path(audio_path)
-    p = _EpisodePaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     segments = load_diarized_segments(audio_path, output_dir=output_dir)
     mapping = load_speaker_map(audio_path, output_dir=output_dir)
@@ -425,7 +390,7 @@ def export_transcript(
         }
         for seg in segments
     ]
-    export = simplify_transcript(resolved)
+    export = merge_consecutive_segments(resolved, max_gap=max_gap)
 
     meta = {
         "show": show,
@@ -435,53 +400,24 @@ def export_transcript(
         "word_count": sum(len(seg["text"].split()) for seg in export),
     }
 
-    out_data: dict = {"meta": meta, "segments": export}
+    out_data = {"meta": meta, "segments": export}
 
-    p.transcript_raw.write_text(
-        json.dumps(out_data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    write_json(p.transcript_raw, out_data)
     logger.success(
         f"Export done — {len(resolved)} → {len(export)} segments (merged) → {p.transcript_raw.name}"
     )
     return export
 
 
-def _resolve_transcript_path(p: "_EpisodePaths") -> Path:
-    """Return the validated transcript path if it exists, else the raw path."""
-    return p.transcript if p.transcript.exists() else p.transcript_raw
+def _load_transcript_file(path: Path) -> dict:
+    """Load a transcript JSON file, handling both old (list) and new (dict) formats.
 
-
-def load_transcript(
-    audio_path: Path | str, output_dir: str | Path | None = None
-) -> list[dict]:
-    """Load the final transcript segments as a plain list.
-
-    Prefers the validated transcript.json; falls back to transcript.raw.json.
-    Handles both old format (plain list) and new format (dict with meta + segments).
-    Returns only the segments list for backward compatibility.
+    Returns {"meta": {...}, "segments": [...]}
     """
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    data = json.loads(_resolve_transcript_path(p).read_text(encoding="utf-8"))
-    return data["segments"] if isinstance(data, dict) else data
-
-
-def load_transcript_raw(
-    audio_path: Path | str, output_dir: str | Path | None = None
-) -> list[dict]:
-    """Load segments specifically from transcript.raw.json (pipeline output)."""
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    data = json.loads(p.transcript_raw.read_text(encoding="utf-8"))
-    return data["segments"] if isinstance(data, dict) else data
-
-
-def load_transcript_validated(
-    audio_path: Path | str, output_dir: str | Path | None = None
-) -> list[dict]:
-    """Load segments specifically from transcript.json (user-validated)."""
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    data = json.loads(p.transcript.read_text(encoding="utf-8"))
-    return data["segments"] if isinstance(data, dict) else data
+    data = read_json(path)
+    if isinstance(data, dict):
+        return data
+    return {"meta": {}, "segments": data}
 
 
 def load_transcript_full(
@@ -490,76 +426,48 @@ def load_transcript_full(
     """Load the final transcript with metadata.
 
     Prefers the validated transcript.json; falls back to transcript.raw.json.
+
     Returns:
         {"meta": {show, episode, speakers, duration, word_count}, "segments": [...]}
         If the file is in old list format, meta will be an empty dict.
     """
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    data = json.loads(_resolve_transcript_path(p).read_text(encoding="utf-8"))
-    if isinstance(data, dict):
-        return data
-    return {"meta": {}, "segments": data}
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    return _load_transcript_file(p.transcript_best)
 
 
-def has_raw_transcript(
+def load_transcript(
     audio_path: Path | str, output_dir: str | Path | None = None
-) -> bool:
-    """True if transcript.raw.json exists but transcript.json (validated) does not."""
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    return p.transcript_raw.exists() and not p.transcript.exists()
+) -> list[dict]:
+    """Load the final transcript segments as a plain list.
 
-
-def transcript_raw_exists(
-    audio_path: Path | str, output_dir: str | Path | None = None
-) -> bool:
-    """True if transcript.raw.json exists (regardless of validated state)."""
-    return _EpisodePaths.from_audio(
-        Path(audio_path), output_dir=output_dir
-    ).transcript_raw.exists()
-
-
-def is_validated_transcript(
-    audio_path: Path | str, output_dir: str | Path | None = None
-) -> bool:
-    """True if the validated transcript.json exists."""
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    return p.transcript.exists()
-
-
-def promote_transcript(
-    audio_path: Path | str, output_dir: str | Path | None = None
-) -> Path:
-    """Copy transcript.raw.json → transcript.json (promote to validated).
-
-    Raises FileNotFoundError if no raw file exists.
-    Returns the path of the validated file.
+    Prefers the validated transcript.json; falls back to transcript.raw.json.
     """
+    return load_transcript_full(audio_path, output_dir=output_dir)["segments"]
 
-    p = _EpisodePaths.from_audio(Path(audio_path), output_dir=output_dir)
-    if not p.transcript_raw.exists():
-        raise FileNotFoundError(f"No raw transcript: {p.transcript_raw}")
-    shutil.copy2(p.transcript_raw, p.transcript)
-    logger.info(f"Transcript promoted: {p.transcript_raw.name} → {p.transcript.name}")
-    return p.transcript
+
+def load_transcript_raw(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> list[dict]:
+    """Load segments specifically from transcript.raw.json (pipeline output)."""
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    return _load_transcript_file(p.transcript_raw)["segments"]
+
+
+def load_transcript_validated(
+    audio_path: Path | str, output_dir: str | Path | None = None
+) -> list[dict]:
+    """Load segments specifically from transcript.json (user-validated)."""
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    return _load_transcript_file(p.transcript)["segments"]
 
 
 # ──────────────────────────────────────────────
-# Utilities
+# Segment analysis
 # ──────────────────────────────────────────────
 
 
-def _free_vram(model) -> None:
-    """Release VRAM after model use."""
-    del model
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
-_UNKNOWN_SPEAKERS = {"UNKNOWN", "UNK", "None", "none"}
-
-# Segments assigned to this name are intentionally excluded at export.
-_REMOVE_SPEAKERS = {"[remove]"}
+# Segments assigned to this name are excluded by clean_transcript().
+REMOVE_SPEAKERS = {"[remove]"}
 
 
 def segment_speech_density(seg: dict) -> float | None:
@@ -576,16 +484,16 @@ def is_segment_flagged(seg: dict) -> bool:
 
     A segment is flagged when:
     - speaker is missing or an unresolved placeholder (UNKNOWN, UNK, …)
-    - speaker is a reserved remove marker ([remove], [music], …)
+    - speaker is a reserved remove marker ([remove])
     - speech density is abnormally low (< 2 chars/s), indicating music, noise,
       or a Whisper hallucination artifact
     """
     speaker = seg.get("speaker", "")
     if speaker == "[BREAK]":
         return False
-    if not speaker or speaker in _UNKNOWN_SPEAKERS:
+    if not speaker or speaker in UNKNOWN_SPEAKERS:
         return True
-    if speaker in _REMOVE_SPEAKERS:
+    if speaker in REMOVE_SPEAKERS:
         return True
     density = segment_speech_density(seg)
     return density is not None and density < 2.0
@@ -610,7 +518,12 @@ def clean_transcript(
     result = []
     for seg in segments:
         speaker = seg.get("speaker", "")
-        if remove_unknown_speakers and (not speaker or speaker in _UNKNOWN_SPEAKERS):
+        if speaker == "[BREAK]":
+            result.append(seg)
+            continue
+        if speaker in REMOVE_SPEAKERS:
+            continue
+        if remove_unknown_speakers and (not speaker or speaker in UNKNOWN_SPEAKERS):
             continue
         if remove_low_density:
             density = segment_speech_density(seg)
@@ -625,22 +538,25 @@ def save_transcript(
     audio_path: Path | str,
     segments: list[dict],
     output_dir: str | Path | None = None,
+    max_gap: float = 10.0,
 ) -> None:
     """Save an edited segment list back to transcript.json, preserving metadata.
+
+    Consecutive segments from the same speaker are merged when the gap between
+    them is ≤ max_gap seconds.  Pass max_gap=0 to disable merging entirely.
 
     Args:
         audio_path : source audio file (used to locate transcript.json)
         segments   : updated segment list
         output_dir : same output_dir used when the transcript was created
+        max_gap    : maximum silence gap (seconds) to merge across (default 10s);
+                     0 disables merging
     """
-    audio_path = Path(audio_path)
-    p = _EpisodePaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     full = load_transcript_full(audio_path, output_dir=output_dir)
-    merged = simplify_transcript(segments)
+    merged = merge_consecutive_segments(segments, max_gap=max_gap)
     full["segments"] = merged
-    p.transcript.write_text(
-        json.dumps(full, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    write_json(p.transcript, full)
     logger.info(
         f"Transcript saved → {p.transcript.name} ({len(segments)} → {len(merged)} segments)"
     )
@@ -691,7 +607,7 @@ def trim_audio(
     Returns the path to the trimmed audio file (skips if it already exists).
     """
     audio_path = Path(audio_path)
-    out = episode_output_dir(audio_path, output_dir)
+    out = AudioPaths.output_dir(audio_path, output_dir)
 
     def _mmss(s: float) -> str:
         return f"{int(s) // 60}m{int(s) % 60:02d}s"
@@ -724,19 +640,3 @@ def trim_audio(
     )
     logger.info(f"Trimmed audio → {dest.name} ({_mmss(start)} → {_mmss(end)})")
     return dest
-
-
-def transcript_to_text(segments: list[dict]) -> str:
-    """Format transcript segments as plain readable text for quick review.
-
-    Works with both load_transcript() (resolved names) and
-    load_diarized_segments() (raw SPEAKER_XX labels).
-    """
-    lines = []
-    for seg in segments:
-        speaker = seg.get("speaker", "UNKNOWN")
-        start = seg["start"]
-        end = seg["end"]
-        text = str(seg.get("text", "")).strip()
-        lines.append(f"[{start:.3f}s - {end:.3f}s] {speaker}\n{text}")
-    return "\n\n".join(lines)

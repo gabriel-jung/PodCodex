@@ -7,25 +7,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+from podcodex.core._utils import INTERNAL_SUFFIXES as _INTERNAL_SUFFIXES
 
-# Internal file suffixes that are never translation language names.
-# Must stay in sync with podcodex.core.translate._INTERNAL_SUFFIXES.
-_INTERNAL_SUFFIXES = frozenset(
-    {
-        "transcript",
-        "transcript.raw",
-        "polished",
-        "polished.raw",
-        "words",
-        "diar",
-        "assigned",
-        "speaker_map",
-        "imported",
-        "segments.meta",
-        "diarization.meta",
-    }
-)
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
 
 
 @dataclass

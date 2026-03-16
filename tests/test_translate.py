@@ -1,11 +1,10 @@
 """Tests for podcodex.core.translate — pure functions only (no API calls, no Ollama)."""
 
 import json
+from podcodex.core._utils import call_and_parse, segments_to_text
 from podcodex.core.translate import (
-    _translate_batch,
-    build_manual_translate_prompt,
-    build_manual_translate_prompts_batched,
-    translation_to_text,
+    build_manual_prompt,
+    build_manual_prompts_batched,
 )
 
 
@@ -22,11 +21,11 @@ def make_segments(*texts):
 
 
 # ──────────────────────────────────────────────
-# _translate_batch
+# call_and_parse
 # ──────────────────────────────────────────────
 
 
-def test_translate_batch_happy_path():
+def test_call_and_parse_happy_path():
     batch = make_segments("Bonjour", "Au revoir")
     response = json.dumps(
         [
@@ -34,62 +33,77 @@ def test_translate_batch_happy_path():
             {"index": 1, "text": "Goodbye"},
         ]
     )
-    result = _translate_batch(batch, "sys", make_call_fn(response))
-    assert result[0]["text_trad"] == "Hello"
-    assert result[1]["text_trad"] == "Goodbye"
+    result = call_and_parse(batch, "sys", make_call_fn(response))
+    assert result[0]["text"] == "Hello"
+    assert result[1]["text"] == "Goodbye"
 
 
-def test_translate_batch_keeps_original_text():
-    """Source text field is never modified; LLM text goes to text_trad."""
+def test_call_and_parse_overwrites_text():
+    """LLM result replaces the text field."""
     batch = make_segments("Bonjour le monde")
     response = json.dumps([{"index": 0, "text": "Hello world"}])
-    result = _translate_batch(batch, "sys", make_call_fn(response))
-    assert result[0]["text"] == "Bonjour le monde"
-    assert result[0]["text_trad"] == "Hello world"
+    result = call_and_parse(batch, "sys", make_call_fn(response), min_length_ratio=0)
+    assert result[0]["text"] == "Hello world"
 
 
-def test_translate_batch_bad_json_does_not_crash():
+def test_call_and_parse_bad_json_keeps_original():
     batch = make_segments("Bonjour le monde")
-    result = _translate_batch(batch, "sys", make_call_fn("not json at all"))
+    result = call_and_parse(batch, "sys", make_call_fn("not json at all"))
     assert len(result) == 1
     assert result[0]["text"] == "Bonjour le monde"
-    assert result[0]["text_trad"] == ""
 
 
-def test_translate_batch_missing_index_falls_back():
-    """If LLM omits a segment, that segment gets empty text_trad."""
-    batch = make_segments("Premier", "Deuxième")
+def test_call_and_parse_missing_index_keeps_original():
+    """If LLM omits a segment, that segment keeps its original text."""
+    batch = make_segments("Premier", "Deuxieme")
     response = json.dumps([{"index": 0, "text": "First"}])
-    result = _translate_batch(batch, "sys", make_call_fn(response))
-    assert result[0]["text_trad"] == "First"
-    assert result[1]["text"] == "Deuxième"
-    assert result[1]["text_trad"] == ""
+    result = call_and_parse(batch, "sys", make_call_fn(response))
+    assert result[0]["text"] == "First"
+    assert result[1]["text"] == "Deuxieme"
 
 
-def test_translate_batch_strips_think_tags():
+def test_call_and_parse_strips_think_tags():
     batch = make_segments("Bonjour")
     inner = json.dumps([{"index": 0, "text": "Hello"}])
     response = f"<think>some reasoning</think>\n{inner}"
-    result = _translate_batch(batch, "sys", make_call_fn(response))
-    assert result[0]["text_trad"] == "Hello"
+    result = call_and_parse(batch, "sys", make_call_fn(response))
+    assert result[0]["text"] == "Hello"
 
 
-def test_translate_batch_strips_markdown_fences():
+def test_call_and_parse_strips_markdown_fences():
     batch = make_segments("Bonjour")
     inner = json.dumps([{"index": 0, "text": "Hello"}])
     response = f"```json\n{inner}\n```"
-    result = _translate_batch(batch, "sys", make_call_fn(response))
-    assert result[0]["text_trad"] == "Hello"
+    result = call_and_parse(batch, "sys", make_call_fn(response))
+    assert result[0]["text"] == "Hello"
+
+
+def test_call_and_parse_truncation_guard():
+    """Segments truncated below min_length_ratio keep original text."""
+    batch = make_segments("This is a very long sentence that should not be truncated")
+    response = json.dumps([{"index": 0, "text": "Short"}])
+    result = call_and_parse(batch, "sys", make_call_fn(response), min_length_ratio=0.7)
+    assert (
+        result[0]["text"] == "This is a very long sentence that should not be truncated"
+    )
+
+
+def test_call_and_parse_no_truncation_guard_when_disabled():
+    """min_length_ratio=0 disables the truncation guard."""
+    batch = make_segments("This is a very long sentence that should not be truncated")
+    response = json.dumps([{"index": 0, "text": "Short"}])
+    result = call_and_parse(batch, "sys", make_call_fn(response), min_length_ratio=0)
+    assert result[0]["text"] == "Short"
 
 
 # ──────────────────────────────────────────────
-# build_manual_translate_prompts_batched
+# build_manual_prompts_batched
 # ──────────────────────────────────────────────
 
 
 def test_batching_single_batch():
     segments = make_segments("Short")
-    batches = build_manual_translate_prompts_batched(segments, batch_minutes=15)
+    batches = build_manual_prompts_batched(segments, batch_minutes=15)
     assert len(batches) == 1
 
 
@@ -98,7 +112,7 @@ def test_batching_splits_by_duration():
         {"speaker": "Alice", "start": i * 600, "end": (i + 1) * 600, "text": f"Seg {i}"}
         for i in range(3)
     ]
-    batches = build_manual_translate_prompts_batched(segments, batch_minutes=15)
+    batches = build_manual_prompts_batched(segments, batch_minutes=15)
     assert len(batches) == 3
 
 
@@ -107,92 +121,55 @@ def test_batching_groups_short_segments():
         {"speaker": "Alice", "start": i * 300, "end": (i + 1) * 300, "text": f"Seg {i}"}
         for i in range(4)
     ]
-    batches = build_manual_translate_prompts_batched(segments, batch_minutes=15)
+    batches = build_manual_prompts_batched(segments, batch_minutes=15)
     assert len(batches) == 2
 
 
 def test_batching_empty():
-    batches = build_manual_translate_prompts_batched([], batch_minutes=15)
+    batches = build_manual_prompts_batched([], batch_minutes=15)
     assert batches == []
 
 
 def test_batching_returns_prompt_strings():
     segments = make_segments("Bonjour")
-    batches = build_manual_translate_prompts_batched(segments, batch_minutes=15)
+    batches = build_manual_prompts_batched(segments, batch_minutes=15)
     batch_segs, prompt = batches[0]
     assert isinstance(prompt, str)
     assert len(prompt) > 0
 
 
 # ──────────────────────────────────────────────
-# build_manual_translate_prompt
+# build_manual_prompt
 # ──────────────────────────────────────────────
 
 
-def test_build_manual_translate_prompt_contains_segments():
+def test_build_manual_prompt_contains_segments():
     segments = make_segments("Bonjour", "Au revoir")
-    prompt = build_manual_translate_prompt(segments, context="French podcast")
+    prompt = build_manual_prompt(segments, context="French podcast")
     assert "Bonjour" in prompt
     assert "Au revoir" in prompt
 
 
-def test_build_manual_translate_prompt_contains_context():
+def test_build_manual_prompt_contains_context():
     segments = make_segments("Bonjour")
-    prompt = build_manual_translate_prompt(segments, context="Film music podcast")
+    prompt = build_manual_prompt(segments, context="Film music podcast")
     assert "Film music podcast" in prompt
 
 
-def test_build_manual_translate_prompt_asks_for_index_and_text():
+def test_build_manual_prompt_asks_for_index_and_text():
     """Translate prompt asks the LLM to return only index and translated text."""
     segments = make_segments("Bonjour")
-    prompt = build_manual_translate_prompt(segments)
+    prompt = build_manual_prompt(segments)
     assert '"index"' in prompt
     assert '"text"' in prompt
-    assert "text_trad" not in prompt
 
 
 # ──────────────────────────────────────────────
-# translation_to_text
+# segments_to_text
 # ──────────────────────────────────────────────
 
 
-def test_translation_to_text_source():
+def test_segments_to_text():
     segments = [{"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "Hello"}]
-    out = translation_to_text(segments)
+    out = segments_to_text(segments)
     assert "Hello" in out
-
-
-def test_translation_to_text_trad():
-    segments = [
-        {
-            "speaker": "Alice",
-            "start": 0.0,
-            "end": 2.0,
-            "text": "Bonjour",
-            "text_trad": "Hello",
-        }
-    ]
-    out = translation_to_text(segments, lang="trad")
-    assert "Hello" in out
-    assert "Bonjour" not in out
-
-
-def test_translation_to_text_original_only():
-    segments = [
-        {
-            "speaker": "Alice",
-            "start": 0.0,
-            "end": 2.0,
-            "text": "Bonjour",
-            "text_trad": "Hello",
-        }
-    ]
-    out = translation_to_text(segments, lang="fr")
-    assert "Bonjour" in out
-    assert "Hello" not in out
-
-
-def test_translation_to_text_missing_trad_shows_placeholder():
-    segments = [{"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "Bonjour"}]
-    out = translation_to_text(segments, lang="trad")
-    assert "[not translated]" in out

@@ -1,12 +1,18 @@
-"""Core transcription and diarization functionality."""
+"""Core transcription, polishing, translation, and synthesis pipeline."""
 
 from __future__ import annotations
 
-from . import transcribe
-from . import translate
-from . import synthesize
+from . import polish, synthesize, transcribe, translate
+from ._utils import AudioPaths
 
-__all__ = ["transcribe", "translate", "synthesize", "validate_segments_json"]
+__all__ = [
+    "transcribe",
+    "polish",
+    "translate",
+    "synthesize",
+    "validate_segments_json",
+    "AudioPaths",
+]
 
 
 def validate_segments_json(data, required: tuple[str, ...] = ("text",)) -> str | None:

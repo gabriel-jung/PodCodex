@@ -9,11 +9,8 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.core.transcribe import (
-    is_segment_flagged,
-    _UNKNOWN_SPEAKERS,
-    _REMOVE_SPEAKERS,
-)
+from podcodex.core._utils import UNKNOWN_SPEAKERS
+from podcodex.core.transcribe import REMOVE_SPEAKERS, is_segment_flagged
 
 _PAGE_SIZES = [10, 20, 50]
 _DEFAULT_PAGE_SIZE = 20
@@ -58,7 +55,7 @@ def render_segment_editor(
         audio_path = Path(audio_path)
 
     # ── Session-state keys ──
-    del_key = f"{editor_key}_deleted"
+    deleted_key = f"{editor_key}_deleted"
     page_key = f"{editor_key}_page"
     flag_filter_key = f"{editor_key}_filter_flagged"
     speaker_filter_key = f"{editor_key}_filter_speaker"
@@ -67,9 +64,9 @@ def render_segment_editor(
     def _mark_dirty():
         st.session_state[dirty_key] = True
 
-    if del_key not in st.session_state:
-        st.session_state[del_key] = set()
-    deleted: set[int] = st.session_state[del_key]
+    if deleted_key not in st.session_state:
+        st.session_state[deleted_key] = set()
+    deleted: set[int] = st.session_state[deleted_key]
     if page_key not in st.session_state:
         st.session_state[page_key] = 0
 
@@ -77,7 +74,7 @@ def render_segment_editor(
     all_active = [i for i in range(len(segments)) if i not in deleted]
     # [remove] speakers are always flagged regardless of show_flags
     remove_flagged = {
-        i for i in all_active if segments[i].get("speaker", "") in _REMOVE_SPEAKERS
+        i for i in all_active if segments[i].get("speaker", "") in REMOVE_SPEAKERS
     }
     if show_flags:
 
@@ -103,14 +100,14 @@ def render_segment_editor(
         col_widths.append(2)
     col_widths += [3, 1, 1, 1]
     bar = st.columns(col_widths)
-    ci = 0
+    col_idx = 0
 
-    cap_col = bar[ci]
-    ci += 1
+    caption_col = bar[col_idx]
+    col_idx += 1
 
     if show_flag_toggle:
-        with bar[ci]:
-            ci += 1
+        with bar[col_idx]:
+            col_idx += 1
             show_flagged_only = st.toggle(
                 f"⚠️ Flagged only ({len(flagged)})", key=flag_filter_key
             )
@@ -123,8 +120,8 @@ def render_segment_editor(
     else:
         show_flagged_only = False
 
-    with bar[ci]:
-        ci += 1
+    with bar[col_idx]:
+        col_idx += 1
         prev_sf = st.session_state.get(f"{speaker_filter_key}_prev", [])
         selected_speakers = st.multiselect(
             "Speaker",
@@ -147,8 +144,8 @@ def render_segment_editor(
         ]
 
     page_size_key = f"{editor_key}_page_size"
-    with bar[ci]:
-        ci += 1
+    with bar[col_idx]:
+        col_idx += 1
         page_size = st.selectbox(
             "Per page",
             options=_PAGE_SIZES,
@@ -162,12 +159,12 @@ def render_segment_editor(
     n_pages = max(1, (len(active_indices) + page_size - 1) // page_size)
     page = min(st.session_state[page_key], n_pages - 1)
 
-    with cap_col:
+    with caption_col:
         st.caption(
             f"{len(segments)} segments · {len(deleted)} deleted · page {page + 1}/{n_pages}"
         )
-    with bar[ci]:
-        ci += 1
+    with bar[col_idx]:
+        col_idx += 1
         if st.button(
             "← Prev",
             disabled=page == 0,
@@ -176,7 +173,7 @@ def render_segment_editor(
         ):
             st.session_state[page_key] = page - 1
             st.rerun()
-    with bar[ci]:
+    with bar[col_idx]:
         if st.button(
             "Next →",
             disabled=page == n_pages - 1,
@@ -207,9 +204,9 @@ def render_segment_editor(
             else speaker
         )
         is_unknown = show_flags and (
-            not display_speaker or display_speaker in _UNKNOWN_SPEAKERS
+            not display_speaker or display_speaker in UNKNOWN_SPEAKERS
         )
-        is_remove = display_speaker in _REMOVE_SPEAKERS
+        is_remove = display_speaker in REMOVE_SPEAKERS
         speaker_label = (
             f"⚠️ {display_speaker or 'None'}"
             if (is_unknown or is_remove)
@@ -276,11 +273,13 @@ def render_segment_editor(
             )
 
             if show_timestamps or show_delete:
-                w = ([2, 2] if show_timestamps else []) + ([1] if show_delete else [])
-                row = st.columns(w)
-                ri = 0
+                row_widths = ([2, 2] if show_timestamps else []) + (
+                    [1] if show_delete else []
+                )
+                row = st.columns(row_widths)
+                row_idx = 0
                 if show_timestamps:
-                    with row[ri]:
+                    with row[row_idx]:
                         st.number_input(
                             "Start (s)",
                             value=start,
@@ -290,8 +289,8 @@ def render_segment_editor(
                             key=f"{editor_key}_start_{i}",
                             on_change=_mark_dirty,
                         )
-                    ri += 1
-                    with row[ri]:
+                    row_idx += 1
+                    with row[row_idx]:
                         st.number_input(
                             "End (s)",
                             value=end,
@@ -301,15 +300,17 @@ def render_segment_editor(
                             key=f"{editor_key}_end_{i}",
                             on_change=_mark_dirty,
                         )
-                    ri += 1
+                    row_idx += 1
                 if show_delete:
-                    with row[ri]:
+                    with row[row_idx]:
                         if st.button(
                             "🗑️ Delete",
                             key=f"{editor_key}_del_{i}",
                             use_container_width=True,
                         ):
-                            st.session_state[del_key] = st.session_state[del_key] | {i}
+                            st.session_state[deleted_key] = st.session_state[
+                                deleted_key
+                            ] | {i}
                             st.session_state[dirty_key] = True
                             st.rerun()
 
@@ -337,7 +338,9 @@ def render_segment_editor(
                     type="primary",
                     key=f"{editor_key}_del_yes",
                 ):
-                    st.session_state[del_key] = st.session_state[del_key] | set(flagged)
+                    st.session_state[deleted_key] = st.session_state[deleted_key] | set(
+                        flagged
+                    )
                     st.session_state[dirty_key] = True
                     st.session_state.pop(confirm_key, None)
                     st.session_state[page_key] = 0
@@ -387,7 +390,7 @@ def render_segment_editor(
                 merged.append(updated)
             on_save(merged)
             st.session_state[dirty_key] = False
-            st.session_state.pop(del_key, None)
+            st.session_state.pop(deleted_key, None)
             st.session_state[page_key] = 0
             st.rerun()
 

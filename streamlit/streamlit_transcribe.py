@@ -7,12 +7,10 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.core import transcribe
+from podcodex.core import AudioPaths, transcribe
+from podcodex.core._utils import group_by_speaker, segments_to_text
 from podcodex.core.transcribe import (
     save_transcript,
-    has_raw_transcript,
-    is_validated_transcript,
-    transcript_raw_exists,
     load_transcript_raw,
     load_transcript_validated,
 )
@@ -27,12 +25,11 @@ def render():
 
     # ── Section 1: Audio & Config ──
     if st.session_state.get("audio_path"):
-        audio_path_loaded = st.session_state.audio_path
         output_dir = st.session_state.get("output_dir", "")
         with st.container(border=True):
             col1, col2 = st.columns([4, 1])
             with col1:
-                st.markdown(f"**{Path(str(audio_path_loaded)).name}**")
+                st.markdown(f"**{Path(str(st.session_state.audio_path)).name}**")
                 st.caption(str(output_dir))
             with col2:
                 language = st.text_input(
@@ -70,7 +67,7 @@ def render():
     # ── Import existing transcript ──
     already_exported = status["exported"]
     with st.expander(
-        "📂 **Import existing transcript** — skip transcription, diarization & export",
+        "📂 **Import existing transcript** — skip transcription and diarization",
         expanded=not already_exported and not st.session_state.get("transcript"),
     ):
         uploaded_json = st.file_uploader(
@@ -108,9 +105,7 @@ def render():
                                 len(s.get("text", "").split()) for s in data
                             ),
                         }
-                        from podcodex.core.transcribe import _EpisodePaths
-
-                        p = _EpisodePaths.from_audio(audio_path, output_dir=output_dir)
+                        p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
                         p.transcript_raw.parent.mkdir(parents=True, exist_ok=True)
                         p.transcript_raw.write_text(
                             json.dumps(
@@ -169,9 +164,7 @@ def render():
 
         if status["transcribed"]:
             with st.expander("📄 Inspect transcription results", expanded=False):
-                result = transcribe.load_transcription(
-                    audio_path, output_dir=output_dir
-                )
+                result = transcribe.load_segments(audio_path, output_dir=output_dir)
                 st.caption(
                     f"Language: **{result['language']}** · Duration: **{result['duration']:.1f}s** · **{result['num_segments']}** segments"
                 )
@@ -242,7 +235,7 @@ def render():
                     force=force_diarize,
                 )
             with st.spinner("Assigning speakers to segments..."):
-                transcribe.assign_speakers_to_file(
+                transcribe.assign_speakers(
                     audio_path, output_dir=output_dir, force=force_diarize
                 )
             st.session_state.requested_tab = "transcribe"
@@ -338,12 +331,12 @@ def render():
                 )
             with col_badge:
                 _dirty = st.session_state.get(f"transcript_{audio_path}_dirty", False)
-                if (
-                    is_validated_transcript(audio_path, output_dir=output_dir)
-                    and not _dirty
-                ):
+                paths = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+                if paths.transcript.exists() and not _dirty:
                     st.success("✅ Saved")
-                elif has_raw_transcript(audio_path, output_dir=output_dir) or _dirty:
+                elif (
+                    paths.transcript_raw.exists() and not paths.transcript.exists()
+                ) or _dirty:
                     st.warning("⚠️ Unsaved")
             _render_transcript_editor(audio_path, output_dir)
 
@@ -467,6 +460,7 @@ def _render_audio_trim(output_dir: str):
 
 
 def _render_status(status: dict):
+    """Show the pipeline status bar (transcribed → diarized → assigned → mapped → exported)."""
     labels = {
         "transcribed": "Transcribed",
         "diarized": "Diarized",
@@ -482,18 +476,17 @@ def _render_status(status: dict):
 
 
 def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
+    """Render the speaker naming UI: text inputs, audio previews, and save button."""
     diarization = transcribe.load_diarization(audio_path, output_dir=output_dir)
     existing_map = transcribe.load_speaker_map(audio_path, output_dir=output_dir)
     speaker_ids = diarization["speakers_found"]
-    ep = Path(audio_path).stem  # namespace all keys by episode
+    episode_stem = Path(audio_path).stem  # namespace all widget keys by episode
 
     all_segs = _load_diarized_segments_cached(str(audio_path), output_dir)
-    segs_by_speaker: dict[str, list[dict]] = {}
-    for seg in all_segs:
-        sp = seg.get("speaker", "UNKNOWN")
-        segs_by_speaker.setdefault(sp, []).append(seg)
+    segs_by_speaker = group_by_speaker(all_segs)
 
-    def _seg_flags(seg):
+    def _check_hallucination(seg):
+        """Return (is_hallucinated, text) for a segment."""
         text = str(seg.get("text", "")).strip()
         return is_hallucination(text), text
 
@@ -504,8 +497,8 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
             key=lambda s: float(s["end"]) - float(s["start"]),
             reverse=True,
         )
-        clean = [s for s in all_speaker_segs if not _seg_flags(s)[0]]
-        flagged_segs = [s for s in all_speaker_segs if _seg_flags(s)[0]]
+        clean = [s for s in all_speaker_segs if not _check_hallucination(s)[0]]
+        flagged_segs = [s for s in all_speaker_segs if _check_hallucination(s)[0]]
         top_segs = (clean + flagged_segs)[:3]
         n_flagged = len(flagged_segs)
 
@@ -522,21 +515,24 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
             with col_del:
                 if st.button(
                     "🗑️",
-                    key=f"remove_{ep}_{speaker_id}",
+                    key=f"remove_{episode_stem}_{speaker_id}",
                     help="Fill [remove] in name field",
                 ):
-                    st.session_state[f"speaker_{ep}_{speaker_id}"] = "[remove]"
+                    st.session_state[f"speaker_{episode_stem}_{speaker_id}"] = (
+                        "[remove]"
+                    )
                     st.rerun()
             with col_name:
                 name = st.text_input(
                     "Name",
                     value=existing_map.get(speaker_id, ""),
-                    key=f"speaker_{ep}_{speaker_id}",
+                    key=f"speaker_{episode_stem}_{speaker_id}",
                     placeholder="Enter name…",
                     label_visibility="collapsed",
                 )
             new_map[speaker_id] = (
-                st.session_state.get(f"speaker_{ep}_{speaker_id}", name) or speaker_id
+                st.session_state.get(f"speaker_{episode_stem}_{speaker_id}", name)
+                or speaker_id
             )
 
             # ── Audio previews — collapsed ──
@@ -550,25 +546,25 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
             with st.expander(label, expanded=False):
                 active = st.session_state.get("_active_speaker_audio")
                 is_active = active in (
-                    f"top_{ep}_{speaker_id}",
-                    f"all_{ep}_{speaker_id}",
+                    f"top_{episode_stem}_{speaker_id}",
+                    f"all_{episode_stem}_{speaker_id}",
                 )
-                show_audio = active == f"all_{ep}_{speaker_id}"
+                show_audio = active == f"all_{episode_stem}_{speaker_id}"
 
                 if not is_active:
                     if st.button(
                         "🔊 Preview",
-                        key=f"btn_top_{ep}_{speaker_id}",
+                        key=f"btn_top_{episode_stem}_{speaker_id}",
                         use_container_width=True,
                     ):
                         st.session_state["_active_speaker_audio"] = (
-                            f"top_{ep}_{speaker_id}"
+                            f"top_{episode_stem}_{speaker_id}"
                         )
                         st.rerun()
                 else:
                     if st.button(
                         "✖ Unload",
-                        key=f"btn_top_{ep}_{speaker_id}",
+                        key=f"btn_top_{episode_stem}_{speaker_id}",
                         use_container_width=True,
                     ):
                         st.session_state.pop("_active_speaker_audio", None)
@@ -577,7 +573,7 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
                 cols = st.columns(len(top_segs)) if top_segs else []
                 for i, (col, seg) in enumerate(zip(cols, top_segs)):
                     dur = float(seg["end"]) - float(seg["start"])
-                    hallu, text = _seg_flags(seg)
+                    is_hallucinated, text = _check_hallucination(seg)
                     with col:
                         if is_active:
                             try:
@@ -596,7 +592,7 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
                         )
                         if not text:
                             st.caption("⚠️ _(no text)_")
-                        elif hallu:
+                        elif is_hallucinated:
                             st.caption(f"⚠️ _{text[:70]}_ ← hallucination")
                         else:
                             st.caption(f"_{text[:70]}{'…' if len(text) > 70 else ''}_")
@@ -605,19 +601,19 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
                     if not show_audio:
                         if st.button(
                             f"Show all segments ({len(remaining_segs)} more)",
-                            key=f"btn_load_{ep}_{speaker_id}",
+                            key=f"btn_load_{episode_stem}_{speaker_id}",
                             use_container_width=True,
                         ):
                             st.session_state["_active_speaker_audio"] = (
-                                f"all_{ep}_{speaker_id}"
+                                f"all_{episode_stem}_{speaker_id}"
                             )
                             st.rerun()
                     else:
                         st.markdown(f"**Remaining {len(remaining_segs)} segments:**")
                         for j, seg in enumerate(remaining_segs[:30]):
                             dur = float(seg["end"]) - float(seg["start"])
-                            hallu, text = _seg_flags(seg)
-                            flags = "⚠️ " if hallu else ""
+                            is_hallucinated, text = _check_hallucination(seg)
+                            flags = "⚠️ " if is_hallucinated else ""
                             col1, col2, col3 = st.columns([3, 4, 2])
                             with col1:
                                 st.caption(
@@ -626,7 +622,7 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
                             with col2:
                                 if not text:
                                     st.caption("_(no text)_")
-                                elif hallu:
+                                elif is_hallucinated:
                                     st.caption(f"⚠️ _{text[:80]}_ ← hallucination")
                                 else:
                                     st.caption(
@@ -678,10 +674,12 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
 
 @st.cache_data(show_spinner=False)
 def _load_diarized_segments_cached(audio_path: str, output_dir: str) -> list:
+    """Cached wrapper for ``transcribe.load_diarized_segments``."""
     return transcribe.load_diarized_segments(Path(audio_path), output_dir=output_dir)
 
 
 def _render_transcript_editor(audio_path, output_dir: str):
+    """Render the transcript editor with load original/edits buttons and segment editor."""
     audio_path = Path(audio_path)
     t_key = f"editor_transcript_{audio_path}"
     if t_key not in st.session_state:
@@ -690,8 +688,9 @@ def _render_transcript_editor(audio_path, output_dir: str):
         )
     transcript = st.session_state[t_key]
 
-    has_raw = transcript_raw_exists(audio_path, output_dir=output_dir)
-    has_validated = is_validated_transcript(audio_path, output_dir=output_dir)
+    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    has_raw = paths.transcript_raw.exists()
+    has_validated = paths.transcript.exists()
     if has_raw or has_validated:
         cols = st.columns(2)
         with cols[0]:
@@ -733,8 +732,8 @@ def _render_transcript_editor(audio_path, output_dir: str):
         show_timestamps=True,
         show_delete=True,
         show_flags=True,
-        is_saved=is_validated_transcript(audio_path, output_dir=output_dir),
-        export_fn=transcribe.transcript_to_text,
+        is_saved=paths.transcript.exists(),
+        export_fn=segments_to_text,
         export_filename=f"{audio_path.stem}_transcript.txt",
         next_tab="polish",
         next_tab_label="→ Go to Polish",

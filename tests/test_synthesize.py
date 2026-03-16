@@ -90,7 +90,7 @@ def make_generated(tmp_path, segments_data):
                 "speaker": "Alice",
                 "start": start,
                 "end": end,
-                "text_trad": "Hello",
+                "text": "Hello",
                 "audio_file": wav,
                 "sample_rate": SR,
             }

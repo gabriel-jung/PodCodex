@@ -7,19 +7,55 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.core import transcribe
+from podcodex.core import AudioPaths, transcribe
 from podcodex.core import translate as translate_mod
 from podcodex.core import polish as polish_mod
+from podcodex.core._utils import segments_to_text
 from podcodex.core.translate import (
-    has_raw_translation,
-    is_validated_translation,
-    translation_raw_exists,
     load_translation_raw,
     load_translation_validated,
 )
 from podcodex.core import validate_segments_json
 from utils import PROVIDERS, build_llm_kwargs, fmt_time, on_provider_change
 from streamlit_editor import render_segment_editor
+
+
+def _run_translate_button(
+    btn_disabled,
+    mode,
+    source_lang,
+    target_lang,
+    context,
+    segments,
+    audio_path,
+    output_dir,
+):
+    """Render the 'Translate' action button and run the pipeline on click.
+
+    Shared by API and Ollama modes — only the mode-specific settings differ.
+    """
+    if st.button(
+        "🌍 Translate",
+        use_container_width=True,
+        type="primary",
+        disabled=btn_disabled,
+        help="Already translated. Check 'Force' to re-run." if btn_disabled else None,
+    ):
+        kwargs = build_llm_kwargs(
+            "trad",
+            mode,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            context=context,
+        )
+        with st.spinner(f"Processing {len(segments)} segments..."):
+            try:
+                result = translate_mod.translate_segments(segments, **kwargs)
+                _save_translation(audio_path, output_dir, result, target_lang)
+                st.success(f"Done — {len(result)} segments translated.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed: {e}")
 
 
 def render():
@@ -91,6 +127,8 @@ def render():
         st.session_state.transcript = None
         st.rerun()
 
+    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+
     # ── Episode header ──
     with st.container(border=True):
         st.markdown(f"**{Path(str(audio_path)).name}**")
@@ -153,7 +191,7 @@ def render():
             )
 
         # Offer polished as source if available
-        has_polished = polish_mod.polished_exists(audio_path, output_dir=output_dir)
+        has_polished = paths.has_polished()
         if has_polished:
             source_choice = st.radio(
                 "Source",
@@ -170,17 +208,15 @@ def render():
                 segments = polish_mod.load_polished(audio_path, output_dir=output_dir)
                 st.caption(f"Using polished transcript — {len(segments)} segments")
             else:
-                segments = transcribe.simplify_transcript(transcript)
-                st.caption(
-                    f"Using raw transcript — {len(segments)} segments (after merging)"
-                )
+                segments = transcribe.merge_consecutive_segments(transcript)
+                st.caption(f"Using raw transcript — {len(segments)} segments")
         else:
-            segments = transcribe.simplify_transcript(transcript)
+            segments = transcribe.merge_consecutive_segments(transcript)
             n_orig = len(transcript)
             n_simplified = len(segments)
             if n_simplified < n_orig:
                 st.caption(
-                    f"**{n_orig}** segments → **{n_simplified}** after merging consecutive same-speaker segments"
+                    f"**{n_orig}** segments → **{n_simplified}** (consecutive same-speaker segments consolidated)"
                 )
 
         mode = st.radio(
@@ -224,9 +260,7 @@ def render():
 
     # ── Section 2: Mode-specific settings ──
     with st.container(border=True):
-        already_done = translate_mod.translation_exists(
-            audio_path, target_lang, output_dir=output_dir
-        )
+        already_done = paths.has_translation(target_lang)
         btn_disabled = already_done and not force
         if already_done and not force:
             st.info("Translation already exists. Check **Force** to redo it.")
@@ -263,30 +297,16 @@ def render():
                 placeholder="Leave empty to use API_KEY from .env",
             )
 
-            if st.button(
-                "🌍 Translate",
-                use_container_width=True,
-                type="primary",
-                disabled=btn_disabled,
-                help="Already translated. Check 'Force' to re-run."
-                if btn_disabled
-                else None,
-            ):
-                kwargs = build_llm_kwargs(
-                    "trad",
-                    mode,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    context=context,
-                )
-                with st.spinner(f"Processing {len(segments)} segments..."):
-                    try:
-                        result = translate_mod.translate_segments(segments, **kwargs)
-                        _save_translation(audio_path, output_dir, result, target_lang)
-                        st.success(f"Done — {len(result)} segments translated.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
+            _run_translate_button(
+                btn_disabled,
+                mode,
+                source_lang,
+                target_lang,
+                context,
+                segments,
+                audio_path,
+                output_dir,
+            )
 
         elif mode == "ollama":
             st.markdown("### 🖥️ Step 2 — Ollama Translation")
@@ -298,30 +318,16 @@ def render():
             )
             st.caption("⚠️ Reliable JSON output requires models ≥ 14B parameters.")
 
-            if st.button(
-                "🌍 Translate",
-                use_container_width=True,
-                type="primary",
-                disabled=btn_disabled,
-                help="Already translated. Check 'Force' to re-run."
-                if btn_disabled
-                else None,
-            ):
-                kwargs = build_llm_kwargs(
-                    "trad",
-                    mode,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    context=context,
-                )
-                with st.spinner(f"Processing {len(segments)} segments..."):
-                    try:
-                        result = translate_mod.translate_segments(segments, **kwargs)
-                        _save_translation(audio_path, output_dir, result, target_lang)
-                        st.success(f"Done — {len(result)} segments translated.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
+            _run_translate_button(
+                btn_disabled,
+                mode,
+                source_lang,
+                target_lang,
+                context,
+                segments,
+                audio_path,
+                output_dir,
+            )
 
         elif mode == "manual":
             st.markdown("### ✍️ Step 2 — Manual Translation")
@@ -338,7 +344,7 @@ def render():
                 key="trad_batch_minutes",
             )
 
-            batches = translate_mod.build_manual_translate_prompts_batched(
+            batches = translate_mod.build_manual_prompts_batched(
                 segments,
                 batch_minutes=batch_minutes,
                 context=context,
@@ -462,6 +468,7 @@ def render():
 def _save_translation(
     audio_path, output_dir: str, segments: list[dict], target_lang: str
 ) -> None:
+    """Save translation as raw and refresh the session-state translations cache."""
     translate_mod.save_translation_raw(
         audio_path, segments, target_lang, output_dir=output_dir
     )
@@ -469,6 +476,7 @@ def _save_translation(
 
 
 def _reload_translations(audio_path, output_dir: str) -> None:
+    """Rescan disk for translations and update session state."""
     langs = translate_mod.list_translations(audio_path, output_dir=output_dir)
     st.session_state.translations = {
         lang: translate_mod.load_translation(audio_path, lang, output_dir=output_dir)
@@ -482,7 +490,9 @@ def _reload_translations(audio_path, output_dir: str) -> None:
 def _render_translation_editor(
     audio_path, output_dir: str, langs: list[str], source_segments: list[dict]
 ):
+    """Render one tab per language with a segment editor, load/save buttons, and badges."""
     stem = Path(audio_path).stem
+    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     with st.container(border=True):
         st.markdown("### ✏️ Step 3 — Review & Edit")
         tabs = st.tabs([lang.capitalize() for lang in langs])
@@ -496,6 +506,8 @@ def _render_translation_editor(
             translation = st.session_state[t_key]
 
             def _make_save(lang=lang, t_key=t_key):
+                """Build a save callback bound to a specific language and cache key."""
+
                 def _on_save(merged):
                     translate_mod.save_translation(
                         audio_path, merged, lang, output_dir=output_dir
@@ -514,25 +526,13 @@ def _render_translation_editor(
                     _dirty = st.session_state.get(
                         f"translate_{audio_path}_{lang}_dirty", False
                     )
-                    if (
-                        is_validated_translation(
-                            audio_path, lang, output_dir=output_dir
-                        )
-                        and not _dirty
-                    ):
+                    if paths.has_validated_translation(lang) and not _dirty:
                         st.success("✅ Saved")
-                    elif (
-                        has_raw_translation(audio_path, lang, output_dir=output_dir)
-                        or _dirty
-                    ):
+                    elif paths.has_raw_translation(lang) or _dirty:
                         st.warning("⚠️ Unsaved")
 
-                has_raw = translation_raw_exists(
-                    audio_path, lang, output_dir=output_dir
-                )
-                has_validated = is_validated_translation(
-                    audio_path, lang, output_dir=output_dir
-                )
+                has_raw = paths.translation_raw_exists(lang)
+                has_validated = paths.has_validated_translation(lang)
                 cols = st.columns(2)
                 with cols[0]:
                     if st.button(
@@ -565,10 +565,8 @@ def _render_translation_editor(
                     on_save=_make_save(),
                     audio_path=audio_path,
                     reference_segments=source_segments,
-                    is_saved=is_validated_translation(
-                        audio_path, lang, output_dir=output_dir
-                    ),
-                    export_fn=translate_mod.translation_to_text,
+                    is_saved=paths.has_validated_translation(lang),
+                    export_fn=segments_to_text,
                     export_filename=f"{stem}.{lang}.txt",
                     next_tab="synthesize" if lang == langs[-1] else None,
                     next_tab_label="→ Go to Synthesis",

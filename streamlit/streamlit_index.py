@@ -1,5 +1,5 @@
 """
-podcodex.ui.streamlit_rag — Search tab (index & query)
+podcodex.ui.streamlit_index — Index tab (vectorize episodes for search)
 """
 
 from __future__ import annotations
@@ -9,19 +9,14 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.ingest.folder import find_audio
-from utils import fmt_time
-
 try:
     from podcodex.rag.defaults import (
-        ALPHA,
         CHUNK_SIZE,
         CHUNK_THRESHOLD,
         CHUNKING_STRATEGIES,
         DEFAULT_CHUNKING,
         DEFAULT_MODEL,
         MODELS,
-        TOP_K,
     )
     from podcodex.rag.localstore import LocalStore
     from podcodex.rag.store import collection_name
@@ -32,8 +27,8 @@ except ImportError:
 
 
 def render():
-    st.header("Search")
-    st.caption("Index episodes for vector search, then query across your show.")
+    st.header("Index")
+    st.caption("Vectorize episodes so they can be searched across your show.")
 
     if not _RAG_AVAILABLE:
         st.error(
@@ -46,21 +41,15 @@ def render():
     audio_path = st.session_state.get("audio_path")
     output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
 
-    # ── Section 1: Index ──
     with st.container(border=True):
-        st.markdown("### ⚙️ Index Episode")
         if not audio_path:
             st.info("Load an episode from the sidebar to index it.")
         else:
             _render_index_section(audio_path, output_dir, show_name)
 
-    # ── Section 2: Search ──
-    with st.container(border=True):
-        st.markdown("### 🔍 Search")
-        _render_search_section(show_name)
-
 
 def _render_index_section(audio_path: str, output_dir: str, show_name: str):
+    """Render the episode indexing UI: source/model/chunker selection and index button."""
     output_dir_path = Path(output_dir)
 
     col_source, col_lang = st.columns(2)
@@ -112,8 +101,8 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
     # Semantic params (shown when "semantic" is selected)
     if "semantic" in chunkings:
         with st.expander("Semantic chunking settings", expanded=False):
-            col_cs, col_ct = st.columns(2)
-            with col_cs:
+            col_chunk_size, col_chunk_threshold = st.columns(2)
+            with col_chunk_size:
                 chunk_size = st.number_input(
                     "Max tokens per chunk",
                     min_value=64,
@@ -122,7 +111,7 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
                     step=32,
                     key="rag_chunk_size",
                 )
-            with col_ct:
+            with col_chunk_threshold:
                 chunk_threshold = st.slider(
                     "Split threshold",
                     min_value=0.0,
@@ -146,8 +135,8 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
             local = LocalStore(db_path=db_path)
             for mk in model_keys:
                 for ck in chunkings:
-                    col = collection_name(show_input, model=mk, chunker=ck)
-                    if local.episode_is_indexed(col, episode_stem):
+                    coll = collection_name(show_input, model=mk, chunker=ck)
+                    if local.episode_is_indexed(coll, episode_stem):
                         indexed.add(f"{model_labels[mk]} / {ck}")
                     else:
                         pending.append(f"{model_labels[mk]} / {ck}")
@@ -158,6 +147,7 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
 
     if indexed and not pending:
         st.success(f"All {len(indexed)} combination(s) indexed.")
+        st.session_state.indexed = True
     elif indexed:
         st.info(
             f"{len(indexed)} indexed, {len(pending)} pending: " + ", ".join(pending)
@@ -211,6 +201,7 @@ def _run_indexing(
     chunk_threshold: float,
     overwrite: bool,
 ):
+    """Run the vectorization pipeline for all (model, chunker) combinations."""
     from podcodex.cli import _resolve_source, vectorize_batch
     from podcodex.rag.store import QdrantStore
 
@@ -264,159 +255,6 @@ def _run_indexing(
         return
 
     progress.empty()
+    st.session_state.indexed = True
     st.toast(f"Indexed {total} combination(s) ({n} chunks embedded).", icon="✅")
     st.rerun()
-
-
-def _render_search_section(show_name: str):
-    audio_path = st.session_state.get("audio_path")
-    episode_stem = Path(audio_path).stem if audio_path else None
-
-    if show_name:
-        show_input = show_name
-    else:
-        show_input = st.text_input(
-            "Show name",
-            value="",
-            key="rag_search_show",
-            help="Name of the show collection to search.",
-        )
-
-    if episode_stem:
-        episode_only = st.toggle(
-            f"This episode only ({episode_stem})",
-            value=True,
-            key="rag_episode_only",
-        )
-        scope = (
-            f"**{episode_stem}**"
-            if episode_only
-            else f"all episodes in **{show_input}**"
-        )
-    else:
-        episode_only = False
-        scope = f"all episodes in **{show_input}**" if show_input else ""
-
-    if scope:
-        st.caption(f"Searching in {scope}")
-
-    col_query, col_btn = st.columns([6, 1])
-    with col_query:
-        query = st.text_input(
-            "Query",
-            placeholder="What was said about neural networks?",
-            key="rag_search_query",
-        )
-    with col_btn:
-        st.markdown("<br>", unsafe_allow_html=True)
-        search_clicked = st.button(
-            "🔍",
-            use_container_width=True,
-            type="primary",
-            disabled=not query.strip() or not show_input.strip(),
-            help="Search",
-        )
-
-    col_alpha, col_model, col_chunking, col_topk = st.columns([2, 2, 2, 1])
-    with col_alpha:
-        alpha = st.slider(
-            "Search mode",
-            min_value=0.0,
-            max_value=1.0,
-            value=float(ALPHA),
-            step=0.1,
-            format="%.1f",
-            key="rag_alpha",
-            help="0 = keyword (BM25) · 1 = semantic (vector) · 0.5 = hybrid",
-        )
-    with col_model:
-        model_labels = {k: v.label for k, v in MODELS.items()}
-        model_key = st.selectbox(
-            "Model",
-            options=list(MODELS.keys()),
-            index=list(MODELS.keys()).index(DEFAULT_MODEL),
-            format_func=lambda k: model_labels[k],
-            key="rag_search_model",
-        )
-    with col_chunking:
-        chunking = st.selectbox(
-            "Chunker",
-            options=list(CHUNKING_STRATEGIES.keys()),
-            index=list(CHUNKING_STRATEGIES.keys()).index(DEFAULT_CHUNKING),
-            key="rag_search_chunking",
-        )
-    with col_topk:
-        top_k = st.slider(
-            "Results", min_value=1, max_value=20, value=TOP_K, key="rag_top_k"
-        )
-
-    if search_clicked:
-        ep_filter = episode_stem if episode_only else None
-        _run_search(
-            query, show_input, top_k, alpha, model_key, chunking, episode=ep_filter
-        )
-
-    results = st.session_state.get("rag_results")
-    if results is not None:
-        if results:
-            _render_results(results)
-        else:
-            st.info("No results. Make sure the show is indexed.")
-
-
-def _run_search(
-    query: str,
-    show: str,
-    top_k: int,
-    alpha: float,
-    model_key: str,
-    chunking: str,
-    episode: str | None = None,
-):
-    from podcodex.rag.retriever import Retriever
-
-    with st.spinner("Searching…"):
-        try:
-            col = collection_name(show, model=model_key, chunker=chunking)
-            retriever = Retriever(model=model_key)
-            results = retriever.retrieve(
-                query, col, top_k=top_k, alpha=alpha, episode=episode
-            )
-            st.session_state.rag_results = results
-        except Exception as e:
-            st.error(f"Search failed: {e}")
-
-
-def _render_results(results: list[dict]):
-    st.divider()
-    st.markdown(f"**{len(results)} result(s)**")
-
-    show_folder = st.session_state.get("show_folder", "")
-
-    for i, res in enumerate(results):
-        score = res.get("score", 0.0)
-        start = res.get("start", 0.0)
-        end = res.get("end", 0.0)
-        episode = res.get("episode", "")
-        speakers_turns = res.get("speakers", [])
-
-        with st.container(border=True):
-            score_dot = "🟢" if score > 0.8 else "🟡" if score > 0.5 else "⚪"
-            st.markdown(
-                f"{score_dot} **{episode}** · {fmt_time(start)}–{fmt_time(end)}"
-                f" <span style='float:right;color:gray'>{score:.2f}</span>",
-                unsafe_allow_html=True,
-            )
-
-            # Show speaker-attributed turns if available, otherwise plain text
-            if speakers_turns:
-                for turn in speakers_turns:
-                    st.markdown(
-                        f"**{turn.get('speaker', '?')}**: {turn.get('text', '')}"
-                    )
-            else:
-                st.write(res.get("text", ""))
-
-            audio_path = find_audio(show_folder, episode)
-            if audio_path:
-                st.audio(str(audio_path), start_time=int(start))

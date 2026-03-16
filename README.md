@@ -61,7 +61,7 @@ from podcodex.core import transcribe
 
 transcribe.transcribe_file("episode.mp3", output_dir="ep01/")
 transcribe.diarize_file("episode.mp3", output_dir="ep01/")
-transcribe.assign_speakers_to_file("episode.mp3", output_dir="ep01/")
+transcribe.assign_speakers("episode.mp3", output_dir="ep01/")
 
 transcribe.save_speaker_map("episode.mp3", {
     "SPEAKER_00": "Alice",
@@ -106,8 +106,7 @@ translated = translate.translate_segments(
 print(translate.build_manual_prompt(segments, context="French podcast about film music"))
 translated = translate.translate_segments(json_from_llm, mode="manual")
 
-translate.save_translation("episode.mp3", translated, output_dir="ep01/")
-print(translate.translation_to_text(translated[:5], lang="both"))
+translate.save_translation("episode.mp3", translated, "english", output_dir="ep01/")
 ```
 
 ### Synthesis

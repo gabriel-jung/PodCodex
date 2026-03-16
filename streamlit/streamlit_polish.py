@@ -7,16 +7,44 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.core import polish as polish_mod
+from podcodex.core import AudioPaths, polish as polish_mod
+from podcodex.core._utils import segments_to_text
 from podcodex.core.polish import (
-    has_raw_polished,
-    is_validated_polished,
-    polished_raw_exists,
     load_polished_raw,
     load_polished_validated,
 )
 from utils import PROVIDERS, build_llm_kwargs, fmt_time, on_provider_change
 from streamlit_editor import render_segment_editor
+
+
+def _run_polish_button(
+    btn_disabled, mode, source_lang, context, transcript, audio_path, output_dir
+):
+    """Render the 'Polish' action button and run the pipeline on click.
+
+    Shared by API and Ollama modes — only the mode-specific settings differ.
+    """
+    if st.button(
+        "✨ Polish",
+        use_container_width=True,
+        type="primary",
+        disabled=btn_disabled,
+        help="Already polished. Check 'Force' to re-run." if btn_disabled else None,
+    ):
+        kwargs = build_llm_kwargs(
+            "polish", mode, source_lang=source_lang, context=context
+        )
+        with st.spinner(f"Processing {len(transcript)} segments..."):
+            try:
+                result = polish_mod.polish_segments(transcript, **kwargs)
+                polish_mod.save_polished_raw(audio_path, result, output_dir=output_dir)
+                st.session_state.polished = polish_mod.load_polished(
+                    audio_path, output_dir=output_dir
+                )
+                st.success(f"Done — {len(result)} segments processed.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed: {e}")
 
 
 def render():
@@ -31,6 +59,8 @@ def render():
             "No episode loaded. Load one from the sidebar or go to the **🎙️ Transcribe** tab."
         )
         return
+
+    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     # ── Episode header ──
     with st.container(border=True):
@@ -64,7 +94,7 @@ def render():
     transcript = st.session_state.transcript
 
     # ── Import existing polished file ──
-    already_polished = polish_mod.polished_exists(audio_path, output_dir=output_dir)
+    already_polished = paths.has_polished()
     with st.expander(
         "📂 **Import existing polished file** — skip the correction step",
         expanded=not already_polished and not st.session_state.get("polished"),
@@ -146,7 +176,7 @@ def render():
 
     # ── Section 2: Mode-specific settings ──
     with st.container(border=True):
-        already_done = polish_mod.polished_exists(audio_path, output_dir=output_dir)
+        already_done = paths.has_polished()
         btn_disabled = already_done and not force
 
         if mode == "api":
@@ -181,31 +211,15 @@ def render():
                 placeholder="Leave empty to use API_KEY from .env",
             )
 
-            if st.button(
-                "✨ Polish",
-                use_container_width=True,
-                type="primary",
-                disabled=btn_disabled,
-                help="Already polished. Check 'Force' to re-run."
-                if btn_disabled
-                else None,
-            ):
-                kwargs = build_llm_kwargs(
-                    "polish", mode, source_lang=source_lang, context=context
-                )
-                with st.spinner(f"Processing {len(transcript)} segments..."):
-                    try:
-                        result = polish_mod.polish_segments(transcript, **kwargs)
-                        polish_mod.save_polished_raw(
-                            audio_path, result, output_dir=output_dir
-                        )
-                        st.session_state.polished = polish_mod.load_polished(
-                            audio_path, output_dir=output_dir
-                        )
-                        st.success(f"Done — {len(result)} segments processed.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
+            _run_polish_button(
+                btn_disabled,
+                mode,
+                source_lang,
+                context,
+                transcript,
+                audio_path,
+                output_dir,
+            )
 
         elif mode == "ollama":
             st.markdown("### 🖥️ Step 2 — Ollama Polish")
@@ -217,31 +231,15 @@ def render():
             )
             st.caption("⚠️ Reliable JSON output requires models ≥ 14B parameters.")
 
-            if st.button(
-                "✨ Polish",
-                use_container_width=True,
-                type="primary",
-                disabled=btn_disabled,
-                help="Already polished. Check 'Force' to re-run."
-                if btn_disabled
-                else None,
-            ):
-                kwargs = build_llm_kwargs(
-                    "polish", mode, source_lang=source_lang, context=context
-                )
-                with st.spinner(f"Processing {len(transcript)} segments..."):
-                    try:
-                        result = polish_mod.polish_segments(transcript, **kwargs)
-                        polish_mod.save_polished_raw(
-                            audio_path, result, output_dir=output_dir
-                        )
-                        st.session_state.polished = polish_mod.load_polished(
-                            audio_path, output_dir=output_dir
-                        )
-                        st.success(f"Done — {len(result)} segments processed.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
+            _run_polish_button(
+                btn_disabled,
+                mode,
+                source_lang,
+                context,
+                transcript,
+                audio_path,
+                output_dir,
+            )
 
         elif mode == "manual":
             st.markdown("### ✍️ Step 2 — Manual Correction")
@@ -258,7 +256,7 @@ def render():
                 key="polish_batch_minutes",
             )
 
-            batches = polish_mod.build_manual_polish_prompts_batched(
+            batches = polish_mod.build_manual_prompts_batched(
                 transcript,
                 batch_minutes=batch_minutes,
                 context=context,
@@ -332,7 +330,9 @@ def render():
                 ):
                     try:
                         data = json.loads(pasted)
-                        validated = polish_mod.polish_segments(data, mode="manual")
+                        validated = polish_mod.polish_segments(
+                            data, mode="manual", original_segments=batch_segs
+                        )
                         st.session_state.polish_batch_results[idx] = validated
                         st.success(
                             f"Batch {idx + 1} validated — {len(validated)} segments."
@@ -372,7 +372,7 @@ def render():
                     st.rerun()
 
     # ── Section 3: Editor ──
-    if polish_mod.polished_exists(audio_path, output_dir=output_dir):
+    if paths.has_polished():
         p_key = f"editor_polished_{audio_path}"
         if p_key not in st.session_state:
             st.session_state[p_key] = polish_mod.load_polished(
@@ -386,16 +386,13 @@ def render():
                 st.markdown("### ✏️ Step 3 — Review & Edit")
             with col_badge:
                 _dirty = st.session_state.get(f"polish_{audio_path}_dirty", False)
-                if (
-                    is_validated_polished(audio_path, output_dir=output_dir)
-                    and not _dirty
-                ):
+                if paths.has_validated_polished() and not _dirty:
                     st.success("✅ Saved")
-                elif has_raw_polished(audio_path, output_dir=output_dir) or _dirty:
+                elif paths.has_raw_polished() or _dirty:
                     st.warning("⚠️ Unsaved")
 
-            has_raw = polished_raw_exists(audio_path, output_dir=output_dir)
-            has_validated = is_validated_polished(audio_path, output_dir=output_dir)
+            has_raw = paths.polished_raw_exists()
+            has_validated = paths.has_validated_polished()
             cols = st.columns(2)
             with cols[0]:
                 if st.button(
@@ -434,8 +431,8 @@ def render():
                 on_save=_on_save,
                 audio_path=audio_path,
                 reference_segments=transcript,
-                is_saved=is_validated_polished(audio_path, output_dir=output_dir),
-                export_fn=polish_mod.polished_to_text,
+                is_saved=paths.has_validated_polished(),
+                export_fn=segments_to_text,
                 export_filename=f"{Path(audio_path).stem}.polished.txt",
                 next_tab="translate",
                 next_tab_label="→ Go to Translate",

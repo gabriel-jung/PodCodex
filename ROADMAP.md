@@ -7,7 +7,7 @@
 ### What's already in place
 - `extract_voice_samples()` (`core/synthesize.py`) — extracts per-speaker audio clips from a diarized episode, ready to feed a reference database
 - `save_speaker_map()` / `load_speaker_map()` (`core/transcribe.py`) — the map is already wired into the pipeline
-- `assign_speakers_to_file()` — `SPEAKER_XX` labels are ready to match against
+- `assign_speakers()` — `SPEAKER_XX` labels are ready to match against
 
 ### What needs to be built (`core/identify.py`)
 - **Embedding computation** — Resemblyzer or pyannote `SpeakerEmbedding`
