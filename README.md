@@ -1,23 +1,26 @@
 # podcodex
 
-AI tools for podcast production — transcription, translation, voice synthesis, and semantic search.
+AI tools for podcast production — transcription, polishing, translation, voice synthesis, and semantic search.
 
 ## Modules
 
 | Module | Description |
 |--------|-------------|
 | `podcodex.core.transcribe` | WhisperX transcription + phonetic alignment + speaker diarization |
+| `podcodex.core.polish` | LLM-based source correction (proper nouns, spelling, punctuation) |
 | `podcodex.core.translate` | LLM-based transcript translation (Ollama, OpenAI-compatible API, or manual) |
 | `podcodex.core.synthesize` | Qwen3-TTS voice cloning + episode assembly |
-| `podcodex.rag` | Chunking, embedding, vector storage, and hybrid retrieval |
+| `podcodex.rag` | Chunking, embedding, vector storage (Qdrant + SQLite), and hybrid retrieval |
 | `podcodex.ingest` | Scan a show folder and report per-episode processing status |
+| `podcodex.bot` | Discord bot with `/search`, `/exact`, `/stats`, `/episodes` commands |
+| `podcodex.cli` | CLI: `podcodex vectorize / sync / query / list / delete` |
 
 ## Pipeline
 
 ```
-Audio → transcribe → translate → synthesize
-                ↓
-           vectorize → query
+Audio → transcribe → polish → translate → synthesize
+                       ↓
+                  vectorize → query
 ```
 
 ## System Requirements
@@ -28,6 +31,9 @@ brew install ffmpeg sox
 
 # Ubuntu/Debian
 sudo apt install ffmpeg sox
+
+# Qdrant (required for RAG / search)
+docker run -p 6333:6333 qdrant/qdrant
 ```
 
 ## Installation
@@ -36,6 +42,10 @@ sudo apt install ffmpeg sox
 git clone https://github.com/gabriel-jung/podcodex
 cd podcodex
 uv sync
+
+# Optional extras
+uv sync --extra bot   # Discord bot (discord.py)
+uv sync --extra app   # Streamlit UI
 ```
 
 ## Environment Variables
@@ -46,6 +56,7 @@ Create a `.env` file at the root:
 HF_TOKEN=your_huggingface_token   # required for pyannote diarization
 API_KEY=your_api_key              # any OpenAI-compatible provider (Mistral, OpenAI, etc.)
 QDRANT_URL=http://localhost:6333  # optional, defaults to localhost:6333
+PODCODEX_DB=/path/to/vectors.db   # optional, overrides default SQLite location
 ```
 
 `HF_TOKEN` requires accepting the pyannote model terms on Hugging Face:
@@ -70,10 +81,34 @@ transcribe.save_speaker_map("episode.mp3", {
 
 transcript = transcribe.export_transcript("episode.mp3", output_dir="ep01/",
                                           show="My Podcast", episode="ep01")
-print(transcribe.transcript_to_text(transcript[:5]))
 
 # Check pipeline status
 transcribe.processing_status("episode.mp3", output_dir="ep01/")
+```
+
+### Polishing
+
+```python
+from podcodex.core import polish
+
+segments = transcribe.load_transcript("episode.mp3", output_dir="ep01/")
+
+# Via API
+polished = polish.polish_segments(
+    segments, mode="api", source_lang="French",
+    context="French podcast about film music, hosted by Alice and Bob",
+    model="mistral-small-latest",
+    api_base_url="https://api.mistral.ai/v1",
+)
+
+# Via Ollama
+polished = polish.polish_segments(
+    segments, mode="ollama", model="qwen3:14b", source_lang="French",
+)
+
+polish.save_polished_raw("episode.mp3", polished, output_dir="ep01/")
+# After review:
+polish.save_polished("episode.mp3", polished, output_dir="ep01/")
 ```
 
 ### Translation
@@ -81,32 +116,31 @@ transcribe.processing_status("episode.mp3", output_dir="ep01/")
 ```python
 from podcodex.core import translate
 
-segments = transcribe.load_transcript("episode.mp3", output_dir="ep01/")
+segments = polish.load_polished("episode.mp3", output_dir="ep01/")
 
-# Via API (Mistral, OpenAI, or any compatible provider)
+# Via API
 translated = translate.translate_segments(
-    segments,
-    mode="api",
+    segments, mode="api",
+    source_lang="French", target_lang="English",
     context="French podcast about film music",
-    source_lang="French",
-    target_lang="English",
     model="mistral-small-latest",
     api_base_url="https://api.mistral.ai/v1",
 )
 
-# Via Ollama (local — works best with 14B+ models)
+# Via Ollama
 translated = translate.translate_segments(
-    segments,
-    mode="ollama",
-    model="qwen3:14b",
-    context="French podcast about film music",
+    segments, mode="ollama", model="qwen3:14b",
+    source_lang="French", target_lang="English",
 )
 
 # Manual copy/paste workflow
-print(translate.build_manual_prompt(segments, context="French podcast about film music"))
+batches = translate.build_manual_prompts_batched(
+    segments, source_lang="French", target_lang="English",
+)
+# ... paste each batch into an LLM, collect results ...
 translated = translate.translate_segments(json_from_llm, mode="manual")
 
-translate.save_translation("episode.mp3", translated, "english", output_dir="ep01/")
+translate.save_translation_raw("episode.mp3", translated, "english", output_dir="ep01/")
 ```
 
 ### Synthesis
@@ -118,12 +152,18 @@ voice_samples = synthesize.extract_voice_samples(
     "episode.mp3", translated, output_dir="ep01/", min_duration=5.0, top_k=3,
 )
 
-generated = synthesize.generate_segments(
-    "episode.mp3", translated, voice_samples, output_dir="ep01/",
-    model_size="1.7B", sample_index={"Alice": 0, "Bob": 1},
-)
+model = synthesize.load_tts_model(model_size="1.7B")
+clone_prompts = synthesize.build_clone_prompts(model, voice_samples, sample_index=0)
 
-episode = synthesize.assemble_episode(
+# Generate one segment at a time
+for i, seg in enumerate(translated):
+    output_path = Path(f"ep01/tts_segments/{i:04d}_{seg['speaker']}.wav")
+    result = synthesize.generate_segment(
+        model, seg, clone_prompts, output_path, language="English",
+    )
+
+# Assemble into final episode
+episode_path = synthesize.assemble_episode(
     generated, "episode.mp3", output_dir="ep01/", strategy="original_timing",
 )
 ```
@@ -134,25 +174,40 @@ Requires Qdrant running locally (`docker run -p 6333:6333 qdrant/qdrant`) or set
 
 ```bash
 # Embed and store a transcript
-podcodex vectorize ep01/ep01.transcript.json --show "My Podcast" --strategy bge_speaker
+podcodex vectorize ep01/ep01.transcript.json --show "My Podcast"
+podcodex vectorize ep01/ep01.transcript.json --show "My Podcast" --model bge-m3 --chunking semantic
 
-# Semantic search
-podcodex query "film music composer" --show "My Podcast" --strategy bge_speaker
-podcodex query "film music composer" --show "My Podcast" --strategy bge_speaker --top-k 3
+# Query
+podcodex query "film music composer" --show "My Podcast"
+podcodex query "film music composer" --show "My Podcast" --top-k 3 --alpha 0.7
+
+# Sync SQLite → Qdrant (rebuild without re-embedding)
+podcodex sync --show "My Podcast"
+podcodex sync --db /path/to/vectors.db
 
 # Manage collections
+podcodex list
 podcodex list --show "My Podcast"
-podcodex delete my_podcast__bge_speaker
+podcodex delete my_podcast__bge-m3__semantic
 ```
 
-#### Embedding strategies
+#### Embedding models
 
-| Strategy | Chunker | Embedder | Search |
-|----------|---------|----------|--------|
-| `bge_speaker` | speaker turns | BAAI/bge-m3 (1024-dim) | hybrid RRF |
-| `bge_semantic` | semantic | BAAI/bge-m3 (1024-dim) | hybrid RRF |
-| `e5_semantic` | semantic | multilingual-e5-small (384-dim) | dense cosine |
-| `pplx_context` | speaker turns | pplx-embed-context (1024-dim) | dense cosine |
+| Model key | Embedder | Dim | Search |
+|-----------|----------|-----|--------|
+| `bge-m3` | BAAI/bge-m3 | 1024 | hybrid (dense + sparse via RRF) |
+| `e5-small` | multilingual-e5-small | 384 | dense cosine |
+| `e5-large` | multilingual-e5-large | 1024 | dense cosine |
+| `pplx` | pplx-embed-context | 1024 | dense cosine |
+
+#### Chunking strategies
+
+| Strategy | Description |
+|----------|-------------|
+| `semantic` | Semantic similarity splitting (Chonkie) — recommended default |
+| `speaker` | One chunk per speaker turn — fast, no extra deps |
+
+Collection names follow the format `{show}__{model}__{chunker}`, e.g. `my_podcast__bge-m3__semantic`.
 
 #### In Python
 
@@ -160,49 +215,74 @@ podcodex delete my_podcast__bge_speaker
 from podcodex.rag.store import QdrantStore, collection_name
 from podcodex.rag.retriever import Retriever
 
-store = QdrantStore()                          # connects to QDRANT_URL or localhost:6333
-store = QdrantStore(in_memory=True)            # no server needed, for notebooks
+store = QdrantStore()                    # connects to QDRANT_URL or localhost:6333
 
-col = collection_name("My Podcast", "bge_speaker")   # → "my_podcast__bge_speaker"
-store.create_collection(col, "bge_speaker")
+col = collection_name("My Podcast", model="bge-m3", chunker="semantic")
+retriever = Retriever(model="bge-m3")
+results = retriever.retrieve("film music", col, top_k=5, alpha=0.5)
 
-retriever = Retriever("bge_speaker", store=store)
-results = retriever.retrieve("film music", col, top_k=5)
+# Filter by episode, speaker, or source
+results = retriever.retrieve(
+    "film music", col, top_k=5, episode="ep01", speaker="Alice",
+)
 ```
+
+### Discord bot
+
+```bash
+# Required env vars
+DISCORD_TOKEN=your_bot_token
+QDRANT_URL=http://localhost:6333
+
+# Run the bot
+podcodex-bot --model bge-m3 --chunking semantic --top-k 5
+podcodex-bot --dev-guild 123456789  # instant command sync for development
+```
+
+**User commands:**
+- `/search <question>` — hybrid semantic search (alpha blends keyword/semantic)
+- `/exact <query>` — literal substring match (case-insensitive)
+- `/stats` — index overview (shows, episodes, segments, duration)
+- `/episodes <show>` — list episodes with segment counts
+
+**Admin commands:**
+- `/setup` — configure per-server defaults (model, chunker, top_k, show allow-list)
+- `/sync` — manually sync the command tree
+
+All search commands support optional `show`, `episode`, `speaker`, `source`, and `compact` filters.
 
 ### Streamlit app
 
 ```bash
-# Single-episode view
 streamlit run streamlit/app.py
-
-# Show-level view — folder of episodes with processing status
-streamlit run streamlit/show_app.py
 ```
 
-The show-level view scans a folder of audio files and displays per-episode status
-(`🔴 Pending` / `🟡 Transcribed` / `🟢 Indexed`). Opening an episode loads it into
-the full pipeline tabs (Transcribe → Translate → Synthesize).
+Tabs: **Transcribe** → **Polish** → **Index** → **Translate** → **Synthesize** → **Search**
+
+The sidebar scans a show folder and displays per-episode status. Opening an episode loads it into the pipeline tabs. The Search tab queries across all indexed episodes.
 
 ## Output Files
 
-Outputs are organised per episode under the show folder:
+Outputs are organised per episode under the show folder. Each step produces a `.raw.json` (pipeline output) and a `.json` (user-validated) version:
 
 ```
 /shows/my_podcast/
 ├── ep01.mp3
-├── ep02.mp3
 ├── ep01/
-│   ├── ep01.segments.parquet
+│   ├── ep01.segments.parquet          ← WhisperX raw segments
 │   ├── ep01.segments.meta.json
-│   ├── ep01.diarization.parquet
+│   ├── ep01.diarization.parquet       ← pyannote diarization
 │   ├── ep01.diarization.meta.json
 │   ├── ep01.diarized_segments.parquet
 │   ├── ep01.speaker_map.json
-│   ├── ep01.transcript.json
-│   ├── ep01.translated.json
-│   ├── ep01.synthesized.wav
-│   ├── .rag_indexed              ← marker set by `podcodex vectorize`
+│   ├── ep01.transcript.raw.json       ← exported transcript (raw)
+│   ├── ep01.transcript.json           ← validated transcript
+│   ├── ep01.polished.raw.json         ← LLM-corrected (raw)
+│   ├── ep01.polished.json             ← validated polished
+│   ├── ep01.english.raw.json          ← translation (raw)
+│   ├── ep01.english.json              ← validated translation
+│   ├── ep01.synthesized.wav           ← assembled episode
+│   ├── vectors.db                     ← SQLite (embedded chunks)
 │   ├── voice_samples/
 │   └── tts_segments/
 └── ep02/
@@ -222,4 +302,5 @@ Outputs are organised per episode under the show folder:
 - Transcription runs on CPU on Apple Silicon (WhisperX does not support MPS yet)
 - Diarization requires a valid `HF_TOKEN` and model access on Hugging Face
 - Synthesis (Qwen3-TTS) is GPU-heavy — recommended on CUDA for production use
-- Ollama translation works best with models ≥ 14B for reliable JSON output
+- Ollama translation works best with models >= 14B for reliable JSON output
+- SQLite (`vectors.db`) is the source of truth for embeddings; `podcodex sync` rebuilds Qdrant from it
