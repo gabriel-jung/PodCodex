@@ -13,6 +13,7 @@ from podcodex.core.polish import (
     load_polished_raw,
     load_polished_validated,
 )
+from constants import DEFAULT_OLLAMA_MODEL, DEFAULT_SOURCE_LANG
 from utils import PROVIDERS, build_llm_kwargs, fmt_time, on_provider_change
 from streamlit_editor import render_segment_editor
 
@@ -158,7 +159,7 @@ def render():
 
         source_lang = st.text_input(
             "Source language",
-            value="French",
+            value=DEFAULT_SOURCE_LANG,
             key="polish_source_lang",
             help="Full language name of the original podcast (e.g. 'French', 'Spanish').",
         )
@@ -225,7 +226,7 @@ def render():
             st.markdown("### 🖥️ Step 2 — Ollama Polish")
             st.text_input(
                 "Ollama model",
-                value="qwen3:14b",
+                value=DEFAULT_OLLAMA_MODEL,
                 key="polish_ollama_model",
                 help="Run `ollama list` to see available models.",
             )

@@ -50,11 +50,25 @@ def _resolve_source(transcript_path: Path, source: str) -> Path:
 
     The episode stem is inferred from the output dir name (= transcript parent).
     Falls back to transcript_path if the requested file does not exist.
+
+    ``auto`` priority chain:
+        1. {stem}.polished.json (polished validated)
+        2. {stem}.polished.raw.json (polished raw)
+        3. transcript_path (fallback)
     """
     episode_stem = transcript_path.parent.name
     parent = transcript_path.parent
 
-    if source == "transcript":
+    if source == "auto":
+        for suffix in (
+            f"{episode_stem}.polished.json",
+            f"{episode_stem}.polished.raw.json",
+        ):
+            p = parent / suffix
+            if p.exists():
+                return p
+        return transcript_path
+    elif source == "transcript":
         return transcript_path
     elif source == "polished":
         p = parent / f"{episode_stem}.polished.json"
@@ -72,6 +86,28 @@ def _resolve_source(transcript_path: Path, source: str) -> Path:
             )
             return transcript_path
         return p
+
+
+def _source_label(source_path: Path, transcript_path: Path) -> str:
+    """Derive a human-readable source label from the resolved path.
+
+    Examples: 'polished', 'english', 'transcript'.
+
+    Uses the transcript stem (directory name) to reliably extract the
+    qualifier even when the episode stem itself contains dots.
+    """
+    if source_path == transcript_path:
+        return "transcript"
+    # Strip the episode stem prefix to isolate the qualifier.
+    # e.g. stem="ep.01", name="ep.01.polished.raw.json"
+    #       → remainder="polished.raw.json" → label="polished"
+    episode_stem = transcript_path.parent.name
+    remainder = source_path.name
+    if remainder.startswith(episode_stem + "."):
+        remainder = remainder[len(episode_stem) + 1 :]
+    # remainder is now e.g. "polished.json" or "polished.raw.json" or "english.json"
+    label = remainder.split(".")[0]
+    return label or "transcript"
 
 
 def _chunk_transcript(
@@ -100,6 +136,7 @@ def vectorize_episode(
     chunk_size: int = CHUNK_SIZE,
     threshold: float = CHUNK_THRESHOLD,
     overwrite: bool = False,
+    device: str = "cpu",
 ) -> tuple[list[dict], int]:
     """
     Vectorize a single (model, chunker) combination.
@@ -125,15 +162,42 @@ def vectorize_episode(
     dim = MODELS[model_key].dim
     local.ensure_collection(col, show=show, model=model_key, chunker=chunking, dim=dim)
 
-    # ── Cached in LocalStore → load and push ──
+    # ── Cached in LocalStore → check Qdrant sync state ──
     if local.episode_is_indexed(col, episode) and not overwrite:
-        logger.info(f"[SKIP] '{episode}' already in local store ({col})")
-        cached = local.load_chunks(col, episode)
-        payload = [{k: v for k, v in c.items() if k != "embedding"} for c in cached]
-        embeddings = np.stack([c["embedding"] for c in cached])
-        store.create_collection(col, model=model_key, overwrite=False)
-        store.upsert(col, payload, embeddings)
-        return chunks or payload, 0
+        # Stale source detection: auto-upgrade if a better source is now available
+        new_source = transcript.get("meta", {}).get("source", "")
+        stored = local.load_chunks_no_embeddings(col, episode)
+        stored_source = stored[0].get("source", "") if stored else ""
+
+        if stored_source and new_source and stored_source != new_source:
+            logger.info(
+                f"[UPGRADE] '{episode}' source changed: "
+                f"{stored_source} → {new_source} ({col})"
+            )
+            local.delete_episode(col, episode)
+            store.create_collection(col, model=model_key, overwrite=False)
+            store.delete_episode_points(col, episode)
+            # Fall through to re-chunk + re-embed below
+        else:
+            local_count = local.episode_chunk_count(col, episode)
+            store.create_collection(col, model=model_key, overwrite=False)
+            qdrant_count = store.episode_point_count(col, episode)
+
+            if local_count == qdrant_count:
+                logger.info(f"[SKIP] '{episode}' synced ({col}, {local_count} chunks)")
+                return chunks or stored, 0
+
+            # Mismatch — delete stale points and re-push
+            logger.info(
+                f"[RESYNC] '{episode}' count mismatch ({col}): "
+                f"local={local_count}, qdrant={qdrant_count}"
+            )
+            store.delete_episode_points(col, episode)
+            cached = local.load_chunks(col, episode)
+            payload = [{k: v for k, v in c.items() if k != "embedding"} for c in cached]
+            embeddings = np.stack([c["embedding"] for c in cached])
+            store.upsert(col, payload, embeddings)
+            return chunks or payload, 0
 
     if overwrite and local.episode_is_indexed(col, episode):
         local.delete_episode(col, episode)
@@ -145,7 +209,7 @@ def vectorize_episode(
         raise ValueError(f"No chunks produced for strategy '{chunking}'")
 
     # ── Embed ──
-    embedder = get_embedder(model_key)
+    embedder = get_embedder(model_key, device=device)
     embeddings = embedder.encode_passages(chunks)
     local.save_chunks(col, episode, chunks, embeddings)
 
@@ -169,6 +233,7 @@ def vectorize_batch(
     chunk_size: int = CHUNK_SIZE,
     threshold: float = CHUNK_THRESHOLD,
     overwrite: bool = False,
+    device: str = "cpu",
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> int:
     """
@@ -207,6 +272,7 @@ def vectorize_batch(
                     chunk_size=chunk_size,
                     threshold=threshold,
                     overwrite=overwrite,
+                    device=device,
                 )
                 total_upserted += n
             except ValueError as e:
@@ -240,6 +306,7 @@ def cmd_vectorize(args: argparse.Namespace) -> None:
     transcript.setdefault("meta", {})
     transcript["meta"].setdefault("show", show)
     transcript["meta"].setdefault("episode", episode)
+    transcript["meta"]["source"] = _source_label(source_path, transcript_path)
 
     logger.info(f"Vectorizing '{episode}' for show '{show}' with model '{args.model}'")
 
@@ -260,6 +327,7 @@ def cmd_vectorize(args: argparse.Namespace) -> None:
             chunk_size=args.chunk_size,
             threshold=args.threshold,
             overwrite=args.overwrite,
+            device=args.device,
         )
     except ValueError as e:
         logger.warning(str(e))
@@ -304,6 +372,17 @@ def cmd_sync(args: argparse.Namespace) -> None:
             cached = local.load_chunks(col, ep)
             if not cached:
                 continue
+
+            local_count = len(cached)
+
+            if not args.overwrite:
+                qdrant_count = store.episode_point_count(col, ep)
+                if local_count == qdrant_count:
+                    logger.info(f"[SKIP] '{ep}' → '{col}' ({local_count} chunks)")
+                    continue
+                if qdrant_count > 0:
+                    store.delete_episode_points(col, ep)
+
             chunks = [{k: v for k, v in c.items() if k != "embedding"} for c in cached]
             embeddings = np.stack([c["embedding"] for c in cached])
             store.upsert(col, chunks, embeddings)
@@ -316,7 +395,10 @@ def cmd_sync(args: argparse.Namespace) -> None:
 def cmd_query(args: argparse.Namespace) -> None:
     col = collection_name(args.show, args.model, args.chunking)
     retriever = Retriever(model=args.model)
-    results = retriever.retrieve(args.query, col, top_k=args.top_k, alpha=args.alpha)
+    source_filter = getattr(args, "source_filter", None)
+    results = retriever.retrieve(
+        args.query, col, top_k=args.top_k, alpha=args.alpha, source=source_filter
+    )
 
     if not results:
         print("No results.")
@@ -402,12 +484,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_vec.add_argument(
         "--source",
-        default="polished",
+        default="auto",
         metavar="SOURCE",
         help=(
-            "Which file to vectorize: 'transcript' (raw), 'polished' (default), "
-            "or a language name such as 'english' for a translation file."
+            "Which file to vectorize: 'auto' (default — picks best available), "
+            "'transcript' (raw), 'polished', or a language name such as 'english'."
         ),
+    )
+    p_vec.add_argument(
+        "--device",
+        default="cpu",
+        help="Torch device for embedding (default: cpu). Use 'cuda' or 'mps' for GPU.",
     )
     p_vec.add_argument(
         "--overwrite",
@@ -469,6 +556,13 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=ALPHA,
         help=f"Blend between BM25 (0.0) and dense vector (1.0). Default: {ALPHA}.",
+    )
+    p_query.add_argument(
+        "--source-filter",
+        default=None,
+        dest="source_filter",
+        metavar="SOURCE",
+        help="Only search chunks from this source (e.g. 'polished', 'transcript').",
     )
 
     # list

@@ -11,9 +11,7 @@ import streamlit as st
 
 from podcodex.core._utils import UNKNOWN_SPEAKERS
 from podcodex.core.transcribe import REMOVE_SPEAKERS, is_segment_flagged
-
-_PAGE_SIZES = [10, 20, 50]
-_DEFAULT_PAGE_SIZE = 20
+from constants import PAGE_SIZES, DEFAULT_PAGE_SIZE, AUDIO_PADDING
 
 
 def render_segment_editor(
@@ -148,9 +146,9 @@ def render_segment_editor(
         col_idx += 1
         page_size = st.selectbox(
             "Per page",
-            options=_PAGE_SIZES,
-            index=_PAGE_SIZES.index(
-                st.session_state.get(page_size_key, _DEFAULT_PAGE_SIZE)
+            options=PAGE_SIZES,
+            index=PAGE_SIZES.index(
+                st.session_state.get(page_size_key, DEFAULT_PAGE_SIZE)
             ),
             key=page_size_key,
             label_visibility="collapsed",
@@ -443,7 +441,7 @@ def _density_warning(seg: dict) -> str | None:
 
 @st.cache_data(show_spinner=False)
 def audio_slice_bytes(
-    audio_path: str, start: float, end: float, pad: float = 0.3
+    audio_path: str, start: float, end: float, pad: float = AUDIO_PADDING
 ) -> bytes:
     """Read a [start, end] slice from audio_path and return WAV bytes. Cached.
 

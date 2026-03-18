@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from podcodex.rag.chunker import (
     _build_episode_text,
-    _resolve_chunk_metadata,
+    _map_offsets_to_metadata,
     semantic_chunks,
     speaker_chunks,
 )
@@ -68,11 +68,11 @@ def test_build_episode_text_offsets_are_correct():
 
 
 # ──────────────────────────────────────────────
-# _resolve_chunk_metadata
+# _map_offsets_to_metadata
 # ──────────────────────────────────────────────
 
 
-def test_resolve_chunk_metadata_single_turn():
+def test_map_offsets_to_metadata_single_turn():
     offset_map = [
         {
             "start_char": 0,
@@ -83,7 +83,7 @@ def test_resolve_chunk_metadata_single_turn():
             "text": "Hello text",
         },
     ]
-    meta = _resolve_chunk_metadata(0, 10, offset_map)
+    meta = _map_offsets_to_metadata(0, 10, offset_map)
     assert meta is not None
     assert meta["dominant_speaker"] == "Alice"
     assert meta["start"] == 0.0
@@ -91,7 +91,7 @@ def test_resolve_chunk_metadata_single_turn():
     assert len(meta["speakers"]) == 1
 
 
-def test_resolve_chunk_metadata_dominant_speaker():
+def test_map_offsets_to_metadata_dominant_speaker():
     # Alice has 8 chars, Bob has 2 chars → Alice dominates
     offset_map = [
         {
@@ -111,11 +111,11 @@ def test_resolve_chunk_metadata_dominant_speaker():
             "text": "BB",
         },
     ]
-    meta = _resolve_chunk_metadata(0, 11, offset_map)
+    meta = _map_offsets_to_metadata(0, 11, offset_map)
     assert meta["dominant_speaker"] == "Alice"
 
 
-def test_resolve_chunk_metadata_no_overlap_returns_none():
+def test_map_offsets_to_metadata_no_overlap_returns_none():
     offset_map = [
         {
             "start_char": 100,
@@ -126,7 +126,7 @@ def test_resolve_chunk_metadata_no_overlap_returns_none():
             "text": "x",
         },
     ]
-    assert _resolve_chunk_metadata(0, 50, offset_map) is None
+    assert _map_offsets_to_metadata(0, 50, offset_map) is None
 
 
 # ──────────────────────────────────────────────
@@ -276,3 +276,66 @@ def test_semantic_chunks_empty_after_filter_returns_empty():
     with ctx:
         result = semantic_chunks(transcript, min_chars=30)
     assert result == []
+
+
+# ──────────────────────────────────────────────
+# Source field propagation
+# ──────────────────────────────────────────────
+
+
+def test_speaker_chunks_include_source_field():
+    t = {
+        "meta": {"show": "S", "episode": "E", "source": "polished"},
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 5.0,
+                "speaker": "A",
+                "text": "Hello world this is fine enough.",
+            },
+        ],
+    }
+    chunks = speaker_chunks(t, min_chars=5)
+    assert len(chunks) == 1
+    assert chunks[0]["source"] == "polished"
+
+
+def test_speaker_chunks_source_defaults_empty():
+    t = {
+        "meta": {"show": "S", "episode": "E"},
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 5.0,
+                "speaker": "A",
+                "text": "Hello world this is fine enough.",
+            },
+        ],
+    }
+    chunks = speaker_chunks(t, min_chars=5)
+    assert chunks[0]["source"] == ""
+
+
+def test_semantic_chunks_include_source_field():
+    transcript = {
+        "meta": {"show": "S", "episode": "E", "source": "english"},
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 5.0,
+                "speaker": "Alice",
+                "text": "Hello world this is a longer sentence for testing.",
+            },
+        ],
+    }
+    full_text = "Hello world this is a longer sentence for testing."
+    mock_chunk = _make_mock_chunk(full_text, 0, len(full_text), token_count=10)
+
+    ctx, mock_mod = _mock_chonkie()
+    mock_mod.SemanticChunker.return_value.chunk.return_value = [mock_chunk]
+
+    with ctx:
+        result = semantic_chunks(transcript, chunk_size=256)
+
+    assert len(result) == 1
+    assert result[0]["source"] == "english"

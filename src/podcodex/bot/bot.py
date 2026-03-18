@@ -6,9 +6,9 @@ Entrypoint:
                  [--qdrant-url URL] [--server-config FILE] [--dev-guild ID]
 
 Slash commands (user-facing):
-    /search   question [show] [alpha] [model] [top_k]
+    /search   question [show] [episode] [speaker] [alpha] [model] [top_k] [source] [compact]
               Hybrid search: alpha blends keyword (0) ↔ semantic (1).
-    /exact    query [show] [top_k]
+    /exact    query [show] [episode] [speaker] [top_k] [source] [compact]
               Literal substring match (case-insensitive, like Ctrl+F).
     /stats    [show] [model]
               Index overview: shows, episodes, segments, duration.
@@ -16,7 +16,8 @@ Slash commands (user-facing):
               List episodes for a show with segment counts.
 
 Slash commands (admin):
-    /setup    [model] [chunker] [top_k]
+    /setup    [model] [chunker] [top_k] [show_add] [show_remove] [show_clear]
+              [default_source] [compact]
               Configure server defaults.
     /sync     Manually sync the command tree.
 """
@@ -28,7 +29,8 @@ import asyncio
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass
+import time
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 import discord
@@ -37,6 +39,7 @@ from loguru import logger
 
 from podcodex.bot.formatting import (
     CooldownManager,
+    build_compact_embed,
     fmt_time,
     merge_results,
     score_bar,
@@ -57,14 +60,34 @@ from podcodex.rag.store import QdrantStore, collection_name
 # ── Slash-command choices ─────────────────────
 
 _MODEL_CHOICES = [
-    app_commands.Choice(name=spec.description, value=spec.key)
-    for spec in MODELS.values()
+    app_commands.Choice(name=spec.description, value=key)
+    for key, spec in MODELS.items()
 ]
 
 _CHUNKER_CHOICES = [
     app_commands.Choice(name=desc, value=key)
     for key, desc in CHUNKING_STRATEGIES.items()
 ]
+
+_BOOL_CHOICES = [
+    app_commands.Choice(name="True", value="true"),
+    app_commands.Choice(name="False", value="false"),
+]
+
+
+# ── Autocomplete cache ───────────────────────
+
+
+@dataclass
+class _AutocompleteCache:
+    episodes: dict[str, list[str]]  # collection -> episode names
+    sources: dict[str, list[str]]  # collection -> source values
+    speakers: dict[str, list[str]]  # collection -> speaker names
+    timestamp: float = 0.0
+    ttl: float = 300.0  # 5 minutes
+
+    def is_stale(self) -> bool:
+        return (time.monotonic() - self.timestamp) > self.ttl
 
 
 # ── Config dataclasses ────────────────────────
@@ -90,6 +113,9 @@ class ServerSettings:
     model: str = DEFAULT_MODEL
     chunker: str = DEFAULT_CHUNKING
     top_k: int = TOP_K
+    default_shows: list[str] = field(default_factory=list)
+    default_source: str = ""
+    compact: bool = False
 
 
 # ── Embed builder ─────────────────────────────
@@ -142,6 +168,7 @@ class PodCodexBot(discord.Client):
         self._store: QdrantStore | None = None
         self._retrievers: dict[str, Retriever] = {}
         self._server_cfg: dict[int, ServerSettings] = self._load_server_config()
+        self._ac_cache = _AutocompleteCache(episodes={}, sources={}, speakers={})
 
         self._register_commands()
 
@@ -151,7 +178,11 @@ class PodCodexBot(discord.Client):
         if not self.server_config_path.exists():
             return {}
         raw = json.loads(self.server_config_path.read_text())
-        return {int(sid): ServerSettings(**v) for sid, v in raw.items()}
+        valid_keys = {f.name for f in fields(ServerSettings)}
+        return {
+            int(sid): ServerSettings(**{k: v for k, v in d.items() if k in valid_keys})
+            for sid, d in raw.items()
+        }
 
     def _save_server_config(self) -> None:
         payload = json.dumps(
@@ -182,6 +213,9 @@ class PodCodexBot(discord.Client):
             model=model or base.model,
             chunker=base.chunker,
             top_k=top_k or base.top_k,
+            default_shows=base.default_shows,
+            default_source=base.default_source,
+            compact=base.compact,
         )
 
     # ── Lazy singletons ──────────────────────
@@ -254,6 +288,161 @@ class PodCodexBot(discord.Client):
             if current.lower() in s.lower()
         ][:25]
 
+    async def _cached_episodes(self, collection: str) -> list[str]:
+        """Return episode names, using the TTL cache."""
+        cache = self._ac_cache
+        if cache.is_stale():
+            cache.episodes.clear()
+            cache.sources.clear()
+            cache.speakers.clear()
+            cache.timestamp = time.monotonic()
+        if collection not in cache.episodes:
+            loop = asyncio.get_running_loop()
+            eps = await loop.run_in_executor(
+                None, lambda: self.store.list_episode_names(collection)
+            )
+            cache.episodes[collection] = eps
+        return cache.episodes.get(collection, [])
+
+    async def _cached_sources(self, collection: str) -> list[str]:
+        """Return source values, using the TTL cache."""
+        cache = self._ac_cache
+        if cache.is_stale():
+            cache.episodes.clear()
+            cache.sources.clear()
+            cache.speakers.clear()
+            cache.timestamp = time.monotonic()
+        if collection not in cache.sources:
+            loop = asyncio.get_running_loop()
+            srcs = await loop.run_in_executor(
+                None, lambda: self.store.list_sources(collection)
+            )
+            cache.sources[collection] = srcs
+        return cache.sources.get(collection, [])
+
+    async def _episode_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        settings = self._server_settings(interaction.guild_id)
+        model = getattr(interaction.namespace, "model", "") or settings.model
+        chunker = settings.chunker
+
+        # Determine which show(s) to look at
+        show = getattr(interaction.namespace, "show", "")
+        if show:
+            shows = [show]
+        elif settings.default_shows:
+            shows = settings.default_shows
+        else:
+            return []
+
+        all_episodes: set[str] = set()
+        for s in shows:
+            col = collection_name(s, model, chunker)
+            all_episodes.update(await self._cached_episodes(col))
+
+        return [
+            app_commands.Choice(name=ep, value=ep)
+            for ep in sorted(all_episodes)
+            if current.lower() in ep.lower()
+        ][:25]
+
+    async def _source_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        settings = self._server_settings(interaction.guild_id)
+        model = getattr(interaction.namespace, "model", "") or settings.model
+        chunker = settings.chunker
+
+        loop = asyncio.get_running_loop()
+        collections = await loop.run_in_executor(
+            None, lambda: self.store.list_collections(model=model, chunker=chunker)
+        )
+
+        all_sources: set[str] = set()
+        for col in collections:
+            all_sources.update(await self._cached_sources(col))
+
+        return [
+            app_commands.Choice(name=s, value=s)
+            for s in sorted(all_sources)
+            if current.lower() in s.lower()
+        ][:25]
+
+    async def _cached_speakers(self, collection: str) -> list[str]:
+        """Return speaker names, using the TTL cache."""
+        cache = self._ac_cache
+        if cache.is_stale():
+            cache.episodes.clear()
+            cache.sources.clear()
+            cache.speakers.clear()
+            cache.timestamp = time.monotonic()
+        if collection not in cache.speakers:
+            loop = asyncio.get_running_loop()
+            spks = await loop.run_in_executor(
+                None, lambda: self.store.list_speakers(collection)
+            )
+            cache.speakers[collection] = spks
+        return cache.speakers.get(collection, [])
+
+    async def _speaker_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        settings = self._server_settings(interaction.guild_id)
+        model = getattr(interaction.namespace, "model", "") or settings.model
+        chunker = settings.chunker
+
+        # Determine which show(s) to look at
+        show = getattr(interaction.namespace, "show", "")
+        if show:
+            shows = [show]
+        elif settings.default_shows:
+            shows = settings.default_shows
+        else:
+            # No show context — list speakers across all collections
+            loop = asyncio.get_running_loop()
+            collections = await loop.run_in_executor(
+                None, lambda: self.store.list_collections(model=model, chunker=chunker)
+            )
+            all_speakers: set[str] = set()
+            for col in collections:
+                all_speakers.update(await self._cached_speakers(col))
+            return [
+                app_commands.Choice(name=s, value=s)
+                for s in sorted(all_speakers)
+                if current.lower() in s.lower()
+            ][:25]
+
+        all_speakers: set[str] = set()
+        for s in shows:
+            col = collection_name(s, model, chunker)
+            all_speakers.update(await self._cached_speakers(col))
+
+        return [
+            app_commands.Choice(name=s, value=s)
+            for s in sorted(all_speakers)
+            if current.lower() in s.lower()
+        ][:25]
+
+    async def _pinned_show_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete from pinned default_shows for the server."""
+        settings = self._server_settings(interaction.guild_id)
+        return [
+            app_commands.Choice(name=s, value=s)
+            for s in settings.default_shows
+            if current.lower() in s.lower()
+        ][:25]
+
     # ── Command registration ──────────────────
 
     def _register_commands(self) -> None:
@@ -266,28 +455,58 @@ class PodCodexBot(discord.Client):
         @app_commands.describe(
             question="What are you looking for?",
             show="Restrict to a specific show (leave empty for all)",
+            episode="Restrict to a specific episode",
+            speaker="Only show results from this speaker",
             alpha="0 = keywords only → 1 = semantic only (default 0.5)",
             model="Embedding model — overrides server default",
             top_k="Number of results — overrides server default",
+            source="Only search chunks from this source (e.g. polished, transcript)",
+            compact="Compact single-embed results (overrides server default)",
         )
-        @app_commands.choices(model=_MODEL_CHOICES)
+        @app_commands.choices(model=_MODEL_CHOICES, compact=_BOOL_CHOICES)
         async def search(
             interaction: discord.Interaction,
             question: str,
             show: str = "",
+            episode: str = "",
+            speaker: str = "",
             alpha: app_commands.Range[float, 0.0, 1.0] = ALPHA,
             model: str = "",
             top_k: app_commands.Range[int, 1, 25] = 0,
+            source: str = "",
+            compact: str = "",
         ) -> None:
             if not await self._check_cooldown(interaction):
                 return
             settings = self._effective_settings(interaction.guild_id, model, top_k)
+            effective_source = source or settings.default_source or None
+            use_compact = compact == "true" if compact else settings.compact
+
+            # Resolve shows: explicit > default_shows > all
+            shows: list[str] | None = None
+            if show:
+                shows = [show]
+            elif settings.default_shows:
+                shows = settings.default_shows
+
             label = f"α={alpha:.2f} • {MODELS[settings.model].label}"
             await self._run_search(
-                interaction, question, show or None, settings, alpha, label
+                interaction,
+                question,
+                shows,
+                settings,
+                alpha,
+                label,
+                source=effective_source,
+                episode=episode or None,
+                speaker=speaker or None,
+                compact=use_compact,
             )
 
         search.autocomplete("show")(self._show_autocomplete)
+        search.autocomplete("episode")(self._episode_autocomplete)
+        search.autocomplete("source")(self._source_autocomplete)
+        search.autocomplete("speaker")(self._speaker_autocomplete)
 
         # /exact ──────────────────────────────
         @self.tree.command(
@@ -297,19 +516,50 @@ class PodCodexBot(discord.Client):
         @app_commands.describe(
             query="Exact text to find (case-insensitive)",
             show="Restrict to a specific show (leave empty for all)",
+            episode="Restrict to a specific episode",
+            speaker="Only show results from this speaker",
             top_k="Max results (default 25)",
+            source="Only search chunks from this source (e.g. polished, transcript)",
+            compact="Compact single-embed results (overrides server default)",
         )
+        @app_commands.choices(compact=_BOOL_CHOICES)
         async def exact(
             interaction: discord.Interaction,
             query: str,
             show: str = "",
+            episode: str = "",
+            speaker: str = "",
             top_k: app_commands.Range[int, 1, 50] = 25,
+            source: str = "",
+            compact: str = "",
         ) -> None:
             if not await self._check_cooldown(interaction):
                 return
-            await self._run_exact(interaction, query, show or None, top_k)
+            settings = self._server_settings(interaction.guild_id)
+            effective_source = source or settings.default_source or None
+            use_compact = compact == "true" if compact else settings.compact
+
+            shows: list[str] | None = None
+            if show:
+                shows = [show]
+            elif settings.default_shows:
+                shows = settings.default_shows
+
+            await self._run_exact(
+                interaction,
+                query,
+                shows,
+                top_k,
+                source=effective_source,
+                episode=episode or None,
+                speaker=speaker or None,
+                compact=use_compact,
+            )
 
         exact.autocomplete("show")(self._show_autocomplete)
+        exact.autocomplete("episode")(self._episode_autocomplete)
+        exact.autocomplete("source")(self._source_autocomplete)
+        exact.autocomplete("speaker")(self._speaker_autocomplete)
 
         # /stats ──────────────────────────────
         @self.tree.command(
@@ -359,20 +609,44 @@ class PodCodexBot(discord.Client):
             model="Default embedding model",
             chunker="Default chunking strategy",
             top_k="Default number of results per query",
+            show_add="Pin a show as default for searches",
+            show_remove="Remove a pinned show",
+            show_clear="Reset pinned shows (search all)",
+            default_source="Default source filter (e.g. polished, transcript)",
+            compact="Default compact results mode",
         )
-        @app_commands.choices(model=_MODEL_CHOICES, chunker=_CHUNKER_CHOICES)
+        @app_commands.choices(
+            model=_MODEL_CHOICES,
+            chunker=_CHUNKER_CHOICES,
+            show_clear=_BOOL_CHOICES,
+            compact=_BOOL_CHOICES,
+        )
         async def setup(
             interaction: discord.Interaction,
             model: str = "",
             chunker: str = "",
             top_k: app_commands.Range[int, 1, 25] = 0,
+            show_add: str = "",
+            show_remove: str = "",
+            show_clear: str = "",
+            default_source: str = "",
+            compact: str = "",
         ) -> None:
             await self._handle_setup(
                 interaction,
                 model or None,
                 chunker or None,
                 top_k or None,
+                show_add=show_add or None,
+                show_remove=show_remove or None,
+                show_clear=show_clear == "true",
+                default_source=default_source,
+                compact=compact,
             )
+
+        setup.autocomplete("show_add")(self._show_autocomplete)
+        setup.autocomplete("show_remove")(self._pinned_show_autocomplete)
+        setup.autocomplete("default_source")(self._source_autocomplete)
 
         # /sync ───────────────────────────────
         @self.tree.command(
@@ -391,10 +665,15 @@ class PodCodexBot(discord.Client):
         self,
         interaction: discord.Interaction,
         question: str,
-        show: str | None,
+        shows: list[str] | None,
         settings: ServerSettings,
         alpha: float,
         label: str,
+        *,
+        source: str | None = None,
+        episode: str | None = None,
+        speaker: str | None = None,
+        compact: bool = False,
     ) -> None:
         await interaction.response.defer()
         loop = asyncio.get_running_loop()
@@ -402,7 +681,15 @@ class PodCodexBot(discord.Client):
         try:
             results = await loop.run_in_executor(
                 None,
-                lambda: self._hybrid_search(question, show, settings, alpha),
+                lambda: self._hybrid_search(
+                    question,
+                    shows,
+                    settings,
+                    alpha,
+                    source=source,
+                    episode=episode,
+                    speaker=speaker,
+                ),
             )
         except Exception:
             logger.exception(f"Search error: {question!r}")
@@ -416,27 +703,34 @@ class PodCodexBot(discord.Client):
             await interaction.followup.send("No results found.", ephemeral=True)
             return
 
-        pages = [
-            _result_embed(chunk, rank, len(results), col, label)
-            for rank, (chunk, col) in enumerate(results, 1)
-        ]
-        view = PaginatedResultView(pages)
-        await interaction.followup.send(embed=view.current_embed, view=view)
+        if compact:
+            embed = build_compact_embed(results, label)
+            await interaction.followup.send(embed=embed)
+        else:
+            pages = [
+                _result_embed(chunk, rank, len(results), col, label)
+                for rank, (chunk, col) in enumerate(results, 1)
+            ]
+            view = PaginatedResultView(pages)
+            await interaction.followup.send(embed=view.current_embed, view=view)
 
     def _hybrid_search(
         self,
         question: str,
-        show: str | None,
+        shows: list[str] | None,
         settings: ServerSettings,
         alpha: float,
+        *,
+        source: str | None = None,
+        episode: str | None = None,
+        speaker: str | None = None,
     ) -> list[tuple[dict, str]]:
         """Run hybrid retrieval across collections and merge results."""
         model, chunker = settings.model, settings.chunker
-        collections = (
-            [collection_name(show, model, chunker)]
-            if show
-            else self.store.list_collections(model=model, chunker=chunker)
-        )
+        if shows:
+            collections = [collection_name(s, model, chunker) for s in shows]
+        else:
+            collections = self.store.list_collections(model=model, chunker=chunker)
         if not collections:
             logger.warning(f"No collections for model={model!r} chunker={chunker!r}")
             return []
@@ -444,7 +738,15 @@ class PodCodexBot(discord.Client):
         ret = self.retriever(model)
         hits_by_col: dict[str, list[dict]] = {}
         for col in collections:
-            hits = ret.retrieve(question, col, top_k=settings.top_k, alpha=alpha)
+            hits = ret.retrieve(
+                question,
+                col,
+                top_k=settings.top_k,
+                alpha=alpha,
+                source=source,
+                episode=episode,
+                speaker=speaker,
+            )
             if hits:
                 hits_by_col[col] = hits
 
@@ -461,22 +763,31 @@ class PodCodexBot(discord.Client):
         self,
         interaction: discord.Interaction,
         query: str,
-        show: str | None,
+        shows: list[str] | None,
         top_k: int,
+        *,
+        source: str | None = None,
+        episode: str | None = None,
+        speaker: str | None = None,
+        compact: bool = False,
     ) -> None:
         await interaction.response.defer()
         settings = self._server_settings(interaction.guild_id)
         loop = asyncio.get_running_loop()
 
         try:
-            collections = await loop.run_in_executor(
-                None,
-                lambda: self.store.list_collections(
-                    show=show or "",
-                    model=settings.model,
-                    chunker=settings.chunker,
-                ),
-            )
+            if shows:
+                collections = [
+                    collection_name(s, settings.model, settings.chunker) for s in shows
+                ]
+            else:
+                collections = await loop.run_in_executor(
+                    None,
+                    lambda: self.store.list_collections(
+                        model=settings.model,
+                        chunker=settings.chunker,
+                    ),
+                )
             if not collections:
                 await interaction.followup.send(
                     "No indexed shows found.", ephemeral=True
@@ -488,7 +799,12 @@ class PodCodexBot(discord.Client):
                 hits = await loop.run_in_executor(
                     None,
                     lambda c=col: self.retriever(settings.model).find(
-                        query, c, top_k=top_k
+                        query,
+                        c,
+                        top_k=top_k,
+                        source=source,
+                        episode=episode,
+                        speaker=speaker,
                     ),
                 )
                 all_results.extend((hit, col) for hit in hits)
@@ -510,12 +826,17 @@ class PodCodexBot(discord.Client):
         )
         all_results = all_results[:top_k]
 
-        pages = [
-            _result_embed(chunk, rank, len(all_results), col, "exact match 🔍")
-            for rank, (chunk, col) in enumerate(all_results, 1)
-        ]
-        view = PaginatedResultView(pages)
-        await interaction.followup.send(embed=view.current_embed, view=view)
+        label = "exact match 🔍"
+        if compact:
+            embed = build_compact_embed(all_results, label)
+            await interaction.followup.send(embed=embed)
+        else:
+            pages = [
+                _result_embed(chunk, rank, len(all_results), col, label)
+                for rank, (chunk, col) in enumerate(all_results, 1)
+            ]
+            view = PaginatedResultView(pages)
+            await interaction.followup.send(embed=view.current_embed, view=view)
 
     # ── /setup handler ────────────────────────
 
@@ -525,35 +846,73 @@ class PodCodexBot(discord.Client):
         model: str | None,
         chunker: str | None,
         top_k: int | None,
+        *,
+        show_add: str | None = None,
+        show_remove: str | None = None,
+        show_clear: bool = False,
+        default_source: str = "",
+        compact: str = "",
     ) -> None:
         guild_id = interaction.guild_id
         current = self._server_settings(guild_id)
 
-        if model is None and chunker is None and top_k is None:
+        has_change = any(
+            [
+                model,
+                chunker,
+                top_k,
+                show_add,
+                show_remove,
+                show_clear,
+                default_source,
+                compact,
+            ]
+        )
+        if not has_change:
+            shows_str = ", ".join(f"`{s}`" for s in current.default_shows) or "*(all)*"
             await interaction.response.send_message(
                 f"**Current settings**\n"
                 f"Model: `{current.model}`\n"
                 f"Chunker: `{current.chunker}`\n"
                 f"Top-k: `{current.top_k}`\n"
+                f"Default shows: {shows_str}\n"
+                f"Default source: `{current.default_source or '(any)'}`\n"
+                f"Compact: `{current.compact}`\n"
                 f"Merge: `{self.config.merge_strategy}`",
                 ephemeral=True,
             )
             return
 
+        # Build updated shows list
+        new_shows = list(current.default_shows)
+        if show_clear:
+            new_shows = []
+        if show_add and show_add not in new_shows:
+            new_shows.append(show_add)
+        if show_remove and show_remove in new_shows:
+            new_shows.remove(show_remove)
+
         updated = ServerSettings(
             model=model or current.model,
             chunker=chunker or current.chunker,
             top_k=top_k or current.top_k,
+            default_shows=new_shows,
+            default_source=default_source if default_source else current.default_source,
+            compact=compact == "true" if compact else current.compact,
         )
         self._server_cfg[guild_id] = updated
         self._save_server_config()
         logger.info(f"Guild {guild_id} updated: {updated}")
 
+        shows_str = ", ".join(f"`{s}`" for s in updated.default_shows) or "*(all)*"
         await interaction.response.send_message(
             f"✅ Settings updated\n"
             f"Model: `{updated.model}`\n"
             f"Chunker: `{updated.chunker}`\n"
-            f"Top-k: `{updated.top_k}`",
+            f"Top-k: `{updated.top_k}`\n"
+            f"Default shows: {shows_str}\n"
+            f"Default source: `{updated.default_source or '(any)'}`\n"
+            f"Compact: `{updated.compact}`",
             ephemeral=True,
         )
 

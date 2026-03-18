@@ -6,30 +6,35 @@ Two strategies:
     semantic_chunks — full-episode text chunked by semantic similarity via
                       Chonkie SemanticChunker, then mapped back to timing metadata.
 
-Both accept the output of load_transcript_full() and return a list of chunk dicts
-ready for embedding and storage.
+Both accept a transcript dict (``{meta: {show, episode, ...}, segments: [...]}``)
+and return a list of chunk dicts ready for embedding and storage.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 from loguru import logger
+
+from podcodex.rag.defaults import CHUNKER_MODEL
 
 
 # ──────────────────────────────────────────────
 # Internal helpers
 # ──────────────────────────────────────────────
 
+_SEP = " "
 
-def _meta_fields(transcript: dict) -> tuple[str, str]:
+
+def _meta_fields(transcript: dict) -> tuple[str, str, str]:
+    """Extract (show, episode, source) from transcript metadata."""
     meta = transcript.get("meta", {})
-    return meta.get("show", ""), meta.get("episode", "")
+    return meta.get("show", ""), meta.get("episode", ""), meta.get("source", "")
 
 
 def _build_episode_text(segments: list[dict]) -> tuple[str, list[dict]]:
     """
     Concatenate turns into a single string, tracking character offsets per turn.
+
+    Segments are assumed to be pre-filtered (all must have ``text``).
 
     Returns:
         (full_text, offset_map) — offset_map entries:
@@ -51,18 +56,18 @@ def _build_episode_text(segments: list[dict]) -> tuple[str, list[dict]]:
             }
         )
         parts.append(text)
-        cursor += len(text) + 1  # +1 for the space separator
-    return " ".join(parts), offset_map
+        cursor += len(text) + len(_SEP)
+    return _SEP.join(parts), offset_map
 
 
-def _resolve_chunk_metadata(
+def _map_offsets_to_metadata(
     chunk_start: int, chunk_end: int, offset_map: list[dict]
 ) -> dict | None:
     """
     Map chunk character offsets back to timing + speaker metadata.
 
     Returns dominant speaker (by character coverage) and the full list of
-    overlapping turns.
+    overlapping turns, or None if the chunk doesn't overlap any turn.
     """
     overlapping = [
         t
@@ -72,17 +77,17 @@ def _resolve_chunk_metadata(
     if not overlapping:
         return None
 
-    speaker_chars: dict[str, int] = defaultdict(int)
+    speaker_chars: dict[str, int] = {}
     for t in overlapping:
         chars = max(
             0, min(t["end_char"], chunk_end) - max(t["start_char"], chunk_start)
         )
-        speaker_chars[t["speaker"]] += chars
+        speaker_chars[t["speaker"]] = speaker_chars.get(t["speaker"], 0) + chars
 
     return {
         "start": overlapping[0]["start"],
         "end": overlapping[-1]["end"],
-        "dominant_speaker": max(speaker_chars, key=speaker_chars.get),
+        "dominant_speaker": max(speaker_chars, key=speaker_chars.__getitem__),
         "speakers": overlapping,
     }
 
@@ -96,17 +101,17 @@ def speaker_chunks(transcript: dict, min_chars: int = 30) -> list[dict]:
     """
     Return one chunk per speaker turn, filtering out noise.
 
-    Segments are already speaker-merged by export_transcript(), so this only
+    Segments are already speaker-merged by the pipeline, so this only
     applies noise filtering (min_chars) and attaches show/episode metadata.
 
     Args:
-        transcript : output of load_transcript_full()
+        transcript : transcript dict with ``meta`` and ``segments`` keys
         min_chars  : minimum character count to keep a turn (default 30)
 
     Returns:
-        List of {show, episode, start, end, speaker, text}
+        List of {show, episode, source, start, end, speaker, text}
     """
-    show, episode = _meta_fields(transcript)
+    show, episode, source = _meta_fields(transcript)
     chunks = []
     for seg in transcript.get("segments", []):
         text = seg.get("text", "").strip()
@@ -116,6 +121,7 @@ def speaker_chunks(transcript: dict, min_chars: int = 30) -> list[dict]:
             {
                 "show": show,
                 "episode": episode,
+                "source": source,
                 "start": seg["start"],
                 "end": seg["end"],
                 "speaker": seg.get("speaker", "UNKNOWN"),
@@ -146,30 +152,32 @@ def semantic_chunks(
     is reported alongside the full list of overlapping turns.
 
     Args:
-        transcript : output of load_transcript_full()
+        transcript : transcript dict with ``meta`` and ``segments`` keys
         chunk_size : max tokens per chunk (default 256)
         threshold  : semantic similarity threshold for splitting (default 0.5)
         min_chars  : minimum chars to keep a segment before chunking (default 30)
 
     Returns:
-        List of {show, episode, start, end, dominant_speaker, speakers, text, token_count}
+        List of chunk dicts with keys:
+            show, episode, source, start, end, text, token_count,
+            dominant_speaker — speaker with most characters in the chunk,
+            speakers — list of overlapping turns, each a dict with
+                {start_char, end_char, speaker, start, end, text}.
     """
     from chonkie import SemanticChunker
 
-    show, episode = _meta_fields(transcript)
+    show, episode, source = _meta_fields(transcript)
 
     segments = [
-        seg
+        {**seg, "text": text}
         for seg in transcript.get("segments", [])
-        if len(seg.get("text", "").strip()) >= min_chars
+        if len(text := seg.get("text", "").strip()) >= min_chars
     ]
     if not segments:
         logger.warning(f"semantic_chunks: no segments after filtering for '{episode}'")
         return []
 
     full_text, offset_map = _build_episode_text(segments)
-
-    from podcodex.rag.defaults import CHUNKER_MODEL
 
     chunker = SemanticChunker(
         embedding_model=CHUNKER_MODEL,
@@ -181,17 +189,18 @@ def semantic_chunks(
 
     chunks = []
     for raw in raw_chunks:
-        meta_chunk = _resolve_chunk_metadata(raw.start_index, raw.end_index, offset_map)
-        if meta_chunk is None:
+        meta = _map_offsets_to_metadata(raw.start_index, raw.end_index, offset_map)
+        if meta is None:
             continue
         chunks.append(
             {
                 "show": show,
                 "episode": episode,
-                "start": meta_chunk["start"],
-                "end": meta_chunk["end"],
-                "dominant_speaker": meta_chunk["dominant_speaker"],
-                "speakers": meta_chunk["speakers"],
+                "source": source,
+                "start": meta["start"],
+                "end": meta["end"],
+                "dominant_speaker": meta["dominant_speaker"],
+                "speakers": meta["speakers"],
                 "text": raw.text,
                 "token_count": raw.token_count,
             }

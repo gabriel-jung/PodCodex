@@ -11,6 +11,16 @@ from podcodex.core import synthesize, validate_segments_json
 from podcodex.core._utils import AudioPaths, wav_duration
 from podcodex.core.synthesize import load_voice_samples, load_generated_segments
 from podcodex.core.transcribe import load_speaker_map
+from constants import (
+    AUDIO_EXTENSIONS,
+    DEFAULT_MAX_CHUNK_DURATION,
+    DEFAULT_SILENCE_DURATION,
+    DEFAULT_TARGET_LANG,
+    TTS_MODEL_SIZES,
+    VOICE_MAX_DURATION,
+    VOICE_MIN_DURATION,
+    VOICE_TOP_K,
+)
 
 
 @st.cache_resource
@@ -136,7 +146,7 @@ def render():
 
         language = st.text_input(
             "Synthesis language",
-            value="English",
+            value=DEFAULT_TARGET_LANG,
             help="Full language name of the text to synthesize. Used by the TTS model for pronunciation.",
         )
 
@@ -144,7 +154,7 @@ def render():
         with col_model:
             model_size = st.selectbox(
                 "TTS model size",
-                ["1.7B", "0.6B"],
+                TTS_MODEL_SIZES,
                 index=0,
                 help="Larger model (1.7B) gives better quality but requires more VRAM (~8GB). Smaller (0.6B) runs on ~4GB.",
             )
@@ -153,7 +163,7 @@ def render():
                 "Max chunk duration (s)",
                 min_value=5.0,
                 max_value=60.0,
-                value=20.0,
+                value=DEFAULT_MAX_CHUNK_DURATION,
                 step=5.0,
                 help="Source segments shorter than this are synthesized in one TTS call. Longer segments are split at sentence boundaries into ceil(duration / max) chunks. Reduce for very long segments if you notice quality drift.",
             )
@@ -184,13 +194,7 @@ def render():
         )
         samples_exist = bool(voice_samples)
 
-        has_real_audio = audio_path and Path(audio_path).suffix in {
-            ".mp3",
-            ".wav",
-            ".m4a",
-            ".ogg",
-            ".flac",
-        }
+        has_real_audio = audio_path and Path(audio_path).suffix in AUDIO_EXTENSIONS
 
         # Voice mapping is always shown — custom uploads are available even without audio
         _render_voice_mapping(voice_samples, translation, audio_path, output_dir)
@@ -210,21 +214,21 @@ def render():
                 with col1:
                     min_duration = st.number_input(
                         "Min duration (s)",
-                        value=3.0,
+                        value=VOICE_MIN_DURATION,
                         min_value=0.0,
                         help="Minimum clip duration to consider as a voice sample.",
                     )
                 with col2:
                     max_duration = st.number_input(
                         "Max duration (s)",
-                        value=0.0,
+                        value=VOICE_MAX_DURATION,
                         min_value=0.0,
                         help="Maximum clip duration. Set to 0 for no limit.",
                     )
                 with col3:
                     top_k = st.number_input(
                         "Candidates per speaker",
-                        value=3,
+                        value=VOICE_TOP_K,
                         min_value=1,
                         max_value=10,
                         help="Number of audio clips to extract per speaker.",
@@ -305,10 +309,12 @@ def render():
                 else None,
             ):
                 model = _load_tts_model(model_size)
+                # voice_samples_resolved contains exactly one sample per speaker,
+                # so sample_index is always 0.
                 clone_prompts = synthesize.build_clone_prompts(
                     model,
                     voice_samples_for_gen,
-                    sample_index=st.session_state.get("sample_index", 0),
+                    sample_index=0,
                 )
                 generated = []
                 progress = st.progress(0, text="Starting...")
@@ -458,7 +464,7 @@ def render():
                             clone_prompts = synthesize.build_clone_prompts(
                                 model,
                                 single_sample,
-                                sample_index=st.session_state.get("sample_index", 0),
+                                sample_index=0,
                             )
 
                         progress_bar = st.progress(0, text="Starting…")
@@ -504,7 +510,7 @@ def render():
             with col2:
                 silence_duration = st.number_input(
                     "Silence (s)",
-                    value=0.5,
+                    value=DEFAULT_SILENCE_DURATION,
                     min_value=0.0,
                     disabled=strategy != "silence",
                     help="Duration of silence inserted between segments.",
@@ -717,7 +723,6 @@ def _render_voice_mapping(
         spk: [{"file": e["file"], "duration": e["duration"], "text": e["text"]}]
         for spk, e in resolved_mapping.items()
     }
-    st.session_state.sample_index = {spk: 0 for spk in resolved_mapping}
 
 
 def _build_voice_pool(voice_samples: dict[str, list[dict]]) -> list[dict]:

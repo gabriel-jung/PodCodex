@@ -32,7 +32,9 @@ def _make_pplx_mocks():
         n = len(episodes[0])
         return [np.zeros((n, 1024), dtype=np.float32)]
 
-    transformers_mock.AutoModel.from_pretrained.return_value.encode = ctx_encode
+    ctx_model = transformers_mock.AutoModel.from_pretrained.return_value
+    ctx_model.encode = ctx_encode
+    ctx_model.to.return_value = ctx_model  # .to(device) returns same mock
     st_mock.SentenceTransformer.return_value.encode.return_value = np.zeros(
         1024, dtype=np.float32
     )
@@ -65,7 +67,9 @@ def test_pplx_encode_passages_episode_grouping():
         n = len(episodes[0])
         return [np.ones((n, 1024), dtype=np.float32) * len(call_log)]
 
-    transformers_mock.AutoModel.from_pretrained.return_value.encode = ctx_encode
+    ctx_model = transformers_mock.AutoModel.from_pretrained.return_value
+    ctx_model.encode = ctx_encode
+    ctx_model.to.return_value = ctx_model  # .to(device) returns same mock
 
     chunks = [
         {"episode": "E1", "text": "a"},

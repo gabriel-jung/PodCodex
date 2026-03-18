@@ -1,8 +1,9 @@
 """
 podcodex.rag.store — Qdrant storage layer for podcast RAG.
 
-One collection per (show, model) pair.
-Collection naming: "{normalized_show}__{model_key}"  e.g. "my_podcast__bge-m3"
+One collection per (show, model, chunker) triple.
+Collection naming: "{normalized_show}__{model}__{chunker}"
+    e.g. "my_podcast__bge-m3__semantic"
 
 Each collection stores dense float32 vectors; vector size comes from the
 model's spec in podcodex.rag.defaults.MODELS.
@@ -30,6 +31,35 @@ def collection_name(show: str, model: str, chunker: str = "semantic") -> str:
     return f"{_normalize_show(show)}__{model}__{chunker}"
 
 
+def _episode_filter(episode: str):
+    """Build a Qdrant Filter matching a single episode."""
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    return Filter(must=[FieldCondition(key="episode", match=MatchValue(value=episode))])
+
+
+def _search_filter(
+    episode: str | None = None,
+    source: str | None = None,
+    speaker: str | None = None,
+):
+    """Build a Qdrant Filter for optional episode + source + speaker constraints."""
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    conditions = []
+    if episode:
+        conditions.append(
+            FieldCondition(key="episode", match=MatchValue(value=episode))
+        )
+    if source:
+        conditions.append(FieldCondition(key="source", match=MatchValue(value=source)))
+    if speaker:
+        conditions.append(
+            FieldCondition(key="speaker", match=MatchValue(value=speaker))
+        )
+    return Filter(must=conditions) if conditions else None
+
+
 class QdrantStore:
     """
     Thin wrapper around QdrantClient for podcast RAG storage.
@@ -50,6 +80,7 @@ class QdrantStore:
     # ── Collection management ──────────────────
 
     def collection_exists(self, name: str) -> bool:
+        """Return True if the collection exists in Qdrant."""
         return self._client.collection_exists(name)
 
     def create_collection(
@@ -81,6 +112,24 @@ class QdrantStore:
             collection_name=name,
             field_name="text",
             field_schema=PayloadSchemaType.TEXT,
+        )
+        # Keyword index on 'episode' speeds up filtered counts, deletes, and searches
+        self._client.create_payload_index(
+            collection_name=name,
+            field_name="episode",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        # Keyword index on 'source' enables filtering by transcript quality
+        self._client.create_payload_index(
+            collection_name=name,
+            field_name="source",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        # Keyword index on 'speaker' enables filtering by speaker
+        self._client.create_payload_index(
+            collection_name=name,
+            field_name="speaker",
+            field_schema=PayloadSchemaType.KEYWORD,
         )
 
         logger.success(f"Created collection '{name}' ({spec.label}, dim={spec.dim})")
@@ -145,24 +194,133 @@ class QdrantStore:
 
         logger.success(f"Upserted {len(points)} points into '{collection}'")
 
-    def fetch_episode_chunks(self, collection: str, episode: str) -> list[dict]:
-        """
-        Fetch all chunks for a given episode, sorted by start time.
-        """
-        from qdrant_client.models import FieldCondition, Filter, MatchValue
+    # ── Query ───────────────────────────────────
 
+    def collection_point_count(self, collection: str) -> int:
+        """Return total number of points in a collection (cheap, from metadata)."""
+        return self._client.get_collection(collection).points_count
+
+    def search_points(
+        self, collection: str, query_vector: list[float], top_k: int, query_filter=None
+    ) -> list[dict]:
+        """Dense vector search. Returns list of {payload fields + score}."""
+        results = self._client.query_points(
+            collection_name=collection,
+            query=query_vector,
+            limit=top_k,
+            query_filter=query_filter,
+        ).points
+        return [_result_to_dict(r) for r in results]
+
+    def scroll_payloads(
+        self, collection: str, scroll_filter=None, limit: int = 10_000
+    ) -> list[dict]:
+        """Scroll all payloads matching a filter. Returns list of payload dicts."""
         results, _ = self._client.scroll(
             collection_name=collection,
-            scroll_filter=Filter(
-                must=[FieldCondition(key="episode", match=MatchValue(value=episode))]
-            ),
-            limit=10_000,
+            scroll_filter=scroll_filter,
+            limit=limit,
             with_payload=True,
             with_vectors=False,
         )
-        chunks = [dict(r.payload) for r in results]
+        return [dict(r.payload) for r in results]
+
+    # ── Episode-level ──────────────────────────
+
+    def episode_point_count(self, collection: str, episode: str) -> int:
+        """Return the number of points for an episode in a collection (cheap count)."""
+        result = self._client.count(
+            collection_name=collection,
+            count_filter=_episode_filter(episode),
+            exact=True,
+        )
+        return result.count
+
+    def delete_episode_points(self, collection: str, episode: str) -> int:
+        """Delete all points for an episode. Returns count deleted."""
+        from qdrant_client.models import FilterSelector
+
+        count = self.episode_point_count(collection, episode)
+        if count == 0:
+            return 0
+
+        self._client.delete(
+            collection_name=collection,
+            points_selector=FilterSelector(filter=_episode_filter(episode)),
+        )
+        logger.info(f"Deleted {count} points for '{episode}' from '{collection}'")
+        return count
+
+    def fetch_episode_chunks(self, collection: str, episode: str) -> list[dict]:
+        """Fetch all chunks for a given episode, sorted by start time."""
+        chunks = self.scroll_payloads(
+            collection, scroll_filter=_episode_filter(episode)
+        )
         chunks.sort(key=lambda c: c.get("start", 0.0))
         return chunks
+
+    def list_episode_names(self, collection: str) -> list[str]:
+        """Return sorted unique episode names in a collection (paginated scroll)."""
+        names: set[str] = set()
+        offset = None
+        while True:
+            batch, next_offset = self._client.scroll(
+                collection_name=collection,
+                limit=1_000,
+                offset=offset,
+                with_payload=["episode"],
+                with_vectors=False,
+            )
+            for point in batch:
+                ep = (point.payload or {}).get("episode")
+                if ep:
+                    names.add(ep)
+            if next_offset is None:
+                break
+            offset = next_offset
+        return sorted(names)
+
+    def list_sources(self, collection: str) -> list[str]:
+        """Return sorted unique source values in a collection (paginated scroll)."""
+        sources: set[str] = set()
+        offset = None
+        while True:
+            batch, next_offset = self._client.scroll(
+                collection_name=collection,
+                limit=1_000,
+                offset=offset,
+                with_payload=["source"],
+                with_vectors=False,
+            )
+            for point in batch:
+                src = (point.payload or {}).get("source")
+                if src:
+                    sources.add(src)
+            if next_offset is None:
+                break
+            offset = next_offset
+        return sorted(sources)
+
+    def list_speakers(self, collection: str) -> list[str]:
+        """Return sorted unique speaker names in a collection (paginated scroll)."""
+        speakers: set[str] = set()
+        offset = None
+        while True:
+            batch, next_offset = self._client.scroll(
+                collection_name=collection,
+                limit=1_000,
+                offset=offset,
+                with_payload=["speaker"],
+                with_vectors=False,
+            )
+            for point in batch:
+                spk = (point.payload or {}).get("speaker")
+                if spk:
+                    speakers.add(spk)
+            if next_offset is None:
+                break
+            offset = next_offset
+        return sorted(speakers)
 
     def get_episode_stats(self, collection: str) -> list[dict]:
         """
@@ -200,6 +358,13 @@ class QdrantStore:
 # ──────────────────────────────────────────────
 # Internal helpers
 # ──────────────────────────────────────────────
+
+
+def _result_to_dict(result) -> dict:
+    """Convert a Qdrant ScoredPoint to a plain dict with a 'score' key."""
+    payload = dict(result.payload or {})
+    payload["score"] = result.score
+    return payload
 
 
 def _serialize_payload(chunk: dict) -> dict:

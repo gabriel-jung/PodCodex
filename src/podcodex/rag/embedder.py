@@ -15,23 +15,17 @@ Factory:
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 import numpy as np
 from loguru import logger
 
-from podcodex.rag.defaults import (
-    BGE_M3_MODEL,
-    E5_LARGE_MODEL,
-    E5_SMALL_MODEL,
-    PPLX_PASSAGE_MODEL,
-    PPLX_QUERY_MODEL,
-)
+from podcodex.rag.defaults import MODELS
 
 
 # ──────────────────────────────────────────────
-# PplxEmbedder  (experimental placeholder)
+# PplxEmbedder
 # ──────────────────────────────────────────────
+
+_PPLX_SPEC = MODELS["pplx"]
 
 
 class PplxEmbedder:
@@ -42,39 +36,41 @@ class PplxEmbedder:
     episode are passed together so each embedding is influenced by its neighbors.
     Query encoding uses the separate pplx-embed-v1-0.6B query model.
 
-    Dense 1024-dim vectors.
+    Dense vectors (dim from MODELS registry). Unnormalized — Qdrant handles
+    cosine normalization at query time.
     """
-
-    PASSAGE_MODEL = PPLX_PASSAGE_MODEL
-    QUERY_MODEL = PPLX_QUERY_MODEL
 
     def __init__(self, device: str = "cpu"):
         from transformers import AutoModel
         from sentence_transformers import SentenceTransformer
 
-        logger.info(f"Loading PplxEmbedder ({self.PASSAGE_MODEL}) on {device}")
+        logger.info(f"Loading PplxEmbedder ({_PPLX_SPEC.hf_model}) on {device}")
         self._ctx_model = AutoModel.from_pretrained(
-            self.PASSAGE_MODEL, trust_remote_code=True
-        )
+            _PPLX_SPEC.hf_model, trust_remote_code=True
+        ).to(device)
         self._query_model = SentenceTransformer(
-            self.QUERY_MODEL, trust_remote_code=True
+            _PPLX_SPEC.hf_query_model, trust_remote_code=True, device=device
         )
+        self._dim = _PPLX_SPEC.dim
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
         """
         Encode passages with full episode context (grouped by episode).
 
-        Returns:
-            np.ndarray of shape (n, 1024), dtype float32
-        """
-        episode_indices: dict[str, list[int]] = defaultdict(list)
-        for i, chunk in enumerate(chunks):
-            episode_indices[chunk.get("episode", "")].append(i)
+        All chunks from the same episode are passed as a single batch so
+        each embedding is influenced by its neighbors (context-aware).
 
-        result = np.empty((len(chunks), 1024), dtype=np.float32)
+        Returns:
+            np.ndarray of shape (n, dim), dtype float32
+        """
+        episode_indices: dict[str, list[int]] = {}
+        for i, chunk in enumerate(chunks):
+            episode_indices.setdefault(chunk.get("episode", ""), []).append(i)
+
+        result = np.empty((len(chunks), self._dim), dtype=np.float32)
         for episode, indices in episode_indices.items():
             texts = [chunks[i]["text"] for i in indices]
-            episode_embs = self._ctx_model.encode([texts])[0]  # (n_chunks, 1024)
+            episode_embs = self._ctx_model.encode([texts])[0]  # (n_chunks, dim)
             for pos, idx in enumerate(indices):
                 result[idx] = episode_embs[pos].astype(np.float32)
 
@@ -82,7 +78,7 @@ class PplxEmbedder:
         return result
 
     def encode_query(self, query: str) -> np.ndarray:
-        """Returns float32 vector of dim 1024."""
+        """Returns float32 vector of dim from MODELS registry."""
         emb = self._query_model.encode(query)
         return np.array(emb, dtype=np.float32)
 
@@ -100,11 +96,6 @@ class E5Embedder:
     Returns L2-normalized dense float32 vectors.
     """
 
-    _HF_MODELS: dict[str, str] = {
-        "e5-small": E5_SMALL_MODEL,
-        "e5-large": E5_LARGE_MODEL,
-    }
-
     def __init__(
         self,
         model_key: str = "e5-small",
@@ -113,7 +104,7 @@ class E5Embedder:
     ):
         from sentence_transformers import SentenceTransformer
 
-        hf_model = self._HF_MODELS.get(model_key, E5_SMALL_MODEL)
+        hf_model = MODELS[model_key].hf_model
         logger.info(f"Loading E5Embedder ({hf_model}) on {device}")
         self._model = SentenceTransformer(hf_model, device=device)
         self._batch_size = batch_size
@@ -152,13 +143,19 @@ class BGEEmbedder:
     BM25 is handled separately by the Retriever via bm25s.
     """
 
-    MODEL = BGE_M3_MODEL
+    MODEL = MODELS["bge-m3"].hf_model
+    _ENCODE_OPTS = dict(
+        return_dense=True, return_sparse=False, return_colbert_vecs=False
+    )
 
-    def __init__(self, use_fp16: bool = True, batch_size: int = 32):
+    def __init__(
+        self, device: str = "cpu", use_fp16: bool = True, batch_size: int = 32
+    ):
         from FlagEmbedding import BGEM3FlagModel
 
-        logger.info("Loading BGEEmbedder (BAAI/bge-m3)")
-        self._model = BGEM3FlagModel(self.MODEL, use_fp16=use_fp16)
+        devices = [device] if device else None
+        logger.info(f"Loading BGEEmbedder ({self.MODEL}) on {device}")
+        self._model = BGEM3FlagModel(self.MODEL, use_fp16=use_fp16, devices=devices)
         self._batch_size = batch_size
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
@@ -168,24 +165,14 @@ class BGEEmbedder:
         """
         texts = [c["text"] for c in chunks]
         output = self._model.encode(
-            texts,
-            batch_size=self._batch_size,
-            max_length=512,
-            return_dense=True,
-            return_sparse=False,
-            return_colbert_vecs=False,
+            texts, batch_size=self._batch_size, max_length=512, **self._ENCODE_OPTS
         )
         logger.info(f"BGEEmbedder: encoded {len(chunks)} passages")
         return np.array(output["dense_vecs"], dtype=np.float32)
 
     def encode_query(self, query: str) -> np.ndarray:
         """Returns float32 vector of dim 1024."""
-        output = self._model.encode(
-            [query],
-            return_dense=True,
-            return_sparse=False,
-            return_colbert_vecs=False,
-        )
+        output = self._model.encode([query], **self._ENCODE_OPTS)
         return np.array(output["dense_vecs"][0], dtype=np.float32)
 
 
@@ -194,19 +181,28 @@ class BGEEmbedder:
 # ──────────────────────────────────────────────
 
 
-def get_embedder(model_key: str):
-    """Return the appropriate embedder instance for the given model key."""
-    from podcodex.rag.defaults import MODELS
+def get_embedder(model_key: str, device: str = "cpu"):
+    """Return the appropriate embedder instance for the given model key.
 
+    Args:
+        model_key: one of the keys in MODELS registry (e.g. "bge-m3", "e5-small").
+        device: torch device string (e.g. "cpu", "cuda", "mps").
+
+    Returns:
+        An embedder instance with ``encode_passages()`` and ``encode_query()`` methods.
+
+    Raises:
+        ValueError: if model_key is not in the registry.
+    """
     if model_key not in MODELS:
         valid = ", ".join(MODELS.keys())
         raise ValueError(f"Unknown model '{model_key}'. Valid: {valid}")
 
     if model_key == "bge-m3":
-        return BGEEmbedder()
+        return BGEEmbedder(device=device)
     if model_key in ("e5-small", "e5-large"):
-        return E5Embedder(model_key=model_key)
+        return E5Embedder(model_key=model_key, device=device)
     if model_key == "pplx":
-        return PplxEmbedder()
+        return PplxEmbedder(device=device)
 
     raise ValueError(f"No embedder class registered for '{model_key}'")

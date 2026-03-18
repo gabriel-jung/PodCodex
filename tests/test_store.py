@@ -304,3 +304,177 @@ def test_upsert_works_with_e5_small_dim():
     ):
         store.upsert("col", _chunks(2), _embeddings(2, dim=384))
     mock_client.upsert.assert_called_once()
+
+
+# ──────────────────────────────────────────────
+# episode_point_count
+# ──────────────────────────────────────────────
+
+
+def test_episode_point_count_returns_count():
+    mock_mod, mock_client = _make_qdrant_mock()
+    mock_client.count.return_value.count = 42
+    store, _ = _make_store(mock_mod)
+    with patch.dict(
+        "sys.modules",
+        {"qdrant_client": mock_mod, "qdrant_client.models": mock_mod.models},
+    ):
+        result = store.episode_point_count("col", "ep1")
+    assert result == 42
+    mock_client.count.assert_called_once()
+
+
+def test_episode_point_count_zero():
+    mock_mod, mock_client = _make_qdrant_mock()
+    mock_client.count.return_value.count = 0
+    store, _ = _make_store(mock_mod)
+    with patch.dict(
+        "sys.modules",
+        {"qdrant_client": mock_mod, "qdrant_client.models": mock_mod.models},
+    ):
+        result = store.episode_point_count("col", "ep_missing")
+    assert result == 0
+
+
+# ──────────────────────────────────────────────
+# delete_episode_points
+# ──────────────────────────────────────────────
+
+
+def test_delete_episode_points_deletes_and_returns_count():
+    mock_mod, mock_client = _make_qdrant_mock()
+    mock_client.count.return_value.count = 5
+    store, _ = _make_store(mock_mod)
+    with patch.dict(
+        "sys.modules",
+        {"qdrant_client": mock_mod, "qdrant_client.models": mock_mod.models},
+    ):
+        result = store.delete_episode_points("col", "ep1")
+    assert result == 5
+    mock_client.delete.assert_called_once()
+
+
+def test_delete_episode_points_zero_skips_delete():
+    mock_mod, mock_client = _make_qdrant_mock()
+    mock_client.count.return_value.count = 0
+    store, _ = _make_store(mock_mod)
+    with patch.dict(
+        "sys.modules",
+        {"qdrant_client": mock_mod, "qdrant_client.models": mock_mod.models},
+    ):
+        result = store.delete_episode_points("col", "ep_missing")
+    assert result == 0
+    mock_client.delete.assert_not_called()
+
+
+# ──────────────────────────────────────────────
+# list_episode_names
+# ──────────────────────────────────────────────
+
+
+def _scroll_points(payloads: list[dict]):
+    """Build mock scroll results: list of objects with .payload attribute."""
+    points = []
+    for p in payloads:
+        pt = MagicMock()
+        pt.payload = p
+        points.append(pt)
+    return points
+
+
+def test_list_episode_names_returns_sorted_unique():
+    mock_mod, mock_client = _make_qdrant_mock()
+    store, _ = _make_store(mock_mod)
+    points = _scroll_points(
+        [
+            {"episode": "ep02"},
+            {"episode": "ep01"},
+            {"episode": "ep02"},
+            {"episode": "ep03"},
+        ]
+    )
+    mock_client.scroll.return_value = (points, None)
+    result = store.list_episode_names("col")
+    assert result == ["ep01", "ep02", "ep03"]
+
+
+def test_list_episode_names_empty_collection():
+    mock_mod, mock_client = _make_qdrant_mock()
+    store, _ = _make_store(mock_mod)
+    mock_client.scroll.return_value = ([], None)
+    result = store.list_episode_names("col")
+    assert result == []
+
+
+def test_list_episode_names_skips_missing_episode():
+    mock_mod, mock_client = _make_qdrant_mock()
+    store, _ = _make_store(mock_mod)
+    points = _scroll_points([{"episode": "ep01"}, {}, {"episode": "ep02"}])
+    mock_client.scroll.return_value = (points, None)
+    result = store.list_episode_names("col")
+    assert result == ["ep01", "ep02"]
+
+
+# ──────────────────────────────────────────────
+# list_sources
+# ──────────────────────────────────────────────
+
+
+def test_list_sources_returns_sorted_unique():
+    mock_mod, mock_client = _make_qdrant_mock()
+    store, _ = _make_store(mock_mod)
+    points = _scroll_points(
+        [
+            {"source": "polished"},
+            {"source": "transcript"},
+            {"source": "polished"},
+        ]
+    )
+    mock_client.scroll.return_value = (points, None)
+    result = store.list_sources("col")
+    assert result == ["polished", "transcript"]
+
+
+def test_list_sources_empty():
+    mock_mod, mock_client = _make_qdrant_mock()
+    store, _ = _make_store(mock_mod)
+    mock_client.scroll.return_value = ([], None)
+    result = store.list_sources("col")
+    assert result == []
+
+
+# ──────────────────────────────────────────────
+# list_speakers
+# ──────────────────────────────────────────────
+
+
+def test_list_speakers_returns_sorted_unique():
+    mock_mod, mock_client = _make_qdrant_mock()
+    store, _ = _make_store(mock_mod)
+    points = _scroll_points(
+        [
+            {"speaker": "Bob"},
+            {"speaker": "Alice"},
+            {"speaker": "Bob"},
+        ]
+    )
+    mock_client.scroll.return_value = (points, None)
+    result = store.list_speakers("col")
+    assert result == ["Alice", "Bob"]
+
+
+def test_list_speakers_empty():
+    mock_mod, mock_client = _make_qdrant_mock()
+    store, _ = _make_store(mock_mod)
+    mock_client.scroll.return_value = ([], None)
+    result = store.list_speakers("col")
+    assert result == []
+
+
+def test_list_speakers_skips_missing():
+    mock_mod, mock_client = _make_qdrant_mock()
+    store, _ = _make_store(mock_mod)
+    points = _scroll_points([{"speaker": "Alice"}, {}, {"speaker": "Bob"}])
+    mock_client.scroll.return_value = (points, None)
+    result = store.list_speakers("col")
+    assert result == ["Alice", "Bob"]

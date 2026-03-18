@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import discord
 
 # ──────────────────────────────────────────────
 # Constants
@@ -171,3 +175,45 @@ class CooldownManager:
     def consume(self, user_id: int) -> None:
         """Record that the user just made a request."""
         self._last_used[user_id] = time.monotonic()
+
+
+# ──────────────────────────────────────────────
+# Compact embed
+# ──────────────────────────────────────────────
+
+_COMPACT_TEXT_MAX = 200
+
+
+def build_compact_embed(
+    results: list[tuple[dict, str]],
+    label: str,
+) -> "discord.Embed":
+    """Build a single embed with one field per result (max 25)."""
+    import discord
+
+    embed = discord.Embed(
+        title=f"🔎 {label}",
+        color=discord.Color.blurple(),
+    )
+    for i, (chunk, _col) in enumerate(results[:25], 1):
+        show = chunk.get("show", "")
+        episode = chunk.get("episode", "")
+        score = chunk.get("score", 0.0)
+        start = chunk.get("start", 0.0)
+        text = chunk.get("text", "")
+        if len(text) > _COMPACT_TEXT_MAX:
+            cut = text.rfind(" ", 0, _COMPACT_TEXT_MAX)
+            text = text[: cut if cut != -1 else _COMPACT_TEXT_MAX] + "…"
+
+        name = f"#{i} {episode}"
+        if show:
+            name += f" ({show})"
+        value = (
+            f"{speaker(chunk)} · {fmt_time(start)} · "
+            f"{score_bar(score)} {score:.0%}\n"
+            f'*"{text}"*'
+        )
+        embed.add_field(name=name, value=value, inline=False)
+
+    embed.set_footer(text=f"{len(results)} result{'s' if len(results) != 1 else ''}")
+    return embed

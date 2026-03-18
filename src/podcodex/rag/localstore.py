@@ -80,9 +80,20 @@ class LocalStore:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        self._conn.close()
+
+    def __enter__(self) -> "LocalStore":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
     # ── Collection management ──────────────────────────────────────────
 
     def collection_exists(self, name: str) -> bool:
+        """Return True if a collection with the given name exists."""
         cur = self._conn.execute("SELECT 1 FROM collections WHERE name=?", (name,))
         return cur.fetchone() is not None
 
@@ -102,7 +113,11 @@ class LocalStore:
     def list_collections(
         self, show: str = "", model: str = "", chunker: str = ""
     ) -> list[str]:
-        """List collection names, optionally filtered by show, model, and/or chunker."""
+        """List collection names, optionally filtered by show, model, and/or chunker.
+
+        Note: filters match the raw values stored in the collections table
+        (exact match), unlike QdrantStore which normalizes the show name.
+        """
         q = "SELECT name FROM collections WHERE 1=1"
         params: list = []
         if show:
@@ -125,13 +140,23 @@ class LocalStore:
     # ── Episode-level ──────────────────────────────────────────────────
 
     def episode_is_indexed(self, collection: str, episode: str) -> bool:
+        """Return True if at least one chunk exists for this episode in the collection."""
         cur = self._conn.execute(
             "SELECT 1 FROM chunks WHERE collection=? AND episode=? LIMIT 1",
             (collection, episode),
         )
         return cur.fetchone() is not None
 
+    def episode_chunk_count(self, collection: str, episode: str) -> int:
+        """Return the number of chunks for an episode in a collection."""
+        cur = self._conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE collection=? AND episode=?",
+            (collection, episode),
+        )
+        return cur.fetchone()[0]
+
     def delete_episode(self, collection: str, episode: str) -> None:
+        """Delete all chunks (and their embeddings via CASCADE) for an episode."""
         self._conn.execute(
             "DELETE FROM chunks WHERE collection=? AND episode=?",
             (collection, episode),
@@ -148,6 +173,7 @@ class LocalStore:
         return {"show": row[0], "model": row[1], "chunker": row[2], "dim": row[3]}
 
     def list_episodes(self, collection: str) -> list[str]:
+        """Return sorted list of distinct episode names in the collection."""
         rows = self._conn.execute(
             "SELECT DISTINCT episode FROM chunks WHERE collection=? ORDER BY episode",
             (collection,),

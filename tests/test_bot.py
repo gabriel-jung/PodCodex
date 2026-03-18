@@ -6,7 +6,11 @@ pytest.importorskip("discord")
 
 from podcodex.bot.bot import BotConfig, ServerSettings, _result_embed
 from podcodex.bot.formatting import (
+    CooldownManager,
+    build_compact_embed,
     fmt_time as _fmt_time,
+    merge_results,
+    safe_truncate,
     speaker as _speaker,
     score_bar as _score_bar,
     format_context as _format_context,
@@ -226,3 +230,374 @@ def test_result_embed_returns_expand_view():
     buttons = [c for c in view.children if isinstance(c, discord.ui.Button)]
     assert len(buttons) == 1
     assert "context" in buttons[0].label.lower()
+
+
+# ──────────────────────────────────────────────
+# safe_truncate
+# ──────────────────────────────────────────────
+
+
+def test_safe_truncate_short_text_unchanged():
+    text, truncated = safe_truncate("hello world", max_chars=100)
+    assert text == "hello world"
+    assert truncated is False
+
+
+def test_safe_truncate_exact_limit_unchanged():
+    text = "a" * 50
+    result, truncated = safe_truncate(text, max_chars=50)
+    assert result == text
+    assert truncated is False
+
+
+def test_safe_truncate_cuts_at_word_boundary():
+    text = "hello world foo bar"
+    result, truncated = safe_truncate(text, max_chars=12)
+    assert truncated is True
+    assert "hello world" in result
+    assert "foo" not in result
+
+
+def test_safe_truncate_adds_truncation_marker():
+    text = "word " * 100
+    result, truncated = safe_truncate(text, max_chars=20)
+    assert truncated is True
+    assert "…(truncated)" in result
+
+
+def test_safe_truncate_no_spaces_cuts_at_max():
+    text = "a" * 100
+    result, truncated = safe_truncate(text, max_chars=50)
+    assert truncated is True
+    assert len(result.split("\n")[0]) == 50
+
+
+# ──────────────────────────────────────────────
+# merge_results
+# ──────────────────────────────────────────────
+
+
+def _hits(scores: list[float]) -> list[dict]:
+    return [{"text": f"t{i}", "score": s} for i, s in enumerate(scores)]
+
+
+def test_merge_score_strategy_sorts_globally():
+    hits_by_col = {
+        "a": _hits([0.9, 0.5]),
+        "b": _hits([0.8, 0.6]),
+    }
+    merged = merge_results(hits_by_col, top_k=4, strategy="score")
+    scores = [c.get("score") for c, _ in merged]
+    assert scores == [0.9, 0.8, 0.6, 0.5]
+
+
+def test_merge_score_strategy_respects_top_k():
+    hits_by_col = {"a": _hits([0.9, 0.8, 0.7])}
+    merged = merge_results(hits_by_col, top_k=2, strategy="score")
+    assert len(merged) == 2
+
+
+def test_merge_roundrobin_interleaves():
+    hits_by_col = {
+        "a": _hits([0.9, 0.7]),
+        "b": _hits([0.8, 0.6]),
+    }
+    merged = merge_results(hits_by_col, top_k=4, strategy="roundrobin")
+    collections = [col for _, col in merged]
+    # Round-robin alternates between collections
+    assert collections[0] != collections[1]
+
+
+def test_merge_roundrobin_respects_top_k():
+    hits_by_col = {
+        "a": _hits([0.9, 0.7, 0.5]),
+        "b": _hits([0.8, 0.6, 0.4]),
+    }
+    merged = merge_results(hits_by_col, top_k=3, strategy="roundrobin")
+    assert len(merged) == 3
+
+
+def test_merge_roundrobin_uneven_collections():
+    hits_by_col = {
+        "a": _hits([0.9]),
+        "b": _hits([0.8, 0.6, 0.4]),
+    }
+    merged = merge_results(hits_by_col, top_k=4, strategy="roundrobin")
+    assert len(merged) == 4
+    # "a" exhausted after 1, remaining come from "b"
+    assert sum(1 for _, col in merged if col == "a") == 1
+    assert sum(1 for _, col in merged if col == "b") == 3
+
+
+def test_merge_empty_input():
+    assert merge_results({}, top_k=5, strategy="score") == []
+    assert merge_results({}, top_k=5, strategy="roundrobin") == []
+
+
+def test_merge_single_collection():
+    hits_by_col = {"a": _hits([0.9, 0.5])}
+    merged = merge_results(hits_by_col, top_k=5, strategy="roundrobin")
+    assert len(merged) == 2
+    assert all(col == "a" for _, col in merged)
+
+
+# ──────────────────────────────────────────────
+# CooldownManager
+# ──────────────────────────────────────────────
+
+
+def test_cooldown_allows_first_request():
+    cm = CooldownManager(seconds=5.0)
+    assert cm.check(123) == 0.0
+
+
+def test_cooldown_blocks_after_consume():
+    cm = CooldownManager(seconds=5.0)
+    cm.consume(123)
+    remaining = cm.check(123)
+    assert remaining > 0.0
+
+
+def test_cooldown_independent_per_user():
+    cm = CooldownManager(seconds=5.0)
+    cm.consume(111)
+    assert cm.check(222) == 0.0
+
+
+def test_cooldown_zero_seconds_never_blocks():
+    cm = CooldownManager(seconds=0.0)
+    cm.consume(123)
+    assert cm.check(123) == 0.0
+
+
+# ──────────────────────────────────────────────
+# ServerSettings — new fields + backwards compat
+# ──────────────────────────────────────────────
+
+
+def test_server_settings_new_fields_default():
+    s = ServerSettings()
+    assert s.default_shows == []
+    assert s.default_source == ""
+    assert s.compact is False
+
+
+def test_server_settings_with_new_fields():
+    s = ServerSettings(
+        default_shows=["Show A"], default_source="polished", compact=True
+    )
+    assert s.default_shows == ["Show A"]
+    assert s.default_source == "polished"
+    assert s.compact is True
+
+
+def test_server_settings_backwards_compat_ignores_unknown_keys():
+    """Old config files may have extra keys; construction should not crash."""
+    raw = {"model": "bge-m3", "chunker": "semantic", "top_k": 5, "unknown_field": 42}
+    import dataclasses
+
+    valid_keys = {f.name for f in dataclasses.fields(ServerSettings)}
+    s = ServerSettings(**{k: v for k, v in raw.items() if k in valid_keys})
+    assert s.model == "bge-m3"
+
+
+def test_server_settings_backwards_compat_missing_new_keys():
+    """Old config files won't have new fields; defaults should fill in."""
+    raw = {"model": "bge-m3", "chunker": "semantic", "top_k": 5}
+    s = ServerSettings(**raw)
+    assert s.default_shows == []
+    assert s.default_source == ""
+    assert s.compact is False
+
+
+# ──────────────────────────────────────────────
+# build_compact_embed
+# ──────────────────────────────────────────────
+
+_COMPACT_RESULTS = [
+    (
+        {
+            "show": "Podcast A",
+            "episode": "ep01",
+            "speaker": "Alice",
+            "start": 60.0,
+            "end": 90.0,
+            "text": "This is a test result.",
+            "score": 0.85,
+        },
+        "podcast_a__bge-m3__semantic",
+    ),
+    (
+        {
+            "show": "Podcast B",
+            "episode": "ep02",
+            "speaker": "Bob",
+            "start": 120.0,
+            "end": 150.0,
+            "text": "Another test result here.",
+            "score": 0.72,
+        },
+        "podcast_b__bge-m3__semantic",
+    ),
+]
+
+
+def test_compact_embed_returns_single_embed():
+    embed = build_compact_embed(_COMPACT_RESULTS, "α=0.50 • BGE-M3")
+    assert embed.title == "🔎 α=0.50 • BGE-M3"
+    assert len(embed.fields) == 2
+
+
+def test_compact_embed_field_names_have_rank_and_episode():
+    embed = build_compact_embed(_COMPACT_RESULTS, "test")
+    assert "#1" in embed.fields[0].name
+    assert "ep01" in embed.fields[0].name
+    assert "Podcast A" in embed.fields[0].name
+
+
+def test_compact_embed_field_values_have_speaker_and_score():
+    embed = build_compact_embed(_COMPACT_RESULTS, "test")
+    assert "Alice" in embed.fields[0].value
+    assert "85%" in embed.fields[0].value
+
+
+def test_compact_embed_max_25_fields():
+    many = [(_COMPACT_RESULTS[0][0], "col")] * 30
+    embed = build_compact_embed(many, "test")
+    assert len(embed.fields) == 25
+
+
+def test_compact_embed_footer_shows_count():
+    embed = build_compact_embed(_COMPACT_RESULTS, "test")
+    assert "2 results" in embed.footer.text
+
+
+def test_compact_embed_truncates_long_text():
+    chunk = {**_COMPACT_RESULTS[0][0], "text": "word " * 100}
+    embed = build_compact_embed([(chunk, "col")], "test")
+    assert "…" in embed.fields[0].value
+
+
+# ──────────────────────────────────────────────
+# _effective_settings preserves new fields
+# ──────────────────────────────────────────────
+
+
+def test_effective_settings_carries_new_fields(tmp_path):
+    """_effective_settings must propagate default_shows/source/compact from server config."""
+    cfg_path = tmp_path / "server_config.json"
+    import json
+
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "1": {
+                    "model": "bge-m3",
+                    "chunker": "semantic",
+                    "top_k": 5,
+                    "default_shows": ["ShowA", "ShowB"],
+                    "default_source": "polished",
+                    "compact": True,
+                }
+            }
+        )
+    )
+    from unittest.mock import patch
+
+    with patch("podcodex.bot.bot.QdrantStore"), patch("podcodex.bot.bot.Retriever"):
+        from podcodex.bot.bot import BotConfig, PodCodexBot
+
+        bot = PodCodexBot(BotConfig(), server_config_path=cfg_path)
+    eff = bot._effective_settings(guild_id=1, model="", top_k=0)
+    assert eff.default_shows == ["ShowA", "ShowB"]
+    assert eff.default_source == "polished"
+    assert eff.compact is True
+    # Per-query model override should still work
+    eff2 = bot._effective_settings(guild_id=1, model="e5-small", top_k=10)
+    assert eff2.model == "e5-small"
+    assert eff2.top_k == 10
+    assert eff2.default_shows == ["ShowA", "ShowB"]
+
+
+# ──────────────────────────────────────────────
+# _AutocompleteCache
+# ──────────────────────────────────────────────
+
+
+def test_autocomplete_cache_starts_stale():
+    from podcodex.bot.bot import _AutocompleteCache
+
+    cache = _AutocompleteCache(episodes={}, sources={}, speakers={})
+    assert cache.is_stale() is True
+
+
+def test_autocomplete_cache_fresh_after_timestamp_set():
+    import time
+    from podcodex.bot.bot import _AutocompleteCache
+
+    cache = _AutocompleteCache(
+        episodes={}, sources={}, speakers={}, timestamp=time.monotonic()
+    )
+    assert cache.is_stale() is False
+
+
+def test_autocomplete_cache_stale_after_ttl():
+    import time
+    from podcodex.bot.bot import _AutocompleteCache
+
+    cache = _AutocompleteCache(
+        episodes={},
+        sources={},
+        speakers={},
+        timestamp=time.monotonic() - 301,
+        ttl=300.0,
+    )
+    assert cache.is_stale() is True
+
+
+# ──────────────────────────────────────────────
+# /setup show list mutations
+# ──────────────────────────────────────────────
+
+
+def test_setup_show_add_appends():
+    """show_add should append to existing default_shows."""
+    current = ServerSettings(default_shows=["ShowA"])
+    new_shows = list(current.default_shows)
+    show_add = "ShowB"
+    if show_add not in new_shows:
+        new_shows.append(show_add)
+    assert new_shows == ["ShowA", "ShowB"]
+
+
+def test_setup_show_add_no_duplicate():
+    current = ServerSettings(default_shows=["ShowA"])
+    new_shows = list(current.default_shows)
+    show_add = "ShowA"
+    if show_add not in new_shows:
+        new_shows.append(show_add)
+    assert new_shows == ["ShowA"]
+
+
+def test_setup_show_remove():
+    current = ServerSettings(default_shows=["ShowA", "ShowB"])
+    new_shows = list(current.default_shows)
+    show_remove = "ShowA"
+    if show_remove in new_shows:
+        new_shows.remove(show_remove)
+    assert new_shows == ["ShowB"]
+
+
+def test_setup_show_clear_then_add():
+    """show_clear runs first, then show_add — allows clear-and-add in one call."""
+    current = ServerSettings(default_shows=["Old1", "Old2"])
+    new_shows = list(current.default_shows)
+    show_clear = True
+    show_add = "NewShow"
+
+    if show_clear:
+        new_shows = []
+    if show_add and show_add not in new_shows:
+        new_shows.append(show_add)
+
+    assert new_shows == ["NewShow"]

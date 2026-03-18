@@ -15,6 +15,7 @@ from podcodex.core.transcribe import (
     load_transcript_validated,
 )
 from podcodex.core.synthesize import is_hallucination
+from constants import WHISPER_MODELS, DEFAULT_LANGUAGE_CODE
 from utils import fmt_time
 from streamlit_editor import render_segment_editor, audio_slice_bytes
 
@@ -34,7 +35,9 @@ def render():
             with col2:
                 language = st.text_input(
                     "Language",
-                    value=st.session_state.get("transcribe_language", "fr"),
+                    value=st.session_state.get(
+                        "transcribe_language", DEFAULT_LANGUAGE_CODE
+                    ),
                     key="transcribe_language",
                     help="ISO 639-1 language code (e.g. 'fr', 'en').",
                 )
@@ -137,7 +140,7 @@ def render():
 
         model_size = st.selectbox(
             "Whisper model",
-            ["large-v3", "medium", "small"],
+            WHISPER_MODELS,
             index=0,
             help="Larger models are more accurate but slower and require more VRAM. 'large-v3' requires ~10GB VRAM, 'medium' ~5GB, 'small' ~2GB.",
         )
@@ -543,8 +546,9 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
             label = f"🎧 {speaker_id}"
             if n_clean < len(top_segs):
                 label += f" — ⚠️ {len(top_segs) - n_clean} suspect"
+            active_audio_key = f"_active_speaker_audio_{episode_stem}"
             with st.expander(label, expanded=False):
-                active = st.session_state.get("_active_speaker_audio")
+                active = st.session_state.get(active_audio_key)
                 is_active = active in (
                     f"top_{episode_stem}_{speaker_id}",
                     f"all_{episode_stem}_{speaker_id}",
@@ -557,7 +561,7 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
                         key=f"btn_top_{episode_stem}_{speaker_id}",
                         use_container_width=True,
                     ):
-                        st.session_state["_active_speaker_audio"] = (
+                        st.session_state[active_audio_key] = (
                             f"top_{episode_stem}_{speaker_id}"
                         )
                         st.rerun()
@@ -567,7 +571,7 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
                         key=f"btn_top_{episode_stem}_{speaker_id}",
                         use_container_width=True,
                     ):
-                        st.session_state.pop("_active_speaker_audio", None)
+                        st.session_state.pop(active_audio_key, None)
                         st.rerun()
 
                 cols = st.columns(len(top_segs)) if top_segs else []
@@ -604,7 +608,7 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
                             key=f"btn_load_{episode_stem}_{speaker_id}",
                             use_container_width=True,
                         ):
-                            st.session_state["_active_speaker_audio"] = (
+                            st.session_state[active_audio_key] = (
                                 f"all_{episode_stem}_{speaker_id}"
                             )
                             st.rerun()

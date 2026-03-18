@@ -156,6 +156,41 @@ def test_delete_collection_no_op_if_missing():
     s.delete_collection("nonexistent")  # should not raise
 
 
+def test_get_collection_info_returns_dict():
+    s = _store()
+    s.ensure_collection("c", show="S", model="bge-m3", chunker="semantic", dim=1024)
+    info = s.get_collection_info("c")
+    assert info == {"show": "S", "model": "bge-m3", "chunker": "semantic", "dim": 1024}
+
+
+def test_get_collection_info_missing_returns_none():
+    s = _store()
+    assert s.get_collection_info("nonexistent") is None
+
+
+# ──────────────────────────────────────────────
+# close / context manager
+# ──────────────────────────────────────────────
+
+
+def test_close_closes_connection():
+    s = _store()
+    s.close()
+    import sqlite3 as _sqlite3
+
+    with pytest.raises(_sqlite3.ProgrammingError):
+        s._conn.execute("SELECT 1")
+
+
+def test_context_manager():
+    with LocalStore(db_path=":memory:") as s:
+        s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+        assert s.collection_exists("c")
+    # connection closed after exiting
+    with pytest.raises(Exception):
+        s._conn.execute("SELECT 1")
+
+
 # ──────────────────────────────────────────────
 # episode_is_indexed
 # ──────────────────────────────────────────────

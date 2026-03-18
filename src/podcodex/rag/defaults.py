@@ -1,7 +1,7 @@
 """
 podcodex.rag.defaults — Centralized model registry and default parameters.
 
-All model keys, HF model IDs, and tunable defaults live here.
+All model specs, HF model IDs, and tunable defaults live here.
 CLI, bot, Streamlit app, and RAG modules import from this file — never
 redefine constants elsewhere.
 """
@@ -18,45 +18,44 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ModelSpec:
-    key: str  # identifier used in CLI args, collection names, bot commands
     label: str  # human-readable display name
+    hf_model: str  # HuggingFace model ID for passage encoding
     dim: int  # dense vector dimension
-    sparse: bool  # True → native sparse vectors (full hybrid); False → dense only
-    description: str
+    description: str  # human-readable, also used in Discord command choices
+    hf_query_model: str = (
+        ""  # separate query model if different from hf_model (pplx only)
+    )
 
 
 MODELS: dict[str, ModelSpec] = {
     "bge-m3": ModelSpec(
-        key="bge-m3",
         label="BGE-M3",
+        hf_model="BAAI/bge-m3",
         dim=1024,
-        sparse=True,
         description="BAAI/bge-m3 — multilingual, dense + sparse (full hybrid)",
     ),
     "e5-small": ModelSpec(
-        key="e5-small",
         label="E5 Small",
+        hf_model="intfloat/multilingual-e5-small",
         dim=384,
-        sparse=False,
         description="intfloat/multilingual-e5-small — fast, dense only",
     ),
     "e5-large": ModelSpec(
-        key="e5-large",
         label="E5 Large",
+        hf_model="intfloat/multilingual-e5-large",
         dim=1024,
-        sparse=False,
         description="intfloat/multilingual-e5-large — accurate, dense only",
     ),
     "pplx": ModelSpec(
-        key="pplx",
         label="Perplexity",
+        hf_model="perplexity-ai/pplx-embed-context-v1-0.6B",
         dim=1024,
-        sparse=False,
         description="perplexity-ai/pplx-embed — context-aware, dense only (experimental)",
+        hf_query_model="perplexity-ai/pplx-embed-v1-0.6B",
     ),
 }
 
-DEFAULT_MODEL: str = "bge-m3"
+DEFAULT_MODEL = "bge-m3"
 
 
 # ──────────────────────────────────────────────
@@ -68,28 +67,17 @@ CHUNKING_STRATEGIES: dict[str, str] = {
     "speaker": "One chunk per speaker turn — fast, no extra deps",
 }
 
-DEFAULT_CHUNKING: str = "semantic"
-
-
-# ──────────────────────────────────────────────
-# HF model identifiers
-# ──────────────────────────────────────────────
-
-BGE_M3_MODEL: str = "BAAI/bge-m3"
-E5_SMALL_MODEL: str = "intfloat/multilingual-e5-small"
-E5_LARGE_MODEL: str = "intfloat/multilingual-e5-large"
-PPLX_PASSAGE_MODEL: str = "perplexity-ai/pplx-embed-context-v1-0.6B"
-PPLX_QUERY_MODEL: str = "perplexity-ai/pplx-embed-v1-0.6B"
+DEFAULT_CHUNKING = "semantic"
 
 # Chonkie's internal splitting model — not exposed to users
-CHUNKER_MODEL: str = E5_SMALL_MODEL
+CHUNKER_MODEL = MODELS["e5-small"].hf_model
 
 
 # ──────────────────────────────────────────────
 # Tunable defaults
 # ──────────────────────────────────────────────
 
-CHUNK_SIZE: int = 256
-CHUNK_THRESHOLD: float = 0.5
-ALPHA: float = 0.5
-TOP_K: int = 5
+CHUNK_SIZE = 256
+CHUNK_THRESHOLD = 0.5
+ALPHA = 0.5
+TOP_K = 5

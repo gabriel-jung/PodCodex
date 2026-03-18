@@ -16,6 +16,7 @@ from podcodex.core.translate import (
     load_translation_validated,
 )
 from podcodex.core import validate_segments_json
+from constants import DEFAULT_OLLAMA_MODEL, DEFAULT_SOURCE_LANG, DEFAULT_TARGET_LANG
 from utils import PROVIDERS, build_llm_kwargs, fmt_time, on_provider_change
 from streamlit_editor import render_segment_editor
 
@@ -144,7 +145,7 @@ def render():
     ):
         import_lang = st.text_input(
             "Language",
-            value="English",
+            value=DEFAULT_TARGET_LANG,
             key="trad_import_lang",
             help="Language name used in the filename, e.g. 'English' → episode.english.json.",
         )
@@ -235,14 +236,14 @@ def render():
         with col1:
             source_lang = st.text_input(
                 "Source language",
-                value="French",
+                value=DEFAULT_SOURCE_LANG,
                 key="trad_source_lang",
                 help="Full language name of the original podcast.",
             )
         with col2:
             target_lang = st.text_input(
                 "Target language",
-                value="English",
+                value=DEFAULT_TARGET_LANG,
                 key="trad_target_lang",
                 help="Full language name to translate into.",
             )
@@ -312,7 +313,7 @@ def render():
             st.markdown("### 🖥️ Step 2 — Ollama Translation")
             st.text_input(
                 "Ollama model",
-                value="qwen3:14b",
+                value=DEFAULT_OLLAMA_MODEL,
                 key="trad_ollama_model",
                 help="Run `ollama list` to see available models.",
             )
@@ -513,7 +514,9 @@ def _render_translation_editor(
                         audio_path, merged, lang, output_dir=output_dir
                     )
                     st.session_state[t_key] = merged
-                    _reload_translations(audio_path, output_dir)
+                    # Update session-state cache directly instead of rescanning disk
+                    st.session_state.translations[lang] = merged
+                    st.session_state.translation = merged
                     st.toast(f"{lang.capitalize()} translation saved!")
 
                 return _on_save

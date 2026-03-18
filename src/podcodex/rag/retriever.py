@@ -13,14 +13,20 @@ model. This means ALL models support hybrid search.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from loguru import logger
 
-from podcodex.rag.store import QdrantStore
+from podcodex.rag.store import QdrantStore, _search_filter
 
-try:
-    import bm25s
-except ImportError:  # pragma: no cover
-    bm25s = None  # type: ignore[assignment]
+import bm25s
+
+
+@dataclass
+class _BM25Cache:
+    bm25: bm25s.BM25
+    chunks: list[dict]
+    point_count: int
 
 
 class Retriever:
@@ -31,6 +37,7 @@ class Retriever:
         model      : model key from MODELS registry (default: "bge-m3")
         qdrant_url : Qdrant server URL (defaults to QDRANT_URL env or localhost:6333)
         store      : optional pre-built QdrantStore
+        device     : torch device for the embedder (default: "cpu")
     """
 
     def __init__(
@@ -38,6 +45,7 @@ class Retriever:
         model: str = "bge-m3",
         qdrant_url: str | None = None,
         store: QdrantStore | None = None,
+        device: str = "cpu",
     ):
         from podcodex.rag.defaults import MODELS
         from podcodex.rag.embedder import get_embedder
@@ -48,8 +56,9 @@ class Retriever:
             raise ValueError(f"Unknown model '{model}'. Valid: {valid}")
 
         self._model_key = model
-        self._embedder = get_embedder(model)
+        self._embedder = get_embedder(model, device=device)
         self._store = store or QdrantStore(url=qdrant_url)
+        self._bm25_cache: dict[str, _BM25Cache] = {}
         logger.info(f"Retriever ready (model={model})")
 
     def retrieve(
@@ -59,6 +68,8 @@ class Retriever:
         top_k: int = 5,
         alpha: float = 0.5,
         episode: str | None = None,
+        source: str | None = None,
+        speaker: str | None = None,
     ) -> list[dict]:
         """
         Retrieve the top_k most relevant chunks for the query.
@@ -69,80 +80,147 @@ class Retriever:
             top_k      : number of results to return
             alpha      : blend between BM25 (0.0) and dense vector (1.0)
             episode    : if set, restrict search to this episode
+            source     : if set, restrict to chunks from this source (e.g. "polished")
+            speaker    : if set, restrict to chunks from this speaker
 
         Returns:
             List of payload dicts with an added 'score' key.
         """
         if alpha >= 1.0:
-            return self._dense_search(query, collection, top_k, episode=episode)
+            return self._dense_search(
+                query,
+                collection,
+                top_k,
+                episode=episode,
+                source=source,
+                speaker=speaker,
+            )
         if alpha <= 0.0:
-            return self._bm25_search(query, collection, top_k, episode=episode)
-        return self._weighted_search(query, collection, top_k, alpha, episode=episode)
+            return self._bm25_search(
+                query,
+                collection,
+                top_k,
+                episode=episode,
+                source=source,
+                speaker=speaker,
+            )
+        return self._weighted_search(
+            query,
+            collection,
+            top_k,
+            alpha,
+            episode=episode,
+            source=source,
+            speaker=speaker,
+        )
 
     # ── Private search methods ─────────────────
 
     def _dense_search(
-        self, query: str, collection: str, top_k: int, *, episode: str | None = None
+        self,
+        query: str,
+        collection: str,
+        top_k: int,
+        *,
+        episode: str | None = None,
+        source: str | None = None,
+        speaker: str | None = None,
     ) -> list[dict]:
-        from qdrant_client.models import FieldCondition, Filter, MatchValue
-
         query_vec = self._embedder.encode_query(query)
-        query_filter = (
-            Filter(
-                must=[FieldCondition(key="episode", match=MatchValue(value=episode))]
-            )
-            if episode
-            else None
+        query_filter = _search_filter(episode, source, speaker)
+        return self._store.search_points(
+            collection, query_vec.tolist(), top_k, query_filter
         )
-        results = self._store._client.query_points(
-            collection_name=collection,
-            query=query_vec.tolist(),
-            limit=top_k,
-            query_filter=query_filter,
-        ).points
-        return [_result_to_dict(r) for r in results]
 
     def _bm25_search(
-        self, query: str, collection: str, top_k: int, *, episode: str | None = None
+        self,
+        query: str,
+        collection: str,
+        top_k: int,
+        *,
+        episode: str | None = None,
+        source: str | None = None,
+        speaker: str | None = None,
     ) -> list[dict]:
-        from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-        scroll_filter = (
-            Filter(
-                must=[FieldCondition(key="episode", match=MatchValue(value=episode))]
+        if episode or source or speaker:
+            return self._bm25_search_uncached(
+                query,
+                collection,
+                top_k,
+                episode=episode,
+                source=source,
+                speaker=speaker,
             )
-            if episode
-            else None
-        )
-        results, _ = self._store._client.scroll(
-            collection_name=collection,
-            scroll_filter=scroll_filter,
-            limit=10_000,
-            with_payload=True,
-            with_vectors=False,
-        )
-        if not results:
+
+        # Full-collection query — use cache
+        cache = self._bm25_cache.get(collection)
+        current_count = self._store.collection_point_count(collection)
+
+        if cache is not None and cache.point_count == current_count:
+            logger.debug(f"BM25 cache hit for '{collection}' ({current_count} points)")
+        else:
+            logger.debug(f"BM25 cache miss for '{collection}' — rebuilding")
+            chunks, bm25_inst = self._build_bm25_index(collection)
+            if not chunks:
+                return []
+            cache = _BM25Cache(bm25=bm25_inst, chunks=chunks, point_count=current_count)
+            self._bm25_cache[collection] = cache
+
+        return self._query_bm25(query, cache.bm25, cache.chunks, top_k)
+
+    def _bm25_search_uncached(
+        self,
+        query: str,
+        collection: str,
+        top_k: int,
+        *,
+        episode: str | None = None,
+        source: str | None = None,
+        speaker: str | None = None,
+    ) -> list[dict]:
+        """BM25 search without caching (for filtered queries)."""
+        scroll_filter = _search_filter(episode, source, speaker)
+        chunks, bm25_inst = self._build_bm25_index(collection, scroll_filter)
+        if not chunks:
             return []
+        return self._query_bm25(query, bm25_inst, chunks, top_k)
 
-        chunks = [dict(r.payload) for r in results]
+    def _build_bm25_index(
+        self, collection: str, scroll_filter=None
+    ) -> tuple[list[dict], "bm25s.BM25 | None"]:
+        """Scroll all points and build a BM25 index. Returns (chunks, bm25_instance)."""
+        chunks = self._store.scroll_payloads(collection, scroll_filter=scroll_filter)
+        if not chunks:
+            return [], None
+
         texts = [c.get("text", "") for c in chunks]
-
         corpus_tokens = bm25s.tokenize(texts)
-        retriever = bm25s.BM25()
-        retriever.index(corpus_tokens)
+        bm25_inst = bm25s.BM25()
+        bm25_inst.index(corpus_tokens)
+        return chunks, bm25_inst
 
+    @staticmethod
+    def _query_bm25(
+        query: str, bm25_inst: "bm25s.BM25", chunks: list[dict], top_k: int
+    ) -> list[dict]:
+        """Query a pre-built BM25 index and return normalized results."""
         query_tokens = bm25s.tokenize(query)
         k = min(top_k, len(chunks))
-        indices, scores = retriever.retrieve(query_tokens, k=k)
+        indices, scores = bm25_inst.retrieve(query_tokens, k=k)
 
-        # ↓ only change: filter zero-padded results before normalizing
         hits = [
             {**chunks[int(idx)], "score": float(score)}
             for idx, score in zip(indices[0], scores[0])
             if float(score) > 1e-6
         ]
-
         return _normalize(hits)
+
+    def invalidate_bm25_cache(self, collection: str | None = None) -> None:
+        """Clear BM25 cache for a collection, or all collections if None."""
+        if collection is None:
+            self._bm25_cache.clear()
+        else:
+            self._bm25_cache.pop(collection, None)
 
     def _weighted_search(
         self,
@@ -152,14 +230,18 @@ class Retriever:
         alpha: float,
         *,
         episode: str | None = None,
+        source: str | None = None,
+        speaker: str | None = None,
     ) -> list[dict]:
         """Linear combination: score = alpha * dense + (1 - alpha) * bm25."""
         k = top_k * 4
         dense_hits = _normalize(
-            self._dense_search(query, collection, k, episode=episode)
+            self._dense_search(
+                query, collection, k, episode=episode, source=source, speaker=speaker
+            )
         )
         bm25_hits = self._bm25_search(
-            query, collection, k, episode=episode
+            query, collection, k, episode=episode, source=source, speaker=speaker
         )  # already normalized
 
         combined: dict[str, float] = {}
@@ -179,11 +261,17 @@ class Retriever:
         return [{**payloads[k], "score": combined[k]} for k in sorted_keys]
 
     def find(
-        self, query: str, collection: str, top_k: int = 25, episode: str | None = None
+        self,
+        query: str,
+        collection: str,
+        top_k: int = 25,
+        episode: str | None = None,
+        source: str | None = None,
+        speaker: str | None = None,
     ) -> list[dict]:
         """
         True substring search — case-insensitive, no scoring.
-        Requires a full-text payload index on 'text' (see QdrantStore.ensure_text_index).
+        Requires a full-text payload index on 'text' (created by QdrantStore.create_collection).
         Results sorted by start time, all scored 1.0.
         """
         from qdrant_client.models import FieldCondition, Filter, MatchText, MatchValue
@@ -193,15 +281,18 @@ class Retriever:
             conditions.append(
                 FieldCondition(key="episode", match=MatchValue(value=episode))
             )
+        if source:
+            conditions.append(
+                FieldCondition(key="source", match=MatchValue(value=source))
+            )
+        if speaker:
+            conditions.append(
+                FieldCondition(key="speaker", match=MatchValue(value=speaker))
+            )
 
-        results, _ = self._store._client.scroll(
-            collection_name=collection,
-            scroll_filter=Filter(must=conditions),
-            limit=top_k,
-            with_payload=True,
-            with_vectors=False,
+        chunks = self._store.scroll_payloads(
+            collection, scroll_filter=Filter(must=conditions), limit=top_k
         )
-        chunks = [dict(r.payload) for r in results]
         chunks.sort(key=lambda c: c.get("start", 0.0))
         return [{**c, "score": 1.0} for c in chunks]
 
@@ -212,22 +303,8 @@ class Retriever:
 
 
 def _chunk_key(chunk: dict) -> str:
+    """Deduplication key for merging dense + BM25 results."""
     return f"{chunk.get('episode', '')}|{chunk.get('start', 0)}"
-
-
-# def _normalize(results: list[dict]) -> list[dict]:
-#     """Min-max normalize scores within a result set to [0, 1]."""
-#     if not results:
-#         return results
-#     scores = [r["score"] for r in results]
-#     lo, hi = min(scores), max(scores)
-#     rng = hi - lo
-#     if rng == 0:
-#         # All scores identical: if all zero → no match at all → 0.0
-#         #                       if all same positive value → tied → 1.0
-#         val = 0.0 if lo == 0 else 1.0
-#         return [{**r, "score": val} for r in results]
-#     return [{**r, "score": (r["score"] - lo) / rng} for r in results]
 
 
 def _normalize(results: list[dict]) -> list[dict]:
@@ -240,9 +317,3 @@ def _normalize(results: list[dict]) -> list[dict]:
     if n == 0:
         return results
     return [{**r, "score": 1.0 - (i / n)} for i, r in enumerate(results)]
-
-
-def _result_to_dict(result) -> dict:
-    payload = dict(result.payload or {})
-    payload["score"] = result.score
-    return payload
