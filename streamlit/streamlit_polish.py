@@ -38,9 +38,12 @@ def _run_polish_button(
         with st.spinner(f"Processing {len(transcript)} segments..."):
             try:
                 result = polish_mod.polish_segments(transcript, **kwargs)
-                polish_mod.save_polished_raw(audio_path, result, output_dir=output_dir)
+                _nd = st.session_state.get("skip_diarization", False)
+                polish_mod.save_polished_raw(
+                    audio_path, result, output_dir=output_dir, nodiar=_nd
+                )
                 st.session_state.polished = polish_mod.load_polished(
-                    audio_path, output_dir=output_dir
+                    audio_path, output_dir=output_dir, nodiar=_nd
                 )
                 st.success(f"Done — {len(result)} segments processed.")
                 st.rerun()
@@ -61,7 +64,8 @@ def render():
         )
         return
 
-    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    nodiar = st.session_state.get("skip_diarization", False)
+    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
 
     # ── Episode header ──
     with st.container(border=True):
@@ -122,10 +126,10 @@ def render():
                         st.error("Missing 'text' field in segments.")
                     else:
                         polish_mod.save_polished_raw(
-                            audio_path, data, output_dir=output_dir
+                            audio_path, data, output_dir=output_dir, nodiar=nodiar
                         )
                         st.session_state.polished = polish_mod.load_polished(
-                            audio_path, output_dir=output_dir
+                            audio_path, output_dir=output_dir, nodiar=nodiar
                         )
                         st.success(f"Imported — {len(data)} segments.")
                         st.rerun()
@@ -251,7 +255,7 @@ def render():
             batch_minutes = st.slider(
                 "Max duration per batch (minutes)",
                 min_value=5,
-                max_value=30,
+                max_value=180,
                 value=15,
                 step=5,
                 key="polish_batch_minutes",
@@ -323,10 +327,11 @@ def render():
                     st.session_state.polish_batch_idx -= 1
                     st.rerun()
             with col_validate:
+                batch_done = idx in st.session_state.polish_batch_results
                 if st.button(
-                    "✅ Validate batch",
+                    "✅ Validated" if batch_done else "✅ Validate batch",
                     use_container_width=True,
-                    type="primary",
+                    type="secondary" if batch_done else "primary",
                     disabled=not pasted.strip(),
                 ):
                     try:
@@ -362,10 +367,10 @@ def render():
                     for b in range(n_batches):
                         all_results.extend(st.session_state.polish_batch_results[b])
                     polish_mod.save_polished_raw(
-                        audio_path, all_results, output_dir=output_dir
+                        audio_path, all_results, output_dir=output_dir, nodiar=nodiar
                     )
                     st.session_state.polished = polish_mod.load_polished(
-                        audio_path, output_dir=output_dir
+                        audio_path, output_dir=output_dir, nodiar=nodiar
                     )
                     st.session_state.polish_batch_idx = 0
                     st.session_state.polish_batch_results = {}
@@ -377,7 +382,7 @@ def render():
         p_key = f"editor_polished_{audio_path}"
         if p_key not in st.session_state:
             st.session_state[p_key] = polish_mod.load_polished(
-                audio_path, output_dir=output_dir
+                audio_path, output_dir=output_dir, nodiar=nodiar
             )
         polished = st.session_state[p_key]
         st.session_state.polished = polished
@@ -403,7 +408,7 @@ def render():
                     disabled=not has_raw,
                 ):
                     st.session_state[p_key] = load_polished_raw(
-                        audio_path, output_dir=output_dir
+                        audio_path, output_dir=output_dir, nodiar=nodiar
                     )
                     st.session_state[f"polish_{audio_path}_dirty"] = False
                     st.rerun()
@@ -415,13 +420,15 @@ def render():
                     disabled=not has_validated,
                 ):
                     st.session_state[p_key] = load_polished_validated(
-                        audio_path, output_dir=output_dir
+                        audio_path, output_dir=output_dir, nodiar=nodiar
                     )
                     st.session_state[f"polish_{audio_path}_dirty"] = False
                     st.rerun()
 
             def _on_save(merged):
-                polish_mod.save_polished(audio_path, merged, output_dir=output_dir)
+                polish_mod.save_polished(
+                    audio_path, merged, output_dir=output_dir, nodiar=nodiar
+                )
                 st.session_state[p_key] = merged
                 st.session_state.polished = merged
                 st.toast("Polished transcript saved!")

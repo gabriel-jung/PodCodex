@@ -234,13 +234,14 @@ def save_translation_raw(
     segments: list[dict],
     lang: str,
     output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> Path:
     """Save pipeline-generated translation to {stem}.{lang_norm}.raw.json.
 
     Use this for LLM/pipeline output. The user can then review and promote
     to the validated {stem}.{lang_norm}.json.
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return save_segments_json(
         p.translation_raw(lang), segments, f"Translation ({lang})"
     )
@@ -251,56 +252,72 @@ def save_translation(
     segments: list[dict],
     lang: str,
     output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> Path:
     """Save validated/edited translation to {stem}.{lang_norm}.json."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return save_segments_json(p.translation(lang), segments, f"Translation ({lang})")
 
 
 def load_translation(
-    audio_path: Path | str, lang: str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    lang: str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> list[dict]:
     """Load translated segments. Prefers validated .json, falls back to .raw.json."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return read_json(p.translation_best(lang))
 
 
 def load_translation_raw(
-    audio_path: Path | str, lang: str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    lang: str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> list[dict]:
     """Load specifically from .{lang}.raw.json (pipeline output)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return read_json(p.translation_raw(lang))
 
 
 def load_translation_validated(
-    audio_path: Path | str, lang: str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    lang: str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> list[dict]:
     """Load specifically from .{lang}.json (user-validated)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return read_json(p.translation(lang))
 
 
 def list_translations(
-    audio_path: Path | str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> list[str]:
     """Return sorted list of available translation language names for this episode.
 
     Scans for {stem}.*.json files in output_dir, excluding internal suffixes.
     Merges raw and validated: english.json and english.raw.json both contribute
     "english" once. Returns normalised language names, e.g. ["english", "spanish"].
+
+    When *nodiar* is True, only returns languages from nodiar translation files.
+    When False (default), only returns languages from diarized translation files.
     """
     audio_path = Path(audio_path)
     root = AudioPaths.output_dir(audio_path, output_dir)
+    prefix = "nodiar." if nodiar else ""
     langs: set[str] = set()
-    for f in sorted(root.glob(f"{audio_path.stem}.*.json")):
+    for f in sorted(root.glob(f"{audio_path.stem}.{prefix}*.json")):
         suffix = f.stem[len(audio_path.stem) + 1 :]
         if suffix in INTERNAL_SUFFIXES:
             continue
         if suffix.endswith(".raw"):
             base = suffix[:-4]  # strip ".raw"
             if base not in INTERNAL_SUFFIXES:
-                langs.add(base)
+                langs.add(base.removeprefix("nodiar."))
         else:
-            langs.add(suffix)
+            langs.add(suffix.removeprefix("nodiar."))
     return sorted(langs)

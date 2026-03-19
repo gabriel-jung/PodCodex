@@ -98,7 +98,8 @@ def init_session_state():
 
 def _select_episode(episode) -> None:
     """Load an episode's data into session state and switch to the transcribe tab."""
-    from podcodex.core.transcribe import load_transcript
+    from podcodex.core import AudioPaths
+    from podcodex.core.transcribe import load_transcript, load_transcript_full
     from podcodex.core.polish import load_polished
     from podcodex.core.translate import load_translation, list_translations
 
@@ -108,20 +109,35 @@ def _select_episode(episode) -> None:
     st.session_state.indexed = episode.indexed if episode.indexed else None
     st.session_state.current_tab = "transcribe"
 
+    # Auto-detect nodiar mode from existing transcript metadata
+    od = str(episode.output_dir)
+    p_diar = AudioPaths.from_audio(episode.path, output_dir=od)
+    p_nodiar = AudioPaths.from_audio(episode.path, output_dir=od, nodiar=True)
+    nodiar = False
+    if p_nodiar.transcript_best.exists() and not p_diar.transcript_best.exists():
+        # Only nodiar transcript exists — auto-enable
+        nodiar = True
+    elif p_diar.transcript_best.exists():
+        # Diarized transcript exists — check its meta
+        full = load_transcript_full(episode.path, output_dir=od)
+        nodiar = not full.get("meta", {}).get("diarized", True)
+    st.session_state["skip_diarization"] = nodiar
+    st.session_state["_prev_skip_diarization"] = nodiar
+
     st.session_state.transcript = (
-        load_transcript(episode.path, output_dir=str(episode.output_dir))
+        load_transcript(episode.path, output_dir=od, nodiar=nodiar)
         if episode.transcribed
         else None
     )
     st.session_state.polished = (
-        load_polished(episode.path, output_dir=str(episode.output_dir))
+        load_polished(episode.path, output_dir=od, nodiar=nodiar)
         if episode.polished
         else None
     )
 
-    langs = list_translations(episode.path, output_dir=str(episode.output_dir))
+    langs = list_translations(episode.path, output_dir=od, nodiar=nodiar)
     st.session_state.translations = {
-        lang: load_translation(episode.path, lang, output_dir=str(episode.output_dir))
+        lang: load_translation(episode.path, lang, output_dir=od, nodiar=nodiar)
         for lang in langs
     }
     # Backward-compat: keep `translation` pointing to the first available translation

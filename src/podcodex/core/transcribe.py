@@ -24,6 +24,7 @@ from pathlib import Path
 from loguru import logger
 
 from podcodex.core._utils import (
+    NARRATOR_SPEAKER,
     UNKNOWN_SPEAKERS,
     AudioPaths,
     free_vram,
@@ -42,16 +43,24 @@ warnings.filterwarnings("ignore", message=".*Lightning automatically upgraded.*"
 
 
 def processing_status(
-    audio_path: Path | str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> dict[str, bool]:
     """Return the processing state of an audio file."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    pn = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=True)
+    exported = (
+        (pn.transcript.exists() or pn.transcript_raw.exists())
+        if nodiar
+        else (p.transcript.exists() or p.transcript_raw.exists())
+    )
     return {
         "transcribed": p.segments.exists() and p.segments_meta.exists(),
         "diarized": p.diarization.exists() and p.diarization_meta.exists(),
         "assigned": p.diarized_segments.exists(),
         "mapped": p.speaker_map.exists(),
-        "exported": p.transcript.exists() or p.transcript_raw.exists(),
+        "exported": exported,
     }
 
 
@@ -357,14 +366,20 @@ def export_transcript(
     show: str = "",
     episode: str = "",
     max_gap: float = 10.0,
+    diarized: bool = True,
 ) -> list[dict]:
     """
     Generate the final JSON transcript with resolved speaker names.
-    Requires diarized_segments.parquet + speaker_map.json.
-    Saves transcript.raw.json in output_dir (pipeline output, unvalidated).
+
+    When *diarized* is True (default), requires diarized_segments.parquet +
+    speaker_map.json.  When False, uses raw WhisperX segments and assigns
+    :data:`NARRATOR_SPEAKER` to every segment.
+
+    Saves transcript.raw.json (or nodiar.transcript.raw.json) in output_dir.
 
     The file format is:
-        {"meta": {show, episode, speakers, duration, word_count}, "segments": [...]}
+        {"meta": {show, episode, diarized, speakers, duration, word_count},
+         "segments": [...]}
 
     Args:
         audio_path : source audio file
@@ -373,21 +388,31 @@ def export_transcript(
         episode    : episode name (stored in meta, defaults to "")
         max_gap    : maximum silence gap (seconds) to merge across (default 10s);
                      0 disables merging
+        diarized   : whether diarization was performed (default True)
 
     Returns:
         List of final segments [{start, end, speaker, text}]
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=not diarized)
 
-    segments = load_diarized_segments(audio_path, output_dir=output_dir)
-    mapping = load_speaker_map(audio_path, output_dir=output_dir)
+    if diarized:
+        segments = load_diarized_segments(audio_path, output_dir=output_dir)
+        mapping = load_speaker_map(audio_path, output_dir=output_dir)
+    else:
+        raw = load_segments(audio_path, output_dir=output_dir)
+        segments = raw["segments"]
+        mapping = {}
 
     resolved = [
         {
             "start": round(float(seg["start"]), 3),
             "end": round(float(seg["end"]), 3),
-            "speaker": mapping.get(seg.get("speaker") or "", seg.get("speaker") or "")
-            or "UNKNOWN",
+            "speaker": (
+                mapping.get(seg.get("speaker") or "", seg.get("speaker") or "")
+                or "UNKNOWN"
+                if diarized
+                else NARRATOR_SPEAKER
+            ),
             "text": str(seg.get("text", "")).strip(),
         }
         for seg in segments
@@ -397,6 +422,7 @@ def export_transcript(
     meta = {
         "show": show,
         "episode": episode,
+        "diarized": diarized,
         "speakers": sorted({seg["speaker"] for seg in export}),
         "duration": round(max((seg["end"] for seg in export), default=0.0), 3),
         "word_count": sum(len(seg["text"].split()) for seg in export),
@@ -423,7 +449,9 @@ def _load_transcript_file(path: Path) -> dict:
 
 
 def load_transcript_full(
-    audio_path: Path | str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> dict:
     """Load the final transcript with metadata.
 
@@ -433,33 +461,41 @@ def load_transcript_full(
         {"meta": {show, episode, speakers, duration, word_count}, "segments": [...]}
         If the file is in old list format, meta will be an empty dict.
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return _load_transcript_file(p.transcript_best)
 
 
 def load_transcript(
-    audio_path: Path | str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> list[dict]:
     """Load the final transcript segments as a plain list.
 
     Prefers the validated transcript.json; falls back to transcript.raw.json.
     """
-    return load_transcript_full(audio_path, output_dir=output_dir)["segments"]
+    return load_transcript_full(audio_path, output_dir=output_dir, nodiar=nodiar)[
+        "segments"
+    ]
 
 
 def load_transcript_raw(
-    audio_path: Path | str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> list[dict]:
     """Load segments specifically from transcript.raw.json (pipeline output)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return _load_transcript_file(p.transcript_raw)["segments"]
 
 
 def load_transcript_validated(
-    audio_path: Path | str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> list[dict]:
     """Load segments specifically from transcript.json (user-validated)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return _load_transcript_file(p.transcript)["segments"]
 
 
@@ -481,7 +517,7 @@ def segment_speech_density(seg: dict) -> float | None:
     return len(text) / dur
 
 
-def is_segment_flagged(seg: dict) -> bool:
+def is_segment_flagged(seg: dict, diarized: bool = True) -> bool:
     """Return True if a segment is suspicious and should be reviewed or removed.
 
     A segment is flagged when:
@@ -489,14 +525,18 @@ def is_segment_flagged(seg: dict) -> bool:
     - speaker is a reserved remove marker ([remove])
     - speech density is abnormally low (< 2 chars/s), indicating music, noise,
       or a Whisper hallucination artifact
+
+    When *diarized* is False, speaker-based checks are skipped (only density
+    is used) since all segments share a generic narrator label.
     """
     speaker = seg.get("speaker", "")
     if speaker == "[BREAK]":
         return False
-    if not speaker or speaker in UNKNOWN_SPEAKERS:
-        return True
-    if speaker in REMOVE_SPEAKERS:
-        return True
+    if diarized:
+        if not speaker or speaker in UNKNOWN_SPEAKERS:
+            return True
+        if speaker in REMOVE_SPEAKERS:
+            return True
     density = segment_speech_density(seg)
     return density is not None and density < 2.0
 
@@ -541,6 +581,7 @@ def save_transcript(
     segments: list[dict],
     output_dir: str | Path | None = None,
     max_gap: float = 10.0,
+    nodiar: bool = False,
 ) -> None:
     """Save an edited segment list back to transcript.json, preserving metadata.
 
@@ -553,9 +594,10 @@ def save_transcript(
         output_dir : same output_dir used when the transcript was created
         max_gap    : maximum silence gap (seconds) to merge across (default 10s);
                      0 disables merging
+        nodiar     : use nodiar file paths (default False)
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    full = load_transcript_full(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
+    full = load_transcript_full(audio_path, output_dir=output_dir, nodiar=nodiar)
     merged = merge_consecutive_segments(segments, max_gap=max_gap)
     full["segments"] = merged
     write_json(p.transcript, full)

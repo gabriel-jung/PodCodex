@@ -255,3 +255,112 @@ def test_export_transcript_defaults_empty_show_episode(tmp_path):
     full = load_transcript_full(audio)
     assert full["meta"]["show"] == ""
     assert full["meta"]["episode"] == ""
+
+
+# ──────────────────────────────────────────────
+# Skip diarization (nodiar) mode
+# ──────────────────────────────────────────────
+
+
+def test_export_transcript_nodiar(tmp_path):
+    """export_transcript(diarized=False) reads raw segments, assigns Narrator."""
+    import pandas as pd
+    from podcodex.core._utils import NARRATOR_SPEAKER
+    from podcodex.core.transcribe import export_transcript
+
+    audio = tmp_path / "ep.mp3"
+    raw_segs = [
+        {"start": 0.0, "end": 5.0, "text": "Hello world"},
+        {"start": 5.5, "end": 12.0, "text": "Hi there"},
+    ]
+    ep_dir = tmp_path / "ep"
+    ep_dir.mkdir()
+    pd.DataFrame(raw_segs).to_parquet(ep_dir / "ep.segments.parquet", index=False)
+    json.dumps({"language": "en", "duration": 12.0, "num_segments": 2})
+    (ep_dir / "ep.segments.meta.json").write_text(
+        json.dumps({"language": "en", "duration": 12.0, "num_segments": 2})
+    )
+
+    segments = export_transcript(audio, diarized=False, show="S", episode="E")
+
+    # All segments should have Narrator as speaker
+    speakers = {s["speaker"] for s in segments if s["speaker"] != "[BREAK]"}
+    assert speakers == {NARRATOR_SPEAKER}
+
+    # File written with nodiar prefix
+    assert (ep_dir / "ep.nodiar.transcript.raw.json").exists()
+    assert not (ep_dir / "ep.transcript.raw.json").exists()
+
+    # Meta includes diarized=False
+    full = load_transcript_full(audio, nodiar=True)
+    assert full["meta"]["diarized"] is False
+    assert full["meta"]["show"] == "S"
+
+
+def test_export_transcript_diarized_has_diarized_true(tmp_path):
+    """export_transcript(diarized=True) includes diarized=True in meta."""
+    import pandas as pd
+    from podcodex.core.transcribe import export_transcript, save_speaker_map
+
+    audio = tmp_path / "ep.mp3"
+    diarized = [
+        {"start": 0.0, "end": 5.0, "speaker": "SPEAKER_00", "text": "Hello"},
+    ]
+    ep_dir = tmp_path / "ep"
+    ep_dir.mkdir()
+    pd.DataFrame(diarized).to_parquet(
+        ep_dir / "ep.diarized_segments.parquet", index=False
+    )
+    save_speaker_map(audio, {"SPEAKER_00": "Alice"})
+
+    export_transcript(audio)
+    full = load_transcript_full(audio)
+    assert full["meta"]["diarized"] is True
+
+
+def test_is_segment_flagged_nodiar():
+    """When diarized=False, speaker-based checks are skipped."""
+    from podcodex.core.transcribe import is_segment_flagged
+
+    # UNKNOWN speaker — flagged in diarized mode, not in nodiar
+    seg = {"speaker": "UNKNOWN", "start": 0, "end": 5, "text": "Hello world test"}
+    assert is_segment_flagged(seg, diarized=True) is True
+    assert is_segment_flagged(seg, diarized=False) is False
+
+    # Low density — flagged in both modes
+    low_density = {"speaker": "Narrator", "start": 0, "end": 10, "text": "Hi"}
+    assert is_segment_flagged(low_density, diarized=True) is True
+    assert is_segment_flagged(low_density, diarized=False) is True
+
+    # Normal segment — not flagged in either mode
+    normal = {
+        "speaker": "Alice",
+        "start": 0,
+        "end": 5,
+        "text": "Hello world how are you doing today",
+    }
+    assert is_segment_flagged(normal, diarized=True) is False
+    assert is_segment_flagged(normal, diarized=False) is False
+
+
+def test_audio_paths_nodiar():
+    """AudioPaths with nodiar=True inserts .nodiar prefix in transcript/polished/translation paths."""
+    from podcodex.core._utils import AudioPaths
+
+    p = AudioPaths(audio_path=Path("/tmp/ep.mp3"), base=Path("/tmp/ep/ep"), nodiar=True)
+    assert p.transcript_raw.name == "ep.nodiar.transcript.raw.json"
+    assert p.transcript.name == "ep.nodiar.transcript.json"
+    assert p.polished_raw.name == "ep.nodiar.polished.raw.json"
+    assert p.polished.name == "ep.nodiar.polished.json"
+    assert p.translation("en").name == "ep.nodiar.en.json"
+    assert p.translation_raw("en").name == "ep.nodiar.en.raw.json"
+
+    # Non-nodiar paths unchanged
+    p2 = AudioPaths(audio_path=Path("/tmp/ep.mp3"), base=Path("/tmp/ep/ep"))
+    assert p2.transcript_raw.name == "ep.transcript.raw.json"
+    assert p2.translation("en").name == "ep.en.json"
+
+    # Diarization-specific paths unaffected by nodiar
+    assert p.segments.name == "ep.segments.parquet"
+    assert p.diarized_segments.name == "ep.diarized_segments.parquet"
+    assert p.speaker_map.name == "ep.speaker_map.json"

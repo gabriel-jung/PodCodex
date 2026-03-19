@@ -51,6 +51,9 @@ def _resolve_source(transcript_path: Path, source: str) -> Path:
     The episode stem is inferred from the output dir name (= transcript parent).
     Falls back to transcript_path if the requested file does not exist.
 
+    Automatically detects nodiar files: if the transcript_path has a ``.nodiar.``
+    prefix, polished and translation lookups also use the nodiar prefix.
+
     ``auto`` priority chain:
         1. {stem}.polished.json (polished validated)
         2. {stem}.polished.raw.json (polished raw)
@@ -58,11 +61,13 @@ def _resolve_source(transcript_path: Path, source: str) -> Path:
     """
     episode_stem = transcript_path.parent.name
     parent = transcript_path.parent
+    # Detect nodiar from the transcript filename itself
+    nodiar_prefix = "nodiar." if ".nodiar." in transcript_path.name else ""
 
     if source == "auto":
         for suffix in (
-            f"{episode_stem}.polished.json",
-            f"{episode_stem}.polished.raw.json",
+            f"{episode_stem}.{nodiar_prefix}polished.json",
+            f"{episode_stem}.{nodiar_prefix}polished.raw.json",
         ):
             p = parent / suffix
             if p.exists():
@@ -71,7 +76,7 @@ def _resolve_source(transcript_path: Path, source: str) -> Path:
     elif source == "transcript":
         return transcript_path
     elif source == "polished":
-        p = parent / f"{episode_stem}.polished.json"
+        p = parent / f"{episode_stem}.{nodiar_prefix}polished.json"
         if not p.exists():
             logger.warning(f"Polished file not found: {p} — falling back to transcript")
             return transcript_path
@@ -79,7 +84,7 @@ def _resolve_source(transcript_path: Path, source: str) -> Path:
     else:
         # Treat as a language name (e.g. "english", "French")
         lang_norm = source.lower().strip().replace(" ", "_")
-        p = parent / f"{episode_stem}.{lang_norm}.json"
+        p = parent / f"{episode_stem}.{nodiar_prefix}{lang_norm}.json"
         if not p.exists():
             logger.warning(
                 f"Translation '{lang_norm}' not found: {p} — falling back to transcript"
@@ -105,7 +110,10 @@ def _source_label(source_path: Path, transcript_path: Path) -> str:
     remainder = source_path.name
     if remainder.startswith(episode_stem + "."):
         remainder = remainder[len(episode_stem) + 1 :]
-    # remainder is now e.g. "polished.json" or "polished.raw.json" or "english.json"
+    # remainder is now e.g. "polished.json" or "nodiar.polished.raw.json" or "english.json"
+    # Strip "nodiar." prefix so the label reflects the actual source type
+    if remainder.startswith("nodiar."):
+        remainder = remainder[len("nodiar.") :]
     label = remainder.split(".")[0]
     return label or "transcript"
 
@@ -118,6 +126,14 @@ def _chunk_transcript(
 ) -> list[dict]:
     """Chunk a transcript using the given strategy. Returns empty list on failure."""
     if chunking == "speaker":
+        if not transcript.get("meta", {}).get("diarized", True):
+            logger.warning(
+                "Speaker chunking is not useful without diarization — "
+                "falling back to semantic."
+            )
+            return semantic_chunks(
+                transcript, chunk_size=chunk_size, threshold=threshold
+            )
         return speaker_chunks(transcript)
     else:
         return semantic_chunks(transcript, chunk_size=chunk_size, threshold=threshold)

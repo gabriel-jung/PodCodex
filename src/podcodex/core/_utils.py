@@ -36,6 +36,11 @@ class AudioPaths:
 
     audio_path: Path  # resolved source audio file
     base: Path  # output_root / stem — no extension
+    nodiar: bool = False  # True when diarization was skipped
+
+    def _suffix(self, name: str) -> str:
+        """Insert '.nodiar' before the logical suffix when diarization is skipped."""
+        return f".nodiar.{name}" if self.nodiar else f".{name}"
 
     @staticmethod
     def output_dir(
@@ -65,13 +70,16 @@ class AudioPaths:
 
     @classmethod
     def from_audio(
-        cls, audio_path: str | Path, output_dir: str | Path | None = None
+        cls,
+        audio_path: str | Path,
+        output_dir: str | Path | None = None,
+        nodiar: bool = False,
     ) -> Self:
         audio_path = Path(audio_path)
         root = cls.output_dir(audio_path, output_dir)
         base = root / audio_path.stem
         base.parent.mkdir(parents=True, exist_ok=True)
-        return cls(audio_path=audio_path, base=base)
+        return cls(audio_path=audio_path, base=base, nodiar=nodiar)
 
     # — Transcription —
 
@@ -101,11 +109,11 @@ class AudioPaths:
 
     @property
     def transcript_raw(self) -> Path:
-        return self.base.with_suffix(".transcript.raw.json")
+        return self.base.with_suffix(self._suffix("transcript.raw.json"))
 
     @property
     def transcript(self) -> Path:
-        return self.base.with_suffix(".transcript.json")
+        return self.base.with_suffix(self._suffix("transcript.json"))
 
     @property
     def transcript_best(self) -> Path:
@@ -116,11 +124,11 @@ class AudioPaths:
 
     @property
     def polished(self) -> Path:
-        return self.base.with_suffix(".polished.json")
+        return self.base.with_suffix(self._suffix("polished.json"))
 
     @property
     def polished_raw(self) -> Path:
-        return self.base.with_suffix(".polished.raw.json")
+        return self.base.with_suffix(self._suffix("polished.raw.json"))
 
     @property
     def polished_best(self) -> Path:
@@ -147,11 +155,13 @@ class AudioPaths:
 
     def translation(self, lang: str) -> Path:
         lang = lang.lower().strip().replace(" ", "_")
-        return self.base.parent / f"{self.base.name}.{lang}.json"
+        prefix = "nodiar." if self.nodiar else ""
+        return self.base.parent / f"{self.base.name}.{prefix}{lang}.json"
 
     def translation_raw(self, lang: str) -> Path:
         lang = lang.lower().strip().replace(" ", "_")
-        return self.base.parent / f"{self.base.name}.{lang}.raw.json"
+        prefix = "nodiar." if self.nodiar else ""
+        return self.base.parent / f"{self.base.name}.{prefix}{lang}.raw.json"
 
     def translation_best(self, lang: str) -> Path:
         """Validated translation if it exists, else raw."""
@@ -221,6 +231,9 @@ API_PROVIDERS = {
 # Used by transcribe.py (filtering) and synthesize.py (voice sample extraction).
 UNKNOWN_SPEAKERS = frozenset({"UNKNOWN", "UNK", "None", "none"})
 
+# Default speaker label when diarization is skipped.
+NARRATOR_SPEAKER = "Narrator"
+
 
 # Internal file suffixes that are never translation language names.
 # Used by translate.py (to detect languages) and ingest/folder.py (to scan episodes).
@@ -228,6 +241,10 @@ INTERNAL_SUFFIXES = frozenset(
     {
         "transcript",
         "transcript.raw",
+        "nodiar.transcript",
+        "nodiar.transcript.raw",
+        "nodiar.polished",
+        "nodiar.polished.raw",
         "polished",
         "polished.raw",
         "words",

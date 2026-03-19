@@ -90,12 +90,19 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
             help="\n".join(f"**{v.label}**: {v.description}" for v in MODELS.values()),
         )
     with col_chunkers:
+        _nodiar = st.session_state.get("skip_diarization", False)
+        _chunker_options = [
+            k for k in CHUNKING_STRATEGIES if not (_nodiar and k == "speaker")
+        ]
         chunkings = st.multiselect(
             "Chunking strategies",
-            options=list(CHUNKING_STRATEGIES.keys()),
+            options=_chunker_options,
             default=[DEFAULT_CHUNKING],
             format_func=lambda k: CHUNKING_STRATEGIES[k],
             key="rag_chunkings",
+            help="Speaker chunking is unavailable without diarization."
+            if _nodiar
+            else None,
         )
 
     # Semantic params (shown when "semantic" is selected)
@@ -205,9 +212,15 @@ def _run_indexing(
     from podcodex.cli import _resolve_source, vectorize_batch
     from podcodex.rag.store import QdrantStore
 
+    from podcodex.core import AudioPaths
+
     output_dir_path = Path(output_dir)
     episode_stem = output_dir_path.name
-    transcript_path = output_dir_path / f"{episode_stem}.transcript.json"
+    nodiar = st.session_state.get("skip_diarization", False)
+    _paths = AudioPaths.from_audio(
+        Path(audio_path), output_dir=output_dir, nodiar=nodiar
+    )
+    transcript_path = _paths.transcript_best
 
     if not transcript_path.exists():
         st.error(

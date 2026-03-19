@@ -25,6 +25,7 @@ def render_segment_editor(
     show_delete: bool = False,
     show_flags: bool = False,
     show_speaker: bool = True,
+    diarized: bool = True,
     is_saved: bool = False,
     export_fn=None,
     export_filename: str | None = None,
@@ -86,17 +87,22 @@ def render_segment_editor(
                 "end": st.session_state.get(f"{editor_key}_end_{i}", seg.get("end", 0)),
             }
 
-        flagged = [i for i in all_active if is_segment_flagged(_live_seg(i))]
+        flagged = [
+            i for i in all_active if is_segment_flagged(_live_seg(i), diarized=diarized)
+        ]
     else:
         flagged = sorted(remove_flagged)
     all_speakers = sorted({segments[i].get("speaker", "") for i in all_active} - {""})
 
     # ── Filter / navigation bar ──
     show_flag_toggle = show_flags or bool(remove_flagged)
+    show_speaker_filter = show_speaker and len(all_speakers) > 1
     col_widths = [3]
     if show_flag_toggle:
         col_widths.append(2)
-    col_widths += [3, 1, 1, 1]
+    if show_speaker_filter:
+        col_widths.append(3)
+    col_widths += [1, 1, 1]
     bar = st.columns(col_widths)
     col_idx = 0
 
@@ -118,20 +124,22 @@ def render_segment_editor(
     else:
         show_flagged_only = False
 
-    with bar[col_idx]:
-        col_idx += 1
-        prev_sf = st.session_state.get(f"{speaker_filter_key}_prev", [])
-        selected_speakers = st.multiselect(
-            "Speaker",
-            options=all_speakers,
-            default=[],
-            key=speaker_filter_key,
-            label_visibility="collapsed",
-            placeholder="All speakers",
-        )
-        if selected_speakers != prev_sf:
-            st.session_state[page_key] = 0
-        st.session_state[f"{speaker_filter_key}_prev"] = selected_speakers
+    selected_speakers = []
+    if show_speaker_filter:
+        with bar[col_idx]:
+            col_idx += 1
+            prev_sf = st.session_state.get(f"{speaker_filter_key}_prev", [])
+            selected_speakers = st.multiselect(
+                "Speaker",
+                options=all_speakers,
+                default=[],
+                key=speaker_filter_key,
+                label_visibility="collapsed",
+                placeholder="All speakers",
+            )
+            if selected_speakers != prev_sf:
+                st.session_state[page_key] = 0
+            st.session_state[f"{speaker_filter_key}_prev"] = selected_speakers
 
     active_indices = flagged if show_flagged_only else all_active
     if selected_speakers:

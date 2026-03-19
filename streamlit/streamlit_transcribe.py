@@ -3,6 +3,7 @@ podcodex.ui.streamlit_transcribe — Transcription tab
 """
 
 import json
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -61,9 +62,67 @@ def render():
 
     st.audio(str(audio_path))
 
+    # ── Diarization toggle ──
+    _has_hf_token = bool(os.environ.get("HF_TOKEN"))
+    # Default to skip when no HF key is available
+    if "skip_diarization" not in st.session_state:
+        st.session_state["skip_diarization"] = not _has_hf_token
+    _prev_skip = st.session_state.get("_prev_skip_diarization")
+    skip_diarization = st.checkbox(
+        "Skip diarization (no speaker detection)",
+        key="skip_diarization",
+        help="Produce a transcript without speaker labels. "
+        "Useful when you don't have a HuggingFace API key for pyannote."
+        + ("" if _has_hf_token else " **No HF_TOKEN detected — defaulting to skip.**"),
+    )
+    nodiar = skip_diarization
+    # Clear cached data when the toggle changes to avoid stale state
+    if _prev_skip is not None and _prev_skip != nodiar:
+        keys_to_clear = [
+            "transcript",
+            "polished",
+            "translations",
+            "translation",
+            "indexed",
+            f"editor_transcript_{audio_path}",
+            f"editor_polished_{audio_path}",
+            f"transcript_{audio_path}_dirty",
+            f"polish_{audio_path}_dirty",
+        ]
+        # Also clear per-language translation editor keys
+        for k in list(st.session_state.keys()):
+            if k.startswith(f"editor_translate_{audio_path}_") or k.startswith(
+                f"translate_{audio_path}_"
+            ):
+                keys_to_clear.append(k)
+        for k in keys_to_clear:
+            st.session_state.pop(k, None)
+        # Auto-export transcript for the new mode if raw segments exist
+        _new_status = transcribe.processing_status(
+            audio_path, output_dir=output_dir, nodiar=nodiar
+        )
+        if _new_status["transcribed"] and not _new_status["exported"]:
+            _prereq = (
+                _new_status["transcribed"]
+                if nodiar
+                else _new_status.get("mapped", False)
+            )
+            if _prereq:
+                try:
+                    result = transcribe.export_transcript(
+                        audio_path, output_dir=output_dir, diarized=not nodiar
+                    )
+                    st.session_state.transcript = result
+                except Exception:
+                    pass  # Will show export button instead
+        st.rerun()
+    st.session_state["_prev_skip_diarization"] = nodiar
+
     # ── Status bar ──
-    status = transcribe.processing_status(audio_path, output_dir=output_dir)
-    _render_status(status)
+    status = transcribe.processing_status(
+        audio_path, output_dir=output_dir, nodiar=nodiar
+    )
+    _render_status(status, nodiar=nodiar)
 
     st.divider()
 
@@ -108,7 +167,9 @@ def render():
                                 len(s.get("text", "").split()) for s in data
                             ),
                         }
-                        p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+                        p = AudioPaths.from_audio(
+                            audio_path, output_dir=output_dir, nodiar=nodiar
+                        )
                         p.transcript_raw.parent.mkdir(parents=True, exist_ok=True)
                         p.transcript_raw.write_text(
                             json.dumps(
@@ -180,116 +241,138 @@ def render():
                         f"... {result['num_segments'] - 20} more segments not shown"
                     )
 
-    # ── Section 3: Diarization ──
-    with st.container(border=True):
-        col_title, col_force = st.columns([4, 1])
-        with col_title:
-            st.markdown("### 👥 Step 2 — Diarization & Speaker Assignment")
-            st.caption("Pyannote speaker diarization + WhisperX segment assignment.")
-        with col_force:
-            force_diarize = st.checkbox(
-                "Force",
-                key="force_diarize",
-                value=False,
-                help="Re-run diarization and speaker assignment even if output already exists.",
-            )
+    # ── Sections 2–3: Diarization & Speaker Map (skipped when nodiar) ──
+    if not status["transcribed"]:
+        return  # Nothing more to show until transcription is done
 
-        col1, col2 = st.columns(2)
-        with col1:
-            min_speakers = st.number_input(
-                "Min speakers",
-                min_value=1,
-                value=2,
-                disabled=status["assigned"] and not force_diarize,
-                help="Minimum number of speakers expected in the episode. Set to 1 if unsure.",
-            )
-        with col2:
-            max_speakers = st.number_input(
-                "Max speakers",
-                min_value=1,
-                value=4,
-                disabled=status["assigned"] and not force_diarize,
-                help="Maximum number of speakers expected. Keeping this close to the actual number improves accuracy.",
-            )
-
-        _diar_disabled = not status["transcribed"] or (
-            status["assigned"] and not force_diarize
+    if nodiar:
+        st.info(
+            "⏭️ Diarization skipped — all segments will be attributed to a single narrator."
         )
-        _diar_help = (
-            "Run transcription first."
-            if not status["transcribed"]
-            else "Already done. Check 'Force' to re-run."
-            if status["assigned"] and not force_diarize
-            else None
-        )
-        if st.button(
-            "Run diarization & assign",
-            use_container_width=True,
-            type="primary",
-            disabled=_diar_disabled,
-            help=_diar_help,
-        ):
-            with st.spinner("Diarizing..."):
-                transcribe.diarize_file(
-                    audio_path,
-                    output_dir=output_dir,
-                    min_speakers=min_speakers,
-                    max_speakers=max_speakers,
-                    force=force_diarize,
-                )
-            with st.spinner("Assigning speakers to segments..."):
-                transcribe.assign_speakers(
-                    audio_path, output_dir=output_dir, force=force_diarize
-                )
-            st.session_state.requested_tab = "transcribe"
-            st.rerun()
-
-        if status["assigned"]:
-            with st.expander("🔗 Inspect diarization results", expanded=False):
-                segs = transcribe.load_diarized_segments(
-                    audio_path, output_dir=output_dir
-                )
-                diar = transcribe.load_diarization(audio_path, output_dir=output_dir)
+    else:
+        with st.container(border=True):
+            col_title, col_force = st.columns([4, 1])
+            with col_title:
+                st.markdown("### 👥 Step 2 — Diarization & Speaker Assignment")
                 st.caption(
-                    f"**{diar['num_speakers']}** speakers detected · **{len(segs)}** segments"
+                    "Pyannote speaker diarization + WhisperX segment assignment."
                 )
-                for seg in segs[:20]:
-                    st.markdown(
-                        f"`{seg['start']:.2f}s → {seg['end']:.2f}s` **{seg.get('speaker', '?')}** {seg.get('text', '')}"
-                    )
-                if len(segs) > 20:
-                    st.caption(f"... {len(segs) - 20} more segments not shown")
+            with col_force:
+                force_diarize = st.checkbox(
+                    "Force",
+                    key="force_diarize",
+                    value=False,
+                    help="Re-run diarization and speaker assignment even if output already exists.",
+                )
 
-    # ── Section 3: Speaker map ──
-    with st.container(border=True):
-        col_title, col_force = st.columns([4, 1])
-        with col_title:
-            st.markdown("### 🏷️ Step 3 — Name Speakers")
-            st.caption(
-                "Listen to each speaker's segments and enter their name. "
-                "Use 🗑️ to flag all segments for a speaker for removal."
+            col1, col2 = st.columns(2)
+            with col1:
+                min_speakers = st.number_input(
+                    "Min speakers",
+                    min_value=1,
+                    value=2,
+                    disabled=status["assigned"] and not force_diarize,
+                    help="Minimum number of speakers expected in the episode. Set to 1 if unsure.",
+                )
+            with col2:
+                max_speakers = st.number_input(
+                    "Max speakers",
+                    min_value=1,
+                    value=4,
+                    disabled=status["assigned"] and not force_diarize,
+                    help="Maximum number of speakers expected. Keeping this close to the actual number improves accuracy.",
+                )
+
+            _diar_disabled = not status["transcribed"] or (
+                status["assigned"] and not force_diarize
             )
-        with col_force:
-            force_map = st.checkbox(
-                "Force",
-                key="force_speaker_map",
-                value=False,
-                help="Re-save the speaker map even if one already exists.",
-                disabled=not status["assigned"],
+            _diar_help = (
+                "Run transcription first."
+                if not status["transcribed"]
+                else "Already done. Check 'Force' to re-run."
+                if status["assigned"] and not force_diarize
+                else None
             )
-        if status["assigned"]:
-            _render_speaker_map(audio_path, output_dir, force=force_map)
-        else:
-            st.info("Run diarization & speaker assignment first.")
+            if st.button(
+                "Run diarization & assign",
+                use_container_width=True,
+                type="primary",
+                disabled=_diar_disabled,
+                help=_diar_help,
+            ):
+                with st.spinner("Diarizing..."):
+                    transcribe.diarize_file(
+                        audio_path,
+                        output_dir=output_dir,
+                        min_speakers=min_speakers,
+                        max_speakers=max_speakers,
+                        force=force_diarize,
+                    )
+                with st.spinner("Assigning speakers to segments..."):
+                    transcribe.assign_speakers(
+                        audio_path, output_dir=output_dir, force=force_diarize
+                    )
+                st.session_state.requested_tab = "transcribe"
+                st.rerun()
+
+            if status["assigned"]:
+                with st.expander("🔗 Inspect diarization results", expanded=False):
+                    segs = transcribe.load_diarized_segments(
+                        audio_path, output_dir=output_dir
+                    )
+                    diar = transcribe.load_diarization(
+                        audio_path, output_dir=output_dir
+                    )
+                    st.caption(
+                        f"**{diar['num_speakers']}** speakers detected · **{len(segs)}** segments"
+                    )
+                    for seg in segs[:20]:
+                        st.markdown(
+                            f"`{seg['start']:.2f}s → {seg['end']:.2f}s` **{seg.get('speaker', '?')}** {seg.get('text', '')}"
+                        )
+                    if len(segs) > 20:
+                        st.caption(f"... {len(segs) - 20} more segments not shown")
+
+        with st.container(border=True):
+            col_title, col_force = st.columns([4, 1])
+            with col_title:
+                st.markdown("### 🏷️ Step 3 — Name Speakers")
+                st.caption(
+                    "Listen to each speaker's segments and enter their name. "
+                    "Use 🗑️ to flag all segments for a speaker for removal."
+                )
+            with col_force:
+                force_map = st.checkbox(
+                    "Force",
+                    key="force_speaker_map",
+                    value=False,
+                    help="Re-save the speaker map even if one already exists.",
+                    disabled=not status["assigned"],
+                )
+            if status["assigned"]:
+                _render_speaker_map(audio_path, output_dir, force=force_map)
+            else:
+                st.info("Run diarization & speaker assignment first.")
 
     # ── Section 4: Export ──
+    # Progressive disclosure: show export only when prerequisites are met
+    _export_ready = status["transcribed"] if nodiar else status["mapped"]
+    if not _export_ready and not status["exported"]:
+        return  # Don't show export or editor until prerequisites are done
+
     with st.container(border=True):
         col_title, col_force = st.columns([4, 1])
         with col_title:
-            st.markdown("### 📝 Step 4 — Export Transcript")
-            st.caption(
-                "Generate the final JSON transcript with resolved speaker names. Requires the speaker map to be saved first."
-            )
+            step_label = "Step 2" if nodiar else "Step 4"
+            st.markdown(f"### 📝 {step_label} — Export Transcript")
+            if nodiar:
+                st.caption(
+                    "Generate the final JSON transcript (single narrator, no speaker detection)."
+                )
+            else:
+                st.caption(
+                    "Generate the final JSON transcript with resolved speaker names. Requires the speaker map to be saved first."
+                )
         with col_force:
             force_export = st.checkbox(
                 "Force",
@@ -298,15 +381,9 @@ def render():
                 help="Re-run export even if transcript already exists.",
             )
 
-        _export_disabled = not status["mapped"] or (
-            status["exported"] and not force_export
-        )
+        _export_disabled = status["exported"] and not force_export
         _export_help = (
-            "Save the speaker map first."
-            if not status["mapped"]
-            else "Already exported. Check 'Force' to re-run."
-            if status["exported"] and not force_export
-            else None
+            "Already exported. Check 'Force' to re-run." if _export_disabled else None
         )
         if st.button(
             "Export transcript",
@@ -317,34 +394,43 @@ def render():
         ):
             with st.spinner("Exporting..."):
                 transcript = transcribe.export_transcript(
-                    audio_path, output_dir=output_dir
+                    audio_path, output_dir=output_dir, diarized=not nodiar
                 )
                 st.session_state.transcript = transcript
             st.session_state.requested_tab = "transcribe"
             st.rerun()
 
-        if not status["mapped"] and not status["exported"]:
-            st.info("Save the speaker map above before exporting.")
-
     # ── Section 5: Transcript editor ──
+    if not status["exported"]:
+        return  # Don't show editor until export is done
+
+    # Auto-load transcript into session if exported but not yet loaded
+    if not st.session_state.get("transcript"):
+        st.session_state.transcript = transcribe.load_transcript(
+            audio_path, output_dir=output_dir, nodiar=nodiar
+        )
+
     if st.session_state.get("transcript"):
         with st.container(border=True):
             col_title, col_badge = st.columns([5, 1])
             with col_title:
-                st.markdown("### ✏️ Step 5 — Review & Edit Transcript")
+                step_label = "Step 3" if nodiar else "Step 5"
+                st.markdown(f"### ✏️ {step_label} — Review & Edit Transcript")
                 st.caption(
                     "Correct transcription errors directly. Changes are saved to the transcript file and will be used for translation."
                 )
             with col_badge:
                 _dirty = st.session_state.get(f"transcript_{audio_path}_dirty", False)
-                paths = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+                paths = AudioPaths.from_audio(
+                    audio_path, output_dir=output_dir, nodiar=nodiar
+                )
                 if paths.transcript.exists() and not _dirty:
                     st.success("✅ Saved")
                 elif (
                     paths.transcript_raw.exists() and not paths.transcript.exists()
                 ) or _dirty:
                     st.warning("⚠️ Unsaved")
-            _render_transcript_editor(audio_path, output_dir)
+            _render_transcript_editor(audio_path, output_dir, nodiar=nodiar)
 
 
 def _render_audio_trim(output_dir: str):
@@ -465,8 +551,8 @@ def _render_audio_trim(output_dir: str):
             st.warning("Could not read audio duration — ffprobe may not be available.")
 
 
-def _render_status(status: dict):
-    """Show the pipeline status bar (transcribed → diarized → assigned → mapped → exported)."""
+def _render_status(status: dict, nodiar: bool = False):
+    """Show the pipeline status bar, hiding diarization steps when nodiar."""
     labels = {
         "transcribed": "Transcribed",
         "diarized": "Diarized",
@@ -474,8 +560,10 @@ def _render_status(status: dict):
         "mapped": "Speaker map",
         "exported": "Exported",
     }
-    cols = st.columns(len(status))
-    for col, (key, done) in zip(cols, status.items()):
+    skip_keys = {"diarized", "assigned", "mapped"} if nodiar else set()
+    visible = {k: v for k, v in status.items() if k not in skip_keys}
+    cols = st.columns(len(visible))
+    for col, (key, done) in zip(cols, visible.items()):
         with col:
             icon = "✅" if done else "⬜"
             st.markdown(f"{icon} {labels[key]}")
@@ -673,17 +761,17 @@ def _load_diarized_segments_cached(audio_path: str, output_dir: str) -> list:
     return transcribe.load_diarized_segments(Path(audio_path), output_dir=output_dir)
 
 
-def _render_transcript_editor(audio_path, output_dir: str):
+def _render_transcript_editor(audio_path, output_dir: str, nodiar: bool = False):
     """Render the transcript editor with load original/edits buttons and segment editor."""
     audio_path = Path(audio_path)
     t_key = f"editor_transcript_{audio_path}"
     if t_key not in st.session_state:
         st.session_state[t_key] = transcribe.load_transcript(
-            audio_path, output_dir=output_dir
+            audio_path, output_dir=output_dir, nodiar=nodiar
         )
     transcript = st.session_state[t_key]
 
-    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     has_raw = paths.transcript_raw.exists()
     has_validated = paths.transcript.exists()
     if has_raw or has_validated:
@@ -693,7 +781,7 @@ def _render_transcript_editor(audio_path, output_dir: str):
                 "↩ Load original", use_container_width=True, disabled=not has_raw
             ):
                 st.session_state[t_key] = load_transcript_raw(
-                    audio_path, output_dir=output_dir
+                    audio_path, output_dir=output_dir, nodiar=nodiar
                 )
                 st.session_state[f"transcript_{audio_path}_dirty"] = False
                 st.rerun()
@@ -702,19 +790,20 @@ def _render_transcript_editor(audio_path, output_dir: str):
                 "✏️ Load edits", use_container_width=True, disabled=not has_validated
             ):
                 st.session_state[t_key] = load_transcript_validated(
-                    audio_path, output_dir=output_dir
+                    audio_path, output_dir=output_dir, nodiar=nodiar
                 )
                 st.session_state[f"transcript_{audio_path}_dirty"] = False
                 st.rerun()
 
     if not transcript or not transcript[0].get("speaker"):
-        st.warning(
-            "Transcript has no speaker info — save the speaker map and re-export first."
-        )
-        return
+        if not nodiar:
+            st.warning(
+                "Transcript has no speaker info — save the speaker map and re-export first."
+            )
+            return
 
     def _on_save(merged):
-        save_transcript(audio_path, merged, output_dir=output_dir)
+        save_transcript(audio_path, merged, output_dir=output_dir, nodiar=nodiar)
         st.session_state[t_key] = merged
         st.session_state.transcript = merged
         st.toast("Transcript saved!")
@@ -727,6 +816,8 @@ def _render_transcript_editor(audio_path, output_dir: str):
         show_timestamps=True,
         show_delete=True,
         show_flags=True,
+        show_speaker=not nodiar,
+        diarized=not nodiar,
         is_saved=paths.transcript.exists(),
         export_fn=segments_to_text,
         export_filename=f"{audio_path.stem}_transcript.txt",

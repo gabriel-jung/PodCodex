@@ -221,13 +221,14 @@ def save_polished_raw(
     audio_path: Path | str,
     segments: list[dict],
     output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> Path:
     """Save pipeline-generated polished segments to {stem}.polished.raw.json.
 
     Use this for LLM/pipeline output. The user can then review and promote
     to the validated {stem}.polished.json.
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return save_segments_json(p.polished_raw, segments, "Polished transcript")
 
 
@@ -235,31 +236,38 @@ def save_polished(
     audio_path: Path | str,
     segments: list[dict],
     output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> Path:
     """Save validated/edited polished segments to {stem}.polished.json."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return save_segments_json(p.polished, segments, "Polished transcript")
 
 
 def load_polished(
-    audio_path: Path | str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> list[dict]:
     """Load polished segments. Prefers validated .polished.json, falls back to .polished.raw.json."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return read_json(p.polished_best)
 
 
 def load_polished_raw(
-    audio_path: Path | str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> list[dict]:
     """Load specifically from .polished.raw.json (pipeline output)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return read_json(p.polished_raw)
 
 
 def load_polished_validated(
-    audio_path: Path | str, output_dir: str | Path | None = None
+    audio_path: Path | str,
+    output_dir: str | Path | None = None,
+    nodiar: bool = False,
 ) -> list[dict]:
     """Load specifically from .polished.json (user-validated)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     return read_json(p.polished)

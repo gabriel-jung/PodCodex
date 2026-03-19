@@ -70,11 +70,27 @@ def scan_folder(show_folder: Path) -> list[EpisodeInfo]:
 
         transcript_raw_exists = f"{stem}.transcript.raw.json" in existing
         transcript_validated_exists = f"{stem}.transcript.json" in existing
-        transcribed = transcript_raw_exists or transcript_validated_exists
+        nodiar_transcript_raw_exists = f"{stem}.nodiar.transcript.raw.json" in existing
+        nodiar_transcript_validated_exists = (
+            f"{stem}.nodiar.transcript.json" in existing
+        )
+        transcribed = (
+            transcript_raw_exists
+            or transcript_validated_exists
+            or nodiar_transcript_raw_exists
+            or nodiar_transcript_validated_exists
+        )
 
         polished_raw_exists = f"{stem}.polished.raw.json" in existing
         polished_validated_exists = f"{stem}.polished.json" in existing
-        polished = polished_raw_exists or polished_validated_exists
+        nodiar_polished_raw_exists = f"{stem}.nodiar.polished.raw.json" in existing
+        nodiar_polished_validated_exists = f"{stem}.nodiar.polished.json" in existing
+        polished = (
+            polished_raw_exists
+            or polished_validated_exists
+            or nodiar_polished_raw_exists
+            or nodiar_polished_validated_exists
+        )
 
         indexed = ".rag_indexed" in existing
 
@@ -91,9 +107,9 @@ def scan_folder(show_folder: Path) -> list[EpisodeInfo]:
             if suffix.endswith(".raw"):
                 base = suffix[:-4]
                 if base not in _INTERNAL_SUFFIXES:
-                    langs_raw.add(base)
+                    langs_raw.add(base.removeprefix("nodiar."))
             else:
-                langs_validated.add(suffix)
+                langs_validated.add(suffix.removeprefix("nodiar."))
 
         all_langs = sorted(langs_validated | langs_raw)
         raw_translations = sorted(langs_raw - langs_validated)
@@ -112,11 +128,26 @@ def scan_folder(show_folder: Path) -> list[EpisodeInfo]:
                 polished=polished,
                 indexed=indexed,
                 translations=all_langs,
-                raw_transcript=transcript_raw_exists
-                and not transcript_validated_exists,
-                validated_transcript=transcript_validated_exists,
-                raw_polished=polished_raw_exists and not polished_validated_exists,
-                validated_polished=polished_validated_exists,
+                raw_transcript=(
+                    (transcript_raw_exists and not transcript_validated_exists)
+                    or (
+                        nodiar_transcript_raw_exists
+                        and not nodiar_transcript_validated_exists
+                    )
+                ),
+                validated_transcript=(
+                    transcript_validated_exists or nodiar_transcript_validated_exists
+                ),
+                raw_polished=(
+                    (polished_raw_exists and not polished_validated_exists)
+                    or (
+                        nodiar_polished_raw_exists
+                        and not nodiar_polished_validated_exists
+                    )
+                ),
+                validated_polished=(
+                    polished_validated_exists or nodiar_polished_validated_exists
+                ),
                 raw_translations=raw_translations,
                 validated_translations=validated_translations,
             )

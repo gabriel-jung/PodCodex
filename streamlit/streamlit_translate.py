@@ -128,7 +128,8 @@ def render():
         st.session_state.transcript = None
         st.rerun()
 
-    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    nodiar = st.session_state.get("skip_diarization", False)
+    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
 
     # ── Episode header ──
     with st.container(border=True):
@@ -138,7 +139,9 @@ def render():
     transcript = st.session_state.transcript
 
     # ── Import existing translation ──
-    existing_langs = translate_mod.list_translations(audio_path, output_dir=output_dir)
+    existing_langs = translate_mod.list_translations(
+        audio_path, output_dir=output_dir, nodiar=nodiar
+    )
     with st.expander(
         "📂 **Import existing translation** — skip the translation step",
         expanded=not existing_langs,
@@ -170,7 +173,11 @@ def render():
                         st.error(f"Format error — {err}")
                     else:
                         translate_mod.save_translation_raw(
-                            audio_path, data, import_lang, output_dir=output_dir
+                            audio_path,
+                            data,
+                            import_lang,
+                            output_dir=output_dir,
+                            nodiar=nodiar,
                         )
                         _reload_translations(audio_path, output_dir)
                         st.success(f"Imported — {len(data)} segments.")
@@ -206,7 +213,9 @@ def render():
                 help="Use the polished transcript if you've already corrected the source.",
             )
             if source_choice == "polished":
-                segments = polish_mod.load_polished(audio_path, output_dir=output_dir)
+                segments = polish_mod.load_polished(
+                    audio_path, output_dir=output_dir, nodiar=nodiar
+                )
                 st.caption(f"Using polished transcript — {len(segments)} segments")
             else:
                 segments = transcribe.merge_consecutive_segments(transcript)
@@ -339,7 +348,7 @@ def render():
             batch_minutes = st.slider(
                 "Max duration per batch (minutes)",
                 min_value=5,
-                max_value=30,
+                max_value=180,
                 value=15,
                 step=5,
                 key="trad_batch_minutes",
@@ -411,10 +420,11 @@ def render():
                     st.session_state.trad_batch_idx -= 1
                     st.rerun()
             with col_validate:
+                batch_done = idx in st.session_state.trad_batch_results
                 if st.button(
-                    "✅ Validate batch",
+                    "✅ Validated" if batch_done else "✅ Validate batch",
                     use_container_width=True,
-                    type="primary",
+                    type="secondary" if batch_done else "primary",
                     disabled=not pasted.strip(),
                 ):
                     try:
@@ -456,7 +466,9 @@ def render():
                     st.rerun()
 
     # ── Section 3: Editor ──
-    langs = translate_mod.list_translations(audio_path, output_dir=output_dir)
+    langs = translate_mod.list_translations(
+        audio_path, output_dir=output_dir, nodiar=nodiar
+    )
     if langs:
         _render_translation_editor(audio_path, output_dir, langs, segments)
 
@@ -470,17 +482,23 @@ def _save_translation(
     audio_path, output_dir: str, segments: list[dict], target_lang: str
 ) -> None:
     """Save translation as raw and refresh the session-state translations cache."""
+    _nd = st.session_state.get("skip_diarization", False)
     translate_mod.save_translation_raw(
-        audio_path, segments, target_lang, output_dir=output_dir
+        audio_path, segments, target_lang, output_dir=output_dir, nodiar=_nd
     )
     _reload_translations(audio_path, output_dir)
 
 
 def _reload_translations(audio_path, output_dir: str) -> None:
     """Rescan disk for translations and update session state."""
-    langs = translate_mod.list_translations(audio_path, output_dir=output_dir)
+    _nd = st.session_state.get("skip_diarization", False)
+    langs = translate_mod.list_translations(
+        audio_path, output_dir=output_dir, nodiar=_nd
+    )
     st.session_state.translations = {
-        lang: translate_mod.load_translation(audio_path, lang, output_dir=output_dir)
+        lang: translate_mod.load_translation(
+            audio_path, lang, output_dir=output_dir, nodiar=_nd
+        )
         for lang in langs
     }
     st.session_state.translation = next(
@@ -493,7 +511,8 @@ def _render_translation_editor(
 ):
     """Render one tab per language with a segment editor, load/save buttons, and badges."""
     stem = Path(audio_path).stem
-    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    _nd = st.session_state.get("skip_diarization", False)
+    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=_nd)
     with st.container(border=True):
         st.markdown("### ✏️ Step 3 — Review & Edit")
         tabs = st.tabs([lang.capitalize() for lang in langs])
@@ -502,7 +521,7 @@ def _render_translation_editor(
             t_key = f"editor_translate_{audio_path}_{lang}"
             if t_key not in st.session_state:
                 st.session_state[t_key] = translate_mod.load_translation(
-                    audio_path, lang, output_dir=output_dir
+                    audio_path, lang, output_dir=output_dir, nodiar=_nd
                 )
             translation = st.session_state[t_key]
 
@@ -510,8 +529,9 @@ def _render_translation_editor(
                 """Build a save callback bound to a specific language and cache key."""
 
                 def _on_save(merged):
+                    _nd2 = st.session_state.get("skip_diarization", False)
                     translate_mod.save_translation(
-                        audio_path, merged, lang, output_dir=output_dir
+                        audio_path, merged, lang, output_dir=output_dir, nodiar=_nd2
                     )
                     st.session_state[t_key] = merged
                     # Update session-state cache directly instead of rescanning disk
@@ -545,7 +565,7 @@ def _render_translation_editor(
                         disabled=not has_raw,
                     ):
                         st.session_state[t_key] = load_translation_raw(
-                            audio_path, lang, output_dir=output_dir
+                            audio_path, lang, output_dir=output_dir, nodiar=_nd
                         )
                         st.session_state[f"translate_{audio_path}_{lang}_dirty"] = False
                         st.rerun()
@@ -557,7 +577,7 @@ def _render_translation_editor(
                         disabled=not has_validated,
                     ):
                         st.session_state[t_key] = load_translation_validated(
-                            audio_path, lang, output_dir=output_dir
+                            audio_path, lang, output_dir=output_dir, nodiar=_nd
                         )
                         st.session_state[f"translate_{audio_path}_{lang}_dirty"] = False
                         st.rerun()
