@@ -17,7 +17,7 @@ from podcodex.core.transcribe import (
 from podcodex.core.synthesize import is_hallucination
 from constants import WHISPER_MODELS, DEFAULT_LANGUAGE_CODE
 from utils import fmt_time
-from streamlit_editor import render_segment_editor, audio_slice_bytes
+from streamlit_editor import render_segment_editor
 
 
 def render():
@@ -261,23 +261,26 @@ def render():
                     st.caption(f"... {len(segs) - 20} more segments not shown")
 
     # ── Section 3: Speaker map ──
-    if status["assigned"]:
-        with st.container(border=True):
-            col_title, col_force = st.columns([4, 1])
-            with col_title:
-                st.markdown("### 🏷️ Step 3 — Name Speakers")
-                st.caption(
-                    "Listen to each speaker's segments and enter their name. "
-                    "Use 🗑️ to flag all segments for a speaker for removal."
-                )
-            with col_force:
-                force_map = st.checkbox(
-                    "Force",
-                    key="force_speaker_map",
-                    value=False,
-                    help="Re-save the speaker map even if one already exists.",
-                )
+    with st.container(border=True):
+        col_title, col_force = st.columns([4, 1])
+        with col_title:
+            st.markdown("### 🏷️ Step 3 — Name Speakers")
+            st.caption(
+                "Listen to each speaker's segments and enter their name. "
+                "Use 🗑️ to flag all segments for a speaker for removal."
+            )
+        with col_force:
+            force_map = st.checkbox(
+                "Force",
+                key="force_speaker_map",
+                value=False,
+                help="Re-save the speaker map even if one already exists.",
+                disabled=not status["assigned"],
+            )
+        if status["assigned"]:
             _render_speaker_map(audio_path, output_dir, force=force_map)
+        else:
+            st.info("Run diarization & speaker assignment first.")
 
     # ── Section 4: Export ──
     with st.container(border=True):
@@ -580,19 +583,13 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
                     is_hallucinated, text = _check_hallucination(seg)
                     with col:
                         if is_active:
-                            try:
-                                st.audio(
-                                    audio_slice_bytes(
-                                        str(audio_path),
-                                        float(seg["start"]),
-                                        float(seg["end"]),
-                                    ),
-                                    format="audio/wav",
-                                )
-                            except Exception:
-                                st.caption("Preview unavailable")
+                            st.audio(
+                                audio_path,
+                                start_time=float(seg["start"]),
+                                end_time=float(seg["end"]),
+                            )
                         st.caption(
-                            f"#{i + 1} · {dur:.1f}s · `{seg['start']:.1f}→{seg['end']:.1f}s`"
+                            f"#{i + 1} · {dur:.1f}s · `{fmt_time(seg['start'])}→{fmt_time(seg['end'])}`"
                         )
                         if not text:
                             st.caption("⚠️ _(no text)_")
@@ -621,7 +618,7 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
                             col1, col2, col3 = st.columns([3, 4, 2])
                             with col1:
                                 st.caption(
-                                    f"`{seg['start']:.1f}→{seg['end']:.1f}s` ({dur:.1f}s) {flags}"
+                                    f"`{fmt_time(seg['start'])}→{fmt_time(seg['end'])}` ({dur:.1f}s) {flags}"
                                 )
                             with col2:
                                 if not text:
@@ -633,17 +630,11 @@ def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
                                         f"_{text[:80]}{'…' if len(text) > 80 else ''}_"
                                     )
                             with col3:
-                                try:
-                                    st.audio(
-                                        audio_slice_bytes(
-                                            str(audio_path),
-                                            float(seg["start"]),
-                                            float(seg["end"]),
-                                        ),
-                                        format="audio/wav",
-                                    )
-                                except Exception:
-                                    st.caption("—")
+                                st.audio(
+                                    audio_path,
+                                    start_time=float(seg["start"]),
+                                    end_time=float(seg["end"]),
+                                )
 
     unnamed = [
         sp

@@ -205,8 +205,10 @@ def diarize_file(
 
     logger.info(f"Diarizing {p.audio_path.name}")
 
+    from whisperx.diarize import DiarizationPipeline
+
     audio = whisperx.load_audio(str(p.audio_path))
-    pipeline = whisperx.DiarizationPipeline(token=token, device=device)
+    pipeline = DiarizationPipeline(token=token, device=device)
     diarize_segments = pipeline(
         audio,
         num_speakers=num_speakers,
