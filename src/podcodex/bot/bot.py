@@ -15,6 +15,9 @@ Slash commands (user-facing):
     /episodes show [model]
               List episodes for a show with segment counts.
 
+Slash commands (info):
+    /help     Show available commands and how to use them.
+
 Slash commands (admin):
     /setup    [model] [chunker] [top_k] [show_add] [show_remove] [show_clear]
               [default_source] [compact]
@@ -43,7 +46,7 @@ from podcodex.bot.formatting import (
     fmt_time,
     merge_results,
     score_bar,
-    speaker,
+    speaker_lines,
 )
 from podcodex.bot.ui import ExpandView, NoExpandView, PaginatedResultView
 from podcodex.rag.defaults import (
@@ -133,14 +136,13 @@ def _result_embed(
     episode = chunk.get("episode", "")
     start = chunk.get("start", 0.0)
     end = chunk.get("end", 0.0)
-    text = chunk.get("text", "")
     score = chunk.get("score", 0.0)
 
-    embed = discord.Embed(description=f'*"{text}"*', color=discord.Color.blurple())
+    description = speaker_lines(chunk)
+    embed = discord.Embed(description=description, color=discord.Color.blurple())
     if show:
         embed.set_author(name=f"🎙 {show}")
     embed.title = episode or "(untitled)"
-    embed.add_field(name="Speaker", value=speaker(chunk), inline=True)
     embed.add_field(
         name="Timestamp", value=f"{fmt_time(start)} → {fmt_time(end)}", inline=True
     )
@@ -658,6 +660,53 @@ class PodCodexBot(discord.Client):
             await interaction.response.defer(ephemeral=True)
             await self.tree.sync()
             await interaction.followup.send("✅ Command tree synced.", ephemeral=True)
+
+        # /help ───────────────────────────────
+        @self.tree.command(
+            name="help",
+            description="Show available commands and how to use them",
+        )
+        async def help_cmd(interaction: discord.Interaction) -> None:
+            embed = discord.Embed(
+                title="📖 PodCodex Help",
+                description="Search and explore your podcast transcripts.",
+                color=discord.Color.blurple(),
+            )
+            embed.add_field(
+                name="/search `question`",
+                value=(
+                    "Find relevant passages using a mix of keyword and semantic search.\n"
+                    "`alpha` controls the blend: 0 = keywords only, 1 = meaning only (default 0.5)."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="/exact `query`",
+                value="Find exact text matches, like Ctrl+F across all episodes.",
+                inline=False,
+            )
+            embed.add_field(
+                name="/episodes `show`",
+                value="List all indexed episodes for a show.",
+                inline=False,
+            )
+            embed.add_field(
+                name="/stats",
+                value="Overview of what's indexed: shows, episodes, segments, duration.",
+                inline=False,
+            )
+            embed.add_field(
+                name="/setup *(admin)*",
+                value=(
+                    "Configure server defaults: model, top-k, pinned shows, "
+                    "default source, compact mode."
+                ),
+                inline=False,
+            )
+            embed.set_footer(
+                text="Use the Show context ↕ button on results to see surrounding dialogue."
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── /search handler ───────────────────────
 

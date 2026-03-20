@@ -1,7 +1,7 @@
 """Tests for podcodex.cli — all heavy deps mocked."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -68,7 +68,7 @@ def _mock_local_not_indexed():
 # ──────────────────────────────────────────────
 
 
-def test_cmd_vectorize_calls_store_methods(tmp_path):
+def test_cmd_vectorize_saves_to_local(tmp_path):
     from podcodex.cli import cmd_vectorize
 
     p = _make_transcript_file(tmp_path)
@@ -78,22 +78,17 @@ def test_cmd_vectorize_calls_store_methods(tmp_path):
     mock_embeddings = np.zeros((1, 1024), dtype=np.float32)
     mock_embedder = MagicMock()
     mock_embedder.encode_passages.return_value = mock_embeddings
-    mock_store = MagicMock()
     mock_local = _mock_local_not_indexed()
 
     with (
         patch("podcodex.cli.semantic_chunks", return_value=mock_chunks),
         patch("podcodex.cli.get_embedder", return_value=mock_embedder),
-        patch("podcodex.cli.QdrantStore", return_value=mock_store),
         patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
-    mock_store.create_collection.assert_called_once_with(
-        "my_show__bge-m3__semantic", model="bge-m3", overwrite=False
-    )
-    mock_store.upsert.assert_called_once_with(
-        "my_show__bge-m3__semantic", mock_chunks, mock_embeddings
+    mock_local.save_chunks.assert_called_once_with(
+        "my_show__bge-m3__semantic", ANY, mock_chunks, mock_embeddings
     )
 
 
@@ -114,7 +109,6 @@ def test_cmd_vectorize_episode_from_args(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
         patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)  # should not raise
@@ -143,7 +137,6 @@ def test_cmd_vectorize_episode_falls_back_to_meta(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
         patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
@@ -170,7 +163,6 @@ def test_cmd_vectorize_episode_falls_back_to_filename(tmp_path):
     p.write_text(json.dumps(data))
     args = _make_vectorize_args(p, show="s", episode=None)
 
-    mock_store = MagicMock()
     mock_local = _mock_local_not_indexed()
     with (
         patch("podcodex.cli.semantic_chunks", return_value=[{"text": "t"}]),
@@ -182,12 +174,11 @@ def test_cmd_vectorize_episode_falls_back_to_filename(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.cli.QdrantStore", return_value=mock_store),
         patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
-    mock_store.create_collection.assert_called_once()
+    mock_local.save_chunks.assert_called_once()
 
 
 def test_cmd_vectorize_no_chunks_returns_early(tmp_path):
@@ -196,16 +187,14 @@ def test_cmd_vectorize_no_chunks_returns_early(tmp_path):
     p = _make_transcript_file(tmp_path)
     args = _make_vectorize_args(p, show="s")
 
-    mock_store = MagicMock()
     mock_local = _mock_local_not_indexed()
     with (
         patch("podcodex.cli.semantic_chunks", return_value=[]),
-        patch("podcodex.cli.QdrantStore", return_value=mock_store),
         patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
-    mock_store.upsert.assert_not_called()
+    mock_local.save_chunks.assert_not_called()
 
 
 def test_cmd_vectorize_file_not_found_exits(tmp_path):
@@ -235,13 +224,12 @@ def test_cmd_vectorize_touches_rag_indexed_marker(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
         patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
     marker = p.parent / ".rag_indexed"
-    assert marker.exists(), ".rag_indexed marker should be touched after upsert"
+    assert marker.exists(), ".rag_indexed marker should be touched after indexing"
 
 
 def test_cmd_vectorize_overwrite_flag(tmp_path):
@@ -250,7 +238,6 @@ def test_cmd_vectorize_overwrite_flag(tmp_path):
     p = _make_transcript_file(tmp_path)
     args = _make_vectorize_args(p, show="s", overwrite=True)
 
-    mock_store = MagicMock()
     mock_local = _mock_local_not_indexed()
     with (
         patch("podcodex.cli.semantic_chunks", return_value=[{"text": "x"}]),
@@ -262,18 +249,15 @@ def test_cmd_vectorize_overwrite_flag(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.cli.QdrantStore", return_value=mock_store),
         patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
-    mock_store.create_collection.assert_called_once_with(
-        "s__bge-m3__semantic", model="bge-m3", overwrite=True
-    )
+    mock_local.save_chunks.assert_called_once()
 
 
-def test_cmd_vectorize_skips_embed_and_upsert_when_synced(tmp_path):
-    """When episode is already in LocalStore AND Qdrant counts match, skip entirely."""
+def test_cmd_vectorize_skips_when_locally_cached(tmp_path):
+    """When episode is already in LocalStore, skip embedding entirely."""
     from podcodex.cli import cmd_vectorize
 
     p = _make_transcript_file(tmp_path)
@@ -285,58 +269,41 @@ def test_cmd_vectorize_skips_embed_and_upsert_when_synced(tmp_path):
     mock_local.load_chunks_no_embeddings.return_value = [
         {"text": "cached chunk", "source": "transcript"}
     ]
-
-    mock_store = MagicMock()
-    mock_store.episode_point_count.return_value = 1  # matches local
     mock_embedder = MagicMock()
 
     with (
         patch("podcodex.cli.get_embedder", return_value=mock_embedder),
-        patch("podcodex.cli.QdrantStore", return_value=mock_store),
         patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
     mock_embedder.encode_passages.assert_not_called()
-    mock_store.upsert.assert_not_called()
 
 
-def test_cmd_vectorize_resyncs_when_qdrant_mismatch(tmp_path):
-    """When LocalStore is cached but Qdrant count differs, resync without re-embedding."""
+def test_cmd_vectorize_re_embeds_on_source_upgrade(tmp_path):
+    """When source changed (e.g. transcript → polished), re-chunk and re-embed."""
     from podcodex.cli import cmd_vectorize
 
     p = _make_transcript_file(tmp_path)
     args = _make_vectorize_args(p, show="my_show")
 
-    cached_chunks = [
-        {
-            "text": "cached chunk",
-            "source": "transcript",
-            "embedding": np.zeros(1024, dtype=np.float32),
-        }
-    ]
     mock_local = MagicMock()
-    mock_local.episode_is_indexed.return_value = True
-    mock_local.episode_chunk_count.return_value = 1
-    mock_local.load_chunks.return_value = cached_chunks
+    mock_local.episode_is_indexed.side_effect = [True, False]
     mock_local.load_chunks_no_embeddings.return_value = [
-        {"text": "cached chunk", "source": "transcript"}
+        {"text": "cached chunk", "source": "polished"}  # different from auto-resolved
     ]
-
-    mock_store = MagicMock()
-    mock_store.episode_point_count.return_value = 0  # mismatch
     mock_embedder = MagicMock()
+    mock_embedder.encode_passages.return_value = np.zeros((1, 1024), dtype=np.float32)
 
     with (
+        patch("podcodex.cli.semantic_chunks", return_value=[{"text": "new"}]),
         patch("podcodex.cli.get_embedder", return_value=mock_embedder),
-        patch("podcodex.cli.QdrantStore", return_value=mock_store),
         patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
 
-    mock_embedder.encode_passages.assert_not_called()
-    mock_store.delete_episode_points.assert_called_once()
-    mock_store.upsert.assert_called_once()
+    mock_local.delete_episode.assert_called_once()
+    mock_embedder.encode_passages.assert_called_once()
 
 
 def test_cmd_vectorize_overwrite_deletes_local_episode(tmp_path):
@@ -359,7 +326,6 @@ def test_cmd_vectorize_overwrite_deletes_local_episode(tmp_path):
                 )
             ),
         ),
-        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
         patch("podcodex.cli.LocalStore", return_value=mock_local),
     ):
         cmd_vectorize(args)
@@ -846,8 +812,8 @@ def test_source_label_dotted_stem():
 # ──────────────────────────────────────────────
 
 
-def test_vectorize_episode_skips_qdrant_when_synced(tmp_path):
-    """When local count == qdrant count, skip upsert entirely."""
+def test_vectorize_episode_skips_when_locally_cached(tmp_path):
+    """When episode is already in LocalStore, skip embedding."""
     from podcodex.cli import vectorize_episode
 
     transcript = {
@@ -862,53 +828,46 @@ def test_vectorize_episode_skips_qdrant_when_synced(tmp_path):
         {"text": "b", "source": "transcript"},
     ]
 
-    mock_store = MagicMock()
-    mock_store.episode_point_count.return_value = 2  # matches local
-
-    _, n = vectorize_episode(
-        transcript, "S", "E1", "bge-m3", "semantic", mock_local, mock_store
-    )
+    _, n = vectorize_episode(transcript, "S", "E1", "bge-m3", "semantic", mock_local)
 
     assert n == 0
-    mock_store.upsert.assert_not_called()
 
 
-def test_vectorize_episode_resyncs_on_mismatch(tmp_path):
-    """When local count != qdrant count, delete stale and re-push."""
+def test_vectorize_episode_upgrades_on_source_change(tmp_path):
+    """When source changed, delete local and re-embed."""
     from podcodex.cli import vectorize_episode
 
     transcript = {
-        "meta": {"show": "S", "episode": "E1", "source": "transcript"},
+        "meta": {"show": "S", "episode": "E1", "source": "polished"},
         "segments": [{"start": 0.0, "end": 5.0, "speaker": "A", "text": "hello world"}],
     }
     mock_local = MagicMock()
-    mock_local.episode_is_indexed.return_value = True
-    mock_local.episode_chunk_count.return_value = 3
+    mock_local.episode_is_indexed.side_effect = [True, False]
     mock_local.load_chunks_no_embeddings.return_value = [
-        {"text": "a", "source": "transcript"},
-    ]
-    mock_local.load_chunks.return_value = [
-        {"text": "a", "embedding": np.zeros(8, dtype=np.float32)},
-        {"text": "b", "embedding": np.zeros(8, dtype=np.float32)},
-        {"text": "c", "embedding": np.zeros(8, dtype=np.float32)},
+        {"text": "a", "source": "transcript"},  # old source
     ]
 
-    mock_store = MagicMock()
-    mock_store.episode_point_count.return_value = 1  # mismatch
+    mock_embedder = MagicMock()
+    mock_embedder.encode_passages.return_value = np.zeros((1, 1024), dtype=np.float32)
 
-    _, n = vectorize_episode(
-        transcript, "S", "E1", "bge-m3", "semantic", mock_local, mock_store
-    )
+    with patch("podcodex.cli.get_embedder", return_value=mock_embedder):
+        _, n = vectorize_episode(
+            transcript,
+            "S",
+            "E1",
+            "bge-m3",
+            "semantic",
+            mock_local,
+            chunks=[{"text": "t"}],
+        )
 
-    assert n == 0
-    mock_store.delete_episode_points.assert_called_once_with(
-        "s__bge-m3__semantic", "E1"
-    )
-    mock_store.upsert.assert_called_once()
+    mock_local.delete_episode.assert_called_once()
+    mock_embedder.encode_passages.assert_called_once()
+    assert n == 1
 
 
 def test_vectorize_overwrite_always_deletes(tmp_path):
-    """--overwrite always deletes local + qdrant and re-embeds."""
+    """--overwrite deletes local episode and re-embeds."""
     from podcodex.cli import vectorize_episode
 
     transcript = {
@@ -925,7 +884,6 @@ def test_vectorize_overwrite_always_deletes(tmp_path):
     mock_local = MagicMock()
     mock_local.episode_is_indexed.return_value = True
 
-    mock_store = MagicMock()
     mock_embedder = MagicMock()
     mock_embedder.encode_passages.return_value = np.zeros((1, 1024), dtype=np.float32)
 
@@ -937,16 +895,12 @@ def test_vectorize_overwrite_always_deletes(tmp_path):
             "bge-m3",
             "semantic",
             mock_local,
-            mock_store,
             chunks=[{"text": "t"}],
             overwrite=True,
         )
 
     mock_local.delete_episode.assert_called_once()
-    mock_store.create_collection.assert_called_once_with(
-        "s__bge-m3__semantic", model="bge-m3", overwrite=True
-    )
-    mock_store.upsert.assert_called_once()
+    mock_local.save_chunks.assert_called_once()
 
 
 # ──────────────────────────────────────────────

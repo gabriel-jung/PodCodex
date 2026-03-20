@@ -156,7 +156,6 @@ def test_result_embed_description_has_text():
 def test_result_embed_fields():
     embed, _ = _result_embed(_CHUNK, rank=1, total=5, collection="col", label="α=0.50")
     fields = {f.name: f.value for f in embed.fields}
-    assert fields["Speaker"] == "Alice"
     assert "01:23" in fields["Timestamp"]
     assert "01:42" in fields["Timestamp"]
     assert "87%" in fields["Relevance"]

@@ -50,7 +50,13 @@ def render():
 
 def _render_index_section(audio_path: str, output_dir: str, show_name: str):
     """Render the episode indexing UI: source/model/chunker selection and index button."""
+    from podcodex.core import AudioPaths
+
     output_dir_path = Path(output_dir)
+    nodiar = st.session_state.get("skip_diarization", False)
+    _paths = AudioPaths.from_audio(
+        Path(audio_path), output_dir=output_dir, nodiar=nodiar
+    )
 
     col_source, col_lang = st.columns(2)
     with col_source:
@@ -134,7 +140,7 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
 
     # Check indexed status for each (model, chunker) combination
     episode_stem = output_dir_path.name
-    db_path = output_dir_path / "vectors.db"
+    db_path = _paths.vectors_db
     indexed: set[str] = set()
     pending: list[str] = []
     if show_input.strip() and model_keys and chunkings:
@@ -208,9 +214,11 @@ def _run_indexing(
     chunk_threshold: float,
     overwrite: bool,
 ):
-    """Run the vectorization pipeline for all (model, chunker) combinations."""
+    """Run the vectorization pipeline for all (model, chunker) combinations.
+
+    Writes to LocalStore (SQLite) only — use Sync to push to Qdrant later.
+    """
     from podcodex.cli import _resolve_source, vectorize_batch
-    from podcodex.rag.store import QdrantStore
 
     from podcodex.core import AudioPaths
 
@@ -238,9 +246,8 @@ def _run_indexing(
     transcript["meta"].setdefault("show", show)
     transcript["meta"].setdefault("episode", episode)
 
-    db_path = output_dir_path / "vectors.db"
+    db_path = _paths.vectors_db
     local = LocalStore(db_path=db_path)
-    store = QdrantStore()
 
     total = len(model_keys) * len(chunkings)
     progress = st.progress(0, text="Indexing…")
@@ -256,7 +263,6 @@ def _run_indexing(
             model_keys,
             chunkings,
             local,
-            store,
             chunk_size=chunk_size,
             threshold=chunk_threshold,
             overwrite=overwrite,
@@ -268,6 +274,8 @@ def _run_indexing(
         return
 
     progress.empty()
+    # Touch the .rag_indexed marker so the sidebar shows ⚡
+    (output_dir_path / ".rag_indexed").touch()
     st.session_state.indexed = True
     st.toast(f"Indexed {total} combination(s) ({n} chunks embedded).", icon="✅")
     st.rerun()

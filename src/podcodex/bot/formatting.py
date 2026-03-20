@@ -33,6 +33,17 @@ def speaker(chunk: dict) -> str:
     return chunk.get("speaker") or chunk.get("dominant_speaker") or "Unknown"
 
 
+def speaker_lines(chunk: dict) -> str:
+    """Format chunk text with per-turn speaker labels when available."""
+    turns: list[dict] = chunk.get("speakers") or []
+    if not turns:
+        return chunk.get("text", "")
+    return "\n".join(
+        f"**{t.get('speaker', 'Unknown')}** ({fmt_time(t.get('start', 0))}): {t.get('text', '')}"
+        for t in turns
+    )
+
+
 def score_bar(score: float, width: int = 8) -> str:
     filled = round(score * width)
     return "█" * filled + "░" * (width - filled)
@@ -54,6 +65,34 @@ def safe_truncate(text: str, max_chars: int = _MAX_CHARS) -> tuple[str, bool]:
 # ──────────────────────────────────────────────
 # Context formatting
 # ──────────────────────────────────────────────
+
+
+def _expand_turns(chunk: dict, bold: bool = False) -> list[str]:
+    """Expand a chunk into individual speaker turns.
+
+    If the chunk has a ``speakers`` list (semantic chunks), each turn is
+    rendered separately.  Otherwise fall back to a single line with the
+    chunk-level speaker.
+    """
+    turns: list[dict] = chunk.get("speakers") or []
+    if not turns:
+        spk = speaker(chunk)
+        ts = fmt_time(chunk.get("start", 0))
+        text = chunk.get("text", "")
+        if bold:
+            return [f"**▶ {spk}** · {ts}\n**{text}**"]
+        return [f"*{spk}* · {ts}\n{text}"]
+
+    lines: list[str] = []
+    for t in turns:
+        spk = t.get("speaker", "Unknown")
+        ts = fmt_time(t.get("start", 0))
+        text = t.get("text", "")
+        if bold:
+            lines.append(f"**▶ {spk}** · {ts}\n**{text}**")
+        else:
+            lines.append(f"*{spk}* · {ts}\n{text}")
+    return lines
 
 
 def format_context(
@@ -83,15 +122,12 @@ def format_context(
     lines = [header + f" · ±{n} turns\n"]
 
     for c in before:
-        lines.append(f"*{speaker(c)}* · {fmt_time(c.get('start', 0))}\n{c['text']}")
+        lines.extend(_expand_turns(c, bold=False))
 
-    lines.append(
-        f"**▶ {speaker(current)}** · {fmt_time(current.get('start', 0))}\n"
-        f"**{current['text']}**"
-    )
+    lines.extend(_expand_turns(current, bold=True))
 
     for c in after:
-        lines.append(f"*{speaker(c)}* · {fmt_time(c.get('start', 0))}\n{c['text']}")
+        lines.extend(_expand_turns(c, bold=False))
 
     content, truncated = safe_truncate("\n\n".join(lines))
     return content, has_more and not truncated

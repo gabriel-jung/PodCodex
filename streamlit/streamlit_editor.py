@@ -29,8 +29,8 @@ def render_segment_editor(
     is_saved: bool = False,
     export_fn=None,
     export_filename: str | None = None,
-    next_tab: str | None = None,
-    next_tab_label: str | None = None,
+    next_tab: str | list[str] | None = None,
+    next_tab_label: str | list[str] | None = None,
 ):
     """
     Render a paginated, filterable segment editor.
@@ -47,8 +47,8 @@ def render_segment_editor(
     show_flags         Enable hallucination-based flagging and the "Flagged only" filter.
     export_fn          Callable(list[dict]) -> str for the text export download button.
     export_filename    Filename for the download button (e.g. "episode.polished.txt").
-    next_tab           Session-state tab key to navigate to on "go to next" click.
-    next_tab_label     Label for the navigation button (e.g. "→ Go to Translate").
+    next_tab           Session-state tab key(s) to navigate to. String or list of strings.
+    next_tab_label     Label(s) for the navigation button(s). String or list of strings.
     """
     if audio_path is not None:
         audio_path = Path(audio_path)
@@ -102,7 +102,7 @@ def render_segment_editor(
         col_widths.append(2)
     if show_speaker_filter:
         col_widths.append(3)
-    col_widths += [1, 1, 1]
+    col_widths += [1, 1, 1, 1]
     bar = st.columns(col_widths)
     col_idx = 0
 
@@ -178,6 +178,20 @@ def render_segment_editor(
             key=f"{editor_key}_prev",
         ):
             st.session_state[page_key] = page - 1
+            st.rerun()
+    with bar[col_idx]:
+        col_idx += 1
+        page_options = list(range(n_pages))
+        go_page = st.selectbox(
+            "Page",
+            options=page_options,
+            index=page,
+            format_func=lambda p: f"{p + 1}/{n_pages}",
+            key=f"{editor_key}_go_page",
+            label_visibility="collapsed",
+        )
+        if go_page != page:
+            st.session_state[page_key] = go_page
             st.rerun()
     with bar[col_idx]:
         if st.button(
@@ -360,7 +374,16 @@ def render_segment_editor(
 
     # ── Bottom action bar ──
     st.divider()
-    col_save, col_export, col_nav = st.columns(3)
+    # Normalise next_tab/next_tab_label to lists
+    if isinstance(next_tab, str):
+        next_tab = [next_tab]
+        next_tab_label = [next_tab_label]
+    nav_items = (
+        list(zip(next_tab, next_tab_label)) if next_tab and next_tab_label else []
+    )
+    n_nav = len(nav_items)
+    bar_cols = [2, 2] + ([n_nav] if n_nav else [])
+    col_save, col_export, *nav_cols = st.columns(bar_cols)
 
     with col_save:
         if st.button(
@@ -421,13 +444,15 @@ def render_segment_editor(
                 key=f"{editor_key}_download",
             )
 
-    with col_nav:
-        if next_tab and next_tab_label:
-            if st.button(
-                next_tab_label, use_container_width=True, key=f"{editor_key}_nav"
-            ):
-                st.session_state.requested_tab = next_tab
-                st.rerun()
+    if nav_items:
+        nav_sub = nav_cols[0].columns(n_nav) if n_nav > 1 else nav_cols
+        for idx, (tab_key, tab_label) in enumerate(nav_items):
+            with nav_sub[idx]:
+                if st.button(
+                    tab_label, use_container_width=True, key=f"{editor_key}_nav_{idx}"
+                ):
+                    st.session_state.requested_tab = tab_key
+                    st.rerun()
 
 
 # ── Shared helpers ──

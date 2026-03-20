@@ -31,6 +31,19 @@ def collection_name(show: str, model: str, chunker: str = "semantic") -> str:
     return f"{_normalize_show(show)}__{model}__{chunker}"
 
 
+def qdrant_available(url: str | None = None, timeout: float = 2.0) -> bool:
+    """Return True if the Qdrant server is reachable."""
+    import urllib.request
+    import urllib.error
+
+    target = url or os.environ.get("QDRANT_URL", QdrantStore.DEFAULT_URL)
+    try:
+        urllib.request.urlopen(f"{target}/readyz", timeout=timeout)
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 def _episode_filter(episode: str):
     """Build a Qdrant Filter matching a single episode."""
     from qdrant_client.models import FieldCondition, Filter, MatchValue

@@ -146,7 +146,6 @@ def vectorize_episode(
     model_key: str,
     chunking: str,
     local: "LocalStore",
-    store: "QdrantStore",
     *,
     chunks: list[dict] | None = None,
     chunk_size: int = CHUNK_SIZE,
@@ -155,14 +154,15 @@ def vectorize_episode(
     device: str = "cpu",
 ) -> tuple[list[dict], int]:
     """
-    Vectorize a single (model, chunker) combination.
+    Vectorize a single (model, chunker) combination into LocalStore.
+
+    Qdrant is not touched — use ``podcodex sync`` to push later.
 
     Args:
         transcript : parsed transcript dict (with meta.show / meta.episode set)
         show, episode : identifiers
         model_key, chunking : which model and chunker to use
         local : LocalStore instance (SQLite)
-        store : QdrantStore instance (Qdrant)
         chunks : pre-computed chunks for this chunking strategy (avoids re-chunking)
         chunk_size, threshold : semantic chunking params
         overwrite : delete and recreate if already indexed
@@ -178,7 +178,7 @@ def vectorize_episode(
     dim = MODELS[model_key].dim
     local.ensure_collection(col, show=show, model=model_key, chunker=chunking, dim=dim)
 
-    # ── Cached in LocalStore → check Qdrant sync state ──
+    # ── Already in LocalStore? ──
     if local.episode_is_indexed(col, episode) and not overwrite:
         # Stale source detection: auto-upgrade if a better source is now available
         new_source = transcript.get("meta", {}).get("source", "")
@@ -191,29 +191,11 @@ def vectorize_episode(
                 f"{stored_source} → {new_source} ({col})"
             )
             local.delete_episode(col, episode)
-            store.create_collection(col, model=model_key, overwrite=False)
-            store.delete_episode_points(col, episode)
             # Fall through to re-chunk + re-embed below
         else:
             local_count = local.episode_chunk_count(col, episode)
-            store.create_collection(col, model=model_key, overwrite=False)
-            qdrant_count = store.episode_point_count(col, episode)
-
-            if local_count == qdrant_count:
-                logger.info(f"[SKIP] '{episode}' synced ({col}, {local_count} chunks)")
-                return chunks or stored, 0
-
-            # Mismatch — delete stale points and re-push
-            logger.info(
-                f"[RESYNC] '{episode}' count mismatch ({col}): "
-                f"local={local_count}, qdrant={qdrant_count}"
-            )
-            store.delete_episode_points(col, episode)
-            cached = local.load_chunks(col, episode)
-            payload = [{k: v for k, v in c.items() if k != "embedding"} for c in cached]
-            embeddings = np.stack([c["embedding"] for c in cached])
-            store.upsert(col, payload, embeddings)
-            return chunks or payload, 0
+            logger.info(f"[SKIP] '{episode}' cached ({col}, {local_count} chunks)")
+            return chunks or stored, 0
 
     if overwrite and local.episode_is_indexed(col, episode):
         local.delete_episode(col, episode)
@@ -224,14 +206,10 @@ def vectorize_episode(
     if not chunks:
         raise ValueError(f"No chunks produced for strategy '{chunking}'")
 
-    # ── Embed ──
+    # ── Embed & save to LocalStore ──
     embedder = get_embedder(model_key, device=device)
     embeddings = embedder.encode_passages(chunks)
     local.save_chunks(col, episode, chunks, embeddings)
-
-    # ── Push to Qdrant ──
-    store.create_collection(col, model=model_key, overwrite=overwrite)
-    store.upsert(col, chunks, embeddings)
 
     logger.success(f"Vectorized {len(chunks)} chunks into '{col}'")
     return chunks, len(chunks)
@@ -244,7 +222,6 @@ def vectorize_batch(
     model_keys: list[str],
     chunkings: list[str],
     local: "LocalStore",
-    store: "QdrantStore",
     *,
     chunk_size: int = CHUNK_SIZE,
     threshold: float = CHUNK_THRESHOLD,
@@ -253,9 +230,10 @@ def vectorize_batch(
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> int:
     """
-    Vectorize all (model, chunker) combinations for an episode.
+    Vectorize all (model, chunker) combinations into LocalStore.
 
     Chunks once per strategy, then embeds with each model.
+    Qdrant is not touched — use ``podcodex sync`` to push later.
 
     Args:
         on_progress : callback(step, total, label) for UI progress updates.
@@ -283,7 +261,6 @@ def vectorize_batch(
                     model_key,
                     chunking,
                     local,
-                    store,
                     chunks=chunks_for_strategy,
                     chunk_size=chunk_size,
                     threshold=threshold,
@@ -326,10 +303,9 @@ def cmd_vectorize(args: argparse.Namespace) -> None:
 
     logger.info(f"Vectorizing '{episode}' for show '{show}' with model '{args.model}'")
 
-    db_path = transcript_path.parent / "vectors.db"
+    # Show-level DB: episode dir is transcript_path.parent, show dir is one up
+    db_path = transcript_path.parent.parent / "vectors.db"
     local = LocalStore(db_path=db_path)
-    qdrant_url = getattr(args, "qdrant_url", None)
-    store = QdrantStore(url=qdrant_url)
 
     try:
         chunks, n = vectorize_episode(
@@ -339,7 +315,6 @@ def cmd_vectorize(args: argparse.Namespace) -> None:
             args.model,
             args.chunking,
             local,
-            store,
             chunk_size=args.chunk_size,
             threshold=args.threshold,
             overwrite=args.overwrite,

@@ -42,9 +42,13 @@ def _run_polish_button(
                 polish_mod.save_polished_raw(
                     audio_path, result, output_dir=output_dir, nodiar=_nd
                 )
-                st.session_state.polished = polish_mod.load_polished(
-                    audio_path, output_dir=output_dir, nodiar=_nd
-                )
+                # Load the new raw into the editor cache so it shows
+                # the fresh run, not the old validated version.
+                p_key = f"editor_polished_{audio_path}"
+                st.session_state[p_key] = result
+                st.session_state[f"polish_{audio_path}_source"] = "raw"
+                st.session_state.polished = result
+                st.session_state.pop(f"polish_{audio_path}_dirty", None)
                 st.success(f"Done — {len(result)} segments processed.")
                 st.rerun()
             except Exception as e:
@@ -128,9 +132,11 @@ def render():
                         polish_mod.save_polished_raw(
                             audio_path, data, output_dir=output_dir, nodiar=nodiar
                         )
-                        st.session_state.polished = polish_mod.load_polished(
-                            audio_path, output_dir=output_dir, nodiar=nodiar
-                        )
+                        p_key = f"editor_polished_{audio_path}"
+                        st.session_state[p_key] = data
+                        st.session_state[f"polish_{audio_path}_source"] = "raw"
+                        st.session_state.polished = data
+                        st.session_state.pop(f"polish_{audio_path}_dirty", None)
                         st.success(f"Imported — {len(data)} segments.")
                         st.rerun()
                 except Exception as e:
@@ -183,6 +189,8 @@ def render():
     with st.container(border=True):
         already_done = paths.has_polished()
         btn_disabled = already_done and not force
+        if already_done and not force:
+            st.info("Polished file already exists. Check **Force** to redo it.")
 
         if mode == "api":
             st.markdown("### 🌐 Step 2 — API Polish")
@@ -259,131 +267,149 @@ def render():
                 value=15,
                 step=5,
                 key="polish_batch_minutes",
+                disabled=btn_disabled,
             )
 
-            batches = polish_mod.build_manual_prompts_batched(
-                transcript,
-                batch_minutes=batch_minutes,
-                context=context,
-                source_lang=source_lang,
-            )
-            n_batches = len(batches)
-
-            if "polish_batch_idx" not in st.session_state:
-                st.session_state.polish_batch_idx = 0
-            if "polish_batch_results" not in st.session_state:
-                st.session_state.polish_batch_results = {}
-
-            if st.session_state.get("polish_n_batches") != n_batches:
-                st.session_state.polish_batch_idx = 0
-                st.session_state.polish_batch_results = {}
-                st.session_state.polish_n_batches = n_batches
-
-            idx = st.session_state.polish_batch_idx
-            done_batches = len(st.session_state.polish_batch_results)
-
-            cols_prog = st.columns(n_batches)
-            for b, col in enumerate(cols_prog):
-                batch_segs, _ = batches[b]
-                dur = sum(s.get("end", 0) - s.get("start", 0) for s in batch_segs)
-                dur_label = fmt_time(dur)
-                with col:
-                    if b in st.session_state.polish_batch_results:
-                        st.markdown(f"✅ **{b + 1}**")
-                    elif b == idx:
-                        st.markdown(f"▶ **{b + 1}**")
-                    else:
-                        st.markdown(f"⬜ {b + 1}")
-                    st.caption(dur_label)
-
-            st.divider()
-            batch_segs, prompt = batches[idx]
-            batch_dur = sum(s.get("end", 0) - s.get("start", 0) for s in batch_segs)
-            st.markdown(
-                f"**Batch {idx + 1} / {n_batches}** — "
-                f"{len(batch_segs)} segments · "
-                f"{fmt_time(batch_dur)} of audio"
-            )
-            st.text_area(
-                "Prompt to copy",
-                value=prompt,
-                height=280,
-                label_visibility="collapsed",
-            )
-
-            st.markdown("**Paste the JSON result:**")
-            pasted = st.text_area(
-                "JSON result",
-                value="",
-                height=180,
-                key=f"polish_paste_{idx}",
-                placeholder='[{"index": 0, "text": "corrected text..."}, ...]',
-                label_visibility="collapsed",
-            )
-
-            col_prev, col_validate, col_next = st.columns([1, 3, 1])
-            with col_prev:
-                if st.button("← Prev", disabled=idx == 0, use_container_width=True):
-                    st.session_state.polish_batch_idx -= 1
-                    st.rerun()
-            with col_validate:
-                batch_done = idx in st.session_state.polish_batch_results
-                if st.button(
-                    "✅ Validated" if batch_done else "✅ Validate batch",
-                    use_container_width=True,
-                    type="secondary" if batch_done else "primary",
-                    disabled=not pasted.strip(),
-                ):
-                    try:
-                        data = json.loads(pasted)
-                        validated = polish_mod.polish_segments(
-                            data, mode="manual", original_segments=batch_segs
-                        )
-                        st.session_state.polish_batch_results[idx] = validated
-                        st.success(
-                            f"Batch {idx + 1} validated — {len(validated)} segments."
-                        )
-                        if idx < n_batches - 1:
-                            st.session_state.polish_batch_idx += 1
-                        st.rerun()
-                    except json.JSONDecodeError as e:
-                        st.error(f"Invalid JSON: {e}")
-                    except ValueError as e:
-                        st.error(str(e))
-            with col_next:
-                if st.button(
-                    "Next →", disabled=idx == n_batches - 1, use_container_width=True
-                ):
-                    st.session_state.polish_batch_idx += 1
-                    st.rerun()
-
-            if done_batches == n_batches:
-                st.divider()
-                st.success(
-                    f"All {n_batches} batches validated ({len(transcript)} segments total)."
+            if not btn_disabled:
+                batches = polish_mod.build_manual_prompts_batched(
+                    transcript,
+                    batch_minutes=batch_minutes,
+                    context=context,
+                    source_lang=source_lang,
                 )
-                if st.button("💾 Save", use_container_width=True, type="primary"):
-                    all_results = []
-                    for b in range(n_batches):
-                        all_results.extend(st.session_state.polish_batch_results[b])
-                    polish_mod.save_polished_raw(
-                        audio_path, all_results, output_dir=output_dir, nodiar=nodiar
-                    )
-                    st.session_state.polished = polish_mod.load_polished(
-                        audio_path, output_dir=output_dir, nodiar=nodiar
-                    )
+                n_batches = len(batches)
+
+                if "polish_batch_idx" not in st.session_state:
+                    st.session_state.polish_batch_idx = 0
+                if "polish_batch_results" not in st.session_state:
+                    st.session_state.polish_batch_results = {}
+
+                if st.session_state.get("polish_n_batches") != n_batches:
                     st.session_state.polish_batch_idx = 0
                     st.session_state.polish_batch_results = {}
-                    st.success(f"Saved — {len(all_results)} segments.")
-                    st.rerun()
+                    st.session_state.polish_n_batches = n_batches
+
+                idx = st.session_state.polish_batch_idx
+                done_batches = len(st.session_state.polish_batch_results)
+
+                cols_prog = st.columns(n_batches)
+                for b, col in enumerate(cols_prog):
+                    batch_segs, _ = batches[b]
+                    dur = sum(s.get("end", 0) - s.get("start", 0) for s in batch_segs)
+                    dur_label = fmt_time(dur)
+                    with col:
+                        if b in st.session_state.polish_batch_results:
+                            st.markdown(f"✅ **{b + 1}**")
+                        elif b == idx:
+                            st.markdown(f"▶ **{b + 1}**")
+                        else:
+                            st.markdown(f"⬜ {b + 1}")
+                        st.caption(dur_label)
+
+                st.divider()
+                batch_segs, prompt = batches[idx]
+                batch_dur = sum(s.get("end", 0) - s.get("start", 0) for s in batch_segs)
+                st.markdown(
+                    f"**Batch {idx + 1} / {n_batches}** — "
+                    f"{len(batch_segs)} segments · "
+                    f"{fmt_time(batch_dur)} of audio"
+                )
+                st.text_area(
+                    "Prompt to copy",
+                    value=prompt,
+                    height=280,
+                    label_visibility="collapsed",
+                )
+
+                st.markdown("**Paste the JSON result:**")
+                pasted = st.text_area(
+                    "JSON result",
+                    value="",
+                    height=180,
+                    key=f"polish_paste_{idx}",
+                    placeholder='[{"index": 0, "text": "corrected text..."}, ...]',
+                    label_visibility="collapsed",
+                )
+
+                col_prev, col_validate, col_next = st.columns([1, 3, 1])
+                with col_prev:
+                    if st.button("← Prev", disabled=idx == 0, use_container_width=True):
+                        st.session_state.polish_batch_idx -= 1
+                        st.rerun()
+                with col_validate:
+                    batch_done = idx in st.session_state.polish_batch_results
+                    if st.button(
+                        "✅ Validated" if batch_done else "✅ Validate batch",
+                        use_container_width=True,
+                        type="secondary" if batch_done else "primary",
+                        disabled=not pasted.strip(),
+                    ):
+                        try:
+                            data = json.loads(pasted)
+                            validated = polish_mod.polish_segments(
+                                data, mode="manual", original_segments=batch_segs
+                            )
+                            st.session_state.polish_batch_results[idx] = validated
+                            st.success(
+                                f"Batch {idx + 1} validated — {len(validated)} segments."
+                            )
+                            if idx < n_batches - 1:
+                                st.session_state.polish_batch_idx += 1
+                            st.rerun()
+                        except json.JSONDecodeError as e:
+                            st.error(f"Invalid JSON: {e}")
+                        except ValueError as e:
+                            st.error(str(e))
+                with col_next:
+                    if st.button(
+                        "Next →",
+                        disabled=idx == n_batches - 1,
+                        use_container_width=True,
+                    ):
+                        st.session_state.polish_batch_idx += 1
+                        st.rerun()
+
+                if done_batches == n_batches:
+                    st.divider()
+                    st.success(
+                        f"All {n_batches} batches validated ({len(transcript)} segments total)."
+                    )
+                    if st.button("💾 Save", use_container_width=True, type="primary"):
+                        all_results = []
+                        for b in range(n_batches):
+                            all_results.extend(st.session_state.polish_batch_results[b])
+                        polish_mod.save_polished_raw(
+                            audio_path,
+                            all_results,
+                            output_dir=output_dir,
+                            nodiar=nodiar,
+                        )
+                        p_key = f"editor_polished_{audio_path}"
+                        st.session_state[p_key] = all_results
+                        st.session_state[f"polish_{audio_path}_source"] = "raw"
+                        st.session_state.polished = all_results
+                        st.session_state.pop(f"polish_{audio_path}_dirty", None)
+                        st.session_state.polish_batch_idx = 0
+                        st.session_state.polish_batch_results = {}
+                        st.success(f"Saved — {len(all_results)} segments.")
+                        st.rerun()
 
     # ── Section 3: Editor ──
     if paths.has_polished():
         p_key = f"editor_polished_{audio_path}"
+        source_key = f"polish_{audio_path}_source"
         if p_key not in st.session_state:
-            st.session_state[p_key] = polish_mod.load_polished(
-                audio_path, output_dir=output_dir, nodiar=nodiar
-            )
+            # First load: pick the best available version and track which one.
+            if paths.has_validated_polished():
+                st.session_state[p_key] = load_polished_validated(
+                    audio_path, output_dir=output_dir, nodiar=nodiar
+                )
+                st.session_state[source_key] = "edited"
+            else:
+                st.session_state[p_key] = load_polished_raw(
+                    audio_path, output_dir=output_dir, nodiar=nodiar
+                )
+                st.session_state[source_key] = "raw"
         polished = st.session_state[p_key]
         st.session_state.polished = polished
         with st.container(border=True):
@@ -392,10 +418,32 @@ def render():
                 st.markdown("### ✏️ Step 3 — Review & Edit")
             with col_badge:
                 _dirty = st.session_state.get(f"polish_{audio_path}_dirty", False)
-                if paths.has_validated_polished() and not _dirty:
+                _src = st.session_state.get(source_key, "")
+                _viewing_raw = _src == "raw"
+                if paths.has_validated_polished() and not _dirty and not _viewing_raw:
                     st.success("✅ Saved")
-                elif paths.has_raw_polished() or _dirty:
+                elif _dirty or _viewing_raw or paths.has_raw_polished():
                     st.warning("⚠️ Unsaved")
+
+            # Show which version is currently loaded
+            if _viewing_raw:
+                if paths.has_validated_polished():
+                    st.caption("Viewing: **original** (you have saved edits)")
+                else:
+                    st.caption("Viewing: **original** (not yet reviewed)")
+            elif _src == "edited":
+                st.caption("Viewing: **saved edits**")
+
+            # Warn if raw file is newer than validated (e.g. forced re-run)
+            if (
+                paths.polished_raw_exists()
+                and paths.has_validated_polished()
+                and paths.polished_raw.stat().st_mtime > paths.polished.stat().st_mtime
+            ):
+                st.warning(
+                    "The previous step was re-run after your last edits. "
+                    "Click **↩ Load original** to see the new version, or keep your current edits."
+                )
 
             has_raw = paths.polished_raw_exists()
             has_validated = paths.has_validated_polished()
@@ -410,6 +458,7 @@ def render():
                     st.session_state[p_key] = load_polished_raw(
                         audio_path, output_dir=output_dir, nodiar=nodiar
                     )
+                    st.session_state[source_key] = "raw"
                     st.session_state[f"polish_{audio_path}_dirty"] = False
                     st.rerun()
             with cols[1]:
@@ -422,6 +471,7 @@ def render():
                     st.session_state[p_key] = load_polished_validated(
                         audio_path, output_dir=output_dir, nodiar=nodiar
                     )
+                    st.session_state[source_key] = "edited"
                     st.session_state[f"polish_{audio_path}_dirty"] = False
                     st.rerun()
 
@@ -430,6 +480,7 @@ def render():
                     audio_path, merged, output_dir=output_dir, nodiar=nodiar
                 )
                 st.session_state[p_key] = merged
+                st.session_state[source_key] = "edited"
                 st.session_state.polished = merged
                 st.toast("Polished transcript saved!")
 
@@ -439,9 +490,9 @@ def render():
                 on_save=_on_save,
                 audio_path=audio_path,
                 reference_segments=transcript,
-                is_saved=paths.has_validated_polished(),
+                is_saved=paths.has_validated_polished() and not _viewing_raw,
                 export_fn=segments_to_text,
                 export_filename=f"{Path(audio_path).stem}.polished.txt",
-                next_tab="translate",
-                next_tab_label="→ Go to Translate",
+                next_tab=["translate", "index"],
+                next_tab_label=["→ Translate", "→ Index"],
             )

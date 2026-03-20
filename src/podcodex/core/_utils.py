@@ -81,6 +81,18 @@ class AudioPaths:
         base.parent.mkdir(parents=True, exist_ok=True)
         return cls(audio_path=audio_path, base=base, nodiar=nodiar)
 
+    # — RAG —
+
+    @property
+    def show_dir(self) -> Path:
+        """Show-level directory (parent of the episode output dir)."""
+        return self.base.parent.parent
+
+    @property
+    def vectors_db(self) -> Path:
+        """Show-level SQLite vector store."""
+        return self.show_dir / "vectors.db"
+
     # — Transcription —
 
     @property

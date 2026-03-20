@@ -179,6 +179,10 @@ def render():
                             ),
                             encoding="utf-8",
                         )
+                        t_key = f"editor_transcript_{audio_path}"
+                        st.session_state[t_key] = data
+                        st.session_state[f"transcript_{audio_path}_source"] = "raw"
+                        st.session_state.pop(f"transcript_{audio_path}_dirty", None)
                         st.session_state.transcript = data
                         st.success(f"Imported — {len(data)} segments.")
                         st.rerun()
@@ -396,6 +400,11 @@ def render():
                 transcript = transcribe.export_transcript(
                     audio_path, output_dir=output_dir, diarized=not nodiar
                 )
+                # Load the new export into the editor cache
+                t_key = f"editor_transcript_{audio_path}"
+                st.session_state[t_key] = transcript
+                st.session_state[f"transcript_{audio_path}_source"] = "raw"
+                st.session_state.pop(f"transcript_{audio_path}_dirty", None)
                 st.session_state.transcript = transcript
             st.session_state.requested_tab = "transcribe"
             st.rerun()
@@ -421,14 +430,19 @@ def render():
                 )
             with col_badge:
                 _dirty = st.session_state.get(f"transcript_{audio_path}_dirty", False)
+                _viewing_raw = (
+                    st.session_state.get(f"transcript_{audio_path}_source", "") == "raw"
+                )
                 paths = AudioPaths.from_audio(
                     audio_path, output_dir=output_dir, nodiar=nodiar
                 )
-                if paths.transcript.exists() and not _dirty:
+                if paths.transcript.exists() and not _dirty and not _viewing_raw:
                     st.success("✅ Saved")
                 elif (
-                    paths.transcript_raw.exists() and not paths.transcript.exists()
-                ) or _dirty:
+                    _dirty
+                    or _viewing_raw
+                    or (paths.transcript_raw.exists() and not paths.transcript.exists())
+                ):
                     st.warning("⚠️ Unsaved")
             _render_transcript_editor(audio_path, output_dir, nodiar=nodiar)
 
@@ -765,13 +779,46 @@ def _render_transcript_editor(audio_path, output_dir: str, nodiar: bool = False)
     """Render the transcript editor with load original/edits buttons and segment editor."""
     audio_path = Path(audio_path)
     t_key = f"editor_transcript_{audio_path}"
+    source_key = f"transcript_{audio_path}_source"
     if t_key not in st.session_state:
-        st.session_state[t_key] = transcribe.load_transcript(
+        paths_init = AudioPaths.from_audio(
             audio_path, output_dir=output_dir, nodiar=nodiar
         )
+        if paths_init.transcript.exists():
+            st.session_state[t_key] = load_transcript_validated(
+                audio_path, output_dir=output_dir, nodiar=nodiar
+            )
+            st.session_state[source_key] = "edited"
+        else:
+            st.session_state[t_key] = load_transcript_raw(
+                audio_path, output_dir=output_dir, nodiar=nodiar
+            )
+            st.session_state[source_key] = "raw"
     transcript = st.session_state[t_key]
 
     paths = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
+
+    # Show which version is currently loaded
+    _src = st.session_state.get(source_key, "")
+    if _src == "raw":
+        if paths.transcript.exists():
+            st.caption("Viewing: **original** (you have saved edits)")
+        else:
+            st.caption("Viewing: **original** (not yet reviewed)")
+    elif _src == "edited":
+        st.caption("Viewing: **saved edits**")
+
+    # Warn if raw file is newer than validated (e.g. forced re-export)
+    if (
+        paths.transcript_raw.exists()
+        and paths.transcript.exists()
+        and paths.transcript_raw.stat().st_mtime > paths.transcript.stat().st_mtime
+    ):
+        st.warning(
+            "The previous step was re-run after your last edits. "
+            "Click **↩ Load original** to see the new version, or keep your current edits."
+        )
+
     has_raw = paths.transcript_raw.exists()
     has_validated = paths.transcript.exists()
     if has_raw or has_validated:
@@ -783,6 +830,7 @@ def _render_transcript_editor(audio_path, output_dir: str, nodiar: bool = False)
                 st.session_state[t_key] = load_transcript_raw(
                     audio_path, output_dir=output_dir, nodiar=nodiar
                 )
+                st.session_state[source_key] = "raw"
                 st.session_state[f"transcript_{audio_path}_dirty"] = False
                 st.rerun()
         with cols[1]:
@@ -792,6 +840,7 @@ def _render_transcript_editor(audio_path, output_dir: str, nodiar: bool = False)
                 st.session_state[t_key] = load_transcript_validated(
                     audio_path, output_dir=output_dir, nodiar=nodiar
                 )
+                st.session_state[source_key] = "edited"
                 st.session_state[f"transcript_{audio_path}_dirty"] = False
                 st.rerun()
 
@@ -805,6 +854,7 @@ def _render_transcript_editor(audio_path, output_dir: str, nodiar: bool = False)
     def _on_save(merged):
         save_transcript(audio_path, merged, output_dir=output_dir, nodiar=nodiar)
         st.session_state[t_key] = merged
+        st.session_state[source_key] = "edited"
         st.session_state.transcript = merged
         st.toast("Transcript saved!")
 
@@ -818,7 +868,8 @@ def _render_transcript_editor(audio_path, output_dir: str, nodiar: bool = False)
         show_flags=True,
         show_speaker=not nodiar,
         diarized=not nodiar,
-        is_saved=paths.transcript.exists(),
+        is_saved=paths.transcript.exists()
+        and st.session_state.get(source_key, "") != "raw",
         export_fn=segments_to_text,
         export_filename=f"{audio_path.stem}_transcript.txt",
         next_tab="polish",
