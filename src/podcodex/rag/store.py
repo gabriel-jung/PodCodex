@@ -338,7 +338,7 @@ class QdrantStore:
     def get_episode_stats(self, collection: str) -> list[dict]:
         """
         Aggregate per-episode stats by scrolling all points in a collection.
-        Returns list of {episode, chunk_count, duration} sorted by episode.
+        Returns list of {episode, chunk_count, duration, speakers} sorted by episode.
         Uses paginated scroll to handle arbitrarily large collections.
         """
         stats: dict[str, dict] = {}
@@ -357,13 +357,30 @@ class QdrantStore:
                 ep = p.get("episode", "(unknown)")
                 end = float(p.get("end", 0.0))
                 if ep not in stats:
-                    stats[ep] = {"episode": ep, "chunk_count": 0, "duration": 0.0}
+                    stats[ep] = {
+                        "episode": ep,
+                        "chunk_count": 0,
+                        "duration": 0.0,
+                        "speakers": set(),
+                    }
                 stats[ep]["chunk_count"] += 1
                 stats[ep]["duration"] = max(stats[ep]["duration"], end)
+                # Collect speakers from chunk-level or turn-level data
+                spk = p.get("speaker") or p.get("dominant_speaker")
+                if spk:
+                    stats[ep]["speakers"].add(spk)
+                for turn in p.get("speakers") or []:
+                    s = turn.get("speaker")
+                    if s:
+                        stats[ep]["speakers"].add(s)
 
             if next_offset is None:
                 break
             offset = next_offset
+
+        # Convert sets to sorted lists for JSON safety
+        for ep_stats in stats.values():
+            ep_stats["speakers"] = sorted(ep_stats["speakers"])
 
         return sorted(stats.values(), key=lambda x: x["episode"])
 

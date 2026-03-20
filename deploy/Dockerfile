@@ -17,6 +17,7 @@ COPY src/ src/
 # Install core + bot deps (CPU-only torch)
 RUN uv pip install --system --no-cache \
     --extra-index-url https://download.pytorch.org/whl/cpu \
+    --index-strategy unsafe-best-match \
     ".[bot]"
 
 # Pre-download BGE-M3 so cold starts are instant

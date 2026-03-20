@@ -33,13 +33,25 @@ def speaker(chunk: dict) -> str:
     return chunk.get("speaker") or chunk.get("dominant_speaker") or "Unknown"
 
 
-def speaker_lines(chunk: dict) -> str:
+def highlight(text: str, query: str) -> str:
+    """Case-insensitive highlight: wrap all occurrences of *query* in bold."""
+    import re
+
+    if not query:
+        return text
+    escaped = re.escape(query)
+    return re.sub(f"({escaped})", r"**\1**", text, flags=re.IGNORECASE)
+
+
+def speaker_lines(chunk: dict, query: str = "") -> str:
     """Format chunk text with per-turn speaker labels when available."""
     turns: list[dict] = chunk.get("speakers") or []
     if not turns:
-        return chunk.get("text", "")
+        text = chunk.get("text", "")
+        return highlight(text, query) if query else text
     return "\n".join(
-        f"**{t.get('speaker', 'Unknown')}** ({fmt_time(t.get('start', 0))}): {t.get('text', '')}"
+        f"**{t.get('speaker', 'Unknown')}** ({fmt_time(t.get('start', 0))}): "
+        f"{highlight(t.get('text', ''), query) if query else t.get('text', '')}"
         for t in turns
     )
 
@@ -223,6 +235,7 @@ _COMPACT_TEXT_MAX = 200
 def build_compact_embed(
     results: list[tuple[dict, str]],
     label: str,
+    query: str = "",
 ) -> "discord.Embed":
     """Build a single embed with one field per result (max 25)."""
     import discord
@@ -240,6 +253,8 @@ def build_compact_embed(
         if len(text) > _COMPACT_TEXT_MAX:
             cut = text.rfind(" ", 0, _COMPACT_TEXT_MAX)
             text = text[: cut if cut != -1 else _COMPACT_TEXT_MAX] + "…"
+        if query:
+            text = highlight(text, query)
 
         name = f"#{i} {episode}"
         if show:

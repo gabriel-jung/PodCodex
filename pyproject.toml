@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     "bm25s>=0.2.0",
     "flagembedding>=1.3.5",
+    "transformers>=4.40,<5",
     "loguru>=0.7.3",
     "numpy>=1.26",
     "python-dotenv>=1.2.1",

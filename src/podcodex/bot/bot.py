@@ -130,6 +130,7 @@ def _result_embed(
     total: int,
     collection: str,
     label: str,
+    query: str = "",
 ) -> tuple[discord.Embed, ExpandView]:
     """Build a Discord embed + context-expand view for a single search result."""
     show = chunk.get("show", "")
@@ -138,7 +139,7 @@ def _result_embed(
     end = chunk.get("end", 0.0)
     score = chunk.get("score", 0.0)
 
-    description = speaker_lines(chunk)
+    description = speaker_lines(chunk, query=query)
     embed = discord.Embed(description=description, color=discord.Color.blurple())
     if show:
         embed.set_author(name=f"🎙 {show}")
@@ -877,11 +878,11 @@ class PodCodexBot(discord.Client):
 
         label = "exact match 🔍"
         if compact:
-            embed = build_compact_embed(all_results, label)
+            embed = build_compact_embed(all_results, label, query=query)
             await interaction.followup.send(embed=embed)
         else:
             pages = [
-                _result_embed(chunk, rank, len(all_results), col, label)
+                _result_embed(chunk, rank, len(all_results), col, label, query=query)
                 for rank, (chunk, col) in enumerate(all_results, 1)
             ]
             view = PaginatedResultView(pages)
@@ -1065,18 +1066,16 @@ class PodCodexBot(discord.Client):
 
         # Paginate: 10 episodes per embed
         pages_data = [ep_stats[i : i + 10] for i in range(0, len(ep_stats), 10)]
-        footer = (
-            f"{len(ep_stats)} episodes · "
-            f"{sum(e['chunk_count'] for e in ep_stats)} total segments"
-        )
+        footer = f"{len(ep_stats)} episodes"
 
         embeds: list[discord.Embed] = []
         for page in pages_data:
             embed = discord.Embed(title=f"🎙 {show}", color=discord.Color.blurple())
             for ep in page:
+                speakers = ", ".join(ep.get("speakers", [])) or "—"
                 embed.add_field(
                     name=ep["episode"],
-                    value=f"`{ep['chunk_count']}` segments · `{fmt_time(ep['duration'])}`",
+                    value=f"{speakers} · `{fmt_time(ep['duration'])}`",
                     inline=False,
                 )
             embed.set_footer(text=footer)

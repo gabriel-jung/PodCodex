@@ -32,8 +32,8 @@ brew install ffmpeg sox
 # Ubuntu/Debian
 sudo apt install ffmpeg sox
 
-# Qdrant (required for RAG / search)
-docker run -p 6333:6333 qdrant/qdrant
+# Qdrant (required for search — not needed for indexing)
+docker compose up -d
 ```
 
 ## Installation
@@ -41,11 +41,12 @@ docker run -p 6333:6333 qdrant/qdrant
 ```bash
 git clone https://github.com/gabriel-jung/podcodex
 cd podcodex
-uv sync
 
-# Optional extras
-uv sync --extra bot   # Discord bot (discord.py)
-uv sync --extra app   # Streamlit UI
+# Full install (pipeline + bot + app)
+uv pip install -e ".[bot,pipeline,app]"
+
+# Minimal install (just RAG search + bot)
+uv pip install -e ".[bot]"
 ```
 
 ## Environment Variables
@@ -170,7 +171,7 @@ episode_path = synthesize.assemble_episode(
 
 ### RAG — vectorize & query
 
-Requires Qdrant running locally (`docker run -p 6333:6333 qdrant/qdrant`) or set `QDRANT_URL`.
+Indexing writes to SQLite only. Qdrant is needed for search — start it with `docker compose up -d` or set `QDRANT_URL`.
 
 ```bash
 # Embed and store a transcript
@@ -250,6 +251,80 @@ podcodex-bot --dev-guild 123456789  # instant command sync for development
 - `/sync` — manually sync the command tree
 
 All search commands support optional `show`, `episode`, `speaker`, `source`, and `compact` filters.
+
+### Deploying the bot
+
+The `deploy/` directory contains everything needed to run the bot + Qdrant on a VPS (tested on Ubuntu 4GB RAM).
+
+#### 1. Clone and configure
+
+```bash
+ssh user@vps
+git clone https://github.com/gabriel-jung/podcodex ~/podcodex
+cd ~/podcodex
+cp deploy/.env.example deploy/.env.production
+# Edit deploy/.env.production and set DISCORD_TOKEN
+```
+
+#### 2. Copy your vectors database
+
+```bash
+# From your local machine
+scp /path/to/vectors.db user@vps:~/podcodex/deploy/data/
+```
+
+#### 3. Build and seed
+
+```bash
+cd ~/podcodex
+
+# Build the bot image (includes BGE-M3 model download — takes a few minutes)
+docker compose -f deploy/docker-compose.yml build
+
+# Start Qdrant first
+docker compose -f deploy/docker-compose.yml up -d qdrant
+
+# Seed Qdrant from your local SQLite database
+docker compose -f deploy/docker-compose.yml run --rm --entrypoint podcodex bot \
+    sync --db /app/data/vectors.db --show "My Podcast"
+```
+
+#### 4. Start the bot
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+The bot image installs only core + bot dependencies (no pipeline), keeping it under 3GB. Qdrant is limited to 512MB. Logs rotate automatically (50MB × 3 files). The bot auto-restarts on crash or reboot.
+
+#### Updating
+
+**New code:**
+```bash
+cd ~/podcodex
+git pull
+docker compose -f deploy/docker-compose.yml build bot
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+**New episodes indexed locally:**
+```bash
+# From your local machine
+scp /path/to/vectors.db user@vps:~/podcodex/deploy/data/
+
+# On the VPS
+docker compose -f deploy/docker-compose.yml run --rm --entrypoint podcodex bot \
+    sync --db /app/data/vectors.db --show "My Podcast"
+```
+
+No manual stop needed — `up -d` replaces the running container automatically.
+
+**Checking logs:**
+```bash
+docker compose -f deploy/docker-compose.yml logs bot --tail 50
+docker compose -f deploy/docker-compose.yml logs -f bot        # follow live
+docker compose -f deploy/docker-compose.yml ps                 # container status
+```
 
 ### Streamlit app
 
