@@ -4,7 +4,7 @@ podcodex.core.synthesize — Voice synthesis pipeline using Qwen3-TTS.
 Steps:
     1. extract_voice_samples() — extract audio clips per speaker for voice cloning
     2. generate_segments()     — generate TTS audio for each translated segment
-    3. merge_segments()        — merge all segments into a final podcast audio file
+    3. assemble_episode()      — merge all segments into a final podcast audio file
 
 Files produced in output_dir:
     voice_samples/{speaker}.wav         — reference clips for voice cloning
@@ -13,13 +13,60 @@ Files produced in output_dir:
 """
 
 import math
-import numpy as np
+import re
 import subprocess
-import soundfile as sf
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
+import numpy as np
+import soundfile as sf
 from loguru import logger
+
+from podcodex.core._utils import (
+    UNKNOWN_SPEAKERS,
+    AudioPaths,
+    group_by_speaker,
+    wav_duration,
+)
+
+
+# ──────────────────────────────────────────────
+# Hallucination detection
+# ──────────────────────────────────────────────
+
+# Patterns Whisper commonly generates on music/silence instead of real speech.
+_HALLUCINATION_RE = re.compile(
+    r"(?i)"
+    r"sous-titrag"  # "Sous-titrage FR", "Sous-titrage MFP", etc.
+    r"|subtitl"  # English equivalents
+    r"|merci d'avoir"  # filler sign-off
+    r"|transcription\s+réalis"
+    r"|www\."  # URLs hallucinated on silence
+)
+
+
+def is_hallucination(text: str) -> bool:
+    """Return True if *text* looks like a Whisper hallucination rather than real speech.
+
+    Catches the most common artifacts produced on music or silence:
+    repeated punctuation (``... ...``), very short strings, and
+    known French/English subtitle watermarks.
+    """
+    t = text.strip()
+    if not t:
+        return False
+    # Only punctuation / dots / ellipses
+    if re.fullmatch(r"[\s.…\-_,;:!?/|]+", t):
+        return True
+    # Very short (single word or less, likely a stutter artifact)
+    if len(t) <= 3:
+        return True
+    # Known watermark / filler patterns
+    if _HALLUCINATION_RE.search(t):
+        return True
+    return False
 
 
 # ──────────────────────────────────────────────
@@ -27,12 +74,86 @@ from loguru import logger
 # ──────────────────────────────────────────────
 
 
+def _select_candidates(
+    segs: list[dict],
+    speaker: str,
+    *,
+    min_duration: float | None = None,
+    max_duration: float | None = None,
+    top_k: int = 3,
+) -> list[dict]:
+    """Pick the best voice-cloning candidates for one speaker.
+
+    Filters by duration range and hallucination detection, then returns
+    up to *top_k* segments sorted by duration descending.
+    Returns an empty list if no usable candidates remain.
+    """
+    candidates = segs
+
+    # Duration filter (fall back to all segments if nothing matches)
+    if min_duration is not None or max_duration is not None:
+        filtered = candidates
+        if min_duration is not None:
+            filtered = [s for s in filtered if s["duration"] >= min_duration]
+        if max_duration is not None:
+            filtered = [s for s in filtered if s["duration"] <= max_duration]
+        if filtered:
+            candidates = filtered
+        else:
+            logger.warning(
+                f"No segments in duration range for {speaker} — using all segments"
+            )
+
+    # Hallucination filter
+    clean = [s for s in candidates if not is_hallucination(s.get("text", ""))]
+    dropped = len(candidates) - len(clean)
+    if dropped:
+        logger.warning(f"Dropped {dropped} hallucinated-text segment(s) for {speaker}")
+    if not clean:
+        logger.warning(
+            f"All candidates for {speaker} are music/hallucination — skipping"
+        )
+        return []
+
+    return sorted(clean, key=lambda s: s["duration"], reverse=True)[:top_k]
+
+
+def _extract_clip(audio_path: Path, seg: dict, output_path: Path) -> dict:
+    """Extract a single audio clip with ffmpeg and return its metadata."""
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(audio_path),
+            "-ss",
+            str(seg["start"]),
+            "-to",
+            str(seg["end"]),
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            str(output_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return {
+        "file": output_path,
+        "start": seg["start"],
+        "end": seg["end"],
+        "duration": seg["duration"],
+        "text": seg["text"],
+    }
+
+
 def extract_voice_samples(
     audio_path: Path | str,
     segments: list[dict],
-    output_dir: str | Path = "",
-    min_duration: Optional[float] = None,
-    max_duration: Optional[float] = None,
+    output_dir: str | Path | None = None,
+    min_duration: float | None = None,
+    max_duration: float | None = None,
     top_k: int = 3,
 ) -> dict[str, list[dict]]:
     """
@@ -44,7 +165,7 @@ def extract_voice_samples(
 
     Args:
         audio_path   : source audio file
-        segments     : output of simplify_transcript()
+        segments     : output of merge_consecutive_segments()
         output_dir   : directory relative to audio_path for outputs
         min_duration : minimum clip duration in seconds (optional)
         max_duration : maximum clip duration in seconds (optional)
@@ -54,82 +175,57 @@ def extract_voice_samples(
         {speaker: [{"file", "start", "end", "duration", "text"}, ...]}
         sorted by duration descending
     """
-    audio_path = Path(audio_path)
-    samples_dir = (
-        (audio_path.parent / output_dir / "voice_samples")
-        if output_dir
-        else (audio_path.parent / "voice_samples")
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    logger.info(
+        f"Extracting voice samples from {p.audio_path.name} — {len(segments)} segments, top_k={top_k}"
     )
-    samples_dir.mkdir(parents=True, exist_ok=True)
+    samples_dir = p.voice_samples_dir
 
-    # Group segments by speaker with their duration
-    by_speaker: dict[str, list[dict]] = {}
-    for seg in segments:
-        speaker = seg.get("speaker", "UNKNOWN")
-        duration = seg["end"] - seg["start"]
-        by_speaker.setdefault(speaker, []).append({**seg, "duration": duration})
+    # Group by speaker, add duration, select candidates, build extraction plan
+    by_speaker = {
+        speaker: [{**seg, "duration": seg["end"] - seg["start"]} for seg in segs]
+        for speaker, segs in group_by_speaker(segments).items()
+    }
+    logger.debug(f"Found {len(by_speaker)} distinct speaker labels")
 
-    results: dict[str, list[dict]] = {}
-
+    plan: list[tuple[str, dict, Path]] = []
     for speaker, segs in by_speaker.items():
-        # Filter by duration range if specified
-        candidates = segs
-        if min_duration is not None:
-            candidates = [s for s in candidates if s["duration"] >= min_duration]
-        if max_duration is not None:
-            candidates = [s for s in candidates if s["duration"] <= max_duration]
-
-        # Fallback to all segments if filters leave nothing
-        if not candidates:
+        if not speaker or speaker in UNKNOWN_SPEAKERS:
             logger.warning(
-                f"No segments in duration range for {speaker} — using all segments"
+                f"Skipping speaker {speaker!r} — not a real speaker ({len(segs)} segments)"
             )
-            candidates = segs
-
-        # Sort by duration descending and take top_k
-        candidates = sorted(candidates, key=lambda s: s["duration"], reverse=True)[
-            :top_k
-        ]
-
-        speaker_samples = []
+            continue
+        candidates = _select_candidates(
+            segs,
+            speaker,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            top_k=top_k,
+        )
         for i, seg in enumerate(candidates):
-            output_path = samples_dir / f"{speaker}_{i:02d}.wav"
+            plan.append((speaker, seg, samples_dir / f"{speaker}_{i:02d}.wav"))
 
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(audio_path),
-                    "-ss",
-                    str(seg["start"]),
-                    "-to",
-                    str(seg["end"]),
-                    "-ar",
-                    "16000",
-                    "-ac",
-                    "1",
-                    str(output_path),
-                ],
-                check=True,
-                capture_output=True,
-            )
+    # Run ffmpeg extractions in parallel (I/O-bound)
+    results: dict[str, list[dict]] = {}
+    with ThreadPoolExecutor(max_workers=min(len(plan) or 1, 8)) as executor:
+        futures = {
+            executor.submit(_extract_clip, p.audio_path, seg, out): speaker
+            for speaker, seg, out in plan
+        }
+        for future in as_completed(futures):
+            speaker = futures[future]
+            entry = future.result()
+            logger.debug(f"{speaker} — {entry['duration']:.1f}s → {entry['file'].name}")
+            results.setdefault(speaker, []).append(entry)
 
-            speaker_samples.append(
-                {
-                    "file": output_path,
-                    "start": seg["start"],
-                    "end": seg["end"],
-                    "duration": seg["duration"],
-                    "text": seg["text"],
-                }
-            )
-            logger.info(
-                f"{speaker} [{i + 1}/{len(candidates)}] — {seg['duration']:.1f}s → {output_path.name}"
-            )
+    # Restore order (sorted by duration descending)
+    for speaker in results:
+        results[speaker].sort(key=lambda e: e["duration"], reverse=True)
 
-        results[speaker] = speaker_samples
-
+    total = sum(len(v) for v in results.values())
+    logger.success(
+        f"Voice samples extracted — {total} clips for {len(results)} speakers → {samples_dir.name}/"
+    )
     return results
 
 
@@ -151,12 +247,14 @@ def load_tts_model(model_size: str = "1.7B"):
     import torch
     from qwen_tts import Qwen3TTSModel
 
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Loading Qwen3-TTS {model_size} on {device}…")
     model = Qwen3TTSModel.from_pretrained(
         f"Qwen/Qwen3-TTS-12Hz-{model_size}-Base",
-        device_map="cuda:0" if torch.cuda.is_available() else "cpu",
+        device_map=device,
         dtype=torch.bfloat16,
     )
-    logger.info(f"Qwen3-TTS {model_size} loaded")
+    logger.success(f"Qwen3-TTS {model_size} loaded")
     return model
 
 
@@ -191,66 +289,68 @@ def build_clone_prompts(
             ref_text=sample["text"],
             x_vector_only_mode=True,
         )
-        logger.info(
+        logger.debug(
             f"Voice prompt ready for {speaker} (sample {idx} — {sample['duration']:.1f}s)"
         )
+    logger.info(f"Clone prompts built for {len(clone_prompts)} speakers")
     return clone_prompts
 
 
-def _split_text(text: str, n_chunks: int) -> list[str]:
-    """
-    Split text into at most n_chunks parts, breaking at sentence boundaries
-    (. ! ?) and falling back to commas when more pieces are needed.
+def _split_text(text: str, max_parts: int) -> list[str]:
+    """Split text into at most *max_parts*, breaking at natural boundaries.
 
-    Parts are balanced by character count (a reasonable proxy for TTS duration).
-    When there are fewer natural breakpoints than n_chunks, returns as many
-    pieces as are available rather than forcing artificial splits.
-    """
-    import re
+    Strategy:
+        1. Split at sentence endings (. ! ?)
+        2. If that yields fewer parts than needed, also split at commas
+        3. If we now have more parts than needed, greedily group them into
+           balanced chunks by character count
 
+    Returns at most *max_parts* strings.  If there are fewer natural
+    breakpoints than requested, returns what's available without forcing
+    artificial mid-word splits.
+    """
     text = text.strip()
-    if not text or n_chunks <= 1:
+    if not text or max_parts <= 1:
         return [text] if text else []
 
-    # Primary split: sentence boundaries
-    pieces = [s for s in re.split(r"(?<=[.!?])\s+", text) if s]
+    # 1. Split at sentence boundaries
+    parts = [s for s in re.split(r"(?<=[.!?])\s+", text) if s]
 
-    # If we still need more breakpoints, also split on commas
-    if len(pieces) < n_chunks:
-        expanded = []
-        for s in pieces:
-            expanded.extend(p for p in re.split(r"(?<=,)\s+", s) if p)
-        pieces = expanded
+    # 2. If not enough parts, also split at commas
+    if len(parts) < max_parts:
+        finer: list[str] = []
+        for s in parts:
+            finer.extend(p for p in re.split(r"(?<=,)\s+", s) if p)
+        parts = finer
 
-    # Fewer pieces than requested chunks — return what we have
-    if len(pieces) <= n_chunks:
-        return pieces
+    # Enough natural splits or fewer — done
+    if len(parts) <= max_parts:
+        return parts
 
-    # Greedy grouping: accumulate pieces until we reach the per-chunk target,
-    # then flush, ensuring we don't run out of pieces for the remaining chunks.
-    total = sum(len(p) for p in pieces)
-    target = total / n_chunks
+    # 3. Too many small parts — group into balanced chunks
+    target_len = sum(len(p) for p in parts) / max_parts
+    groups: list[str] = []
+    buf: list[str] = []
+    buf_len = 0
 
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-    for i, piece in enumerate(pieces):
-        current.append(piece)
-        current_len += len(piece)
-        remaining_pieces = len(pieces) - i - 1
-        remaining_chunks_needed = n_chunks - len(chunks) - 1
+    for i, part in enumerate(parts):
+        buf.append(part)
+        buf_len += len(part)
+
+        parts_left = len(parts) - i - 1
+        groups_left = max_parts - len(groups) - 1
         if (
-            current_len >= target
-            and len(chunks) < n_chunks - 1
-            and remaining_pieces >= remaining_chunks_needed
+            buf_len >= target_len
+            and len(groups) < max_parts - 1
+            and parts_left >= groups_left
         ):
-            chunks.append(" ".join(current))
-            current, current_len = [], 0
+            groups.append(" ".join(buf))
+            buf, buf_len = [], 0
 
-    if current:
-        chunks.append(" ".join(current))
+    if buf:
+        groups.append(" ".join(buf))
 
-    return chunks
+    return groups
 
 
 def generate_segment(
@@ -261,7 +361,7 @@ def generate_segment(
     language: str = "English",
     instruct: str | None = None,
     max_chunk_duration: float = 20.0,
-    on_chunk: object | None = None,
+    on_chunk: Callable[[int, int], None] | None = None,
 ) -> dict | None:
     """
     Generate TTS audio for a single segment.
@@ -274,7 +374,7 @@ def generate_segment(
 
     Args:
         model              : loaded Qwen3TTSModel from load_tts_model()
-        seg                : single segment dict with text_trad, speaker, start, end
+        seg                : single segment dict with text, speaker, start, end
         clone_prompts      : output of build_clone_prompts()
         output_path        : path to save the generated WAV file
         language           : target language for TTS (must match translation target_lang)
@@ -290,10 +390,10 @@ def generate_segment(
         Segment dict with added "audio_file" and "sample_rate" fields, or None if skipped
     """
     speaker = seg["speaker"]
-    text = seg.get("text_trad", "")
+    text = seg.get("text", "")
 
     if not text:
-        logger.warning(f"Segment has no text_trad — skipping [{output_path.stem}]")
+        logger.warning(f"Segment has no text — skipping [{output_path.stem}]")
         return None
 
     if speaker not in clone_prompts:
@@ -320,7 +420,7 @@ def generate_segment(
             text=chunk,
             language=language,
             voice_clone_prompt=clone_prompts[speaker],
-            instruct=instruct if instruct else None,
+            instruct=instruct or None,
         )
         audio_parts.append(wavs[0])
         sr = chunk_sr
@@ -329,6 +429,10 @@ def generate_segment(
 
     audio = np.concatenate(audio_parts) if len(audio_parts) > 1 else audio_parts[0]
     sf.write(str(output_path), audio, sr)
+    gen_duration = len(audio) / sr
+    logger.debug(
+        f"Generated {output_path.name} — {gen_duration:.1f}s audio from {duration:.1f}s source"
+    )
     return {**seg, "audio_file": output_path, "sample_rate": sr}
 
 
@@ -336,7 +440,7 @@ def generate_segments(
     audio_path: Path | str,
     segments: list[dict],
     voice_samples: dict[str, list[dict]],
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
     model_size: str = "1.7B",
     language: str = "English",
     sample_index: dict[str, int] | int = 0,
@@ -361,13 +465,11 @@ def generate_segments(
     Returns:
         List of segments with added "audio_file" and "sample_rate" fields
     """
-    audio_path = Path(audio_path)
-    segments_dir = (
-        (audio_path.parent / output_dir / "tts_segments")
-        if output_dir
-        else (audio_path.parent / "tts_segments")
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    logger.info(
+        f"Generating TTS for {len(segments)} segments — model={model_size}, language={language}"
     )
-    segments_dir.mkdir(parents=True, exist_ok=True)
+    segments_dir = p.tts_segments_dir
 
     model = load_tts_model(model_size=model_size)
     clone_prompts = build_clone_prompts(model, voice_samples, sample_index=sample_index)
@@ -385,10 +487,15 @@ def generate_segments(
         )
         if result:
             generated.append(result)
-            logger.info(
-                f"[{i + 1}/{len(segments)}] {seg['speaker']}: {seg.get('text_trad', '')[:60]}..."
+            logger.debug(
+                f"[{i + 1}/{len(segments)}] {seg['speaker']}: {seg.get('text', '')[:60]}…"
             )
 
+    skipped = len(segments) - len(generated)
+    logger.success(
+        f"TTS generation done — {len(generated)} segments generated"
+        + (f", {skipped} skipped" if skipped else "")
+    )
     return generated
 
 
@@ -400,7 +507,7 @@ def generate_segments(
 def assemble_episode(
     generated: list[dict],
     audio_path: Path | str,
-    output_dir: str | Path = "",
+    output_dir: str | Path | None = None,
     strategy: Literal["silence", "original_timing"] = "original_timing",
     silence_duration: float = 0.5,
 ) -> Path:
@@ -423,12 +530,9 @@ def assemble_episode(
         Path to the final .wav file
     """
 
-    audio_path = Path(audio_path)
-    out_path = (
-        (audio_path.parent / output_dir / f"{audio_path.stem}.synthesized.wav")
-        if output_dir
-        else (audio_path.parent / f"{audio_path.stem}.synthesized.wav")
-    )
+    logger.info(f"Assembling {len(generated)} segments — strategy={strategy}")
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    out_path = p.synthesized
 
     if not generated:
         raise ValueError("No generated segments to assemble.")
@@ -464,3 +568,89 @@ def assemble_episode(
     duration = len(episode) / sr
     logger.success(f"Episode assembled — {duration:.1f}s → {out_path.name}")
     return out_path
+
+
+# ──────────────────────────────────────────────
+# Disk loaders (voice samples & generated segments)
+# ──────────────────────────────────────────────
+
+
+def load_voice_samples(
+    output_dir: str | Path,
+    speakers: list[str],
+    speaker_map: dict[str, str] | None = None,
+) -> dict[str, list[dict]]:
+    """Load previously extracted voice samples from disk.
+
+    Args:
+        output_dir   : episode output directory containing ``voice_samples/``
+        speakers     : ordered list of speaker names to look for
+        speaker_map  : optional {SPEAKER_XX: human_name} map for fallback matching
+
+    Returns:
+        {speaker: [{"file": Path, "duration": float, "text": ""}, ...]}
+    """
+    samples_dir = Path(output_dir) / "voice_samples"
+    if not samples_dir.exists():
+        logger.debug(f"No voice_samples/ directory in {output_dir}")
+        return {}
+
+    reverse_map = {v: k for k, v in (speaker_map or {}).items()}
+
+    result: dict[str, list[dict]] = {}
+    for speaker in speakers:
+        files = sorted(
+            f for f in samples_dir.glob(f"{speaker}_*.wav") if "_custom_" not in f.name
+        )
+        if not files:
+            speaker_id = reverse_map.get(speaker)
+            if speaker_id:
+                files = sorted(
+                    f
+                    for f in samples_dir.glob(f"{speaker_id}_*.wav")
+                    if "_custom_" not in f.name
+                )
+        if files:
+            result[speaker] = [
+                {"file": f, "duration": wav_duration(f), "text": ""} for f in files
+            ]
+    total = sum(len(v) for v in result.values())
+    logger.debug(
+        f"Loaded {total} voice samples for {len(result)}/{len(speakers)} speakers"
+    )
+    return result
+
+
+def load_generated_segments(
+    output_dir: str | Path,
+    segments: list[dict],
+) -> list[dict]:
+    """Load previously generated TTS segments from disk.
+
+    Args:
+        output_dir : episode output directory containing ``tts_segments/``
+        segments   : segment list (used to match filenames and merge metadata)
+
+    Returns:
+        List of segment dicts with ``audio_file`` and ``sample_rate`` fields,
+        or an empty list if any segment file is missing.
+    """
+    segments_dir = Path(output_dir) / "tts_segments"
+    if not segments_dir.exists():
+        logger.debug(f"No tts_segments/ directory in {output_dir}")
+        return []
+    result = []
+    for i, seg in enumerate(segments):
+        speaker = seg.get("speaker", "UNK")
+        wav_path = segments_dir / f"{i:04d}_{speaker}.wav"
+        if not wav_path.exists():
+            return []
+        try:
+            info = sf.info(str(wav_path))
+            result.append(
+                {**seg, "audio_file": wav_path, "sample_rate": info.samplerate}
+            )
+        except Exception:
+            return []
+    logger.debug(f"Loaded {len(result)} generated segments from disk")
+    return result

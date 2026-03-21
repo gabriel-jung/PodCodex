@@ -7,11 +7,25 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.core import synthesize
+from podcodex.core import synthesize, validate_segments_json
+from podcodex.core._utils import AudioPaths, wav_duration
+from podcodex.core.synthesize import load_voice_samples, load_generated_segments
+from podcodex.core.transcribe import load_speaker_map
+from constants import (
+    AUDIO_EXTENSIONS,
+    DEFAULT_MAX_CHUNK_DURATION,
+    DEFAULT_SILENCE_DURATION,
+    DEFAULT_TARGET_LANG,
+    TTS_MODEL_SIZES,
+    VOICE_MAX_DURATION,
+    VOICE_MIN_DURATION,
+    VOICE_TOP_K,
+)
 
 
 @st.cache_resource
 def _load_tts_model(model_size: str):
+    """Cached wrapper for ``synthesize.load_tts_model`` — loaded once per model size."""
     return synthesize.load_tts_model(model_size=model_size)
 
 
@@ -32,7 +46,7 @@ def render():
                 uploaded_json = st.file_uploader(
                     "Transcript or translation JSON",
                     type=["json"],
-                    help="JSON array with 'speaker', 'start', 'end', 'text' fields. May also contain 'text_trad' if already translated. Compatible with podcodex transcript.json and translated.json formats.",
+                    help="JSON array with 'speaker', 'start', 'end', 'text' fields. Compatible with podcodex transcript.json and translation.json formats.",
                     label_visibility="collapsed",
                 )
             with col2:
@@ -49,14 +63,9 @@ def render():
                     '  "speaker": "Alice",\n'
                     '  "start": 0.0,\n'
                     '  "end": 5.2,\n'
-                    '  "text": "Original text.",\n'
-                    '  "text_trad": "Translated text."  ← optional\n'
+                    '  "text": "Text to synthesize."\n'
                     "}, ...]",
                     language="json",
-                )
-                st.caption(
-                    "`text_trad` is required for synthesis. "
-                    "If absent, select `text` as the field to synthesize in Configuration."
                 )
 
             if uploaded_json:
@@ -66,7 +75,7 @@ def render():
                     st.error(f"Invalid JSON: {e}")
                     data = None
                 if data is not None:
-                    err = _validate_segments_json(data, required=("text",))
+                    err = validate_segments_json(data, required=("text",))
                     if err:
                         st.error(f"Format error — {err}")
                     else:
@@ -135,86 +144,60 @@ def render():
     with st.container(border=True):
         st.markdown("### ⚙️ Configuration")
 
-        sample_seg = translation[0] if translation else {}
-        available_fields = [k for k in ["text", "text_trad"] if k in sample_seg]
-        extra_fields = [
-            k
-            for k in sample_seg
-            if k not in ["speaker", "start", "end", "text", "text_trad"]
-        ]
-        available_fields += extra_fields
+        language = st.text_input(
+            "Synthesis language",
+            value=DEFAULT_TARGET_LANG,
+            help="Full language name of the text to synthesize. Used by the TTS model for pronunciation.",
+        )
 
-        col1, col2 = st.columns(2)
-        with col1:
-            text_field = st.selectbox(
-                "Text field to synthesize",
-                options=available_fields,
-                index=available_fields.index("text_trad")
-                if "text_trad" in available_fields
-                else 0,
-                help="Choose which text field to use for synthesis. 'text_trad' for translated text, 'text' for source language.",
-            )
-        with col2:
-            language = st.text_input(
-                "Synthesis language",
-                value="English" if text_field == "text_trad" else "French",
-                help="Full language name matching the text field you selected. Used by the TTS model for pronunciation.",
-            )
-
-        col3, col4 = st.columns(2)
-        with col3:
+        col_model, col_chunk = st.columns(2)
+        with col_model:
             model_size = st.selectbox(
                 "TTS model size",
-                ["1.7B", "0.6B"],
+                TTS_MODEL_SIZES,
                 index=0,
                 help="Larger model (1.7B) gives better quality but requires more VRAM (~8GB). Smaller (0.6B) runs on ~4GB.",
             )
-        with col4:
+        with col_chunk:
             max_chunk_duration = st.number_input(
                 "Max chunk duration (s)",
                 min_value=5.0,
                 max_value=60.0,
-                value=20.0,
+                value=DEFAULT_MAX_CHUNK_DURATION,
                 step=5.0,
                 help="Source segments shorter than this are synthesized in one TTS call. Longer segments are split at sentence boundaries into ceil(duration / max) chunks. Reduce for very long segments if you notice quality drift.",
             )
 
-        st.caption(
-            f"**{len(translation)}** segments · synthesizing field **`{text_field}`**"
-        )
+        st.caption(f"**{len(translation)}** segments")
 
     # ── Section 2: Voice samples ──
     with st.container(border=True):
         st.markdown("### 🎤 Step 1 — Voice Samples")
         st.caption("Assign a voice reference clip to each speaker for cloning.")
 
-        speaker_map = _load_speaker_map(output_dir)  # {SPEAKER_XX: human_name}
-        _vs = st.session_state.get("voice_samples")
-        if _vs and speaker_map:
+        speaker_map = load_speaker_map(audio_path, output_dir=output_dir)
+        cached_samples = st.session_state.get("voice_samples")
+        if cached_samples and speaker_map:
             # If session-state samples use SPEAKER_XX keys but translation uses
             # human names (speaker_map was applied during export), remap the keys
             # so each speaker is matched to their own samples in the pool.
             translation_speakers = {
                 seg.get("speaker") for seg in translation if seg.get("speaker")
             }
-            if not (set(_vs.keys()) & translation_speakers):
-                _vs = {speaker_map.get(k, k): v for k, v in _vs.items()}
-                st.session_state.voice_samples = _vs
-        voice_samples = _vs or _load_voice_samples_from_disk(
+            if not (set(cached_samples.keys()) & translation_speakers):
+                cached_samples = {
+                    speaker_map.get(k, k): v for k, v in cached_samples.items()
+                }
+                st.session_state.voice_samples = cached_samples
+        voice_samples = cached_samples or _load_existing_voice_samples(
             audio_path, output_dir, translation
         )
         samples_exist = bool(voice_samples)
 
-        has_real_audio = audio_path and Path(audio_path).suffix in {
-            ".mp3",
-            ".wav",
-            ".m4a",
-            ".ogg",
-            ".flac",
-        }
+        has_real_audio = audio_path and Path(audio_path).suffix in AUDIO_EXTENSIONS
 
         # Voice mapping is always shown — custom uploads are available even without audio
-        _render_voice_mapping(voice_samples, translation, output_dir)
+        _render_voice_mapping(voice_samples, translation, audio_path, output_dir)
 
         # Extraction from audio — secondary action, collapsed when samples already exist
         with st.expander(
@@ -231,21 +214,21 @@ def render():
                 with col1:
                     min_duration = st.number_input(
                         "Min duration (s)",
-                        value=3.0,
+                        value=VOICE_MIN_DURATION,
                         min_value=0.0,
                         help="Minimum clip duration to consider as a voice sample.",
                     )
                 with col2:
                     max_duration = st.number_input(
                         "Max duration (s)",
-                        value=0.0,
+                        value=VOICE_MAX_DURATION,
                         min_value=0.0,
                         help="Maximum clip duration. Set to 0 for no limit.",
                     )
                 with col3:
                     top_k = st.number_input(
                         "Candidates per speaker",
-                        value=3,
+                        value=VOICE_TOP_K,
                         min_value=1,
                         max_value=10,
                         help="Number of audio clips to extract per speaker.",
@@ -265,6 +248,9 @@ def render():
                     "Extract voice samples",
                     use_container_width=True,
                     disabled=samples_exist and not force_samples,
+                    help="Already extracted. Check 'Force' to redo."
+                    if samples_exist and not force_samples
+                    else None,
                 ):
                     with st.spinner("Extracting voice samples..."):
                         voice_samples = synthesize.extract_voice_samples(
@@ -280,7 +266,6 @@ def render():
                     st.rerun()
 
     # ── Section 3: Generate segments ──
-    voice_samples = voice_samples if "voice_samples" in dir() else {}
     voice_samples_for_gen = (
         st.session_state.get("voice_samples_resolved") or voice_samples
     )
@@ -303,7 +288,7 @@ def render():
 
             generated = st.session_state.get("generated")
             if not generated:
-                generated = _load_generated_from_disk(output_dir, translation)
+                generated = load_generated_segments(output_dir, translation)
                 if generated:
                     st.session_state.generated = generated
 
@@ -319,21 +304,26 @@ def render():
                 use_container_width=True,
                 type="primary",
                 disabled=already_generated and not force_generate,
+                help="Already generated. Check 'Force' to redo."
+                if already_generated and not force_generate
+                else None,
             ):
                 model = _load_tts_model(model_size)
+                # voice_samples_resolved contains exactly one sample per speaker,
+                # so sample_index is always 0.
                 clone_prompts = synthesize.build_clone_prompts(
                     model,
                     voice_samples_for_gen,
-                    sample_index=st.session_state.get("sample_index", 0),
+                    sample_index=0,
                 )
                 generated = []
                 progress = st.progress(0, text="Starting...")
-                segments_dir = Path(output_dir) / "tts_segments"
-                segments_dir.mkdir(parents=True, exist_ok=True)
+                segments_dir = AudioPaths.from_audio(
+                    audio_path, output_dir=output_dir
+                ).tts_segments_dir
 
                 chunk_status = st.empty()
                 for i, seg in enumerate(translation):
-                    seg_to_synth = {**seg, "text_trad": seg.get(text_field, "")}
                     output_path = (
                         segments_dir / f"{i:04d}_{seg.get('speaker', 'UNK')}.wav"
                     )
@@ -349,14 +339,14 @@ def render():
                             if n_chunks > 1:
                                 chunk_status.caption(
                                     f"↳ chunk {chunk_i}/{n_chunks} · "
-                                    f"{seg_to_synth['text_trad'][:60]}…"
+                                    f"{seg.get('text', '')[:60]}…"
                                 )
 
                         return on_chunk
 
                     result = synthesize.generate_segment(
                         model,
-                        seg_to_synth,
+                        seg,
                         clone_prompts,
                         output_path,
                         language=language,
@@ -390,21 +380,16 @@ def render():
             pool_labels = [e["label"] for e in pool]
 
             for i, seg in enumerate(generated):
-                label = f"[{seg['start']:.1f}s] **{seg.get('speaker', '?')}** — {seg.get('text_trad', '')[:60]}..."
+                label = f"[{seg['start']:.1f}s] **{seg.get('speaker', '?')}** — {seg.get('text', '')[:60]}..."
                 with st.expander(label, expanded=False):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.caption("Source text")
-                        st.write(seg.get("text", ""))
-                    with col2:
-                        new_text = st.text_area(
-                            "Synthesized text",
-                            value=seg.get("text_trad", ""),
-                            key=f"edit_trad_{i}",
-                            height=80,
-                            help="Edit the text and click Regenerate to re-synthesize this segment.",
-                            label_visibility="collapsed",
-                        )
+                    new_text = st.text_area(
+                        "Text to synthesize",
+                        value=seg.get("text", ""),
+                        key=f"edit_text_{i}",
+                        height=80,
+                        help="Edit the text and click Regenerate to re-synthesize this segment.",
+                        label_visibility="collapsed",
+                    )
 
                     col_voice, col_intonation = st.columns(2)
                     with col_voice:
@@ -444,7 +429,7 @@ def render():
                     ):
                         seg_updated = {
                             **seg,
-                            "text_trad": new_text,
+                            "text": new_text,
                             "_voice_override": voice_override,
                             "_intonation": intonation,
                         }
@@ -479,7 +464,7 @@ def render():
                             clone_prompts = synthesize.build_clone_prompts(
                                 model,
                                 single_sample,
-                                sample_index=st.session_state.get("sample_index", 0),
+                                sample_index=0,
                             )
 
                         progress_bar = st.progress(0, text="Starting…")
@@ -511,26 +496,29 @@ def render():
             st.markdown("### 🎬 Step 4 — Assemble Episode")
             st.caption("Merge all synthesized segments into a final audio file.")
 
-            col1, col2 = st.columns(2)
+            col1, col2 = st.columns([3, 1])
             with col1:
                 strategy = st.radio(
                     "Assembly strategy",
                     options=["original_timing", "silence"],
                     format_func=lambda x: {
-                        "original_timing": "Original timing — preserve original gaps between segments",
-                        "silence": "Fixed silence — insert a fixed pause between segments",
+                        "original_timing": "Original timing — preserve original gaps",
+                        "silence": "Fixed silence — fixed pause between segments",
                     }[x],
+                    horizontal=True,
                 )
             with col2:
                 silence_duration = st.number_input(
-                    "Silence duration (s)",
-                    value=0.5,
+                    "Silence (s)",
+                    value=DEFAULT_SILENCE_DURATION,
                     min_value=0.0,
                     disabled=strategy != "silence",
+                    help="Duration of silence inserted between segments.",
                 )
 
-            audio_path_obj = Path(audio_path)
-            episode_path = Path(output_dir) / f"{audio_path_obj.stem}.synthesized.wav"
+            episode_path = AudioPaths.from_audio(
+                audio_path, output_dir=output_dir
+            ).synthesized
 
             # Detect if any segment is newer than the assembled file
             needs_reassemble = False
@@ -574,6 +562,7 @@ def render():
 
 
 def _render_download(episode_path: Path):
+    """Show audio player and download button for the assembled episode."""
     st.audio(str(episode_path))
     with open(episode_path, "rb") as f:
         st.download_button(
@@ -588,8 +577,15 @@ def _render_download(episode_path: Path):
 def _render_voice_mapping(
     voice_samples: dict[str, list[dict]],
     translation: list,
+    audio_path,
     output_dir: str,
 ):
+    """Render per-speaker voice assignment UI with selectboxes and custom uploads.
+
+    For each speaker in the translation, shows a selectbox to pick a voice sample
+    from the pool, a custom upload option, and an audio preview. Writes the resolved
+    mapping to ``st.session_state.voice_samples_resolved``.
+    """
     st.markdown("**🗂️ Voice assignment — map each speaker to a reference clip:**")
     st.caption(
         "Each speaker is matched to their own samples by default. "
@@ -610,125 +606,127 @@ def _render_voice_mapping(
         own_in_pool = [e for e in pool if e["speaker"] == speaker]
         has_any_pool = bool(pool)
 
-        # ── Custom upload ──────────────────────────────────────────────────
-        # Prominent (flat) when the speaker has no samples yet; collapsed otherwise.
-        if own_in_pool:
-            with st.expander(f"📎 Custom upload for {speaker}", expanded=False):
-                uploaded = st.file_uploader(
-                    "Drop a WAV/MP3 here",
-                    type=["wav", "mp3", "ogg", "flac", "m4a"],
-                    key=f"voice_upload_{speaker}",
-                    label_visibility="collapsed",
+        with st.container(border=True):
+            # ── Custom upload ──────────────────────────────────────────────────
+            # Prominent (flat) when the speaker has no samples yet; collapsed otherwise.
+            if own_in_pool:
+                with st.expander(f"📎 Custom upload for {speaker}", expanded=False):
+                    uploaded = st.file_uploader(
+                        "Drop a WAV/MP3 here",
+                        type=["wav", "mp3", "ogg", "flac", "m4a"],
+                        key=f"voice_upload_{speaker}",
+                        label_visibility="collapsed",
+                    )
+            else:
+                col_no_sample, col_upload = st.columns([2, 5])
+                with col_no_sample:
+                    st.markdown(f"**{speaker}**")
+                    st.caption("No sample yet")
+                with col_upload:
+                    uploaded = st.file_uploader(
+                        f"Upload a voice sample for {speaker}",
+                        type=["wav", "mp3", "ogg", "flac", "m4a"],
+                        key=f"voice_upload_{speaker}",
+                        label_visibility="collapsed",
+                    )
+
+            # ── Register custom upload in pool ─────────────────────────────────
+            if uploaded:
+                custom_dir = AudioPaths.from_audio(
+                    audio_path, output_dir=output_dir
+                ).voice_samples_dir
+                dest = custom_dir / f"{speaker}_custom_{uploaded.name}"
+                if not dest.exists():
+                    dest.write_bytes(uploaded.read())
+                    voice_samples.setdefault(speaker, []).insert(
+                        0,
+                        {"file": dest, "duration": wav_duration(dest), "text": ""},
+                    )
+                    st.session_state.voice_samples = voice_samples
+                custom_entry = {
+                    "label": f"🎙️ Custom: {uploaded.name}",
+                    "file": dest,
+                    "duration": wav_duration(dest),
+                    "text": "",
+                    "speaker": speaker,
+                    "idx": -1,
+                }
+                speaker_pool = [custom_entry] + pool
+                natural_default = custom_entry["label"]
+            else:
+                speaker_pool = pool
+                natural_default = (
+                    own_in_pool[0]["label"]
+                    if own_in_pool
+                    else (pool[0]["label"] if has_any_pool else "")
                 )
-        else:
-            col_no_sample, col_upload = st.columns([2, 5])
-            with col_no_sample:
+
+            # ── No sample at all — skip selectbox ─────────────────────────────
+            pool_labels = [e["label"] for e in speaker_pool]
+            if not pool_labels:
+                continue
+
+            # ── Selectbox + player ─────────────────────────────────────────────
+            col_label, col_select, col_player = st.columns([2, 3, 2])
+
+            current_value = st.session_state.get(f"voice_select_{speaker}")
+            if current_value and current_value in pool_labels:
+                default_idx = pool_labels.index(current_value)
+            elif natural_default in pool_labels:
+                default_idx = pool_labels.index(natural_default)
+            else:
+                default_idx = 0
+
+            with col_label:
                 st.markdown(f"**{speaker}**")
-                st.caption("No sample yet")
-            with col_upload:
-                uploaded = st.file_uploader(
-                    f"Upload a voice sample for {speaker}",
-                    type=["wav", "mp3", "ogg", "flac", "m4a"],
-                    key=f"voice_upload_{speaker}",
+            with col_select:
+                chosen_label = st.selectbox(
+                    "Voice reference",
+                    options=pool_labels,
+                    index=default_idx,
+                    key=f"voice_select_{speaker}",
                     label_visibility="collapsed",
                 )
+            chosen_entry = next(e for e in speaker_pool if e["label"] == chosen_label)
 
-        # ── Register custom upload in pool ─────────────────────────────────
-        if uploaded:
-            custom_dir = Path(output_dir) / "voice_samples"
-            custom_dir.mkdir(parents=True, exist_ok=True)
-            dest = custom_dir / f"{speaker}_custom_{uploaded.name}"
-            if not dest.exists():
-                dest.write_bytes(uploaded.read())
-                voice_samples.setdefault(speaker, []).insert(
-                    0,
-                    {"file": dest, "duration": _wav_duration(dest), "text": ""},
+            with col_player:
+                st.audio(str(chosen_entry["file"]))
+                cross = (
+                    f" · from **{chosen_entry['speaker']}**"
+                    if chosen_entry["speaker"] != speaker
+                    else ""
                 )
-                st.session_state.voice_samples = voice_samples
-            custom_entry = {
-                "label": f"🎙️ Custom: {uploaded.name}",
-                "file": dest,
-                "duration": _wav_duration(dest),
-                "text": "",
-                "speaker": speaker,
-                "idx": -1,
-            }
-            speaker_pool = [custom_entry] + pool
-            natural_default = custom_entry["label"]
-        else:
-            speaker_pool = pool
-            natural_default = (
-                own_in_pool[0]["label"]
-                if own_in_pool
-                else (pool[0]["label"] if has_any_pool else "")
-            )
+                st.caption(f"{chosen_entry['duration']:.1f}s{cross}")
 
-        # ── No sample at all — skip selectbox ─────────────────────────────
-        pool_labels = [e["label"] for e in speaker_pool]
-        if not pool_labels:
-            st.divider()
-            continue
+            own_candidates = [
+                e
+                for e in speaker_pool
+                if e["speaker"] == speaker and e["label"] != chosen_label
+            ]
+            if own_candidates:
+                with st.expander(
+                    f"Other candidates ({len(own_candidates)})", expanded=False
+                ):
+                    for entry in own_candidates:
+                        c1, c2 = st.columns([2, 3])
+                        with c1:
+                            st.caption(
+                                f"#{entry['idx'] + 1} · {entry['duration']:.1f}s"
+                            )
+                        with c2:
+                            st.audio(str(entry["file"]))
 
-        # ── Selectbox + player ─────────────────────────────────────────────
-        col_label, col_select, col_player = st.columns([2, 3, 2])
-
-        current_value = st.session_state.get(f"voice_select_{speaker}")
-        if current_value and current_value in pool_labels:
-            default_idx = pool_labels.index(current_value)
-        elif natural_default in pool_labels:
-            default_idx = pool_labels.index(natural_default)
-        else:
-            default_idx = 0
-
-        with col_label:
-            st.markdown(f"**{speaker}**")
-        with col_select:
-            chosen_label = st.selectbox(
-                "Voice reference",
-                options=pool_labels,
-                index=default_idx,
-                key=f"voice_select_{speaker}",
-                label_visibility="collapsed",
-            )
-        chosen_entry = next(e for e in speaker_pool if e["label"] == chosen_label)
-
-        with col_player:
-            st.audio(str(chosen_entry["file"]))
-            cross = (
-                f" · from **{chosen_entry['speaker']}**"
-                if chosen_entry["speaker"] != speaker
-                else ""
-            )
-            st.caption(f"{chosen_entry['duration']:.1f}s{cross}")
-
-        own_candidates = [
-            e
-            for e in speaker_pool
-            if e["speaker"] == speaker and e["label"] != chosen_label
-        ]
-        if own_candidates:
-            with st.expander(
-                f"Other candidates ({len(own_candidates)})", expanded=False
-            ):
-                for entry in own_candidates:
-                    c1, c2 = st.columns([2, 3])
-                    with c1:
-                        st.caption(f"#{entry['idx'] + 1} · {entry['duration']:.1f}s")
-                    with c2:
-                        st.audio(str(entry["file"]))
-
-        resolved_mapping[speaker] = {**chosen_entry}
-        st.divider()
+            resolved_mapping[speaker] = {**chosen_entry}
 
     st.session_state.voice_mapping = resolved_mapping
     st.session_state.voice_samples_resolved = {
         spk: [{"file": e["file"], "duration": e["duration"], "text": e["text"]}]
         for spk, e in resolved_mapping.items()
     }
-    st.session_state.sample_index = {spk: 0 for spk in resolved_mapping}
 
 
 def _build_voice_pool(voice_samples: dict[str, list[dict]]) -> list[dict]:
+    """Flatten {speaker: [samples]} into a flat list of labeled entries for selectboxes."""
     pool = []
     for speaker, samples in voice_samples.items():
         for i, s in enumerate(samples):
@@ -745,111 +743,16 @@ def _build_voice_pool(voice_samples: dict[str, list[dict]]) -> list[dict]:
     return pool
 
 
-def _load_speaker_map(output_dir: str) -> dict[str, str]:
-    """Return {SPEAKER_XX: human_name} from the first *.speaker_map.json in output_dir."""
-    for p in Path(output_dir).glob("*.speaker_map.json"):
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-
-def _load_voice_samples_from_disk(
+def _load_existing_voice_samples(
     audio_path, output_dir: str, translation: list
 ) -> dict:
-    samples_dir = Path(output_dir) / "voice_samples"
-    if not samples_dir.exists():
-        return {}
+    """Load previously extracted voice samples from disk, matching speakers in translation."""
     seen: set[str] = set()
     speakers: list[str] = []
     for seg in translation:
-        sp = seg.get("speaker", "")
-        if sp and sp not in seen:
-            seen.add(sp)
-            speakers.append(sp)
-
-    # speaker_map lets us fall back to SPEAKER_XX-named files when the transcript
-    # uses human names (i.e. the map was applied during export).
-    speaker_map = _load_speaker_map(output_dir)  # {SPEAKER_XX: human_name}
-    inv_map = {v: k for k, v in speaker_map.items()}  # {human_name: SPEAKER_XX}
-
-    result = {}
-    for speaker in speakers:
-        files = sorted(
-            f for f in samples_dir.glob(f"{speaker}_*.wav") if "_custom_" not in f.name
-        )
-        if not files:
-            # Fallback: samples may be stored under the original SPEAKER_XX label
-            speaker_id = inv_map.get(speaker)
-            if speaker_id:
-                files = sorted(
-                    f
-                    for f in samples_dir.glob(f"{speaker_id}_*.wav")
-                    if "_custom_" not in f.name
-                )
-        if files:
-            result[speaker] = [
-                {"file": f, "duration": _wav_duration(f), "text": ""} for f in files
-            ]
-    return result
-
-
-def _load_generated_from_disk(output_dir: str, translation: list) -> list:
-    segments_dir = Path(output_dir) / "tts_segments"
-    if not segments_dir.exists():
-        return []
-    result = []
-    for i, seg in enumerate(translation):
-        speaker = seg.get("speaker", "UNK")
-        wav_path = segments_dir / f"{i:04d}_{speaker}.wav"
-        if not wav_path.exists():
-            return []
-        try:
-            import soundfile as sf
-
-            info = sf.info(str(wav_path))
-            result.append(
-                {**seg, "audio_file": wav_path, "sample_rate": info.samplerate}
-            )
-        except Exception:
-            return []
-    return result
-
-
-def _validate_segments_json(data, required: tuple[str, ...]) -> str | None:
-    """
-    Return a human-readable error string if data doesn't look like a valid
-    segments array, or None if it passes basic validation.
-    """
-    if not isinstance(data, list):
-        if isinstance(data, dict):
-            keys = list(data.keys())[:6]
-            hint = (
-                " Looks like a raw Whisper output — use the 🎙️ Transcribe tab to export it first."
-                if "segments" in data or "text" in data
-                else ""
-            )
-            return f"Expected a JSON array but got an object with keys {keys}.{hint}"
-        return f"Expected a JSON array, got {type(data).__name__}."
-    if not data:
-        return "The JSON array is empty."
-    if not isinstance(data[0], dict):
-        return f"Expected each element to be an object, got {type(data[0]).__name__}."
-    missing = [f for f in required if f not in data[0]]
-    if missing:
-        found = list(data[0].keys())
-        return (
-            f"Missing required field(s) {missing} in the first segment. "
-            f"Fields found: {found}. Check the format hint above."
-        )
-    return None
-
-
-def _wav_duration(path: Path) -> float:
-    try:
-        import soundfile as sf
-
-        return sf.info(str(path)).duration
-    except Exception:
-        return 0.0
+        speaker = seg.get("speaker", "")
+        if speaker and speaker not in seen:
+            seen.add(speaker)
+            speakers.append(speaker)
+    speaker_map = load_speaker_map(audio_path, output_dir=output_dir)
+    return load_voice_samples(output_dir, speakers, speaker_map)
