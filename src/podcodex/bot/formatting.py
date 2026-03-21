@@ -40,7 +40,7 @@ def highlight(text: str, query: str) -> str:
     if not query:
         return text
     escaped = re.escape(query)
-    return re.sub(f"({escaped})", r"**\1**", text, flags=re.IGNORECASE)
+    return re.sub(f"({escaped})", r"**__\1__**", text, flags=re.IGNORECASE)
 
 
 def speaker_lines(chunk: dict, query: str = "") -> str:

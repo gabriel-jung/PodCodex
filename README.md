@@ -171,7 +171,7 @@ episode_path = synthesize.assemble_episode(
 
 ### RAG — vectorize & query
 
-Indexing writes to SQLite only. Qdrant is needed for search — start it with `docker compose up -d` or set `QDRANT_URL`.
+Indexing saves everything locally in a SQLite file. To enable search, you also need Qdrant running — start it with `docker compose up -d` or set `QDRANT_URL`.
 
 ```bash
 # Embed and store a transcript
@@ -244,13 +244,25 @@ podcodex-bot --dev-guild 123456789  # instant command sync for development
 - `/search <question>` — hybrid semantic search (alpha blends keyword/semantic)
 - `/exact <query>` — literal substring match (case-insensitive)
 - `/stats` — index overview (shows, episodes, segments, duration)
-- `/episodes <show>` — list episodes with segment counts
+- `/episodes [show]` — list episodes (auto-selects if only one show)
 
 **Admin commands:**
 - `/setup` — configure per-server defaults (model, chunker, top_k, show allow-list)
 - `/sync` — manually sync the command tree
 
 All search commands support optional `show`, `episode`, `speaker`, `source`, and `compact` filters.
+
+### Creating the Discord application
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**
+2. Under **Bot**, click **Reset Token** and copy it — this is your `DISCORD_TOKEN`
+3. Under **Bot → Privileged Gateway Intents**, enable **Message Content Intent** (needed for the bot to read messages if you add message-based features later)
+4. Under **OAuth2 → URL Generator**:
+   - **Scopes**: select `bot` and `applications.commands`
+   - **Bot Permissions**: select `Send Messages`, `Embed Links`, `Use Slash Commands`
+5. Copy the generated URL and open it in your browser to invite the bot to your server
+
+For development, use `--dev-guild <guild_id>` so slash commands sync instantly to your test server instead of waiting up to an hour for global propagation.
 
 ### Deploying the bot
 
@@ -378,4 +390,4 @@ Outputs are organised per episode under the show folder. Each step produces a `.
 - Diarization requires a valid `HF_TOKEN` and model access on Hugging Face
 - Synthesis (Qwen3-TTS) is GPU-heavy — recommended on CUDA for production use
 - Ollama translation works best with models >= 14B for reliable JSON output
-- SQLite (`vectors.db`) is the source of truth for embeddings; `podcodex sync` rebuilds Qdrant from it
+- All embeddings are saved locally in `vectors.db` (SQLite) — `podcodex sync` pushes them to Qdrant for search

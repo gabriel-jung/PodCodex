@@ -457,14 +457,14 @@ class PodCodexBot(discord.Client):
         )
         @app_commands.describe(
             question="What are you looking for?",
-            show="Restrict to a specific show (leave empty for all)",
-            episode="Restrict to a specific episode",
-            speaker="Only show results from this speaker",
-            alpha="0 = keywords only → 1 = semantic only (default 0.5)",
-            model="Embedding model — overrides server default",
-            top_k="Number of results — overrides server default",
-            source="Only search chunks from this source (e.g. polished, transcript)",
-            compact="Compact single-embed results (overrides server default)",
+            show="Pick a show (searches all if empty)",
+            episode="Pick an episode",
+            speaker="Filter by speaker name",
+            alpha="0 = keywords only → 1 = meaning only (default 0.5)",
+            model="Search model (leave empty for server default)",
+            top_k="How many results to show (leave empty for server default)",
+            source="Where to search: polished, transcript, etc.",
+            compact="Show results in a single compact embed",
         )
         @app_commands.choices(model=_MODEL_CHOICES, compact=_BOOL_CHOICES)
         async def search(
@@ -517,13 +517,13 @@ class PodCodexBot(discord.Client):
             description="Literal substring search — case-insensitive, like Ctrl+F",
         )
         @app_commands.describe(
-            query="Exact text to find (case-insensitive)",
-            show="Restrict to a specific show (leave empty for all)",
-            episode="Restrict to a specific episode",
-            speaker="Only show results from this speaker",
-            top_k="Max results (default 25)",
-            source="Only search chunks from this source (e.g. polished, transcript)",
-            compact="Compact single-embed results (overrides server default)",
+            query="Text to find (not case-sensitive)",
+            show="Pick a show (searches all if empty)",
+            episode="Pick an episode",
+            speaker="Filter by speaker name",
+            top_k="How many results to show (default 25)",
+            source="Where to search: polished, transcript, etc.",
+            compact="Show results in a single compact embed",
         )
         @app_commands.choices(compact=_BOOL_CHOICES)
         async def exact(
@@ -570,8 +570,8 @@ class PodCodexBot(discord.Client):
             description="Index overview: shows, episodes, segments, duration",
         )
         @app_commands.describe(
-            show="Restrict to a specific show (leave empty for all)",
-            model="Embedding model to filter collections",
+            show="Pick a show (shows all if empty)",
+            model="Search model (leave empty for server default)",
         )
         @app_commands.choices(model=_MODEL_CHOICES)
         async def stats(
@@ -589,16 +589,16 @@ class PodCodexBot(discord.Client):
             description="List episodes for a show with segment count and duration",
         )
         @app_commands.describe(
-            show="Show name (required)",
-            model="Embedding model to filter collections",
+            show="Pick a show (auto-selected if only one)",
+            model="Search model (leave empty for server default)",
         )
         @app_commands.choices(model=_MODEL_CHOICES)
         async def episodes(
             interaction: discord.Interaction,
-            show: str,
+            show: str = "",
             model: str = "",
         ) -> None:
-            await self._handle_episodes(interaction, show, model or None)
+            await self._handle_episodes(interaction, show or None, model or None)
 
         episodes.autocomplete("show")(self._show_autocomplete)
 
@@ -609,14 +609,14 @@ class PodCodexBot(discord.Client):
         )
         @app_commands.default_permissions(manage_guild=True)
         @app_commands.describe(
-            model="Default embedding model",
-            chunker="Default chunking strategy",
-            top_k="Default number of results per query",
-            show_add="Pin a show as default for searches",
-            show_remove="Remove a pinned show",
-            show_clear="Reset pinned shows (search all)",
-            default_source="Default source filter (e.g. polished, transcript)",
-            compact="Default compact results mode",
+            model="Default search model for this server",
+            chunker="How transcripts are split up for search",
+            top_k="How many results to show by default",
+            show_add="Always search this show by default",
+            show_remove="Stop searching this show by default",
+            show_clear="Remove all default shows (search everything)",
+            default_source="Default source to search: polished, transcript, etc.",
+            compact="Use compact results by default",
         )
         @app_commands.choices(
             model=_MODEL_CHOICES,
@@ -1036,13 +1036,42 @@ class PodCodexBot(discord.Client):
     async def _handle_episodes(
         self,
         interaction: discord.Interaction,
-        show: str,
+        show: str | None,
         model: str | None,
     ) -> None:
         await interaction.response.defer()
         settings = self._effective_settings(interaction.guild_id, model or "", 0)
-        col = collection_name(show, settings.model, settings.chunker)
         loop = asyncio.get_running_loop()
+
+        # Auto-resolve show: explicit > default_shows > single show > ask
+        if not show:
+            if settings.default_shows:
+                show = settings.default_shows[0]
+            else:
+                collections = await loop.run_in_executor(
+                    None,
+                    lambda: self.store.list_collections(
+                        model=settings.model, chunker=settings.chunker
+                    ),
+                )
+                suffix = f"__{settings.model}__{settings.chunker}"
+                shows = sorted({c.removesuffix(suffix) for c in collections})
+                if len(shows) == 1:
+                    show = shows[0]
+                elif not shows:
+                    await interaction.followup.send(
+                        "No indexed shows found.", ephemeral=True
+                    )
+                    return
+                else:
+                    names = "\n".join(f"🎙 {s}" for s in shows)
+                    await interaction.followup.send(
+                        f"Multiple shows available — please specify one:\n{names}",
+                        ephemeral=True,
+                    )
+                    return
+
+        col = collection_name(show, settings.model, settings.chunker)
 
         try:
             ep_stats = await loop.run_in_executor(
