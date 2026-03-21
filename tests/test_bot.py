@@ -132,12 +132,18 @@ _CHUNK = {
 }
 
 
-def test_result_embed_show_as_author_episode_as_title():
+def test_result_embed_show_in_title_query_as_author():
     embed, _ = _result_embed(
-        _CHUNK, rank=1, total=5, collection="my_podcast", label="α=0.50"
+        _CHUNK,
+        rank=1,
+        total=5,
+        collection="my_podcast",
+        label="α=0.50",
+        question="film music",
     )
-    assert embed.author.name == "🎙 My Podcast"
-    assert embed.title == "ep01"
+    assert embed.author.name == '🔎 "film music"'
+    assert "ep01" in embed.title
+    assert "My Podcast" in embed.title
 
 
 def test_result_embed_footer_has_rank_and_label():

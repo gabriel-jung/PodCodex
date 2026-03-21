@@ -236,12 +236,16 @@ def build_compact_embed(
     results: list[tuple[dict, str]],
     label: str,
     query: str = "",
+    question: str = "",
 ) -> "discord.Embed":
     """Build a single embed with one field per result (max 25)."""
     import discord
 
+    q = question or query
+    title = f"🔎 {label}"
     embed = discord.Embed(
-        title=f"🔎 {label}",
+        title=title,
+        description=f'*"{q}"*' if q else None,
         color=discord.Color.blurple(),
     )
     for i, (chunk, _col) in enumerate(results[:25], 1):

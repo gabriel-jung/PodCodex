@@ -131,6 +131,7 @@ def _result_embed(
     collection: str,
     label: str,
     query: str = "",
+    question: str = "",
 ) -> tuple[discord.Embed, ExpandView]:
     """Build a Discord embed + context-expand view for a single search result."""
     show = chunk.get("show", "")
@@ -139,11 +140,15 @@ def _result_embed(
     end = chunk.get("end", 0.0)
     score = chunk.get("score", 0.0)
 
+    q = question or query
     description = speaker_lines(chunk, query=query)
     embed = discord.Embed(description=description, color=discord.Color.blurple())
+    if q:
+        embed.set_author(name=f'🔎 "{q}"')
+    title = episode or "(untitled)"
     if show:
-        embed.set_author(name=f"🎙 {show}")
-    embed.title = episode or "(untitled)"
+        title += f" ({show})"
+    embed.title = title
     embed.add_field(
         name="Timestamp", value=f"{fmt_time(start)} → {fmt_time(end)}", inline=True
     )
@@ -754,11 +759,11 @@ class PodCodexBot(discord.Client):
             return
 
         if compact:
-            embed = build_compact_embed(results, label)
+            embed = build_compact_embed(results, label, question=question)
             await interaction.followup.send(embed=embed)
         else:
             pages = [
-                _result_embed(chunk, rank, len(results), col, label)
+                _result_embed(chunk, rank, len(results), col, label, question=question)
                 for rank, (chunk, col) in enumerate(results, 1)
             ]
             view = PaginatedResultView(pages)
