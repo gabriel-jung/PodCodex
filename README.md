@@ -2,28 +2,135 @@
 
 AI tools for podcast production — transcription, polishing, translation, voice synthesis, and semantic search.
 
-## Modules
+The **Discord bot** lets anyone search through your podcast transcripts. The **pipeline** handles the processing: transcribe, polish, translate, synthesize, and index.
 
-| Module | Description |
-|--------|-------------|
-| `podcodex.core.transcribe` | WhisperX transcription + phonetic alignment + speaker diarization |
-| `podcodex.core.polish` | LLM-based source correction (proper nouns, spelling, punctuation) |
-| `podcodex.core.translate` | LLM-based transcript translation (Ollama, OpenAI-compatible API, or manual) |
-| `podcodex.core.synthesize` | Qwen3-TTS voice cloning + episode assembly |
-| `podcodex.rag` | Chunking, embedding, vector storage (Qdrant + SQLite), and hybrid retrieval |
-| `podcodex.ingest` | Scan a show folder and report per-episode processing status |
-| `podcodex.bot` | Discord bot with `/search`, `/exact`, `/stats`, `/episodes` commands |
-| `podcodex.cli` | CLI: `podcodex vectorize / sync / query / list / delete` |
+## Discord bot
+
+Search your podcast transcripts from Discord with slash commands.
+
+**Commands:**
+
+- `/search <question>` — find relevant passages by meaning (semantic) or keywords
+- `/exact <query>` — literal text search, like Ctrl+F
+- `/stats` — overview of indexed shows, episodes, and duration
+- `/episodes [show]` — list episodes (auto-selects if only one show)
+- `/setup` — configure server defaults (admin)
+- `/sync` — manually sync the command tree (admin)
+
+All search commands support optional `show`, `episode`, `speaker`, `source`, and `compact` filters.
+
+### Setting up the Discord application
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**
+2. Under **Bot**, click **Reset Token** and copy it — this is your `DISCORD_TOKEN`
+3. Under **Bot → Privileged Gateway Intents**, enable **Message Content Intent** (needed for the bot to read messages if you add message-based features later)
+4. Under **OAuth2 → URL Generator**:
+   - **Scopes**: select `bot` and `applications.commands`
+   - **Bot Permissions**: select `Send Messages`, `Embed Links`, `Use Slash Commands`
+5. Copy the generated URL and open it in your browser to invite the bot to your server
+
+### Running the bot locally
+
+```bash
+# Required env vars
+DISCORD_TOKEN=your_bot_token
+QDRANT_URL=http://localhost:6333   # Qdrant must be running for search
+
+# Start
+podcodex-bot --model bge-m3 --chunking semantic --top-k 5
+podcodex-bot --dev-guild 123456789  # instant command sync for development
+```
+
+### Deploying to a server
+
+The `deploy/` directory contains everything needed to run the bot + Qdrant on a VPS (tested on Ubuntu 4GB RAM). Only Docker is required on the server — no Python, no GPU.
+
+#### 1. Clone and configure
+
+```bash
+ssh user@vps
+git clone https://github.com/gabriel-jung/podcodex ~/podcodex
+cd ~/podcodex
+cp deploy/.env.example deploy/.env.production
+# Edit deploy/.env.production and set DISCORD_TOKEN
+```
+
+#### 2. Copy your vectors database
+
+```bash
+# From your local machine
+scp /path/to/vectors.db user@vps:~/podcodex/deploy/data/
+```
+
+#### 3. Build and seed
+
+```bash
+cd ~/podcodex
+
+# Build the bot image (includes BGE-M3 model download — takes a few minutes)
+docker compose -f deploy/docker-compose.yml build
+
+# Start Qdrant first
+docker compose -f deploy/docker-compose.yml up -d qdrant
+
+# Seed Qdrant from your local SQLite database
+docker compose -f deploy/docker-compose.yml run --rm --entrypoint podcodex bot \
+    sync --db /app/data/vectors.db --show "My Podcast"
+```
+
+#### 4. Start the bot
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+The bot image installs only core + bot dependencies (no pipeline), keeping it under 3GB. Qdrant is limited to 512MB. Logs rotate automatically (50MB × 3 files). The bot auto-restarts on crash or reboot.
+
+#### Updating
+
+**New code:**
+
+```bash
+cd ~/podcodex
+git pull
+docker compose -f deploy/docker-compose.yml build bot
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+**New episodes indexed locally:**
+
+```bash
+# From your local machine
+scp /path/to/vectors.db user@vps:~/podcodex/deploy/data/
+
+# On the VPS
+docker compose -f deploy/docker-compose.yml run --rm --entrypoint podcodex bot \
+    sync --db /app/data/vectors.db --show "My Podcast"
+```
+
+No manual stop needed — `up -d` replaces the running container automatically.
+
+**Checking logs:**
+
+```bash
+docker compose -f deploy/docker-compose.yml logs bot --tail 50
+docker compose -f deploy/docker-compose.yml logs -f bot        # follow live
+docker compose -f deploy/docker-compose.yml ps                 # container status
+```
 
 ## Pipeline
 
-```
+The processing pipeline runs locally and requires more setup than the bot.
+
+```text
 Audio → transcribe → polish → translate → synthesize
                        ↓
                   vectorize → query
 ```
 
-## System Requirements
+### System requirements
+
+These are only needed if you run the pipeline locally (not needed for the bot deployment).
 
 ```bash
 # macOS
@@ -31,40 +138,42 @@ brew install ffmpeg sox
 
 # Ubuntu/Debian
 sudo apt install ffmpeg sox
-
-# Qdrant (required for search — not needed for indexing)
-docker compose up -d
 ```
 
-## Installation
+### Installation
 
 ```bash
 git clone https://github.com/gabriel-jung/podcodex
 cd podcodex
 
+# Bot only (search + Discord)
+uv pip install -e ".[bot]"
+
 # Full install (pipeline + bot + app)
 uv pip install -e ".[bot,pipeline,app]"
-
-# Minimal install (just RAG search + bot)
-uv pip install -e ".[bot]"
 ```
 
-## Environment Variables
+### Environment variables
 
-Create a `.env` file at the root:
+Create a `.env` file at the root. Only set what you need:
 
 ```env
-HF_TOKEN=your_huggingface_token   # required for pyannote diarization
-API_KEY=your_api_key              # any OpenAI-compatible provider (Mistral, OpenAI, etc.)
+# Bot
+DISCORD_TOKEN=your_bot_token      # required for the Discord bot
+
+# Search
 QDRANT_URL=http://localhost:6333  # optional, defaults to localhost:6333
 PODCODEX_DB=/path/to/vectors.db   # optional, overrides default SQLite location
+
+# Pipeline
+HF_TOKEN=your_huggingface_token   # required for speaker diarization
+API_KEY=your_api_key              # any OpenAI-compatible provider (Mistral, OpenAI, etc.)
 ```
 
 `HF_TOKEN` requires accepting the pyannote model terms on Hugging Face:
+
 - [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
 - [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
-
-## Usage
 
 ### Transcription
 
@@ -144,6 +253,14 @@ translated = translate.translate_segments(json_from_llm, mode="manual")
 translate.save_translation_raw("episode.mp3", translated, "english", output_dir="ep01/")
 ```
 
+#### Translation modes
+
+| Mode | Description | Best for |
+|------|-------------|----------|
+| `ollama` | Local LLM via Ollama | Privacy, offline — use 14B+ models |
+| `api` | OpenAI-compatible API | Best quality (Mistral, OpenAI, etc.) |
+| `manual` | Copy/paste via LLM UI | Full control, best quality |
+
 ### Synthesis
 
 ```python
@@ -169,7 +286,7 @@ episode_path = synthesize.assemble_episode(
 )
 ```
 
-### RAG — vectorize & query
+### Indexing & search
 
 Indexing saves everything locally in a SQLite file. To enable search, you also need Qdrant running — start it with `docker compose up -d` or set `QDRANT_URL`.
 
@@ -228,116 +345,6 @@ results = retriever.retrieve(
 )
 ```
 
-### Discord bot
-
-```bash
-# Required env vars
-DISCORD_TOKEN=your_bot_token
-QDRANT_URL=http://localhost:6333
-
-# Run the bot
-podcodex-bot --model bge-m3 --chunking semantic --top-k 5
-podcodex-bot --dev-guild 123456789  # instant command sync for development
-```
-
-**User commands:**
-- `/search <question>` — hybrid semantic search (alpha blends keyword/semantic)
-- `/exact <query>` — literal substring match (case-insensitive)
-- `/stats` — index overview (shows, episodes, segments, duration)
-- `/episodes [show]` — list episodes (auto-selects if only one show)
-
-**Admin commands:**
-- `/setup` — configure per-server defaults (model, chunker, top_k, show allow-list)
-- `/sync` — manually sync the command tree
-
-All search commands support optional `show`, `episode`, `speaker`, `source`, and `compact` filters.
-
-### Creating the Discord application
-
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**
-2. Under **Bot**, click **Reset Token** and copy it — this is your `DISCORD_TOKEN`
-3. Under **Bot → Privileged Gateway Intents**, enable **Message Content Intent** (needed for the bot to read messages if you add message-based features later)
-4. Under **OAuth2 → URL Generator**:
-   - **Scopes**: select `bot` and `applications.commands`
-   - **Bot Permissions**: select `Send Messages`, `Embed Links`, `Use Slash Commands`
-5. Copy the generated URL and open it in your browser to invite the bot to your server
-
-For development, use `--dev-guild <guild_id>` so slash commands sync instantly to your test server instead of waiting up to an hour for global propagation.
-
-### Deploying the bot
-
-The `deploy/` directory contains everything needed to run the bot + Qdrant on a VPS (tested on Ubuntu 4GB RAM).
-
-#### 1. Clone and configure
-
-```bash
-ssh user@vps
-git clone https://github.com/gabriel-jung/podcodex ~/podcodex
-cd ~/podcodex
-cp deploy/.env.example deploy/.env.production
-# Edit deploy/.env.production and set DISCORD_TOKEN
-```
-
-#### 2. Copy your vectors database
-
-```bash
-# From your local machine
-scp /path/to/vectors.db user@vps:~/podcodex/deploy/data/
-```
-
-#### 3. Build and seed
-
-```bash
-cd ~/podcodex
-
-# Build the bot image (includes BGE-M3 model download — takes a few minutes)
-docker compose -f deploy/docker-compose.yml build
-
-# Start Qdrant first
-docker compose -f deploy/docker-compose.yml up -d qdrant
-
-# Seed Qdrant from your local SQLite database
-docker compose -f deploy/docker-compose.yml run --rm --entrypoint podcodex bot \
-    sync --db /app/data/vectors.db --show "My Podcast"
-```
-
-#### 4. Start the bot
-
-```bash
-docker compose -f deploy/docker-compose.yml up -d
-```
-
-The bot image installs only core + bot dependencies (no pipeline), keeping it under 3GB. Qdrant is limited to 512MB. Logs rotate automatically (50MB × 3 files). The bot auto-restarts on crash or reboot.
-
-#### Updating
-
-**New code:**
-```bash
-cd ~/podcodex
-git pull
-docker compose -f deploy/docker-compose.yml build bot
-docker compose -f deploy/docker-compose.yml up -d
-```
-
-**New episodes indexed locally:**
-```bash
-# From your local machine
-scp /path/to/vectors.db user@vps:~/podcodex/deploy/data/
-
-# On the VPS
-docker compose -f deploy/docker-compose.yml run --rm --entrypoint podcodex bot \
-    sync --db /app/data/vectors.db --show "My Podcast"
-```
-
-No manual stop needed — `up -d` replaces the running container automatically.
-
-**Checking logs:**
-```bash
-docker compose -f deploy/docker-compose.yml logs bot --tail 50
-docker compose -f deploy/docker-compose.yml logs -f bot        # follow live
-docker compose -f deploy/docker-compose.yml ps                 # container status
-```
-
 ### Streamlit app
 
 ```bash
@@ -348,11 +355,11 @@ Tabs: **Transcribe** → **Polish** → **Index** → **Translate** → **Synthe
 
 The sidebar scans a show folder and displays per-episode status. Opening an episode loads it into the pipeline tabs. The Search tab queries across all indexed episodes.
 
-## Output Files
+## Output files
 
 Outputs are organised per episode under the show folder. Each step produces a `.raw.json` (pipeline output) and a `.json` (user-validated) version:
 
-```
+```text
 /shows/my_podcast/
 ├── ep01.mp3
 ├── ep01/
@@ -376,13 +383,18 @@ Outputs are organised per episode under the show folder. Each step produces a `.
     └── ...
 ```
 
-## Translation Modes
+## Modules
 
-| Mode | Description | Best for |
-|------|-------------|----------|
-| `ollama` | Local LLM via Ollama | Privacy, offline — use 14B+ models |
-| `api` | OpenAI-compatible API | Best quality (Mistral, OpenAI, etc.) |
-| `manual` | Copy/paste via LLM UI | Full control, best quality |
+| Module | Description |
+|--------|-------------|
+| `podcodex.bot` | Discord bot with `/search`, `/exact`, `/stats`, `/episodes` commands |
+| `podcodex.rag` | Chunking, embedding, vector storage (Qdrant + SQLite), and hybrid retrieval |
+| `podcodex.cli` | CLI: `podcodex vectorize / sync / query / list / delete` |
+| `podcodex.core.transcribe` | WhisperX transcription + phonetic alignment + speaker diarization |
+| `podcodex.core.polish` | LLM-based source correction (proper nouns, spelling, punctuation) |
+| `podcodex.core.translate` | LLM-based transcript translation (Ollama, OpenAI-compatible API, or manual) |
+| `podcodex.core.synthesize` | Qwen3-TTS voice cloning + episode assembly |
+| `podcodex.ingest` | Scan a show folder and report per-episode processing status |
 
 ## Notes
 
