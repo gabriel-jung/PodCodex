@@ -47,6 +47,7 @@ from podcodex.bot.formatting import (
     build_compact_embed,
     count_occurrences,
     fmt_time,
+    fmt_timestamp,
     merge_results,
     score_bar,
     speaker_lines,
@@ -152,9 +153,10 @@ def _result_embed(
     if show:
         title += f" ({show})"
     embed.title = title
-    embed.add_field(
-        name="Timestamp", value=f"{fmt_time(start)} → {fmt_time(end)}", inline=True
-    )
+    timed = chunk.get("timed", True)
+    ts_label = fmt_timestamp(start, end, timed=timed)
+    if ts_label:
+        embed.add_field(name="Timestamp", value=ts_label, inline=True)
     embed.add_field(
         name="Relevance", value=f"{score_bar(score)} {score:.0%}", inline=True
     )
@@ -1021,9 +1023,10 @@ class PodCodexBot(discord.Client):
             title += f" ({show})"
         embed.title = title
         embed.add_field(name="Speaker", value=spk, inline=True)
-        embed.add_field(
-            name="Timestamp", value=f"{fmt_time(start)} → {fmt_time(end)}", inline=True
-        )
+        timed = chunk.get("timed", True)
+        ts_label = fmt_timestamp(start, end, timed=timed)
+        if ts_label:
+            embed.add_field(name="Timestamp", value=ts_label, inline=True)
         embed.set_footer(text="🎲 random quote")
 
         view = ExpandView(col, ep, show, start)

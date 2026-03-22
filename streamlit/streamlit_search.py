@@ -137,7 +137,9 @@ def _run_sync(db_path: str, show: str | None):
 def _render_search_section(show_name: str):
     """Render the search UI: query input, filters, and result display."""
     audio_path = st.session_state.get("audio_path")
-    episode_stem = Path(audio_path).stem if audio_path else None
+    episode_stem = st.session_state.get("episode_stem") or (
+        Path(audio_path).stem if audio_path else None
+    )
 
     if show_name:
         show_input = show_name

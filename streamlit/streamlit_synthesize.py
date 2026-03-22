@@ -33,6 +33,13 @@ def render():
     st.header("Synthesis")
     st.caption("Clone speaker voices and synthesize a translated podcast episode.")
 
+    if st.session_state.get("transcript_only"):
+        st.info(
+            "Audio synthesis requires an audio file for voice cloning. "
+            "This episode has no audio file."
+        )
+        return
+
     # ── Import (standalone mode) ──
     if not st.session_state.get("translation"):
         with st.container(border=True):

@@ -17,7 +17,13 @@ from podcodex.core.translate import (
 )
 from podcodex.core import validate_segments_json
 from constants import DEFAULT_OLLAMA_MODEL, DEFAULT_SOURCE_LANG, DEFAULT_TARGET_LANG
-from utils import PROVIDERS, build_llm_kwargs, fmt_time, on_provider_change
+from utils import (
+    PROVIDERS,
+    build_llm_kwargs,
+    fmt_time,
+    get_episode_paths,
+    on_provider_change,
+)
 from streamlit_editor import render_segment_editor
 
 
@@ -115,6 +121,8 @@ def render():
                                     encoding="utf-8",
                                 )
                                 st.session_state.audio_path = dummy
+                                st.session_state.episode_stem = stem
+                                st.session_state.transcript_only = True
                             st.session_state.transcript = data
                             st.success(f"Loaded — {len(data)} segments.")
                             st.session_state.requested_tab = "translate"
@@ -127,20 +135,24 @@ def render():
         if not st.session_state.get("transcript"):
             return
 
-    audio_path = st.session_state.get("audio_path")
-    output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
-
-    if not audio_path:
+    paths = get_episode_paths()
+    if not paths:
         st.warning("Session lost — please reload the page.")
         st.session_state.transcript = None
         st.rerun()
 
+    audio_path = st.session_state.get("audio_path")
+    output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
     nodiar = st.session_state.get("skip_diarization", False)
-    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
 
     # ── Episode header ──
     with st.container(border=True):
-        st.markdown(f"**{Path(str(audio_path)).name}**")
+        ep_label = (
+            st.session_state.get("episode_title")
+            or st.session_state.get("episode_stem")
+            or Path(str(audio_path)).name
+        )
+        st.markdown(f"**{ep_label}**")
         st.caption(str(output_dir))
 
     transcript = st.session_state.transcript
@@ -646,11 +658,14 @@ def _render_translation_editor(
                         st.session_state[f"translate_{audio_path}_{lang}_dirty"] = False
                         st.rerun()
 
+                _real_audio = (
+                    audio_path if not st.session_state.get("transcript_only") else None
+                )
                 render_segment_editor(
                     translation,
                     editor_key=f"translate_{audio_path}_{lang}",
                     on_save=_make_save(),
-                    audio_path=audio_path,
+                    audio_path=_real_audio,
                     reference_segments=source_segments,
                     is_saved=paths.has_validated_translation(lang) and not _viewing_raw,
                     export_fn=segments_to_text,

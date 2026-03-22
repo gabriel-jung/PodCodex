@@ -1,6 +1,9 @@
 """
 podcodex.cli — Command-line interface.
 
+    podcodex init      <show_folder> --name <name> [--rss <url>] [--language <lang>]
+    podcodex rss       <show_folder> [--rss <url>] [--episode <title>] [--download]
+    podcodex import    <transcript.json> <show_folder> [--episode <stem>] [--show <name>]
     podcodex vectorize <transcript.json> --show <name>
                        [--model bge-m3] [--chunking semantic|speaker]
                        [--chunk-size N] [--threshold F]
@@ -417,6 +420,128 @@ def cmd_list(args: argparse.Namespace) -> None:
             print(name)
 
 
+def cmd_init(args: argparse.Namespace) -> None:
+    from podcodex.ingest.show import ShowMeta, load_show_meta, save_show_meta
+
+    folder = Path(args.show_folder)
+    existing = load_show_meta(folder)
+    if existing and not args.overwrite:
+        logger.info(
+            f"show.toml already exists for '{existing.name}' — use --overwrite to replace"
+        )
+        return
+
+    meta = ShowMeta(
+        name=args.name,
+        rss_url=args.rss or "",
+        language=args.language or "",
+        speakers=[s.strip() for s in args.speakers.split(",")] if args.speakers else [],
+    )
+    path = save_show_meta(folder, meta)
+    logger.success(f"Created {path}")
+
+
+def cmd_rss(args: argparse.Namespace) -> None:
+    from podcodex.ingest.rss import (
+        download_audio,
+        fetch_feed,
+        save_feed_cache,
+        episode_stem as rss_episode_stem,
+    )
+    from podcodex.ingest.show import load_show_meta
+
+    folder = Path(args.show_folder)
+    meta = load_show_meta(folder)
+
+    rss_url = args.rss or (meta.rss_url if meta else "")
+    if not rss_url:
+        logger.error("No RSS URL — pass --rss or set rss_url in show.toml")
+        sys.exit(1)
+
+    logger.info(f"Fetching {rss_url}")
+    episodes = fetch_feed(rss_url)
+    if not episodes:
+        logger.warning("No episodes found in feed.")
+        return
+
+    save_feed_cache(folder, episodes)
+
+    # Filter to single episode if requested
+    if args.episode:
+        q = args.episode.lower()
+        episodes = [
+            ep for ep in episodes if q in ep.title.lower() or q in ep.guid.lower()
+        ]
+        if not episodes:
+            logger.error(f"No episode matching '{args.episode}'")
+            sys.exit(1)
+
+    new_count = 0
+    existing_count = 0
+    downloaded_count = 0
+
+    for ep in episodes:
+        stem = rss_episode_stem(ep)
+        output_dir = folder / stem
+
+        if output_dir.exists():
+            existing_count += 1
+        else:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            ep_meta = {
+                "guid": ep.guid,
+                "title": ep.title,
+                "pub_date": ep.pub_date,
+                "description": ep.description,
+                "audio_url": ep.audio_url,
+                "duration": ep.duration,
+            }
+            (output_dir / ".episode_meta.json").write_text(
+                json.dumps(ep_meta, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            new_count += 1
+
+        has_audio = "🎵" if ep.audio_url else "  "
+        print(f"  {has_audio} {stem}  ←  {ep.title}")
+
+        if args.download and ep.audio_url:
+            result = download_audio(ep, folder)
+            if result:
+                downloaded_count += 1
+
+    logger.success(
+        f"{new_count} new, {existing_count} existing"
+        + (f", {downloaded_count} downloaded" if args.download else "")
+    )
+
+
+def cmd_import(args: argparse.Namespace) -> None:
+    from podcodex.ingest.importer import import_transcript
+    from podcodex.ingest.show import load_show_meta
+
+    transcript_path = Path(args.transcript)
+    show_folder = Path(args.show_folder)
+
+    if not transcript_path.exists():
+        logger.error(f"Transcript not found: {transcript_path}")
+        sys.exit(1)
+
+    # Resolve show name
+    meta = load_show_meta(show_folder)
+    show_name = args.show or (meta.name if meta else "")
+    if not show_name:
+        logger.error(
+            "No show name — pass --show or create show.toml with podcodex init"
+        )
+        sys.exit(1)
+
+    # Resolve episode stem
+    episode_stem = args.episode or transcript_path.stem
+
+    dest = import_transcript(transcript_path, show_folder, episode_stem, show_name)
+    print(f"Imported → {dest}")
+
+
 def cmd_delete(args: argparse.Namespace) -> None:
     store = QdrantStore()
     store.delete_collection(args.collection)
@@ -434,6 +559,55 @@ def _build_parser() -> argparse.ArgumentParser:
         description="AI tools for podcast production.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    # init
+    p_init = sub.add_parser("init", help="Create show.toml for a show folder.")
+    p_init.add_argument("show_folder", help="Path to the show folder.")
+    p_init.add_argument("--name", required=True, help="Canonical show name.")
+    p_init.add_argument("--rss", default=None, help="RSS feed URL.")
+    p_init.add_argument("--language", default=None, help="Primary language.")
+    p_init.add_argument(
+        "--speakers",
+        default=None,
+        help="Comma-separated list of known speakers.",
+    )
+    p_init.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing show.toml.",
+    )
+
+    # rss
+    p_rss = sub.add_parser(
+        "rss", help="Fetch RSS feed, register episodes, optionally download audio."
+    )
+    p_rss.add_argument("show_folder", help="Path to the show folder.")
+    p_rss.add_argument(
+        "--rss", default=None, help="RSS feed URL (overrides show.toml)."
+    )
+    p_rss.add_argument(
+        "--episode", default=None, help="Filter to a single episode by title or guid."
+    )
+    p_rss.add_argument(
+        "--download",
+        action="store_true",
+        help="Download audio files for episodes with enclosures.",
+    )
+
+    # import
+    p_imp = sub.add_parser(
+        "import", help="Import an external transcript into a show folder."
+    )
+    p_imp.add_argument(
+        "transcript", metavar="transcript.json", help="Path to transcript JSON."
+    )
+    p_imp.add_argument("show_folder", help="Path to the show folder.")
+    p_imp.add_argument(
+        "--episode", default=None, help="Episode stem (default: transcript filename)."
+    )
+    p_imp.add_argument(
+        "--show", default=None, help="Show name (default: from show.toml)."
+    )
 
     # vectorize
     p_vec = sub.add_parser("vectorize", help="Chunk, embed and store a transcript.")
@@ -576,7 +750,13 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    if args.command == "vectorize":
+    if args.command == "init":
+        cmd_init(args)
+    elif args.command == "rss":
+        cmd_rss(args)
+    elif args.command == "import":
+        cmd_import(args)
+    elif args.command == "vectorize":
         cmd_vectorize(args)
     elif args.command == "sync":
         cmd_sync(args)

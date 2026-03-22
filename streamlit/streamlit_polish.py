@@ -7,14 +7,20 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.core import AudioPaths, polish as polish_mod
+from podcodex.core import polish as polish_mod
 from podcodex.core._utils import segments_to_text
 from podcodex.core.polish import (
     load_polished_raw,
     load_polished_validated,
 )
 from constants import DEFAULT_OLLAMA_MODEL, DEFAULT_SOURCE_LANG
-from utils import PROVIDERS, build_llm_kwargs, fmt_time, on_provider_change
+from utils import (
+    PROVIDERS,
+    build_llm_kwargs,
+    fmt_time,
+    get_episode_paths,
+    on_provider_change,
+)
 from streamlit_editor import render_segment_editor
 
 
@@ -59,21 +65,25 @@ def render():
     st.header("Polish")
     st.caption("Correct transcription errors and proper nouns in the source language.")
 
-    audio_path = st.session_state.get("audio_path")
-    output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
-
-    if not audio_path:
+    paths = get_episode_paths()
+    if not paths:
         st.info(
             "No episode loaded. Load one from the sidebar or go to the **🎙️ Transcribe** tab."
         )
         return
 
+    audio_path = st.session_state.get("audio_path")
+    output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
     nodiar = st.session_state.get("skip_diarization", False)
-    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
 
     # ── Episode header ──
     with st.container(border=True):
-        st.markdown(f"**{Path(str(audio_path)).name}**")
+        ep_label = (
+            st.session_state.get("episode_title")
+            or st.session_state.get("episode_stem")
+            or Path(str(audio_path)).name
+        )
+        st.markdown(f"**{ep_label}**")
         st.caption(str(output_dir))
 
     if not st.session_state.get("transcript"):
@@ -85,7 +95,19 @@ def render():
                 type=["json"],
                 key="polish_transcript_upload",
                 label_visibility="collapsed",
+                help='JSON with {"segments": [...]} or a bare list of segments. Each segment needs at least a "text" field.',
             )
+            with st.expander("📋 Expected JSON format", expanded=False):
+                st.code(
+                    '{"segments": [\n'
+                    '  {"speaker": "Alice", "text": "Hello..."},\n'
+                    '  {"speaker": "Bob", "text": "Hi there!"}\n'
+                    "]}\n\n"
+                    '// Only "text" is required.\n'
+                    '// Optional: "speaker", "start", "end".\n'
+                    "// Also accepts a bare list of segments (without the wrapper).",
+                    language="json",
+                )
             if uploaded_json:
                 try:
                     data = json.loads(uploaded_json.read().decode("utf-8"))
@@ -484,11 +506,14 @@ def render():
                 st.session_state.polished = merged
                 st.toast("Polished transcript saved!")
 
+            _real_audio = (
+                audio_path if not st.session_state.get("transcript_only") else None
+            )
             render_segment_editor(
                 polished,
                 editor_key=f"polish_{audio_path}",
                 on_save=_on_save,
-                audio_path=audio_path,
+                audio_path=_real_audio,
                 reference_segments=transcript,
                 is_saved=paths.has_validated_polished() and not _viewing_raw,
                 export_fn=segments_to_text,

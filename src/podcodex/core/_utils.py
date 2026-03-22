@@ -81,6 +81,24 @@ class AudioPaths:
         base.parent.mkdir(parents=True, exist_ok=True)
         return cls(audio_path=audio_path, base=base, nodiar=nodiar)
 
+    @classmethod
+    def from_stem(
+        cls,
+        stem: str,
+        output_dir: str | Path,
+        nodiar: bool = False,
+    ) -> Self:
+        """Create paths for a transcript-only episode (no audio file).
+
+        Resolves all paths from ``output_dir / stem`` without requiring an
+        audio file to exist.
+        """
+        root = Path(output_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        base = root / stem
+        # Use a dummy audio_path — synthesis methods will check for existence
+        return cls(audio_path=root / f"{stem}.audio", base=base, nodiar=nodiar)
+
     # — RAG —
 
     @property

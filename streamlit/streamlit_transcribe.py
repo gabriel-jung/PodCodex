@@ -25,6 +25,26 @@ def render():
     st.header("Transcription")
     st.caption("Transcribe, diarize and prepare your podcast episode for translation.")
 
+    # Episodes without audio
+    if st.session_state.get("transcript_only"):
+        if st.session_state.get("transcript"):
+            st.info(
+                "This is a transcript-only episode (no audio file). "
+                "Transcription is not needed — the transcript was imported directly."
+            )
+            with st.expander("Preview transcript", expanded=False):
+                st.text(segments_to_text(st.session_state.transcript))
+        else:
+            st.info(
+                "No audio file for this episode. "
+                "Download the audio from the show overview, or import a transcript "
+                "in the **Polish** tab."
+            )
+            if st.button("Go to Polish →", type="primary"):
+                st.session_state.current_tab = "polish"
+                st.rerun()
+        return
+
     # ── Section 1: Audio & Config ──
     if st.session_state.get("audio_path"):
         output_dir = st.session_state.get("output_dir", "")
