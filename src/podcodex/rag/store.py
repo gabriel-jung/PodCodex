@@ -14,6 +14,7 @@ The Qdrant URL defaults to QDRANT_URL env var, falling back to localhost:6333.
 from __future__ import annotations
 
 import os
+import random
 import re
 import uuid
 
@@ -224,6 +225,30 @@ class QdrantStore:
             query_filter=query_filter,
         ).points
         return [_result_to_dict(r) for r in results]
+
+    def random_point(self, collection: str, scroll_filter=None) -> dict | None:
+        """Return a single random payload from the collection, or None if empty."""
+        count = self._client.count(
+            collection_name=collection,
+            count_filter=scroll_filter,
+            exact=True,
+        ).count
+        if count == 0:
+            return None
+
+        # Scroll to a random offset and grab one point
+        offset = random.randint(0, count - 1)
+        results, _ = self._client.scroll(
+            collection_name=collection,
+            scroll_filter=scroll_filter,
+            limit=1,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not results:
+            return None
+        return dict(results[0].payload)
 
     def scroll_payloads(
         self, collection: str, scroll_filter=None, limit: int = 10_000

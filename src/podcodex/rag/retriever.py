@@ -13,6 +13,7 @@ model. This means ALL models support hybrid search.
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 
 from loguru import logger
@@ -259,6 +260,41 @@ class Retriever:
 
         sorted_keys = sorted(combined, key=combined.__getitem__, reverse=True)[:top_k]
         return [{**payloads[k], "score": combined[k]} for k in sorted_keys]
+
+    def random(
+        self,
+        collection: str,
+        episode: str | None = None,
+        source: str | None = None,
+        speaker: str | None = None,
+    ) -> dict | None:
+        """
+        Pick a random chunk. If the chunk has multiple speaker turns,
+        select one turn at random and return it as a single-speaker segment.
+        """
+        scroll_filter = _search_filter(episode, source, speaker)
+        chunk = self._store.random_point(collection, scroll_filter)
+        if chunk is None:
+            return None
+
+        turns: list[dict] = chunk.get("speakers") or []
+        if len(turns) > 1:
+            # If speaker filter is set, narrow to matching turns
+            if speaker:
+                matching = [t for t in turns if t.get("speaker") == speaker]
+                turns = matching or turns
+            turn = random.choice(turns)
+            return {
+                "show": chunk.get("show", ""),
+                "episode": chunk.get("episode", ""),
+                "source": chunk.get("source", ""),
+                "speaker": turn.get("speaker", "Unknown"),
+                "text": turn.get("text", ""),
+                "start": turn.get("start", chunk.get("start", 0.0)),
+                "end": turn.get("end", chunk.get("end", 0.0)),
+            }
+
+        return chunk
 
     def find(
         self,

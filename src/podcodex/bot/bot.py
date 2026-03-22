@@ -10,6 +10,8 @@ Slash commands (user-facing):
               Hybrid search: alpha blends keyword (0) ↔ semantic (1).
     /exact    query [show] [episode] [speaker] [top_k] [source] [compact]
               Literal substring match (case-insensitive, like Ctrl+F).
+    /random   [show] [episode] [speaker] [source]
+              Pull a random quote from the transcripts.
     /stats    [show] [model]
               Index overview: shows, episodes, segments, duration.
     /episodes show [model]
@@ -43,6 +45,7 @@ from loguru import logger
 from podcodex.bot.formatting import (
     CooldownManager,
     build_compact_embed,
+    count_occurrences,
     fmt_time,
     merge_results,
     score_bar,
@@ -569,6 +572,48 @@ class PodCodexBot(discord.Client):
         exact.autocomplete("source")(self._source_autocomplete)
         exact.autocomplete("speaker")(self._speaker_autocomplete)
 
+        # /random ─────────────────────────────
+        @self.tree.command(
+            name="random",
+            description="Pull a random quote from the transcripts",
+        )
+        @app_commands.describe(
+            show="Pick a show (random from all if empty)",
+            episode="Pick an episode",
+            speaker="Filter by speaker name",
+            source="Where to search: polished, transcript, etc.",
+        )
+        async def random_cmd(
+            interaction: discord.Interaction,
+            show: str = "",
+            episode: str = "",
+            speaker: str = "",
+            source: str = "",
+        ) -> None:
+            if not await self._check_cooldown(interaction):
+                return
+            settings = self._server_settings(interaction.guild_id)
+            effective_source = source or settings.default_source or None
+
+            shows: list[str] | None = None
+            if show:
+                shows = [show]
+            elif settings.default_shows:
+                shows = settings.default_shows
+
+            await self._run_random(
+                interaction,
+                shows,
+                source=effective_source,
+                episode=episode or None,
+                speaker=speaker or None,
+            )
+
+        random_cmd.autocomplete("show")(self._show_autocomplete)
+        random_cmd.autocomplete("episode")(self._episode_autocomplete)
+        random_cmd.autocomplete("source")(self._source_autocomplete)
+        random_cmd.autocomplete("speaker")(self._speaker_autocomplete)
+
         # /stats ──────────────────────────────
         @self.tree.command(
             name="stats",
@@ -689,6 +734,11 @@ class PodCodexBot(discord.Client):
             embed.add_field(
                 name="/exact `query`",
                 value="Find exact text matches, like Ctrl+F across all episodes.",
+                inline=False,
+            )
+            embed.add_field(
+                name="/random",
+                value="Pull a random quote — optionally filter by show, episode, or speaker.",
                 inline=False,
             )
             embed.add_field(
@@ -881,7 +931,14 @@ class PodCodexBot(discord.Client):
         )
         all_results = all_results[:top_k]
 
-        label = "exact match 🔍"
+        total_mentions = sum(
+            count_occurrences(c.get("text", ""), query) for c, _ in all_results
+        )
+        label = (
+            f"exact match 🔍 · {total_mentions} mention"
+            f"{'s' if total_mentions != 1 else ''} in {len(all_results)} chunk"
+            f"{'s' if len(all_results) != 1 else ''}"
+        )
         if compact:
             embed = build_compact_embed(all_results, label, query=query)
             await interaction.followup.send(embed=embed)
@@ -892,6 +949,85 @@ class PodCodexBot(discord.Client):
             ]
             view = PaginatedResultView(pages)
             await interaction.followup.send(embed=view.current_embed, view=view)
+
+    # ── /random handler ───────────────────────
+
+    async def _run_random(
+        self,
+        interaction: discord.Interaction,
+        shows: list[str] | None,
+        *,
+        source: str | None = None,
+        episode: str | None = None,
+        speaker: str | None = None,
+    ) -> None:
+        await interaction.response.defer()
+        settings = self._server_settings(interaction.guild_id)
+        loop = asyncio.get_running_loop()
+
+        try:
+            if shows:
+                collections = [
+                    collection_name(s, settings.model, settings.chunker) for s in shows
+                ]
+            else:
+                collections = await loop.run_in_executor(
+                    None,
+                    lambda: self.store.list_collections(
+                        model=settings.model,
+                        chunker=settings.chunker,
+                    ),
+                )
+            if not collections:
+                await interaction.followup.send(
+                    "No indexed shows found.", ephemeral=True
+                )
+                return
+
+            import random as _rand
+
+            col = _rand.choice(collections)
+            retriever = self.retriever(settings.model)
+            chunk = await loop.run_in_executor(
+                None,
+                lambda: retriever.random(
+                    col, episode=episode, source=source, speaker=speaker
+                ),
+            )
+        except Exception:
+            logger.exception("Random quote error")
+            await interaction.followup.send(
+                "❌ Could not fetch a random quote.", ephemeral=True
+            )
+            return
+
+        if chunk is None:
+            await interaction.followup.send("No segments found.", ephemeral=True)
+            return
+
+        show = chunk.get("show", "")
+        ep = chunk.get("episode", "")
+        spk = chunk.get("speaker") or chunk.get("dominant_speaker") or "Unknown"
+        start = chunk.get("start", 0.0)
+        end = chunk.get("end", 0.0)
+        text = chunk.get("text", "")
+
+        embed = discord.Embed(
+            description=f'"{text}"',
+            color=discord.Color.blurple(),
+        )
+        title = ep or "(untitled)"
+        if show:
+            title += f" ({show})"
+        embed.title = title
+        embed.add_field(name="Speaker", value=spk, inline=True)
+        embed.add_field(
+            name="Timestamp", value=f"{fmt_time(start)} → {fmt_time(end)}", inline=True
+        )
+        embed.set_footer(text="🎲 random quote")
+
+        view = ExpandView(col, ep, show, start)
+        await interaction.followup.send(embed=embed, view=view)
 
     # ── /setup handler ────────────────────────
 

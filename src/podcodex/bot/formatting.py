@@ -33,6 +33,13 @@ def speaker(chunk: dict) -> str:
     return chunk.get("speaker") or chunk.get("dominant_speaker") or "Unknown"
 
 
+def count_occurrences(text: str, query: str) -> int:
+    """Count case-insensitive occurrences of *query* in *text*."""
+    if not query:
+        return 0
+    return text.lower().count(query.lower())
+
+
 def highlight(text: str, query: str) -> str:
     """Case-insensitive highlight: wrap all occurrences of *query* in bold."""
     import re
@@ -270,5 +277,14 @@ def build_compact_embed(
         )
         embed.add_field(name=name, value=value, inline=False)
 
-    embed.set_footer(text=f"{len(results)} result{'s' if len(results) != 1 else ''}")
+    n_results = len(results)
+    if query:
+        total_occ = sum(count_occurrences(c.get("text", ""), query) for c, _ in results)
+        footer = (
+            f"{n_results} chunk{'s' if n_results != 1 else ''} · "
+            f"{total_occ} mention{'s' if total_occ != 1 else ''}"
+        )
+    else:
+        footer = f"{n_results} result{'s' if n_results != 1 else ''}"
+    embed.set_footer(text=footer)
     return embed

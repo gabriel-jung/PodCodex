@@ -28,23 +28,26 @@ For podcasts with a small fixed cast this is a one-time cost.
 | RAG module: chunker, embedder, store, retriever | `src/podcodex/rag/` |
 | SQLite LocalStore (source of truth, skip re-embed) | `src/podcodex/rag/localstore.py` |
 | CLI: `podcodex vectorize / sync / query / list / delete` | `src/podcodex/cli.py` |
-| Discord bot: `/search`, `/exact`, `/setup`, per-server settings | `src/podcodex/bot/bot.py` |
-| Full test suite passing (196 tests, 1 skipped for missing discord) | `tests/` |
+| Discord bot: `/search`, `/exact`, `/stats`, `/episodes`, `/setup`, `/sync` | `src/podcodex/bot/bot.py` |
+| Paginated results, rich embeds, expand-in-context view | `src/podcodex/bot/ui.py` |
+| Full test suite passing (239 tests) | `tests/` |
 | Notebook `rag_dev.ipynb` updated to current API | `../Notebooks/rag_dev.ipynb` |
 
 ---
 
 ## Discord Bot Improvements
 
-**Design not settled yet — needs more thought before implementing.**
+### Done ✓
+- Richer embeds with score bars, highlighted matches, speaker info
+- Paginated results with prev/next buttons
+- Expand-in-context view (surrounding chunks)
+- `/exact` mention counts ("N mentions in M chunks")
+- `/random` command (WIP, uncommitted)
 
-Directions that have been floated (nothing committed):
-- Better result display: richer embeds, pagination, cleaner layout
+### Still open
 - Conversation context: stateless today; follow-up questions would be nice
 - LLM-synthesised answers on top of retrieved chunks
 - Multi-show cross-collection search
-
-**Next action: think about it more, then come back with a concrete design discussion.**
 
 ---
 
@@ -132,12 +135,14 @@ make build   # production .app bundle
 
 ---
 
-## RAG Layer Polish (lower priority)
+## RAG Layer Polish ✓
 
-- **Multi-episode deduplication** — same content in polished + translated files both indexed; need a strategy
-- **Incremental sync** — `podcodex sync` currently pushes everything; could push only what changed
-- **`--db` UX** — auto-discover `vectors.db` by walking up from `--show` path
-- **BM25 persistence** — BM25 index rebuilt from Qdrant on every query; could be cached
+All items resolved:
+
+- ~~**Incremental sync**~~ ✓ — `podcodex sync` works
+- ~~**`--db` UX**~~ ✓ — covered by `PODCODEX_DB` env var + `--db` flag
+- ~~**BM25 persistence**~~ ✓ — BM25 index cached in retriever
+- ~~**Multi-episode deduplication**~~ — not a real issue; `source` filter handles it
 
 ---
 
