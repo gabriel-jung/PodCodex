@@ -7,11 +7,12 @@ Run with: streamlit run streamlit/app.py
 import os
 import sys
 import warnings
+from pathlib import Path
 
 import streamlit as st
-from loguru import logger
-from pathlib import Path
 from dotenv import load_dotenv
+from loguru import logger
+
 from utils import normalize_path
 
 load_dotenv()
@@ -128,9 +129,7 @@ def _select_episode(episode) -> None:
     episode output directory.
     """
     logger.info(
-        "Loading episode: {} (transcript_only={})",
-        episode.stem,
-        episode.audio_path is None,
+        f"Loading episode: {episode.stem} (transcript_only={episode.audio_path is None})"
     )
     from podcodex.core import AudioPaths
     from podcodex.core.transcribe import load_transcript, load_transcript_full
@@ -151,6 +150,14 @@ def _select_episode(episode) -> None:
     st.session_state.generated = None
     st.session_state.indexed = episode.indexed if episode.indexed else None
     st.session_state.current_tab = "transcribe"
+    # Clear per-tab UI toggles so they re-evaluate for the new episode
+    for _ui_key in (
+        "show_pipeline_steps",
+        "show_pipeline_steps_to",
+        "show_polish_steps",
+        "show_audio_sources",
+    ):
+        st.session_state.pop(_ui_key, None)
 
     od = str(episode.output_dir)
 
@@ -174,7 +181,7 @@ def _select_episode(episode) -> None:
         )
     st.session_state["skip_diarization"] = nodiar
     st.session_state["_prev_skip_diarization"] = nodiar
-    logger.debug("nodiar={}, audio_path={}", nodiar, audio_path)
+    logger.debug(f"nodiar={nodiar}, audio_path={audio_path}")
 
     # Load transcript, polished, and translations using the (pseudo) audio path
     st.session_state.transcript = (
@@ -195,10 +202,7 @@ def _select_episode(episode) -> None:
 
     n_segs = len(st.session_state.transcript) if st.session_state.transcript else 0
     logger.info(
-        "Episode loaded: {} segments, polished={}, translations={}",
-        n_segs,
-        bool(st.session_state.polished),
-        list(langs),
+        f"Episode loaded: {n_segs} segments, polished={bool(st.session_state.polished)}, translations={list(langs)}"
     )
 
     # Backward-compat: keep `translation` pointing to the first available translation
@@ -212,13 +216,17 @@ def _load_show_meta_for_folder(folder: str) -> None:
     """Load show.toml for a folder and populate session state."""
     from podcodex.ingest.show import load_show_meta
 
-    meta = load_show_meta(Path(folder)) if folder and Path(folder).is_dir() else None
+    try:
+        is_dir = folder and Path(folder).is_dir()
+    except OSError:
+        is_dir = False
+    meta = load_show_meta(Path(folder)) if is_dir else None
     st.session_state.show_meta = meta
     if meta:
         st.session_state.show_name = meta.name
-        logger.info("Loaded show.toml: name={}, rss={}", meta.name, bool(meta.rss_url))
+        logger.info(f"Loaded show.toml: name={meta.name}, rss={bool(meta.rss_url)}")
     else:
-        logger.debug("No show.toml found in {}", folder)
+        logger.debug(f"No show.toml found in {folder}")
 
 
 def _render_show_settings(folder_input: str) -> None:
@@ -350,6 +358,9 @@ def _render_sidebar_podcast() -> None:
         help="Local folder for this show. Audio files and all outputs are stored here, one subfolder per episode. Can be empty — populate it from an RSS feed.",
     )
     folder_input = normalize_path(folder_input)
+    # Guard against accidental paste of non-path text (e.g. chat messages)
+    if len(folder_input) > 1024:
+        folder_input = ""
 
     # Reload show.toml when folder changes
     if folder_input != st.session_state.get("_prev_show_folder", ""):
@@ -426,6 +437,11 @@ def _scan_folder_cached(folder: str) -> list:
     """Cached wrapper for ``scan_folder`` — refreshes every 60s or on manual clear."""
     from podcodex.ingest.folder import scan_folder
 
+    try:
+        if not folder or not Path(folder).is_dir():
+            return []
+    except OSError:
+        return []
     return scan_folder(Path(folder))
 
 
@@ -668,14 +684,14 @@ def _get_feed_episodes(folder: str, rss_url: str) -> list | None:
         return feed
 
     # Auto-fetch on first visit when URL is configured but no cache exists
-    logger.info("Auto-fetching RSS feed for {}", rss_url)
+    logger.info(f"Auto-fetching RSS feed for {rss_url}")
     try:
         feed = fetch_feed(rss_url)
         save_feed_cache(Path(folder), feed)
         st.session_state["_rss_feed"] = feed
         return feed
     except Exception as e:
-        logger.warning("Auto-fetch failed: {}", e)
+        logger.warning(f"Auto-fetch failed: {e}")
         return None
 
 
@@ -694,11 +710,11 @@ def _render_rss_controls(folder: str, rss_url: str) -> None:
                     save_feed_cache(Path(folder), feed_episodes)
                     st.session_state["_rss_feed"] = feed_episodes
                     _scan_folder_cached.clear()
-                    logger.info("Fetched {} episodes from RSS", len(feed_episodes))
+                    logger.info(f"Fetched {len(feed_episodes)} episodes from RSS")
                     st.toast(f"Fetched {len(feed_episodes)} episodes.", icon="✅")
                     st.rerun()
                 except Exception as e:
-                    logger.error("Feed fetch failed: {}", e)
+                    logger.error(f"Feed fetch failed: {e}")
                     st.error(f"Feed fetch failed: {e}")
 
 
@@ -777,9 +793,9 @@ def _render_show_overview() -> None:
                         try:
                             download_audio(ep, Path(folder))
                             downloaded += 1
-                            logger.info("Downloaded {}", slug)
+                            logger.info(f"Downloaded {slug}")
                         except Exception as e:
-                            logger.error("Download failed for {}: {}", slug, e)
+                            logger.error(f"Download failed for {slug}: {e}")
                             st.warning(f"Failed: {slug} — {e}")
                     progress.empty()
                     _scan_folder_cached.clear()
@@ -836,13 +852,11 @@ def _render_show_overview() -> None:
                                     try:
                                         download_audio(rss_ep, Path(folder))
                                         _scan_folder_cached.clear()
-                                        logger.info("Downloaded {}", slug)
+                                        logger.info(f"Downloaded {slug}")
                                         st.toast(f"Downloaded {slug}.", icon="✅")
                                         st.rerun()
                                     except Exception as e:
-                                        logger.error(
-                                            "Download failed for {}: {}", slug, e
-                                        )
+                                        logger.error(f"Download failed for {slug}: {e}")
                                         st.error(f"Download failed: {e}")
 
         # Local-only episodes not in the feed

@@ -27,7 +27,7 @@ except ImportError:
     _RAG_AVAILABLE = False
 
 
-def render():
+def render() -> None:
     st.header("Search")
     st.caption("Query across your indexed episodes using hybrid semantic search.")
 
@@ -49,7 +49,7 @@ def render():
     _render_search_section(show_name)
 
 
-def _render_qdrant_offline():
+def _render_qdrant_offline() -> None:
     """Show Qdrant-offline state with sync button."""
     st.warning(
         "Qdrant is not reachable. Start it with `docker compose up -d` "
@@ -85,7 +85,7 @@ def _render_qdrant_offline():
             _run_sync(db_path.strip(), show.strip() or None)
 
 
-def _run_sync(db_path: str, show: str | None):
+def _run_sync(db_path: str, show: str | None) -> None:
     """Sync LocalStore → Qdrant."""
     import numpy as np
 
@@ -134,7 +134,7 @@ def _run_sync(db_path: str, show: str | None):
             st.error(f"Sync failed: {e}")
 
 
-def _render_search_section(show_name: str):
+def _render_search_section(show_name: str) -> None:
     """Render the search UI: query input, filters, and result display."""
     audio_path = st.session_state.get("audio_path")
     episode_stem = st.session_state.get("episode_stem") or (
@@ -241,7 +241,7 @@ def _run_search(
     model_key: str,
     chunking: str,
     episode: str | None = None,
-):
+) -> None:
     """Execute a hybrid search and store results in session state."""
     from podcodex.rag.retriever import Retriever
 
@@ -257,7 +257,7 @@ def _run_search(
             st.error(f"Search failed: {e}")
 
 
-def _render_results(results: list[dict]):
+def _render_results(results: list[dict]) -> None:
     """Display search results with score badges, speaker turns, and audio previews."""
     st.divider()
     st.markdown(f"**{len(results)} result(s)**")

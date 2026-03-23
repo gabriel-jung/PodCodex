@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+from loguru import logger
 
 DEFAULT_DB_PATH: Path = Path(
     os.environ.get(
@@ -79,6 +80,7 @@ class LocalStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        logger.debug(f"LocalStore opened: {self._path}")
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""
@@ -136,6 +138,7 @@ class LocalStore:
         """Delete collection; ON DELETE CASCADE removes chunks + embeddings."""
         self._conn.execute("DELETE FROM collections WHERE name=?", (name,))
         self._conn.commit()
+        logger.debug(f"Deleted collection '{name}'")
 
     # ── Episode-level ──────────────────────────────────────────────────
 
@@ -162,6 +165,7 @@ class LocalStore:
             (collection, episode),
         )
         self._conn.commit()
+        logger.debug(f"Deleted episode '{episode}' from '{collection}'")
 
     def get_collection_info(self, name: str) -> dict | None:
         """Return {show, model, chunker, dim} for a collection, or None if not found."""
@@ -216,6 +220,7 @@ class LocalStore:
                     "INSERT INTO embeddings(chunk_id, vector) VALUES (?, ?)",
                     (chunk_id, embeddings[i].astype(np.float32).tobytes()),
                 )
+        logger.debug(f"Saved {len(chunks)} chunks for '{episode}' in '{collection}'")
 
     # ── Read ───────────────────────────────────────────────────────────
 
@@ -240,6 +245,7 @@ class LocalStore:
                 np.frombuffer(blob, dtype=np.float32).copy().reshape(dim)
             )
             result.append(chunk)
+        logger.debug(f"Loaded {len(result)} chunks for '{episode}' in '{collection}'")
         return result
 
     def load_chunks_no_embeddings(self, collection: str, episode: str) -> list[dict]:

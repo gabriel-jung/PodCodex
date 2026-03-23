@@ -29,7 +29,7 @@ def _load_tts_model(model_size: str):
     return synthesize.load_tts_model(model_size=model_size)
 
 
-def render():
+def render() -> None:
     st.header("Synthesis")
     st.caption("Clone speaker voices and synthesize a translated podcast episode.")
 
@@ -568,7 +568,7 @@ def render():
                 st.rerun()
 
 
-def _render_download(episode_path: Path):
+def _render_download(episode_path: Path) -> None:
     """Show audio player and download button for the assembled episode."""
     st.audio(str(episode_path))
     with open(episode_path, "rb") as f:
@@ -583,10 +583,10 @@ def _render_download(episode_path: Path):
 
 def _render_voice_mapping(
     voice_samples: dict[str, list[dict]],
-    translation: list,
-    audio_path,
+    translation: list[dict],
+    audio_path: str,
     output_dir: str,
-):
+) -> None:
     """Render per-speaker voice assignment UI with selectboxes and custom uploads.
 
     For each speaker in the translation, shows a selectbox to pick a voice sample
@@ -751,8 +751,8 @@ def _build_voice_pool(voice_samples: dict[str, list[dict]]) -> list[dict]:
 
 
 def _load_existing_voice_samples(
-    audio_path, output_dir: str, translation: list
-) -> dict:
+    audio_path: str, output_dir: str, translation: list[dict]
+) -> dict[str, list[dict]]:
     """Load previously extracted voice samples from disk, matching speakers in translation."""
     seen: set[str] = set()
     speakers: list[str] = []

@@ -5,9 +5,14 @@ podcodex.ui.streamlit_index — Index tab (vectorize episodes for search)
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import streamlit as st
+
+if TYPE_CHECKING:
+    from podcodex.core._utils import AudioPaths
 
 try:
     from podcodex.rag.defaults import (
@@ -26,7 +31,7 @@ except ImportError:
     _RAG_AVAILABLE = False
 
 
-def render():
+def render() -> None:
     st.header("Index")
     st.caption("Vectorize episodes so they can be searched across your show.")
 
@@ -50,7 +55,7 @@ def render():
             _render_index_section(paths, output_dir, show_name)
 
 
-def _render_index_section(paths, output_dir: str, show_name: str):
+def _render_index_section(paths: "AudioPaths", output_dir: str, show_name: str) -> None:
     """Render the episode indexing UI: source/model/chunker selection and index button."""
     output_dir_path = Path(output_dir)
     _paths = paths
@@ -150,7 +155,7 @@ def _render_index_section(paths, output_dir: str, show_name: str):
                         indexed.add(f"{model_labels[mk]} / {ck}")
                     else:
                         pending.append(f"{model_labels[mk]} / {ck}")
-        except Exception:
+        except (OSError, sqlite3.Error):
             pending = [
                 f"{model_labels[mk]} / {ck}" for mk in model_keys for ck in chunkings
             ]
@@ -201,7 +206,7 @@ def _render_index_section(paths, output_dir: str, show_name: str):
 
 
 def _run_indexing(
-    paths,
+    paths: AudioPaths,
     output_dir: str,
     show: str,
     source: str,
@@ -210,7 +215,7 @@ def _run_indexing(
     chunk_size: int,
     chunk_threshold: float,
     overwrite: bool,
-):
+) -> None:
     """Run the vectorization pipeline for all (model, chunker) combinations.
 
     Writes to LocalStore (SQLite) only — use Sync to push to Qdrant later.

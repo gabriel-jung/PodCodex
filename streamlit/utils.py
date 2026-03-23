@@ -7,6 +7,7 @@ Only streamlit-specific helpers belong here. Domain logic belongs in src/podcode
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import streamlit as st
@@ -91,7 +92,7 @@ def get_episode_paths(nodiar: bool | None = None) -> AudioPaths | None:
 
 def require_audio_and_file(
     label: str,
-    check_fn=None,
+    check_fn: Callable[[AudioPaths], bool] | None = None,
 ) -> tuple[AudioPaths | None, bool]:
     """Common guard: ensure audio is selected and optionally that a file exists.
 

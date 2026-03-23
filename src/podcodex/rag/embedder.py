@@ -181,7 +181,9 @@ class BGEEmbedder:
 # ──────────────────────────────────────────────
 
 
-def get_embedder(model_key: str, device: str = "cpu"):
+def get_embedder(
+    model_key: str, device: str = "cpu"
+) -> BGEEmbedder | E5Embedder | PplxEmbedder:
     """Return the appropriate embedder instance for the given model key.
 
     Args:

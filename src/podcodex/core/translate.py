@@ -18,9 +18,13 @@ from pathlib import Path
 from loguru import logger
 
 from podcodex.core._utils import (
+    BREAK_SPEAKER,
+    DEFAULT_BATCH_MINUTES,
+    DEFAULT_MAX_GAP,
     INTERNAL_SUFFIXES,
     AudioPaths,
     batch_segments_by_duration,
+    build_llm_prompt,
     merge_consecutive_segments,
     read_json,
     run_api,
@@ -45,31 +49,22 @@ def _build_prompt(
         source_lang : source language (e.g. "French")
         target_lang : target language (e.g. "English")
     """
-    role = f"You are translating a transcript from a podcast in {source_lang}."
-
-    context_section = (
-        f"Context about this podcast: {context}\n"
-        "Any names, titles, brands, or terms mentioned in the context above are the CORRECT spellings."
-        if context
-        else ""
-    )
-
-    task = f"""\
+    return build_llm_prompt(
+        role=f"You are translating a transcript from a podcast in {source_lang}.",
+        task=f"""\
 Your task: translation only.
 - Translate into natural, conversational {target_lang}
 - Preserve the oral tone and style of the podcast
 - Do not translate proper nouns (people, films, places)
 - Translate the full text — never truncate or summarize
-- Segments with speaker "[BREAK]" are music or jingle breaks — copy them to the output exactly as-is, do not translate their text"""
-
-    output = """\
+- Segments with speaker "{BREAK_SPEAKER}" are music or jingle breaks — copy them to the output exactly as-is, do not translate their text""",
+        output="""\
 Output format:
 Return a JSON array with one entry per segment, containing only the index and translated text.
 Reply ONLY with valid JSON, no surrounding text, no markdown.
-Format: [{"index": 0, "text": "translated text..."}]"""
-
-    sections = [role, context_section, task, output]
-    return "\n\n".join(s for s in sections if s)
+Format: [{"index": 0, "text": "translated text..."}]""",
+        context=context,
+    )
 
 
 # ──────────────────────────────────────────────
@@ -99,7 +94,7 @@ def build_manual_prompt(
 
 def build_manual_prompts_batched(
     segments: list[dict],
-    batch_minutes: float = 15.0,
+    batch_minutes: float = DEFAULT_BATCH_MINUTES,
     context: str = "",
     source_lang: str = "French",
     target_lang: str = "English",
@@ -147,7 +142,7 @@ def translate_segments(
     batch_size: int = 10,
     original_segments: list[dict] | None = None,
     merge: bool = True,
-    max_gap: float = 10.0,
+    max_gap: float = DEFAULT_MAX_GAP,
     provider: str | None = None,
 ) -> list[dict]:
     """

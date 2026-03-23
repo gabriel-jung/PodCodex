@@ -18,13 +18,14 @@ import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import soundfile as sf
 from loguru import logger
 
 from podcodex.core._utils import (
+    SAMPLE_RATE,
     UNKNOWN_SPEAKERS,
     AudioPaths,
     group_by_speaker,
@@ -131,7 +132,7 @@ def _extract_clip(audio_path: Path, seg: dict, output_path: Path) -> dict:
             "-to",
             str(seg["end"]),
             "-ar",
-            "16000",
+            str(SAMPLE_RATE),
             "-ac",
             "1",
             str(output_path),
@@ -259,7 +260,7 @@ def load_tts_model(model_size: str = "1.7B"):
 
 
 def build_clone_prompts(
-    model,
+    model: Any,
     voice_samples: dict[str, list[dict]],
     sample_index: dict[str, int] | int = 0,
 ) -> dict[str, object]:
@@ -354,7 +355,7 @@ def _split_text(text: str, max_parts: int) -> list[str]:
 
 
 def generate_segment(
-    model,
+    model: Any,
     seg: dict,
     clone_prompts: dict[str, object],
     output_path: Path,
@@ -650,7 +651,7 @@ def load_generated_segments(
             result.append(
                 {**seg, "audio_file": wav_path, "sample_rate": info.samplerate}
             )
-        except Exception:
+        except (OSError, RuntimeError):
             return []
     logger.debug(f"Loaded {len(result)} generated segments from disk")
     return result

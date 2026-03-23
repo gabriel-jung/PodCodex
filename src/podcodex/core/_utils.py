@@ -264,6 +264,19 @@ UNKNOWN_SPEAKERS = frozenset({"UNKNOWN", "UNK", "None", "none"})
 # Default speaker label when diarization is skipped.
 NARRATOR_SPEAKER = "Narrator"
 
+# Segment inserted by merge_consecutive_segments when gap > max_gap.
+BREAK_SPEAKER = "[BREAK]"
+
+# Audio sample rate used by Whisper / TTS pipeline (16 kHz mono).
+SAMPLE_RATE = 16000
+
+# Default time-based thresholds shared across pipeline modules.
+DEFAULT_MAX_GAP = 10.0
+DEFAULT_BATCH_MINUTES = 15.0
+
+# LLM temperature for deterministic output in polish / translate.
+DEFAULT_TEMPERATURE = 0
+
 
 # Internal file suffixes that are never translation language names.
 # Used by translate.py (to detect languages) and ingest/folder.py (to scan episodes).
@@ -323,7 +336,7 @@ def wav_duration(path: Path) -> float:
 
     try:
         return sf.info(str(path)).duration
-    except Exception:
+    except (OSError, RuntimeError):
         return 0.0
 
 
@@ -382,7 +395,7 @@ def save_segments_json(
 
 
 def batch_segments_by_duration(
-    segments: list[dict], batch_minutes: float = 15.0
+    segments: list[dict], batch_minutes: float = DEFAULT_BATCH_MINUTES
 ) -> list[list[dict]]:
     """Split segments into time-based batches.
 
@@ -422,16 +435,20 @@ def segments_to_text(segments: list[dict], text_field: str = "text") -> str:
     """
     lines = []
     for seg in segments:
-        header = (
-            f"[{seg['start']:.3f}s - {seg['end']:.3f}s] {seg.get('speaker', 'UNKNOWN')}"
-        )
+        speaker = seg.get("speaker", "UNKNOWN")
+        start = seg.get("start")
+        end = seg.get("end")
+        if start is not None and end is not None:
+            header = f"[{start:.3f}s - {end:.3f}s] {speaker}"
+        else:
+            header = speaker
         text = seg.get(text_field) or "[empty]"
         lines.append(f"{header}\n{text}")
     return "\n\n".join(lines)
 
 
 def merge_consecutive_segments(
-    segments: list[dict], max_gap: float = 10.0
+    segments: list[dict], max_gap: float = DEFAULT_MAX_GAP
 ) -> list[dict]:
     """
     Merge consecutive segments from the same speaker into single entries.
@@ -450,36 +467,91 @@ def merge_consecutive_segments(
     result = []
     for seg in segments:
         speaker = seg.get("speaker_name") or seg.get("speaker") or "UNKNOWN"
-        entry = {
+        raw_start = seg.get("start")
+        raw_end = seg.get("end")
+        has_times = raw_start is not None and raw_end is not None
+        entry: dict = {
             "speaker": speaker,
-            "start": round(float(seg["start"]), 3),
-            "end": round(float(seg["end"]), 3),
             "text": str(seg.get("text", "")).strip(),
         }
-        if (
-            result
-            and result[-1]["speaker"] == entry["speaker"]
-            and entry["start"] - result[-1]["end"] <= max_gap
-        ):
-            result[-1]["end"] = entry["end"]
-            result[-1]["text"] += " " + entry["text"]
+        if has_times:
+            entry["start"] = round(float(raw_start), 3)
+            entry["end"] = round(float(raw_end), 3)
+
+        prev = result[-1] if result else None
+        if prev and prev["speaker"] == entry["speaker"]:
+            # With timestamps: merge only if gap <= max_gap
+            # Without timestamps: always merge consecutive same-speaker
+            if has_times and "start" in prev:
+                gap = entry["start"] - prev["end"]
+                if gap <= max_gap:
+                    prev["end"] = entry["end"]
+                    prev["text"] += " " + entry["text"]
+                else:
+                    result.append(
+                        {
+                            "speaker": BREAK_SPEAKER,
+                            "start": prev["end"],
+                            "end": entry["start"],
+                            "text": "",
+                        }
+                    )
+                    result.append(entry)
+            else:
+                prev["text"] += " " + entry["text"]
+                if has_times:
+                    prev["end"] = entry["end"]
         else:
-            if result and entry["start"] - result[-1]["end"] > max_gap:
-                result.append(
-                    {
-                        "speaker": "[BREAK]",
-                        "start": result[-1]["end"],
-                        "end": entry["start"],
-                        "text": "",
-                    }
-                )
+            # Different speaker — check for break insertion (only with timestamps)
+            if prev and has_times and "end" in prev:
+                if entry["start"] - prev["end"] > max_gap:
+                    result.append(
+                        {
+                            "speaker": BREAK_SPEAKER,
+                            "start": prev["end"],
+                            "end": entry["start"],
+                            "text": "",
+                        }
+                    )
             result.append(entry)
-    n_breaks = sum(1 for s in result if s["speaker"] == "[BREAK]")
+    n_breaks = sum(1 for s in result if s["speaker"] == BREAK_SPEAKER)
     logger.debug(
         f"merge_consecutive_segments: {n_input} → {len(result)} segments "
         f"({n_breaks} breaks, max_gap={max_gap}s)"
     )
     return result
+
+
+# ──────────────────────────────────────────────
+# Prompt helpers
+# ──────────────────────────────────────────────
+
+
+def build_llm_prompt(
+    role: str,
+    task: str,
+    output: str,
+    context: str = "",
+    context_extra: str = "",
+) -> str:
+    """Assemble a system prompt from standard sections.
+
+    Args:
+        role          : opening role sentence
+        task          : bullet-list of task instructions
+        output        : output format instructions
+        context       : optional podcast context; omitted when empty
+        context_extra : additional sentence appended to the context block
+    """
+    context_section = (
+        f"Context about this podcast: {context}\n"
+        "Any names, titles, brands, or terms mentioned in the context above are the CORRECT spellings."
+        + (f" {context_extra}" if context_extra else "")
+        if context
+        else ""
+    )
+    sections = [role, context_section, task, output]
+    return "\n\n".join(s for s in sections if s)
 
 
 # ──────────────────────────────────────────────
@@ -575,7 +647,7 @@ def run_ollama(
             response = client.chat(
                 model=model,
                 messages=messages,
-                options={"temperature": 0},
+                options={"temperature": DEFAULT_TEMPERATURE},
                 format="json",
             )
             return response.message.content.strip()
@@ -637,7 +709,7 @@ def run_api(
 
         def call_fn(messages):
             response = client.chat.completions.create(
-                model=model, messages=messages, temperature=0
+                model=model, messages=messages, temperature=DEFAULT_TEMPERATURE
             )
             return response.choices[0].message.content.strip()
 

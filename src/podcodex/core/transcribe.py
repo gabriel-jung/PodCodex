@@ -24,7 +24,10 @@ from pathlib import Path
 from loguru import logger
 
 from podcodex.core._utils import (
+    BREAK_SPEAKER,
+    DEFAULT_MAX_GAP,
     NARRATOR_SPEAKER,
+    SAMPLE_RATE,
     UNKNOWN_SPEAKERS,
     AudioPaths,
     free_vram,
@@ -141,7 +144,7 @@ def transcribe_file(
     free_vram(model_a)
 
     segments = result["segments"]
-    duration = float(audio.shape[0]) / 16000
+    duration = float(audio.shape[0]) / SAMPLE_RATE
     meta = {"language": language, "duration": duration, "num_segments": len(segments)}
 
     write_parquet(p.segments, segments)
@@ -365,7 +368,7 @@ def export_transcript(
     output_dir: str | Path | None = None,
     show: str = "",
     episode: str = "",
-    max_gap: float = 10.0,
+    max_gap: float = DEFAULT_MAX_GAP,
     diarized: bool = True,
 ) -> list[dict]:
     """
@@ -530,7 +533,7 @@ def is_segment_flagged(seg: dict, diarized: bool = True) -> bool:
     is used) since all segments share a generic narrator label.
     """
     speaker = seg.get("speaker", "")
-    if speaker == "[BREAK]":
+    if speaker == BREAK_SPEAKER:
         return False
     if diarized:
         if not speaker or speaker in UNKNOWN_SPEAKERS:
@@ -560,7 +563,7 @@ def clean_transcript(
     result = []
     for seg in segments:
         speaker = seg.get("speaker", "")
-        if speaker == "[BREAK]":
+        if speaker == BREAK_SPEAKER:
             result.append(seg)
             continue
         if speaker in REMOVE_SPEAKERS:
@@ -580,9 +583,9 @@ def save_transcript(
     audio_path: Path | str,
     segments: list[dict],
     output_dir: str | Path | None = None,
-    max_gap: float = 10.0,
+    max_gap: float = DEFAULT_MAX_GAP,
     nodiar: bool = False,
-) -> None:
+) -> Path:
     """Save an edited segment list back to transcript.json, preserving metadata.
 
     Consecutive segments from the same speaker are merged when the gap between
@@ -604,6 +607,7 @@ def save_transcript(
     logger.info(
         f"Transcript saved → {p.transcript.name} ({len(segments)} → {len(merged)} segments)"
     )
+    return p.transcript
 
 
 def audio_duration(path: Path | str) -> float | None:
@@ -674,7 +678,7 @@ def trim_audio(
             "-to",
             str(end),
             "-ar",
-            "16000",
+            str(SAMPLE_RATE),
             "-ac",
             "1",
             str(dest),

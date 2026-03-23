@@ -28,15 +28,15 @@ from streamlit_editor import render_segment_editor
 
 
 def _run_translate_button(
-    btn_disabled,
-    mode,
-    source_lang,
-    target_lang,
-    context,
-    segments,
-    audio_path,
-    output_dir,
-):
+    btn_disabled: bool,
+    mode: str,
+    source_lang: str,
+    target_lang: str,
+    context: str,
+    segments: list[dict],
+    audio_path: str,
+    output_dir: str,
+) -> None:
     """Render the 'Translate' action button and run the pipeline on click.
 
     Shared by API and Ollama modes — only the mode-specific settings differ.
@@ -72,7 +72,7 @@ def _run_translate_button(
                 st.error(f"Failed: {e}")
 
 
-def render():
+def render() -> None:
     st.header("Translate")
     st.caption(
         "Translate a transcript to another language. Use the ✨ Polish tab first to correct the source."
@@ -520,7 +520,7 @@ def render():
 
 
 def _save_translation(
-    audio_path, output_dir: str, segments: list[dict], target_lang: str
+    audio_path: str, output_dir: str, segments: list[dict], target_lang: str
 ) -> None:
     """Save translation as raw and refresh the session-state translations cache."""
     _nd = st.session_state.get("skip_diarization", False)
@@ -530,7 +530,7 @@ def _save_translation(
     _reload_translations(audio_path, output_dir)
 
 
-def _reload_translations(audio_path, output_dir: str) -> None:
+def _reload_translations(audio_path: str, output_dir: str) -> None:
     """Rescan disk for translations and update session state."""
     _nd = st.session_state.get("skip_diarization", False)
     langs = translate_mod.list_translations(
@@ -548,8 +548,8 @@ def _reload_translations(audio_path, output_dir: str) -> None:
 
 
 def _render_translation_editor(
-    audio_path, output_dir: str, langs: list[str], source_segments: list[dict]
-):
+    audio_path: str, output_dir: str, langs: list[str], source_segments: list[dict]
+) -> None:
     """Render one tab per language with a segment editor, load/save buttons, and badges."""
     stem = Path(audio_path).stem
     _nd = st.session_state.get("skip_diarization", False)
@@ -659,7 +659,11 @@ def _render_translation_editor(
                         st.rerun()
 
                 _real_audio = (
-                    audio_path if not st.session_state.get("transcript_only") else None
+                    audio_path
+                    if audio_path
+                    and not st.session_state.get("transcript_only")
+                    and Path(audio_path).is_file()
+                    else None
                 )
                 render_segment_editor(
                     translation,

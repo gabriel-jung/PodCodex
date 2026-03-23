@@ -118,5 +118,5 @@ def import_transcript(
         json.dumps(transcript, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    logger.success("Imported transcript → {}", dest)
+    logger.success(f"Imported transcript → {dest}")
     return dest

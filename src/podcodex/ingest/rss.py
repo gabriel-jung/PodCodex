@@ -114,7 +114,7 @@ def fetch_feed(url: str) -> list[RSSEpisode]:
     """Fetch and parse an RSS feed. Returns episodes in feed order."""
     feed = feedparser.parse(url)
     if feed.bozo and not feed.entries:
-        logger.warning("Feed parse error: {}", feed.bozo_exception)
+        logger.warning(f"Feed parse error: {feed.bozo_exception}")
         return []
 
     episodes: list[RSSEpisode] = []
@@ -193,7 +193,7 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
         raw = json.loads(path.read_text(encoding="utf-8"))
         return RSSEpisode(**raw)
     except (json.JSONDecodeError, TypeError, KeyError):
-        logger.warning("Corrupt episode meta: {}", path)
+        logger.warning(f"Corrupt episode meta: {path}")
         return None
 
 
@@ -220,12 +220,12 @@ def download_audio(
     save_episode_meta(Path(show_folder) / stem, rss_episode)
 
     if dest.exists():
-        logger.info("Audio already exists: {}", dest.name)
+        logger.info(f"Audio already exists: {dest.name}")
         return dest
 
     import httpx
 
-    logger.info("Downloading {} → {}", rss_episode.audio_url, dest.name)
+    logger.info(f"Downloading {rss_episode.audio_url} → {dest.name}")
     with httpx.stream("GET", rss_episode.audio_url, follow_redirects=True) as resp:
         resp.raise_for_status()
         with open(dest, "wb") as f:
@@ -233,6 +233,6 @@ def download_audio(
                 f.write(chunk)
 
     logger.success(
-        "Downloaded {} ({:.1f} MB)", dest.name, dest.stat().st_size / 1024 / 1024
+        f"Downloaded {dest.name} ({dest.stat().st_size / 1024 / 1024:.1f} MB)"
     )
     return dest

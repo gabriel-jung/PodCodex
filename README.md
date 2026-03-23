@@ -12,6 +12,7 @@ Search your podcast transcripts from Discord with slash commands.
 
 - `/search <question>` — find relevant passages by meaning (semantic) or keywords
 - `/exact <query>` — literal text search, like Ctrl+F
+- `/random` — random quote with optional show/episode/speaker filters
 - `/stats` — overview of indexed shows, episodes, and duration
 - `/episodes [show]` — list episodes (auto-selects if only one show)
 - `/setup` — configure server defaults (admin)
@@ -417,7 +418,7 @@ Outputs are organised per episode under the show folder. Each step produces a `.
 
 | Module | Description |
 |--------|-------------|
-| `podcodex.bot` | Discord bot with `/search`, `/exact`, `/stats`, `/episodes` commands |
+| `podcodex.bot` | Discord bot with `/search`, `/exact`, `/random`, `/stats`, `/episodes` commands |
 | `podcodex.rag` | Chunking, embedding, vector storage (Qdrant + SQLite), and hybrid retrieval |
 | `podcodex.cli` | CLI: `podcodex vectorize / sync / query / list / delete` |
 | `podcodex.core.transcribe` | WhisperX transcription + phonetic alignment + speaker diarization |
