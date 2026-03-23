@@ -35,7 +35,7 @@ def fmt_timestamp(start: float, end: float, *, timed: bool = True) -> str | None
     Returns None when there is no meaningful timestamp to show
     (untimed episode with both values at zero).
     """
-    if not timed and start == 0.0 and end == 0.0:
+    if start == 0.0 and end == 0.0:
         return None
     if not timed:
         return f"~{start:.0f}% → ~{end:.0f}%"
@@ -69,15 +69,19 @@ def speaker_lines(chunk: dict, query: str = "") -> str:
     if not turns:
         text = chunk.get("text", "")
         return highlight(text, query) if query else text
-    return "\n".join(
-        f"**{t.get('speaker', 'Unknown')}** ({fmt_time(t.get('start', 0))}): "
-        f"{highlight(t.get('text', ''), query) if query else t.get('text', '')}"
-        for t in turns
-    )
+    lines = []
+    for t in turns:
+        spk = t.get("speaker", "Unknown")
+        start = t.get("start", 0)
+        ts_part = f" ({fmt_time(start)})" if start else ""
+        text = highlight(t.get("text", ""), query) if query else t.get("text", "")
+        lines.append(f"**{spk}**{ts_part}: {text}")
+    return "\n".join(lines)
 
 
 def score_bar(score: float, width: int = 8) -> str:
-    filled = round(score * width)
+    clamped = max(0.0, min(1.0, score))
+    filled = round(clamped * width)
     return "█" * filled + "░" * (width - filled)
 
 
@@ -109,21 +113,23 @@ def _expand_turns(chunk: dict, bold: bool = False) -> list[str]:
     turns: list[dict] = chunk.get("speakers") or []
     if not turns:
         spk = speaker(chunk)
-        ts = fmt_time(chunk.get("start", 0))
+        start = chunk.get("start", 0)
+        ts_part = f" · {fmt_time(start)}" if start else ""
         text = chunk.get("text", "")
         if bold:
-            return [f"**▶ {spk}** · {ts}\n**{text}**"]
-        return [f"*{spk}* · {ts}\n{text}"]
+            return [f"**▶ {spk}**{ts_part}\n**{text}**"]
+        return [f"*{spk}*{ts_part}\n{text}"]
 
     lines: list[str] = []
     for t in turns:
         spk = t.get("speaker", "Unknown")
-        ts = fmt_time(t.get("start", 0))
+        start = t.get("start", 0)
+        ts_part = f" · {fmt_time(start)}" if start else ""
         text = t.get("text", "")
         if bold:
-            lines.append(f"**▶ {spk}** · {ts}\n**{text}**")
+            lines.append(f"**▶ {spk}**{ts_part}\n**{text}**")
         else:
-            lines.append(f"*{spk}* · {ts}\n{text}")
+            lines.append(f"*{spk}*{ts_part}\n{text}")
     return lines
 
 
@@ -150,7 +156,8 @@ def format_context(
     current = neighbors[pos]
     after = neighbors[pos + 1 : hi]
 
-    header = f"**{show} — {episode}**" if (show or episode) else "*Context*"
+    ep_display = (neighbors[0].get("episode_title") if neighbors else None) or episode
+    header = f"**{show} — {ep_display}**" if (show or ep_display) else "*Context*"
     lines = [header + f" · ±{n} turns\n"]
 
     for c in before:
@@ -270,7 +277,7 @@ def build_compact_embed(
     )
     for i, (chunk, _col) in enumerate(results[:25], 1):
         show = chunk.get("show", "")
-        episode = chunk.get("episode", "")
+        episode = chunk.get("episode_title") or chunk.get("episode", "")
         score = chunk.get("score", 0.0)
         start = chunk.get("start", 0.0)
         text = chunk.get("text", "")
@@ -283,9 +290,13 @@ def build_compact_embed(
         name = f"#{i} {episode}"
         if show:
             name += f" ({show})"
+        end = chunk.get("end", 0.0)
+        timed = chunk.get("timed", True)
+        ts_label = fmt_timestamp(start, end, timed=timed)
+        ts_part = f" · {ts_label}" if ts_label else ""
         value = (
-            f"{speaker(chunk)} · {fmt_time(start)} · "
-            f"{score_bar(score)} {score:.0%}\n"
+            f"{speaker(chunk)}{ts_part} · "
+            f"{score_bar(score)} {min(1.0, score):.0%}\n"
             f'*"{text}"*'
         )
         embed.add_field(name=name, value=value, inline=False)

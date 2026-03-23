@@ -6,6 +6,7 @@ Entrypoint:
                  [--qdrant-url URL] [--server-config FILE]
                  [--shows-config shows.toml] [--dev-guild ID]
     podcodex-bot --hash-password
+    podcodex-bot --add-show [--shows-config FILE]
 
 Slash commands (user-facing):
     /search   question [show] [episode] [speaker] [alpha] [model] [top_k] [source] [compact]
@@ -190,6 +191,7 @@ def _result_embed(
     """Build a Discord embed + context-expand view for a single search result."""
     show = chunk.get("show", "")
     episode = chunk.get("episode", "")
+    episode_display = chunk.get("episode_title") or episode
     start = chunk.get("start", 0.0)
     end = chunk.get("end", 0.0)
     score = chunk.get("score", 0.0)
@@ -199,7 +201,7 @@ def _result_embed(
     embed = discord.Embed(description=description, color=discord.Color.blurple())
     if q:
         embed.set_author(name=f'🔎 "{q}"')
-    title = episode or "(untitled)"
+    title = episode_display or "(untitled)"
     if show:
         title += f" ({show})"
     embed.title = title
@@ -207,8 +209,9 @@ def _result_embed(
     ts_label = fmt_timestamp(start, end, timed=timed)
     if ts_label:
         embed.add_field(name="Timestamp", value=ts_label, inline=True)
+    clamped = max(0.0, min(1.0, score))
     embed.add_field(
-        name="Relevance", value=f"{score_bar(score)} {score:.0%}", inline=True
+        name="Relevance", value=f"{score_bar(clamped)} {clamped:.0%}", inline=True
     )
     embed.set_footer(text=f"#{rank} of {total} • {label}")
 
@@ -1158,6 +1161,7 @@ class PodCodexBot(discord.Client):
 
         show = chunk.get("show", "")
         ep = chunk.get("episode", "")
+        ep_display = chunk.get("episode_title") or ep
         spk = chunk.get("speaker") or chunk.get("dominant_speaker") or "Unknown"
         start = chunk.get("start", 0.0)
         end = chunk.get("end", 0.0)
@@ -1167,7 +1171,7 @@ class PodCodexBot(discord.Client):
             description=f'"{text}"',
             color=discord.Color.blurple(),
         )
-        title = ep or "(untitled)"
+        title = ep_display or "(untitled)"
         if show:
             title += f" ({show})"
         embed.title = title
@@ -1524,6 +1528,51 @@ def _hash_password_cli() -> None:
     print(f"sha256:{h}")
 
 
+def _add_show_cli(shows_config: str) -> None:
+    """Interactive helper to add a show to shows.toml."""
+    import getpass
+    import re
+
+    path = Path(shows_config)
+
+    # Ask for show name
+    name = input("Show name: ").strip()
+    if not name:
+        print("Empty name — aborting.")
+        sys.exit(1)
+
+    # Generate TOML key from name (same logic as collection naming)
+    key = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+
+    # Check for duplicates
+    if path.exists():
+        content = path.read_text(encoding="utf-8")
+        if f"[shows.{key}]" in content:
+            print(f"Show '{name}' (key: {key}) already exists in {path}")
+            sys.exit(1)
+    else:
+        content = ""
+
+    # Ask for password
+    password = getpass.getpass("Password: ")
+    if not password:
+        print("Empty password — aborting.")
+        sys.exit(1)
+    confirm = getpass.getpass("Confirm password: ")
+    if password != confirm:
+        print("Passwords don't match — aborting.")
+        sys.exit(1)
+
+    h = hashlib.sha256(password.encode()).hexdigest()
+
+    # Append to file
+    entry = f'\n[shows.{key}]\nname = "{name}"\npassword_hash = "sha256:{h}"\n'
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(entry)
+
+    print(f"Added '{name}' to {path}")
+
+
 def main() -> None:
     logger.remove()
     logger.add(sys.stderr, level="DEBUG")
@@ -1559,10 +1608,20 @@ def main() -> None:
         action="store_true",
         help="Generate a sha256 password hash and exit",
     )
+    parser.add_argument(
+        "--add-show",
+        action="store_true",
+        help="Interactively add a show to shows.toml and exit",
+    )
     args = parser.parse_args()
 
     if args.hash_password:
         _hash_password_cli()
+        return
+
+    if args.add_show:
+        config_path = args.shows_config or "shows.toml"
+        _add_show_cli(config_path)
         return
 
     token = os.environ.get("DISCORD_TOKEN", "").strip()
@@ -1570,8 +1629,9 @@ def main() -> None:
         raise RuntimeError("DISCORD_TOKEN not set — add it to .env or environment.")
 
     shows = {}
-    if args.shows_config:
-        shows = _load_shows_config(Path(args.shows_config))
+    shows_path = Path(args.shows_config) if args.shows_config else Path("shows.toml")
+    if shows_path.exists():
+        shows = _load_shows_config(shows_path)
 
     config = BotConfig(
         model=args.model,

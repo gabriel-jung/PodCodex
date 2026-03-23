@@ -24,10 +24,25 @@ from podcodex.rag.defaults import CHUNKER_MODEL
 _SEP = " "
 
 
-def _meta_fields(transcript: dict) -> tuple[str, str, str]:
-    """Extract (show, episode, source) from transcript metadata."""
+def _meta_fields(transcript: dict) -> tuple[str, str, str, dict]:
+    """Extract (show, episode, source, extras) from transcript metadata.
+
+    ``extras`` contains optional display fields (episode_title, pub_date,
+    episode_number) when available — only non-empty values are included.
+    """
     meta = transcript.get("meta", {})
-    return meta.get("show", ""), meta.get("episode", ""), meta.get("source", "")
+    episode = meta.get("episode", "")
+    extras: dict = {}
+    rss_title = meta.get("rss_title", "")
+    if rss_title and rss_title != episode:
+        extras["episode_title"] = rss_title
+    if meta.get("rss_pub_date"):
+        extras["pub_date"] = meta["rss_pub_date"]
+    if meta.get("episode_number") is not None:
+        extras["episode_number"] = meta["episode_number"]
+    if not meta.get("timed", True):
+        extras["timed"] = False
+    return meta.get("show", ""), episode, meta.get("source", ""), extras
 
 
 def _build_episode_text(segments: list[dict]) -> tuple[str, list[dict]]:
@@ -111,23 +126,23 @@ def speaker_chunks(transcript: dict, min_chars: int = 30) -> list[dict]:
     Returns:
         List of {show, episode, source, start, end, speaker, text}
     """
-    show, episode, source = _meta_fields(transcript)
+    show, episode, source, extras = _meta_fields(transcript)
     chunks = []
     for seg in transcript.get("segments", []):
         text = seg.get("text", "").strip()
         if len(text) < min_chars:
             continue
-        chunks.append(
-            {
-                "show": show,
-                "episode": episode,
-                "source": source,
-                "start": seg.get("start", 0.0),
-                "end": seg.get("end", 0.0),
-                "speaker": seg.get("speaker", "UNKNOWN"),
-                "text": text,
-            }
-        )
+        chunk = {
+            "show": show,
+            "episode": episode,
+            "source": source,
+            "start": seg.get("start", 0.0),
+            "end": seg.get("end", 0.0),
+            "speaker": seg.get("speaker", "UNKNOWN"),
+            "text": text,
+            **extras,
+        }
+        chunks.append(chunk)
     logger.info(f"speaker_chunks: {len(chunks)} chunks from '{episode}'")
     return chunks
 
@@ -166,7 +181,7 @@ def semantic_chunks(
     """
     from chonkie import SemanticChunker
 
-    show, episode, source = _meta_fields(transcript)
+    show, episode, source, extras = _meta_fields(transcript)
 
     segments = [
         {**seg, "text": text}
@@ -203,6 +218,7 @@ def semantic_chunks(
                 "speakers": meta["speakers"],
                 "text": raw.text,
                 "token_count": raw.token_count,
+                **extras,
             }
         )
 

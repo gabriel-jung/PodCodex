@@ -316,11 +316,15 @@ class Retriever:
         text_cond = FieldCondition(key="text", match=MatchText(text=query))
         conditions = [text_cond] + (base.must if base else [])
 
-        chunks = self._store.scroll_payloads(
-            collection, scroll_filter=Filter(must=conditions), limit=top_k
+        # MatchText is tokenized (matches individual words, not phrases).
+        # Over-fetch from Qdrant, then filter for true substring match.
+        candidates = self._store.scroll_payloads(
+            collection, scroll_filter=Filter(must=conditions), limit=top_k * 4
         )
+        query_lower = query.lower()
+        chunks = [c for c in candidates if query_lower in c.get("text", "").lower()]
         chunks.sort(key=lambda c: c.get("start", 0.0))
-        return [{**c, "score": 1.0} for c in chunks]
+        return [{**c, "score": 1.0} for c in chunks[:top_k]]
 
 
 # ──────────────────────────────────────────────

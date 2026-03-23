@@ -13,6 +13,7 @@ podcodex.cli — Command-line interface.
     podcodex query     <QUERY> --show <name> [--top-k N] [--alpha F]
     podcodex list      [--show <name>]
     podcodex delete    <collection>
+    podcodex enrich        <show_folder>
 """
 
 from __future__ import annotations
@@ -548,6 +549,71 @@ def cmd_delete(args: argparse.Namespace) -> None:
     print(f"Deleted collection '{args.collection}'")
 
 
+def cmd_enrich(args: argparse.Namespace) -> None:
+    """Enrich existing vectors.db with episode_title / pub_date / episode_number."""
+    show_folder = Path(args.show_folder)
+    db_path = show_folder / "vectors.db"
+    if not db_path.exists():
+        logger.error(f"No vectors.db in {show_folder}")
+        sys.exit(1)
+
+    local = LocalStore(db_path=db_path)
+    collections = local.list_collections()
+    if not collections:
+        logger.warning("No collections in local store.")
+        return
+
+    updated = 0
+    for col in collections:
+        episodes = local.list_episodes(col)
+        for ep in episodes:
+            # Find the transcript dir
+            ep_dir = show_folder / ep
+            if not ep_dir.is_dir():
+                continue
+
+            # Try to load RSS metadata
+            meta_file = ep_dir / ".episode_meta.json"
+            extras: dict = {}
+            if meta_file.exists():
+                rss = json.loads(meta_file.read_text(encoding="utf-8"))
+                if rss.get("title") and rss["title"] != ep:
+                    extras["episode_title"] = rss["title"]
+                if rss.get("pub_date"):
+                    extras["pub_date"] = rss["pub_date"]
+                if rss.get("episode_number") is not None:
+                    extras["episode_number"] = rss["episode_number"]
+            else:
+                # Fall back to transcript meta
+                for candidate in (
+                    ep_dir / f"{ep}.transcript.json",
+                    ep_dir / f"{ep}.polished.json",
+                ):
+                    if candidate.exists():
+                        data = json.loads(candidate.read_text(encoding="utf-8"))
+                        meta = data.get("meta", {}) if isinstance(data, dict) else {}
+                        if meta.get("rss_title") and meta["rss_title"] != ep:
+                            extras["episode_title"] = meta["rss_title"]
+                        if meta.get("rss_pub_date"):
+                            extras["pub_date"] = meta["rss_pub_date"]
+                        if meta.get("episode_number") is not None:
+                            extras["episode_number"] = meta["episode_number"]
+                        break
+
+            if not extras:
+                continue
+
+            # Update meta_json for all chunks in this episode
+            n = local.enrich_chunk_meta(col, ep, extras)
+            if n:
+                updated += n
+                logger.info(f"Updated {n} chunks for '{ep}' in '{col}': {extras}")
+
+    logger.success(
+        f"Backfilled metadata for {updated} chunks. Re-sync to push to Qdrant."
+    )
+
+
 # ──────────────────────────────────────────────
 # Argument parser
 # ──────────────────────────────────────────────
@@ -738,6 +804,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_delete = sub.add_parser("delete", help="Delete a vector collection.")
     p_delete.add_argument("collection", help="Collection name to delete.")
 
+    # enrich
+    p_bf = sub.add_parser(
+        "enrich",
+        help="Enrich an existing vectors.db with episode titles and RSS metadata.",
+    )
+    p_bf.add_argument(
+        "show_folder",
+        help="Path to the show folder (must contain vectors.db and episode dirs).",
+    )
+
     return parser
 
 
@@ -766,3 +842,5 @@ def main() -> None:
         cmd_list(args)
     elif args.command == "delete":
         cmd_delete(args)
+    elif args.command == "enrich":
+        cmd_enrich(args)

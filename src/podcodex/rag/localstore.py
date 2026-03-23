@@ -265,3 +265,24 @@ class LocalStore:
             chunk["text"] = text
             result.append(chunk)
         return result
+
+    def enrich_chunk_meta(self, collection: str, episode: str, extras: dict) -> int:
+        """Merge *extras* into meta_json for all chunks of an episode.
+
+        Returns the number of updated rows.
+        """
+        rows = self._conn.execute(
+            "SELECT id, meta_json FROM chunks WHERE collection=? AND episode=?",
+            (collection, episode),
+        ).fetchall()
+        if not rows:
+            return 0
+        with self._conn:
+            for row_id, meta_json in rows:
+                meta = json.loads(meta_json)
+                meta.update(extras)
+                self._conn.execute(
+                    "UPDATE chunks SET meta_json=? WHERE id=?",
+                    (json.dumps(meta), row_id),
+                )
+        return len(rows)
