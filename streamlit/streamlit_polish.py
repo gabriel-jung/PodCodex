@@ -7,20 +7,167 @@ from pathlib import Path
 
 import streamlit as st
 
-from podcodex.core import AudioPaths, polish as polish_mod
+from podcodex.core import polish as polish_mod
 from podcodex.core._utils import segments_to_text
 from podcodex.core.polish import (
     load_polished_raw,
     load_polished_validated,
 )
 from constants import DEFAULT_OLLAMA_MODEL, DEFAULT_SOURCE_LANG
-from utils import PROVIDERS, build_llm_kwargs, fmt_time, on_provider_change
+from utils import (
+    PROVIDERS,
+    build_llm_kwargs,
+    fmt_time,
+    get_episode_paths,
+    on_provider_change,
+)
 from streamlit_editor import render_segment_editor
 
 
+def _render_polish_editor(
+    audio_path: str, output_dir: str, nodiar: bool, transcript: list[dict], paths
+) -> None:
+    """Render the polished transcript editor with load original/edits buttons."""
+    p_key = f"editor_polished_{audio_path}"
+    source_key = f"polish_{audio_path}_source"
+    if p_key not in st.session_state:
+        if paths.has_validated_polished():
+            st.session_state[p_key] = load_polished_validated(
+                audio_path, output_dir=output_dir, nodiar=nodiar
+            )
+            st.session_state[source_key] = "edited"
+        else:
+            st.session_state[p_key] = load_polished_raw(
+                audio_path, output_dir=output_dir, nodiar=nodiar
+            )
+            st.session_state[source_key] = "raw"
+    polished = st.session_state[p_key]
+    st.session_state.polished = polished
+    with st.container(border=True):
+        col_title, col_badge = st.columns([5, 1])
+        with col_title:
+            st.markdown("### ✏️ Review & Edit Polished")
+        with col_badge:
+            _dirty = st.session_state.get(f"polish_{audio_path}_dirty", False)
+            _src = st.session_state.get(source_key, "")
+            _viewing_raw = _src == "raw"
+            if paths.has_validated_polished() and not _dirty and not _viewing_raw:
+                st.success("✅ Saved")
+            elif _dirty or _viewing_raw or paths.has_raw_polished():
+                st.warning("⚠️ Unsaved")
+
+        # Show which version is currently loaded
+        if _viewing_raw:
+            if paths.has_validated_polished():
+                st.caption("Viewing: **original** (you have saved edits)")
+            else:
+                st.caption("Viewing: **original** (not yet reviewed)")
+        elif _src == "edited":
+            st.caption("Viewing: **saved edits**")
+
+        # Warn if raw file is newer than validated (e.g. forced re-run)
+        if (
+            paths.polished_raw_exists()
+            and paths.has_validated_polished()
+            and paths.polished_raw.stat().st_mtime > paths.polished.stat().st_mtime
+        ):
+            st.warning(
+                "The previous step was re-run after your last edits. "
+                "Click **↩ Load original** to see the new version, or keep your current edits."
+            )
+
+        has_raw = paths.polished_raw_exists()
+        has_validated = paths.has_validated_polished()
+        cols = st.columns(2)
+        with cols[0]:
+            if st.button(
+                "↩ Load original",
+                key="load_raw_polished",
+                use_container_width=True,
+                disabled=not has_raw,
+            ):
+                st.session_state[p_key] = load_polished_raw(
+                    audio_path, output_dir=output_dir, nodiar=nodiar
+                )
+                st.session_state[source_key] = "raw"
+                st.session_state[f"polish_{audio_path}_dirty"] = False
+                st.rerun()
+        with cols[1]:
+            if st.button(
+                "✏️ Load edits",
+                key="load_edited_polished",
+                use_container_width=True,
+                disabled=not has_validated,
+            ):
+                st.session_state[p_key] = load_polished_validated(
+                    audio_path, output_dir=output_dir, nodiar=nodiar
+                )
+                st.session_state[source_key] = "edited"
+                st.session_state[f"polish_{audio_path}_dirty"] = False
+                st.rerun()
+
+        # ── Summary ──
+        if polished:
+            speakers = sorted(
+                {s.get("speaker", "") for s in polished} - {"", "[BREAK]"}
+            )
+            total_chars = sum(len(s.get("text", "")) for s in polished)
+            total_words = sum(len(s.get("text", "").split()) for s in polished)
+            first_start = polished[0].get("start")
+            last_end = polished[-1].get("end")
+            duration_str = (
+                fmt_time(last_end - first_start)
+                if first_start is not None and last_end is not None
+                else None
+            )
+            parts = [f"**{len(polished)}** segments"]
+            if speakers:
+                parts.append(f"**{len(speakers)}** speakers ({', '.join(speakers)})")
+            parts.append(f"**{total_words:,}** words · **{total_chars:,}** chars")
+            if duration_str:
+                parts.append(f"**{duration_str}**")
+            st.caption(" · ".join(parts))
+
+        def _on_save(merged):
+            polish_mod.save_polished(
+                audio_path, merged, output_dir=output_dir, nodiar=nodiar
+            )
+            st.session_state[p_key] = merged
+            st.session_state[source_key] = "edited"
+            st.session_state.polished = merged
+            st.toast("Polished transcript saved!")
+
+        _real_audio = (
+            audio_path
+            if audio_path
+            and not st.session_state.get("transcript_only")
+            and Path(audio_path).is_file()
+            else None
+        )
+        render_segment_editor(
+            polished,
+            editor_key=f"polish_{audio_path}",
+            on_save=_on_save,
+            audio_path=_real_audio,
+            reference_segments=transcript,
+            is_saved=paths.has_validated_polished() and not _viewing_raw,
+            export_fn=segments_to_text,
+            export_filename=f"{Path(audio_path).stem}.polished.txt",
+            next_tab=["translate", "index"],
+            next_tab_label=["→ Translate", "→ Index"],
+        )
+
+
 def _run_polish_button(
-    btn_disabled, mode, source_lang, context, transcript, audio_path, output_dir
-):
+    btn_disabled: bool,
+    mode: str,
+    source_lang: str,
+    context: str,
+    transcript: list[dict],
+    audio_path: str,
+    output_dir: str,
+    nodiar: bool = False,
+) -> None:
     """Render the 'Polish' action button and run the pipeline on click.
 
     Shared by API and Ollama modes — only the mode-specific settings differ.
@@ -38,9 +185,8 @@ def _run_polish_button(
         with st.spinner(f"Processing {len(transcript)} segments..."):
             try:
                 result = polish_mod.polish_segments(transcript, **kwargs)
-                _nd = st.session_state.get("skip_diarization", False)
                 polish_mod.save_polished_raw(
-                    audio_path, result, output_dir=output_dir, nodiar=_nd
+                    audio_path, result, output_dir=output_dir, nodiar=nodiar
                 )
                 # Load the new raw into the editor cache so it shows
                 # the fresh run, not the old validated version.
@@ -55,58 +201,85 @@ def _run_polish_button(
                 st.error(f"Failed: {e}")
 
 
-def render():
+def render() -> None:
     st.header("Polish")
     st.caption("Correct transcription errors and proper nouns in the source language.")
 
-    audio_path = st.session_state.get("audio_path")
-    output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
-
-    if not audio_path:
+    paths = get_episode_paths()
+    if not paths:
         st.info(
             "No episode loaded. Load one from the sidebar or go to the **🎙️ Transcribe** tab."
         )
         return
 
+    audio_path = st.session_state.get("audio_path")
+    output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
     nodiar = st.session_state.get("skip_diarization", False)
-    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
 
     # ── Episode header ──
     with st.container(border=True):
-        st.markdown(f"**{Path(str(audio_path)).name}**")
+        ep_label = (
+            st.session_state.get("episode_title")
+            or st.session_state.get("episode_stem")
+            or Path(str(audio_path)).name
+        )
+        st.markdown(f"**{ep_label}**")
         st.caption(str(output_dir))
 
     if not st.session_state.get("transcript"):
-        with st.container(border=True):
-            st.markdown("### 📄 Load Transcript")
-            st.caption("No transcript in session. Upload a JSON transcript to proceed.")
-            uploaded_json = st.file_uploader(
-                "Upload transcript JSON",
-                type=["json"],
-                key="polish_transcript_upload",
-                label_visibility="collapsed",
-            )
-            if uploaded_json:
-                try:
-                    data = json.loads(uploaded_json.read().decode("utf-8"))
-                    segs = data["segments"] if isinstance(data, dict) else data
-                    if not segs or "text" not in segs[0]:
-                        st.error("Missing 'text' field in segments.")
-                    else:
-                        st.session_state.transcript = segs
-                        st.success(f"Loaded {len(segs)} segments.")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Failed: {e}")
+        st.info(
+            "No transcript loaded. Go to the **🎙️ Transcribe** tab to import or "
+            "generate one first."
+        )
+        if st.button("Go to Transcribe →", type="primary"):
+            st.session_state.requested_tab = "transcribe"
+            st.rerun()
         return
 
     transcript = st.session_state.transcript
+    already_polished = paths.has_polished()
+    has_polished = already_polished or st.session_state.get("polished")
+
+    # ── Audio player ──
+    if (
+        audio_path
+        and not st.session_state.get("transcript_only")
+        and Path(audio_path).is_file()
+    ):
+        st.audio(str(audio_path))
+
+    # ── Skip polishing ──
+    if not already_polished:
+        with st.container(border=True):
+            st.markdown("### ✅ Skip polishing")
+            st.caption(
+                "If the transcript is already correct (e.g. written by hand), "
+                "skip LLM polishing and go straight to the next step."
+            )
+            if st.button(
+                "Skip polishing →",
+                use_container_width=True,
+                type="primary",
+                key="polish_skip",
+            ):
+                polish_mod.save_polished(
+                    audio_path, transcript, output_dir=output_dir, nodiar=nodiar
+                )
+                p_key = f"editor_polished_{audio_path}"
+                st.session_state[p_key] = transcript
+                st.session_state[f"polish_{audio_path}_source"] = "edited"
+                st.session_state.polished = transcript
+                st.session_state.pop(f"polish_{audio_path}_dirty", None)
+                st.toast(
+                    "Transcript saved as polished — skipped LLM correction.", icon="✅"
+                )
+                st.session_state.requested_tab = "index"
+                st.rerun()
 
     # ── Import existing polished file ──
-    already_polished = paths.has_polished()
     with st.expander(
         "📂 **Import existing polished file** — skip the correction step",
-        expanded=not already_polished and not st.session_state.get("polished"),
+        expanded=not has_polished,
     ):
         uploaded_json = st.file_uploader(
             "Upload polished JSON",
@@ -141,6 +314,19 @@ def render():
                         st.rerun()
                 except Exception as e:
                     st.error(f"Import failed: {e}")
+
+    # ── Editor (shown first when polished exists) ──
+    if paths.has_polished():
+        _render_polish_editor(audio_path, output_dir, nodiar, transcript, paths)
+
+    # ── LLM processing steps (collapsed when polished exists) ──
+    show_llm_steps = st.checkbox(
+        "Show LLM polishing steps",
+        value=not has_polished,
+        key="show_polish_steps",
+    )
+    if not show_llm_steps:
+        return
 
     # ── Section 1: Configuration ──
     with st.container(border=True):
@@ -232,6 +418,7 @@ def render():
                 transcript,
                 audio_path,
                 output_dir,
+                nodiar,
             )
 
         elif mode == "ollama":
@@ -252,6 +439,7 @@ def render():
                 transcript,
                 audio_path,
                 output_dir,
+                nodiar,
             )
 
         elif mode == "manual":
@@ -393,106 +581,3 @@ def render():
                         st.session_state.polish_batch_results = {}
                         st.success(f"Saved — {len(all_results)} segments.")
                         st.rerun()
-
-    # ── Section 3: Editor ──
-    if paths.has_polished():
-        p_key = f"editor_polished_{audio_path}"
-        source_key = f"polish_{audio_path}_source"
-        if p_key not in st.session_state:
-            # First load: pick the best available version and track which one.
-            if paths.has_validated_polished():
-                st.session_state[p_key] = load_polished_validated(
-                    audio_path, output_dir=output_dir, nodiar=nodiar
-                )
-                st.session_state[source_key] = "edited"
-            else:
-                st.session_state[p_key] = load_polished_raw(
-                    audio_path, output_dir=output_dir, nodiar=nodiar
-                )
-                st.session_state[source_key] = "raw"
-        polished = st.session_state[p_key]
-        st.session_state.polished = polished
-        with st.container(border=True):
-            col_title, col_badge = st.columns([5, 1])
-            with col_title:
-                st.markdown("### ✏️ Step 3 — Review & Edit")
-            with col_badge:
-                _dirty = st.session_state.get(f"polish_{audio_path}_dirty", False)
-                _src = st.session_state.get(source_key, "")
-                _viewing_raw = _src == "raw"
-                if paths.has_validated_polished() and not _dirty and not _viewing_raw:
-                    st.success("✅ Saved")
-                elif _dirty or _viewing_raw or paths.has_raw_polished():
-                    st.warning("⚠️ Unsaved")
-
-            # Show which version is currently loaded
-            if _viewing_raw:
-                if paths.has_validated_polished():
-                    st.caption("Viewing: **original** (you have saved edits)")
-                else:
-                    st.caption("Viewing: **original** (not yet reviewed)")
-            elif _src == "edited":
-                st.caption("Viewing: **saved edits**")
-
-            # Warn if raw file is newer than validated (e.g. forced re-run)
-            if (
-                paths.polished_raw_exists()
-                and paths.has_validated_polished()
-                and paths.polished_raw.stat().st_mtime > paths.polished.stat().st_mtime
-            ):
-                st.warning(
-                    "The previous step was re-run after your last edits. "
-                    "Click **↩ Load original** to see the new version, or keep your current edits."
-                )
-
-            has_raw = paths.polished_raw_exists()
-            has_validated = paths.has_validated_polished()
-            cols = st.columns(2)
-            with cols[0]:
-                if st.button(
-                    "↩ Load original",
-                    key="load_raw_polished",
-                    use_container_width=True,
-                    disabled=not has_raw,
-                ):
-                    st.session_state[p_key] = load_polished_raw(
-                        audio_path, output_dir=output_dir, nodiar=nodiar
-                    )
-                    st.session_state[source_key] = "raw"
-                    st.session_state[f"polish_{audio_path}_dirty"] = False
-                    st.rerun()
-            with cols[1]:
-                if st.button(
-                    "✏️ Load edits",
-                    key="load_edited_polished",
-                    use_container_width=True,
-                    disabled=not has_validated,
-                ):
-                    st.session_state[p_key] = load_polished_validated(
-                        audio_path, output_dir=output_dir, nodiar=nodiar
-                    )
-                    st.session_state[source_key] = "edited"
-                    st.session_state[f"polish_{audio_path}_dirty"] = False
-                    st.rerun()
-
-            def _on_save(merged):
-                polish_mod.save_polished(
-                    audio_path, merged, output_dir=output_dir, nodiar=nodiar
-                )
-                st.session_state[p_key] = merged
-                st.session_state[source_key] = "edited"
-                st.session_state.polished = merged
-                st.toast("Polished transcript saved!")
-
-            render_segment_editor(
-                polished,
-                editor_key=f"polish_{audio_path}",
-                on_save=_on_save,
-                audio_path=audio_path,
-                reference_segments=transcript,
-                is_saved=paths.has_validated_polished() and not _viewing_raw,
-                export_fn=segments_to_text,
-                export_filename=f"{Path(audio_path).stem}.polished.txt",
-                next_tab=["translate", "index"],
-                next_tab_label=["→ Translate", "→ Index"],
-            )

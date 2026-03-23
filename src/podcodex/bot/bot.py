@@ -3,7 +3,9 @@ podcodex.bot.bot — Discord bot for podcast transcript search.
 
 Entrypoint:
     podcodex-bot [--model bge-m3] [--chunking semantic] [--top-k 5]
-                 [--qdrant-url URL] [--server-config FILE] [--dev-guild ID]
+                 [--qdrant-url URL] [--server-config FILE]
+                 [--shows-config shows.toml] [--dev-guild ID]
+    podcodex-bot --hash-password
 
 Slash commands (user-facing):
     /search   question [show] [episode] [speaker] [alpha] [model] [top_k] [source] [compact]
@@ -24,6 +26,10 @@ Slash commands (admin):
     /setup    [model] [chunker] [top_k] [show_add] [show_remove] [show_clear]
               [default_source] [compact]
               Configure server defaults.
+    /unlock   show password
+              Unlock a show for this server (requires shows.toml).
+    /lock     show
+              Remove a show from this server.
     /sync     Manually sync the command tree.
 """
 
@@ -31,8 +37,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
+import random
 import sys
 import time
 from dataclasses import asdict, dataclass, field, fields
@@ -47,6 +55,7 @@ from podcodex.bot.formatting import (
     build_compact_embed,
     count_occurrences,
     fmt_time,
+    fmt_timestamp,
     merge_results,
     score_bar,
     speaker_lines,
@@ -100,6 +109,14 @@ class _AutocompleteCache:
 
 
 @dataclass
+class ShowEntry:
+    """A single show registered by the bot owner in shows.toml."""
+
+    name: str
+    password_hash: str  # "sha256:<hex>"
+
+
+@dataclass
 class BotConfig:
     """Global bot configuration (set via CLI flags, immutable at runtime)."""
 
@@ -110,6 +127,7 @@ class BotConfig:
     merge_strategy: str = "roundrobin"
     cooldown_seconds: float = 5.0
     dev_guild_id: int | None = None
+    shows: dict[str, ShowEntry] = field(default_factory=dict)
 
 
 @dataclass
@@ -119,9 +137,42 @@ class ServerSettings:
     model: str = DEFAULT_MODEL
     chunker: str = DEFAULT_CHUNKING
     top_k: int = TOP_K
-    default_shows: list[str] = field(default_factory=list)
+    allowed_shows: list[str] = field(default_factory=list)
     default_source: str = ""
     compact: bool = False
+
+
+# ── Shows config ─────────────────────────────
+
+
+def _load_shows_config(path: Path) -> dict[str, ShowEntry]:
+    """Load shows.toml → {normalized_name: ShowEntry}."""
+    if not path.exists():
+        return {}
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python < 3.11
+        import tomli as tomllib  # type: ignore[no-redef]
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    shows: dict[str, ShowEntry] = {}
+    for _key, entry in raw.get("shows", {}).items():
+        name = entry.get("name", _key)
+        pw_hash = entry.get("password_hash", "")
+        if not pw_hash:
+            logger.warning(f"Show {name!r} has no password_hash — skipping")
+            continue
+        shows[name.lower()] = ShowEntry(name=name, password_hash=pw_hash)
+    logger.info(f"Loaded {len(shows)} show(s) from {path}")
+    return shows
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    """Verify a password against a stored 'sha256:<hex>' hash."""
+    if not stored_hash.startswith("sha256:"):
+        return False
+    expected = stored_hash.removeprefix("sha256:")
+    actual = hashlib.sha256(password.encode()).hexdigest()
+    return actual == expected
 
 
 # ── Embed builder ─────────────────────────────
@@ -152,9 +203,10 @@ def _result_embed(
     if show:
         title += f" ({show})"
     embed.title = title
-    embed.add_field(
-        name="Timestamp", value=f"{fmt_time(start)} → {fmt_time(end)}", inline=True
-    )
+    timed = chunk.get("timed", True)
+    ts_label = fmt_timestamp(start, end, timed=timed)
+    if ts_label:
+        embed.add_field(name="Timestamp", value=ts_label, inline=True)
     embed.add_field(
         name="Relevance", value=f"{score_bar(score)} {score:.0%}", inline=True
     )
@@ -175,6 +227,7 @@ class PodCodexBot(discord.Client):
         self.server_config_path = server_config_path
         self.tree = app_commands.CommandTree(self)
         self._cooldown = CooldownManager(seconds=config.cooldown_seconds)
+        self._access_control = bool(config.shows)
 
         self._store: QdrantStore | None = None
         self._retrievers: dict[str, Retriever] = {}
@@ -188,19 +241,23 @@ class PodCodexBot(discord.Client):
     def _load_server_config(self) -> dict[int, ServerSettings]:
         if not self.server_config_path.exists():
             return {}
-        raw = json.loads(self.server_config_path.read_text())
+        raw = json.loads(self.server_config_path.read_text(encoding="utf-8"))
         valid_keys = {f.name for f in fields(ServerSettings)}
-        return {
-            int(sid): ServerSettings(**{k: v for k, v in d.items() if k in valid_keys})
-            for sid, d in raw.items()
-        }
+        result: dict[int, ServerSettings] = {}
+        for sid, d in raw.items():
+            # Backward compat: rename old "default_shows" → "allowed_shows"
+            if "default_shows" in d and "allowed_shows" not in d:
+                d["allowed_shows"] = d.pop("default_shows")
+            filtered = {k: v for k, v in d.items() if k in valid_keys}
+            result[int(sid)] = ServerSettings(**filtered)
+        return result
 
     def _save_server_config(self) -> None:
         payload = json.dumps(
             {str(k): asdict(v) for k, v in self._server_cfg.items()}, indent=2
         )
         tmp = self.server_config_path.with_suffix(".tmp")
-        tmp.write_text(payload)
+        tmp.write_text(payload, encoding="utf-8")
         tmp.replace(self.server_config_path)
 
     def _server_settings(self, guild_id: int | None) -> ServerSettings:
@@ -224,10 +281,56 @@ class PodCodexBot(discord.Client):
             model=model or base.model,
             chunker=base.chunker,
             top_k=top_k or base.top_k,
-            default_shows=base.default_shows,
+            allowed_shows=base.allowed_shows,
             default_source=base.default_source,
             compact=base.compact,
         )
+
+    # ── Access control helpers ────────────────
+
+    def _resolve_shows(
+        self, settings: ServerSettings, explicit_show: str = ""
+    ) -> list[str] | None:
+        """Resolve which shows a command may query.
+
+        Returns a list of show names, or None (= all shows, when access
+        control is off and no filter is set).
+
+        With access control ON (shows.toml loaded):
+          - explicit show must be in allowed_shows, otherwise rejected
+          - no explicit show → allowed_shows (empty = no access)
+        With access control OFF (no shows.toml):
+          - explicit show → [show]
+          - allowed_shows set → allowed_shows
+          - neither → None (all shows)
+        """
+        if self._access_control:
+            allowed = settings.allowed_shows
+            if explicit_show:
+                if explicit_show in allowed:
+                    return [explicit_show]
+                return []  # not allowed → empty = no results
+            return allowed if allowed else []
+        # No access control — original behavior
+        if explicit_show:
+            return [explicit_show]
+        if settings.allowed_shows:
+            return settings.allowed_shows
+        return None
+
+    def _filter_collections(
+        self, collections: list[str], settings: ServerSettings
+    ) -> list[str]:
+        """Filter a list of collections to only those the server may access."""
+        if not self._access_control:
+            return collections
+        allowed = settings.allowed_shows
+        if not allowed:
+            return []
+        allowed_cols = {
+            collection_name(s, settings.model, settings.chunker) for s in allowed
+        }
+        return [c for c in collections if c in allowed_cols]
 
     # ── Lazy singletons ──────────────────────
 
@@ -286,13 +389,18 @@ class PodCodexBot(discord.Client):
         settings = self._server_settings(interaction.guild_id)
         model = getattr(interaction.namespace, "model", "") or settings.model
         chunker = settings.chunker
-        loop = asyncio.get_running_loop()
-        collections = await loop.run_in_executor(
-            None,
-            lambda: self.store.list_collections(model=model, chunker=chunker),
-        )
-        suffix = f"__{model}__{chunker}"
-        shows = sorted({c.removesuffix(suffix) for c in collections})
+
+        if self._access_control:
+            # Only offer shows this server has unlocked
+            shows = sorted(settings.allowed_shows)
+        else:
+            loop = asyncio.get_running_loop()
+            collections = await loop.run_in_executor(
+                None,
+                lambda: self.store.list_collections(model=model, chunker=chunker),
+            )
+            suffix = f"__{model}__{chunker}"
+            shows = sorted({c.removesuffix(suffix) for c in collections})
         return [
             app_commands.Choice(name=s, value=s)
             for s in shows
@@ -342,11 +450,8 @@ class PodCodexBot(discord.Client):
 
         # Determine which show(s) to look at
         show = getattr(interaction.namespace, "show", "")
-        if show:
-            shows = [show]
-        elif settings.default_shows:
-            shows = settings.default_shows
-        else:
+        shows = self._resolve_shows(settings, show)
+        if not shows:
             return []
 
         all_episodes: set[str] = set()
@@ -373,6 +478,7 @@ class PodCodexBot(discord.Client):
         collections = await loop.run_in_executor(
             None, lambda: self.store.list_collections(model=model, chunker=chunker)
         )
+        collections = self._filter_collections(collections, settings)
 
         all_sources: set[str] = set()
         for col in collections:
@@ -409,14 +515,16 @@ class PodCodexBot(discord.Client):
         model = getattr(interaction.namespace, "model", "") or settings.model
         chunker = settings.chunker
 
-        # Determine which show(s) to look at
         show = getattr(interaction.namespace, "show", "")
-        if show:
-            shows = [show]
-        elif settings.default_shows:
-            shows = settings.default_shows
-        else:
-            # No show context — list speakers across all collections
+        shows = self._resolve_shows(settings, show)
+
+        if shows:
+            all_speakers: set[str] = set()
+            for s in shows:
+                col = collection_name(s, model, chunker)
+                all_speakers.update(await self._cached_speakers(col))
+        elif shows is None:
+            # No access control, no filter — list speakers across all collections
             loop = asyncio.get_running_loop()
             collections = await loop.run_in_executor(
                 None, lambda: self.store.list_collections(model=model, chunker=chunker)
@@ -424,16 +532,8 @@ class PodCodexBot(discord.Client):
             all_speakers: set[str] = set()
             for col in collections:
                 all_speakers.update(await self._cached_speakers(col))
-            return [
-                app_commands.Choice(name=s, value=s)
-                for s in sorted(all_speakers)
-                if current.lower() in s.lower()
-            ][:25]
-
-        all_speakers: set[str] = set()
-        for s in shows:
-            col = collection_name(s, model, chunker)
-            all_speakers.update(await self._cached_speakers(col))
+        else:
+            return []
 
         return [
             app_commands.Choice(name=s, value=s)
@@ -446,11 +546,24 @@ class PodCodexBot(discord.Client):
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
-        """Autocomplete from pinned default_shows for the server."""
+        """Autocomplete from allowed shows for the server."""
         settings = self._server_settings(interaction.guild_id)
         return [
             app_commands.Choice(name=s, value=s)
-            for s in settings.default_shows
+            for s in settings.allowed_shows
+            if current.lower() in s.lower()
+        ][:25]
+
+    async def _available_show_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete from shows defined in shows.toml (for /unlock)."""
+        available = [entry.name for entry in self.config.shows.values()]
+        return [
+            app_commands.Choice(name=s, value=s)
+            for s in sorted(available)
             if current.lower() in s.lower()
         ][:25]
 
@@ -493,12 +606,7 @@ class PodCodexBot(discord.Client):
             effective_source = source or settings.default_source or None
             use_compact = compact == "true" if compact else settings.compact
 
-            # Resolve shows: explicit > default_shows > all
-            shows: list[str] | None = None
-            if show:
-                shows = [show]
-            elif settings.default_shows:
-                shows = settings.default_shows
+            shows = self._resolve_shows(settings, show)
 
             label = f"α={alpha:.2f} • {MODELS[settings.model].label}"
             await self._run_search(
@@ -550,11 +658,7 @@ class PodCodexBot(discord.Client):
             effective_source = source or settings.default_source or None
             use_compact = compact == "true" if compact else settings.compact
 
-            shows: list[str] | None = None
-            if show:
-                shows = [show]
-            elif settings.default_shows:
-                shows = settings.default_shows
+            shows = self._resolve_shows(settings, show)
 
             await self._run_exact(
                 interaction,
@@ -595,11 +699,7 @@ class PodCodexBot(discord.Client):
             settings = self._server_settings(interaction.guild_id)
             effective_source = source or settings.default_source or None
 
-            shows: list[str] | None = None
-            if show:
-                shows = [show]
-            elif settings.default_shows:
-                shows = settings.default_shows
+            shows = self._resolve_shows(settings, show)
 
             await self._run_random(
                 interaction,
@@ -712,6 +812,40 @@ class PodCodexBot(discord.Client):
             await self.tree.sync()
             await interaction.followup.send("✅ Command tree synced.", ephemeral=True)
 
+        # /unlock ─────────────────────────────
+        @self.tree.command(
+            name="unlock",
+            description="Unlock a show for this server (admin)",
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            show="Name of the show to unlock",
+            password="Access password provided by the bot owner",
+        )
+        async def unlock(
+            interaction: discord.Interaction,
+            show: str,
+            password: str,
+        ) -> None:
+            await self._handle_unlock(interaction, show, password)
+
+        unlock.autocomplete("show")(self._available_show_autocomplete)
+
+        # /lock ───────────────────────────────
+        @self.tree.command(
+            name="lock",
+            description="Remove a show from this server (admin)",
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(show="Name of the show to lock")
+        async def lock(
+            interaction: discord.Interaction,
+            show: str,
+        ) -> None:
+            await self._handle_lock(interaction, show)
+
+        lock.autocomplete("show")(self._pinned_show_autocomplete)
+
         # /help ───────────────────────────────
         @self.tree.command(
             name="help",
@@ -754,11 +888,22 @@ class PodCodexBot(discord.Client):
             embed.add_field(
                 name="/setup *(admin)*",
                 value=(
-                    "Configure server defaults: model, top-k, pinned shows, "
+                    "Configure server defaults: model, top-k, "
                     "default source, compact mode."
                 ),
                 inline=False,
             )
+            if self._access_control:
+                embed.add_field(
+                    name="/unlock *(admin)*",
+                    value="Unlock a show for this server with a password.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="/lock *(admin)*",
+                    value="Remove a show from this server.",
+                    inline=False,
+                )
             embed.set_footer(
                 text="Use the Show context ↕ button on results to see surrounding dialogue."
             )
@@ -835,7 +980,9 @@ class PodCodexBot(discord.Client):
         if shows:
             collections = [collection_name(s, model, chunker) for s in shows]
         else:
-            collections = self.store.list_collections(model=model, chunker=chunker)
+            collections = self._filter_collections(
+                self.store.list_collections(model=model, chunker=chunker), settings
+            )
         if not collections:
             logger.warning(f"No collections for model={model!r} chunker={chunker!r}")
             return []
@@ -886,12 +1033,15 @@ class PodCodexBot(discord.Client):
                     collection_name(s, settings.model, settings.chunker) for s in shows
                 ]
             else:
-                collections = await loop.run_in_executor(
-                    None,
-                    lambda: self.store.list_collections(
-                        model=settings.model,
-                        chunker=settings.chunker,
+                collections = self._filter_collections(
+                    await loop.run_in_executor(
+                        None,
+                        lambda: self.store.list_collections(
+                            model=settings.model,
+                            chunker=settings.chunker,
+                        ),
                     ),
+                    settings,
                 )
             if not collections:
                 await interaction.followup.send(
@@ -971,12 +1121,15 @@ class PodCodexBot(discord.Client):
                     collection_name(s, settings.model, settings.chunker) for s in shows
                 ]
             else:
-                collections = await loop.run_in_executor(
-                    None,
-                    lambda: self.store.list_collections(
-                        model=settings.model,
-                        chunker=settings.chunker,
+                collections = self._filter_collections(
+                    await loop.run_in_executor(
+                        None,
+                        lambda: self.store.list_collections(
+                            model=settings.model,
+                            chunker=settings.chunker,
+                        ),
                     ),
+                    settings,
                 )
             if not collections:
                 await interaction.followup.send(
@@ -984,9 +1137,7 @@ class PodCodexBot(discord.Client):
                 )
                 return
 
-            import random as _rand
-
-            col = _rand.choice(collections)
+            col = random.choice(collections)
             retriever = self.retriever(settings.model)
             chunk = await loop.run_in_executor(
                 None,
@@ -1021,9 +1172,10 @@ class PodCodexBot(discord.Client):
             title += f" ({show})"
         embed.title = title
         embed.add_field(name="Speaker", value=spk, inline=True)
-        embed.add_field(
-            name="Timestamp", value=f"{fmt_time(start)} → {fmt_time(end)}", inline=True
-        )
+        timed = chunk.get("timed", True)
+        ts_label = fmt_timestamp(start, end, timed=timed)
+        if ts_label:
+            embed.add_field(name="Timestamp", value=ts_label, inline=True)
         embed.set_footer(text="🎲 random quote")
 
         view = ExpandView(col, ep, show, start)
@@ -1047,6 +1199,14 @@ class PodCodexBot(discord.Client):
         guild_id = interaction.guild_id
         current = self._server_settings(guild_id)
 
+        # When access control is on, show management goes through /unlock + /lock
+        if self._access_control and (show_add or show_remove or show_clear):
+            await interaction.response.send_message(
+                "Show access is managed via `/unlock` and `/lock`.",
+                ephemeral=True,
+            )
+            return
+
         has_change = any(
             [
                 model,
@@ -1060,13 +1220,21 @@ class PodCodexBot(discord.Client):
             ]
         )
         if not has_change:
-            shows_str = ", ".join(f"`{s}`" for s in current.default_shows) or "*(all)*"
+            if self._access_control:
+                shows_str = (
+                    ", ".join(f"`{s}`" for s in current.allowed_shows)
+                    or "*(none — use /unlock)*"
+                )
+            else:
+                shows_str = (
+                    ", ".join(f"`{s}`" for s in current.allowed_shows) or "*(all)*"
+                )
             await interaction.response.send_message(
                 f"**Current settings**\n"
                 f"Model: `{current.model}`\n"
                 f"Chunker: `{current.chunker}`\n"
                 f"Top-k: `{current.top_k}`\n"
-                f"Default shows: {shows_str}\n"
+                f"Shows: {shows_str}\n"
                 f"Default source: `{current.default_source or '(any)'}`\n"
                 f"Compact: `{current.compact}`\n"
                 f"Merge: `{self.config.merge_strategy}`",
@@ -1074,8 +1242,8 @@ class PodCodexBot(discord.Client):
             )
             return
 
-        # Build updated shows list
-        new_shows = list(current.default_shows)
+        # Build updated shows list (only when access control is off)
+        new_shows = list(current.allowed_shows)
         if show_clear:
             new_shows = []
         if show_add and show_add not in new_shows:
@@ -1087,7 +1255,7 @@ class PodCodexBot(discord.Client):
             model=model or current.model,
             chunker=chunker or current.chunker,
             top_k=top_k or current.top_k,
-            default_shows=new_shows,
+            allowed_shows=new_shows,
             default_source=default_source if default_source else current.default_source,
             compact=compact == "true" if compact else current.compact,
         )
@@ -1095,17 +1263,90 @@ class PodCodexBot(discord.Client):
         self._save_server_config()
         logger.info(f"Guild {guild_id} updated: {updated}")
 
-        shows_str = ", ".join(f"`{s}`" for s in updated.default_shows) or "*(all)*"
+        shows_str = ", ".join(f"`{s}`" for s in updated.allowed_shows) or "*(all)*"
         await interaction.response.send_message(
             f"✅ Settings updated\n"
             f"Model: `{updated.model}`\n"
             f"Chunker: `{updated.chunker}`\n"
             f"Top-k: `{updated.top_k}`\n"
-            f"Default shows: {shows_str}\n"
+            f"Shows: {shows_str}\n"
             f"Default source: `{updated.default_source or '(any)'}`\n"
             f"Compact: `{updated.compact}`",
             ephemeral=True,
         )
+
+    # ── /unlock + /lock handlers ────────────────
+
+    async def _handle_unlock(
+        self,
+        interaction: discord.Interaction,
+        show: str,
+        password: str,
+    ) -> None:
+        if not self._access_control:
+            await interaction.response.send_message(
+                "Access control is not enabled (no shows.toml configured).",
+                ephemeral=True,
+            )
+            return
+
+        # Look up show by name (case-insensitive)
+        entry = self.config.shows.get(show.lower())
+        if not entry:
+            await interaction.response.send_message(
+                f"Unknown show: **{show}**", ephemeral=True
+            )
+            return
+
+        if not _verify_password(password, entry.password_hash):
+            logger.warning(
+                f"Failed unlock attempt for {show!r} in guild {interaction.guild_id}"
+            )
+            await interaction.response.send_message(
+                "Incorrect password.", ephemeral=True
+            )
+            return
+
+        guild_id = interaction.guild_id
+        settings = self._server_settings(guild_id)
+        if entry.name not in settings.allowed_shows:
+            settings.allowed_shows.append(entry.name)
+            self._server_cfg[guild_id] = settings
+            self._save_server_config()
+            logger.info(f"Guild {guild_id} unlocked show {entry.name!r}")
+
+        await interaction.response.send_message(
+            f"Show **{entry.name}** is now available on this server.",
+            ephemeral=True,
+        )
+
+    async def _handle_lock(
+        self,
+        interaction: discord.Interaction,
+        show: str,
+    ) -> None:
+        if not self._access_control:
+            await interaction.response.send_message(
+                "Access control is not enabled (no shows.toml configured).",
+                ephemeral=True,
+            )
+            return
+
+        guild_id = interaction.guild_id
+        settings = self._server_settings(guild_id)
+        if show in settings.allowed_shows:
+            settings.allowed_shows.remove(show)
+            self._server_cfg[guild_id] = settings
+            self._save_server_config()
+            logger.info(f"Guild {guild_id} locked show {show!r}")
+            await interaction.response.send_message(
+                f"Show **{show}** has been removed from this server.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                f"Show **{show}** is not currently unlocked.", ephemeral=True
+            )
 
     # ── /stats handler ────────────────────────
 
@@ -1128,6 +1369,7 @@ class PodCodexBot(discord.Client):
                     chunker=settings.chunker,
                 ),
             )
+            collections = self._filter_collections(collections, settings)
             if not collections:
                 await interaction.followup.send(
                     "No indexed shows found.", ephemeral=True
@@ -1184,16 +1426,24 @@ class PodCodexBot(discord.Client):
         settings = self._effective_settings(interaction.guild_id, model or "", 0)
         loop = asyncio.get_running_loop()
 
-        # Auto-resolve show: explicit > default_shows > single show > ask
+        # Auto-resolve show: explicit > allowed_shows > single show > ask
+        # Check access control for explicit show
+        if show and self._access_control and show not in settings.allowed_shows:
+            await interaction.followup.send("No indexed shows found.", ephemeral=True)
+            return
+
         if not show:
-            if settings.default_shows:
-                show = settings.default_shows[0]
+            if settings.allowed_shows:
+                show = settings.allowed_shows[0]
             else:
-                collections = await loop.run_in_executor(
-                    None,
-                    lambda: self.store.list_collections(
-                        model=settings.model, chunker=settings.chunker
+                collections = self._filter_collections(
+                    await loop.run_in_executor(
+                        None,
+                        lambda: self.store.list_collections(
+                            model=settings.model, chunker=settings.chunker
+                        ),
                     ),
+                    settings,
                 )
                 suffix = f"__{settings.model}__{settings.chunker}"
                 shows = sorted({c.removesuffix(suffix) for c in collections})
@@ -1262,6 +1512,18 @@ class PodCodexBot(discord.Client):
 # ── Entrypoint ────────────────────────────────
 
 
+def _hash_password_cli() -> None:
+    """Interactive helper to generate a sha256 password hash."""
+    import getpass
+
+    password = getpass.getpass("Enter password: ")
+    if not password:
+        print("Empty password — aborting.")
+        sys.exit(1)
+    h = hashlib.sha256(password.encode()).hexdigest()
+    print(f"sha256:{h}")
+
+
 def main() -> None:
     logger.remove()
     logger.add(sys.stderr, level="DEBUG")
@@ -1285,13 +1547,31 @@ def main() -> None:
     )
     parser.add_argument("--server-config", default="server_config.json")
     parser.add_argument(
+        "--shows-config",
+        default=None,
+        help="Path to shows.toml for password-gated access control",
+    )
+    parser.add_argument(
         "--dev-guild", default=None, type=int, help="Guild ID for instant dev sync"
     )
+    parser.add_argument(
+        "--hash-password",
+        action="store_true",
+        help="Generate a sha256 password hash and exit",
+    )
     args = parser.parse_args()
+
+    if args.hash_password:
+        _hash_password_cli()
+        return
 
     token = os.environ.get("DISCORD_TOKEN", "").strip()
     if not token:
         raise RuntimeError("DISCORD_TOKEN not set — add it to .env or environment.")
+
+    shows = {}
+    if args.shows_config:
+        shows = _load_shows_config(Path(args.shows_config))
 
     config = BotConfig(
         model=args.model,
@@ -1301,10 +1581,13 @@ def main() -> None:
         merge_strategy=args.merge_strategy,
         cooldown_seconds=args.cooldown,
         dev_guild_id=args.dev_guild,
+        shows=shows,
     )
 
     bot = PodCodexBot(config, server_config_path=Path(args.server_config))
     logger.info(f"Starting PodCodex bot (model={config.model}, top_k={config.top_k})")
+    if shows:
+        logger.info(f"Access control ON: {len(shows)} show(s) registered")
     bot.run(token, log_handler=None)
 
 

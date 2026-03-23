@@ -5,6 +5,7 @@ Used by Transcribe, Polish and Translate tabs.
 """
 
 import io
+from collections.abc import Callable
 from pathlib import Path
 
 import streamlit as st
@@ -17,9 +18,9 @@ from constants import PAGE_SIZES, DEFAULT_PAGE_SIZE, AUDIO_PADDING
 def render_segment_editor(
     segments: list[dict],
     editor_key: str,
-    on_save,
+    on_save: Callable[[list[dict]], None],
     *,
-    audio_path=None,
+    audio_path: Path | str | None = None,
     reference_segments: list[dict] | None = None,
     show_timestamps: bool = False,
     show_delete: bool = False,
@@ -27,28 +28,26 @@ def render_segment_editor(
     show_speaker: bool = True,
     diarized: bool = True,
     is_saved: bool = False,
-    export_fn=None,
+    export_fn: Callable[[list[dict]], str] | None = None,
     export_filename: str | None = None,
     next_tab: str | list[str] | None = None,
     next_tab_label: str | list[str] | None = None,
-):
-    """
-    Render a paginated, filterable segment editor.
+) -> None:
+    """Render a paginated, filterable segment editor.
 
-    Parameters
-    ----------
-    segments           Segment list to edit (dicts with 'text', 'speaker', 'start', 'end').
-    editor_key         Unique prefix for all session-state and widget keys.
-    on_save            Callable(list[dict]) called with merged edited segments on save.
-    audio_path         If provided, enables per-segment audio preview.
-    reference_segments If provided, shows each reference segment's text alongside.
-    show_timestamps    Enable start/end time editing.
-    show_delete        Enable per-segment delete and bulk-delete of flagged segments.
-    show_flags         Enable hallucination-based flagging and the "Flagged only" filter.
-    export_fn          Callable(list[dict]) -> str for the text export download button.
-    export_filename    Filename for the download button (e.g. "episode.polished.txt").
-    next_tab           Session-state tab key(s) to navigate to. String or list of strings.
-    next_tab_label     Label(s) for the navigation button(s). String or list of strings.
+    Args:
+        segments: Segment list to edit (dicts with 'text', 'speaker', 'start', 'end').
+        editor_key: Unique prefix for all session-state and widget keys.
+        on_save: Callable(list[dict]) called with merged edited segments on save.
+        audio_path: If provided, enables per-segment audio preview.
+        reference_segments: If provided, shows each reference segment's text alongside.
+        show_timestamps: Enable start/end time editing.
+        show_delete: Enable per-segment delete and bulk-delete of flagged segments.
+        show_flags: Enable hallucination-based flagging and the "Flagged only" filter.
+        export_fn: Callable(list[dict]) -> str for the text export download button.
+        export_filename: Filename for the download button (e.g. "episode.polished.txt").
+        next_tab: Session-state tab key(s) to navigate to. String or list of strings.
+        next_tab_label: Label(s) for the navigation button(s). String or list of strings.
     """
     if audio_path is not None:
         audio_path = Path(audio_path)
@@ -240,8 +239,9 @@ def render_segment_editor(
         )
 
         display_text = st.session_state.get(f"{editor_key}_text_{i}", text)
+        _time_prefix = f"[{start:.1f}s → {end:.1f}s] " if show_timestamps else ""
         with st.expander(
-            f"[{start:.1f}s → {end:.1f}s] **{speaker_label}**{density_flag} — {display_text[:60]}{'...' if len(display_text) > 60 else ''}",
+            f"{_time_prefix}**{speaker_label}**{density_flag} — {display_text[:60]}{'...' if len(display_text) > 60 else ''}",
             expanded=False,
         ):
             if density_warn:
@@ -255,7 +255,7 @@ def render_segment_editor(
                             audio_slice_bytes(str(audio_path), start, end),
                             format="audio/wav",
                         )
-                    except Exception:
+                    except (OSError, ValueError):
                         st.caption("Preview unavailable")
                 else:
                     if st.button(

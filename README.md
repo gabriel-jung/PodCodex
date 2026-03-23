@@ -12,6 +12,7 @@ Search your podcast transcripts from Discord with slash commands.
 
 - `/search <question>` — find relevant passages by meaning (semantic) or keywords
 - `/exact <query>` — literal text search, like Ctrl+F
+- `/random` — random quote with optional show/episode/speaker filters
 - `/stats` — overview of indexed shows, episodes, and duration
 - `/episodes [show]` — list episodes (auto-selects if only one show)
 - `/setup` — configure server defaults (admin)
@@ -351,9 +352,36 @@ results = retriever.retrieve(
 streamlit run streamlit/app.py
 ```
 
-Tabs: **Transcribe** → **Polish** → **Index** → **Translate** → **Synthesize** → **Search**
+The app has two modes:
 
-The sidebar scans a show folder and displays per-episode status. Opening an episode loads it into the pipeline tabs. The Search tab queries across all indexed episodes.
+- **Simple mode** (default) — drop an audio file and go through the pipeline. Tabs: **Transcribe** → **Polish** → **Translate** → **Synthesize**.
+- **Podcast mode** (toggle in sidebar) — manage a show folder with RSS feed integration, episode browsing, indexing, and search. Tabs: **Transcribe** → **Polish** → **Index** → **Translate** → **Synthesize** → **Search**.
+
+#### Podcast mode
+
+1. Set a **local folder** for the show in the sidebar
+2. Search for a podcast by name (uses iTunes/Apple Podcasts directory) or paste an RSS feed URL
+3. The show overview lists all episodes from the feed, with download and open buttons
+4. Episodes can be opened without downloading audio — useful for importing transcripts from external sources
+5. Per-episode pipeline status is shown in the sidebar and overview (transcribed, polished, indexed, etc.)
+6. Show settings (name, RSS URL, language, speakers) are stored in `show.toml`
+
+#### RSS episode metadata
+
+When downloading from an RSS feed, episode metadata (title, pub date, description, episode/season number) is saved as `.episode_meta.json` in each episode's output directory. This title is displayed throughout the app instead of the filesystem slug.
+
+### CLI — RSS and import
+
+```bash
+# Fetch RSS feed and list episodes (uses show.toml for the URL, or --rss to override)
+podcodex rss <show_folder>
+podcodex rss <show_folder> --rss https://example.com/feed.xml
+podcodex rss <show_folder> --download          # also download audio files
+
+# Import an external transcript
+podcodex import transcript.json <show_folder>
+podcodex import transcript.json <show_folder> --episode ep01 --show "My Podcast"
+```
 
 ## Output files
 
@@ -361,8 +389,11 @@ Outputs are organised per episode under the show folder. Each step produces a `.
 
 ```text
 /shows/my_podcast/
+├── show.toml                          ← show settings (name, RSS, language, speakers)
+├── .feed_cache.json                   ← cached RSS feed data
 ├── ep01.mp3
 ├── ep01/
+│   ├── .episode_meta.json             ← RSS episode metadata (title, pub date, etc.)
 │   ├── ep01.segments.parquet          ← WhisperX raw segments
 │   ├── ep01.segments.meta.json
 │   ├── ep01.diarization.parquet       ← pyannote diarization
@@ -387,14 +418,17 @@ Outputs are organised per episode under the show folder. Each step produces a `.
 
 | Module | Description |
 |--------|-------------|
-| `podcodex.bot` | Discord bot with `/search`, `/exact`, `/stats`, `/episodes` commands |
+| `podcodex.bot` | Discord bot with `/search`, `/exact`, `/random`, `/stats`, `/episodes` commands |
 | `podcodex.rag` | Chunking, embedding, vector storage (Qdrant + SQLite), and hybrid retrieval |
 | `podcodex.cli` | CLI: `podcodex vectorize / sync / query / list / delete` |
 | `podcodex.core.transcribe` | WhisperX transcription + phonetic alignment + speaker diarization |
 | `podcodex.core.polish` | LLM-based source correction (proper nouns, spelling, punctuation) |
 | `podcodex.core.translate` | LLM-based transcript translation (Ollama, OpenAI-compatible API, or manual) |
 | `podcodex.core.synthesize` | Qwen3-TTS voice cloning + episode assembly |
-| `podcodex.ingest` | Scan a show folder and report per-episode processing status |
+| `podcodex.ingest.folder` | Scan a show folder and report per-episode processing status |
+| `podcodex.ingest.rss` | RSS feed parsing, episode metadata, audio download |
+| `podcodex.ingest.importer` | Import external transcripts into the show folder structure |
+| `podcodex.ingest.show` | Show-level metadata (`show.toml`) |
 
 ## Notes
 

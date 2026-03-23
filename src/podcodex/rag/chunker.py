@@ -50,8 +50,8 @@ def _build_episode_text(segments: list[dict]) -> tuple[str, list[dict]]:
                 "start_char": cursor,
                 "end_char": cursor + len(text),
                 "speaker": seg.get("speaker", "UNKNOWN"),
-                "start": seg["start"],
-                "end": seg["end"],
+                "start": seg.get("start", 0.0),
+                "end": seg.get("end", 0.0),
                 "text": text,
             }
         )
@@ -122,8 +122,8 @@ def speaker_chunks(transcript: dict, min_chars: int = 30) -> list[dict]:
                 "show": show,
                 "episode": episode,
                 "source": source,
-                "start": seg["start"],
-                "end": seg["end"],
+                "start": seg.get("start", 0.0),
+                "end": seg.get("end", 0.0),
                 "speaker": seg.get("speaker", "UNKNOWN"),
                 "text": text,
             }

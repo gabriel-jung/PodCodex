@@ -29,6 +29,19 @@ def fmt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
 
 
+def fmt_timestamp(start: float, end: float, *, timed: bool = True) -> str | None:
+    """Format a timestamp range for display.
+
+    Returns None when there is no meaningful timestamp to show
+    (untimed episode with both values at zero).
+    """
+    if not timed and start == 0.0 and end == 0.0:
+        return None
+    if not timed:
+        return f"~{start:.0f}% → ~{end:.0f}%"
+    return f"{fmt_time(start)} → {fmt_time(end)}"
+
+
 def speaker(chunk: dict) -> str:
     return chunk.get("speaker") or chunk.get("dominant_speaker") or "Unknown"
 

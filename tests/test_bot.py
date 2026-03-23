@@ -382,16 +382,16 @@ def test_cooldown_zero_seconds_never_blocks():
 
 def test_server_settings_new_fields_default():
     s = ServerSettings()
-    assert s.default_shows == []
+    assert s.allowed_shows == []
     assert s.default_source == ""
     assert s.compact is False
 
 
 def test_server_settings_with_new_fields():
     s = ServerSettings(
-        default_shows=["Show A"], default_source="polished", compact=True
+        allowed_shows=["Show A"], default_source="polished", compact=True
     )
-    assert s.default_shows == ["Show A"]
+    assert s.allowed_shows == ["Show A"]
     assert s.default_source == "polished"
     assert s.compact is True
 
@@ -410,7 +410,7 @@ def test_server_settings_backwards_compat_missing_new_keys():
     """Old config files won't have new fields; defaults should fill in."""
     raw = {"model": "bge-m3", "chunker": "semantic", "top_k": 5}
     s = ServerSettings(**raw)
-    assert s.default_shows == []
+    assert s.allowed_shows == []
     assert s.default_source == ""
     assert s.compact is False
 
@@ -489,7 +489,7 @@ def test_compact_embed_truncates_long_text():
 
 
 def test_effective_settings_carries_new_fields(tmp_path):
-    """_effective_settings must propagate default_shows/source/compact from server config."""
+    """_effective_settings must propagate allowed_shows/source/compact from server config."""
     cfg_path = tmp_path / "server_config.json"
     import json
 
@@ -500,7 +500,7 @@ def test_effective_settings_carries_new_fields(tmp_path):
                     "model": "bge-m3",
                     "chunker": "semantic",
                     "top_k": 5,
-                    "default_shows": ["ShowA", "ShowB"],
+                    "allowed_shows": ["ShowA", "ShowB"],
                     "default_source": "polished",
                     "compact": True,
                 }
@@ -514,14 +514,14 @@ def test_effective_settings_carries_new_fields(tmp_path):
 
         bot = PodCodexBot(BotConfig(), server_config_path=cfg_path)
     eff = bot._effective_settings(guild_id=1, model="", top_k=0)
-    assert eff.default_shows == ["ShowA", "ShowB"]
+    assert eff.allowed_shows == ["ShowA", "ShowB"]
     assert eff.default_source == "polished"
     assert eff.compact is True
     # Per-query model override should still work
     eff2 = bot._effective_settings(guild_id=1, model="e5-small", top_k=10)
     assert eff2.model == "e5-small"
     assert eff2.top_k == 10
-    assert eff2.default_shows == ["ShowA", "ShowB"]
+    assert eff2.allowed_shows == ["ShowA", "ShowB"]
 
 
 # ──────────────────────────────────────────────
@@ -566,9 +566,9 @@ def test_autocomplete_cache_stale_after_ttl():
 
 
 def test_setup_show_add_appends():
-    """show_add should append to existing default_shows."""
-    current = ServerSettings(default_shows=["ShowA"])
-    new_shows = list(current.default_shows)
+    """show_add should append to existing allowed_shows."""
+    current = ServerSettings(allowed_shows=["ShowA"])
+    new_shows = list(current.allowed_shows)
     show_add = "ShowB"
     if show_add not in new_shows:
         new_shows.append(show_add)
@@ -576,8 +576,8 @@ def test_setup_show_add_appends():
 
 
 def test_setup_show_add_no_duplicate():
-    current = ServerSettings(default_shows=["ShowA"])
-    new_shows = list(current.default_shows)
+    current = ServerSettings(allowed_shows=["ShowA"])
+    new_shows = list(current.allowed_shows)
     show_add = "ShowA"
     if show_add not in new_shows:
         new_shows.append(show_add)
@@ -585,8 +585,8 @@ def test_setup_show_add_no_duplicate():
 
 
 def test_setup_show_remove():
-    current = ServerSettings(default_shows=["ShowA", "ShowB"])
-    new_shows = list(current.default_shows)
+    current = ServerSettings(allowed_shows=["ShowA", "ShowB"])
+    new_shows = list(current.allowed_shows)
     show_remove = "ShowA"
     if show_remove in new_shows:
         new_shows.remove(show_remove)
@@ -595,8 +595,8 @@ def test_setup_show_remove():
 
 def test_setup_show_clear_then_add():
     """show_clear runs first, then show_add — allows clear-and-add in one call."""
-    current = ServerSettings(default_shows=["Old1", "Old2"])
-    new_shows = list(current.default_shows)
+    current = ServerSettings(allowed_shows=["Old1", "Old2"])
+    new_shows = list(current.allowed_shows)
     show_clear = True
     show_add = "NewShow"
 

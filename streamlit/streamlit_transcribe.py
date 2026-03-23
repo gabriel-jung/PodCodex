@@ -16,14 +16,196 @@ from podcodex.core.transcribe import (
     load_transcript_validated,
 )
 from podcodex.core.synthesize import is_hallucination
-from constants import WHISPER_MODELS, DEFAULT_LANGUAGE_CODE
+from constants import AUDIO_EXTENSIONS, WHISPER_MODELS, DEFAULT_LANGUAGE_CODE
 from utils import fmt_time
 from streamlit_editor import render_segment_editor
 
 
-def render():
+def _render_transcript_import(
+    audio_path: str, output_dir: str, nodiar: bool, *, wrap_expander: bool = False
+) -> None:
+    """Render the transcript JSON upload UI. Saves to .transcript.raw.json on import."""
+    uploaded_json = st.file_uploader(
+        "Upload transcript JSON",
+        type=["json"],
+        help='JSON array or {"segments": [...]}. Each segment needs at least a "text" field.',
+        key="transcribe_upload",
+    )
+    with st.expander("📋 Expected JSON format", expanded=False):
+        st.code(
+            '[{\n  "speaker": "Alice",\n  "start": 0.0,\n  "end": 5.2,\n  "text": "Hello world."\n}, ...]',
+            language="json",
+        )
+    if uploaded_json:
+        if st.button("Import", use_container_width=True, key="transcribe_import_btn"):
+            try:
+                raw = json.loads(uploaded_json.read().decode("utf-8"))
+                data = raw.get("segments", raw) if isinstance(raw, dict) else raw
+                if not isinstance(data, list) or not data:
+                    st.error('Expected a JSON array or {"segments": [...]}.')
+                elif "text" not in data[0]:
+                    st.error("Missing 'text' field in segments.")
+                else:
+                    speakers = sorted({s.get("speaker", "") for s in data} - {""})
+                    meta = {
+                        "episode": Path(audio_path).stem,
+                        "speakers": speakers,
+                        "duration": round(
+                            max((s.get("end", 0) for s in data), default=0.0), 3
+                        ),
+                        "word_count": sum(len(s.get("text", "").split()) for s in data),
+                    }
+                    p = AudioPaths.from_audio(
+                        audio_path, output_dir=output_dir, nodiar=nodiar
+                    )
+                    p.transcript_raw.parent.mkdir(parents=True, exist_ok=True)
+                    payload = {"meta": meta, "segments": data}
+                    p.transcript_raw.write_text(
+                        json.dumps(payload, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    from podcodex.core._utils import write_json
+
+                    write_json(p.transcript, payload)
+                    t_key = f"editor_transcript_{audio_path}"
+                    st.session_state[t_key] = data
+                    st.session_state[f"transcript_{audio_path}_source"] = "raw"
+                    st.session_state.pop(f"transcript_{audio_path}_dirty", None)
+                    st.session_state.transcript = data
+                    st.success(f"Imported — {len(data)} segments.")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Import failed: {e}")
+
+
+def _find_rss_episode():
+    """Find the RSS episode matching the current episode stem. Returns (rss_ep, show_folder) or (None, "")."""
+    episode_stem = st.session_state.get("episode_stem", "")
+    show_folder = st.session_state.get("show_folder", "")
+    if not episode_stem or not show_folder:
+        return None, show_folder
+    try:
+        from podcodex.ingest.rss import episode_stem as rss_stem, load_feed_cache
+
+        feed = st.session_state.get("_rss_feed") or load_feed_cache(Path(show_folder))
+        if feed:
+            for ep in feed:
+                if rss_stem(ep) == episode_stem and ep.audio_url:
+                    return ep, show_folder
+    except ImportError:
+        pass
+    return None, show_folder
+
+
+def _render_audio_container(output_dir: str) -> None:
+    """Unified audio container: RSS download, upload, and player.
+
+    Adapts to whether audio already exists on disk.
+    """
+    audio_path = st.session_state.get("audio_path", "")
+    audio_exists = audio_path and Path(audio_path).is_file()
+    rss_ep, show_folder = _find_rss_episode()
+
+    with st.container(border=True):
+        st.markdown("### 🎧 Audio")
+        if audio_exists:
+            st.audio(str(audio_path))
+            st.caption(Path(audio_path).name)
+            show_sources = st.checkbox(
+                "Change audio source",
+                value=False,
+                key="show_audio_sources",
+            )
+        else:
+            st.caption("No audio file yet.")
+            show_sources = True
+
+        if show_sources:
+            # RSS download
+            if rss_ep:
+                from podcodex.ingest.rss import download_audio
+
+                col_label, col_btn = st.columns([4, 2])
+                with col_label:
+                    st.markdown(f"📡 **{rss_ep.title}**")
+                with col_btn:
+                    if st.button(
+                        "Download from RSS",
+                        use_container_width=True,
+                        type="primary",
+                        key="transcribe_rss_download",
+                    ):
+                        with st.spinner("Downloading…"):
+                            try:
+                                dl_path = download_audio(rss_ep, Path(show_folder))
+                                if dl_path:
+                                    st.session_state.audio_path = str(dl_path)
+                                st.toast("Audio downloaded.", icon="✅")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Download failed: {e}")
+
+            # File upload
+            audio_file = st.file_uploader(
+                "Upload audio file",
+                type=[ext.lstrip(".") for ext in AUDIO_EXTENSIONS],
+                key="transcribe_audio_upload",
+            )
+            if audio_file:
+                dest = Path(show_folder or output_dir) / audio_file.name
+                if st.button(
+                    "Save audio file",
+                    use_container_width=True,
+                    type="primary",
+                    key="transcribe_audio_save",
+                ):
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(audio_file.read())
+                    st.session_state.audio_path = str(dest)
+                    st.toast(f"Saved {dest.name}.", icon="✅")
+                    st.rerun()
+
+
+def render() -> None:
     st.header("Transcription")
     st.caption("Transcribe, diarize and prepare your podcast episode for translation.")
+
+    # Episodes opened without audio (transcript-only)
+    if st.session_state.get("transcript_only"):
+        audio_path = st.session_state.get("audio_path", "")
+        output_dir = st.session_state.get("output_dir", "")
+        nodiar = st.session_state.get("skip_diarization", False)
+        audio_exists = audio_path and Path(audio_path).is_file()
+
+        # Unified audio container: download / upload / player
+        _render_audio_container(output_dir)
+
+        # Import transcript
+        has_transcript = bool(st.session_state.get("transcript"))
+        with st.expander(
+            "📄 **Import existing transcript**",
+            expanded=not has_transcript,
+        ):
+            st.caption(
+                "Already have a transcript? Import it and skip audio processing."
+            )
+            _render_transcript_import(audio_path, output_dir, nodiar)
+
+        # Editor
+        if has_transcript:
+            _render_transcript_editor(audio_path, output_dir, nodiar=nodiar)
+
+        # Pipeline steps (only available when audio exists)
+        if audio_exists:
+            if st.checkbox(
+                "Show audio processing steps",
+                value=False,
+                key="show_pipeline_steps_to",
+            ):
+                # Switch to full pipeline mode
+                st.session_state.transcript_only = False
+                st.rerun()
+        return
 
     # ── Section 1: Audio & Config ──
     if st.session_state.get("audio_path"):
@@ -60,7 +242,8 @@ def render():
     audio_path = st.session_state.audio_path
     output_dir = st.session_state.output_dir
 
-    st.audio(str(audio_path))
+    if Path(audio_path).is_file():
+        st.audio(str(audio_path))
 
     # ── Diarization toggle ──
     _has_hf_token = bool(os.environ.get("HF_TOKEN"))
@@ -113,7 +296,7 @@ def render():
                         audio_path, output_dir=output_dir, diarized=not nodiar
                     )
                     st.session_state.transcript = result
-                except Exception:
+                except (OSError, ValueError, KeyError):
                     pass  # Will show export button instead
         st.rerun()
     st.session_state["_prev_skip_diarization"] = nodiar
@@ -128,68 +311,33 @@ def render():
 
     # ── Import existing transcript ──
     already_exported = status["exported"]
+    has_transcript = already_exported or st.session_state.get("transcript")
     with st.expander(
         "📂 **Import existing transcript** — skip transcription and diarization",
-        expanded=not already_exported and not st.session_state.get("transcript"),
+        expanded=not has_transcript,
     ):
-        uploaded_json = st.file_uploader(
-            "Upload transcript JSON",
-            type=["json"],
-            help="JSON array with 'speaker', 'start', 'end', 'text' fields per segment.",
-            label_visibility="collapsed",
-            key="transcribe_upload",
-        )
-        with st.expander("📋 Expected JSON format", expanded=False):
-            st.code(
-                '[{\n  "speaker": "Alice",\n  "start": 0.0,\n  "end": 5.2,\n  "text": "Hello world."\n}, ...]',
-                language="json",
-            )
-        if uploaded_json:
-            if st.button(
-                "Import", use_container_width=True, key="transcribe_import_btn"
-            ):
-                try:
-                    data = json.loads(uploaded_json.read().decode("utf-8"))
-                    if not isinstance(data, list) or not data:
-                        st.error("Expected a non-empty JSON array.")
-                    elif "text" not in data[0]:
-                        st.error("Missing 'text' field in segments.")
-                    else:
-                        # Save as raw transcript with minimal metadata
-                        speakers = sorted({s.get("speaker", "") for s in data} - {""})
-                        meta = {
-                            "episode": Path(audio_path).stem,
-                            "speakers": speakers,
-                            "duration": round(
-                                max((s.get("end", 0) for s in data), default=0.0), 3
-                            ),
-                            "word_count": sum(
-                                len(s.get("text", "").split()) for s in data
-                            ),
-                        }
-                        p = AudioPaths.from_audio(
-                            audio_path, output_dir=output_dir, nodiar=nodiar
-                        )
-                        p.transcript_raw.parent.mkdir(parents=True, exist_ok=True)
-                        p.transcript_raw.write_text(
-                            json.dumps(
-                                {"meta": meta, "segments": data},
-                                indent=2,
-                                ensure_ascii=False,
-                            ),
-                            encoding="utf-8",
-                        )
-                        t_key = f"editor_transcript_{audio_path}"
-                        st.session_state[t_key] = data
-                        st.session_state[f"transcript_{audio_path}_source"] = "raw"
-                        st.session_state.pop(f"transcript_{audio_path}_dirty", None)
-                        st.session_state.transcript = data
-                        st.success(f"Imported — {len(data)} segments.")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Import failed: {e}")
+        _render_transcript_import(audio_path, output_dir, nodiar)
 
-    # ── Section 2: Transcription ──
+    # ── Transcript editor (shown first when transcript exists) ──
+    # Auto-load transcript into session if exported but not yet loaded
+    if already_exported and not st.session_state.get("transcript"):
+        st.session_state.transcript = transcribe.load_transcript(
+            audio_path, output_dir=output_dir, nodiar=nodiar
+        )
+
+    if st.session_state.get("transcript"):
+        _render_transcript_editor(audio_path, output_dir, nodiar=nodiar)
+
+    # ── Audio processing steps (collapsed when transcript exists) ──
+    show_pipeline = st.checkbox(
+        "Show audio processing steps",
+        value=not has_transcript,
+        key="show_pipeline_steps",
+    )
+    if not show_pipeline:
+        return
+
+    # ── Step 1: Transcription ──
     with st.container(border=True):
         col_title, col_force = st.columns([4, 1])
         with col_title:
@@ -245,7 +393,7 @@ def render():
                         f"... {result['num_segments'] - 20} more segments not shown"
                     )
 
-    # ── Sections 2–3: Diarization & Speaker Map (skipped when nodiar) ──
+    # ── Steps 2–3: Diarization & Speaker Map (skipped when nodiar) ──
     if not status["transcribed"]:
         return  # Nothing more to show until transcription is done
 
@@ -358,11 +506,11 @@ def render():
             else:
                 st.info("Run diarization & speaker assignment first.")
 
-    # ── Section 4: Export ──
+    # ── Export ──
     # Progressive disclosure: show export only when prerequisites are met
     _export_ready = status["transcribed"] if nodiar else status["mapped"]
     if not _export_ready and not status["exported"]:
-        return  # Don't show export or editor until prerequisites are done
+        return  # Don't show export until prerequisites are done
 
     with st.container(border=True):
         col_title, col_force = st.columns([4, 1])
@@ -409,45 +557,8 @@ def render():
             st.session_state.requested_tab = "transcribe"
             st.rerun()
 
-    # ── Section 5: Transcript editor ──
-    if not status["exported"]:
-        return  # Don't show editor until export is done
 
-    # Auto-load transcript into session if exported but not yet loaded
-    if not st.session_state.get("transcript"):
-        st.session_state.transcript = transcribe.load_transcript(
-            audio_path, output_dir=output_dir, nodiar=nodiar
-        )
-
-    if st.session_state.get("transcript"):
-        with st.container(border=True):
-            col_title, col_badge = st.columns([5, 1])
-            with col_title:
-                step_label = "Step 3" if nodiar else "Step 5"
-                st.markdown(f"### ✏️ {step_label} — Review & Edit Transcript")
-                st.caption(
-                    "Correct transcription errors directly. Changes are saved to the transcript file and will be used for translation."
-                )
-            with col_badge:
-                _dirty = st.session_state.get(f"transcript_{audio_path}_dirty", False)
-                _viewing_raw = (
-                    st.session_state.get(f"transcript_{audio_path}_source", "") == "raw"
-                )
-                paths = AudioPaths.from_audio(
-                    audio_path, output_dir=output_dir, nodiar=nodiar
-                )
-                if paths.transcript.exists() and not _dirty and not _viewing_raw:
-                    st.success("✅ Saved")
-                elif (
-                    _dirty
-                    or _viewing_raw
-                    or (paths.transcript_raw.exists() and not paths.transcript.exists())
-                ):
-                    st.warning("⚠️ Unsaved")
-            _render_transcript_editor(audio_path, output_dir, nodiar=nodiar)
-
-
-def _render_audio_trim(output_dir: str):
+def _render_audio_trim(output_dir: str) -> None:
     """
     Optional audio range selector. Shown once the file is uploaded.
 
@@ -565,7 +676,7 @@ def _render_audio_trim(output_dir: str):
             st.warning("Could not read audio duration — ffprobe may not be available.")
 
 
-def _render_status(status: dict, nodiar: bool = False):
+def _render_status(status: dict, nodiar: bool = False) -> None:
     """Show the pipeline status bar, hiding diarization steps when nodiar."""
     labels = {
         "transcribed": "Transcribed",
@@ -583,7 +694,7 @@ def _render_status(status: dict, nodiar: bool = False):
             st.markdown(f"{icon} {labels[key]}")
 
 
-def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False):
+def _render_speaker_map(audio_path: Path, output_dir: str, force: bool = False) -> None:
     """Render the speaker naming UI: text inputs, audio previews, and save button."""
     diarization = transcribe.load_diarization(audio_path, output_dir=output_dir)
     existing_map = transcribe.load_speaker_map(audio_path, output_dir=output_dir)
@@ -775,7 +886,9 @@ def _load_diarized_segments_cached(audio_path: str, output_dir: str) -> list:
     return transcribe.load_diarized_segments(Path(audio_path), output_dir=output_dir)
 
 
-def _render_transcript_editor(audio_path, output_dir: str, nodiar: bool = False):
+def _render_transcript_editor(
+    audio_path: Path | str, output_dir: str, nodiar: bool = False
+) -> None:
     """Render the transcript editor with load original/edits buttons and segment editor."""
     audio_path = Path(audio_path)
     t_key = f"editor_transcript_{audio_path}"
@@ -798,80 +911,129 @@ def _render_transcript_editor(audio_path, output_dir: str, nodiar: bool = False)
 
     paths = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
 
-    # Show which version is currently loaded
+    _dirty = st.session_state.get(f"transcript_{audio_path}_dirty", False)
     _src = st.session_state.get(source_key, "")
-    if _src == "raw":
-        if paths.transcript.exists():
-            st.caption("Viewing: **original** (you have saved edits)")
-        else:
-            st.caption("Viewing: **original** (not yet reviewed)")
-    elif _src == "edited":
-        st.caption("Viewing: **saved edits**")
+    _viewing_raw = _src == "raw"
 
-    # Warn if raw file is newer than validated (e.g. forced re-export)
-    if (
-        paths.transcript_raw.exists()
-        and paths.transcript.exists()
-        and paths.transcript_raw.stat().st_mtime > paths.transcript.stat().st_mtime
-    ):
-        st.warning(
-            "The previous step was re-run after your last edits. "
-            "Click **↩ Load original** to see the new version, or keep your current edits."
-        )
-
-    has_raw = paths.transcript_raw.exists()
-    has_validated = paths.transcript.exists()
-    if has_raw or has_validated:
-        cols = st.columns(2)
-        with cols[0]:
-            if st.button(
-                "↩ Load original", use_container_width=True, disabled=not has_raw
-            ):
-                st.session_state[t_key] = load_transcript_raw(
-                    audio_path, output_dir=output_dir, nodiar=nodiar
-                )
-                st.session_state[source_key] = "raw"
-                st.session_state[f"transcript_{audio_path}_dirty"] = False
-                st.rerun()
-        with cols[1]:
-            if st.button(
-                "✏️ Load edits", use_container_width=True, disabled=not has_validated
-            ):
-                st.session_state[t_key] = load_transcript_validated(
-                    audio_path, output_dir=output_dir, nodiar=nodiar
-                )
-                st.session_state[source_key] = "edited"
-                st.session_state[f"transcript_{audio_path}_dirty"] = False
-                st.rerun()
-
-    if not transcript or not transcript[0].get("speaker"):
-        if not nodiar:
-            st.warning(
-                "Transcript has no speaker info — save the speaker map and re-export first."
+    with st.container(border=True):
+        col_title, col_badge = st.columns([5, 1])
+        with col_title:
+            st.markdown("### ✏️ Review & Edit Transcript")
+            st.caption(
+                "Correct transcription errors directly. Changes are saved "
+                "to the transcript file and will be used for translation."
             )
-            return
+        with col_badge:
+            if paths.transcript.exists() and not _dirty and not _viewing_raw:
+                st.success("✅ Saved")
+            elif (
+                _dirty
+                or _viewing_raw
+                or (paths.transcript_raw.exists() and not paths.transcript.exists())
+            ):
+                st.warning("⚠️ Unsaved")
 
-    def _on_save(merged):
-        save_transcript(audio_path, merged, output_dir=output_dir, nodiar=nodiar)
-        st.session_state[t_key] = merged
-        st.session_state[source_key] = "edited"
-        st.session_state.transcript = merged
-        st.toast("Transcript saved!")
+        # Show which version is currently loaded
+        if _viewing_raw:
+            if paths.transcript.exists():
+                st.caption("Viewing: **original** (you have saved edits)")
+            else:
+                st.caption("Viewing: **original** (not yet reviewed)")
+        elif _src == "edited":
+            st.caption("Viewing: **saved edits**")
 
-    render_segment_editor(
-        transcript,
-        editor_key=f"transcript_{audio_path}",
-        on_save=_on_save,
-        audio_path=audio_path,
-        show_timestamps=True,
-        show_delete=True,
-        show_flags=True,
-        show_speaker=not nodiar,
-        diarized=not nodiar,
-        is_saved=paths.transcript.exists()
-        and st.session_state.get(source_key, "") != "raw",
-        export_fn=segments_to_text,
-        export_filename=f"{audio_path.stem}_transcript.txt",
-        next_tab="polish",
-        next_tab_label="→ Go to Polish",
-    )
+        # Warn if raw file is newer than validated (e.g. forced re-export)
+        if (
+            paths.transcript_raw.exists()
+            and paths.transcript.exists()
+            and paths.transcript_raw.stat().st_mtime > paths.transcript.stat().st_mtime
+        ):
+            st.warning(
+                "The previous step was re-run after your last edits. "
+                "Click **↩ Load original** to see the new version, or keep your current edits."
+            )
+
+        has_raw = paths.transcript_raw.exists()
+        has_validated = paths.transcript.exists()
+        if has_raw or has_validated:
+            cols = st.columns(2)
+            with cols[0]:
+                if st.button(
+                    "↩ Load original", use_container_width=True, disabled=not has_raw
+                ):
+                    st.session_state[t_key] = load_transcript_raw(
+                        audio_path, output_dir=output_dir, nodiar=nodiar
+                    )
+                    st.session_state[source_key] = "raw"
+                    st.session_state[f"transcript_{audio_path}_dirty"] = False
+                    st.rerun()
+            with cols[1]:
+                if st.button(
+                    "✏️ Load edits", use_container_width=True, disabled=not has_validated
+                ):
+                    st.session_state[t_key] = load_transcript_validated(
+                        audio_path, output_dir=output_dir, nodiar=nodiar
+                    )
+                    st.session_state[source_key] = "edited"
+                    st.session_state[f"transcript_{audio_path}_dirty"] = False
+                    st.rerun()
+
+        # ── Summary ──
+        if transcript:
+            speakers = sorted(
+                {s.get("speaker", "") for s in transcript} - {"", "[BREAK]"}
+            )
+            total_chars = sum(len(s.get("text", "")) for s in transcript)
+            total_words = sum(len(s.get("text", "").split()) for s in transcript)
+            first_start = transcript[0].get("start")
+            last_end = transcript[-1].get("end")
+            if first_start is not None and last_end is not None:
+                duration_str = fmt_time(last_end - first_start)
+            elif Path(audio_path).is_file():
+                try:
+                    dur = transcribe.audio_duration(audio_path)
+                    duration_str = fmt_time(dur) if dur else None
+                except Exception:
+                    duration_str = None
+            else:
+                duration_str = None
+            parts = [f"**{len(transcript)}** segments"]
+            if speakers:
+                parts.append(f"**{len(speakers)}** speakers ({', '.join(speakers)})")
+            parts.append(f"**{total_words:,}** words · **{total_chars:,}** chars")
+            if duration_str:
+                parts.append(f"**{duration_str}**")
+            st.caption(" · ".join(parts))
+
+        if not transcript or not transcript[0].get("speaker"):
+            if not nodiar and not st.session_state.get("transcript_only"):
+                st.warning(
+                    "Transcript has no speaker info — save the speaker map and re-export first."
+                )
+                return
+
+        def _on_save(merged):
+            save_transcript(audio_path, merged, output_dir=output_dir, nodiar=nodiar)
+            st.session_state[t_key] = merged
+            st.session_state[source_key] = "edited"
+            st.session_state.transcript = merged
+            st.toast("Transcript saved!")
+
+        has_timestamps = any(seg.get("start") is not None for seg in transcript)
+        render_segment_editor(
+            transcript,
+            editor_key=f"transcript_{audio_path}",
+            on_save=_on_save,
+            audio_path=audio_path if Path(audio_path).is_file() else None,
+            show_timestamps=has_timestamps,
+            show_delete=True,
+            show_flags=True,
+            show_speaker=not nodiar,
+            diarized=not nodiar,
+            is_saved=paths.transcript.exists()
+            and st.session_state.get(source_key, "") != "raw",
+            export_fn=segments_to_text,
+            export_filename=f"{audio_path.stem}_transcript.txt",
+            next_tab="polish",
+            next_tab_label="→ Go to Polish",
+        )

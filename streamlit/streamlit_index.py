@@ -5,9 +5,14 @@ podcodex.ui.streamlit_index — Index tab (vectorize episodes for search)
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import streamlit as st
+
+if TYPE_CHECKING:
+    from podcodex.core._utils import AudioPaths
 
 try:
     from podcodex.rag.defaults import (
@@ -26,7 +31,7 @@ except ImportError:
     _RAG_AVAILABLE = False
 
 
-def render():
+def render() -> None:
     st.header("Index")
     st.caption("Vectorize episodes so they can be searched across your show.")
 
@@ -37,26 +42,23 @@ def render():
         )
         return
 
+    from utils import get_episode_paths
+
     show_name = st.session_state.get("show_name", "")
-    audio_path = st.session_state.get("audio_path")
     output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
+    paths = get_episode_paths()
 
     with st.container(border=True):
-        if not audio_path:
+        if not paths:
             st.info("Load an episode from the sidebar to index it.")
         else:
-            _render_index_section(audio_path, output_dir, show_name)
+            _render_index_section(paths, output_dir, show_name)
 
 
-def _render_index_section(audio_path: str, output_dir: str, show_name: str):
+def _render_index_section(paths: "AudioPaths", output_dir: str, show_name: str) -> None:
     """Render the episode indexing UI: source/model/chunker selection and index button."""
-    from podcodex.core import AudioPaths
-
     output_dir_path = Path(output_dir)
-    nodiar = st.session_state.get("skip_diarization", False)
-    _paths = AudioPaths.from_audio(
-        Path(audio_path), output_dir=output_dir, nodiar=nodiar
-    )
+    _paths = paths
 
     col_source, col_lang = st.columns(2)
     with col_source:
@@ -153,7 +155,7 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
                         indexed.add(f"{model_labels[mk]} / {ck}")
                     else:
                         pending.append(f"{model_labels[mk]} / {ck}")
-        except Exception:
+        except (OSError, sqlite3.Error):
             pending = [
                 f"{model_labels[mk]} / {ck}" for mk in model_keys for ck in chunkings
             ]
@@ -191,7 +193,7 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
                 st.error("Show name is required.")
                 return
             _run_indexing(
-                audio_path,
+                _paths,
                 output_dir,
                 show_input,
                 source,
@@ -204,7 +206,7 @@ def _render_index_section(audio_path: str, output_dir: str, show_name: str):
 
 
 def _run_indexing(
-    audio_path: str,
+    paths: AudioPaths,
     output_dir: str,
     show: str,
     source: str,
@@ -213,21 +215,16 @@ def _run_indexing(
     chunk_size: int,
     chunk_threshold: float,
     overwrite: bool,
-):
+) -> None:
     """Run the vectorization pipeline for all (model, chunker) combinations.
 
     Writes to LocalStore (SQLite) only — use Sync to push to Qdrant later.
     """
     from podcodex.cli import _resolve_source, vectorize_batch
 
-    from podcodex.core import AudioPaths
-
     output_dir_path = Path(output_dir)
     episode_stem = output_dir_path.name
-    nodiar = st.session_state.get("skip_diarization", False)
-    _paths = AudioPaths.from_audio(
-        Path(audio_path), output_dir=output_dir, nodiar=nodiar
-    )
+    _paths = paths
     transcript_path = _paths.transcript_best
 
     if not transcript_path.exists():

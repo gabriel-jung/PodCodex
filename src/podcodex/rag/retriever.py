@@ -310,21 +310,11 @@ class Retriever:
         Requires a full-text payload index on 'text' (created by QdrantStore.create_collection).
         Results sorted by start time, all scored 1.0.
         """
-        from qdrant_client.models import FieldCondition, Filter, MatchText, MatchValue
+        from qdrant_client.models import FieldCondition, Filter, MatchText
 
-        conditions = [FieldCondition(key="text", match=MatchText(text=query))]
-        if episode:
-            conditions.append(
-                FieldCondition(key="episode", match=MatchValue(value=episode))
-            )
-        if source:
-            conditions.append(
-                FieldCondition(key="source", match=MatchValue(value=source))
-            )
-        if speaker:
-            conditions.append(
-                FieldCondition(key="speaker", match=MatchValue(value=speaker))
-            )
+        base = _search_filter(episode, source, speaker)
+        text_cond = FieldCondition(key="text", match=MatchText(text=query))
+        conditions = [text_cond] + (base.must if base else [])
 
         chunks = self._store.scroll_payloads(
             collection, scroll_filter=Filter(must=conditions), limit=top_k

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from . import polish, synthesize, transcribe, translate
-from ._utils import AudioPaths
+from ._utils import BREAK_SPEAKER, DEFAULT_MAX_GAP, SAMPLE_RATE, AudioPaths
 
 __all__ = [
     "transcribe",
@@ -12,6 +12,9 @@ __all__ = [
     "synthesize",
     "validate_segments_json",
     "AudioPaths",
+    "BREAK_SPEAKER",
+    "DEFAULT_MAX_GAP",
+    "SAMPLE_RATE",
 ]
 
 

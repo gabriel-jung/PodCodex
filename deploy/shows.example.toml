@@ -1,0 +1,20 @@
+# Show access configuration for podcodex-bot.
+#
+# Each [shows.<key>] block registers a show that server admins can
+# unlock via the /unlock slash command.
+#
+# Generate password hashes with:
+#   podcodex-bot --hash-password
+#
+# Usage:
+#   podcodex-bot --shows-config shows.toml [other flags]
+
+[shows.les_pieds_sur_terre]
+name = "Les Pieds sur terre"
+password_hash = "sha256:5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"
+# password: "password" (change this!)
+
+[shows.transfert]
+name = "Transfert"
+password_hash = "sha256:ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f"
+# password: "password123" (change this!)

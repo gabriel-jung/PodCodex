@@ -7,6 +7,7 @@ Only streamlit-specific helpers belong here. Domain logic belongs in src/podcode
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import streamlit as st
@@ -70,9 +71,28 @@ def on_provider_change(prefix: str) -> None:
         st.session_state[f"{prefix}_api_model"] = preset["model"]
 
 
+# ── Path resolution helpers ──────────────────
+
+
+def get_episode_paths(nodiar: bool | None = None) -> AudioPaths | None:
+    """Return an ``AudioPaths`` for the current episode.
+
+    Works for both audio episodes and transcript-only episodes (which use a
+    pseudo audio path set by ``_select_episode``).  Returns None when no
+    episode is loaded.
+    """
+    audio_path = st.session_state.get("audio_path")
+    if not audio_path:
+        return None
+    output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
+    if nodiar is None:
+        nodiar = st.session_state.get("skip_diarization", False)
+    return AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
+
+
 def require_audio_and_file(
     label: str,
-    check_fn=None,
+    check_fn: Callable[[AudioPaths], bool] | None = None,
 ) -> tuple[AudioPaths | None, bool]:
     """Common guard: ensure audio is selected and optionally that a file exists.
 
