@@ -82,6 +82,58 @@ def test_call_and_parse_strips_markdown_fences():
     assert result[0]["text"] == "Bonjour corrige"
 
 
+def test_call_and_parse_skips_break_segments():
+    """[BREAK] segments should pass through without being sent to the LLM."""
+    batch = [
+        {"speaker": "Alice", "start": 0.0, "end": 10.0, "text": "Bonjour"},
+        {"speaker": "[BREAK]", "start": 10.0, "end": 15.0, "text": ""},
+        {"speaker": "Alice", "start": 15.0, "end": 25.0, "text": "On continue"},
+    ]
+    # LLM only sees 2 segments (indices 0 and 1), not the [BREAK]
+    response = json.dumps(
+        [
+            {"index": 0, "text": "Bonjour corrigé"},
+            {"index": 1, "text": "On continue corrigé"},
+        ]
+    )
+
+    call_count = 0
+
+    def tracking_call_fn(messages):
+        nonlocal call_count
+        call_count += 1
+        # Verify [BREAK] is not in the user message
+        user_msg = messages[1]["content"]
+        assert "[BREAK]" not in user_msg
+        assert "2 numbered segments" in user_msg
+        return response
+
+    result = call_and_parse(batch, "sys", tracking_call_fn)
+
+    assert len(result) == 3
+    assert result[0]["text"] == "Bonjour corrigé"
+    assert result[1]["speaker"] == "[BREAK]"
+    assert result[1]["text"] == ""
+    assert result[2]["text"] == "On continue corrigé"
+    assert call_count == 1
+
+
+def test_call_and_parse_all_breaks_no_llm_call():
+    """A batch of only [BREAK] segments should not call the LLM."""
+    batch = [
+        {"speaker": "[BREAK]", "start": 0.0, "end": 5.0, "text": ""},
+        {"speaker": "[BREAK]", "start": 10.0, "end": 15.0, "text": ""},
+    ]
+
+    def should_not_be_called(messages):
+        raise AssertionError("LLM should not be called for all-break batches")
+
+    result = call_and_parse(batch, "sys", should_not_be_called)
+
+    assert len(result) == 2
+    assert all(seg["speaker"] == "[BREAK]" for seg in result)
+
+
 # ──────────────────────────────────────────────
 # build_manual_prompts_batched
 # ──────────────────────────────────────────────

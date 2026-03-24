@@ -15,6 +15,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from loguru import logger
+
 from podcodex.core._utils import INTERNAL_SUFFIXES as _INTERNAL_SUFFIXES
 from podcodex.ingest.rss import EPISODE_META_FILE
 
@@ -150,7 +152,8 @@ def _load_title(output_dir: Path) -> str:
     try:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         return data.get("title", "")
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning(f"Corrupt episode metadata, skipping: {meta_path} ({exc})")
         return ""
 
 

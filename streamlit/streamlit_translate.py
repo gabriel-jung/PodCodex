@@ -16,6 +16,7 @@ from podcodex.core.translate import (
     load_translation_validated,
 )
 from podcodex.core import validate_segments_json
+from podcodex.ingest.rss import build_episode_context
 from constants import DEFAULT_OLLAMA_MODEL, DEFAULT_SOURCE_LANG, DEFAULT_TARGET_LANG
 from utils import (
     PROVIDERS,
@@ -285,8 +286,10 @@ def render() -> None:
             )
         if "trad_context" not in st.session_state:
             show_name = st.session_state.get("show_name", "")
-            if show_name:
-                st.session_state.trad_context = f"Podcast: {show_name}"
+            output_dir = st.session_state.get("output_dir")
+            ctx = build_episode_context(show_name, output_dir)
+            if ctx:
+                st.session_state.trad_context = ctx
         context = st.text_area(
             "Context",
             placeholder="e.g. French podcast about film music, hosted by Alice and Bob.",

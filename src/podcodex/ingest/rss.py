@@ -197,6 +197,53 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
         return None
 
 
+# ── Context builder ───────────────────────────
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def build_episode_context(
+    show_name: str = "",
+    episode_dir: Path | str | None = None,
+    max_desc: int = 500,
+) -> str:
+    """Build an LLM context string from show name + RSS episode metadata.
+
+    Returns a multi-line string suitable for the ``context`` parameter of
+    :func:`~podcodex.core.polish.polish_segments` and
+    :func:`~podcodex.core.translate.translate_segments`.
+
+    Args:
+        show_name   : display name of the podcast
+        episode_dir : path to the episode output directory (may contain
+                      ``.episode_meta.json``)
+        max_desc    : maximum characters to keep from the RSS description
+    """
+    parts: list[str] = []
+    if show_name:
+        parts.append(f"Podcast: {show_name}")
+
+    if episode_dir is not None:
+        meta = load_episode_meta(Path(episode_dir))
+        if meta:
+            # Title + optional episode/season identifier
+            if meta.title:
+                ep_id = ""
+                if meta.season_number is not None and meta.episode_number is not None:
+                    ep_id = f" (S{meta.season_number}E{meta.episode_number})"
+                elif meta.episode_number is not None:
+                    ep_id = f" (Episode {meta.episode_number})"
+                parts.append(f'Episode: "{meta.title}"{ep_id}')
+            # HTML-stripped, truncated description
+            if meta.description:
+                desc = _HTML_TAG_RE.sub("", meta.description).strip()
+                if len(desc) > max_desc:
+                    desc = desc[:max_desc].rsplit(" ", 1)[0] + "…"
+                parts.append(f"Description: {desc}")
+
+    return "\n".join(parts)
+
+
 # ── Audio download ────────────────────────────
 
 
@@ -226,11 +273,18 @@ def download_audio(
     import httpx
 
     logger.info(f"Downloading {rss_episode.audio_url} → {dest.name}")
-    with httpx.stream("GET", rss_episode.audio_url, follow_redirects=True) as resp:
-        resp.raise_for_status()
-        with open(dest, "wb") as f:
-            for chunk in resp.iter_bytes(chunk_size=65536):
-                f.write(chunk)
+    try:
+        with httpx.stream("GET", rss_episode.audio_url, follow_redirects=True) as resp:
+            resp.raise_for_status()
+            with open(dest, "wb") as f:
+                for chunk in resp.iter_bytes(chunk_size=65536):
+                    f.write(chunk)
+    except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+        logger.warning(f"Download failed for {dest.name}: {exc}")
+        # Clean up partial file
+        if dest.exists():
+            dest.unlink()
+        return None
 
     logger.success(
         f"Downloaded {dest.name} ({dest.stat().st_size / 1024 / 1024:.1f} MB)"

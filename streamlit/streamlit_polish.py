@@ -13,6 +13,7 @@ from podcodex.core.polish import (
     load_polished_raw,
     load_polished_validated,
 )
+from podcodex.ingest.rss import build_episode_context
 from constants import DEFAULT_OLLAMA_MODEL, DEFAULT_SOURCE_LANG
 from utils import (
     PROVIDERS,
@@ -361,8 +362,10 @@ def render() -> None:
         )
         if "polish_context" not in st.session_state:
             show_name = st.session_state.get("show_name", "")
-            if show_name:
-                st.session_state.polish_context = f"Podcast: {show_name}"
+            output_dir = st.session_state.get("output_dir")
+            ctx = build_episode_context(show_name, output_dir)
+            if ctx:
+                st.session_state.polish_context = ctx
         context = st.text_area(
             "Context",
             placeholder="e.g. French podcast about film music, hosted by Alice and Bob. Names: Guillermo del Toro, Alexandre Desplat.",

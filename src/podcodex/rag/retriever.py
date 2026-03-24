@@ -334,7 +334,7 @@ class Retriever:
 
 def _chunk_key(chunk: dict) -> str:
     """Deduplication key for merging dense + BM25 results."""
-    return f"{chunk.get('episode', '')}|{chunk.get('start', 0)}"
+    return f"{chunk.get('show', '')}|{chunk.get('episode', '')}|{chunk.get('start', 0)}"
 
 
 def _normalize(results: list[dict]) -> list[dict]:

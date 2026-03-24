@@ -248,7 +248,9 @@ class QdrantStore:
         )
         if not results:
             return None
-        return dict(results[0].payload)
+        payload = dict(results[0].payload)
+        payload["_pool_size"] = count
+        return payload
 
     def scroll_payloads(
         self, collection: str, scroll_filter=None, limit: int = 10_000
@@ -348,11 +350,12 @@ class QdrantStore:
                 collection_name=collection,
                 limit=1_000,
                 offset=offset,
-                with_payload=["speaker"],
+                with_payload=["speaker", "dominant_speaker"],
                 with_vectors=False,
             )
             for point in batch:
-                spk = (point.payload or {}).get("speaker")
+                payload = point.payload or {}
+                spk = payload.get("speaker") or payload.get("dominant_speaker")
                 if spk:
                     speakers.add(spk)
             if next_offset is None:

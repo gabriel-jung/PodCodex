@@ -81,24 +81,6 @@ class AudioPaths:
         base.parent.mkdir(parents=True, exist_ok=True)
         return cls(audio_path=audio_path, base=base, nodiar=nodiar)
 
-    @classmethod
-    def from_stem(
-        cls,
-        stem: str,
-        output_dir: str | Path,
-        nodiar: bool = False,
-    ) -> Self:
-        """Create paths for a transcript-only episode (no audio file).
-
-        Resolves all paths from ``output_dir / stem`` without requiring an
-        audio file to exist.
-        """
-        root = Path(output_dir)
-        root.mkdir(parents=True, exist_ok=True)
-        base = root / stem
-        # Use a dummy audio_path — synthesis methods will check for existence
-        return cls(audio_path=root / f"{stem}.audio", base=base, nodiar=nodiar)
-
     # — RAG —
 
     @property
@@ -559,50 +541,118 @@ def build_llm_prompt(
 # ──────────────────────────────────────────────
 
 
-def call_and_parse(
-    batch: list[dict],
-    system_prompt: str,
-    call_fn,
-    instruction: str = "Process",
-    min_length_ratio: float = 0.7,
-) -> list[dict]:
-    """Call the LLM for one batch and parse the response.
+def _is_break(seg: dict) -> bool:
+    """Return True for [BREAK] segments (music/jingle markers)."""
+    return seg.get("speaker") == "[BREAK]"
 
-    Builds the user message, calls ``call_fn(messages) -> str``, strips
-    markdown/thinking tags, and merges corrections back into the original
-    segments.  Segments truncated below *min_length_ratio* are kept as-is.
+
+def _separate_breaks(
+    segments: list[dict],
+) -> tuple[list[int], list[dict]]:
+    """Split segments into real content and [BREAK] markers.
+
+    Returns:
+        (real_indices, real_segments) — positions and segments that are
+        not ``[BREAK]`` markers.
     """
-    user_content = "\n\n".join(f"[{i}] {seg['text']}" for i, seg in enumerate(batch))
-    user_content += f"\n\n{instruction} all {len(batch)} numbered segments above."
+    real_indices: list[int] = []
+    real_segs: list[dict] = []
+    for i, seg in enumerate(segments):
+        if not _is_break(seg):
+            real_indices.append(i)
+            real_segs.append(seg)
+    return real_indices, real_segs
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_content},
-    ]
 
-    raw = call_fn(messages)
-    logger.debug(f"LLM response: {len(raw)} chars")
+def _reassemble_breaks(
+    segments: list[dict],
+    real_indices: list[int],
+    processed: list[dict],
+) -> list[dict]:
+    """Merge processed results back with [BREAK] segments in original order."""
+    results: list[dict] = []
+    proc_iter = iter(processed)
+    for i, seg in enumerate(segments):
+        if i in real_indices:
+            results.append(next(proc_iter))
+        else:
+            results.append(seg)
+    return results
+
+
+def format_segments(segments: list[dict], instruction: str = "Process") -> str:
+    """Format segments as a numbered user message for the LLM.
+
+    Produces the same ``[i] text`` format used by all three modes
+    (ollama, api, manual).  ``[BREAK]`` segments are excluded.
+
+    Args:
+        segments    : transcript segments (breaks are filtered out)
+        instruction : verb for the closing instruction line
+    """
+    _, real = _separate_breaks(segments)
+    lines = [f"[{i}] {seg['text']}" for i, seg in enumerate(real)]
+    lines.append(f"\n{instruction} all {len(real)} numbered segments above.")
+    return "\n\n".join(lines)
+
+
+def parse_llm_response(raw: str) -> dict[int, dict]:
+    """Parse a raw LLM response string into a dict keyed by segment index.
+
+    Strips ``<think>`` tags and markdown fences before parsing JSON.
+
+    Returns:
+        ``{index: {"text": "...", ...}}`` dict.  Empty dict on parse failure.
+    """
     raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
     raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
-
     try:
         parsed = json.loads(raw)
         by_index = {item.get("index", i): item for i, item in enumerate(parsed)}
         logger.debug(f"Parsed {len(parsed)} items from LLM response")
+        return by_index
     except Exception as e:
         logger.warning(f"Parse error: {e} — batch will keep original text")
         logger.debug(f"Raw response (first 500 chars): {raw[:500]}")
-        by_index = {}
+        return {}
 
-    results = []
+
+def apply_corrections(
+    batch: list[dict],
+    by_index: dict[int, dict],
+    min_length_ratio: float = 0.7,
+) -> list[dict]:
+    """Apply LLM corrections to a batch of segments.
+
+    Merges corrected text from *by_index* into the original segments.
+    ``[BREAK]`` segments are passed through unchanged.  Segments whose
+    corrected text is suspiciously short (below *min_length_ratio* of the
+    original) keep their original text.
+
+    Args:
+        batch            : original segments (may include ``[BREAK]``s)
+        by_index         : ``{index: {"text": "..."}}`` from the LLM
+        min_length_ratio : minimum corrected/original length ratio (0 to disable)
+
+    Returns:
+        List of segments with text field updated.
+    """
+    real_indices, real_segs = _separate_breaks(batch)
+
+    corrected_segs: list[dict] = []
     changed = 0
-    for i, seg in enumerate(batch):
+    for i, seg in enumerate(real_segs):
         item = by_index.get(i, {})
         original_text = seg["text"]
         corrected_text = item.get("text", original_text)
 
+        if not corrected_text:
+            logger.warning(f"Segment [{i}] has no corrected text — keeping original")
+            corrected_text = original_text
+
         if (
             min_length_ratio
+            and original_text
             and len(corrected_text) < len(original_text) * min_length_ratio
         ):
             logger.warning(
@@ -615,10 +665,39 @@ def call_and_parse(
             changed += 1
         entry = {**seg, "text": corrected_text}
         entry.pop("index", None)
-        results.append(entry)
+        corrected_segs.append(entry)
 
-    logger.debug(f"Batch: {changed}/{len(batch)} segments modified")
-    return results
+    logger.debug(f"Batch: {changed}/{len(real_segs)} segments modified")
+    return _reassemble_breaks(batch, real_indices, corrected_segs)
+
+
+def call_and_parse(
+    batch: list[dict],
+    system_prompt: str,
+    call_fn,
+    instruction: str = "Process",
+    min_length_ratio: float = 0.7,
+) -> list[dict]:
+    """Call the LLM for one batch and parse the response.
+
+    Uses :func:`format_segments`, :func:`parse_llm_response`, and
+    :func:`apply_corrections` — the same pipeline that manual mode uses.
+    ``[BREAK]`` segments are passed through unchanged.
+    """
+    _, real_segs = _separate_breaks(batch)
+    if not real_segs:
+        return list(batch)
+
+    user_content = format_segments(batch, instruction=instruction)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+    raw = call_fn(messages)
+    logger.debug(f"LLM response: {len(raw)} chars")
+    by_index = parse_llm_response(raw)
+    return apply_corrections(batch, by_index, min_length_ratio=min_length_ratio)
 
 
 def run_ollama(
@@ -731,6 +810,10 @@ def validate_manual(
 ) -> list[dict]:
     """Merge LLM-returned corrections with original source segments.
 
+    Uses :func:`parse_llm_response` (via raw JSON) and
+    :func:`apply_corrections` — the same pipeline that ollama/api use.
+    ``[BREAK]`` segments are passed through unchanged.
+
     Args:
         corrections       : list of {"index": i, "text": "corrected text"} from LLM
         original_segments : source segments (speaker, start, end, text, ...)
@@ -746,24 +829,16 @@ def validate_manual(
             f"Fields found: {sorted(corrections[0].keys())}"
         )
 
-    if len(corrections) != len(original_segments):
+    _, real_segs = _separate_breaks(original_segments)
+    if len(corrections) != len(real_segs):
         logger.warning(
             f"Correction count mismatch: {len(corrections)} corrections "
-            f"vs {len(original_segments)} original segments"
+            f"vs {len(real_segs)} segments (excluding "
+            f"{len(original_segments) - len(real_segs)} breaks)"
         )
 
     by_index = {item.get("index", i): item for i, item in enumerate(corrections)}
-
-    results = []
-    for i, seg in enumerate(original_segments):
-        item = by_index.get(i, {})
-        corrected = item.get("text", seg["text"])
-        if not corrected:
-            logger.warning(f"Segment [{i}] has no corrected text — keeping original")
-            corrected = seg["text"]
-        entry = {**seg, "text": corrected}
-        entry.pop("index", None)
-        results.append(entry)
+    results = apply_corrections(original_segments, by_index, min_length_ratio=0)
 
     logger.info(f"Manual corrections validated — {len(results)} segments")
     return results

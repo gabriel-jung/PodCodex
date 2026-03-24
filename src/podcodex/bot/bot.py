@@ -1180,7 +1180,11 @@ class PodCodexBot(discord.Client):
         ts_label = fmt_timestamp(start, end, timed=timed)
         if ts_label:
             embed.add_field(name="Timestamp", value=ts_label, inline=True)
-        embed.set_footer(text="🎲 random quote")
+        pool = chunk.get("_pool_size")
+        footer_text = "🎲 random quote"
+        if pool:
+            footer_text += f" (from {pool:,} segments)"
+        embed.set_footer(text=footer_text)
 
         view = ExpandView(col, ep, show, start)
         await interaction.followup.send(embed=embed, view=view)
@@ -1431,6 +1435,7 @@ class PodCodexBot(discord.Client):
         loop = asyncio.get_running_loop()
 
         # Auto-resolve show: explicit > allowed_shows > single show > ask
+        show_auto_resolved = not show
         # Check access control for explicit show
         if show and self._access_control and show not in settings.allowed_shows:
             await interaction.followup.send("No indexed shows found.", ephemeral=True)
@@ -1491,6 +1496,8 @@ class PodCodexBot(discord.Client):
         # Paginate: 10 episodes per embed
         pages_data = [ep_stats[i : i + 10] for i in range(0, len(ep_stats), 10)]
         footer = f"{len(ep_stats)} episodes"
+        if show_auto_resolved:
+            footer += f" (auto-selected: {show})"
 
         embeds: list[discord.Embed] = []
         for page in pages_data:

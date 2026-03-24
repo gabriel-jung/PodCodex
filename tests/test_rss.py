@@ -3,6 +3,7 @@
 from podcodex.ingest.rss import (
     RSSEpisode,
     _parse_duration,
+    build_episode_context,
     fetch_feed,
     load_episode_meta,
     load_feed_cache,
@@ -167,3 +168,101 @@ def test_fetch_feed_from_local_xml(tmp_path):
     assert ep2.guid == "ep-002"
     assert ep2.audio_url == ""
     assert ep2.duration == 0.0
+
+
+# ──────────────────────────────────────────────
+# build_episode_context
+# ──────────────────────────────────────────────
+
+
+def test_build_episode_context_full(tmp_path):
+    ep = RSSEpisode(
+        guid="abc",
+        title="Solène et la dot au Moyen Âge",
+        pub_date="2026-03-15",
+        description="In this episode we discuss medieval dowries.",
+        episode_number=116,
+        season_number=2,
+    )
+    ep_dir = tmp_path / "ep116"
+    save_episode_meta(ep_dir, ep)
+
+    ctx = build_episode_context("Mon Podcast", ep_dir)
+
+    assert "Podcast: Mon Podcast" in ctx
+    assert 'Episode: "Solène et la dot au Moyen Âge" (S2E116)' in ctx
+    assert "Description: In this episode we discuss medieval dowries." in ctx
+
+
+def test_build_episode_context_episode_number_only(tmp_path):
+    ep = RSSEpisode(guid="abc", title="Test", pub_date="2026-01-01", episode_number=5)
+    save_episode_meta(tmp_path, ep)
+
+    ctx = build_episode_context("Show", tmp_path)
+
+    assert "(Episode 5)" in ctx
+    assert "(S" not in ctx  # no season prefix
+
+
+def test_build_episode_context_no_numbers(tmp_path):
+    ep = RSSEpisode(guid="abc", title="Bonus: Q&A", pub_date="2026-01-01")
+    save_episode_meta(tmp_path, ep)
+
+    ctx = build_episode_context("Show", tmp_path)
+
+    assert 'Episode: "Bonus: Q&A"' in ctx
+    assert "(" not in ctx.split("Episode:")[-1]  # no parenthetical
+
+
+def test_build_episode_context_html_stripped(tmp_path):
+    ep = RSSEpisode(
+        guid="abc",
+        title="Test",
+        pub_date="2026-01-01",
+        description="<p>Hello <b>world</b>!</p><br/>More text.",
+    )
+    save_episode_meta(tmp_path, ep)
+
+    ctx = build_episode_context("Show", tmp_path)
+
+    assert "<p>" not in ctx
+    assert "<b>" not in ctx
+    assert "<br/>" not in ctx
+    assert "Hello world!" in ctx
+    assert "More text." in ctx
+
+
+def test_build_episode_context_description_truncated(tmp_path):
+    ep = RSSEpisode(
+        guid="abc",
+        title="Test",
+        pub_date="2026-01-01",
+        description="word " * 200,  # 1000 chars
+    )
+    save_episode_meta(tmp_path, ep)
+
+    ctx = build_episode_context("Show", tmp_path, max_desc=50)
+
+    desc_line = [line for line in ctx.splitlines() if line.startswith("Description:")][
+        0
+    ]
+    assert desc_line.endswith("…")
+    assert len(desc_line) <= len("Description: ") + 55  # some slack for word boundary
+
+
+def test_build_episode_context_show_name_only():
+    ctx = build_episode_context("My Podcast")
+
+    assert ctx == "Podcast: My Podcast"
+
+
+def test_build_episode_context_no_metadata(tmp_path):
+    ctx = build_episode_context("Show", tmp_path)
+
+    assert ctx == "Podcast: Show"
+
+
+def test_build_episode_context_empty():
+    ctx = build_episode_context()
+
+    assert ctx == ""

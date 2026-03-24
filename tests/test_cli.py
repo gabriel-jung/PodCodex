@@ -40,6 +40,7 @@ def _make_vectorize_args(
     overwrite=False,
     source="transcript",
     device="cpu",
+    dry_run=False,
 ):
     args = MagicMock()
     args.transcript = str(transcript)
@@ -53,6 +54,7 @@ def _make_vectorize_args(
     args.source = source
     args.device = device
     args.qdrant_url = None
+    args.dry_run = dry_run
     return args
 
 

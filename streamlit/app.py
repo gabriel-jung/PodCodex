@@ -782,6 +782,8 @@ def _render_show_overview() -> None:
                     use_container_width=True,
                     help=f"Download {len(not_downloaded)} episodes that aren't local yet.",
                 ):
+                    import time
+
                     progress = st.progress(0, text="Downloading…")
                     downloaded = 0
                     for j, ep in enumerate(not_downloaded):
@@ -790,6 +792,8 @@ def _render_show_overview() -> None:
                             (j + 1) / len(not_downloaded),
                             text=f"Downloading {ep.title}…",
                         )
+                        if j > 0:
+                            time.sleep(1)
                         try:
                             download_audio(ep, Path(folder))
                             downloaded += 1

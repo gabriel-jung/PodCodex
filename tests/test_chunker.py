@@ -129,6 +129,20 @@ def test_map_offsets_to_metadata_no_overlap_returns_none():
     assert _map_offsets_to_metadata(0, 50, offset_map) is None
 
 
+def test_map_offsets_to_metadata_no_speaker_returns_none():
+    """Overlapping turns with no speaker key should not crash max()."""
+    offset_map = [
+        {
+            "start_char": 0,
+            "end_char": 10,
+            "start": 0.0,
+            "end": 5.0,
+            "text": "hello",
+        },
+    ]
+    assert _map_offsets_to_metadata(0, 10, offset_map) is None
+
+
 # ──────────────────────────────────────────────
 # semantic_chunks — mocked (no model loading)
 # ──────────────────────────────────────────────

@@ -18,13 +18,13 @@ from pathlib import Path
 from loguru import logger
 
 from podcodex.core._utils import (
-    BREAK_SPEAKER,
     DEFAULT_BATCH_MINUTES,
     DEFAULT_MAX_GAP,
     INTERNAL_SUFFIXES,
     AudioPaths,
     batch_segments_by_duration,
     build_llm_prompt,
+    format_segments,
     merge_consecutive_segments,
     read_json,
     run_api,
@@ -56,8 +56,7 @@ Your task: translation only.
 - Translate into natural, conversational {target_lang}
 - Preserve the oral tone and style of the podcast
 - Do not translate proper nouns (people, films, places)
-- Translate the full text — never truncate or summarize
-- Segments with speaker "{BREAK_SPEAKER}" are music or jingle breaks — copy them to the output exactly as-is, do not translate their text""",
+- Translate the full text — never truncate or summarize""",
         output="""\
 Output format:
 Return a JSON array with one entry per segment, containing only the index and translated text.
@@ -80,15 +79,14 @@ def build_manual_prompt(
 ) -> str:
     """Generate a prompt to paste into a LLM UI for manual translation.
 
-    Combines the system prompt from ``_build_prompt`` with the
-    numbered segments so the user can paste a single block into any LLM UI.
+    Uses :func:`~podcodex.core._utils.format_segments` — the same
+    ``[i] text`` format that ollama/api modes use.
+    ``[BREAK]`` segments are excluded from the prompt.
     """
     prompt = _build_prompt(
         context=context, source_lang=source_lang, target_lang=target_lang
     )
-    segments_text = "\n\n".join(
-        f"[{i}] {seg['text']}" for i, seg in enumerate(segments)
-    )
+    segments_text = format_segments(segments, instruction="Translate")
     return f"{prompt}\n\n{segments_text}"
 
 

@@ -293,7 +293,11 @@ def cmd_vectorize(args: argparse.Namespace) -> None:
     source_path = _resolve_source(transcript_path, args.source)
     logger.info(f"Source: {source_path.name}")
 
-    data = json.loads(source_path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(source_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        logger.error(f"Invalid JSON in {source_path}: {exc}")
+        sys.exit(1)
     transcript = data if isinstance(data, dict) else {"meta": {}, "segments": data}
 
     meta = transcript.get("meta", {})
@@ -306,6 +310,20 @@ def cmd_vectorize(args: argparse.Namespace) -> None:
     transcript["meta"]["source"] = _source_label(source_path, transcript_path)
 
     logger.info(f"Vectorizing '{episode}' for show '{show}' with model '{args.model}'")
+
+    if args.dry_run:
+        chunks = _chunk_transcript(
+            transcript, args.chunking, args.chunk_size, args.threshold
+        )
+        col = collection_name(show, args.model, args.chunking)
+        logger.info(f"[DRY RUN] Collection: {col}")
+        logger.info(f"[DRY RUN] Chunks: {len(chunks)}")
+        logger.info(
+            f"[DRY RUN] Embedding model: {args.model} (dim={MODELS[args.model].dim})"
+        )
+        avg_len = sum(len(c.get("text", "")) for c in chunks) // max(len(chunks), 1)
+        logger.info(f"[DRY RUN] Avg chunk length: {avg_len} chars")
+        return
 
     # Show-level DB: episode dir is transcript_path.parent, show dir is one up
     db_path = transcript_path.parent.parent / "vectors.db"
@@ -348,7 +366,10 @@ def cmd_sync(args: argparse.Namespace) -> None:
 
     collections = local.list_collections(show=show_filter)
     if not collections:
-        logger.warning("No collections found in local store.")
+        logger.warning(
+            "No collections found in local store. "
+            "Run `podcodex vectorize` or `podcodex sync --db <path>` first."
+        )
         return
 
     total_chunks = 0
@@ -506,6 +527,10 @@ def cmd_rss(args: argparse.Namespace) -> None:
         print(f"  {has_audio} {stem}  ←  {ep.title}")
 
         if args.download and ep.audio_url:
+            if downloaded_count > 0:
+                import time
+
+                time.sleep(1)
             result = download_audio(ep, folder)
             if result:
                 downloaded_count += 1
@@ -549,6 +574,63 @@ def cmd_delete(args: argparse.Namespace) -> None:
     print(f"Deleted collection '{args.collection}'")
 
 
+def cmd_validate(args: argparse.Namespace) -> None:
+    """Validate a transcript JSON file for correctness."""
+    from podcodex.core import validate_segments_json
+
+    path = Path(args.transcript)
+    if not path.exists():
+        logger.error(f"File not found: {path}")
+        sys.exit(1)
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        logger.error(f"Invalid JSON: {exc}")
+        sys.exit(1)
+
+    # Unwrap {"meta": ..., "segments": [...]} format
+    if isinstance(data, dict):
+        meta = data.get("meta", {})
+        segments = data.get("segments", data)
+        if meta:
+            logger.info(
+                f"Meta: show={meta.get('show', '?')}, episode={meta.get('episode', '?')}"
+            )
+    else:
+        segments = data
+        meta = {}
+
+    err = validate_segments_json(segments)
+    if err:
+        logger.error(err)
+        sys.exit(1)
+
+    n = len(segments)
+    speakers = {s.get("speaker", "?") for s in segments}
+    has_times = "start" in segments[0] and "end" in segments[0]
+    total_chars = sum(len(s.get("text", "")) for s in segments)
+    avg_chars = total_chars // max(n, 1)
+
+    logger.success(f"Valid transcript: {n} segments, {len(speakers)} speakers")
+    logger.info(f"Speakers: {', '.join(sorted(speakers))}")
+    logger.info(f"Total text: {total_chars:,} chars (avg {avg_chars}/segment)")
+
+    if has_times:
+        duration = segments[-1].get("end", 0) - segments[0].get("start", 0)
+        logger.info(f"Duration: {duration / 60:.1f} min")
+
+        # Check for non-increasing timestamps
+        bad = 0
+        for i in range(1, n):
+            if segments[i].get("start", 0) < segments[i - 1].get("start", 0):
+                bad += 1
+        if bad:
+            logger.warning(f"{bad} segments have non-increasing timestamps")
+    else:
+        logger.info("No timestamps found")
+
+
 def cmd_enrich(args: argparse.Namespace) -> None:
     """Enrich existing vectors.db with episode_title / pub_date / episode_number."""
     show_folder = Path(args.show_folder)
@@ -576,7 +658,11 @@ def cmd_enrich(args: argparse.Namespace) -> None:
             meta_file = ep_dir / ".episode_meta.json"
             extras: dict = {}
             if meta_file.exists():
-                rss = json.loads(meta_file.read_text(encoding="utf-8"))
+                try:
+                    rss = json.loads(meta_file.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    logger.warning(f"Corrupt metadata, skipping: {meta_file}")
+                    continue
                 if rss.get("title") and rss["title"] != ep:
                     extras["episode_title"] = rss["title"]
                 if rss.get("pub_date"):
@@ -590,7 +676,11 @@ def cmd_enrich(args: argparse.Namespace) -> None:
                     ep_dir / f"{ep}.polished.json",
                 ):
                     if candidate.exists():
-                        data = json.loads(candidate.read_text(encoding="utf-8"))
+                        try:
+                            data = json.loads(candidate.read_text(encoding="utf-8"))
+                        except json.JSONDecodeError:
+                            logger.warning(f"Corrupt transcript, skipping: {candidate}")
+                            continue
                         meta = data.get("meta", {}) if isinstance(data, dict) else {}
                         if meta.get("rss_title") and meta["rss_title"] != ep:
                             extras["episode_title"] = meta["rss_title"]
@@ -732,6 +822,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Delete and recreate the collection if it already exists.",
     )
+    p_vec.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Show what would be vectorized without writing to the database.",
+    )
 
     # sync
     p_sync = sub.add_parser(
@@ -782,9 +878,18 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="top_k",
         help=f"Number of results to return (default: {TOP_K}).",
     )
+
+    def _alpha_range(val: str) -> float:
+        f = float(val)
+        if not 0.0 <= f <= 1.0:
+            raise argparse.ArgumentTypeError(
+                f"alpha must be between 0.0 and 1.0, got {f}"
+            )
+        return f
+
     p_query.add_argument(
         "--alpha",
-        type=float,
+        type=_alpha_range,
         default=ALPHA,
         help=f"Blend between BM25 (0.0) and dense vector (1.0). Default: {ALPHA}.",
     )
@@ -803,6 +908,16 @@ def _build_parser() -> argparse.ArgumentParser:
     # delete
     p_delete = sub.add_parser("delete", help="Delete a vector collection.")
     p_delete.add_argument("collection", help="Collection name to delete.")
+
+    # validate
+    p_val = sub.add_parser(
+        "validate", help="Check a transcript JSON file for correctness."
+    )
+    p_val.add_argument(
+        "transcript",
+        metavar="transcript.json",
+        help="Path to the transcript JSON file.",
+    )
 
     # enrich
     p_bf = sub.add_parser(
@@ -842,5 +957,7 @@ def main() -> None:
         cmd_list(args)
     elif args.command == "delete":
         cmd_delete(args)
+    elif args.command == "validate":
+        cmd_validate(args)
     elif args.command == "enrich":
         cmd_enrich(args)

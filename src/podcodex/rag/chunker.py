@@ -97,7 +97,12 @@ def _map_offsets_to_metadata(
         chars = max(
             0, min(t["end_char"], chunk_end) - max(t["start_char"], chunk_start)
         )
-        speaker_chars[t["speaker"]] = speaker_chars.get(t["speaker"], 0) + chars
+        spk = t.get("speaker")
+        if spk:
+            speaker_chars[spk] = speaker_chars.get(spk, 0) + chars
+
+    if not speaker_chars:
+        return None
 
     return {
         "start": overlapping[0]["start"],

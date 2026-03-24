@@ -11,6 +11,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from loguru import logger
+
 SHOW_META_FILENAME = "show.toml"
 
 
@@ -29,7 +31,11 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
     path = Path(show_folder) / SHOW_META_FILENAME
     if not path.exists():
         return None
-    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError) as exc:
+        logger.warning(f"Invalid show.toml, skipping: {path} ({exc})")
+        return None
     return ShowMeta(
         name=raw.get("name", ""),
         rss_url=raw.get("rss_url", ""),
