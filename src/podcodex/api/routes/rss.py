@@ -1,0 +1,126 @@
+"""RSS feed routes — fetch, cache, and download episodes."""
+
+from __future__ import annotations
+
+import time
+from dataclasses import asdict
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+
+from podcodex.api.schemas import DownloadResult, RSSEpisodeOut
+from podcodex.ingest.rss import (
+    RSSEpisode,
+    download_audio,
+    episode_stem,
+    fetch_feed,
+    load_feed_cache,
+    save_feed_cache,
+)
+from podcodex.ingest.show import load_show_meta
+
+router = APIRouter()
+
+
+def _local_stem(ep: RSSEpisode) -> str:
+    return episode_stem(ep)
+
+
+def _is_downloaded(show_folder: Path, ep: RSSEpisode) -> bool:
+    """Check if an episode's audio has already been downloaded."""
+    stem = _local_stem(ep)
+    for ext in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
+        if (show_folder / f"{stem}{ext}").exists():
+            return True
+    return False
+
+
+def _rss_to_out(ep: RSSEpisode, show_folder: Path) -> dict:
+    """Convert an RSSEpisode to an RSSEpisodeOut dict."""
+    return {
+        **asdict(ep),
+        "local_stem": _local_stem(ep),
+        "downloaded": _is_downloaded(show_folder, ep),
+    }
+
+
+@router.post("/{show_folder:path}/rss/fetch", response_model=list[RSSEpisodeOut])
+async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
+    """Fetch (or refresh) the RSS feed for a show. Uses show.toml rss_url if not provided."""
+    path = Path(show_folder)
+    if not path.is_dir():
+        raise HTTPException(404, f"Show folder not found: {show_folder}")
+
+    if not rss_url:
+        meta = load_show_meta(path)
+        if meta and meta.rss_url:
+            rss_url = meta.rss_url
+    if not rss_url:
+        raise HTTPException(400, "No RSS URL provided and none in show.toml")
+
+    episodes = fetch_feed(rss_url)
+    if not episodes:
+        raise HTTPException(502, "Feed returned no episodes (parse error or empty)")
+
+    save_feed_cache(path, episodes)
+    return [_rss_to_out(ep, path) for ep in episodes]
+
+
+@router.get("/{show_folder:path}/rss/cache", response_model=list[RSSEpisodeOut])
+async def rss_cache(show_folder: str) -> list[dict]:
+    """Return cached RSS feed data (no network call)."""
+    path = Path(show_folder)
+    cached = load_feed_cache(path)
+    if cached is None:
+        return []
+    return [_rss_to_out(ep, path) for ep in cached]
+
+
+@router.post(
+    "/{show_folder:path}/rss/download",
+    response_model=list[DownloadResult],
+)
+async def rss_download(
+    show_folder: str,
+    guids: list[str] | None = None,
+) -> list[DownloadResult]:
+    """Download one or more episodes by GUID. Downloads all if guids is None."""
+    path = Path(show_folder)
+    cached = load_feed_cache(path)
+    if cached is None:
+        raise HTTPException(400, "No cached feed — fetch RSS first")
+
+    targets = cached
+    if guids:
+        guid_set = set(guids)
+        targets = [ep for ep in cached if ep.guid in guid_set]
+        if not targets:
+            raise HTTPException(404, "No matching episodes found for the given GUIDs")
+
+    results: list[DownloadResult] = []
+    for ep in targets:
+        stem = _local_stem(ep)
+        if _is_downloaded(path, ep):
+            results.append(DownloadResult(stem=stem, audio_path=None, status="exists"))
+            continue
+        if not ep.audio_url:
+            results.append(
+                DownloadResult(stem=stem, audio_path=None, status="no_audio")
+            )
+            continue
+
+        audio_path = download_audio(ep, path)
+        if audio_path:
+            results.append(
+                DownloadResult(
+                    stem=stem, audio_path=str(audio_path), status="downloaded"
+                )
+            )
+        else:
+            results.append(DownloadResult(stem=stem, audio_path=None, status="failed"))
+
+        # Small delay between downloads to be respectful to servers
+        if len(targets) > 1:
+            time.sleep(1)
+
+    return results

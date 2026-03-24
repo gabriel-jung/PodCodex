@@ -39,6 +39,11 @@ app = [
 ingest = [
     "feedparser>=6.0",
 ]
+desktop = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "python-multipart>=0.0.20",
+]
 pipeline = [
     "accelerate>=1.12.0",
     "chonkie>=0.5.0",
@@ -55,6 +60,7 @@ pipeline = [
 [project.scripts]
 podcodex     = "podcodex.cli:main"
 podcodex-bot = "podcodex.bot.bot:main"
+podcodex-api = "podcodex.api.app:main"
 
 [project.urls]
 Homepage = "https://github.com/gabriel-jung/podcodex"
