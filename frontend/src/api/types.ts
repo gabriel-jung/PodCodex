@@ -57,6 +57,7 @@ export interface Segment {
   text: string;
   start: number;
   end: number;
+  flagged?: boolean;
 }
 
 export interface CreateFromRSSResponse {
@@ -70,4 +71,51 @@ export interface PodcastSearchResult {
   artist: string;
   feed_url: string;
   artwork_url: string;
+}
+
+export interface VersionInfo {
+  has_raw: boolean;
+  has_validated: boolean;
+}
+
+export interface TaskResponse {
+  task_id: string;
+}
+
+export interface TranscribeRequest {
+  audio_path: string;
+  output_dir?: string | null;
+  model_size?: string;
+  language?: string;
+  batch_size?: number;
+  force?: boolean;
+  diarize?: boolean;
+  hf_token?: string | null;
+  num_speakers?: number | null;
+  show?: string;
+  episode?: string;
+}
+
+export interface PolishRequest {
+  audio_path: string;
+  output_dir?: string | null;
+  mode?: string;
+  provider?: string | null;
+  model?: string;
+  context?: string;
+  source_lang?: string;
+  batch_size?: number;
+  engine?: string;
+}
+
+export interface TranslateRequest {
+  audio_path: string;
+  output_dir?: string | null;
+  mode?: string;
+  provider?: string | null;
+  model?: string;
+  context?: string;
+  source_lang?: string;
+  target_lang?: string;
+  batch_size?: number;
 }

@@ -7,9 +7,14 @@ import type {
   Episode,
   HealthResponse,
   PodcastSearchResult,
+  PolishRequest,
   Segment,
   ShowMeta,
   ShowSummary,
+  TaskResponse,
+  TranscribeRequest,
+  TranslateRequest,
+  VersionInfo,
 } from "./types";
 
 const BASE = "";  // proxied by Vite in dev, same origin in prod
@@ -101,6 +106,138 @@ export const getSegments = (audioPath: string) =>
 export const getSegmentsRaw = (audioPath: string) =>
   json<Segment[]>(`/api/transcribe/segments/raw?audio_path=${encodeURIComponent(audioPath)}`);
 
+export const saveSegments = (audioPath: string, segments: Segment[]) =>
+  json<{ status: string; count: number }>(`/api/transcribe/segments?audio_path=${encodeURIComponent(audioPath)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(segments),
+  });
+
+export const getTranscribeVersionInfo = (audioPath: string) =>
+  json<VersionInfo>(`/api/transcribe/version-info?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const getSpeakerMap = (audioPath: string) =>
+  json<Record<string, string>>(`/api/transcribe/speaker-map?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const saveSpeakerMap = (audioPath: string, mapping: Record<string, string>) =>
+  json<{ status: string }>(`/api/transcribe/speaker-map?audio_path=${encodeURIComponent(audioPath)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(mapping),
+  });
+
+export const startTranscribe = (req: TranscribeRequest) =>
+  json<TaskResponse>("/api/transcribe/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+export async function uploadTranscript(audioPath: string, file: File): Promise<{ status: string; count: number }> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`/api/transcribe/upload?audio_path=${encodeURIComponent(audioPath)}`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+// ── Polish ─────────────────────────────────
+
+export const getPolishSegments = (audioPath: string) =>
+  json<Segment[]>(`/api/polish/segments?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const getPolishSegmentsRaw = (audioPath: string) =>
+  json<Segment[]>(`/api/polish/segments/raw?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const savePolishSegments = (audioPath: string, segments: Segment[]) =>
+  json<{ status: string; count: number }>(`/api/polish/segments?audio_path=${encodeURIComponent(audioPath)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(segments),
+  });
+
+export const getPolishVersionInfo = (audioPath: string) =>
+  json<VersionInfo>(`/api/polish/version-info?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const startPolish = (req: PolishRequest) =>
+  json<TaskResponse>("/api/polish/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+export const getPolishManualPrompts = (params: {
+  audio_path: string;
+  context?: string;
+  source_lang?: string;
+  batch_minutes?: number;
+  engine?: string;
+}) =>
+  json<{ batch_index: number; prompt: string; segment_count: number }[]>(
+    "/api/polish/manual-prompts",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params) },
+  );
+
+export const applyPolishManual = (params: { audio_path: string; corrections: unknown[] }) =>
+  json<{ status: string; count: number }>("/api/polish/apply-manual", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+
+// ── Translate ──────────────────────────────
+
+export const getTranslateSegments = (audioPath: string, lang: string) =>
+  json<Segment[]>(`/api/translate/segments?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`);
+
+export const getTranslateSegmentsRaw = (audioPath: string, lang: string) =>
+  json<Segment[]>(`/api/translate/segments/raw?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`);
+
+export const saveTranslateSegments = (audioPath: string, lang: string, segments: Segment[]) =>
+  json<{ status: string; count: number }>(`/api/translate/segments?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(segments),
+  });
+
+export const getTranslateVersionInfo = (audioPath: string, lang: string) =>
+  json<VersionInfo>(`/api/translate/version-info?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`);
+
+export const getTranslateLanguages = (audioPath: string) =>
+  json<string[]>(`/api/translate/languages?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const startTranslate = (req: TranslateRequest) =>
+  json<TaskResponse>("/api/translate/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+export const getTranslateManualPrompts = (params: {
+  audio_path: string;
+  context?: string;
+  source_lang?: string;
+  target_lang?: string;
+  batch_minutes?: number;
+}) =>
+  json<{ batch_index: number; prompt: string; segment_count: number }[]>(
+    "/api/translate/manual-prompts",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params) },
+  );
+
+export const applyTranslateManual = (params: { audio_path: string; lang: string; corrections: unknown[] }) =>
+  json<{ status: string; count: number }>("/api/translate/apply-manual", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+
 // ── Filesystem ──────────────────────────────
 
 export interface DirEntry {
@@ -131,5 +268,7 @@ export const listDirectory = (path: string, showFiles = false) =>
 export const audioFileUrl = (path: string) =>
   `/api/audio/file?path=${encodeURIComponent(path)}`;
 
-export const audioClipUrl = (path: string, start: number, end: number, padding = 0.3) =>
-  `/api/audio/clip?path=${encodeURIComponent(path)}&start=${start}&end=${end}&padding=${padding}`;
+export const deleteAudioFile = (path: string) =>
+  json<{ status: string; path: string }>(`/api/audio/file?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+  });

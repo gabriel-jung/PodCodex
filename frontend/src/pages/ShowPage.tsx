@@ -6,11 +6,12 @@ import {
   refreshRSS,
   getEpisodes,
   getShowMeta,
+  deleteAudioFile,
 } from "@/api/client";
 import type { Episode } from "@/api/types";
 import { useAppStore } from "@/store";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, RefreshCw, Play, ExternalLink, Download } from "lucide-react";
+import { ArrowLeft, RefreshCw, Play, ExternalLink, Download, CheckCircle, Trash2 } from "lucide-react";
 
 import { formatDuration, formatDate } from "@/lib/utils";
 
@@ -50,6 +51,13 @@ export default function ShowPage({ folder }: { folder: string }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["episodes", folder] });
       setSelected(new Set());
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (audioPath: string) => deleteAudioFile(audioPath),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["episodes", folder] });
     },
   });
 
@@ -211,6 +219,7 @@ export default function ShowPage({ folder }: { folder: string }) {
                 onOpen={() => goEpisode(ep.stem || ep.id)}
                 onPlay={() => ep.audio_path && playAudio(ep.audio_path, ep.title, ep.artwork_url || meta?.artwork_url, showName)}
                 onDownload={() => downloadMutation.mutate([ep.id])}
+                onDelete={() => ep.audio_path && deleteMutation.mutate(ep.audio_path)}
                 downloading={downloadMutation.isPending}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
               />
@@ -276,15 +285,17 @@ function StatusDots({ ep }: { ep: Episode }) {
   );
 }
 
-function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload, downloading, isPlaying }: {
+function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying }: {
   ep: Episode; selected: boolean; onToggle: () => void;
-  onOpen: () => void; onPlay: () => void; onDownload: () => void; downloading: boolean; isPlaying: boolean;
+  onOpen: () => void; onPlay: () => void; onDownload: () => void; onDelete: () => void; downloading: boolean; isPlaying: boolean;
 }) {
   const canDownload = !ep.downloaded && !!ep.audio_url;
   return (
     <div className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
       {canDownload ? (
         <input type="checkbox" checked={selected} onChange={onToggle} className="accent-primary shrink-0" />
+      ) : ep.downloaded ? (
+        <CheckCircle className="w-4 h-4 text-green-500 shrink-0" title="Downloaded" />
       ) : (
         <div className="w-4" />
       )}
@@ -303,10 +314,15 @@ function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload, downlo
       <StatusDots ep={ep} />
       <span className="text-xs text-muted-foreground w-20 text-right shrink-0">{formatDate(ep.pub_date)}</span>
       <span className="text-xs text-muted-foreground w-12 text-right shrink-0">{formatDuration(ep.duration)}</span>
-      <div className="w-16 flex justify-end gap-1 shrink-0">
+      <div className="w-20 flex justify-end gap-1 shrink-0">
         {ep.audio_path && (
           <button onClick={onPlay} title="Play" className={`opacity-0 group-hover:opacity-100 transition ${isPlaying ? "text-green-400 !opacity-100" : "text-muted-foreground hover:text-foreground"}`}>
             <Play className="w-3.5 h-3.5" />
+          </button>
+        )}
+        {ep.audio_path && (
+          <button onClick={onDelete} title="Delete audio" className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition">
+            <Trash2 className="w-3.5 h-3.5" />
           </button>
         )}
         {canDownload && !selected && (

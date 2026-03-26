@@ -10,6 +10,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Self
 
 from loguru import logger
@@ -708,6 +709,7 @@ def run_ollama(
     instruction: str = "Process",
     min_length_ratio: float = 0.7,
     label: str = "",
+    on_batch: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
     """Run segments through a local Ollama model."""
     from ollama import Client
@@ -718,9 +720,8 @@ def run_ollama(
 
     for i in range(0, len(segments), batch_size):
         batch = segments[i : i + batch_size]
-        logger.info(
-            f"{label} batch {i // batch_size + 1}/{n_batches} via Ollama ({model})"
-        )
+        batch_num = i // batch_size + 1
+        logger.info(f"{label} batch {batch_num}/{n_batches} via Ollama ({model})")
 
         def call_fn(messages):
             response = client.chat(
@@ -740,6 +741,8 @@ def run_ollama(
                 min_length_ratio=min_length_ratio,
             )
         )
+        if on_batch:
+            on_batch(batch_num, n_batches)
 
     return results
 
@@ -755,6 +758,7 @@ def run_api(
     instruction: str = "Process",
     min_length_ratio: float = 0.7,
     label: str = "",
+    on_batch: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
     """Run segments through an OpenAI-compatible API."""
     import os
@@ -782,9 +786,8 @@ def run_api(
 
     for i in range(0, len(segments), batch_size):
         batch = segments[i : i + batch_size]
-        logger.info(
-            f"{label} batch {i // batch_size + 1}/{n_batches} via API ({model})"
-        )
+        batch_num = i // batch_size + 1
+        logger.info(f"{label} batch {batch_num}/{n_batches} via API ({model})")
 
         def call_fn(messages):
             response = client.chat.completions.create(
@@ -801,6 +804,8 @@ def run_api(
                 min_length_ratio=min_length_ratio,
             )
         )
+        if on_batch:
+            on_batch(batch_num, n_batches)
 
     return results
 

@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { getEpisodes, getSegments, getShowMeta } from "@/api/client";
-import type { Episode } from "@/api/types";
+import { getEpisodes, getShowMeta } from "@/api/client";
+import type { Episode, ShowMeta } from "@/api/types";
 import { useAppStore } from "@/store";
 import { Button } from "@/components/ui/button";
-import SegmentViewer from "@/components/shows/SegmentViewer";
+import TranscribePanel from "@/components/transcribe/TranscribePanel";
+import PolishPanel from "@/components/polish/PolishPanel";
+import TranslatePanel from "@/components/translate/TranslatePanel";
 import { formatDuration, formatDate } from "@/lib/utils";
 import {
   ArrowLeft,
@@ -82,12 +84,6 @@ export default function EpisodePage({
         validated_transcript: false,
       }
     : episodes?.find((e) => e.stem === stem || e.id === stem);
-
-  const { data: segments } = useQuery({
-    queryKey: ["segments", episode?.audio_path],
-    queryFn: () => getSegments(episode!.audio_path!),
-    enabled: !!episode?.audio_path && episode.transcribed && activeStep === "transcribe",
-  });
 
   const goBack = () => {
     if (isStandalone) {
@@ -222,7 +218,7 @@ export default function EpisodePage({
           <StepContent
             step={activeStep}
             episode={episode}
-            segments={segments}
+            showMeta={meta}
           />
         </div>
       </div>
@@ -233,11 +229,11 @@ export default function EpisodePage({
 function StepContent({
   step,
   episode,
-  segments,
+  showMeta,
 }: {
   step: PipelineStep;
   episode: Episode;
-  segments: { speaker: string; text: string; start: number; end: number }[] | undefined;
+  showMeta?: ShowMeta | null;
 }) {
   switch (step) {
     case "info":
@@ -281,42 +277,13 @@ function StepContent({
       );
 
     case "transcribe":
-      if (segments && segments.length > 0) {
-        return (
-          <SegmentViewer
-            segments={segments}
-            audioPath={episode.audio_path ?? undefined}
-          />
-        );
-      }
-      if (episode.transcribed) {
-        return <div className="p-6 text-muted-foreground">Loading transcript...</div>;
-      }
-      return (
-        <div className="p-6 text-muted-foreground">
-          {episode.downloaded
-            ? "No transcript yet. Run the transcription pipeline to get started."
-            : "Episode not downloaded yet."}
-        </div>
-      );
+      return <TranscribePanel episode={episode} showMeta={showMeta} />;
 
     case "polish":
-      return (
-        <div className="p-6 text-muted-foreground">
-          {episode.polished
-            ? "Polished transcript available."
-            : "Polish pipeline not yet run for this episode."}
-        </div>
-      );
+      return <PolishPanel episode={episode} showMeta={showMeta} />;
 
     case "translate":
-      return (
-        <div className="p-6 text-muted-foreground">
-          {episode.translations.length > 0
-            ? `Translations available: ${episode.translations.join(", ")}`
-            : "No translations yet."}
-        </div>
-      );
+      return <TranslatePanel episode={episode} showMeta={showMeta} />;
 
     case "synthesize":
       return (

@@ -3,18 +3,10 @@ import { useAppStore } from "@/store";
 import { audioFileUrl } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Play, Pause, X, SkipBack, SkipForward, Volume2, VolumeX } from "lucide-react";
-
-function formatTime(seconds: number): string {
-  if (!isFinite(seconds) || seconds < 0) return "--:--";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
+import { formatTime } from "@/lib/utils";
 
 export default function AudioBar() {
-  const { audioPath, audioTitle, audioArtwork, audioShowName, stopAudio } = useAppStore();
+  const { audioPath, audioTitle, audioArtwork, audioShowName, pendingSeek, consumeSeek, stopAudio } = useAppStore();
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -29,6 +21,33 @@ export default function AudioBar() {
     setDuration(0);
     setPlaying(false);
   }, [audioPath]);
+
+  // Handle pending seek (from segment play buttons)
+  useEffect(() => {
+    if (pendingSeek == null) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    // pendingSeek === -1 means pause
+    if (pendingSeek < 0) {
+      audio.pause();
+      consumeSeek();
+      return;
+    }
+
+    const doSeek = () => {
+      audio.currentTime = pendingSeek;
+      audio.play();
+      consumeSeek();
+    };
+
+    if (audio.readyState >= 1) {
+      doSeek();
+    } else {
+      audio.addEventListener("loadedmetadata", doSeek, { once: true });
+      return () => audio.removeEventListener("loadedmetadata", doSeek);
+    }
+  }, [pendingSeek, consumeSeek]);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -77,12 +96,16 @@ export default function AudioBar() {
         ref={audioRef}
         src={audioFileUrl(audioPath)}
         autoPlay
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
-        onEnded={() => setPlaying(false)}
+        onPlay={() => { setPlaying(true); useAppStore.setState({ isPlaying: true }); }}
+        onPause={() => { setPlaying(false); useAppStore.setState({ isPlaying: false }); }}
+        onEnded={() => { setPlaying(false); useAppStore.setState({ isPlaying: false }); }}
         onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
         onTimeUpdate={(e) => {
-          if (!seeking) setCurrentTime(e.currentTarget.duration > 0 ? e.currentTarget.currentTime : 0);
+          if (!seeking) {
+            const t = e.currentTarget.duration > 0 ? e.currentTarget.currentTime : 0;
+            setCurrentTime(t);
+            useAppStore.setState({ currentTime: t });
+          }
         }}
       />
 
@@ -116,7 +139,7 @@ export default function AudioBar() {
         {/* Seek bar + time */}
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-muted-foreground w-10 text-right shrink-0">
-            {formatTime(currentTime)}
+            {formatTime(currentTime, false)}
           </span>
           <div className="flex-1 relative h-1.5 group">
             <div className="absolute inset-0 rounded-full bg-muted overflow-hidden">
@@ -138,7 +161,7 @@ export default function AudioBar() {
             />
           </div>
           <span className="text-[10px] text-muted-foreground w-10 shrink-0">
-            {formatTime(duration)}
+            {formatTime(duration, false)}
           </span>
         </div>
       </div>

@@ -71,3 +71,20 @@ async def serve_audio_clip(
     except ImportError:
         # soundfile not installed — serve full file
         return FileResponse(p, media_type="audio/mpeg")
+
+
+@router.delete("/api/audio/file")
+async def delete_audio_file(
+    path: str = Query(..., description="Absolute path to audio file"),
+):
+    """Delete an audio file from disk."""
+    p = Path(path)
+    if not p.is_file():
+        raise HTTPException(404, f"Audio file not found: {path}")
+
+    AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".opus", ".wma"}
+    if p.suffix.lower() not in AUDIO_EXTS:
+        raise HTTPException(400, f"Not an audio file: {p.name}")
+
+    p.unlink()
+    return {"status": "deleted", "path": str(p)}

@@ -2,7 +2,132 @@
 
 AI tools for podcast production — transcription, polishing, translation, voice synthesis, and semantic search.
 
-The **Discord bot** lets anyone search through your podcast transcripts. The **pipeline** handles the processing: transcribe, polish, translate, synthesize, and index.
+The **desktop app** is the main interface for processing episodes: transcribe, polish, translate, edit, and review — all from a native window. The **Discord bot** lets anyone search through your podcast transcripts. The **pipeline** can also be driven from the CLI or Python.
+
+## Desktop app
+
+A native desktop application built with Tauri (Rust) + React + FastAPI. Manages your podcast library and runs the full processing pipeline through a graphical interface.
+
+### Architecture
+
+```text
+┌──────────────────────────────────────────────────┐
+│  Tauri shell (native window, file system access)  │
+│  ┌──────────────────────────────────────────────┐ │
+│  │  React frontend (Vite + TypeScript)          │ │
+│  │  └── Zustand store, TanStack Query           │ │
+│  └──────────────────────────────────────────────┘ │
+│         ↕ HTTP + WebSocket                        │
+│  ┌──────────────────────────────────────────────┐ │
+│  │  FastAPI backend (Python)                    │ │
+│  │  └── podcodex.core.* pipeline modules        │ │
+│  └──────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────┘
+```
+
+- **Frontend** (`frontend/`): React 19, Vite, Tailwind CSS, shadcn/ui components. Communicates with the backend via REST API and WebSocket for real-time task progress.
+- **Backend** (`src/podcodex/api/`): FastAPI server exposing the pipeline as HTTP endpoints. Background tasks run in a thread pool with progress updates streamed over WebSocket.
+- **Tauri** (`src-tauri/`): Thin Rust shell that wraps the frontend in a native window. Provides filesystem access and OS integration.
+
+The frontend can also run standalone in a browser (without Tauri) for development or remote access.
+
+### Features
+
+**Show management:**
+- Search and add podcasts by name (Apple Podcasts directory) or RSS URL
+- Import existing show folders
+- Browse episodes with status indicators (downloaded, transcribed, polished, translated, indexed)
+- Download episodes from RSS feeds (single or batch)
+- Delete audio files
+
+**Transcription (Whisper):**
+- Configure model size, language, speaker diarization
+- Background processing with real-time progress bar
+- Upload existing transcript files (JSON)
+- Speaker name mapping after diarization
+
+**Polish (LLM correction):**
+- Fix transcription errors using a local LLM (Ollama) or cloud API (OpenAI, Anthropic, Mistral, Groq)
+- Manual mode: generate prompts to paste into any LLM, then apply the corrections
+- Word-level diff view comparing original transcript to polished version
+
+**Translation (LLM):**
+- Translate to any language using the same LLM modes as polish
+- Multiple target languages per episode
+- Side-by-side view of source and translated text
+
+**Segment editor (shared across all steps):**
+- Inline text editing with auto-resize
+- Speaker dropdown per segment
+- Timestamp editing with "snap to current playback position"
+- Insert / delete segments
+- Flagged segment detection (unknown speakers, low speech density)
+- Pagination, search, speaker/flagged/changed filters
+- "Estimate timestamps" for transcripts without timing data
+- Active segment highlighting during audio playback
+
+**Audio player:**
+- Global player persists across page navigation
+- Play from any segment with one click
+- Seek bar, skip ±15s, volume control
+
+### Quick start
+
+```bash
+# Prerequisites
+brew install node           # or your OS equivalent
+python3.12 -m venv .venv
+
+# Install Python dependencies
+uv pip install -e ".[desktop,ingest]" --python .venv/bin/python
+
+# Install frontend dependencies
+cd frontend && npm install && cd ..
+
+# Start (API + frontend in browser)
+make dev-no-tauri
+# Open http://localhost:5173
+```
+
+For the full native app experience (requires Rust):
+
+```bash
+# One-time Rust setup
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+cargo install tauri-cli --version "^2"
+
+# Start everything (API + Vite + Tauri window)
+make dev
+```
+
+### Make targets
+
+| Target | Description |
+|--------|-------------|
+| `make setup` | One-time: install all Python and frontend deps |
+| `make dev` | Start API + Vite + Tauri (native window, hot-reload) |
+| `make dev-no-tauri` | Start API + Vite only (use browser at localhost:5173) |
+| `make build` | Production `.app` / `.exe` bundle |
+| `make test` | Run Python test suite |
+| `make clean` | Remove build artifacts |
+
+### API endpoints
+
+The FastAPI backend exposes these route groups (all under `/api`):
+
+| Prefix | Description |
+|--------|-------------|
+| `/health` | Status and capability check |
+| `/config` | App configuration (show folders, save path) |
+| `/shows` | List shows, register folders, show metadata, episode lists |
+| `/transcribe` | Load/save segments, start transcription, speaker map, upload |
+| `/polish` | Load/save segments, start polish, manual prompts |
+| `/translate` | Load/save segments, start translate, manual prompts, language list |
+| `/audio` | Serve audio files, extract clips, delete files |
+| `/fs` | Directory browser for folder picker |
+| `/ws` | WebSocket for real-time task progress |
+
+---
 
 ## Discord bot
 
@@ -150,8 +275,11 @@ cd podcodex
 # Bot only (search + Discord)
 uv pip install -e ".[bot]"
 
-# Full install (pipeline + bot + app)
-uv pip install -e ".[bot,pipeline,app]"
+# Desktop app (Tauri frontend + FastAPI backend)
+uv pip install -e ".[desktop,ingest]"
+
+# Full install (everything)
+uv pip install -e ".[bot,pipeline,desktop,app,ingest]"
 ```
 
 ### Environment variables
@@ -346,9 +474,12 @@ results = retriever.retrieve(
 )
 ```
 
-### Streamlit app
+### Streamlit app (legacy)
+
+> **Note:** The Streamlit app is being replaced by the desktop app (see above). It remains functional and covers features not yet available in the desktop app (synthesis, indexing, search).
 
 ```bash
+uv pip install -e ".[app]" --python .venv/bin/python
 streamlit run streamlit/app.py
 ```
 
@@ -418,6 +549,7 @@ Outputs are organised per episode under the show folder. Each step produces a `.
 
 | Module | Description |
 |--------|-------------|
+| `podcodex.api` | FastAPI backend for the desktop app (REST + WebSocket, background tasks) |
 | `podcodex.bot` | Discord bot with `/search`, `/exact`, `/random`, `/stats`, `/episodes` commands |
 | `podcodex.rag` | Chunking, embedding, vector storage (Qdrant + SQLite), and hybrid retrieval |
 | `podcodex.cli` | CLI: `podcodex vectorize / sync / query / list / delete` |
@@ -429,6 +561,68 @@ Outputs are organised per episode under the show folder. Each step produces a `.
 | `podcodex.ingest.rss` | RSS feed parsing, episode metadata, audio download |
 | `podcodex.ingest.importer` | Import external transcripts into the show folder structure |
 | `podcodex.ingest.show` | Show-level metadata (`show.toml`) |
+
+## Dependency groups
+
+| Extra | What it installs | Use case |
+|-------|-----------------|----------|
+| *(base)* | torch, sentence-transformers, qdrant-client, etc. | Core embeddings and vector storage |
+| `[bot]` | discord.py | Discord bot |
+| `[desktop]` | fastapi, uvicorn, python-multipart | Desktop app backend |
+| `[app]` | streamlit | Legacy Streamlit UI |
+| `[ingest]` | feedparser | RSS feed parsing |
+| `[pipeline]` | whisperx, pyannote-audio, ollama, openai, chonkie, qwen-tts, etc. | Full processing pipeline |
+
+## Roadmap
+
+### Desktop app — in progress
+
+The desktop app currently covers the core workflow: **show management → episode download → transcribe → polish → translate → edit**. These features are planned:
+
+**Near-term:**
+- Confirmation dialogs for destructive actions (delete audio, overwrite transcript)
+- Show metadata editing (language, speakers, artwork)
+- Translation language validation and autocomplete
+- Retry mechanism for failed background tasks
+- Cancel running tasks
+
+**Transcription engines:**
+- Voxtral API as an alternative to WhisperX (cloud-based, no local GPU needed)
+- Engine abstraction layer to support pluggable transcription backends
+- Per-engine parameter forms (each engine has different settings)
+
+**Synthesis tab:**
+- Voice sample extraction from source audio
+- Speaker-to-voice mapping UI
+- TTS generation with Qwen3-TTS (segment-by-segment with review)
+- Episode assembly with timing control
+- Hallucination detection for generated speech
+
+**Indexing & search tab:**
+- Embedding model and chunking strategy selection
+- Vectorize episodes into local SQLite store
+- Sync to Qdrant for search
+- In-app semantic search across episodes
+
+**Editor improvements:**
+- Audio waveform visualization
+- Bulk speaker reassignment (select multiple segments)
+- Undo/redo history
+- Keyboard shortcuts for common operations
+- Segment alignment tool (sync transcript with audio)
+
+**Infrastructure:**
+- Pipeline orchestration (run transcribe → polish → translate in one action)
+- Concurrent tasks on the same episode (e.g., polish + translate in parallel)
+- Global settings page (default LLM provider, model, language)
+- Export to SRT/VTT subtitles
+
+### Pipeline
+
+- Additional transcription engines (Voxtral, AssemblyAI)
+- Forced alignment for imported transcripts without timestamps
+- Quality scoring for transcription output
+- Batch processing across multiple episodes
 
 ## Notes
 

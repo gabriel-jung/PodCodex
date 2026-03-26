@@ -5,9 +5,23 @@ from podcodex.api.routes import (
     config,
     filesystem,
     health,
+    polish,
     rss,
     shows,
     transcribe,
+    translate,
+    ws,
 )
 
-__all__ = ["audio", "config", "filesystem", "health", "rss", "shows", "transcribe"]
+__all__ = [
+    "audio",
+    "config",
+    "filesystem",
+    "health",
+    "polish",
+    "rss",
+    "shows",
+    "transcribe",
+    "translate",
+    "ws",
+]

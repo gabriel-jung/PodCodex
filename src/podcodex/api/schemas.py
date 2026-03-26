@@ -65,6 +65,7 @@ class Segment(BaseModel):
     text: str = ""
     start: float = 0.0
     end: float = 0.0
+    flagged: bool = False
 
 
 class UnifiedEpisodeOut(BaseModel):

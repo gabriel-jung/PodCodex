@@ -13,6 +13,7 @@ Output files:
     {stem}.polished.json      — validated/edited polished transcript
 """
 
+from collections.abc import Callable
 from pathlib import Path
 
 from loguru import logger
@@ -143,6 +144,7 @@ def polish_segments(
     max_gap: float = DEFAULT_MAX_GAP,
     provider: str | None = None,
     engine: str = "Whisper",
+    on_batch: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
     """
     Correct transcription errors in segments.
@@ -193,6 +195,7 @@ def polish_segments(
             batch_size=batch_size,
             instruction="Correct",
             label="Polish",
+            on_batch=on_batch,
         )
     elif mode == "api":
         result = run_api(
@@ -205,6 +208,7 @@ def polish_segments(
             provider=provider,
             instruction="Correct",
             label="Polish",
+            on_batch=on_batch,
         )
     else:
         raise ValueError(

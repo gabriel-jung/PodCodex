@@ -13,6 +13,7 @@ Output files:
     {stem}.{lang_norm}.json  — translated segments, e.g. {stem}.english.json
 """
 
+from collections.abc import Callable
 from pathlib import Path
 
 from loguru import logger
@@ -142,6 +143,7 @@ def translate_segments(
     merge: bool = True,
     max_gap: float = DEFAULT_MAX_GAP,
     provider: str | None = None,
+    on_batch: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
     """
     Translate transcript segments to the target language.
@@ -164,6 +166,7 @@ def translate_segments(
         max_gap           : maximum silence gap in seconds for merging (default 10.0)
         provider          : provider shorthand ("openai", "anthropic", "mistral", "groq")
                             — sets api_base_url, model, and api_key env var automatically
+        on_batch          : optional callback(batch_num, total_batches) for progress
 
     Returns:
         List of segments with translated text field.
@@ -195,6 +198,7 @@ def translate_segments(
             batch_size=batch_size,
             instruction="Translate",
             label="Translate",
+            on_batch=on_batch,
         )
     elif mode == "api":
         result = run_api(
@@ -207,6 +211,7 @@ def translate_segments(
             provider=provider,
             instruction="Translate",
             label="Translate",
+            on_batch=on_batch,
         )
     else:
         raise ValueError(
