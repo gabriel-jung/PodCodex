@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from podcodex.api.routes._helpers import annotate_flags, read_segments
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.api.tasks import task_manager
-from podcodex.core._utils import AudioPaths, write_json
+from podcodex.core._utils import AudioPaths, merge_consecutive_segments, write_json
 
 router = APIRouter()
 
@@ -141,6 +141,9 @@ async def upload_transcript(
         seg.setdefault("speaker", "UNKNOWN")
         seg.setdefault("start", 0.0)
         seg.setdefault("end", 0.0)
+
+    # Merge consecutive same-speaker segments (same as the transcription pipeline)
+    segments = merge_consecutive_segments(segments)
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     p.base.parent.mkdir(parents=True, exist_ok=True)

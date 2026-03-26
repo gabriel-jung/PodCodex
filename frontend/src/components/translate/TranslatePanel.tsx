@@ -13,9 +13,10 @@ import {
   getTranslateManualPrompts,
   applyTranslateManual,
 } from "@/api/client";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { buildDefaultContext } from "@/lib/utils";
+import HelpLabel from "@/components/common/HelpLabel";
 import SegmentEditor from "@/components/editor/SegmentEditor";
-import ProgressBar from "@/components/editor/ProgressBar";
+import PipelinePanel from "@/components/common/PipelinePanel";
 import LLMControls, { type LLMConfig } from "@/components/common/LLMControls";
 
 interface TranslatePanelProps {
@@ -32,7 +33,7 @@ export default function TranslatePanel({ episode, showMeta }: TranslatePanelProp
     mode: "ollama",
     provider: "openai",
     model: "",
-    context: "",
+    context: buildDefaultContext(episode, showMeta),
     sourceLang: showMeta?.language || "French",
     batchSize: 10,
   });
@@ -84,56 +85,36 @@ export default function TranslatePanel({ episode, showMeta }: TranslatePanelProp
     setSelectedLang(targetLang.toLowerCase().replace(/\s+/g, "_"));
   };
 
-  if (!episode.transcribed) {
-    return (
-      <div className="p-6 text-muted-foreground">
-        Transcription required before translation. Go to the Transcribe tab first.
-      </div>
-    );
-  }
-
   const hasTranslations = (languages?.length ?? 0) > 0;
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Step header */}
-      <div className="px-4 pt-3 pb-2 border-b border-border">
-        <h3 className="text-sm font-semibold">Translate</h3>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Translate segments to another language using an LLM. Uses polished text when available, otherwise the raw transcript.
-        </p>
-      </div>
-
-      {/* Controls — collapsible when translations exist */}
-      {!taskId && (
-        <div className="border-b border-border">
-          {hasTranslations ? (
-            <div className="flex items-center">
-              <button
-                onClick={() => setExpanded(!expanded)}
-                className="px-4 py-2 flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition"
+    <PipelinePanel
+      title="Translate"
+      description="Translate the transcript into another language using AI. If you polished the text first, the translation will use that improved version."
+      prerequisite={!episode.transcribed ? "You need a transcript first. Go to the Transcribe tab to create one." : undefined}
+      done={hasTranslations}
+      expanded={expanded}
+      onToggle={() => setExpanded(!expanded)}
+      rerunLabel="New translation"
+      taskId={taskId}
+      onTaskComplete={handleComplete}
+      emptyMessage="No translations yet."
+      controls={
+        <>
+          {/* Language selector in the toggle row (only when collapsed) */}
+          {hasTranslations && !expanded && (
+            <div className="px-4 pb-2 flex justify-end">
+              <select
+                value={selectedLang}
+                onChange={(e) => setSelectedLang(e.target.value)}
+                className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm"
               >
-                {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                <span className="font-medium">New translation</span>
-              </button>
-              {!expanded && (
-                <select
-                  value={selectedLang}
-                  onChange={(e) => setSelectedLang(e.target.value)}
-                  className="ml-auto mr-4 bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm"
-                >
-                  {languages!.map((lang) => (
-                    <option key={lang} value={lang}>{lang}</option>
-                  ))}
-                </select>
-              )}
-            </div>
-          ) : (
-            <div className="px-4 pt-3 pb-1">
-              <h4 className="text-sm font-medium">Translation settings</h4>
+                {languages!.map((lang) => (
+                  <option key={lang} value={lang}>{lang}</option>
+                ))}
+              </select>
             </div>
           )}
-
           {expanded && (
             <LLMControls
               config={config}
@@ -144,7 +125,7 @@ export default function TranslatePanel({ episode, showMeta }: TranslatePanelProp
               runLabel="Run translation"
               extraFields={
                 <>
-                  <label className="text-muted-foreground">Target language</label>
+                  <HelpLabel label="Target language" help="The language to translate into (e.g. English, Spanish, German)." />
                   <input
                     value={targetLang}
                     onChange={(e) => setTargetLang(e.target.value)}
@@ -174,11 +155,9 @@ export default function TranslatePanel({ episode, showMeta }: TranslatePanelProp
               }}
             />
           )}
-        </div>
-      )}
-
-      {taskId && <ProgressBar taskId={taskId} onComplete={handleComplete} />}
-
+        </>
+      }
+    >
       {hasTranslations && selectedLang && !taskId && !expanded && (
         <SegmentEditor
           editorKey={`translate-${selectedLang}`}
@@ -196,12 +175,6 @@ export default function TranslatePanel({ episode, showMeta }: TranslatePanelProp
           speakers={showMeta?.speakers}
         />
       )}
-
-      {!hasTranslations && !expanded && !taskId && (
-        <div className="p-6 text-muted-foreground">
-          No translations yet.
-        </div>
-      )}
-    </div>
+    </PipelinePanel>
   );
 }

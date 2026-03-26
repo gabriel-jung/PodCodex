@@ -14,6 +14,17 @@ from podcodex.api.schemas import (
     CreateFromRSSResponse,
     RegisterShowRequest,
 )
+from podcodex.core.constants import (
+    ASSEMBLE_STRATEGIES,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_SOURCE_LANG,
+    DEFAULT_TARGET_LANG,
+    DEFAULT_TTS_MODEL_SIZE,
+    DEFAULT_WHISPER_MODEL,
+    LLM_PROVIDERS,
+    TTS_MODEL_SIZES,
+    WHISPER_MODELS,
+)
 from podcodex.ingest.rss import feed_artwork, fetch_feed, save_feed_cache, search_itunes
 from podcodex.ingest.show import ShowMeta as _ShowMeta
 from podcodex.ingest.show import load_show_meta, save_show_meta
@@ -55,6 +66,26 @@ def _register_folder(cfg: AppConfig, folder_path: str) -> AppConfig:
         cfg.show_folders.append(resolved)
         _save(cfg)
     return cfg
+
+
+@router.get("/api/pipeline-config")
+async def pipeline_config() -> dict:
+    """Return all pipeline constants (models, providers, strategies).
+
+    The React frontend fetches this once at startup so that labels,
+    descriptions, and defaults live in Python — never duplicated in TS.
+    """
+    return {
+        "whisper_models": WHISPER_MODELS,
+        "default_whisper_model": DEFAULT_WHISPER_MODEL,
+        "tts_model_sizes": TTS_MODEL_SIZES,
+        "default_tts_model_size": DEFAULT_TTS_MODEL_SIZE,
+        "assemble_strategies": ASSEMBLE_STRATEGIES,
+        "llm_providers": LLM_PROVIDERS,
+        "default_ollama_model": DEFAULT_OLLAMA_MODEL,
+        "default_source_lang": DEFAULT_SOURCE_LANG,
+        "default_target_lang": DEFAULT_TARGET_LANG,
+    }
 
 
 @router.get("/api/config", response_model=AppConfig)

@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useMemo } from "react";
 import { Button } from "@/components/ui/button";
-import { Play, Pause, Trash2, ChevronDown, ChevronRight, Diff } from "lucide-react";
+import { Play, Pause, Trash2, ChevronDown, ChevronRight, Diff, Merge, Scissors } from "lucide-react";
 import type { Segment } from "@/api/types";
 import { formatTime } from "@/lib/utils";
 import { useAppStore } from "@/store";
@@ -26,6 +26,8 @@ interface SegmentRowProps {
   onDelete: () => void;
   onInsertBefore?: () => void;
   onInsertAfter?: () => void;
+  onMergeNext?: () => void;
+  onSplit?: (cursorPos: number) => void;
 }
 
 function InsertBeforeIcon({ className }: { className?: string }) {
@@ -82,12 +84,21 @@ function computeWordDiff(original: string, current: string): DiffPart[] {
   const b = current.split(/\s+/).filter(Boolean);
 
   const m = a.length, n = b.length;
-  // For very long segments, fall back to simple before/after
+  // For very long segments, use a sliding-window approach instead of full LCS
   if (m * n > 50000) {
-    return [
-      { type: "removed", text: original },
-      { type: "added", text: current },
-    ];
+    // Find common prefix and suffix, diff only the middle
+    let prefix = 0;
+    while (prefix < m && prefix < n && a[prefix] === b[prefix]) prefix++;
+    let suffix = 0;
+    while (suffix < m - prefix && suffix < n - prefix && a[m - 1 - suffix] === b[n - 1 - suffix]) suffix++;
+    const parts: DiffPart[] = [];
+    if (prefix > 0) parts.push({ type: "same", text: a.slice(0, prefix).join(" ") });
+    const removedMiddle = a.slice(prefix, m - suffix);
+    const addedMiddle = b.slice(prefix, n - suffix);
+    if (removedMiddle.length > 0) parts.push({ type: "removed", text: removedMiddle.join(" ") });
+    if (addedMiddle.length > 0) parts.push({ type: "added", text: addedMiddle.join(" ") });
+    if (suffix > 0) parts.push({ type: "same", text: a.slice(m - suffix).join(" ") });
+    return parts;
   }
 
   // LCS table
@@ -152,6 +163,8 @@ export default function SegmentRow({
   onDelete,
   onInsertBefore,
   onInsertAfter,
+  onMergeNext,
+  onSplit,
 }: SegmentRowProps) {
   const seekTo = useAppStore((s) => s.seekTo);
   const pauseAudio = useAppStore((s) => s.pauseAudio);
@@ -163,8 +176,9 @@ export default function SegmentRow({
 
   const validTime = hasValidTime(segment);
 
-  // Whether reference text differs from current
-  const hasDiff = referenceText != null && referenceText !== segment.text;
+  // Whether reference text exists and whether it differs from current
+  const hasRef = referenceText != null;
+  const hasDiff = hasRef && referenceText !== segment.text;
 
   // Auto-resize textarea to fit content
   useEffect(() => {
@@ -262,12 +276,25 @@ export default function SegmentRow({
           </Button>
         )}
 
+        {onMergeNext && (
+          <Button
+            onClick={onMergeNext}
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 text-muted-foreground hover:text-foreground"
+            title="Merge with next segment"
+          >
+            <Merge className="w-3 h-3" />
+          </Button>
+        )}
+
         {showDelete && (
           <Button
             onClick={onDelete}
             variant="ghost"
             size="icon"
             className="h-5 w-5 text-muted-foreground hover:text-destructive"
+            title="Delete segment"
           >
             <Trash2 className="w-3 h-3" />
           </Button>
@@ -331,24 +358,33 @@ export default function SegmentRow({
         ref={textRef}
         value={segment.text}
         onChange={(e) => onTextChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && onSplit) {
+            e.preventDefault();
+            const pos = e.currentTarget.selectionStart;
+            if (pos > 0 && pos < segment.text.length) onSplit(pos);
+          }
+        }}
         className="w-full bg-transparent text-sm leading-relaxed resize-none outline-none pr-4 overflow-hidden rounded border border-transparent hover:border-border focus:border-primary/50 focus:bg-accent/10 px-1.5 py-0 transition"
         style={{ marginLeft: "calc(2.5rem - 6px)" }}
         rows={1}
       />
 
-      {/* Reference text — collapsible, only shown when different */}
-      {hasDiff && (
+      {/* Reference text — always shown when available, diff highlighted when different */}
+      {hasRef && (
         <div className="ml-10">
           <button
             onClick={() => setRefExpanded(!refExpanded)}
             className="flex items-center gap-1 text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition"
           >
             <Diff className="w-3 h-3" />
-            <span>{referenceLabel}</span>
+            <span>{referenceLabel}{!hasDiff && " ✓"}</span>
             {refExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
           </button>
           {refExpanded && (
-            <DiffView original={referenceText!} current={segment.text} />
+            hasDiff
+              ? <DiffView original={referenceText!} current={segment.text} />
+              : <p className="text-xs text-muted-foreground/50 py-1">{referenceText}</p>
           )}
         </div>
       )}

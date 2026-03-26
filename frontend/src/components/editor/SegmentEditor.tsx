@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useCallback } from "react";
+import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment, VersionInfo } from "@/api/types";
 import { useSegments } from "@/hooks/useSegments";
@@ -80,12 +80,29 @@ export default function SegmentEditor({
     },
   });
 
+  // Merge dialog state: when merging segments with different speakers
+  const [mergeDialog, setMergeDialog] = useState<{
+    index: number;
+    speakers: [string, string];
+  } | null>(null);
+
+  const handleMerge = useCallback((originalIndex: number, currentSpeaker: string) => {
+    const next = editor.getNextSegment(originalIndex);
+    if (!next) return;
+    if (next.speaker === currentSpeaker) {
+      editor.mergeWithNext(originalIndex);
+    } else {
+      setMergeDialog({ index: originalIndex, speakers: [currentSpeaker, next.speaker] });
+    }
+  }, [editor]);
+
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(20);
   const [speakerFilter, setSpeakerFilter] = useState("");
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
   const [showChangedOnly, setShowChangedOnly] = useState(false);
   const [densityThreshold, setDensityThreshold] = useState(2);
+  const [maxDensityThreshold, setMaxDensityThreshold] = useState(50);
   const [searchQuery, setSearchQuery] = useState("");
 
   // Build list of speakers
@@ -104,20 +121,35 @@ export default function SegmentEditor({
 
   const UNKNOWN_SPEAKERS = new Set(["UNKNOWN", "UNK", "None", "none", ""]);
 
-  // Compute flagged based on density threshold slider
+  // Compute flagged based on density threshold sliders
   const isFlaggedSeg = (seg: Segment): boolean => {
     if (seg.speaker === "[BREAK]") return false;
     if (UNKNOWN_SPEAKERS.has(seg.speaker)) return true;
     if (seg.speaker === "[remove]") return true;
     const dur = seg.end - seg.start;
-    if (dur > 0 && seg.text.length / dur < densityThreshold) return true;
+    if (dur > 0) {
+      const density = seg.text.length / dur;
+      if (density < densityThreshold) return true;
+      if (density > maxDensityThreshold) return true;
+    }
     return false;
   };
 
-  // Check if a segment differs from its reference
+  // Map originalIndex → position in editedSegments (for positional reference matching).
+  // After deletes, positions shift so references stay aligned.
+  const origToEditedIdx = useMemo(() => {
+    const map = new Map<number, number>();
+    for (let i = 0; i < editor.originalIndices.length; i++) {
+      map.set(editor.originalIndices[i], i);
+    }
+    return map;
+  }, [editor.originalIndices]);
+
+  // Check if a segment differs from its reference (positional match)
   const isChanged = (seg: Segment, origIdx: number) => {
     if (!referenceSegments || seg.speaker === "[BREAK]") return false;
-    const ref = referenceSegments[origIdx];
+    const editedIdx = origToEditedIdx.get(origIdx) ?? origIdx;
+    const ref = referenceSegments[editedIdx];
     return ref != null && ref.text !== seg.text;
   };
 
@@ -160,19 +192,24 @@ export default function SegmentEditor({
 
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor.editedSegments, editor.originalIndices, segments, speakerFilter, showFlaggedOnly, showChangedOnly, showFlags, searchLower, referenceSegments, densityThreshold]);
+  }, [editor.editedSegments, editor.originalIndices, segments, speakerFilter, showFlaggedOnly, showChangedOnly, showFlags, searchLower, referenceSegments, densityThreshold, maxDensityThreshold]);
 
   const totalPages = Math.ceil(displaySegments.length / pageSize);
   const pageSegments = displaySegments.slice(page * pageSize, (page + 1) * pageSize);
 
-  // Flagged count based on current density threshold
+  // Flagged count based on current density thresholds
   const flaggedCount = useMemo(() => {
     return editor.editedSegments.filter(isFlaggedSeg).length;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor.editedSegments, densityThreshold]);
+  }, [editor.editedSegments, densityThreshold, maxDensityThreshold]);
 
   // Reset page when filters change
   useEffect(() => setPage(0), [speakerFilter, showFlaggedOnly, showChangedOnly, searchQuery]);
+
+  // Clamp page when total pages shrinks (e.g. after deleting segments)
+  useEffect(() => {
+    if (totalPages > 0 && page >= totalPages) setPage(totalPages - 1);
+  }, [totalPages, page]);
 
   // Track which segment is currently playing
   const storeAudioPath = useAppStore((s) => s.audioPath);
@@ -227,6 +264,48 @@ export default function SegmentEditor({
     editor.reset(data);
   };
 
+  // Ref for search input focus
+  const searchRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Warn before leaving with unsaved changes
+  useEffect(() => {
+    if (!editor.isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [editor.isDirty]);
+
+  // Keyboard shortcuts: Ctrl+S save, Ctrl+Z undo, Ctrl+F search
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      if (e.key === "s") {
+        e.preventDefault();
+        if (editor.isDirty && !saveMutation.isPending) saveMutation.mutate();
+      } else if (e.key === "z" && !e.shiftKey) {
+        // Only handle undo if focus is NOT in a textarea (let native undo work there)
+        if ((e.target as HTMLElement)?.tagName !== "TEXTAREA" && editor.canUndo) {
+          e.preventDefault();
+          editor.undo();
+        }
+      } else if (e.key === "f") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [editor.isDirty, editor.canUndo, saveMutation]);
+
+  // Auto-scroll to active (playing) segment
+  useEffect(() => {
+    if (activeOrigIdx == null || !scrollRef.current) return;
+    const el = scrollRef.current.querySelector(`[data-orig-idx="${activeOrigIdx}"]`);
+    if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [activeOrigIdx]);
+
   if (!segments) {
     return <div className="p-6 text-muted-foreground text-sm">Loading segments...</div>;
   }
@@ -255,11 +334,15 @@ export default function SegmentEditor({
         changedCount={changedCount}
         densityThreshold={densityThreshold}
         onDensityChange={setDensityThreshold}
+        maxDensityThreshold={maxDensityThreshold}
+        onMaxDensityChange={setMaxDensityThreshold}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
+        searchRef={searchRef}
         onSave={() => saveMutation.mutate()}
         onLoadOriginal={handleLoadOriginal}
         onLoadEdits={versionInfo?.has_validated ? handleLoadEdits : undefined}
+        onUndo={editor.canUndo ? editor.undo : undefined}
         onEstimateTimestamps={missingTimestamps && episodeDuration ? handleEstimateTimestamps : undefined}
         onDeleteFlagged={() => {
           const indices = editor.editedSegments
@@ -270,17 +353,18 @@ export default function SegmentEditor({
         isSaving={saveMutation.isPending}
       />
 
-      <div className="flex-1 overflow-y-auto">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {pageSegments.map(({ segment, originalIndex, displayIndex }) => {
           const isBreak = segment.speaker === "[BREAK]";
-          const ref = referenceSegments?.[originalIndex];
+          const editedIdx = origToEditedIdx.get(originalIndex) ?? originalIndex;
+          const ref = referenceSegments?.[editedIdx];
           return (
+            <div key={`${editorKey}-${originalIndex}`} data-orig-idx={originalIndex}>
             <SegmentRow
-              key={`${editorKey}-${originalIndex}`}
               segment={segment}
               index={displayIndex}
               totalCount={displaySegments.length}
-              isEdited={editor.isDirty && segment !== (segments[originalIndex] ?? segment)}
+              isEdited={editor.isDirty && (originalIndex >= segments.length || segment !== segments[originalIndex])}
               isFlagged={showFlags ? isFlaggedSeg(segment) : false}
               isChanged={isChanged(segment, originalIndex)}
               isActive={activeOrigIdx === originalIndex}
@@ -297,7 +381,10 @@ export default function SegmentEditor({
               onDelete={() => editor.deleteSegment(originalIndex)}
               onInsertBefore={() => editor.insertAfter(originalIndex - 1, { speaker: segment.speaker, text: "", start: segment.start, end: segment.start })}
               onInsertAfter={() => editor.insertAfter(originalIndex, { speaker: segment.speaker, text: "", start: segment.end, end: segment.end })}
+              onMergeNext={() => handleMerge(originalIndex, segment.speaker)}
+              onSplit={(cursorPos) => editor.splitAt(originalIndex, cursorPos)}
             />
+            </div>
           );
         })}
       </div>
@@ -313,6 +400,35 @@ export default function SegmentEditor({
             setPage(0);
           }}
         />
+      )}
+
+      {/* Merge speaker dialog */}
+      {mergeDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-popover border border-border rounded-lg p-4 shadow-lg space-y-3 max-w-xs">
+            <p className="text-sm font-medium">Which speaker for the merged segment?</p>
+            <div className="flex flex-col gap-2">
+              {mergeDialog.speakers.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => {
+                    editor.mergeWithNext(mergeDialog.index, s);
+                    setMergeDialog(null);
+                  }}
+                  className="px-3 py-2 text-sm rounded border border-border bg-secondary hover:bg-accent transition text-left"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setMergeDialog(null)}
+              className="text-xs text-muted-foreground hover:text-foreground transition"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -26,6 +26,7 @@ class EpisodeOut(BaseModel):
     transcribed: bool
     polished: bool
     indexed: bool
+    synthesized: bool
     translations: list[str]
     # raw/validated status
     raw_transcript: bool
@@ -82,6 +83,7 @@ class UnifiedEpisodeOut(BaseModel):
     transcribed: bool = False
     polished: bool = False
     indexed: bool = False
+    synthesized: bool = False
     translations: list[str] = []
     artwork_url: str = ""
     raw_transcript: bool = False

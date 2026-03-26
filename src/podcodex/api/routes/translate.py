@@ -130,6 +130,7 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
             batch_size=req_data.batch_size,
             provider=req_data.provider,
             original_segments=segments,
+            merge=False,  # source segments are already merged on load/upload
             on_batch=on_batch,
         )
 

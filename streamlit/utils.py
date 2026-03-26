@@ -13,7 +13,7 @@ from pathlib import Path
 import streamlit as st
 
 from podcodex.core import AudioPaths
-from constants import DEFAULT_OLLAMA_MODEL
+from podcodex.core.constants import DEFAULT_OLLAMA_MODEL, LLM_PROVIDERS
 
 
 def normalize_path(path: str) -> str:
@@ -51,11 +51,11 @@ def fmt_time(seconds: float) -> str:
 
 # ── LLM provider presets ─────────────────────
 
-PROVIDERS = {
-    "Mistral": {"url": "https://api.mistral.ai/v1", "model": "mistral-small-latest"},
-    "OpenAI": {"url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
-    "Custom": {"url": "", "model": ""},
+# Build Streamlit-friendly dict (label → {url, model}) from centralized registry
+PROVIDERS: dict[str, dict[str, str]] = {
+    v["label"]: {"url": v["url"], "model": v["model"]} for v in LLM_PROVIDERS.values()
 }
+PROVIDERS["Custom"] = {"url": "", "model": ""}
 
 
 def on_provider_change(prefix: str) -> None:

@@ -48,6 +48,7 @@ class EpisodeInfo:
     transcribed: bool = False  # transcript exported (raw or validated)
     polished: bool = False
     indexed: bool = False
+    synthesized: bool = False
     translations: list[str] = field(default_factory=list)
     # raw/validated status per step
     raw_transcript: bool = False
@@ -96,6 +97,7 @@ def _episode_status(stem: str, existing: set[str]) -> dict:
     )
 
     indexed = ".rag_indexed" in existing
+    synthesized = f"{stem}.synthesized.wav" in existing
 
     # Translations: derive from filenames
     langs_validated: set[str] = set()
@@ -121,6 +123,7 @@ def _episode_status(stem: str, existing: set[str]) -> dict:
         "transcribed": transcribed,
         "polished": polished,
         "indexed": indexed,
+        "synthesized": synthesized,
         "translations": sorted(langs_validated | langs_raw),
         "raw_transcript": (
             (transcript_raw and not transcript_val)

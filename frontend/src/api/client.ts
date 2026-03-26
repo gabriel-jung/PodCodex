@@ -2,19 +2,31 @@
 
 import type {
   AppConfig,
+  AssembleRequest,
+  CollectionInfo,
   CreateFromRSSResponse,
   DownloadResult,
   Episode,
+  ExtractVoicesRequest,
+  GenerateRequest,
+  GeneratedSegment,
   HealthResponse,
+  IndexRequest,
+  IndexStatus,
+  PipelineConfig,
   PodcastSearchResult,
   PolishRequest,
+  SearchRequest,
+  SearchResult,
   Segment,
   ShowMeta,
   ShowSummary,
+  SynthesisStatus,
   TaskResponse,
   TranscribeRequest,
   TranslateRequest,
   VersionInfo,
+  VoiceSample,
 } from "./types";
 
 const BASE = "";  // proxied by Vite in dev, same origin in prod
@@ -35,6 +47,7 @@ export const getHealth = () => json<HealthResponse>("/api/health");
 // ── Config ──────────────────────────────────
 
 export const getConfig = () => json<AppConfig>("/api/config");
+export const getPipelineConfig = () => json<PipelineConfig>("/api/pipeline-config");
 
 export const updateConfig = (cfg: AppConfig) =>
   json<AppConfig>("/api/config", {
@@ -271,4 +284,76 @@ export const audioFileUrl = (path: string) =>
 export const deleteAudioFile = (path: string) =>
   json<{ status: string; path: string }>(`/api/audio/file?path=${encodeURIComponent(path)}`, {
     method: "DELETE",
+  });
+
+// ── Synthesize ─────────────────────────────
+
+export const getSynthesisStatus = (audioPath: string) =>
+  json<SynthesisStatus>(`/api/synthesize/status?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const startExtractVoices = (req: ExtractVoicesRequest) =>
+  json<TaskResponse>("/api/synthesize/extract-voices", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+export const getVoiceSamples = (audioPath: string) =>
+  json<Record<string, VoiceSample[]>>(`/api/synthesize/voice-samples?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const startGenerateTTS = (req: GenerateRequest) =>
+  json<TaskResponse>("/api/synthesize/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+export const getGeneratedSegments = (audioPath: string) =>
+  json<GeneratedSegment[]>(`/api/synthesize/generated-segments?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const assembleEpisode = (req: AssembleRequest) =>
+  json<{ path: string; duration: number }>("/api/synthesize/assemble", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+// ── Index ──────────────────────────────────
+
+export const getIndexConfig = () =>
+  json<{
+    models: Record<string, { label: string; description: string }>;
+    chunking_strategies: Record<string, string>;
+    defaults: { model: string; chunking: string; chunk_size: number; threshold: number };
+  }>("/api/index/config");
+
+export const getIndexStatus = (audioPath: string, show: string) =>
+  json<{ combinations: IndexStatus[]; db_exists: boolean }>(
+    `/api/index/status?audio_path=${encodeURIComponent(audioPath)}&show=${encodeURIComponent(show)}`,
+  );
+
+export const getIndexCollections = (audioPath: string) =>
+  json<CollectionInfo[]>(`/api/index/collections?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const startIndex = (req: IndexRequest) =>
+  json<TaskResponse>("/api/index/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+// ── Search ─────────────────────────────────
+
+export const getSearchConfig = () =>
+  json<{
+    models: Record<string, { label: string; description: string }>;
+    chunking_strategies: Record<string, string>;
+    defaults: { model: string; chunking: string; alpha: number; top_k: number };
+  }>("/api/search/config");
+
+export const searchQuery = (req: SearchRequest) =>
+  json<SearchResult[]>("/api/search/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
   });

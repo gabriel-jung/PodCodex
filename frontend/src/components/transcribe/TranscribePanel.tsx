@@ -1,19 +1,20 @@
 import { useState, useRef } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Episode, ShowMeta } from "@/api/types";
 import {
   getSegments,
   getSegmentsRaw,
+  getPipelineConfig,
   getTranscribeVersionInfo,
   saveSegments,
   startTranscribe,
   uploadTranscript,
 } from "@/api/client";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, ChevronRight, Upload, Settings2 } from "lucide-react";
+import { Upload, Settings2 } from "lucide-react";
 import HelpLabel from "@/components/common/HelpLabel";
 import SegmentEditor from "@/components/editor/SegmentEditor";
-import ProgressBar from "@/components/editor/ProgressBar";
+import PipelinePanel from "@/components/common/PipelinePanel";
 import SpeakerMapEditor from "./SpeakerMapEditor";
 
 interface TranscribePanelProps {
@@ -26,6 +27,12 @@ export default function TranscribePanel({ episode, showMeta }: TranscribePanelPr
   const [taskId, setTaskId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(!episode.transcribed);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { data: pipelineConfig } = useQuery({
+    queryKey: ["pipeline-config"],
+    queryFn: getPipelineConfig,
+    staleTime: Infinity,
+  });
 
   // Form state
   const [modelSize, setModelSize] = useState("large-v3");
@@ -74,64 +81,40 @@ export default function TranscribePanel({ episode, showMeta }: TranscribePanelPr
     setExpanded(false);
   };
 
-  if (!episode.audio_path) {
-    return (
-      <div className="p-6 text-muted-foreground">
-        Episode not downloaded yet. Download the audio file to start transcription.
-      </div>
-    );
-  }
-
   return (
-    <div className="flex flex-col h-full">
-      {/* Step header */}
-      <div className="px-4 pt-3 pb-2 border-b border-border">
-        <h3 className="text-sm font-semibold">Transcribe</h3>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Convert audio to text using Whisper with optional speaker diarization.
-        </p>
-      </div>
-
-      {/* Transcription controls — collapsible when already transcribed */}
-      {!taskId && (
-        <div className="border-b border-border">
-          {episode.transcribed ? (
-            <button
-              onClick={() => setExpanded(!expanded)}
-              className="w-full px-4 py-2 flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition"
-            >
-              {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-              <span className="font-medium">Re-run transcription</span>
-            </button>
-          ) : (
-            <div className="px-4 pt-3 pb-1">
-              <h4 className="text-sm font-medium">Transcription settings</h4>
-            </div>
-          )}
-
-          {expanded && (
-            <TranscribeForm
-              modelSize={modelSize} setModelSize={setModelSize}
-              language={language} setLanguage={setLanguage}
-              batchSize={batchSize} setBatchSize={setBatchSize}
-              diarize={diarize} setDiarize={setDiarize}
-              hfToken={hfToken} setHfToken={setHfToken}
-              numSpeakers={numSpeakers} setNumSpeakers={setNumSpeakers}
-              onRun={() => startMutation.mutate()}
-              onUpload={() => fileInputRef.current?.click()}
-              isPending={startMutation.isPending}
-              isUploading={uploadMutation.isPending}
-              error={startMutation.isError ? (startMutation.error as Error).message : uploadMutation.isError ? (uploadMutation.error as Error).message : null}
-              showOverwriteWarning={episode.transcribed}
-            />
-          )}
+    <PipelinePanel
+      title="Transcribe"
+      description="Turn audio into text and identify who is speaking."
+      prerequisite={!episode.audio_path ? "Download the audio file first before transcribing." : undefined}
+      done={episode.transcribed}
+      expanded={expanded}
+      onToggle={() => setExpanded(!expanded)}
+      rerunLabel="Re-run transcription"
+      settingsLabel="Transcription settings"
+      taskId={taskId}
+      onTaskComplete={handleComplete}
+      emptyMessage="No transcript yet. Run the transcription pipeline to get started."
+      controls={
+        <>
+          <TranscribeForm
+            modelSize={modelSize} setModelSize={setModelSize}
+            language={language} setLanguage={setLanguage}
+            batchSize={batchSize} setBatchSize={setBatchSize}
+            diarize={diarize} setDiarize={setDiarize}
+            hfToken={hfToken} setHfToken={setHfToken}
+            numSpeakers={numSpeakers} setNumSpeakers={setNumSpeakers}
+            whisperModels={pipelineConfig?.whisper_models}
+            onRun={() => startMutation.mutate()}
+            onUpload={() => fileInputRef.current?.click()}
+            isPending={startMutation.isPending}
+            isUploading={uploadMutation.isPending}
+            error={startMutation.isError ? (startMutation.error as Error).message : uploadMutation.isError ? (uploadMutation.error as Error).message : null}
+            showOverwriteWarning={episode.transcribed}
+          />
           <input ref={fileInputRef} type="file" accept=".json" onChange={handleFileUpload} className="hidden" />
-        </div>
-      )}
-
-      {/* Progress */}
-      {taskId && <ProgressBar taskId={taskId} onComplete={handleComplete} />}
-
+        </>
+      }
+    >
       {/* Speaker map */}
       {episode.transcribed && !taskId && (
         <SpeakerMapEditor
@@ -158,14 +141,7 @@ export default function TranscribePanel({ episode, showMeta }: TranscribePanelPr
           speakers={showMeta?.speakers}
         />
       )}
-
-      {/* Not transcribed yet, controls collapsed */}
-      {!episode.transcribed && !expanded && !taskId && (
-        <div className="p-6 text-muted-foreground">
-          No transcript yet. Run the transcription pipeline to get started.
-        </div>
-      )}
-    </div>
+    </PipelinePanel>
   );
 }
 
@@ -176,9 +152,11 @@ function TranscribeForm({
   diarize, setDiarize,
   hfToken, setHfToken,
   numSpeakers, setNumSpeakers,
+  whisperModels,
   onRun, onUpload, isPending, isUploading, error, showOverwriteWarning,
 }: {
   modelSize: string; setModelSize: (v: string) => void;
+  whisperModels?: Record<string, string>;
   language: string; setLanguage: (v: string) => void;
   batchSize: number; setBatchSize: (v: number) => void;
   diarize: boolean; setDiarize: (v: boolean) => void;
@@ -192,57 +170,63 @@ function TranscribeForm({
 
   return (
     <div className="px-4 pb-3 space-y-4">
-      {/* ── Transcription ── */}
-      <div className="space-y-3">
-        <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Transcription</h5>
-        <div className="grid grid-cols-2 gap-3 max-w-lg text-sm">
-          <HelpLabel label="Model" help="Whisper model size. Larger models are more accurate but slower. large-v3 is recommended for best quality." />
-          <select
-            value={modelSize}
-            onChange={(e) => setModelSize(e.target.value)}
-            className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm"
-          >
-            {["large-v3", "medium", "small", "base", "tiny"].map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
+      {/* ── Transcription + Speaker identification — side by side on wide screens ── */}
+      <div className="flex flex-col lg:flex-row gap-6">
+        {/* Left: Transcription */}
+        <div className="space-y-3 flex-1">
+          <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Transcription</h5>
+          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm items-center">
+            <HelpLabel label="Model" help="The speech recognition model. Bigger models understand speech better (fewer mistakes) but take longer and need a more powerful GPU." />
+            <select
+              value={modelSize}
+              onChange={(e) => setModelSize(e.target.value)}
+              className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm"
+            >
+              {whisperModels
+                ? Object.entries(whisperModels).map(([key, desc]) => (
+                    <option key={key} value={key} title={desc}>{key} — {desc}</option>
+                  ))
+                : <option value={modelSize}>{modelSize}</option>
+              }
+            </select>
 
-          <HelpLabel label="Language" help="Audio language. Leave empty to auto-detect. Specifying it improves accuracy and speed." />
-          <input
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            placeholder="auto-detect"
-            className="input py-1 text-sm"
-          />
-        </div>
-      </div>
-
-      {/* ── Speaker diarization ── */}
-      <div className="space-y-3 border-t border-border/50 pt-3">
-        <div className="flex items-center gap-3">
-          <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Speaker diarization</h5>
-          <label className="flex items-center gap-1.5 cursor-pointer">
+            <HelpLabel label="Language" help="ISO code of the spoken language (e.g. fr, en, de). Leave empty to auto-detect. Setting it improves accuracy and enables word-level alignment." />
             <input
-              type="checkbox"
-              checked={diarize}
-              onChange={(e) => setDiarize(e.target.checked)}
-              className="accent-primary"
-            />
-            <span className="text-xs text-muted-foreground">Enabled</span>
-          </label>
-        </div>
-
-        {diarize && (
-          <div className="grid grid-cols-2 gap-3 max-w-lg text-sm">
-            <HelpLabel label="Num speakers" help="Expected number of speakers. Leave empty to auto-detect. Setting this improves diarization when you know the count." />
-            <input
-              value={numSpeakers}
-              onChange={(e) => setNumSpeakers(e.target.value)}
-              placeholder="auto-detect"
-              className="input py-1 text-sm w-20"
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              placeholder="e.g. fr, en, de"
+              className="input py-1 text-sm"
             />
           </div>
-        )}
+        </div>
+
+        {/* Right: Speaker identification */}
+        <div className="space-y-3 flex-1 lg:border-l lg:border-border lg:pl-6">
+          <div className="flex items-center gap-3">
+            <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Speaker identification</h5>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={diarize}
+                onChange={(e) => setDiarize(e.target.checked)}
+                className="accent-primary"
+              />
+              <span className="text-xs text-muted-foreground">Enabled</span>
+            </label>
+          </div>
+
+          {diarize && (
+            <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm items-center">
+              <HelpLabel label="Num speakers" help="How many different people are talking (e.g. 2 for an interview). Leave empty and it will guess. Filling this in helps it tell speakers apart more reliably." />
+              <input
+                value={numSpeakers}
+                onChange={(e) => setNumSpeakers(e.target.value)}
+                placeholder="auto-detect"
+                className="input py-1 text-sm w-20"
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Advanced ── */}
@@ -256,8 +240,8 @@ function TranscribeForm({
         </button>
 
         {showAdvanced && (
-          <div className="grid grid-cols-2 gap-3 max-w-lg text-sm pl-3 border-l-2 border-border">
-            <HelpLabel label="Batch size" help="Number of audio chunks processed in parallel. Higher values use more VRAM but are faster. Reduce if you get out-of-memory errors." />
+          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center text-sm pl-3 border-l-2 border-border">
+            <HelpLabel label="Batch size" help="How many audio chunks are processed at the same time. Higher = faster but uses more GPU memory. Lower this if you get out-of-memory errors." />
             <input
               type="number"
               value={batchSize}
@@ -268,7 +252,7 @@ function TranscribeForm({
 
             {diarize && (
               <>
-                <HelpLabel label="HF token" help="HuggingFace API token for pyannote diarization models. Uses the HF_TOKEN environment variable if left empty." />
+                <HelpLabel label="HF token" help="A HuggingFace access token, needed to download the speaker detection model. Get one free at huggingface.co/settings/tokens. If left empty, it looks for a HF_TOKEN environment variable." />
                 <input
                   type="password"
                   value={hfToken}

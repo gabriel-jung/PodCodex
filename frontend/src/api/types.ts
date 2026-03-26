@@ -40,6 +40,7 @@ export interface Episode {
   transcribed: boolean;
   polished: boolean;
   indexed: boolean;
+  synthesized: boolean;
   translations: string[];
   artwork_url: string;
   raw_transcript: boolean;
@@ -118,4 +119,125 @@ export interface TranslateRequest {
   source_lang?: string;
   target_lang?: string;
   batch_size?: number;
+}
+
+// ── Pipeline config (from Python constants) ─
+
+export interface LLMProviderSpec {
+  url: string;
+  model: string;
+  label: string;
+}
+
+export interface PipelineConfig {
+  whisper_models: Record<string, string>;
+  default_whisper_model: string;
+  tts_model_sizes: Record<string, string>;
+  default_tts_model_size: string;
+  assemble_strategies: Record<string, string>;
+  llm_providers: Record<string, LLMProviderSpec>;
+  default_ollama_model: string;
+  default_source_lang: string;
+  default_target_lang: string;
+}
+
+// ── Synthesize ─────────────────────────────
+
+export interface ExtractVoicesRequest {
+  audio_path: string;
+  output_dir?: string | null;
+  min_duration?: number | null;
+  max_duration?: number | null;
+  top_k?: number;
+}
+
+export interface GenerateRequest {
+  audio_path: string;
+  output_dir?: string | null;
+  model_size?: string;
+  language?: string;
+  source_lang?: string | null;
+  max_chunk_duration?: number;
+}
+
+export interface AssembleRequest {
+  audio_path: string;
+  output_dir?: string | null;
+  strategy?: string;
+  silence_duration?: number;
+}
+
+export interface VoiceSample {
+  file: string;
+  duration: number;
+  text: string;
+}
+
+export interface GeneratedSegment {
+  speaker: string;
+  text: string;
+  start: number;
+  end: number;
+  audio_file: string;
+  duration: number;
+}
+
+export interface SynthesisStatus {
+  voice_samples_extracted: boolean;
+  tts_segments_generated: boolean;
+  synthesized: boolean;
+}
+
+// ── Index ──────────────────────────────────
+
+export interface IndexRequest {
+  audio_path: string;
+  output_dir?: string | null;
+  show: string;
+  source?: string;
+  model_keys?: string[];
+  chunkings?: string[];
+  chunk_size?: number;
+  threshold?: number;
+  overwrite?: boolean;
+}
+
+export interface IndexStatus {
+  model: string;
+  chunking: string;
+  indexed: boolean;
+  chunk_count: number;
+}
+
+export interface CollectionInfo {
+  name: string;
+  model: string;
+  chunker: string;
+  episode_count: number;
+}
+
+// ── Search ─────────────────────────────────
+
+export interface SearchRequest {
+  query: string;
+  audio_path: string;
+  output_dir?: string | null;
+  show: string;
+  model?: string;
+  chunking?: string;
+  top_k?: number;
+  alpha?: number;
+  episode?: string | null;
+  speaker?: string | null;
+}
+
+export interface SearchResult {
+  text: string;
+  episode: string;
+  speaker: string;
+  start: number;
+  end: number;
+  score: number;
+  source: string;
+  speakers: { speaker: string; text: string; start: number; end: number }[] | null;
 }

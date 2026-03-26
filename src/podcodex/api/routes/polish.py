@@ -117,6 +117,7 @@ async def start_polish(req: PolishRequest) -> TaskResponse:
             provider=req_data.provider,
             engine=req_data.engine,
             original_segments=segments,
+            merge=False,  # transcript is already merged on load/upload
             on_batch=on_batch,
         )
 

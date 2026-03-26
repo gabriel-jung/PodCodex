@@ -8,6 +8,9 @@ import { Button } from "@/components/ui/button";
 import TranscribePanel from "@/components/transcribe/TranscribePanel";
 import PolishPanel from "@/components/polish/PolishPanel";
 import TranslatePanel from "@/components/translate/TranslatePanel";
+import SynthesizePanel from "@/components/synthesize/SynthesizePanel";
+import IndexPanel from "@/components/index/IndexPanel";
+import SearchPanel from "@/components/search/SearchPanel";
 import { formatDuration, formatDate } from "@/lib/utils";
 import {
   ArrowLeft,
@@ -78,6 +81,7 @@ export default function EpisodePage({
         transcribed: false,
         polished: false,
         indexed: false,
+        synthesized: false,
         translations: [] as string[],
         artwork_url: "",
         raw_transcript: false,
@@ -114,6 +118,7 @@ export default function EpisodePage({
       case "transcribe": return episode.transcribed;
       case "polish": return episode.polished;
       case "translate": return episode.translations.length > 0;
+      case "synthesize": return episode.synthesized;
       case "index": return episode.indexed;
       default: return false;
     }
@@ -286,27 +291,13 @@ function StepContent({
       return <TranslatePanel episode={episode} showMeta={showMeta} />;
 
     case "synthesize":
-      return (
-        <div className="p-6 text-muted-foreground">
-          Synthesis pipeline — coming soon.
-        </div>
-      );
+      return <SynthesizePanel episode={episode} showMeta={showMeta} />;
 
     case "index":
-      return (
-        <div className="p-6 text-muted-foreground">
-          {episode.indexed
-            ? "Episode is indexed and searchable."
-            : "Episode not yet indexed."}
-        </div>
-      );
+      return <IndexPanel episode={episode} showMeta={showMeta} />;
 
     case "search":
-      return (
-        <div className="p-6 text-muted-foreground">
-          Search — coming soon.
-        </div>
-      );
+      return <SearchPanel episode={episode} showMeta={showMeta} />;
   }
 }
 
@@ -319,6 +310,7 @@ function PipelineStatus({ episode }: { episode: Episode }) {
       label: "Translated",
       done: episode.translations.length > 0,
     },
+    { key: "synthesized", label: "Synthesized", done: episode.synthesized },
     { key: "indexed", label: "Indexed", done: episode.indexed },
   ];
 
