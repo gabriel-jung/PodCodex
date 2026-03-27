@@ -20,6 +20,7 @@ import type {
   SearchResult,
   Segment,
   ShowMeta,
+  SyncRequest,
   ShowSummary,
   SynthesisStatus,
   TaskResponse,
@@ -97,7 +98,7 @@ export const getEpisodes = (folder: string) =>
 // ── RSS actions ─────────────────────────────
 
 export const refreshRSS = (folder: string) =>
-  json<unknown>(`/api/shows/${encodeURIComponent(folder)}/rss/fetch`, {
+  json<{ status: string }>(`/api/shows/${encodeURIComponent(folder)}/rss/fetch`, {
     method: "POST",
   });
 
@@ -183,6 +184,13 @@ export const startPolish = (req: PolishRequest) =>
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
+  });
+
+export const skipPolish = (audioPath: string) =>
+  json<{ status: string; count: number }>("/api/polish/skip", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ audio_path: audioPath }),
   });
 
 export const getPolishManualPrompts = (params: {
@@ -357,3 +365,39 @@ export const searchQuery = (req: SearchRequest) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
+
+export const syncToQdrant = (req: SyncRequest) =>
+  json<{ task_id: string }>("/api/search/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+export const exactSearch = (req: SearchRequest) =>
+  json<SearchResult[]>("/api/search/exact", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+export const randomQuote = (req: {
+  folder?: string | null;
+  audio_path?: string | null;
+  show: string;
+  model?: string;
+  chunking?: string;
+  episode?: string | null;
+  speaker?: string | null;
+}) =>
+  json<SearchResult | null>("/api/search/random", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+export const getIndexStats = (folder: string, show: string = "") =>
+  json<{
+    collections: { collection: string; model: string; chunking: string; episodes: number; chunks: number }[];
+    total_episodes: number;
+    total_chunks: number;
+  }>(`/api/search/stats?folder=${encodeURIComponent(folder)}&show=${encodeURIComponent(show)}`);

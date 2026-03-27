@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 
 from podcodex.api.schemas import EpisodeOut, ShowMeta, UnifiedEpisodeOut
 from podcodex.ingest.folder import EpisodeInfo, scan_folder
-from podcodex.ingest.rss import episode_stem, load_feed_cache
+from podcodex.ingest.rss import episode_stem, load_episode_meta, load_feed_cache
 from podcodex.ingest.show import ShowMeta as _ShowMeta
 from podcodex.ingest.show import load_show_meta, save_show_meta
 
@@ -134,20 +134,21 @@ async def unified_episodes(show_folder: str) -> list[dict]:
             }
         )
 
-    # Local-only episodes (no RSS match)
+    # Local-only episodes (no RSS match) — restore cached RSS metadata if available
     for ep in local.values():
         if ep.stem in seen_stems:
             continue
+        meta = load_episode_meta(ep.output_dir) if ep.output_dir else None
         result.append(
             {
-                "id": ep.stem,
-                "title": ep.title or ep.stem,
+                "id": meta.guid if meta else ep.stem,
+                "title": (meta.title if meta else None) or ep.title or ep.stem,
                 "stem": ep.stem,
-                "pub_date": None,
-                "description": "",
-                "audio_url": None,
-                "duration": 0,
-                "episode_number": None,
+                "pub_date": meta.pub_date if meta else None,
+                "description": (meta.description or "") if meta else "",
+                "audio_url": (meta.audio_url or None) if meta else None,
+                "duration": meta.duration if meta else 0,
+                "episode_number": meta.episode_number if meta else None,
                 "audio_path": str(ep.audio_path) if ep.audio_path else None,
                 "downloaded": bool(ep.audio_path),
                 "transcribed": ep.transcribed,
@@ -155,7 +156,7 @@ async def unified_episodes(show_folder: str) -> list[dict]:
                 "indexed": ep.indexed,
                 "synthesized": ep.synthesized,
                 "translations": ep.translations,
-                "artwork_url": "",
+                "artwork_url": (meta.artwork_url or "") if meta else "",
                 "raw_transcript": ep.raw_transcript,
                 "validated_transcript": ep.validated_transcript,
             }

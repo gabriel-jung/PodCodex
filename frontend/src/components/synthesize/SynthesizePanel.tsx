@@ -61,7 +61,7 @@ export default function SynthesizePanel({ episode, showMeta }: SynthesizePanelPr
     enabled: !!episode.audio_path && !!status?.tts_segments_generated,
   });
 
-  const invalidate = useCallback(() => {
+  const refreshQueries =useCallback(() => {
     refetchStatus();
     queryClient.invalidateQueries({ queryKey: ["synthesize"] });
     queryClient.invalidateQueries({ queryKey: ["episodes"] });
@@ -92,7 +92,7 @@ export default function SynthesizePanel({ episode, showMeta }: SynthesizePanelPr
         strategy: assembleStrategy,
       }),
     onSuccess: () => {
-      invalidate();
+      refreshQueries();
       setExpanded(false);
     },
   });
@@ -306,10 +306,10 @@ export default function SynthesizePanel({ episode, showMeta }: SynthesizePanelPr
     >
       {/* Progress bars (when running) */}
       {extractTaskId && (
-        <ProgressBar taskId={extractTaskId} onComplete={() => { invalidate(); setExtractTaskId(null); }} />
+        <ProgressBar taskId={extractTaskId} onComplete={() => { refreshQueries(); setExtractTaskId(null); }} />
       )}
       {generateTaskId && (
-        <ProgressBar taskId={generateTaskId} onComplete={() => { invalidate(); setGenerateTaskId(null); }} />
+        <ProgressBar taskId={generateTaskId} onComplete={() => { refreshQueries(); setGenerateTaskId(null); }} />
       )}
 
       {/* Result — shown when synthesized and controls collapsed */}

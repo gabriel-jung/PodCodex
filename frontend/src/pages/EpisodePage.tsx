@@ -297,7 +297,7 @@ function StepContent({
       return <IndexPanel episode={episode} showMeta={showMeta} />;
 
     case "search":
-      return <SearchPanel episode={episode} showMeta={showMeta} />;
+      return <SearchPanel scope="episode" episode={episode} showMeta={showMeta} />;
   }
 }
 

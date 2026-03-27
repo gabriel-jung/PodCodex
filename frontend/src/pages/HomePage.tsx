@@ -6,12 +6,13 @@ import {
   listShows,
   createFromRSS,
   registerShow,
+  refreshRSS,
   searchPodcasts,
 } from "@/api/client";
 import type { PodcastSearchResult, ShowSummary } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import FolderPicker from "@/components/common/FolderPicker";
-import { Plus, FolderOpen, Search, FileAudio } from "lucide-react";
+import { Plus, FolderOpen, Search, FileAudio, RefreshCw } from "lucide-react";
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -24,6 +25,18 @@ export default function HomePage() {
   });
 
   const [addMode, setAddMode] = useState<"rss" | "import" | "file" | null>(null);
+
+  const rssShows = shows?.filter((s) => s.has_rss) ?? [];
+
+  const refreshAllMutation = useMutation({
+    mutationFn: async () => {
+      await Promise.allSettled(rssShows.map((s) => refreshRSS(s.path)));
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      queryClient.invalidateQueries({ queryKey: ["episodes"] });
+    },
+  });
 
   const goToShow = (folder: string) =>
     navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } });
@@ -44,6 +57,18 @@ export default function HomePage() {
             <p className="text-sm text-muted-foreground mt-1">Podcast processing pipeline</p>
           </div>
           <div className="flex gap-2">
+            {rssShows.length > 0 && (
+              <Button
+                onClick={() => refreshAllMutation.mutate()}
+                disabled={refreshAllMutation.isPending}
+                variant="outline"
+                size="sm"
+                title="Refresh RSS feeds for all shows"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${refreshAllMutation.isPending ? "animate-spin" : ""}`} />
+                {refreshAllMutation.isPending ? "Refreshing..." : "Update feeds"}
+              </Button>
+            )}
             <Button onClick={() => setAddMode("rss")} size="sm"><Plus /> Add podcast</Button>
             <Button onClick={() => setAddMode("import")} variant="outline" size="sm">
               <FolderOpen /> Import folder

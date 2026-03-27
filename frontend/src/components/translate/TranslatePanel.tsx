@@ -38,7 +38,7 @@ export default function TranslatePanel({ episode, showMeta }: TranslatePanelProp
     batchSize: 10,
   });
   const [targetLang, setTargetLang] = useState("English");
-  const [selectedLang, setSelectedLang] = useState(episode.translations[0] || "");
+  const [editingLang, setEditingLang] = useState(episode.translations[0] || "");
 
   const { data: languages } = useQuery({
     queryKey: ["translate", "languages", episode.audio_path],
@@ -73,16 +73,16 @@ export default function TranslatePanel({ episode, showMeta }: TranslatePanelProp
     onSuccess: (data) => setTaskId(data.task_id),
   });
 
-  const invalidate = () => {
+  const refreshQueries =() => {
     queryClient.invalidateQueries({ queryKey: ["translate"] });
     queryClient.invalidateQueries({ queryKey: ["episodes"] });
   };
 
   const handleComplete = () => {
-    invalidate();
+    refreshQueries();
     setTaskId(null);
     setExpanded(false);
-    setSelectedLang(targetLang.toLowerCase().replace(/\s+/g, "_"));
+    setEditingLang(targetLang.toLowerCase().replace(/\s+/g, "_"));
   };
 
   const hasTranslations = (languages?.length ?? 0) > 0;
@@ -105,8 +105,8 @@ export default function TranslatePanel({ episode, showMeta }: TranslatePanelProp
           {hasTranslations && !expanded && (
             <div className="px-4 pb-2 flex justify-end">
               <select
-                value={selectedLang}
-                onChange={(e) => setSelectedLang(e.target.value)}
+                value={editingLang}
+                onChange={(e) => setEditingLang(e.target.value)}
                 className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm"
               >
                 {languages!.map((lang) => (
@@ -148,9 +148,9 @@ export default function TranslatePanel({ episode, showMeta }: TranslatePanelProp
                     corrections,
                   }),
                 onApplied: () => {
-                  invalidate();
+                  refreshQueries();
                   setExpanded(false);
-                  setSelectedLang(targetLang.toLowerCase().replace(/\s+/g, "_"));
+                  setEditingLang(targetLang.toLowerCase().replace(/\s+/g, "_"));
                 },
               }}
             />
@@ -158,15 +158,15 @@ export default function TranslatePanel({ episode, showMeta }: TranslatePanelProp
         </>
       }
     >
-      {hasTranslations && selectedLang && !taskId && !expanded && (
+      {hasTranslations && editingLang && !taskId && !expanded && (
         <SegmentEditor
-          editorKey={`translate-${selectedLang}`}
+          editorKey={`translate-${editingLang}`}
           audioPath={episode.audio_path ?? undefined}
           episodeDuration={episode.duration}
-          loadSegments={() => getTranslateSegments(episode.audio_path!, selectedLang)}
-          loadRawSegments={() => getTranslateSegmentsRaw(episode.audio_path!, selectedLang)}
-          loadVersionInfo={() => getTranslateVersionInfo(episode.audio_path!, selectedLang)}
-          saveSegments={(segs) => saveTranslateSegments(episode.audio_path!, selectedLang, segs)}
+          loadSegments={() => getTranslateSegments(episode.audio_path!, editingLang)}
+          loadRawSegments={() => getTranslateSegmentsRaw(episode.audio_path!, editingLang)}
+          loadVersionInfo={() => getTranslateVersionInfo(episode.audio_path!, editingLang)}
+          saveSegments={(segs) => saveTranslateSegments(episode.audio_path!, editingLang, segs)}
           showDelete
           showFlags={false}
           showSpeaker

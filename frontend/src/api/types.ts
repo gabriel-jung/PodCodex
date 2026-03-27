@@ -220,7 +220,8 @@ export interface CollectionInfo {
 
 export interface SearchRequest {
   query: string;
-  audio_path: string;
+  audio_path?: string | null;
+  folder?: string | null;
   output_dir?: string | null;
   show: string;
   model?: string;
@@ -229,6 +230,13 @@ export interface SearchRequest {
   alpha?: number;
   episode?: string | null;
   speaker?: string | null;
+}
+
+export interface SyncRequest {
+  folder: string;
+  show: string;
+  overwrite?: boolean;
+  qdrant_url?: string | null;
 }
 
 export interface SearchResult {

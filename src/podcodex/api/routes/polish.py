@@ -132,6 +132,28 @@ async def start_polish(req: PolishRequest) -> TaskResponse:
     return TaskResponse(task_id=info.task_id)
 
 
+# ── Skip polish ──────────────────────────────────────────
+
+
+class SkipRequest(BaseModel):
+    audio_path: str
+    output_dir: str | None = None
+
+
+@router.post("/skip")
+async def skip_polish(req: SkipRequest) -> dict:
+    """Copy transcript segments directly to polished output (skip LLM)."""
+    from podcodex.core.polish import save_polished_raw
+    from podcodex.core.transcribe import load_transcript
+
+    segments = load_transcript(req.audio_path, output_dir=req.output_dir)
+    if not segments:
+        raise HTTPException(404, "No transcript found to copy")
+
+    save_polished_raw(req.audio_path, segments, output_dir=req.output_dir)
+    return {"status": "saved", "count": len(segments)}
+
+
 # ── Manual mode ──────────────────────────────────────────
 
 

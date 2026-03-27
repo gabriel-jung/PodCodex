@@ -6,6 +6,7 @@ import {
   getIndexStatus,
   startIndex,
 } from "@/api/client";
+import { getShowName } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Settings2 } from "lucide-react";
 import HelpLabel from "@/components/common/HelpLabel";
@@ -21,7 +22,7 @@ export default function IndexPanel({ episode, showMeta }: IndexPanelProps) {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(!episode.indexed);
 
-  const showName = showMeta?.name || episode.audio_path?.split("/").slice(-2, -1)[0] || "show";
+  const showName = getShowName(showMeta, episode.audio_path);
 
   const { data: config } = useQuery({
     queryKey: ["index", "config"],
@@ -42,14 +43,14 @@ export default function IndexPanel({ episode, showMeta }: IndexPanelProps) {
   const [overwrite, setOverwrite] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const invalidate = useCallback(() => {
+  const refreshQueries =useCallback(() => {
     refetchStatus();
     queryClient.invalidateQueries({ queryKey: ["index"] });
     queryClient.invalidateQueries({ queryKey: ["episodes"] });
   }, [queryClient, refetchStatus]);
 
   const handleComplete = () => {
-    invalidate();
+    refreshQueries();
     setTaskId(null);
     setExpanded(false);
   };

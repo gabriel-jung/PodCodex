@@ -8,10 +8,13 @@ import {
   savePolishSegments,
   getSegments,
   startPolish,
+  skipPolish,
   getPolishManualPrompts,
   applyPolishManual,
 } from "@/api/client";
 import { buildDefaultContext } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { SkipForward } from "lucide-react";
 import SegmentEditor from "@/components/editor/SegmentEditor";
 import PipelinePanel from "@/components/common/PipelinePanel";
 import HelpLabel from "@/components/common/HelpLabel";
@@ -58,13 +61,21 @@ export default function PolishPanel({ episode, showMeta }: PolishPanelProps) {
     onSuccess: (data) => setTaskId(data.task_id),
   });
 
-  const invalidate = () => {
+  const skipMutation = useMutation({
+    mutationFn: () => skipPolish(episode.audio_path!),
+    onSuccess: () => {
+      refreshQueries();
+      setExpanded(false);
+    },
+  });
+
+  const refreshQueries =() => {
     queryClient.invalidateQueries({ queryKey: ["polish"] });
     queryClient.invalidateQueries({ queryKey: ["episodes"] });
   };
 
   const handleComplete = () => {
-    invalidate();
+    refreshQueries();
     setTaskId(null);
     setExpanded(false);
   };
@@ -82,42 +93,63 @@ export default function PolishPanel({ episode, showMeta }: PolishPanelProps) {
       onTaskComplete={handleComplete}
       emptyMessage="Polish pipeline not yet run for this episode."
       controls={
-        <LLMControls
-          config={config}
-          onChange={(patch) => setConfig({ ...config, ...patch })}
-          onRun={() => startMutation.mutate()}
-          isPending={startMutation.isPending}
-          error={startMutation.isError ? (startMutation.error as Error).message : null}
-          runLabel="Run polish"
-          extraFields={
-            <>
-              <HelpLabel label="Engine" help="Which transcription engine produced the text. Affects the correction prompt — Whisper and Voxtral make different kinds of errors." />
-              <select
-                value={engine}
-                onChange={(e) => setEngine(e.target.value)}
-                className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm"
+        <>
+          <LLMControls
+            config={config}
+            onChange={(patch) => setConfig({ ...config, ...patch })}
+            onRun={() => startMutation.mutate()}
+            isPending={startMutation.isPending}
+            error={startMutation.isError ? (startMutation.error as Error).message : null}
+            runLabel="Run polish"
+            extraFields={
+              <>
+                <HelpLabel label="Engine" help="Which transcription engine produced the text. Affects the correction prompt — Whisper and Voxtral make different kinds of errors." />
+                <select
+                  value={engine}
+                  onChange={(e) => setEngine(e.target.value)}
+                  className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm"
+                >
+                  <option value="Whisper">Whisper</option>
+                  <option value="Voxtral">Voxtral</option>
+                </select>
+              </>
+            }
+            manualPrompts={{
+              generate: () =>
+                getPolishManualPrompts({
+                  audio_path: episode.audio_path!,
+                  context: config.context,
+                  source_lang: config.sourceLang,
+                  engine,
+                }),
+              apply: (corrections) =>
+                applyPolishManual({ audio_path: episode.audio_path!, corrections }),
+              onApplied: () => {
+                refreshQueries();
+                setExpanded(false);
+              },
+            }}
+          />
+          <div className="px-4 pb-3 border-t border-border/50 pt-3">
+            <div className="flex items-center gap-3">
+              <Button
+                onClick={() => skipMutation.mutate()}
+                disabled={skipMutation.isPending || startMutation.isPending}
+                variant="outline"
+                size="sm"
               >
-                <option value="Whisper">Whisper</option>
-                <option value="Voxtral">Voxtral</option>
-              </select>
-            </>
-          }
-          manualPrompts={{
-            generate: () =>
-              getPolishManualPrompts({
-                audio_path: episode.audio_path!,
-                context: config.context,
-                source_lang: config.sourceLang,
-                engine,
-              }),
-            apply: (corrections) =>
-              applyPolishManual({ audio_path: episode.audio_path!, corrections }),
-            onApplied: () => {
-              invalidate();
-              setExpanded(false);
-            },
-          }}
-        />
+                <SkipForward className="w-3.5 h-3.5 mr-1.5" />
+                {skipMutation.isPending ? "Copying..." : "Skip polish"}
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                Copy transcript as-is without AI correction
+              </span>
+            </div>
+            {skipMutation.isError && (
+              <p className="text-destructive text-xs mt-1">{(skipMutation.error as Error).message}</p>
+            )}
+          </div>
+        </>
       }
     >
       {episode.polished && !taskId && (

@@ -4,7 +4,7 @@ import { formatTime } from "@/lib/utils";
 
 interface SearchResultCardProps {
   result: SearchResult;
-  audioPath: string;
+  audioPath?: string;
 }
 
 export default function SearchResultCard({ result, audioPath }: SearchResultCardProps) {
@@ -30,12 +30,14 @@ export default function SearchResultCard({ result, audioPath }: SearchResultCard
         {result.speaker && (
           <span className="font-medium">{result.speaker}</span>
         )}
-        <button
-          onClick={() => seekTo(audioPath, result.start)}
-          className="ml-auto text-xs px-2 py-0.5 rounded bg-accent hover:bg-accent/80 transition"
-        >
-          Seek
-        </button>
+        {audioPath && (
+          <button
+            onClick={() => seekTo(audioPath, result.start)}
+            className="ml-auto text-xs px-2 py-0.5 rounded bg-accent hover:bg-accent/80 transition"
+          >
+            Seek
+          </button>
+        )}
       </div>
       <p className="text-sm leading-relaxed whitespace-pre-wrap">
         {result.text}

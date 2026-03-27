@@ -12,9 +12,12 @@ import type { Episode } from "@/api/types";
 import { useAppStore } from "@/store";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, RefreshCw, Play, ExternalLink, Download, CheckCircle, Trash2 } from "lucide-react";
+import ShowSettings from "@/components/show/ShowSettings";
+import SearchPanel from "@/components/search/SearchPanel";
 
 import { formatDuration, formatDate } from "@/lib/utils";
 
+type ShowTab = "episodes" | "search" | "settings";
 type ViewMode = "list" | "card";
 type StatusFilter = "all" | "downloaded" | "not_downloaded" | "transcribed" | "polished" | "indexed";
 
@@ -23,6 +26,7 @@ export default function ShowPage({ folder }: { folder: string }) {
   const { playAudio, audioPath } = useAppStore();
   const queryClient = useQueryClient();
 
+  const [tab, setTab] = useState<ShowTab>("episodes");
   const [view, setView] = useState<ViewMode>("list");
   const [cardSize, setCardSize] = useState(3); // 1-5, maps to grid columns
   const [search, setSearch] = useState("");
@@ -131,6 +135,24 @@ export default function ShowPage({ folder }: { folder: string }) {
         </Button>
       </div>
 
+      {/* Tabs */}
+      <div className="px-6 border-b border-border flex gap-1">
+        {(["episodes", "search", "settings"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-3 py-2 text-sm capitalize transition border-b-2 -mb-px ${
+              tab === t
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === "episodes" && (<>
       {/* Filters */}
       <div className="px-6 py-3 border-b border-border flex items-center gap-3 flex-wrap">
         <input
@@ -270,6 +292,19 @@ export default function ShowPage({ folder }: { folder: string }) {
         <div className="px-6 py-2 border-t border-border text-destructive text-xs">
           {(refreshMutation.error as Error).message}
         </div>
+      )}
+      </>)}
+
+      {tab === "search" && (
+        <SearchPanel scope="show" folder={folder} showName={showName} />
+      )}
+
+      {tab === "settings" && meta && (
+        <ShowSettings
+          folder={folder}
+          meta={meta}
+          hasIndex={all.some((e) => e.indexed)}
+        />
       )}
     </div>
   );

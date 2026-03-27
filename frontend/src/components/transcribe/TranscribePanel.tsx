@@ -12,6 +12,7 @@ import {
 } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Upload, Settings2 } from "lucide-react";
+import { languageToISO } from "@/lib/utils";
 import HelpLabel from "@/components/common/HelpLabel";
 import SegmentEditor from "@/components/editor/SegmentEditor";
 import PipelinePanel from "@/components/common/PipelinePanel";
@@ -36,7 +37,7 @@ export default function TranscribePanel({ episode, showMeta }: TranscribePanelPr
 
   // Form state
   const [modelSize, setModelSize] = useState("large-v3");
-  const [language, setLanguage] = useState(showMeta?.language || "");
+  const [language, setLanguage] = useState(languageToISO(showMeta?.language || ""));
   const [batchSize, setBatchSize] = useState(16);
   const [diarize, setDiarize] = useState(true);
   const [hfToken, setHfToken] = useState("");

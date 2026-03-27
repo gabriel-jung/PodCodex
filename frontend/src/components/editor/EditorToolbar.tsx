@@ -1,6 +1,6 @@
 import { useState, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
-import { Search, X, SlidersHorizontal, Clock, Undo2, HelpCircle } from "lucide-react";
+import { Search, X, SlidersHorizontal, Clock, Undo2, HelpCircle, FileInput, FilePen } from "lucide-react";
 import type { VersionInfo } from "@/api/types";
 
 function Tip({ text }: { text: string }) {
@@ -226,10 +226,12 @@ export default function EditorToolbar({
         <Button
           onClick={onLoadOriginal}
           disabled={!hasRaw}
-          variant="ghost"
+          variant="outline"
           size="sm"
           className="h-6"
+          title="Reload the raw pipeline output (before any manual edits)"
         >
+          <FileInput className="w-3 h-3 mr-1" />
           Load original
         </Button>
       )}
@@ -237,10 +239,12 @@ export default function EditorToolbar({
         <Button
           onClick={onLoadEdits}
           disabled={!hasValidated}
-          variant="ghost"
+          variant="outline"
           size="sm"
           className="h-6"
+          title="Reload the last saved version"
         >
+          <FilePen className="w-3 h-3 mr-1" />
           Load edits
         </Button>
       )}
