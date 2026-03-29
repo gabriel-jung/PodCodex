@@ -145,11 +145,12 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
     # Get artwork: prefer what was passed (from search), fall back to feed
     artwork = req.artwork_url or feed_artwork(req.rss_url)
 
-    # Save show metadata
+    # Save show metadata — use the display name from search, fall back to folder name
+    show_name = req.name.strip() or folder_name
     save_show_meta(
         show_path,
         _ShowMeta(
-            name=folder_name,
+            name=show_name,
             rss_url=req.rss_url,
             artwork_url=artwork,
         ),
@@ -192,6 +193,7 @@ class ShowSummary(BaseModel):
     episode_count: int = 0
     has_rss: bool = False
     artwork_url: str = ""
+    last_rss_update: str | None = None  # ISO timestamp of last feed cache write
 
 
 @router.get("/api/shows", response_model=list[ShowSummary])
@@ -209,23 +211,21 @@ async def list_shows() -> list[ShowSummary]:
         name = (meta.name if meta else None) or child.name
         artwork = (meta.artwork_url if meta else "") or ""
 
-        # Backfill artwork from RSS feed if missing
-        if not artwork and meta and meta.rss_url:
-            try:
-                artwork = feed_artwork(meta.rss_url)
-                if artwork:
-                    meta.artwork_url = artwork
-                    save_show_meta(child, meta)
-            except Exception:
-                pass
-
         audio_count = sum(
             1
             for f in child.iterdir()
             if f.is_file() and f.suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac")
         )
 
-        has_rss = (child / "rss_cache.json").exists()
+        feed_cache = child / ".feed_cache.json"
+        has_rss = feed_cache.exists() or bool(meta and meta.rss_url)
+        last_rss: str | None = None
+        if feed_cache.exists():
+            from datetime import datetime, timezone
+
+            last_rss = datetime.fromtimestamp(
+                feed_cache.stat().st_mtime, tz=timezone.utc
+            ).isoformat()
         shows.append(
             ShowSummary(
                 name=name,
@@ -233,6 +233,7 @@ async def list_shows() -> list[ShowSummary]:
                 episode_count=audio_count,
                 has_rss=has_rss,
                 artwork_url=artwork,
+                last_rss_update=last_rss,
             )
         )
     return shows

@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
+from podcodex.api.routes._helpers import AUDIO_EXTS
+
 router = APIRouter()
 
 
@@ -82,9 +84,14 @@ async def delete_audio_file(
     if not p.is_file():
         raise HTTPException(404, f"Audio file not found: {path}")
 
-    AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".opus", ".wma"}
     if p.suffix.lower() not in AUDIO_EXTS:
         raise HTTPException(400, f"Not an audio file: {p.name}")
 
+    show_folder = p.parent
     p.unlink()
+
+    from podcodex.ingest.folder import invalidate_scan_cache
+
+    invalidate_scan_cache(show_folder)
+
     return {"status": "deleted", "path": str(p)}

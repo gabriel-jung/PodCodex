@@ -7,6 +7,7 @@ import RootLayout from "./pages/RootLayout";
 import HomePage from "./pages/HomePage";
 import ShowPage from "./pages/ShowPage";
 import EpisodePage from "./pages/EpisodePage";
+import SettingsPage from "./pages/SettingsPage";
 
 const rootRoute = createRootRoute({
   component: RootLayout,
@@ -50,7 +51,13 @@ const fileRoute = createRoute({
   },
 });
 
-const routeTree = rootRoute.addChildren([homeRoute, showRoute, episodeRoute, fileRoute]);
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings",
+  component: SettingsPage,
+});
+
+const routeTree = rootRoute.addChildren([homeRoute, showRoute, episodeRoute, fileRoute, settingsRoute]);
 
 export const router = createRouter({ routeTree });
 

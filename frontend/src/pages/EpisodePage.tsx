@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getEpisodes, getShowMeta } from "@/api/client";
 import type { Episode, ShowMeta } from "@/api/types";
-import { useAppStore } from "@/store";
+import { useAudioStore, useEpisodeStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import TranscribePanel from "@/components/transcribe/TranscribePanel";
 import PolishPanel from "@/components/polish/PolishPanel";
@@ -48,7 +48,7 @@ export default function EpisodePage({
   audioFilePath?: string;
 }) {
   const navigate = useNavigate();
-  const { playAudio } = useAppStore();
+  const { seekTo, setAudioMeta } = useAudioStore();
   const [activeStep, setActiveStep] = useState<PipelineStep>("info");
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
 
@@ -102,6 +102,34 @@ export default function EpisodePage({
 
   const artwork = episode?.artwork_url || meta?.artwork_url || "";
 
+  // Keep audio bar metadata in sync when this episode is playing
+  useEffect(() => {
+    if (!episode?.audio_path) return;
+    setAudioMeta(episode.audio_path, {
+      title: episode.title,
+      artwork: artwork || undefined,
+      showName: meta?.name,
+      folder,
+      stem: episode.stem || undefined,
+    });
+  }, [episode?.audio_path, episode?.title, artwork, meta?.name, folder, episode?.stem, setAudioMeta]);
+
+  // Sync episode + show context into stores for downstream panels
+  const setEpisode = useEpisodeStore((s) => s.setEpisode);
+  const setShowMeta = useEpisodeStore((s) => s.setShowMeta);
+  useEffect(() => {
+    setEpisode(episode ?? null);
+  }, [episode, setEpisode]);
+
+  useEffect(() => {
+    setShowMeta(meta ?? null);
+  }, [meta, setShowMeta]);
+
+  // Still loading episodes list
+  if (!isStandalone && !episodes) {
+    return <div className="p-6 text-muted-foreground">Loading...</div>;
+  }
+
   if (!episode) {
     return (
       <div className="p-6 text-muted-foreground">
@@ -133,7 +161,7 @@ export default function EpisodePage({
         </Button>
         {episode.audio_path && artwork ? (
           <button
-            onClick={() => playAudio(episode.audio_path!, episode.title, artwork, meta?.name)}
+            onClick={() => seekTo(episode.audio_path!, 0)}
             className="relative group shrink-0"
           >
             <img src={artwork} alt="" className="w-10 h-10 rounded-lg" />
@@ -159,7 +187,7 @@ export default function EpisodePage({
         </div>
         {episode.audio_path && (
           <Button
-            onClick={() => playAudio(episode.audio_path!, episode.title, artwork, meta?.name)}
+            onClick={() => seekTo(episode.audio_path!, 0)}
             variant="outline"
             size="sm"
           >
@@ -197,11 +225,8 @@ export default function EpisodePage({
               >
                 <Icon className="w-5 h-5 shrink-0" />
                 {sidebarExpanded && <span className="truncate">{label}</span>}
-                {!sidebarExpanded && stepDone(key) && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
-                )}
-                {sidebarExpanded && stepDone(key) && (
-                  <span className="ml-auto w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+                {stepDone(key) && (
+                  <span className={`w-1.5 h-1.5 rounded-full bg-green-500 shrink-0 ${sidebarExpanded ? "ml-auto" : ""}`} />
                 )}
               </button>
             ))}
@@ -220,84 +245,93 @@ export default function EpisodePage({
 
         {/* Main content */}
         <div className="flex-1 overflow-y-auto">
-          <StepContent
-            step={activeStep}
-            episode={episode}
-            showMeta={meta}
-          />
+          <StepContent step={activeStep} episode={episode} />
         </div>
       </div>
     </div>
   );
 }
 
-function StepContent({
-  step,
-  episode,
-  showMeta,
-}: {
-  step: PipelineStep;
-  episode: Episode;
-  showMeta?: ShowMeta | null;
-}) {
+function StepContent({ step, episode }: { step: PipelineStep; episode: Episode }) {
   switch (step) {
     case "info":
       return (
-        <div className="p-6 space-y-4">
-          <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm max-w-md">
-            {episode.episode_number != null && (
-              <>
-                <span className="text-muted-foreground">Episode</span>
-                <span>#{episode.episode_number}</span>
-              </>
-            )}
-            {episode.pub_date && (
-              <>
-                <span className="text-muted-foreground">Published</span>
-                <span>{formatDate(episode.pub_date)}</span>
-              </>
-            )}
-            {episode.duration > 0 && (
-              <>
-                <span className="text-muted-foreground">Duration</span>
-                <span>{formatDuration(episode.duration)}</span>
-              </>
-            )}
-            <span className="text-muted-foreground">Downloaded</span>
-            <span>{episode.downloaded ? "Yes" : "No"}</span>
-            <span className="text-muted-foreground">Transcribed</span>
-            <span>{episode.transcribed ? "Yes" : "No"}</span>
-            <span className="text-muted-foreground">Polished</span>
-            <span>{episode.polished ? "Yes" : "No"}</span>
-            {episode.translations.length > 0 && (
-              <>
-                <span className="text-muted-foreground">Translations</span>
-                <span>{episode.translations.join(", ")}</span>
-              </>
-            )}
-            <span className="text-muted-foreground">Indexed</span>
-            <span>{episode.indexed ? "Yes" : "No"}</span>
+        <div className="p-6 space-y-6">
+          {/* Episode details */}
+          {(episode.episode_number != null || episode.pub_date || episode.duration > 0) && (
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium">Details</h4>
+              <div className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm max-w-md">
+                {episode.episode_number != null && (
+                  <>
+                    <span className="text-muted-foreground">Episode</span>
+                    <span>#{episode.episode_number}</span>
+                  </>
+                )}
+                {episode.pub_date && (
+                  <>
+                    <span className="text-muted-foreground">Published</span>
+                    <span>{formatDate(episode.pub_date)}</span>
+                  </>
+                )}
+                {episode.duration > 0 && (
+                  <>
+                    <span className="text-muted-foreground">Duration</span>
+                    <span>{formatDuration(episode.duration)}</span>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Pipeline status */}
+          <div className="space-y-3">
+            <h4 className="text-sm font-medium">Pipeline</h4>
+            <div className="grid gap-2 max-w-sm">
+              {[
+                { label: "Downloaded", done: episode.downloaded },
+                { label: "Transcribed", done: episode.transcribed },
+                { label: "Polished", done: episode.polished },
+                { label: "Translated", done: episode.translations.length > 0, detail: episode.translations.length > 0 ? episode.translations.join(", ") : undefined },
+                { label: "Synthesized", done: episode.synthesized },
+                { label: "Indexed", done: episode.indexed },
+              ].map(({ label, done, detail }) => (
+                <div key={label} className="flex items-center gap-3 text-sm">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${done ? "bg-green-500" : "bg-muted-foreground/30"}`} />
+                  <span className={done ? "text-foreground" : "text-muted-foreground"}>{label}</span>
+                  {detail && <span className="text-xs text-muted-foreground ml-auto">{detail}</span>}
+                </div>
+              ))}
+            </div>
           </div>
+
+          {/* Audio path */}
+          {episode.audio_path && (
+            <div className="space-y-1">
+              <h4 className="text-sm font-medium">File</h4>
+              <p className="text-xs text-muted-foreground font-mono break-all">{episode.audio_path}</p>
+            </div>
+          )}
         </div>
       );
 
     case "transcribe":
-      return <TranscribePanel episode={episode} showMeta={showMeta} />;
+      return <TranscribePanel />;
 
     case "polish":
-      return <PolishPanel episode={episode} showMeta={showMeta} />;
+      return <PolishPanel />;
 
     case "translate":
-      return <TranslatePanel episode={episode} showMeta={showMeta} />;
+      return <TranslatePanel />;
 
     case "synthesize":
-      return <SynthesizePanel episode={episode} showMeta={showMeta} />;
+      return <SynthesizePanel />;
 
     case "index":
-      return <IndexPanel episode={episode} showMeta={showMeta} />;
+      return <IndexPanel />;
 
     case "search":
-      return <SearchPanel scope="episode" episode={episode} showMeta={showMeta} />;
+      return <SearchPanel scope="episode" />;
   }
 }
 

@@ -5,6 +5,17 @@ export interface HealthResponse {
   capabilities: Record<string, boolean>;
 }
 
+export interface ExtraInfo {
+  description: string;
+  installed: boolean;
+  capabilities: string[];
+}
+
+export interface ExtrasResponse {
+  extras: Record<string, ExtraInfo>;
+  capabilities: Record<string, boolean>;
+}
+
 export interface AppConfig {
   show_folders: string[];
   default_save_path: string;
@@ -16,6 +27,7 @@ export interface ShowSummary {
   episode_count: number;
   has_rss: boolean;
   artwork_url: string;
+  last_rss_update: string | null;
 }
 
 export interface ShowMeta {
@@ -107,6 +119,8 @@ export interface PolishRequest {
   source_lang?: string;
   batch_size?: number;
   engine?: string;
+  api_base_url?: string;
+  api_key?: string | null;
 }
 
 export interface TranslateRequest {
@@ -119,6 +133,8 @@ export interface TranslateRequest {
   source_lang?: string;
   target_lang?: string;
   batch_size?: number;
+  api_base_url?: string;
+  api_key?: string | null;
 }
 
 // ── Pipeline config (from Python constants) ─
@@ -127,6 +143,7 @@ export interface LLMProviderSpec {
   url: string;
   model: string;
   label: string;
+  env_var?: string;
 }
 
 export interface PipelineConfig {
@@ -158,6 +175,8 @@ export interface GenerateRequest {
   language?: string;
   source_lang?: string | null;
   max_chunk_duration?: number;
+  force?: boolean;
+  only_speakers?: string[] | null;
 }
 
 export interface AssembleRequest {
@@ -180,6 +199,8 @@ export interface GeneratedSegment {
   end: number;
   audio_file: string;
   duration: number;
+  voice_sample?: string;
+  generated_at?: string;
 }
 
 export interface SynthesisStatus {
@@ -238,6 +259,54 @@ export interface SyncRequest {
   overwrite?: boolean;
   qdrant_url?: string | null;
 }
+
+// ── Filesystem ────────────────────────────
+
+export interface DirEntry {
+  name: string;
+  path: string;
+  is_show: boolean;
+  has_audio: boolean;
+}
+
+export interface FileEntry {
+  name: string;
+  path: string;
+}
+
+export interface DirListing {
+  path: string;
+  parent: string | null;
+  dirs: DirEntry[];
+  files: FileEntry[];
+  error: string | null;
+}
+
+// ── Models ────────────────────────────────
+
+export interface CachedModel {
+  id: string;
+  name: string;
+  size_bytes: number;
+  size_mb: number;
+  path: string;
+}
+
+export interface VRAMStatus {
+  total_mb: number;
+  used_mb: number;
+  reserved_mb: number;
+  free_mb: number;
+  device: string;
+}
+
+export interface ModelsResponse {
+  models: CachedModel[];
+  cache_dir: string;
+  vram: VRAMStatus | null;
+}
+
+// ── Search ─────────────────────────────────
 
 export interface SearchResult {
   text: string;

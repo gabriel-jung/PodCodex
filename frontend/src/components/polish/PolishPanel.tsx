@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Episode, ShowMeta } from "@/api/types";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useEpisodeStore } from "@/stores";
 import {
   getPolishSegments,
   getPolishSegmentsRaw,
@@ -12,7 +12,8 @@ import {
   getPolishManualPrompts,
   applyPolishManual,
 } from "@/api/client";
-import { buildDefaultContext } from "@/lib/utils";
+import { buildDefaultContext, errorMessage, selectClass } from "@/lib/utils";
+import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { Button } from "@/components/ui/button";
 import { SkipForward } from "lucide-react";
 import SegmentEditor from "@/components/editor/SegmentEditor";
@@ -20,15 +21,12 @@ import PipelinePanel from "@/components/common/PipelinePanel";
 import HelpLabel from "@/components/common/HelpLabel";
 import LLMControls, { type LLMConfig } from "@/components/common/LLMControls";
 
-interface PolishPanelProps {
-  episode: Episode;
-  showMeta?: ShowMeta | null;
-}
-
-export default function PolishPanel({ episode, showMeta }: PolishPanelProps) {
-  const queryClient = useQueryClient();
-  const [taskId, setTaskId] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(!episode.polished);
+export default function PolishPanel() {
+  const episode = useEpisodeStore((s) => s.episode);
+  const showMeta = useEpisodeStore((s) => s.showMeta);
+  if (!episode) return null;
+  const task = usePipelineTask(episode.audio_path, "polish");
+  const expanded = task.expanded || !episode.polished;
 
   const [config, setConfig] = useState<LLMConfig>({
     mode: "ollama",
@@ -37,6 +35,8 @@ export default function PolishPanel({ episode, showMeta }: PolishPanelProps) {
     context: buildDefaultContext(episode, showMeta),
     sourceLang: showMeta?.language || "French",
     batchSize: 10,
+    apiBaseUrl: "",
+    apiKey: "",
   });
   const [engine, setEngine] = useState("Whisper");
 
@@ -51,34 +51,25 @@ export default function PolishPanel({ episode, showMeta }: PolishPanelProps) {
       startPolish({
         audio_path: episode.audio_path!,
         mode: config.mode === "api" ? "api" : "ollama",
-        provider: config.mode === "api" ? config.provider : undefined,
+        provider: config.mode === "api" && config.provider !== "custom" ? config.provider : undefined,
         model: config.model,
         context: config.context,
         source_lang: config.sourceLang,
         batch_size: config.batchSize,
         engine,
+        api_base_url: config.apiBaseUrl || undefined,
+        api_key: config.apiKey || undefined,
       }),
-    onSuccess: (data) => setTaskId(data.task_id),
+    onSuccess: (data) => task.startTask(data.task_id),
   });
 
   const skipMutation = useMutation({
     mutationFn: () => skipPolish(episode.audio_path!),
     onSuccess: () => {
-      refreshQueries();
-      setExpanded(false);
+      task.refreshQueries();
+      task.setExpanded(false);
     },
   });
-
-  const refreshQueries =() => {
-    queryClient.invalidateQueries({ queryKey: ["polish"] });
-    queryClient.invalidateQueries({ queryKey: ["episodes"] });
-  };
-
-  const handleComplete = () => {
-    refreshQueries();
-    setTaskId(null);
-    setExpanded(false);
-  };
 
   return (
     <PipelinePanel
@@ -87,10 +78,12 @@ export default function PolishPanel({ episode, showMeta }: PolishPanelProps) {
       prerequisite={!episode.transcribed ? "You need a transcript first. Go to the Transcribe tab to create one." : undefined}
       done={episode.polished}
       expanded={expanded}
-      onToggle={() => setExpanded(!expanded)}
+      onToggle={() => task.setExpanded(!expanded)}
       rerunLabel="Re-run polish"
-      taskId={taskId}
-      onTaskComplete={handleComplete}
+      taskId={task.activeTaskId}
+      onTaskComplete={task.handleComplete}
+      onRetry={task.handleRetry}
+      onDismiss={task.handleDismiss}
       emptyMessage="Polish pipeline not yet run for this episode."
       controls={
         <>
@@ -99,7 +92,7 @@ export default function PolishPanel({ episode, showMeta }: PolishPanelProps) {
             onChange={(patch) => setConfig({ ...config, ...patch })}
             onRun={() => startMutation.mutate()}
             isPending={startMutation.isPending}
-            error={startMutation.isError ? (startMutation.error as Error).message : null}
+            error={startMutation.isError ? errorMessage(startMutation.error) : null}
             runLabel="Run polish"
             extraFields={
               <>
@@ -107,7 +100,7 @@ export default function PolishPanel({ episode, showMeta }: PolishPanelProps) {
                 <select
                   value={engine}
                   onChange={(e) => setEngine(e.target.value)}
-                  className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm"
+                  className={selectClass}
                 >
                   <option value="Whisper">Whisper</option>
                   <option value="Voxtral">Voxtral</option>
@@ -115,18 +108,19 @@ export default function PolishPanel({ episode, showMeta }: PolishPanelProps) {
               </>
             }
             manualPrompts={{
-              generate: () =>
+              generate: (batchMinutes) =>
                 getPolishManualPrompts({
                   audio_path: episode.audio_path!,
                   context: config.context,
                   source_lang: config.sourceLang,
                   engine,
+                  batch_minutes: batchMinutes,
                 }),
               apply: (corrections) =>
                 applyPolishManual({ audio_path: episode.audio_path!, corrections }),
               onApplied: () => {
-                refreshQueries();
-                setExpanded(false);
+                task.refreshQueries();
+                task.setExpanded(false);
               },
             }}
           />
@@ -146,13 +140,13 @@ export default function PolishPanel({ episode, showMeta }: PolishPanelProps) {
               </span>
             </div>
             {skipMutation.isError && (
-              <p className="text-destructive text-xs mt-1">{(skipMutation.error as Error).message}</p>
+              <p className="text-destructive text-xs mt-1">{errorMessage(skipMutation.error)}</p>
             )}
           </div>
         </>
       }
     >
-      {episode.polished && !taskId && (
+      {episode.polished && !task.activeTaskId && (
         <SegmentEditor
           editorKey="polish"
           audioPath={episode.audio_path ?? undefined}

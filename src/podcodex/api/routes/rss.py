@@ -8,7 +8,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from podcodex.api.schemas import DownloadResult, RSSEpisodeOut
+from podcodex.api.routes._helpers import is_downloaded, require_show_folder, submit_task
+from podcodex.api.schemas import RSSEpisodeOut, TaskResponse
 from podcodex.ingest.rss import (
     RSSEpisode,
     download_audio,
@@ -22,34 +23,20 @@ from podcodex.ingest.show import load_show_meta
 router = APIRouter()
 
 
-def _local_stem(ep: RSSEpisode) -> str:
-    return episode_stem(ep)
-
-
-def _is_downloaded(show_folder: Path, ep: RSSEpisode) -> bool:
-    """Check if an episode's audio has already been downloaded."""
-    stem = _local_stem(ep)
-    for ext in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
-        if (show_folder / f"{stem}{ext}").exists():
-            return True
-    return False
-
-
 def _rss_to_out(ep: RSSEpisode, show_folder: Path) -> dict:
     """Convert an RSSEpisode to an RSSEpisodeOut dict."""
+    stem = episode_stem(ep)
     return {
         **asdict(ep),
-        "local_stem": _local_stem(ep),
-        "downloaded": _is_downloaded(show_folder, ep),
+        "local_stem": stem,
+        "downloaded": is_downloaded(show_folder, stem),
     }
 
 
 @router.post("/{show_folder:path}/rss/fetch", response_model=list[RSSEpisodeOut])
 async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
     """Fetch (or refresh) the RSS feed for a show. Uses show.toml rss_url if not provided."""
-    path = Path(show_folder)
-    if not path.is_dir():
-        raise HTTPException(404, f"Show folder not found: {show_folder}")
+    path = require_show_folder(show_folder)
 
     if not rss_url:
         meta = load_show_meta(path)
@@ -78,13 +65,13 @@ async def rss_cache(show_folder: str) -> list[dict]:
 
 @router.post(
     "/{show_folder:path}/rss/download",
-    response_model=list[DownloadResult],
+    response_model=TaskResponse,
 )
 async def rss_download(
     show_folder: str,
     guids: list[str] | None = None,
-) -> list[DownloadResult]:
-    """Download one or more episodes by GUID. Downloads all if guids is None."""
+) -> TaskResponse:
+    """Download episodes as a background task. Progress is streamed via WebSocket."""
     path = Path(show_folder)
     cached = load_feed_cache(path)
     if cached is None:
@@ -97,30 +84,39 @@ async def rss_download(
         if not targets:
             raise HTTPException(404, "No matching episodes found for the given GUIDs")
 
-    results: list[DownloadResult] = []
-    for ep in targets:
-        stem = _local_stem(ep)
-        if _is_downloaded(path, ep):
-            results.append(DownloadResult(stem=stem, audio_path=None, status="exists"))
-            continue
-        if not ep.audio_url:
-            results.append(
-                DownloadResult(stem=stem, audio_path=None, status="no_audio")
-            )
-            continue
+    def run_downloads(progress_cb, episodes=targets, show_path=path):
+        from podcodex.ingest.folder import invalidate_scan_cache
 
-        audio_path = download_audio(ep, path)
-        if audio_path:
-            results.append(
-                DownloadResult(
-                    stem=stem, audio_path=str(audio_path), status="downloaded"
+        results = []
+        total = len(episodes)
+        for i, ep in enumerate(episodes):
+            stem = episode_stem(ep)
+            progress_cb(i / total, f"Downloading {i + 1}/{total}: {stem}")
+
+            if is_downloaded(show_path, stem):
+                results.append({"stem": stem, "status": "exists"})
+                continue
+            if not ep.audio_url:
+                results.append({"stem": stem, "status": "no_audio"})
+                continue
+
+            audio_path = download_audio(ep, show_path)
+            if audio_path:
+                results.append(
+                    {
+                        "stem": stem,
+                        "status": "downloaded",
+                        "audio_path": str(audio_path),
+                    }
                 )
-            )
-        else:
-            results.append(DownloadResult(stem=stem, audio_path=None, status="failed"))
+                invalidate_scan_cache(show_path)
+            else:
+                results.append({"stem": stem, "status": "failed"})
 
-        # Small delay between downloads to be respectful to servers
-        if len(targets) > 1:
-            time.sleep(1)
+            # Small delay between downloads to be respectful to servers
+            if total > 1:
+                time.sleep(1)
 
-    return results
+        return results
+
+    return submit_task("download", str(path), run_downloads)

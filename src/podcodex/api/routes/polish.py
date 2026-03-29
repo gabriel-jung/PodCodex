@@ -9,9 +9,9 @@ from podcodex.api.routes._helpers import (
     annotate_flags,
     read_segments,
     save_segments_json,
+    submit_task,
 )
 from podcodex.api.schemas import Segment, TaskResponse
-from podcodex.api.tasks import task_manager
 from podcodex.core._utils import AudioPaths
 
 router = APIRouter()
@@ -86,6 +86,8 @@ class PolishRequest(BaseModel):
     source_lang: str = "French"
     batch_size: int = 10
     engine: str = "Whisper"
+    api_base_url: str = ""
+    api_key: str | None = None
 
 
 @router.post("/start", response_model=TaskResponse)
@@ -116,6 +118,8 @@ async def start_polish(req: PolishRequest) -> TaskResponse:
             batch_size=req_data.batch_size,
             provider=req_data.provider,
             engine=req_data.engine,
+            api_base_url=req_data.api_base_url,
+            api_key=req_data.api_key,
             original_segments=segments,
             merge=False,  # transcript is already merged on load/upload
             on_batch=on_batch,
@@ -125,11 +129,7 @@ async def start_polish(req: PolishRequest) -> TaskResponse:
         save_polished_raw(req_data.audio_path, polished, output_dir=req_data.output_dir)
         return {"count": len(polished)}
 
-    try:
-        info = task_manager.submit("polish", req.audio_path, run_polish, req)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc))
-    return TaskResponse(task_id=info.task_id)
+    return submit_task("polish", req.audio_path, run_polish, req)
 
 
 # ── Skip polish ──────────────────────────────────────────

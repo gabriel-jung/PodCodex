@@ -68,16 +68,25 @@ LLM_PROVIDERS: dict[str, dict[str, str]] = {
         "url": "https://api.mistral.ai/v1",
         "model": "mistral-small-latest",
         "label": "Mistral",
+        "env_var": "MISTRAL_API_KEY",
     },
     "openai": {
         "url": "https://api.openai.com/v1",
         "model": "gpt-4o-mini",
         "label": "OpenAI",
+        "env_var": "OPENAI_API_KEY",
     },
     "anthropic": {
         "url": "https://api.anthropic.com/v1",
         "model": "claude-sonnet-4-20250514",
         "label": "Anthropic",
+        "env_var": "ANTHROPIC_API_KEY",
+    },
+    "custom": {
+        "url": "",
+        "model": "",
+        "label": "Custom (OpenAI-compatible)",
+        "env_var": "",
     },
 }
 

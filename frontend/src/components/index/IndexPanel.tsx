@@ -1,35 +1,35 @@
-import { useState, useCallback } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Episode, ShowMeta } from "@/api/types";
+import { useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useEpisodeStore } from "@/stores";
 import {
   getIndexConfig,
   getIndexStatus,
   startIndex,
 } from "@/api/client";
-import { getShowName } from "@/lib/utils";
+import { errorMessage, getShowName } from "@/lib/utils";
+import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { Button } from "@/components/ui/button";
-import { Settings2 } from "lucide-react";
+import { useCapabilities } from "@/hooks/useCapabilities";
+import AdvancedToggle from "@/components/common/AdvancedToggle";
 import HelpLabel from "@/components/common/HelpLabel";
+import MissingDependency from "@/components/common/MissingDependency";
+import SectionHeader from "@/components/common/SectionHeader";
 import PipelinePanel from "@/components/common/PipelinePanel";
 
-interface IndexPanelProps {
-  episode: Episode;
-  showMeta?: ShowMeta | null;
-}
-
-export default function IndexPanel({ episode, showMeta }: IndexPanelProps) {
-  const queryClient = useQueryClient();
-  const [taskId, setTaskId] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(!episode.indexed);
-
+export default function IndexPanel() {
+  const episode = useEpisodeStore((s) => s.episode);
+  const showMeta = useEpisodeStore((s) => s.showMeta);
+  if (!episode) return null;
   const showName = getShowName(showMeta, episode.audio_path);
+  const task = usePipelineTask(episode.audio_path, "index");
+  const expanded = task.expanded || !episode.indexed;
 
   const { data: config } = useQuery({
     queryKey: ["index", "config"],
     queryFn: getIndexConfig,
   });
 
-  const { data: status, refetch: refetchStatus } = useQuery({
+  const { data: status } = useQuery({
     queryKey: ["index", "status", episode.audio_path, showName],
     queryFn: () => getIndexStatus(episode.audio_path!, showName),
     enabled: !!episode.audio_path,
@@ -41,19 +41,6 @@ export default function IndexPanel({ episode, showMeta }: IndexPanelProps) {
   const [chunkSize, setChunkSize] = useState(256);
   const [threshold, setThreshold] = useState(0.5);
   const [overwrite, setOverwrite] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
-  const refreshQueries =useCallback(() => {
-    refetchStatus();
-    queryClient.invalidateQueries({ queryKey: ["index"] });
-    queryClient.invalidateQueries({ queryKey: ["episodes"] });
-  }, [queryClient, refetchStatus]);
-
-  const handleComplete = () => {
-    refreshQueries();
-    setTaskId(null);
-    setExpanded(false);
-  };
 
   const startMutation = useMutation({
     mutationFn: () =>
@@ -66,8 +53,11 @@ export default function IndexPanel({ episode, showMeta }: IndexPanelProps) {
         threshold,
         overwrite,
       }),
-    onSuccess: (data) => setTaskId(data.task_id),
+    onSuccess: (data) => task.startTask(data.task_id),
   });
+
+  const { has: hasCap } = useCapabilities();
+  const hasRAG = hasCap("embeddings") && hasCap("torch");
 
   const prereq = !episode.audio_path
     ? "Download the audio file first before indexing."
@@ -92,21 +82,28 @@ export default function IndexPanel({ episode, showMeta }: IndexPanelProps) {
       title="Index"
       description="Build a search index so you can find specific moments by meaning, not just keywords. Required before using the Search tab."
       prerequisite={prereq}
+      blocker={!prereq && !hasRAG ? (
+        <MissingDependency
+          extra="rag"
+          label="Search & indexing libraries"
+          description="Semantic search requires torch, sentence-transformers, and other dependencies from the rag extra."
+        />
+      ) : undefined}
       done={episode.indexed}
       expanded={expanded}
-      onToggle={() => setExpanded(!expanded)}
+      onToggle={() => task.setExpanded(!expanded)}
       rerunLabel="Re-index"
       settingsLabel="Index settings"
-      taskId={taskId}
-      onTaskComplete={handleComplete}
+      taskId={task.activeTaskId}
+      onTaskComplete={task.handleComplete}
+      onRetry={task.handleRetry}
+      onDismiss={task.handleDismiss}
       emptyMessage="Episode not yet indexed."
       controls={
         <div className="px-4 pb-3 space-y-4">
           {/* Model selection */}
           <div className="space-y-2">
-            <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-              Embedding Models
-            </h5>
+            <SectionHeader>Embedding Models</SectionHeader>
             <div className="flex flex-wrap gap-2">
               {config &&
                 Object.entries(config.models).map(([key, spec]) => (
@@ -128,9 +125,7 @@ export default function IndexPanel({ episode, showMeta }: IndexPanelProps) {
 
           {/* Chunking selection */}
           <div className="space-y-2">
-            <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-              Chunking Strategy
-            </h5>
+            <SectionHeader>Chunking Strategy</SectionHeader>
             <div className="flex flex-wrap gap-2">
               {config &&
                 Object.entries(config.chunking_strategies).map(([key, desc]) => (
@@ -150,52 +145,40 @@ export default function IndexPanel({ episode, showMeta }: IndexPanelProps) {
             </div>
           </div>
 
-          {/* Advanced settings — collapsible */}
-          <div className="border-t border-border/50 pt-3 space-y-3">
-            <button
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition"
-            >
-              <Settings2 className="w-3 h-3" />
-              <span className="font-semibold uppercase tracking-wide">
-                {showAdvanced ? "Hide advanced" : "Advanced settings"}
-              </span>
-            </button>
-
-            {showAdvanced && (
-              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center text-sm pl-3 border-l-2 border-border">
-                <HelpLabel label="Chunk size" help="Number of tokens per chunk. Smaller chunks give more precise search results, larger chunks preserve more context." />
+          {/* Advanced settings */}
+          <AdvancedToggle className="border-t border-border/50 pt-3 space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
+              <HelpLabel label="Chunk size" help="Number of tokens per chunk. Smaller chunks give more precise search results, larger chunks preserve more context." />
+              <input
+                type="number"
+                value={chunkSize}
+                onChange={(e) => setChunkSize(Number(e.target.value))}
+                className="input py-1 text-sm w-20"
+                min={64}
+                max={1024}
+              />
+              <HelpLabel label="Similarity threshold" help="For semantic chunking: how similar adjacent sentences must be to stay in the same chunk (0 = always split, 1 = never split)." />
+              <input
+                type="number"
+                value={threshold}
+                onChange={(e) => setThreshold(Number(e.target.value))}
+                className="input py-1 text-sm w-20"
+                min={0}
+                max={1}
+                step={0.05}
+              />
+              <HelpLabel label="Overwrite" help="Re-index from scratch even if this episode was already indexed." />
+              <label className="flex items-center gap-2">
                 <input
-                  type="number"
-                  value={chunkSize}
-                  onChange={(e) => setChunkSize(Number(e.target.value))}
-                  className="input py-1 text-sm w-20"
-                  min={64}
-                  max={1024}
+                  type="checkbox"
+                  checked={overwrite}
+                  onChange={(e) => setOverwrite(e.target.checked)}
+                  className="accent-primary"
                 />
-                <HelpLabel label="Similarity threshold" help="For semantic chunking: how similar adjacent sentences must be to stay in the same chunk (0 = always split, 1 = never split)." />
-                <input
-                  type="number"
-                  value={threshold}
-                  onChange={(e) => setThreshold(Number(e.target.value))}
-                  className="input py-1 text-sm w-20"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                />
-                <HelpLabel label="Overwrite" help="Re-index from scratch even if this episode was already indexed." />
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={overwrite}
-                    onChange={(e) => setOverwrite(e.target.checked)}
-                    className="accent-primary"
-                  />
-                  <span className="text-xs text-muted-foreground">Replace existing index</span>
-                </label>
-              </div>
-            )}
-          </div>
+                <span className="text-xs text-muted-foreground">Replace existing index</span>
+              </label>
+            </div>
+          </AdvancedToggle>
 
           {/* Run button */}
           <div className="border-t border-border/50 pt-3">
@@ -212,19 +195,17 @@ export default function IndexPanel({ episode, showMeta }: IndexPanelProps) {
             </Button>
             {startMutation.isError && (
               <p className="text-destructive text-xs mt-1">
-                {(startMutation.error as Error).message}
+                {errorMessage(startMutation.error)}
               </p>
             )}
           </div>
         </div>
       }
     >
-      {/* Status grid — shown when indexed and controls collapsed */}
-      {status && status.combinations.some((c) => c.indexed) && !expanded && !taskId && (
+      {/* Status grid */}
+      {status && status.combinations.some((c) => c.indexed) && !expanded && !task.activeTaskId && (
         <div className="p-4 space-y-2">
-          <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-            Indexed combinations
-          </h5>
+          <SectionHeader>Indexed combinations</SectionHeader>
           <div className="grid gap-2">
             {status.combinations
               .filter((c) => c.indexed)

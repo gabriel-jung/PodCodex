@@ -1,5 +1,5 @@
 import type { SearchResult } from "@/api/types";
-import { useAppStore } from "@/store";
+import { useAudioStore } from "@/stores";
 import { formatTime } from "@/lib/utils";
 
 interface SearchResultCardProps {
@@ -8,7 +8,7 @@ interface SearchResultCardProps {
 }
 
 export default function SearchResultCard({ result, audioPath }: SearchResultCardProps) {
-  const { seekTo } = useAppStore();
+  const { seekTo } = useAudioStore();
 
   const scoreColor =
     result.score >= 0.8

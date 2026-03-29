@@ -1,10 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ShowMeta } from "@/api/types";
 import { updateShowMeta, syncToQdrant } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
+import { errorMessage } from "@/lib/utils";
 import HelpLabel from "@/components/common/HelpLabel";
+import SectionHeader from "@/components/common/SectionHeader";
 import ProgressBar from "@/components/editor/ProgressBar";
 
 interface ShowSettingsProps {
@@ -19,6 +21,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
   const [name, setName] = useState(meta.name);
   const [language, setLanguage] = useState(meta.language);
   const [rssUrl, setRssUrl] = useState(meta.rss_url);
+  const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
   const [speakers, setSpeakers] = useState<string[]>(meta.speakers);
   const [newSpeaker, setNewSpeaker] = useState("");
   const [syncTaskId, setSyncTaskId] = useState<string | null>(null);
@@ -29,6 +32,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
     setName(meta.name);
     setLanguage(meta.language);
     setRssUrl(meta.rss_url);
+    setArtworkUrl(meta.artwork_url);
     setSpeakers(meta.speakers);
   }, [meta]);
 
@@ -36,6 +40,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
     name !== meta.name ||
     language !== meta.language ||
     rssUrl !== meta.rss_url ||
+    artworkUrl !== meta.artwork_url ||
     JSON.stringify(speakers) !== JSON.stringify(meta.speakers);
 
   const saveMutation = useMutation({
@@ -45,12 +50,25 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         language,
         rss_url: rssUrl,
         speakers,
-        artwork_url: meta.artwork_url,
+        artwork_url: artworkUrl,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["showMeta", folder] });
+      queryClient.invalidateQueries({ queryKey: ["shows"] });
     },
   });
+
+  // Debounced auto-save: saves 1.5s after last change
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const autoSave = useCallback(() => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => saveMutation.mutate(), 1500);
+  }, [saveMutation]);
+
+  useEffect(() => {
+    if (isDirty) autoSave();
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [name, language, rssUrl, artworkUrl, speakers]);
 
   const syncMutation = useMutation({
     mutationFn: () =>
@@ -75,7 +93,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
       {/* Form — two columns on wide screens */}
       <div className="flex flex-col lg:flex-row gap-6">
         {/* Left: basic fields */}
-        <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center text-sm flex-1">
+        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm flex-1">
           <HelpLabel label="Name" help="Display name for this podcast." />
           <input
             value={name}
@@ -97,6 +115,24 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
             placeholder="https://..."
             className="input py-1 text-sm"
           />
+
+          <HelpLabel label="Artwork URL" help="URL to the podcast cover image. Shown in the show list and episode pages." />
+          <div className="flex items-center gap-2">
+            <input
+              value={artworkUrl}
+              onChange={(e) => setArtworkUrl(e.target.value)}
+              placeholder="https://..."
+              className="input py-1 text-sm flex-1"
+            />
+            {artworkUrl && (
+              <img
+                src={artworkUrl}
+                alt="artwork"
+                className="w-8 h-8 rounded object-cover shrink-0"
+                onError={(e) => (e.currentTarget.style.display = "none")}
+              />
+            )}
+          </div>
         </div>
 
         {/* Right: speakers */}
@@ -133,26 +169,28 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         </div>
       </div>
 
-      {/* Save */}
+      {/* Save status */}
       <div className="flex items-center gap-3">
-        <Button onClick={() => saveMutation.mutate()} disabled={!isDirty || saveMutation.isPending} size="sm">
-          {saveMutation.isPending ? "Saving..." : "Save"}
-        </Button>
-        {isDirty && <span className="text-xs text-yellow-400">Unsaved changes</span>}
+        {isDirty && (
+          <>
+            <span className="text-xs text-yellow-400">Saving...</span>
+            <Button onClick={() => { if (saveTimer.current) clearTimeout(saveTimer.current); saveMutation.mutate(); }} variant="ghost" size="sm" className="text-xs">
+              Save now
+            </Button>
+          </>
+        )}
         {saveMutation.isSuccess && !isDirty && (
           <span className="text-xs text-green-400">Saved</span>
         )}
         {saveMutation.isError && (
-          <span className="text-xs text-destructive">{(saveMutation.error as Error).message}</span>
+          <span className="text-xs text-destructive">{errorMessage(saveMutation.error)}</span>
         )}
       </div>
 
       {/* Qdrant sync */}
       {hasIndex && (
         <div className="border-t border-border pt-6 space-y-3">
-          <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-            Qdrant Sync
-          </h5>
+          <SectionHeader>Qdrant Sync</SectionHeader>
           <p className="text-xs text-muted-foreground">
             Push indexed episodes from the local database to Qdrant for faster search across large collections.
           </p>
@@ -179,7 +217,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
                 Overwrite existing
               </label>
               {syncMutation.isError && (
-                <span className="text-xs text-destructive">{(syncMutation.error as Error).message}</span>
+                <span className="text-xs text-destructive">{errorMessage(syncMutation.error)}</span>
               )}
             </div>
           )}

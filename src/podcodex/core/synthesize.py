@@ -9,14 +9,18 @@ Steps:
 Files produced in output_dir:
     voice_samples/{speaker}.wav         — reference clips for voice cloning
     tts_segments/{index:04d}_{speaker}.wav  — generated audio per segment
+    tts_segments/manifest.json          — generation metadata for incremental re-runs
     {stem}.synthesized.wav              — final merged podcast
 """
 
+import hashlib
+import json
 import math
 import re
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -31,6 +35,79 @@ from podcodex.core._utils import (
     group_by_speaker,
     wav_duration,
 )
+
+
+# ──────────────────────────────────────────────
+# Generation manifest — tracks what produced each segment
+# ──────────────────────────────────────────────
+
+
+def _text_hash(text: str) -> str:
+    """Short hash of segment text — changes when text is re-polished/re-translated."""
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
+def _sample_key(
+    voice_samples: dict[str, list[dict]],
+    speaker: str,
+    sample_index: dict[str, int] | int = 0,
+) -> str:
+    """Return the filename of the voice sample used for a speaker."""
+    samples = voice_samples.get(speaker, [])
+    if not samples:
+        return ""
+    idx = (
+        sample_index.get(speaker, 0) if isinstance(sample_index, dict) else sample_index
+    )
+    idx = min(idx, len(samples) - 1)
+    return Path(samples[idx]["file"]).name
+
+
+def load_manifest(segments_dir: Path) -> dict:
+    """Load the generation manifest, or return empty structure."""
+    manifest_path = segments_dir / "manifest.json"
+    if manifest_path.exists():
+        try:
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            logger.warning("Corrupt manifest.json — will regenerate all segments")
+    return {"model": None, "language": None, "segments": {}}
+
+
+def save_manifest(segments_dir: Path, manifest: dict) -> None:
+    """Write the generation manifest to disk."""
+    manifest_path = segments_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, default=str), encoding="utf-8"
+    )
+
+
+def segment_is_current(
+    manifest: dict,
+    filename: str,
+    text: str,
+    speaker: str,
+    voice_sample_name: str,
+    model_size: str,
+    language: str,
+) -> bool:
+    """Check if a previously generated segment is still valid.
+
+    A segment is valid only if ALL of these match:
+    - The WAV file exists (checked by caller)
+    - Run-level settings (model, language) match
+    - Segment text hasn't changed (hash match)
+    - Same voice sample was used for this speaker
+    """
+    if manifest.get("model") != model_size or manifest.get("language") != language:
+        return False
+    entry = manifest.get("segments", {}).get(filename)
+    if not entry:
+        return False
+    return (
+        entry.get("text_hash") == _text_hash(text)
+        and entry.get("voice_sample") == voice_sample_name
+    )
 
 
 # ──────────────────────────────────────────────
@@ -230,6 +307,62 @@ def extract_voice_samples(
     return results
 
 
+def extract_selected_samples(
+    audio_path: Path | str,
+    selections: list[dict],
+    output_dir: str | Path | None = None,
+) -> dict[str, list[dict]]:
+    """Extract specific user-chosen segments as voice samples.
+
+    Args:
+        audio_path  : source audio file
+        selections  : list of {speaker, start, end, text} dicts
+        output_dir  : directory relative to audio_path for outputs
+
+    Returns:
+        {speaker: [{"file", "start", "end", "duration", "text"}, ...]}
+    """
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    samples_dir = p.voice_samples_dir
+
+    # Build extraction plan grouped by speaker
+    by_speaker: dict[str, list[dict]] = {}
+    for sel in selections:
+        speaker = sel["speaker"]
+        seg = {**sel, "duration": sel["end"] - sel["start"]}
+        by_speaker.setdefault(speaker, []).append(seg)
+
+    plan: list[tuple[str, dict, Path]] = []
+    for speaker, segs in by_speaker.items():
+        for i, seg in enumerate(segs):
+            plan.append((speaker, seg, samples_dir / f"{speaker}_{i:02d}.wav"))
+
+    # Clear old samples for these speakers
+    for speaker in by_speaker:
+        for old in samples_dir.glob(f"{speaker}_*.wav"):
+            old.unlink()
+
+    results: dict[str, list[dict]] = {}
+    with ThreadPoolExecutor(max_workers=min(len(plan) or 1, 8)) as executor:
+        futures = {
+            executor.submit(_extract_clip, p.audio_path, seg, out): speaker
+            for speaker, seg, out in plan
+        }
+        for future in as_completed(futures):
+            speaker = futures[future]
+            entry = future.result()
+            results.setdefault(speaker, []).append(entry)
+
+    for speaker in results:
+        results[speaker].sort(key=lambda e: e["duration"], reverse=True)
+
+    total = sum(len(v) for v in results.values())
+    logger.success(
+        f"Extracted {total} selected voice samples for {len(results)} speakers"
+    )
+    return results
+
+
 # ──────────────────────────────────────────────
 # STEP 2 — Segment generation
 # ──────────────────────────────────────────────
@@ -250,10 +383,13 @@ def load_tts_model(model_size: str = "1.7B"):
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     logger.info(f"Loading Qwen3-TTS {model_size} on {device}…")
+    from podcodex.core.cache import get_hf_cache_dir
+
     model = Qwen3TTSModel.from_pretrained(
         f"Qwen/Qwen3-TTS-12Hz-{model_size}-Base",
         device_map=device,
         dtype=torch.bfloat16,
+        cache_dir=str(get_hf_cache_dir()),
     )
     logger.success(f"Qwen3-TTS {model_size} loaded")
     return model
@@ -446,9 +582,14 @@ def generate_segments(
     language: str = "English",
     sample_index: dict[str, int] | int = 0,
     max_chunk_duration: float = 20.0,
+    force: bool = False,
+    only_speakers: list[str] | None = None,
 ) -> list[dict]:
     """
     Generate TTS audio for all translated segments using Qwen3-TTS voice cloning.
+
+    Supports incremental generation: previously generated segments are skipped
+    if their text and voice sample haven't changed (tracked via manifest.json).
 
     Convenience wrapper around load_tts_model + build_clone_prompts + generate_segment.
     For segment-by-segment control (e.g. in Streamlit), use those functions directly.
@@ -462,6 +603,8 @@ def generate_segments(
         language           : target language for TTS — must match translation target_lang
         sample_index       : which voice sample to use per speaker
         max_chunk_duration : source-audio seconds above which a segment is split
+        force              : if True, regenerate all segments ignoring manifest
+        only_speakers      : if set, only regenerate segments for these speakers
 
     Returns:
         List of segments with added "audio_file" and "sample_rate" fields
@@ -472,12 +615,47 @@ def generate_segments(
     )
     segments_dir = p.tts_segments_dir
 
+    # Load manifest for incremental generation
+    manifest = (
+        load_manifest(segments_dir)
+        if not force
+        else {"model": None, "language": None, "segments": {}}
+    )
+
     model = load_tts_model(model_size=model_size)
     clone_prompts = build_clone_prompts(model, voice_samples, sample_index=sample_index)
 
     generated = []
+    reused = 0
     for i, seg in enumerate(segments):
-        output_path = segments_dir / f"{i:04d}_{seg['speaker']}.wav"
+        speaker = seg.get("speaker", "UNK")
+        text = seg.get("text", "").strip()
+        filename = f"{i:04d}_{speaker}.wav"
+        output_path = segments_dir / filename
+
+        # Skip if only regenerating specific speakers
+        if only_speakers and speaker not in only_speakers:
+            if output_path.exists():
+                generated.append(
+                    {**seg, "audio_file": output_path, "sample_rate": SAMPLE_RATE}
+                )
+            continue
+
+        # Check manifest — skip if segment is still valid
+        sample_name = _sample_key(voice_samples, speaker, sample_index)
+        if (
+            not force
+            and output_path.exists()
+            and segment_is_current(
+                manifest, filename, text, speaker, sample_name, model_size, language
+            )
+        ):
+            generated.append(
+                {**seg, "audio_file": output_path, "sample_rate": SAMPLE_RATE}
+            )
+            reused += 1
+            continue
+
         result = generate_segment(
             model,
             seg,
@@ -488,14 +666,28 @@ def generate_segments(
         )
         if result:
             generated.append(result)
-            logger.debug(
-                f"[{i + 1}/{len(segments)}] {seg['speaker']}: {seg.get('text', '')[:60]}…"
-            )
+            # Update manifest entry
+            manifest["segments"][filename] = {
+                "speaker": speaker,
+                "voice_sample": sample_name,
+                "text_hash": _text_hash(text),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            logger.debug(f"[{i + 1}/{len(segments)}] {speaker}: {text[:60]}…")
 
-    skipped = len(segments) - len(generated)
+    # Update run-level manifest fields and save
+    manifest["model"] = model_size
+    manifest["language"] = language
+    save_manifest(segments_dir, manifest)
+
+    new_count = len(generated) - reused
     logger.success(
-        f"TTS generation done — {len(generated)} segments generated"
-        + (f", {skipped} skipped" if skipped else "")
+        f"TTS generation done — {new_count} generated, {reused} reused"
+        + (
+            f", {len(segments) - len(generated)} skipped"
+            if len(generated) < len(segments)
+            else ""
+        )
     )
     return generated
 
@@ -633,25 +825,43 @@ def load_generated_segments(
         segments   : segment list (used to match filenames and merge metadata)
 
     Returns:
-        List of segment dicts with ``audio_file`` and ``sample_rate`` fields,
-        or an empty list if any segment file is missing.
+        List of segment dicts with ``audio_file`` and ``sample_rate`` fields
+        for segments that have been generated.  Missing segments are omitted
+        (previously this returned [] if any were missing).
     """
     segments_dir = Path(output_dir) / "tts_segments"
     if not segments_dir.exists():
         logger.debug(f"No tts_segments/ directory in {output_dir}")
         return []
+
+    manifest = load_manifest(segments_dir)
+
     result = []
+    missing = 0
     for i, seg in enumerate(segments):
         speaker = seg.get("speaker", "UNK")
-        wav_path = segments_dir / f"{i:04d}_{speaker}.wav"
+        filename = f"{i:04d}_{speaker}.wav"
+        wav_path = segments_dir / filename
         if not wav_path.exists():
-            return []
+            missing += 1
+            continue
         try:
             info = sf.info(str(wav_path))
+            entry = manifest.get("segments", {}).get(filename, {})
             result.append(
-                {**seg, "audio_file": wav_path, "sample_rate": info.samplerate}
+                {
+                    **seg,
+                    "audio_file": wav_path,
+                    "sample_rate": info.samplerate,
+                    "voice_sample": entry.get("voice_sample", ""),
+                    "generated_at": entry.get("generated_at", ""),
+                }
             )
         except (OSError, RuntimeError):
-            return []
-    logger.debug(f"Loaded {len(result)} generated segments from disk")
+            missing += 1
+            continue
+    logger.debug(
+        f"Loaded {len(result)} generated segments from disk"
+        + (f" ({missing} missing)" if missing else "")
+    )
     return result

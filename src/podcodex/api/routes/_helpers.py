@@ -5,10 +5,56 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from fastapi import HTTPException
+
+from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import (
     UNKNOWN_SPEAKERS,
     save_segments_json as _core_save_segments,
 )
+
+# ── Shared constants ────────────────────────────
+
+AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".opus", ".wma"}
+
+
+# ── Path helpers ────────────────────────────────
+
+
+def require_show_folder(show_folder: str) -> Path:
+    """Resolve a show folder path, raising 404 if it doesn't exist."""
+    path = Path(show_folder)
+    if not path.is_dir():
+        raise HTTPException(404, f"Show folder not found: {show_folder}")
+    return path
+
+
+def is_downloaded(show_folder: Path, stem: str) -> bool:
+    """Check if an audio file with the given stem exists in the show folder."""
+    return any((show_folder / f"{stem}{ext}").exists() for ext in AUDIO_EXTS)
+
+
+# ── Task submission ─────────────────────────────
+
+
+def submit_task(step: str, audio_path: str, fn, *args) -> TaskResponse:
+    """Submit a background task.
+
+    If a task is already running on this audio_path, return its task_id
+    instead of raising an error — lets the UI reconnect after navigation.
+    """
+    from podcodex.api.tasks import task_manager
+
+    try:
+        info = task_manager.submit(step, audio_path, fn, *args)
+    except ValueError:
+        # Return existing running task so the UI can reconnect
+        existing = task_manager.get_active(audio_path)
+        if existing:
+            return TaskResponse(task_id=existing.task_id)
+        raise HTTPException(409, "A task is already running on this file") from None
+    return TaskResponse(task_id=info.task_id)
+
 
 # Extend the core set with empty string (relevant for flagging UI segments).
 _UNKNOWN_SPEAKERS = UNKNOWN_SPEAKERS | {""}

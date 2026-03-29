@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import ProgressBar from "@/components/editor/ProgressBar";
+import { EmptyState } from "@/components/ui/empty-state";
 
 interface PipelinePanelProps {
   /** Panel title shown in the header. */
@@ -20,6 +21,10 @@ interface PipelinePanelProps {
   taskId: string | null;
   /** Called when task completes. */
   onTaskComplete?: () => void;
+  /** Called when user clicks Retry on a stuck/failed task. */
+  onRetry?: () => void;
+  /** Called when user dismisses a stuck/failed task. */
+  onDismiss?: () => void;
   /** Controls section — rendered inside the collapsible area. */
   controls?: React.ReactNode;
   /** Main content — shown below controls (e.g. SegmentEditor, results). */
@@ -28,6 +33,8 @@ interface PipelinePanelProps {
   emptyMessage?: string;
   /** Prerequisite message — when set, renders only the header + this message. */
   prerequisite?: string;
+  /** Rich blocker content (e.g. install button) — takes precedence over prerequisite. */
+  blocker?: React.ReactNode;
 }
 
 export default function PipelinePanel({
@@ -44,15 +51,18 @@ export default function PipelinePanel({
   children,
   emptyMessage,
   prerequisite,
+  blocker,
+  onRetry,
+  onDismiss,
 }: PipelinePanelProps) {
-  if (prerequisite) {
+  if (blocker || prerequisite) {
     return (
       <div className="flex flex-col h-full">
         <div className="px-4 pt-3 pb-2 border-b border-border">
           <h3 className="text-sm font-semibold">{title}</h3>
           <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
         </div>
-        <div className="p-6 text-muted-foreground">{prerequisite}</div>
+        <div className="p-6">{blocker || <span className="text-muted-foreground">{prerequisite}</span>}</div>
       </div>
     );
   }
@@ -87,14 +97,14 @@ export default function PipelinePanel({
       )}
 
       {/* Progress */}
-      {taskId && <ProgressBar taskId={taskId} onComplete={onTaskComplete} />}
+      {taskId && <ProgressBar taskId={taskId} onComplete={onTaskComplete} onRetry={onRetry} onDismiss={onDismiss} />}
 
       {/* Main content (editor, results, etc.) */}
       {children}
 
       {/* Empty state */}
       {!done && !expanded && !taskId && emptyMessage && (
-        <div className="p-6 text-muted-foreground">{emptyMessage}</div>
+        <EmptyState title={emptyMessage} dashed />
       )}
     </div>
   );

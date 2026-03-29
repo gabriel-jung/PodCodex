@@ -4,6 +4,8 @@ export interface TaskProgress {
   status: "pending" | "running" | "completed" | "failed";
   progress: number;
   message: string;
+  steps?: string[];
+  log?: string[];
   result?: Record<string, unknown>;
   error?: string;
 }

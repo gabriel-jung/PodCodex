@@ -12,7 +12,7 @@ router = APIRouter()
 @router.websocket("/ws")
 async def websocket_progress(ws: WebSocket) -> None:
     await ws.accept()
-    task_manager.register_ws(ws)
+    await task_manager.register_ws(ws)
     try:
         # Keep connection open — server pushes only
         while True:

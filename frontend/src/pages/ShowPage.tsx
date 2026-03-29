@@ -9,21 +9,24 @@ import {
   deleteAudioFile,
 } from "@/api/client";
 import type { Episode } from "@/api/types";
-import { useAppStore } from "@/store";
+import ProgressBar from "@/components/editor/ProgressBar";
+import { useAudioStore } from "@/stores";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, RefreshCw, Play, ExternalLink, Download, CheckCircle, Trash2 } from "lucide-react";
+import { ArrowLeft, RefreshCw, Play, ExternalLink, Download, CheckCircle, Trash2, Podcast, Search } from "lucide-react";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
+import { EmptyState } from "@/components/ui/empty-state";
 import ShowSettings from "@/components/show/ShowSettings";
 import SearchPanel from "@/components/search/SearchPanel";
 
-import { formatDuration, formatDate } from "@/lib/utils";
+import { errorMessage, formatDuration, formatDate } from "@/lib/utils";
 
 type ShowTab = "episodes" | "search" | "settings";
 type ViewMode = "list" | "card";
-type StatusFilter = "all" | "downloaded" | "not_downloaded" | "transcribed" | "polished" | "indexed";
+type StatusFilter = "all" | "downloaded" | "not_downloaded" | "transcribed" | "polished" | "translated" | "synthesized" | "indexed";
 
 export default function ShowPage({ folder }: { folder: string }) {
   const navigate = useNavigate();
-  const { playAudio, audioPath } = useAppStore();
+  const { seekTo, setAudioMeta, audioPath } = useAudioStore();
   const queryClient = useQueryClient();
 
   const [tab, setTab] = useState<ShowTab>("episodes");
@@ -32,15 +35,18 @@ export default function ShowPage({ folder }: { folder: string }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [downloadTaskId, setDownloadTaskId] = useState<string | null>(null);
 
   const { data: meta } = useQuery({
     queryKey: ["showMeta", folder],
     queryFn: () => getShowMeta(folder),
   });
 
-  const { data: episodes } = useQuery({
+  const { data: episodes, isLoading: episodesLoading } = useQuery({
     queryKey: ["episodes", folder],
     queryFn: () => getEpisodes(folder),
+    // Refetch every 5s while a download is in progress
+    refetchInterval: downloadTaskId ? 5000 : false,
   });
 
   const refreshMutation = useMutation({
@@ -52,8 +58,8 @@ export default function ShowPage({ folder }: { folder: string }) {
 
   const downloadMutation = useMutation({
     mutationFn: (guids: string[]) => downloadEpisodes(folder, guids),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["episodes", folder] });
+    onSuccess: (data) => {
+      setDownloadTaskId(data.task_id);
       setSelected(new Set());
     },
   });
@@ -77,6 +83,8 @@ export default function ShowPage({ folder }: { folder: string }) {
     if (filter === "not_downloaded") list = list.filter((e) => !e.downloaded);
     if (filter === "transcribed") list = list.filter((e) => e.transcribed);
     if (filter === "polished") list = list.filter((e) => e.polished);
+    if (filter === "translated") list = list.filter((e) => e.translations.length > 0);
+    if (filter === "synthesized") list = list.filter((e) => e.synthesized);
     if (filter === "indexed") list = list.filter((e) => e.indexed);
     return list;
   }, [all, search, filter]);
@@ -171,6 +179,8 @@ export default function ShowPage({ folder }: { folder: string }) {
           <option value="not_downloaded">Not downloaded ({all.filter((e) => !e.downloaded).length})</option>
           <option value="transcribed">Transcribed ({all.filter((e) => e.transcribed).length})</option>
           <option value="polished">Polished ({all.filter((e) => e.polished).length})</option>
+          <option value="translated">Translated ({all.filter((e) => e.translations.length > 0).length})</option>
+          <option value="synthesized">Synthesized ({all.filter((e) => e.synthesized).length})</option>
           <option value="indexed">Indexed ({all.filter((e) => e.indexed).length})</option>
         </select>
         <div className="flex-1" />
@@ -217,10 +227,10 @@ export default function ShowPage({ folder }: { folder: string }) {
               {downloadableSelected.length > 0 && (
                 <Button
                   onClick={() => downloadMutation.mutate(downloadableSelected.map((e) => e.id))}
-                  disabled={downloadMutation.isPending}
+                  disabled={downloadMutation.isPending || !!downloadTaskId}
                   size="sm"
                 >
-                  {downloadMutation.isPending ? "Downloading..." : `Download ${downloadableSelected.length}`}
+                  {downloadMutation.isPending ? "Starting..." : `Download ${downloadableSelected.length}`}
                 </Button>
               )}
             </>
@@ -239,10 +249,16 @@ export default function ShowPage({ folder }: { folder: string }) {
                 selected={selected.has(ep.id)}
                 onToggle={() => toggleSelect(ep.id)}
                 onOpen={() => goEpisode(ep.stem || ep.id)}
-                onPlay={() => ep.audio_path && playAudio(ep.audio_path, ep.title, ep.artwork_url || meta?.artwork_url, showName)}
+                onPlay={() => ep.audio_path && (setAudioMeta(ep.audio_path, { title: ep.title, artwork: ep.artwork_url || meta?.artwork_url, showName }), seekTo(ep.audio_path, 0))}
                 onDownload={() => downloadMutation.mutate([ep.id])}
-                onDelete={() => ep.audio_path && deleteMutation.mutate(ep.audio_path)}
-                downloading={downloadMutation.isPending}
+                onDelete={() => ep.audio_path && confirmDialog.open({
+                  title: "Delete episode audio?",
+                  description: `This will remove the downloaded audio for "${ep.title}". You can re-download it later from RSS.`,
+                  confirmLabel: "Delete",
+                  variant: "destructive",
+                  onConfirm: () => deleteMutation.mutate(ep.audio_path!),
+                })}
+                downloading={downloadMutation.isPending || !!downloadTaskId}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
               />
             ))}
@@ -257,40 +273,51 @@ export default function ShowPage({ folder }: { folder: string }) {
                 key={ep.id}
                 ep={ep}
                 onOpen={() => goEpisode(ep.stem || ep.id)}
-                onPlay={() => ep.audio_path && playAudio(ep.audio_path, ep.title, ep.artwork_url || meta?.artwork_url, showName)}
+                onPlay={() => ep.audio_path && (setAudioMeta(ep.audio_path, { title: ep.title, artwork: ep.artwork_url || meta?.artwork_url, showName }), seekTo(ep.audio_path, 0))}
                 onDownload={() => downloadMutation.mutate([ep.id])}
-                downloading={downloadMutation.isPending}
+                downloading={downloadMutation.isPending || !!downloadTaskId}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
               />
             ))}
           </div>
         )}
 
-        {filtered.length === 0 && (
-          <div className="p-12 text-center text-muted-foreground">
-            {all.length === 0
-              ? "No episodes. Click \"Refresh RSS\" to fetch the feed."
-              : "No episodes match your filters."}
-          </div>
+        {episodesLoading && (
+          <EmptyState icon={Podcast} title="Loading episodes..." />
+        )}
+        {!episodesLoading && filtered.length === 0 && (
+          all.length === 0 ? (
+            <EmptyState
+              icon={Podcast}
+              title="No episodes yet"
+              description="Refresh the RSS feed to fetch episodes, or add audio files manually."
+              action={{ label: "Refresh RSS", onClick: () => refreshMutation.mutate() }}
+            />
+          ) : (
+            <EmptyState
+              icon={Search}
+              title="No episodes match your filters"
+              description="Try changing the search term or status filter."
+            />
+          )
         )}
       </div>
 
-      {/* Status messages */}
-      {downloadMutation.data && (
-        <div className="px-6 py-2 border-t border-border bg-card/80 flex gap-2 text-xs flex-wrap">
-          {downloadMutation.data.map((r) => (
-            <span
-              key={r.stem}
-              className={r.status === "downloaded" ? "text-green-400" : r.status === "exists" ? "text-muted-foreground" : "text-destructive"}
-            >
-              {r.stem}: {r.status}
-            </span>
-          ))}
+      {/* Download progress */}
+      {downloadTaskId && (
+        <div className="border-t border-border">
+          <ProgressBar
+            taskId={downloadTaskId}
+            onComplete={() => {
+              setDownloadTaskId(null);
+              queryClient.refetchQueries({ queryKey: ["episodes", folder] });
+            }}
+          />
         </div>
       )}
       {refreshMutation.isError && (
         <div className="px-6 py-2 border-t border-border text-destructive text-xs">
-          {(refreshMutation.error as Error).message}
+          {errorMessage(refreshMutation.error)}
         </div>
       )}
       </>)}
@@ -315,6 +342,8 @@ function StatusDots({ ep }: { ep: Episode }) {
     <div className="flex gap-1.5 items-center">
       {ep.transcribed && <span className="w-2 h-2 rounded-full bg-blue-500" title="Transcribed" />}
       {ep.polished && <span className="w-2 h-2 rounded-full bg-purple-500" title="Polished" />}
+      {ep.translations.length > 0 && <span className="w-2 h-2 rounded-full bg-teal-500" title={`Translated (${ep.translations.join(", ")})`} />}
+      {ep.synthesized && <span className="w-2 h-2 rounded-full bg-orange-500" title="Synthesized" />}
       {ep.indexed && <span className="w-2 h-2 rounded-full bg-yellow-500" title="Indexed" />}
     </div>
   );
@@ -370,56 +399,89 @@ function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload, onDele
   );
 }
 
+function PipelineBar({ ep }: { ep: Episode }) {
+  const steps = [ep.downloaded, ep.transcribed, ep.polished, ep.translations.length > 0, ep.synthesized, ep.indexed];
+  const done = steps.filter(Boolean).length;
+  const pct = (done / steps.length) * 100;
+  if (done === 0) return null;
+  const color = done === steps.length ? "bg-green-500" : "bg-primary";
+  return (
+    <div className="h-1 bg-muted/50 rounded-full overflow-hidden">
+      <div className={`h-full ${color} transition-all duration-300`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
 function EpisodeCard({ ep, onOpen, onPlay, onDownload, downloading, isPlaying }: {
   ep: Episode; onOpen: () => void; onPlay: () => void; onDownload: () => void; downloading: boolean; isPlaying: boolean;
 }) {
+  const canDownload = !ep.downloaded && !!ep.audio_url;
   return (
-    <div className="bg-card border border-border rounded-xl p-4 flex flex-col gap-3 hover:border-muted-foreground/30 transition">
-      {ep.artwork_url && (
-        <img src={ep.artwork_url} alt="" className="w-full aspect-square object-cover rounded-lg" />
-      )}
-      <div>
-        {ep.episode_number != null && (
-          <span className="text-xs text-muted-foreground mr-1">#{ep.episode_number}</span>
+    <div
+      className="group relative bg-card border border-border rounded-xl overflow-hidden hover:border-muted-foreground/30 transition cursor-pointer"
+      onClick={onOpen}
+    >
+      {/* Artwork / placeholder */}
+      <div className="relative aspect-square bg-muted">
+        {ep.artwork_url ? (
+          <img src={ep.artwork_url} alt="" className="w-full h-full object-cover" loading="lazy" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-muted-foreground/30">
+            <Play className="w-10 h-10" />
+          </div>
         )}
-        <button
-          onClick={onOpen}
-          className="text-sm font-medium text-foreground hover:text-primary cursor-pointer"
-        >
-          {ep.title}
-        </button>
+
+        {/* Hover overlay with play/download buttons */}
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center gap-3 opacity-0 group-hover:opacity-100">
+          {ep.audio_path && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onPlay(); }}
+              className={`w-10 h-10 rounded-full bg-white/90 flex items-center justify-center transition hover:scale-110 ${isPlaying ? "ring-2 ring-green-400" : ""}`}
+              title="Play"
+            >
+              <Play className="w-5 h-5 text-black fill-black ml-0.5" />
+            </button>
+          )}
+          {canDownload && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDownload(); }}
+              disabled={downloading}
+              className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center transition hover:scale-110"
+              title="Download"
+            >
+              <Download className="w-5 h-5 text-black" />
+            </button>
+          )}
+        </div>
+
+        {/* Top-right: status badges */}
+        <div className="absolute top-2 right-2 flex gap-1">
+          <StatusDots ep={ep} />
+        </div>
+
+        {/* Top-left: episode number */}
+        {ep.episode_number != null && (
+          <span className="absolute top-2 left-2 text-[10px] bg-black/60 text-white px-1.5 py-0.5 rounded-md font-medium">
+            #{ep.episode_number}
+          </span>
+        )}
+
+        {/* Now playing indicator */}
+        {isPlaying && (
+          <span className="absolute bottom-2 right-2 text-[10px] bg-green-500 text-white px-1.5 py-0.5 rounded-md font-medium animate-pulse">
+            Playing
+          </span>
+        )}
       </div>
-      {ep.description && <p className="text-xs text-muted-foreground line-clamp-3">{ep.description}</p>}
-      <div className="flex items-center gap-3 text-xs text-muted-foreground mt-auto">
-        {ep.pub_date && <span>{formatDate(ep.pub_date)}</span>}
-        {ep.duration > 0 && <span>{formatDuration(ep.duration)}</span>}
-        <div className="flex-1" />
-        <StatusDots ep={ep} />
-      </div>
-      <div className="flex gap-1">
-        <Button onClick={onOpen} variant="ghost" size="icon" className="h-8 w-8" title="Open">
-          <ExternalLink className="w-3.5 h-3.5" />
-        </Button>
-        <Button
-          onClick={onDownload}
-          disabled={ep.downloaded || downloading || !ep.audio_url}
-          variant="ghost"
-          size="icon"
-          className={`h-8 w-8 ${!ep.downloaded && ep.audio_url ? "text-green-400" : ""}`}
-          title={ep.downloaded ? "Already downloaded" : "Download"}
-        >
-          <Download className="w-3.5 h-3.5" />
-        </Button>
-        <Button
-          onClick={onPlay}
-          disabled={!ep.audio_path}
-          variant="ghost"
-          size="icon"
-          className={`h-8 w-8 ${isPlaying ? "text-green-400" : ""}`}
-          title={ep.audio_path ? "Play" : "Download first to play"}
-        >
-          <Play className="w-3.5 h-3.5" />
-        </Button>
+
+      {/* Text content */}
+      <div className="p-3 space-y-1.5">
+        <p className="text-sm font-medium line-clamp-2 leading-snug">{ep.title}</p>
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          {ep.pub_date && <span>{formatDate(ep.pub_date)}</span>}
+          {ep.duration > 0 && <span>{formatDuration(ep.duration)}</span>}
+        </div>
+        <PipelineBar ep={ep} />
       </div>
     </div>
   );

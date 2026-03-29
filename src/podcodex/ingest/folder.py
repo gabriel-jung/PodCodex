@@ -12,15 +12,20 @@ Audio-sourced entries take priority when both exist for the same stem.
 from __future__ import annotations
 
 import json
+import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from loguru import logger
 
 from podcodex.core._utils import INTERNAL_SUFFIXES as _INTERNAL_SUFFIXES
+from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.ingest.rss import EPISODE_META_FILE
 
-AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+# ── Scan cache ──────────────────────────────────
+_scan_cache: dict[str, tuple[float, list["EpisodeInfo"]]] = {}
+_CACHE_TTL = 10.0  # seconds
 
 _TRANSCRIPT_MARKERS = frozenset(
     {
@@ -177,30 +182,76 @@ def _make_episode(
 
 
 def scan_folder(show_folder: Path) -> list[EpisodeInfo]:
-    """Return a sorted list of EpisodeInfo for every episode in *show_folder*."""
+    """Return a sorted list of EpisodeInfo for every episode in *show_folder*.
+
+    Results are cached for ``_CACHE_TTL`` seconds.  Call
+    ``invalidate_scan_cache(show_folder)`` after mutations.
+    """
     show_folder = Path(show_folder)
+    key = str(show_folder)
+    now = time.monotonic()
+
+    cached = _scan_cache.get(key)
+    if cached and (now - cached[0]) < _CACHE_TTL:
+        return cached[1]
+
+    result = _scan_folder_uncached(show_folder)
+    _scan_cache[key] = (now, result)
+    return result
+
+
+def invalidate_scan_cache(show_folder: Path | str | None = None) -> None:
+    """Drop cached scan results.  Pass ``None`` to clear everything."""
+    if show_folder is None:
+        _scan_cache.clear()
+    else:
+        _scan_cache.pop(str(show_folder), None)
+
+
+def _scan_folder_uncached(show_folder: Path) -> list[EpisodeInfo]:
+    """Batch-scan a show folder in two OS calls instead of O(n)."""
     episodes: dict[str, EpisodeInfo] = {}
 
-    # Pass 1: audio files
-    for item in show_folder.iterdir():
-        if item.suffix.lower() not in AUDIO_EXTENSIONS:
-            continue
-        stem = item.stem
+    # Single os.scandir for the top-level folder
+    audio_files: dict[str, Path] = {}
+    subdirs: list[str] = []
+    with os.scandir(show_folder) as it:
+        for entry in it:
+            if entry.is_file(follow_symlinks=False):
+                name = entry.name
+                dot = name.rfind(".")
+                if dot > 0 and name[dot:].lower() in AUDIO_EXTENSIONS:
+                    audio_files[name[:dot]] = show_folder / name
+            elif entry.is_dir(follow_symlinks=False):
+                subdirs.append(entry.name)
+
+    # Batch-collect filenames for all subdirectories in one pass each
+    subdir_files: dict[str, set[str]] = {}
+    for name in subdirs:
+        subdir_path = show_folder / name
+        try:
+            with os.scandir(subdir_path) as sub_it:
+                subdir_files[name] = {e.name for e in sub_it}
+        except OSError:
+            subdir_files[name] = set()
+
+    # Build episodes from audio files
+    for stem, audio_path in audio_files.items():
+        existing = subdir_files.get(stem, set())
         output_dir = show_folder / stem
         episodes[stem] = _make_episode(
-            stem, output_dir, _list_dir(output_dir), audio_path=item
+            stem, output_dir, existing, audio_path=audio_path
         )
 
-    # Pass 2 & 3: subdirectories (transcript-only or metadata-only)
-    for item in show_folder.iterdir():
-        if not item.is_dir() or item.name in episodes:
+    # Transcript-only or metadata-only subdirectories
+    for name in subdirs:
+        if name in episodes:
             continue
-        stem = item.name
-        existing = _list_dir(item)
-        has_transcript = any(f"{stem}.{m}" in existing for m in _TRANSCRIPT_MARKERS)
+        existing = subdir_files[name]
+        has_transcript = any(f"{name}.{m}" in existing for m in _TRANSCRIPT_MARKERS)
         has_meta = EPISODE_META_FILE in existing
         if has_transcript or has_meta:
-            episodes[stem] = _make_episode(stem, item, existing)
+            episodes[name] = _make_episode(name, show_folder / name, existing)
 
     return sorted(episodes.values(), key=lambda ep: ep.stem)
 

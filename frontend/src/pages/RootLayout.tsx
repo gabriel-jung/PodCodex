@@ -1,7 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { Outlet } from "@tanstack/react-router";
-import { getHealth } from "@/api/client";
+import { getHealth, getExtras } from "@/api/client";
 import AudioBar from "@/components/layout/AudioBar";
+import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
+import { PlatformProvider } from "@/platform";
+import { useTheme } from "@/hooks/useTheme";
+import { useNavigate } from "@tanstack/react-router";
+import { Sun, Moon, Monitor, Settings } from "lucide-react";
 
 export default function RootLayout() {
   const { data: health, error } = useQuery({
@@ -9,6 +14,15 @@ export default function RootLayout() {
     queryFn: getHealth,
     retry: 3,
     retryDelay: 1000,
+  });
+
+  // Prefetch capabilities at startup so panels never flash "not installed"
+  useQuery({
+    queryKey: ["system", "extras"],
+    queryFn: getExtras,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    enabled: !!health,
   });
 
   if (error) {
@@ -36,11 +50,41 @@ export default function RootLayout() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-background text-foreground">
-      <main className="flex-1 overflow-hidden">
-        <Outlet />
-      </main>
-      <AudioBar />
+    <PlatformProvider>
+      <div className="flex flex-col h-screen bg-background text-foreground">
+        <main className="flex-1 overflow-hidden">
+          <Outlet />
+        </main>
+        <AudioBar />
+        <FloatingActions />
+        <ConfirmDialogHost />
+      </div>
+    </PlatformProvider>
+  );
+}
+
+function FloatingActions() {
+  const navigate = useNavigate();
+  const { theme, setTheme } = useTheme();
+  const next = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
+  const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
+  return (
+    <div className="fixed bottom-24 right-4 flex items-center gap-px rounded-lg bg-card border border-border shadow-sm z-50 overflow-hidden">
+      <button
+        onClick={() => navigate({ to: "/settings" })}
+        title="Settings"
+        className="p-2 text-muted-foreground hover:text-foreground hover:bg-accent transition"
+      >
+        <Settings className="w-4 h-4" />
+      </button>
+      <div className="w-px h-5 bg-border" />
+      <button
+        onClick={() => setTheme(next)}
+        title={`Theme: ${theme} (click for ${next})`}
+        className="p-2 text-muted-foreground hover:text-foreground hover:bg-accent transition"
+      >
+        <ThemeIcon className="w-4 h-4" />
+      </button>
     </div>
   );
 }

@@ -94,6 +94,7 @@ class CreateFromRSSRequest(BaseModel):
     rss_url: str
     save_path: str  # absolute path where the show folder will be created
     folder_name: str = ""  # optional subfolder name (auto-generated if empty)
+    name: str = ""  # display name from search/RSS (falls back to folder_name)
     artwork_url: str = ""  # optional, passed from search result
 
 

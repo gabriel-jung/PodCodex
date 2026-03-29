@@ -7,9 +7,8 @@ import json
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
 
-from podcodex.api.routes._helpers import annotate_flags, read_segments
+from podcodex.api.routes._helpers import annotate_flags, read_segments, submit_task
 from podcodex.api.schemas import Segment, TaskResponse
-from podcodex.api.tasks import task_manager
 from podcodex.core._utils import AudioPaths, merge_consecutive_segments, write_json
 
 router = APIRouter()
@@ -217,8 +216,4 @@ async def start_transcribe(req: TranscribeRequest) -> TaskResponse:
         )
         return {"count": len(segments)}
 
-    try:
-        info = task_manager.submit("transcribe", req.audio_path, run_transcribe, req)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc))
-    return TaskResponse(task_id=info.task_id)
+    return submit_task("transcribe", req.audio_path, run_transcribe, req)

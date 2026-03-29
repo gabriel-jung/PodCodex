@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment, VersionInfo } from "@/api/types";
 import { useSegments } from "@/hooks/useSegments";
-import { useAppStore } from "@/store";
+import { useAudioStore } from "@/stores";
 import EditorToolbar from "./EditorToolbar";
 import SegmentRow from "./SegmentRow";
 import Pagination from "./Pagination";
@@ -68,7 +68,15 @@ export default function SegmentEditor({
 
   // Reset editor when source segments change
   useEffect(() => {
-    if (segments) editor.reset(segments);
+    if (segments) {
+      editor.reset(segments);
+      // Push to store so AudioBar can show current segment text
+      if (audioPath) {
+        useAudioStore.getState().setAudioSegments(audioPath, segments.map((s) => ({
+          start: s.start, end: s.end, speaker: s.speaker, text: s.text,
+        })));
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [segments]);
 
@@ -121,22 +129,33 @@ export default function SegmentEditor({
 
   const UNKNOWN_SPEAKERS = new Set(["UNKNOWN", "UNK", "None", "none", ""]);
 
-  // Compute flagged based on density threshold sliders
-  const isFlaggedSeg = (seg: Segment): boolean => {
-    if (seg.speaker === "[BREAK]") return false;
-    if (UNKNOWN_SPEAKERS.has(seg.speaker)) return true;
-    if (seg.speaker === "[remove]") return true;
+  // Set of original indices whose flags have been manually dismissed
+  const [dismissedFlags, setDismissedFlags] = useState<Set<number>>(new Set());
+
+  // Compute flag reason based on density threshold sliders
+  const flagReason = (seg: Segment): string | null => {
+    if (seg.speaker === "[BREAK]") return null;
+    if (UNKNOWN_SPEAKERS.has(seg.speaker)) return "Unknown speaker";
+    if (seg.speaker === "[remove]") return "Marked for removal";
     const dur = seg.end - seg.start;
     if (dur > 0) {
       const density = seg.text.length / dur;
-      if (density < densityThreshold) return true;
-      if (density > maxDensityThreshold) return true;
+      if (density < densityThreshold) return "Too little text for duration (sparse)";
+      if (density > maxDensityThreshold) return "Too much text for duration (dense)";
     }
-    return false;
+    return null;
+  };
+
+  const isFlaggedSeg = (seg: Segment, origIdx?: number): boolean => {
+    if (origIdx != null && dismissedFlags.has(origIdx)) return false;
+    return flagReason(seg) !== null;
+  };
+
+  const dismissFlag = (origIdx: number) => {
+    setDismissedFlags((prev) => new Set(prev).add(origIdx));
   };
 
   // Map originalIndex → position in editedSegments (for positional reference matching).
-  // After deletes, positions shift so references stay aligned.
   const origToEditedIdx = useMemo(() => {
     const map = new Map<number, number>();
     for (let i = 0; i < editor.originalIndices.length; i++) {
@@ -145,11 +164,92 @@ export default function SegmentEditor({
     return map;
   }, [editor.originalIndices]);
 
-  // Check if a segment differs from its reference (positional match)
+  // Skipped reference indices — these are excluded from positional matching
+  const [skippedRefIndices, setSkippedRefIndices] = useState<Set<number>>(new Set());
+
+  const skipReference = (refIdx: number) => {
+    setSkippedRefIndices((prev) => new Set(prev).add(refIdx));
+  };
+
+  const unskipReference = (refIdx: number) => {
+    setSkippedRefIndices((prev) => {
+      const next = new Set(prev);
+      next.delete(refIdx);
+      return next;
+    });
+  };
+
+  // Build adjusted reference lookup.
+  // Both edited and reference segments started as parallel arrays. When an
+  // edited segment is deleted, the corresponding reference position should
+  // also be consumed (auto-skipped). Manual skips add additional offsets.
+  //
+  // Strategy: build a list of "active" (non-skipped, non-deleted) reference
+  // indices, then assign them 1:1 to edited segments.
+  const refMapping = useMemo(() => {
+    if (!referenceSegments) return null;
+
+    // Detect which original positions were deleted by finding gaps in originalIndices
+    const deletedOriginals = new Set<number>();
+    const survivingSet = new Set(editor.originalIndices);
+    // originalIndices covers 0..maxOrigIdx; anything missing was deleted
+    const maxOrig = editor.originalIndices.length > 0
+      ? Math.max(...editor.originalIndices, referenceSegments.length - 1)
+      : referenceSegments.length - 1;
+    for (let i = 0; i <= maxOrig; i++) {
+      if (!survivingSet.has(i)) deletedOriginals.add(i);
+    }
+
+    // Active reference indices: skip both manually-skipped and auto-skipped (deleted)
+    const activeRefIndices: number[] = [];
+    for (let i = 0; i < referenceSegments.length; i++) {
+      if (!skippedRefIndices.has(i) && !deletedOriginals.has(i)) {
+        activeRefIndices.push(i);
+      }
+    }
+
+    // Map editedIdx → refIdx (1:1 positional)
+    const map = new Map<number, number>();
+    for (let e = 0; e < editor.editedSegments.length && e < activeRefIndices.length; e++) {
+      map.set(e, activeRefIndices[e]);
+    }
+    return map;
+  }, [referenceSegments, skippedRefIndices, editor.editedSegments, editor.originalIndices]);
+
+  // Get reference segment for a given edited position
+  const getRef = (editedIdx: number) => {
+    if (!referenceSegments || !refMapping) return undefined;
+    const refIdx = refMapping.get(editedIdx);
+    return refIdx != null ? referenceSegments[refIdx] : undefined;
+  };
+
+  const getRefIdx = (editedIdx: number) => {
+    return refMapping?.get(editedIdx);
+  };
+
+  // Get manually-skipped reference segments that fall before a given editedIdx
+  // (auto-skipped from deletes are not shown — they follow their deleted segment)
+  const getSkippedBefore = (editedIdx: number) => {
+    if (!referenceSegments || skippedRefIndices.size === 0) return undefined;
+    const myRefIdx = refMapping?.get(editedIdx);
+    const prevRefIdx = editedIdx > 0 ? refMapping?.get(editedIdx - 1) : -1;
+    if (myRefIdx == null) return undefined;
+
+    const skipped: Array<{ refIdx: number; text: string }> = [];
+    const start = prevRefIdx != null ? prevRefIdx + 1 : 0;
+    for (let i = start; i < myRefIdx; i++) {
+      if (skippedRefIndices.has(i)) {
+        skipped.push({ refIdx: i, text: referenceSegments[i].text });
+      }
+    }
+    return skipped.length > 0 ? skipped : undefined;
+  };
+
+  // Check if a segment differs from its reference (positional — shifts with deletes)
   const isChanged = (seg: Segment, origIdx: number) => {
     if (!referenceSegments || seg.speaker === "[BREAK]") return false;
     const editedIdx = origToEditedIdx.get(origIdx) ?? origIdx;
-    const ref = referenceSegments[editedIdx];
+    const ref = getRef(editedIdx);
     return ref != null && ref.text !== seg.text;
   };
 
@@ -162,7 +262,7 @@ export default function SegmentEditor({
     }
     return count;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor.editedSegments, editor.originalIndices, referenceSegments]);
+  }, [editor.editedSegments, editor.originalIndices, referenceSegments, skippedRefIndices]);
 
   // Filter editedSegments for display
   const displaySegments = useMemo(() => {
@@ -178,7 +278,7 @@ export default function SegmentEditor({
       if (speakerFilter && seg.speaker !== speakerFilter && seg.speaker !== "[BREAK]") continue;
 
       // Flagged filter (use client-side density threshold)
-      if (showFlaggedOnly && showFlags && !isFlaggedSeg(seg) && seg.speaker !== "[BREAK]") continue;
+      if (showFlaggedOnly && showFlags && !isFlaggedSeg(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
 
       // Changed filter
       if (showChangedOnly && !isChanged(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
@@ -186,22 +286,29 @@ export default function SegmentEditor({
       // Search filter
       if (searchLower && !seg.text.toLowerCase().includes(searchLower) && seg.speaker !== "[BREAK]") continue;
 
+      // Skip consecutive breaks — only keep the first one
+      if (seg.speaker === "[BREAK]" && result.length > 0 && result[result.length - 1].segment.speaker === "[BREAK]") continue;
+
       result.push({ segment: seg, originalIndex: origIdx, displayIndex: idx });
       idx++;
     }
 
+    // Trim leading/trailing breaks
+    while (result.length > 0 && result[0].segment.speaker === "[BREAK]") result.shift();
+    while (result.length > 0 && result[result.length - 1].segment.speaker === "[BREAK]") result.pop();
+
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor.editedSegments, editor.originalIndices, segments, speakerFilter, showFlaggedOnly, showChangedOnly, showFlags, searchLower, referenceSegments, densityThreshold, maxDensityThreshold]);
+  }, [editor.editedSegments, editor.originalIndices, segments, speakerFilter, showFlaggedOnly, showChangedOnly, showFlags, searchLower, referenceSegments, densityThreshold, maxDensityThreshold, dismissedFlags]);
 
   const totalPages = Math.ceil(displaySegments.length / pageSize);
   const pageSegments = displaySegments.slice(page * pageSize, (page + 1) * pageSize);
 
   // Flagged count based on current density thresholds
   const flaggedCount = useMemo(() => {
-    return editor.editedSegments.filter(isFlaggedSeg).length;
+    return editor.editedSegments.filter((seg, i) => isFlaggedSeg(seg, editor.originalIndices[i])).length;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor.editedSegments, densityThreshold, maxDensityThreshold]);
+  }, [editor.editedSegments, editor.originalIndices, densityThreshold, maxDensityThreshold, dismissedFlags]);
 
   // Reset page when filters change
   useEffect(() => setPage(0), [speakerFilter, showFlaggedOnly, showChangedOnly, searchQuery]);
@@ -212,7 +319,7 @@ export default function SegmentEditor({
   }, [totalPages, page]);
 
   // Track which segment is currently playing
-  const storeAudioPath = useAppStore((s) => s.audioPath);
+  const storeAudioPath = useAudioStore((s) => s.audioPath);
   const isPlayingThisFile = audioPath != null && storeAudioPath === audioPath;
 
   const [activeOrigIdx, setActiveOrigIdx] = useState<number | null>(null);
@@ -224,8 +331,8 @@ export default function SegmentEditor({
     }
     // Subscribe to currentTime changes at ~4Hz to find active segment
     const interval = setInterval(() => {
-      const t = useAppStore.getState().currentTime;
-      if (!useAppStore.getState().isPlaying) return;
+      const t = useAudioStore.getState().currentTime;
+      if (!useAudioStore.getState().isPlaying) return;
       // Find segment containing current time
       for (let e = editor.editedSegments.length - 1; e >= 0; e--) {
         const seg = editor.editedSegments[e];
@@ -346,18 +453,27 @@ export default function SegmentEditor({
         onEstimateTimestamps={missingTimestamps && episodeDuration ? handleEstimateTimestamps : undefined}
         onDeleteFlagged={() => {
           const indices = editor.editedSegments
-            .map((seg, i) => isFlaggedSeg(seg) ? editor.originalIndices[i] : -1)
+            .map((seg, i) => isFlaggedSeg(seg, editor.originalIndices[i]) ? editor.originalIndices[i] : -1)
             .filter(i => i >= 0);
           for (const idx of indices) editor.deleteSegment(idx);
         }}
         isSaving={saveMutation.isPending}
+        audioPath={audioPath}
+        exportSource={
+          editorKey === "transcript" ? "transcript"
+            : editorKey === "polish" ? "polished"
+            : editorKey.startsWith("translate-") ? editorKey.replace("translate-", "")
+            : undefined
+        }
       />
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {pageSegments.map(({ segment, originalIndex, displayIndex }) => {
           const isBreak = segment.speaker === "[BREAK]";
           const editedIdx = origToEditedIdx.get(originalIndex) ?? originalIndex;
-          const ref = referenceSegments?.[editedIdx];
+          const ref = getRef(editedIdx);
+          const refIdx = getRefIdx(editedIdx);
+          const skippedBefore = getSkippedBefore(editedIdx);
           return (
             <div key={`${editorKey}-${originalIndex}`} data-orig-idx={originalIndex}>
             <SegmentRow
@@ -365,13 +481,19 @@ export default function SegmentEditor({
               index={displayIndex}
               totalCount={displaySegments.length}
               isEdited={editor.isDirty && (originalIndex >= segments.length || segment !== segments[originalIndex])}
-              isFlagged={showFlags ? isFlaggedSeg(segment) : false}
+              isFlagged={showFlags ? isFlaggedSeg(segment, originalIndex) : false}
+              flagReason={showFlags ? flagReason(segment) : null}
+              onDismissFlag={showFlags ? () => dismissFlag(originalIndex) : undefined}
               isChanged={isChanged(segment, originalIndex)}
               isActive={activeOrigIdx === originalIndex}
               isBreak={isBreak}
               audioPath={audioPath}
               referenceText={ref && !isBreak ? ref.text : undefined}
               referenceLabel={referenceLabel}
+              referenceIndex={refIdx}
+              skippedBefore={!isBreak ? skippedBefore : undefined}
+              onSkipReference={ref && !isBreak ? () => skipReference(refIdx!) : undefined}
+              onUnskipReference={!isBreak ? unskipReference : undefined}
               speakers={speakers}
               showDelete={showDelete}
               showSpeaker={showSpeaker && !isBreak}

@@ -15,7 +15,7 @@ A native desktop application built with Tauri (Rust) + React + FastAPI. Manages 
 │  Tauri shell (native window, file system access)  │
 │  ┌──────────────────────────────────────────────┐ │
 │  │  React frontend (Vite + TypeScript)          │ │
-│  │  └── Zustand store, TanStack Query           │ │
+│  │  └── Zustand stores, TanStack Query           │ │
 │  └──────────────────────────────────────────────┘ │
 │         ↕ HTTP + WebSocket                        │
 │  ┌──────────────────────────────────────────────┐ │
@@ -36,7 +36,7 @@ The frontend can also run standalone in a browser (without Tauri) for developmen
 **Show management:**
 - Search and add podcasts by name (Apple Podcasts directory) or RSS URL
 - Import existing show folders
-- Browse episodes with status indicators (downloaded, transcribed, polished, translated, indexed)
+- Browse episodes with status indicators (downloaded, transcribed, polished, translated, synthesized, indexed)
 - Download episodes from RSS feeds (single or batch)
 - Delete audio files
 
@@ -56,6 +56,17 @@ The frontend can also run standalone in a browser (without Tauri) for developmen
 - Multiple target languages per episode
 - Side-by-side view of source and translated text
 
+**Synthesis (Qwen3-TTS):**
+- Extract voice samples from source audio per speaker
+- TTS generation segment-by-segment with cloned voices
+- Episode assembly from generated segments
+
+**Indexing & search:**
+- Choose embedding model and chunking strategy
+- Vectorize episodes into local SQLite store
+- Semantic and exact-match search across indexed segments
+- Random quote with optional filters
+
 **Segment editor (shared across all steps):**
 - Inline text editing with auto-resize
 - Speaker dropdown per segment
@@ -69,18 +80,20 @@ The frontend can also run standalone in a browser (without Tauri) for developmen
 **Audio player:**
 - Global player persists across page navigation
 - Play from any segment with one click
-- Seek bar, skip ±15s, volume control
+- WaveSurfer.js waveform with drag-to-seek, skip ±15s, volume control
 
 ### Quick start
 
 ```bash
-# Prerequisites
-brew install node           # or your OS equivalent
-python3.12 -m venv .venv
+# Prerequisites — Node.js (pick one)
+# Linux/WSL (via nvm, recommended)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
+nvm install --lts
+# macOS
+brew install node
 
 # Install Python dependencies
-uv pip install -e ".[desktop,ingest]" --python .venv/bin/python
-
+uv sync --extra desktop
 # Install frontend dependencies
 cd frontend && npm install && cd ..
 
@@ -125,7 +138,12 @@ The FastAPI backend exposes these route groups (all under `/api`):
 | `/translate` | Load/save segments, start translate, manual prompts, language list |
 | `/audio` | Serve audio files, extract clips, delete files |
 | `/fs` | Directory browser for folder picker |
+| `/synthesize` | Voice synthesis: samples, TTS generation, assembly |
+| `/index` | Vectorize episodes, manage embeddings |
+| `/search` | Semantic and keyword search across episodes |
 | `/ws` | WebSocket for real-time task progress |
+| `/export` | Export segments as text, SRT, VTT, or ZIP archive |
+| `/models` | Model cache management, VRAM monitoring |
 
 ---
 
@@ -144,6 +162,12 @@ Search your podcast transcripts from Discord with slash commands.
 - `/sync` — manually sync the command tree (admin)
 
 All search commands support optional `show`, `episode`, `speaker`, `source`, and `compact` filters.
+
+**Admin commands:**
+
+- `/unlock <show> <password>` — unlock a show for this server
+- `/lock <show>` — remove a show from this server
+- `/help` — list available commands and usage
 
 ### Setting up the Discord application
 
@@ -259,11 +283,11 @@ Audio → transcribe → polish → translate → synthesize
 These are only needed if you run the pipeline locally (not needed for the bot deployment).
 
 ```bash
+# Ubuntu/Debian/WSL
+sudo apt install ffmpeg sox
+
 # macOS
 brew install ffmpeg sox
-
-# Ubuntu/Debian
-sudo apt install ffmpeg sox
 ```
 
 ### Installation
@@ -272,14 +296,20 @@ sudo apt install ffmpeg sox
 git clone https://github.com/gabriel-jung/podcodex
 cd podcodex
 
-# Bot only (search + Discord)
-uv pip install -e ".[bot]"
+# Desktop app (lightweight — browse, upload, edit transcripts)
+uv sync --extra desktop
 
-# Desktop app (Tauri frontend + FastAPI backend)
-uv pip install -e ".[desktop,ingest]"
+# Add automatic transcription, TTS, LLM polish/translate
+uv sync --extra desktop --extra pipeline
+
+# Add semantic search & indexing
+uv sync --extra desktop --extra rag
+
+# Bot only (search + Discord)
+uv sync --extra bot --extra rag
 
 # Full install (everything)
-uv pip install -e ".[bot,pipeline,desktop,app,ingest]"
+uv sync --extra bot --extra pipeline --extra rag --extra desktop --extra app
 ```
 
 ### Environment variables
@@ -476,10 +506,10 @@ results = retriever.retrieve(
 
 ### Streamlit app (legacy)
 
-> **Note:** The Streamlit app is being replaced by the desktop app (see above). It remains functional and covers features not yet available in the desktop app (synthesis, indexing, search).
+> **Note:** The Streamlit app is being replaced by the desktop app (see above). It remains functional for quick prototyping.
 
 ```bash
-uv pip install -e ".[app]" --python .venv/bin/python
+uv sync --extra app
 streamlit run streamlit/app.py
 ```
 
@@ -552,7 +582,7 @@ Outputs are organised per episode under the show folder. Each step produces a `.
 | `podcodex.api` | FastAPI backend for the desktop app (REST + WebSocket, background tasks) |
 | `podcodex.bot` | Discord bot with `/search`, `/exact`, `/random`, `/stats`, `/episodes` commands |
 | `podcodex.rag` | Chunking, embedding, vector storage (Qdrant + SQLite), and hybrid retrieval |
-| `podcodex.cli` | CLI: `podcodex vectorize / sync / query / list / delete` |
+| `podcodex.cli` | CLI: `podcodex init / rss / import / vectorize / sync / query / list / delete / validate / enrich` |
 | `podcodex.core.transcribe` | WhisperX transcription + phonetic alignment + speaker diarization |
 | `podcodex.core.polish` | LLM-based source correction (proper nouns, spelling, punctuation) |
 | `podcodex.core.translate` | LLM-based transcript translation (Ollama, OpenAI-compatible API, or manual) |
@@ -566,18 +596,17 @@ Outputs are organised per episode under the show folder. Each step produces a `.
 
 | Extra | What it installs | Use case |
 |-------|-----------------|----------|
-| *(base)* | torch, sentence-transformers, qdrant-client, etc. | Core embeddings and vector storage |
-| `[bot]` | discord.py | Discord bot |
-| `[desktop]` | fastapi, uvicorn, python-multipart | Desktop app backend |
-| `[app]` | streamlit | Legacy Streamlit UI |
-| `[ingest]` | feedparser | RSS feed parsing |
-| `[pipeline]` | whisperx, pyannote-audio, ollama, openai, chonkie, qwen-tts, etc. | Full processing pipeline |
+| *(none)* | torch, sentence-transformers, qdrant-client, feedparser, etc. | Core embeddings, vector storage, RSS |
+| `bot` | discord.py | Discord bot |
+| `desktop` | fastapi, uvicorn, python-multipart | Desktop app backend |
+| `app` | streamlit | Legacy Streamlit UI |
+| `pipeline` | whisperx, pyannote-audio, ollama, openai, chonkie, qwen-tts, etc. | Full processing pipeline |
 
 ## Roadmap
 
-### Desktop app — in progress
+### Desktop app
 
-The desktop app currently covers the core workflow: **show management → episode download → transcribe → polish → translate → edit**. These features are planned:
+The desktop app covers the full workflow: **show management → episode download → transcribe → polish → translate → synthesize → index → search**, with a segment editor and audio player throughout. Planned improvements:
 
 **Near-term:**
 - Confirmation dialogs for destructive actions (delete audio, overwrite transcript)
@@ -591,21 +620,7 @@ The desktop app currently covers the core workflow: **show management → episod
 - Engine abstraction layer to support pluggable transcription backends
 - Per-engine parameter forms (each engine has different settings)
 
-**Synthesis tab:**
-- Voice sample extraction from source audio
-- Speaker-to-voice mapping UI
-- TTS generation with Qwen3-TTS (segment-by-segment with review)
-- Episode assembly with timing control
-- Hallucination detection for generated speech
-
-**Indexing & search tab:**
-- Embedding model and chunking strategy selection
-- Vectorize episodes into local SQLite store
-- Sync to Qdrant for search
-- In-app semantic search across episodes
-
 **Editor improvements:**
-- Audio waveform visualization
 - Bulk speaker reassignment (select multiple segments)
 - Undo/redo history
 - Keyboard shortcuts for common operations
@@ -614,8 +629,6 @@ The desktop app currently covers the core workflow: **show management → episod
 **Infrastructure:**
 - Pipeline orchestration (run transcribe → polish → translate in one action)
 - Concurrent tasks on the same episode (e.g., polish + translate in parallel)
-- Global settings page (default LLM provider, model, language)
-- Export to SRT/VTT subtitles
 
 ### Pipeline
 

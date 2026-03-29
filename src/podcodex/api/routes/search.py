@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from podcodex.api.routes._helpers import submit_task
+from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import AudioPaths
 
 router = APIRouter()
@@ -235,10 +237,8 @@ class SyncRequest(BaseModel):
 
 
 @router.post("/sync")
-async def sync_to_qdrant(req: SyncRequest) -> dict:
+async def sync_to_qdrant(req: SyncRequest) -> TaskResponse:
     """Push indexed episodes from LocalStore (SQLite) to Qdrant."""
-    from podcodex.api.tasks import task_manager
-
     db_path = Path(req.folder) / "vectors.db"
     if not db_path.exists():
         raise HTTPException(404, "No vectors.db found — index episodes first")
@@ -294,8 +294,7 @@ async def sync_to_qdrant(req: SyncRequest) -> dict:
         progress_cb(1.0, f"Done — {total_chunks} chunks pushed to Qdrant")
         local.close()
 
-    task = task_manager.submit("sync", req.folder, run_sync)
-    return {"task_id": task.task_id}
+    return submit_task("sync", req.folder, run_sync)
 
 
 # ── Exact (substring) search ────────────────────────────

@@ -5,14 +5,17 @@ import type {
   AssembleRequest,
   CollectionInfo,
   CreateFromRSSResponse,
+  DirListing,
   DownloadResult,
   Episode,
+  ExtrasResponse,
   ExtractVoicesRequest,
   GenerateRequest,
   GeneratedSegment,
   HealthResponse,
   IndexRequest,
   IndexStatus,
+  ModelsResponse,
   PipelineConfig,
   PodcastSearchResult,
   PolishRequest,
@@ -45,6 +48,31 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const getHealth = () => json<HealthResponse>("/api/health");
 
+// ── System ─────────────────────────────────
+
+export const getExtras = () => json<ExtrasResponse>("/api/system/extras");
+
+export const getActiveTask = (audioPath: string) =>
+  json<{
+    task_id: string;
+    status: string;
+    progress: number;
+    message: string;
+    steps?: string[];
+    log?: string[];
+    result?: Record<string, unknown>;
+    error?: string;
+  } | null>(
+    `/api/tasks/active?audio_path=${encodeURIComponent(audioPath)}`,
+  );
+
+export const installExtra = (extra: string) =>
+  json<TaskResponse>("/api/system/install-extra", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ extra }),
+  });
+
 // ── Config ──────────────────────────────────
 
 export const getConfig = () => json<AppConfig>("/api/config");
@@ -66,11 +94,11 @@ export const searchPodcasts = (query: string, limit = 8) =>
 
 export const listShows = () => json<ShowSummary[]>("/api/shows");
 
-export const createFromRSS = (rssUrl: string, savePath: string, folderName?: string, artworkUrl?: string) =>
+export const createFromRSS = (rssUrl: string, savePath: string, folderName?: string, artworkUrl?: string, name?: string) =>
   json<CreateFromRSSResponse>("/api/shows/from-rss", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rss_url: rssUrl, save_path: savePath, folder_name: folderName || "", artwork_url: artworkUrl || "" }),
+    body: JSON.stringify({ rss_url: rssUrl, save_path: savePath, folder_name: folderName || "", artwork_url: artworkUrl || "", name: name || "" }),
   });
 
 export const registerShow = (path: string) =>
@@ -103,7 +131,7 @@ export const refreshRSS = (folder: string) =>
   });
 
 export const downloadEpisodes = (folder: string, guids: string[]) =>
-  json<DownloadResult[]>(
+  json<TaskResponse>(
     `/api/shows/${encodeURIComponent(folder)}/rss/download`,
     {
       method: "POST",
@@ -261,28 +289,14 @@ export const applyTranslateManual = (params: { audio_path: string; lang: string;
 
 // ── Filesystem ──────────────────────────────
 
-export interface DirEntry {
-  name: string;
-  path: string;
-  is_show: boolean;
-  has_audio: boolean;
-}
-
-export interface FileEntry {
-  name: string;
-  path: string;
-}
-
-export interface DirListing {
-  path: string;
-  parent: string | null;
-  dirs: DirEntry[];
-  files: FileEntry[];
-  error: string | null;
-}
-
 export const listDirectory = (path: string, showFiles = false) =>
   json<DirListing>(`/api/fs/list?path=${encodeURIComponent(path)}&show_files=${showFiles}`);
+
+export const createDirectory = (path: string, name: string) =>
+  json<{ path: string | null; error: string | null }>(
+    `/api/fs/mkdir?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`,
+    { method: "POST" },
+  );
 
 // ── Audio ───────────────────────────────────
 
@@ -308,6 +322,29 @@ export const startExtractVoices = (req: ExtractVoicesRequest) =>
 
 export const getVoiceSamples = (audioPath: string) =>
   json<Record<string, VoiceSample[]>>(`/api/synthesize/voice-samples?audio_path=${encodeURIComponent(audioPath)}`);
+
+export async function uploadVoiceSample(audioPath: string, speaker: string, file: File): Promise<VoiceSample & { speaker: string }> {
+  const form = new FormData();
+  form.append("audio_path", audioPath);
+  form.append("speaker", speaker);
+  form.append("file", file);
+  const res = await fetch("/api/synthesize/upload-sample", { method: "POST", body: form });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+export const extractSelectedSamples = (audioPath: string, selections: { speaker: string; start: number; end: number; text: string }[]) =>
+  json<{ status: string; speakers: number; total_samples: number; samples: Record<string, VoiceSample[]> }>(
+    "/api/synthesize/extract-selected",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audio_path: audioPath, selections }),
+    },
+  );
 
 export const startGenerateTTS = (req: GenerateRequest) =>
   json<TaskResponse>("/api/synthesize/generate", {
@@ -401,3 +438,38 @@ export const getIndexStats = (folder: string, show: string = "") =>
     total_episodes: number;
     total_chunks: number;
   }>(`/api/search/stats?folder=${encodeURIComponent(folder)}&show=${encodeURIComponent(show)}`);
+
+// ── Models ────────────────────────────────
+
+export const getModels = () => json<ModelsResponse>("/api/models");
+
+export const deleteModel = (modelId: string) =>
+  json<{ status: string; model_id: string }>(`/api/models/${encodeURIComponent(modelId)}`, {
+    method: "DELETE",
+  });
+
+// ── Export ─────────────────────────────────
+
+export const exportTextUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
+  const params = new URLSearchParams({ audio_path: audioPath, source });
+  if (outputDir) params.set("output_dir", outputDir);
+  return `/api/export/text?${params}`;
+};
+
+export const exportSrtUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
+  const params = new URLSearchParams({ audio_path: audioPath, source });
+  if (outputDir) params.set("output_dir", outputDir);
+  return `/api/export/srt?${params}`;
+};
+
+export const exportVttUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
+  const params = new URLSearchParams({ audio_path: audioPath, source });
+  if (outputDir) params.set("output_dir", outputDir);
+  return `/api/export/vtt?${params}`;
+};
+
+export const exportZipUrl = (audioPath: string, outputDir?: string) => {
+  const params = new URLSearchParams({ audio_path: audioPath });
+  if (outputDir) params.set("output_dir", outputDir);
+  return `/api/export/zip?${params}`;
+};

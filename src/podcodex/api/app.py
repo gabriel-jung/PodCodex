@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,9 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from podcodex.api.routes import (
     audio,
     config,
+    export,
     filesystem,
     health,
     index,
+    models,
     polish,
     rss,
     search,
@@ -21,6 +26,8 @@ from podcodex.api.routes import (
     translate,
     ws,
 )
+
+load_dotenv()
 
 
 def create_app() -> FastAPI:
@@ -58,6 +65,9 @@ def create_app() -> FastAPI:
     app.include_router(index.router, prefix="/api/index", tags=["index"])
     app.include_router(search.router, prefix="/api/search", tags=["search"])
     app.include_router(ws.router, prefix="/api", tags=["ws"])
+
+    app.include_router(models.router, prefix="/api/models", tags=["models"])
+    app.include_router(export.router, prefix="/api/export", tags=["export"])
 
     return app
 

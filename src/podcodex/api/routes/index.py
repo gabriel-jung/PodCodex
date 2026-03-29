@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
+from podcodex.api.routes._helpers import submit_task
 from podcodex.api.schemas import TaskResponse
-from podcodex.api.tasks import task_manager
 from podcodex.core._utils import AudioPaths
 
 router = APIRouter()
@@ -179,24 +179,27 @@ async def start_index(req: IndexRequest) -> TaskResponse:
         db_path = p.vectors_db
         local = LocalStore(db_path)
 
-        progress_cb(0.05, "Starting vectorization...")
+        try:
+            progress_cb(0.05, "Starting vectorization...")
 
-        def on_progress(step, total, label):
-            frac = 0.05 + 0.9 * (step / max(total, 1))
-            progress_cb(frac, f"{label} ({step + 1}/{total})")
+            def on_progress(step, total, label):
+                frac = 0.05 + 0.9 * (step / max(total, 1))
+                progress_cb(frac, f"{label} ({step + 1}/{total})")
 
-        total_upserted = vectorize_batch(
-            transcript,
-            req_data.show,
-            episode,
-            req_data.model_keys,
-            req_data.chunkings,
-            local,
-            chunk_size=req_data.chunk_size,
-            threshold=req_data.threshold,
-            overwrite=req_data.overwrite,
-            on_progress=on_progress,
-        )
+            total_upserted = vectorize_batch(
+                transcript,
+                req_data.show,
+                episode,
+                req_data.model_keys,
+                req_data.chunkings,
+                local,
+                chunk_size=req_data.chunk_size,
+                threshold=req_data.threshold,
+                overwrite=req_data.overwrite,
+                on_progress=on_progress,
+            )
+        finally:
+            local.close()
 
         # Touch marker file for status detection
         marker = p.base.parent / ".rag_indexed"
@@ -207,8 +210,4 @@ async def start_index(req: IndexRequest) -> TaskResponse:
             "source": source_label,
         }
 
-    try:
-        info = task_manager.submit("index", req.audio_path, run_index, req)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc))
-    return TaskResponse(task_id=info.task_id)
+    return submit_task("index", req.audio_path, run_index, req)

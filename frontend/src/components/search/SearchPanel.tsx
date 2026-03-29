@@ -1,20 +1,21 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import type { Episode, ShowMeta, SearchResult } from "@/api/types";
+import type { SearchResult } from "@/api/types";
+import { useEpisodeStore } from "@/stores";
 import { getSearchConfig, getIndexStats, searchQuery, exactSearch, randomQuote } from "@/api/client";
-import { getShowName } from "@/lib/utils";
+import { errorMessage, getShowName, selectClass } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Settings2, Shuffle } from "lucide-react";
+import { useCapabilities } from "@/hooks/useCapabilities";
 import HelpLabel from "@/components/common/HelpLabel";
+import MissingDependency from "@/components/common/MissingDependency";
 import SearchResultCard from "./SearchResultCard";
 
 type SearchMode = "semantic" | "exact";
 
-/** Episode-scoped search (from EpisodePage). */
+/** Episode-scoped search (from EpisodePage) — reads from store. */
 interface EpisodeSearchProps {
   scope: "episode";
-  episode: Episode;
-  showMeta?: ShowMeta | null;
 }
 
 /** Show-wide search (from ShowPage). */
@@ -28,9 +29,11 @@ type SearchPanelProps = EpisodeSearchProps | ShowSearchProps;
 
 export default function SearchPanel(props: SearchPanelProps) {
   const isShowScope = props.scope === "show";
-  const showName = isShowScope ? props.showName : getShowName(props.showMeta, props.episode.audio_path);
+  const storeEpisode = useEpisodeStore((s) => s.episode);
+  const storeShowMeta = useEpisodeStore((s) => s.showMeta);
+  const showName = isShowScope ? props.showName : getShowName(storeShowMeta, storeEpisode?.audio_path);
   const folder = isShowScope ? props.folder : undefined;
-  const episode = isShowScope ? undefined : props.episode;
+  const episode = isShowScope ? undefined : storeEpisode;
   const audioPath = episode?.audio_path ?? undefined;
 
   const [query, setQuery] = useState("");
@@ -94,6 +97,9 @@ export default function SearchPanel(props: SearchPanelProps) {
   const error = searchMutation.error || randomMutation.error;
   const hasResults = searchMutation.isSuccess || randomMutation.isSuccess;
 
+  const { has: hasCap } = useCapabilities();
+  const hasRAG = hasCap("embeddings") && hasCap("torch");
+
   // Prerequisite checks
   const prereq = isShowScope
     ? (stats?.total_chunks ?? 0) === 0
@@ -130,7 +136,15 @@ export default function SearchPanel(props: SearchPanelProps) {
         </div>
       )}
 
-      {prereq ? (
+      {!hasRAG ? (
+        <div className={`${isShowScope ? "p-12" : "p-6"}`}>
+          <MissingDependency
+            extra="rag"
+            label="Search & indexing libraries"
+            description="Semantic search requires torch, sentence-transformers, and other dependencies from the rag extra."
+          />
+        </div>
+      ) : prereq ? (
         <div className={`${isShowScope ? "p-12 text-center" : "p-6"} text-muted-foreground text-sm`}>{prereq}</div>
       ) : (<>
         {/* Query bar */}
@@ -201,13 +215,13 @@ export default function SearchPanel(props: SearchPanelProps) {
 
           {/* Advanced settings */}
           {showAdvanced && (
-            <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center text-sm pl-3 border-l-2 border-border">
+            <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
               <HelpLabel label="Embedding model" help="Which model was used to index. Must match what you selected in the Index tab." />
               {config ? (
                 <select
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
-                  className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm"
+                  className={selectClass}
                 >
                   {Object.entries(config.models).map(([key, spec]) => (
                     <option key={key} value={key}>{spec.label}</option>
@@ -222,7 +236,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                 <select
                   value={chunking}
                   onChange={(e) => setChunking(e.target.value)}
-                  className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm"
+                  className={selectClass}
                 >
                   {Object.entries(config.chunking_strategies).map(([key, desc]) => (
                     <option key={key} value={key} title={desc}>{key}</option>
@@ -266,7 +280,7 @@ export default function SearchPanel(props: SearchPanelProps) {
         {/* Error */}
         {isError && (
           <div className={`${px} py-2`}>
-            <p className="text-destructive text-xs">{(error as Error).message}</p>
+            <p className="text-destructive text-xs">{errorMessage(error)}</p>
           </div>
         )}
 

@@ -1,11 +1,34 @@
 # Roadmap
 
-## Semi-automatic speaker mapping
+## In Progress: Desktop App Improvements
+
+8 improvements organized into 7 phases. Phases A–F are complete; Phase G is next.
+
+### Completed
+
+| Phase | What | Status |
+|-------|------|--------|
+| A | **Multi-store Zustand** — split single `useAppStore` into 8 domain-sliced stores (audio, episode, show, config, ui, pipeline, editor, search) | Done |
+| B | **Eliminate prop drilling** — pipeline panels read episode/showMeta from `episodeStore` instead of props | Done |
+| C | **UI patterns + accent color** — CircleButton, SettingRow/Section components, EmptyState dashed variant, accent color with distinct chroma | Done |
+| D | **WaveSurfer.js waveform** — bar-style waveform in AudioBar replacing the seek slider, theme-aware colors via MutationObserver | Done |
+| E | **Platform abstraction** — `PlatformProvider` with interfaces for FS, window, lifecycle; web fallbacks; Tauri detection ready | Done |
+| F | **Backend — model cache + export** — centralized model cache (`~/.podcodex/models/`), VRAM monitoring, SRT/VTT/text/ZIP export endpoints | Done |
+
+### Next Up
+
+| Phase | What | Status |
+|-------|------|--------|
+| G | **Frontend — model panel + export UI** — Settings page with ModelCachePanel (cache dir, VRAM bar, model table), export dropdown in EditorToolbar, ZIP download in episode header | Pending |
+
+---
+
+## Semi-automatic Speaker Mapping
 
 **Goal**: auto-generate `speaker_map.json` for new episodes without manual UI intervention.
 
 ### What's already in place
-- `extract_voice_samples()` (`core/synthesize.py`) — extracts per-speaker audio clips from a diarized episode, ready to feed a reference database
+- `extract_voice_samples()` (`core/synthesize.py`) — extracts per-speaker audio clips from a diarized episode
 - `save_speaker_map()` / `load_speaker_map()` (`core/transcribe.py`) — the map is already wired into the pipeline
 - `assign_speakers()` — `SPEAKER_XX` labels are ready to match against
 
@@ -14,6 +37,7 @@
 - **Reference database** — `{speaker_name: embedding}` built from manually-labeled episodes
 - **Matching logic** — cosine similarity + confidence threshold → `{SPEAKER_00: "Name", ...}`
 - **Entry point** — takes a diarized episode + reference DB, writes `speaker_map.json`
+- **Show-level speaker registry** — first-class Speaker entity with name, voice embedding, metadata
 
 ### Bootstrapping
 A few manually-labeled episodes are needed first to build the reference database.
@@ -21,41 +45,41 @@ For podcasts with a small fixed cast this is a one-time cost.
 
 ---
 
-## What's Done ✓
+## Generation Versioning
 
-| Item | Files |
-|------|-------|
-| RAG module: chunker, embedder, store, retriever | `src/podcodex/rag/` |
-| SQLite LocalStore (source of truth, skip re-embed) | `src/podcodex/rag/localstore.py` |
-| CLI: `podcodex vectorize / sync / query / list / delete` | `src/podcodex/cli.py` |
-| Discord bot: `/search`, `/exact`, `/stats`, `/episodes`, `/setup`, `/sync` | `src/podcodex/bot/bot.py` |
-| Paginated results, rich embeds, expand-in-context view | `src/podcodex/bot/ui.py` |
-| Full test suite passing (239 tests) | `tests/` |
-| Notebook `rag_dev.ipynb` updated to current API | `../Notebooks/rag_dev.ipynb` |
+**Goal**: keep N versions of each pipeline step output with full provenance.
 
----
+### What to track per version
+- Timestamp, model name/size, pipeline parameters
+- Content hash (detect what actually changed)
+- Manual edit flag + editor identity
+- Parent version (for diff/rollback)
 
-## Discord Bot Improvements
-
-### Done ✓
-- Richer embeds with score bars, highlighted matches, speaker info
-- Paginated results with prev/next buttons
-- Expand-in-context view (surrounding chunks)
-- `/exact` mention counts ("N mentions in M chunks")
-- `/random` command (WIP, uncommitted)
-
-### Still open
-- Conversation context: stateless today; follow-up questions would be nice
-- LLM-synthesised answers on top of retrieved chunks
-- Multi-show cross-collection search
+### Design considerations
+- Store versions alongside current output (e.g. `.polished.v1.json`, `.polished.v2.json`) or in a manifest
+- UI needs a version picker per pipeline step
+- Requires backend schema changes — deeper rework, not just endpoint additions
 
 ---
 
-## App Replacement (Streamlit → Desktop)
+## Timeline Editor
 
-**Why:** Streamlit was a useful prototype shell. Not suited for a proper product: no real state management, poor UX control, hard to share.
+**Goal**: multi-track assembly with jingle/music reinsertion for final episode production.
 
-### Architecture (settled)
+### What this enables
+- Drag-and-drop segment reordering
+- Insert jingles, intros, outros, music beds between segments
+- Per-segment volume/fade controls
+- Export assembled episode as single audio file
+
+### Dependencies
+- WaveSurfer.js regions plugin (Phase D provides the foundation)
+- Audio mixing backend (ffmpeg or similar)
+- Deeper frontend state management for multi-track editing
+
+---
+
+## App Architecture (Settled)
 
 | Layer | Choice | Notes |
 |---|---|---|
@@ -65,9 +89,7 @@ For podcasts with a small fixed cast this is a one-time cost.
 | Storage | SQLite + Qdrant (optional) | Qdrant only needed for RAG |
 | Apple Silicon | MLX for inference | Better perf than PyTorch on M-series |
 
-The FastAPI backend is API-first: the Tauri app points at `localhost` by default, but a user can point it at a remote GPU server instead. No code changes needed to support either mode.
-
-**Reference:** [Voicebox](https://github.com/jamiepine/voicebox) (MIT) uses this exact stack. We won't fork it, but use it as a reference for Tauri config, Makefile, and React shell.
+The FastAPI backend is API-first: the Tauri app points at `localhost` by default, but a user can point it at a remote GPU server instead.
 
 ### Install tiers
 
@@ -81,31 +103,7 @@ Users install only what they need via `uv sync --extra`:
 
 The app detects which extras are installed at startup and shows/hides features accordingly.
 
-### First-time setup flow
-
-1. Download and install Docker Desktop _(optional — only for RAG)_
-2. Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-3. Download PodCodex release zip, move app to Applications
-4. Double-click `Setup.command` — runs `uv sync`, pulls Qdrant image if Docker present, creates `.env` template
-5. Add HuggingFace token to `.env` _(one-time; requires accepting pyannote licence on HF website)_
-6. Double-click `PodCodex.app` — starts backend, opens UI
-
-### Day-to-day
-
-Double-click `PodCodex.app`. Starts Qdrant container (if installed), starts FastAPI backend, opens webview. Quit app → cleans up.
-
-### Screens (replacing Streamlit)
-
-- Episode management / status dashboard _(new)_
-- Transcription + diarization
-- Speaker map editor
-- Translation / polish
-- TTS synthesis
-- RAG search _(hidden if `rag` extra not installed)_
-
 ### Dev setup
-
-Makefile orchestrates everything (following Voicebox pattern):
 
 ```
 make setup   # uv sync + frontend deps + Rust toolchain check
@@ -131,18 +129,36 @@ make build   # production .app bundle
 - Deduplication by guid against already-downloaded episodes
 - Integration with `scan_folder()` / `EpisodeInfo` so the dashboard reflects RSS state
 
-**Design not settled yet — discuss before implementing.**
+---
+
+## What's Done
+
+| Item | Files |
+|------|-------|
+| RAG module: chunker, embedder, store, retriever | `src/podcodex/rag/` |
+| SQLite LocalStore (source of truth, skip re-embed) | `src/podcodex/rag/localstore.py` |
+| CLI: `podcodex vectorize / sync / query / list / delete` | `src/podcodex/cli.py` |
+| Discord bot: `/search`, `/exact`, `/stats`, `/episodes`, `/setup`, `/sync` | `src/podcodex/bot/bot.py` |
+| Paginated results, rich embeds, expand-in-context view | `src/podcodex/bot/ui.py` |
+| Full test suite passing (239 tests) | `tests/` |
+| RAG layer polish (incremental sync, BM25 persistence, dedup) | `src/podcodex/rag/` |
+| Model cache management (`~/.podcodex/models/`) | `src/podcodex/core/cache.py` |
+| Export endpoints (text, SRT, VTT, ZIP) | `src/podcodex/api/routes/export.py` |
 
 ---
 
-## RAG Layer Polish ✓
+## Discord Bot Improvements
 
-All items resolved:
+### Done
+- Richer embeds with score bars, highlighted matches, speaker info
+- Paginated results with prev/next buttons
+- Expand-in-context view (surrounding chunks)
+- `/exact` mention counts ("N mentions in M chunks")
 
-- ~~**Incremental sync**~~ ✓ — `podcodex sync` works
-- ~~**`--db` UX**~~ ✓ — covered by `PODCODEX_DB` env var + `--db` flag
-- ~~**BM25 persistence**~~ ✓ — BM25 index cached in retriever
-- ~~**Multi-episode deduplication**~~ — not a real issue; `source` filter handles it
+### Still open
+- Conversation context: stateless today; follow-up questions would be nice
+- LLM-synthesised answers on top of retrieved chunks
+- Multi-show cross-collection search
 
 ---
 

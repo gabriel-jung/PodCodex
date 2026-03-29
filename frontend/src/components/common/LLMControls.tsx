@@ -1,9 +1,12 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Settings2 } from "lucide-react";
 import { getPipelineConfig } from "@/api/client";
+import { selectClass } from "@/lib/utils";
+import { useCapabilities } from "@/hooks/useCapabilities";
+import AdvancedToggle from "./AdvancedToggle";
 import HelpLabel from "./HelpLabel";
+import MissingDependency from "./MissingDependency";
 import ManualModePanel from "./ManualModePanel";
 
 export type LLMMode = "ollama" | "api" | "manual";
@@ -15,6 +18,8 @@ export interface LLMConfig {
   context: string;
   sourceLang: string;
   batchSize: number;
+  apiBaseUrl: string;
+  apiKey: string;
 }
 
 interface LLMControlsProps {
@@ -26,7 +31,7 @@ interface LLMControlsProps {
   runLabel?: string;
   extraFields?: React.ReactNode;
   manualPrompts?: {
-    generate: () => Promise<{ batch_index: number; prompt: string; segment_count: number }[]>;
+    generate: (batchMinutes: number) => Promise<{ batch_index: number; prompt: string; segment_count: number }[]>;
     apply: (corrections: unknown[]) => Promise<unknown>;
     onApplied?: () => void;
   };
@@ -42,7 +47,10 @@ export default function LLMControls({
   extraFields,
   manualPrompts,
 }: LLMControlsProps) {
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const { has: hasCap } = useCapabilities();
+  const hasOllama = hasCap("ollama");
+  const hasOpenAI = hasCap("openai");
+  const hasLLM = hasOllama || hasOpenAI;
   const modes: LLMMode[] = manualPrompts ? ["ollama", "api", "manual"] : ["ollama", "api"];
 
   const { data: pipelineConfig } = useQuery({
@@ -55,12 +63,25 @@ export default function LLMControls({
     ? Object.entries(pipelineConfig.llm_providers).filter(([k]) => k !== "ollama")
     : [];
 
+  // Current provider info (env var name, default model, etc.)
+  const providerInfo = pipelineConfig?.llm_providers[config.provider] as
+    | { url?: string; model?: string; label?: string; env_var?: string }
+    | undefined;
+
   return (
     <div className="px-4 pb-3 space-y-3">
+      {!hasLLM && (
+        <MissingDependency
+          extra="pipeline"
+          label="LLM libraries"
+          description="Required for automatic AI processing. You can use manual mode instead — it gives you prompts to paste into any chatbot."
+        />
+      )}
+
       {/* Standard parameters — 2-column layout on wide screens */}
       <div className="flex flex-col lg:flex-row gap-6 text-sm">
         {/* Left: form fields */}
-        <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 max-w-md items-center">
+        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 max-w-md items-start sm:items-center">
           <HelpLabel label="Mode" help="Ollama = runs on your own computer (free, needs a GPU). API = uses a cloud service (OpenAI, Mistral, etc. — requires an API key). Manual = shows you the prompts so you can paste them into any chatbot yourself." />
           <div className="flex gap-3">
             {modes.map((m) => (
@@ -84,7 +105,7 @@ export default function LLMControls({
                   <select
                     value={config.provider}
                     onChange={(e) => onChange({ provider: e.target.value })}
-                    className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm"
+                    className={selectClass}
                   >
                     {apiProviders.length > 0
                       ? apiProviders.map(([key, spec]) => (
@@ -103,6 +124,27 @@ export default function LLMControls({
                 placeholder="auto from provider"
                 className="input py-1 text-sm"
               />
+
+              {config.mode === "api" && (
+                <>
+                  <HelpLabel label="Endpoint" help={providerInfo?.url ? "Custom API endpoint URL. Leave empty to use the provider's default endpoint. Useful for proxies." : "OpenAI-compatible API endpoint URL (required)."} />
+                  <input
+                    value={config.apiBaseUrl}
+                    onChange={(e) => onChange({ apiBaseUrl: e.target.value })}
+                    placeholder={providerInfo?.url || "https://api.example.com/v1"}
+                    className="input py-1 text-sm"
+                  />
+
+                  <HelpLabel label="API key" help={providerInfo?.env_var ? `Authentication key. Leave empty to use the ${providerInfo.env_var} environment variable.` : "API key for your endpoint."} />
+                  <input
+                    type="password"
+                    value={config.apiKey}
+                    onChange={(e) => onChange({ apiKey: e.target.value })}
+                    placeholder={providerInfo?.env_var ? `from ${providerInfo.env_var}` : "required"}
+                    className="input py-1 text-sm"
+                  />
+                </>
+              )}
             </>
           )}
 
@@ -130,34 +172,24 @@ export default function LLMControls({
 
       {/* Advanced settings */}
       {config.mode !== "manual" && (
-        <div className="border-t border-border/50 pt-3 space-y-3">
-          <button
-            onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition"
-          >
-            <Settings2 className="w-3 h-3" />
-            <span className="font-semibold uppercase tracking-wide">{showAdvanced ? "Hide advanced" : "Advanced settings"}</span>
-          </button>
-
-          {showAdvanced && (
-            <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center text-sm pl-3 border-l-2 border-border">
-              <HelpLabel label="Batch size" help="How many segments are processed at once. Smaller values (5-10) are safer but slower. Larger values (20-50) are faster but may fail if the AI can't handle that much text." />
-              <input
-                type="number"
-                value={config.batchSize}
-                onChange={(e) => onChange({ batchSize: Number(e.target.value) })}
-                min={1}
-                className="input py-1 text-sm w-20"
-              />
-            </div>
-          )}
-        </div>
+        <AdvancedToggle className="border-t border-border/50 pt-3 space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
+            <HelpLabel label="Batch size" help="How many segments are processed at once. Smaller values (5-10) are safer but slower. Larger values (20-50) are faster but may fail if the AI can't handle that much text." />
+            <input
+              type="number"
+              value={config.batchSize}
+              onChange={(e) => onChange({ batchSize: Number(e.target.value) })}
+              min={1}
+              className="input py-1 text-sm w-20"
+            />
+          </div>
+        </AdvancedToggle>
       )}
 
       {/* Run button */}
       {config.mode !== "manual" && (
         <div className="border-t border-border/50 pt-3">
-          <Button onClick={onRun} disabled={isPending} size="sm">
+          <Button onClick={onRun} disabled={isPending || !hasLLM} size="sm" title={!hasLLM ? "Install the pipeline extra to enable automatic processing" : undefined}>
             {isPending ? "Starting..." : runLabel}
           </Button>
           {error && <p className="text-destructive text-xs">{error}</p>}
@@ -165,11 +197,13 @@ export default function LLMControls({
       )}
 
       {config.mode === "manual" && manualPrompts && (
-        <ManualModePanel
-          generatePrompts={manualPrompts.generate}
-          applyCorrections={manualPrompts.apply}
-          onApplied={manualPrompts.onApplied}
-        />
+        <div className="border-t border-border/50 pt-4">
+          <ManualModePanel
+            generatePrompts={manualPrompts.generate}
+            applyCorrections={manualPrompts.apply}
+            onApplied={manualPrompts.onApplied}
+          />
+        </div>
       )}
     </div>
   );

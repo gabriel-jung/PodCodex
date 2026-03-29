@@ -11,6 +11,7 @@ import {
 } from "@/api/client";
 import type { PodcastSearchResult, ShowSummary } from "@/api/types";
 import { Button } from "@/components/ui/button";
+import { errorMessage, timeAgo } from "@/lib/utils";
 import FolderPicker from "@/components/common/FolderPicker";
 import { Plus, FolderOpen, Search, FileAudio, RefreshCw } from "lucide-react";
 
@@ -27,6 +28,13 @@ export default function HomePage() {
   const [addMode, setAddMode] = useState<"rss" | "import" | "file" | null>(null);
 
   const rssShows = shows?.filter((s) => s.has_rss) ?? [];
+
+  // Oldest RSS update across all shows (to display in the button)
+  const oldestRssUpdate = rssShows.reduce<string | null>((oldest, s) => {
+    if (!s.last_rss_update) return oldest;
+    if (!oldest) return s.last_rss_update;
+    return s.last_rss_update < oldest ? s.last_rss_update : oldest;
+  }, null);
 
   const refreshAllMutation = useMutation({
     mutationFn: async () => {
@@ -66,7 +74,11 @@ export default function HomePage() {
                 title="Refresh RSS feeds for all shows"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${refreshAllMutation.isPending ? "animate-spin" : ""}`} />
-                {refreshAllMutation.isPending ? "Refreshing..." : "Update feeds"}
+                {refreshAllMutation.isPending
+                  ? "Refreshing..."
+                  : oldestRssUpdate
+                    ? `Updated ${timeAgo(oldestRssUpdate)}`
+                    : "Update feeds"}
               </Button>
             )}
             <Button onClick={() => setAddMode("rss")} size="sm"><Plus /> Add podcast</Button>
@@ -151,7 +163,7 @@ function ShowCard({ show, onClick }: { show: ShowSummary; onClick: () => void })
         <h3 className="font-medium truncate group-hover:text-primary transition">{show.name}</h3>
         <div className="mt-1 flex gap-3 text-xs text-muted-foreground">
           {show.episode_count > 0 && <span>{show.episode_count} episode{show.episode_count !== 1 && "s"}</span>}
-          {show.has_rss && <span>RSS</span>}
+          {show.last_rss_update && <span title={show.last_rss_update}>updated {timeAgo(show.last_rss_update)}</span>}
         </div>
       </div>
     </button>
@@ -167,6 +179,7 @@ function AddShowModal({ defaultSavePath, onClose, onCreated }: {
   const [searchQuery, setSearchQuery] = useState("");
   const [rssUrl, setRssUrl] = useState("");
   const [artworkUrl, setArtworkUrl] = useState("");
+  const [showName, setShowName] = useState("");
   const [fullPath, setFullPath] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -180,7 +193,7 @@ function AddShowModal({ defaultSavePath, onClose, onCreated }: {
       const lastSlash = fullPath.lastIndexOf("/");
       const savePath = lastSlash > 0 ? fullPath.slice(0, lastSlash) : fullPath;
       const folderName = lastSlash > 0 ? fullPath.slice(lastSlash + 1) : "";
-      return createFromRSS(rssUrl, savePath, folderName, artworkUrl);
+      return createFromRSS(rssUrl, savePath, folderName, artworkUrl, showName);
     },
     onSuccess: (data) => onCreated(data.folder),
   });
@@ -191,6 +204,7 @@ function AddShowModal({ defaultSavePath, onClose, onCreated }: {
   const selectResult = (result: PodcastSearchResult) => {
     setRssUrl(result.feed_url);
     setArtworkUrl(result.artwork_url);
+    setShowName(result.name);
     setFullPath(defaultPath(result.name));
     setStep("location");
   };
@@ -301,7 +315,7 @@ function AddShowModal({ defaultSavePath, onClose, onCreated }: {
                 </div>
               </div>
               {createMutation.isError && (
-                <p className="text-destructive text-xs">{(createMutation.error as Error).message}</p>
+                <p className="text-destructive text-xs">{errorMessage(createMutation.error)}</p>
               )}
               <div className="flex gap-2">
                 <Button onClick={() => setStep("search")} variant="outline" className="flex-1">

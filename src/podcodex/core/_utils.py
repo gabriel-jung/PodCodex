@@ -430,6 +430,65 @@ def segments_to_text(segments: list[dict], text_field: str = "text") -> str:
     return "\n\n".join(lines)
 
 
+def segments_to_srt(segments: list[dict], text_field: str = "text") -> str:
+    """Format segments as SRT subtitles.
+
+    Args:
+        segments   : list of segment dicts with speaker, start, end, and text fields
+        text_field : which field to use for the text content (default "text")
+    """
+    lines = []
+    for i, seg in enumerate(segments, 1):
+        start = seg.get("start", 0.0)
+        end = seg.get("end", 0.0)
+        speaker = seg.get("speaker", "")
+        text = seg.get(text_field) or "[empty]"
+        prefix = f"{speaker}: " if speaker else ""
+        lines.append(str(i))
+        lines.append(f"{_srt_ts(start)} --> {_srt_ts(end)}")
+        lines.append(f"{prefix}{text}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _srt_ts(seconds: float) -> str:
+    """Format seconds as SRT timestamp (HH:MM:SS,mmm)."""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def segments_to_vtt(segments: list[dict], text_field: str = "text") -> str:
+    """Format segments as WebVTT subtitles.
+
+    Args:
+        segments   : list of segment dicts with speaker, start, end, and text fields
+        text_field : which field to use for the text content (default "text")
+    """
+    lines = ["WEBVTT", ""]
+    for seg in segments:
+        start = seg.get("start", 0.0)
+        end = seg.get("end", 0.0)
+        speaker = seg.get("speaker", "")
+        text = seg.get(text_field) or "[empty]"
+        prefix = f"<v {speaker}>" if speaker else ""
+        lines.append(f"{_vtt_ts(start)} --> {_vtt_ts(end)}")
+        lines.append(f"{prefix}{text}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _vtt_ts(seconds: float) -> str:
+    """Format seconds as VTT timestamp (HH:MM:SS.mmm)."""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
 def merge_consecutive_segments(
     segments: list[dict], max_gap: float = DEFAULT_MAX_GAP
 ) -> list[dict]:

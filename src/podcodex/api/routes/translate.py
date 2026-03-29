@@ -10,9 +10,9 @@ from podcodex.api.routes._helpers import (
     load_best_source,
     read_segments,
     save_segments_json,
+    submit_task,
 )
 from podcodex.api.schemas import Segment, TaskResponse
-from podcodex.api.tasks import task_manager
 from podcodex.core._utils import AudioPaths
 
 router = APIRouter()
@@ -102,6 +102,8 @@ class TranslateRequest(BaseModel):
     source_lang: str = "French"
     target_lang: str = "English"
     batch_size: int = 10
+    api_base_url: str = ""
+    api_key: str | None = None
 
 
 @router.post("/start", response_model=TaskResponse)
@@ -129,6 +131,8 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
             model=req_data.model,
             batch_size=req_data.batch_size,
             provider=req_data.provider,
+            api_base_url=req_data.api_base_url,
+            api_key=req_data.api_key,
             original_segments=segments,
             merge=False,  # source segments are already merged on load/upload
             on_batch=on_batch,
@@ -143,11 +147,7 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
         )
         return {"count": len(translated), "lang": req_data.target_lang}
 
-    try:
-        info = task_manager.submit("translate", req.audio_path, run_translate, req)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc))
-    return TaskResponse(task_id=info.task_id)
+    return submit_task("translate", req.audio_path, run_translate, req)
 
 
 # ── Manual mode ──────────────────────────────────────────

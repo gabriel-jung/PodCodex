@@ -45,11 +45,17 @@ class PplxEmbedder:
         from sentence_transformers import SentenceTransformer
 
         logger.info(f"Loading PplxEmbedder ({_PPLX_SPEC.hf_model}) on {device}")
+        from podcodex.core.cache import get_hf_cache_dir
+
+        cache_dir = str(get_hf_cache_dir())
         self._ctx_model = AutoModel.from_pretrained(
-            _PPLX_SPEC.hf_model, trust_remote_code=True
+            _PPLX_SPEC.hf_model, trust_remote_code=True, cache_dir=cache_dir
         ).to(device)
         self._query_model = SentenceTransformer(
-            _PPLX_SPEC.hf_query_model, trust_remote_code=True, device=device
+            _PPLX_SPEC.hf_query_model,
+            trust_remote_code=True,
+            device=device,
+            cache_folder=cache_dir,
         )
         self._dim = _PPLX_SPEC.dim
 
@@ -106,7 +112,13 @@ class E5Embedder:
 
         hf_model = MODELS[model_key].hf_model
         logger.info(f"Loading E5Embedder ({hf_model}) on {device}")
-        self._model = SentenceTransformer(hf_model, device=device)
+        from podcodex.core.cache import get_hf_cache_dir
+
+        self._model = SentenceTransformer(
+            hf_model,
+            device=device,
+            cache_folder=str(get_hf_cache_dir()),
+        )
         self._batch_size = batch_size
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
@@ -152,7 +164,9 @@ class BGEEmbedder:
         self, device: str = "cpu", use_fp16: bool = True, batch_size: int = 32
     ):
         from FlagEmbedding import BGEM3FlagModel
+        from podcodex.core.cache import get_hf_cache_dir
 
+        get_hf_cache_dir()  # ensure HF_HOME is set before BGEM3 downloads
         devices = [device] if device else None
         logger.info(f"Loading BGEEmbedder ({self.MODEL}) on {device}")
         self._model = BGEM3FlagModel(self.MODEL, use_fp16=use_fp16, devices=devices)

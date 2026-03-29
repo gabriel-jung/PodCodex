@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import fields
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
+from podcodex.api.routes._helpers import is_downloaded, require_show_folder
 from podcodex.api.schemas import EpisodeOut, ShowMeta, UnifiedEpisodeOut
 from podcodex.ingest.folder import EpisodeInfo, scan_folder
 from podcodex.ingest.rss import episode_stem, load_episode_meta, load_feed_cache
@@ -36,9 +37,7 @@ def _episode_to_dict(ep: EpisodeInfo) -> dict:
 
 @router.get("/{show_folder:path}/meta", response_model=ShowMeta)
 async def get_show_meta(show_folder: str) -> ShowMeta:
-    path = Path(show_folder)
-    if not path.is_dir():
-        raise HTTPException(404, f"Show folder not found: {show_folder}")
+    path = require_show_folder(show_folder)
     meta = load_show_meta(path)
     if meta is None:
         return ShowMeta(name=path.name)
@@ -62,6 +61,7 @@ async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
             rss_url=meta.rss_url,
             language=meta.language,
             speakers=meta.speakers,
+            artwork_url=meta.artwork_url,
         ),
     )
     return {"status": "saved"}
@@ -72,21 +72,12 @@ async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
 
 @router.get("/{show_folder:path}/episodes", response_model=list[EpisodeOut])
 async def list_episodes(show_folder: str) -> list[dict]:
-    path = Path(show_folder)
-    if not path.is_dir():
-        raise HTTPException(404, f"Show folder not found: {show_folder}")
+    path = require_show_folder(show_folder)
     episodes = scan_folder(path)
     return [_episode_to_dict(ep) for ep in episodes]
 
 
 # ── Unified episodes (local + RSS merged) ───
-
-
-def _is_downloaded(show_folder: Path, stem: str) -> bool:
-    for ext in (".mp3", ".m4a", ".wav", ".ogg", ".flac"):
-        if (show_folder / f"{stem}{ext}").exists():
-            return True
-    return False
 
 
 @router.get(
@@ -95,9 +86,7 @@ def _is_downloaded(show_folder: Path, stem: str) -> bool:
 )
 async def unified_episodes(show_folder: str) -> list[dict]:
     """Return a merged list of RSS + local episodes."""
-    path = Path(show_folder)
-    if not path.is_dir():
-        raise HTTPException(404, f"Show folder not found: {show_folder}")
+    path = require_show_folder(show_folder)
 
     local = {ep.stem: ep for ep in scan_folder(path)}
     rss = load_feed_cache(path) or []
@@ -122,7 +111,7 @@ async def unified_episodes(show_folder: str) -> list[dict]:
                 "duration": r.duration,
                 "episode_number": r.episode_number,
                 "audio_path": str(ep.audio_path) if ep and ep.audio_path else None,
-                "downloaded": _is_downloaded(path, stem) if stem else False,
+                "downloaded": is_downloaded(path, stem) if stem else False,
                 "transcribed": ep.transcribed if ep else False,
                 "polished": ep.polished if ep else False,
                 "indexed": ep.indexed if ep else False,
