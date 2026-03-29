@@ -7,9 +7,18 @@ interface ConfigState {
   /** Playback speed (0.5 - 3.0). */
   playbackSpeed: number;
   setPlaybackSpeed: (speed: number) => void;
-  /** Hide episodes shorter than this (minutes). 0 = show all. */
+  /** Hide episodes shorter than this (minutes). 0 = no minimum. */
   minDurationMinutes: number;
   setMinDurationMinutes: (min: number) => void;
+  /** Hide episodes longer than this (minutes). 0 = no maximum. */
+  maxDurationMinutes: number;
+  setMaxDurationMinutes: (max: number) => void;
+  /** Only show episodes whose title contains this text. Empty = no filter. */
+  titleInclude: string;
+  setTitleInclude: (v: string) => void;
+  /** Hide episodes whose title contains this text. Empty = no filter. */
+  titleExclude: string;
+  setTitleExclude: (v: string) => void;
 }
 
 export const useConfigStore = create<ConfigState>()(
@@ -19,6 +28,12 @@ export const useConfigStore = create<ConfigState>()(
       setPlaybackSpeed: (speed) => set({ playbackSpeed: speed }),
       minDurationMinutes: 0,
       setMinDurationMinutes: (min) => set({ minDurationMinutes: min }),
+      maxDurationMinutes: 0,
+      setMaxDurationMinutes: (max) => set({ maxDurationMinutes: max }),
+      titleInclude: "",
+      setTitleInclude: (v) => set({ titleInclude: v }),
+      titleExclude: "",
+      setTitleExclude: (v) => set({ titleExclude: v }),
     }),
     { name: "podcodex-config" },
   ),

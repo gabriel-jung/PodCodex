@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEpisodeStore } from "@/stores";
+import { useEpisodeStore, usePipelineConfigStore } from "@/stores";
 import {
   getTranslateSegments,
   getTranslateSegmentsRaw,
@@ -23,7 +23,8 @@ export default function TranslatePanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
   if (!episode) return null;
-  const [targetLang, setTargetLang] = useState("English");
+  const targetLang = usePipelineConfigStore((s) => s.targetLang);
+  const setTargetLang = usePipelineConfigStore((s) => s.setTargetLang);
   const [editingLang, setEditingLang] = useState(episode.translations[0] || "");
 
   const task = usePipelineTask(episode.audio_path, "translate", {

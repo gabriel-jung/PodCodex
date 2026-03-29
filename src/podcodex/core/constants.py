@@ -18,14 +18,15 @@ from __future__ import annotations
 # Values = short descriptions shown in the UI dropdown.
 
 WHISPER_MODELS: dict[str, str] = {
-    "large-v3": "Best quality — needs a GPU with ~10 GB memory",
-    "medium": "Good quality/speed trade-off — needs ~5 GB GPU memory",
-    "small": "Faster, slightly less accurate — needs ~2 GB GPU memory",
+    "large-v3": "Best quality — needs ~10 GB VRAM",
+    "large-v3-turbo": "Near-best quality, 3× faster — needs ~6 GB VRAM",
+    "medium": "Good quality/speed trade-off — needs ~5 GB VRAM",
+    "small": "Faster, slightly less accurate — needs ~2 GB VRAM",
     "base": "Very fast, lower accuracy — works on most GPUs",
     "tiny": "Fastest, lowest accuracy — useful for quick tests",
 }
 
-DEFAULT_WHISPER_MODEL = "large-v3"
+DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 
 # ── Text-to-Speech (TTS) model sizes ────────────────────────────────────────
 #

@@ -8,12 +8,13 @@ interface ProgressBarProps {
   onComplete?: () => void;
   onRetry?: () => void;
   onDismiss?: () => void;
+  onCancel?: () => void;
 }
 
 /** Seconds without a WebSocket update before showing the "stuck" hint. */
 const STALE_THRESHOLD = 30;
 
-export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss }: ProgressBarProps) {
+export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, onCancel }: ProgressBarProps) {
   const progress = useProgress(taskId);
   const completeCalled = useRef(false);
   const [showLog, setShowLog] = useState(false);
@@ -66,6 +67,8 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss }: 
   const currentMsg = progress?.message || "Starting...";
   const isFailed = progress?.status === "failed";
   const isDone = progress?.status === "completed";
+  const isCancelled = progress?.status === "cancelled";
+  const isRunning = !isDone && !isFailed && !isCancelled;
   const showRetry = isFailed || stale;
 
   return (
@@ -75,10 +78,20 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss }: 
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground truncate mr-2">{currentMsg}</span>
           <div className="flex items-center gap-2 shrink-0">
-            {stale && !isFailed && !isDone && (
+            {stale && isRunning && (
               <span className="text-xs text-yellow-500">No updates</span>
             )}
             <span className="text-muted-foreground">{pct}%</span>
+            {onCancel && isRunning && (
+              <Button onClick={onCancel} variant="ghost" size="sm" className="text-xs h-6 px-1.5">
+                Cancel
+              </Button>
+            )}
+            {onDismiss && !isRunning && (
+              <Button onClick={onDismiss} variant="ghost" size="sm" className="text-xs h-6 px-1.5">
+                Dismiss
+              </Button>
+            )}
           </div>
         </div>
         <div className="h-2 rounded-full bg-muted overflow-hidden">

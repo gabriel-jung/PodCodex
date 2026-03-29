@@ -68,6 +68,30 @@ def _register_folder(cfg: AppConfig, folder_path: str) -> AppConfig:
     return cfg
 
 
+def _mask(value: str) -> str:
+    """Show first 4 chars + asterisks for a secret value."""
+    if len(value) <= 4:
+        return "****"
+    return value[:4] + "****"
+
+
+def _detect_env_keys() -> dict[str, str]:
+    """Return masked values for known API keys found in the environment."""
+    import os
+
+    detected: dict[str, str] = {}
+    hf = os.environ.get("HF_TOKEN", "")
+    if hf:
+        detected["hf_token"] = _mask(hf)
+    for provider, spec in LLM_PROVIDERS.items():
+        env_var = spec.get("env_var", "")
+        if env_var:
+            val = os.environ.get(env_var, "")
+            if val:
+                detected[provider] = _mask(val)
+    return detected
+
+
 @router.get("/api/pipeline-config")
 async def pipeline_config() -> dict:
     """Return all pipeline constants (models, providers, strategies).
@@ -85,6 +109,7 @@ async def pipeline_config() -> dict:
         "default_ollama_model": DEFAULT_OLLAMA_MODEL,
         "default_source_lang": DEFAULT_SOURCE_LANG,
         "default_target_lang": DEFAULT_TARGET_LANG,
+        "detected_keys": _detect_env_keys(),
     }
 
 

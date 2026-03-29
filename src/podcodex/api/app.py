@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from podcodex.api.routes import (
     audio,
+    batch,
     config,
     export,
     filesystem,
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
     app.include_router(search.router, prefix="/api/search", tags=["search"])
     app.include_router(ws.router, prefix="/api", tags=["ws"])
 
+    app.include_router(batch.router, prefix="/api/batch", tags=["batch"])
     app.include_router(models.router, prefix="/api/models", tags=["models"])
     app.include_router(export.router, prefix="/api/export", tags=["export"])
 

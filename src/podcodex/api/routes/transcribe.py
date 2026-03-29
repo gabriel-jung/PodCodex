@@ -156,7 +156,7 @@ async def upload_transcript(
 class TranscribeRequest(BaseModel):
     audio_path: str
     output_dir: str | None = None
-    model_size: str = "large-v3"
+    model_size: str = "large-v3-turbo"
     language: str = ""
     batch_size: int = 16
     force: bool = False

@@ -1,24 +1,47 @@
-import { useState } from "react";
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getPolishSegments, getSegments } from "@/api/client";
 import { buildDefaultContext } from "@/lib/utils";
 import type { LLMConfig } from "@/components/common/LLMControls";
 import type { Episode, ShowMeta, Segment } from "@/api/types";
+import { usePipelineConfigStore } from "@/stores";
 
 /**
- * Shared default LLM configuration state for pipeline panels (polish, translate).
+ * Shared LLM configuration state for pipeline panels (polish, translate).
+ * Reads from and writes to the persisted pipeline config store.
+ * Initialises sourceLang and context from show/episode metadata on first use.
  */
-export function useLLMConfig(episode: Episode, showMeta: ShowMeta | null) {
-  return useState<LLMConfig>({
-    mode: "ollama",
-    provider: "openai",
-    model: "",
-    context: buildDefaultContext(episode, showMeta),
-    sourceLang: showMeta?.language || "French",
-    batchSize: 10,
-    apiBaseUrl: "",
-    apiKey: "",
-  });
+export function useLLMConfig(
+  episode: Episode,
+  showMeta: ShowMeta | null,
+): [LLMConfig, (patch: LLMConfig | ((prev: LLMConfig) => LLMConfig)) => void] {
+  const llm = usePipelineConfigStore((s) => s.llm);
+  const setLLM = usePipelineConfigStore((s) => s.setLLM);
+
+  // Seed sourceLang and context from show metadata when they're empty
+  useEffect(() => {
+    const patches: Partial<LLMConfig> = {};
+    if (!llm.sourceLang && showMeta?.language) {
+      patches.sourceLang = showMeta.language;
+    }
+    if (!llm.context) {
+      const ctx = buildDefaultContext(episode, showMeta);
+      if (ctx) patches.context = ctx;
+    }
+    if (Object.keys(patches).length > 0) setLLM(patches);
+  }, [episode, showMeta]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Provide a setState-like API for compatibility with existing panels
+  const setter = (valOrFn: LLMConfig | ((prev: LLMConfig) => LLMConfig)) => {
+    if (typeof valOrFn === "function") {
+      const next = valOrFn(llm);
+      setLLM(next);
+    } else {
+      setLLM(valOrFn);
+    }
+  };
+
+  return [llm, setter];
 }
 
 /**

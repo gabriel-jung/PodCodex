@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 export interface TaskProgress {
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   progress: number;
   message: string;
   steps?: string[];

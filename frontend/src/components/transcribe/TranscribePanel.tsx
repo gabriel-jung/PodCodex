@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEpisodeStore } from "@/stores";
+import { useEpisodeStore, usePipelineConfigStore } from "@/stores";
 import {
   getSegments,
   getSegmentsRaw,
@@ -40,13 +40,10 @@ export default function TranscribePanel() {
     staleTime: Infinity,
   });
 
-  // Form state
-  const [modelSize, setModelSize] = useState("large-v3");
+  // Form state — shared with batch modal via store
+  const tc = usePipelineConfigStore((s) => s.transcribe);
+  const setTc = usePipelineConfigStore((s) => s.setTranscribe);
   const [language, setLanguage] = useState(languageToISO(showMeta?.language || ""));
-  const [batchSize, setBatchSize] = useState(16);
-  const [diarize, setDiarize] = useState(true);
-  const [hfToken, setHfToken] = useState("");
-  const [numSpeakers, setNumSpeakers] = useState<string>("");
 
   const uploadMutation = useMutation({
     mutationFn: (file: File) => uploadTranscript(episode.audio_path!, file),
@@ -66,13 +63,13 @@ export default function TranscribePanel() {
     mutationFn: () =>
       startTranscribe({
         audio_path: episode.audio_path!,
-        model_size: modelSize,
+        model_size: tc.modelSize,
         language: language || undefined,
-        batch_size: batchSize,
+        batch_size: tc.batchSize,
         force: episode.transcribed,
-        diarize,
-        hf_token: hfToken || undefined,
-        num_speakers: numSpeakers ? Number(numSpeakers) : undefined,
+        diarize: tc.diarize,
+        hf_token: tc.hfToken || undefined,
+        num_speakers: tc.numSpeakers ? Number(tc.numSpeakers) : undefined,
         show: showMeta?.name || "",
         episode: episode.title,
       }),
@@ -97,12 +94,12 @@ export default function TranscribePanel() {
       controls={
         <>
           <TranscribeForm
-            modelSize={modelSize} setModelSize={setModelSize}
+            modelSize={tc.modelSize} setModelSize={(v) => setTc({ modelSize: v })}
             language={language} setLanguage={setLanguage}
-            batchSize={batchSize} setBatchSize={setBatchSize}
-            diarize={diarize} setDiarize={setDiarize}
-            hfToken={hfToken} setHfToken={setHfToken}
-            numSpeakers={numSpeakers} setNumSpeakers={setNumSpeakers}
+            batchSize={tc.batchSize} setBatchSize={(v) => setTc({ batchSize: v })}
+            diarize={tc.diarize} setDiarize={(v) => setTc({ diarize: v })}
+            hfToken={tc.hfToken} setHfToken={(v) => setTc({ hfToken: v })}
+            numSpeakers={tc.numSpeakers} setNumSpeakers={(v) => setTc({ numSpeakers: v })}
             whisperModels={pipelineConfig?.whisper_models}
             hasWhisperX={hasWhisperX}
             onRun={() => startMutation.mutate()}

@@ -137,6 +137,40 @@ export interface TranslateRequest {
   api_key?: string | null;
 }
 
+// ── Batch ─────────────────────────────────
+
+export interface BatchRequest {
+  show_folder: string;
+  audio_paths: string[];
+  // Step toggles
+  transcribe?: boolean;
+  polish?: boolean;
+  translate?: boolean;
+  index?: boolean;
+  // Transcribe config
+  model_size?: string;
+  language?: string;
+  batch_size?: number;
+  diarize?: boolean;
+  hf_token?: string | null;
+  num_speakers?: number | null;
+  // LLM config (polish/translate)
+  llm_mode?: string;
+  llm_provider?: string | null;
+  llm_model?: string;
+  llm_api_base_url?: string;
+  llm_api_key?: string | null;
+  context?: string;
+  source_lang?: string;
+  target_lang?: string;
+  llm_batch_size?: number;
+  engine?: string;
+  // Index config
+  show_name?: string;
+  index_model_keys?: string[];
+  index_chunkings?: string[];
+}
+
 // ── Pipeline config (from Python constants) ─
 
 export interface LLMProviderSpec {
@@ -156,6 +190,8 @@ export interface PipelineConfig {
   default_ollama_model: string;
   default_source_lang: string;
   default_target_lang: string;
+  /** Masked env keys detected on the backend (e.g. { hf_token: "hf_k****", mistral: "sk-4****" }) */
+  detected_keys?: Record<string, string>;
 }
 
 // ── Synthesize ─────────────────────────────

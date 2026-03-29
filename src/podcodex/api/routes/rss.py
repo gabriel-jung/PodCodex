@@ -87,11 +87,16 @@ async def rss_download(
     def run_downloads(progress_cb, episodes=targets, show_path=path):
         from podcodex.ingest.folder import invalidate_scan_cache
 
+        cancel = getattr(progress_cb, "cancel_event", None)
         results = []
         total = len(episodes)
         for i, ep in enumerate(episodes):
+            if cancel and cancel.is_set():
+                progress_cb(i / total, "Cancelled")
+                break
+
             stem = episode_stem(ep)
-            progress_cb(i / total, f"Downloading {i + 1}/{total}: {stem}")
+            progress_cb(i / total, f"Downloading {i + 1}/{total}")
 
             if is_downloaded(show_path, stem):
                 results.append({"stem": stem, "status": "exists"})

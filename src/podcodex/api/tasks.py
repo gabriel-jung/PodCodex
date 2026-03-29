@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -23,7 +24,7 @@ _MAX_DEBUG_LINES = 200
 class TaskInfo:
     task_id: str
     audio_path: str = ""
-    status: str = "pending"  # pending | running | completed | failed
+    status: str = "pending"  # pending | running | completed | failed | cancelled
     progress: float = 0.0
     message: str = ""
     result: Any = None
@@ -31,6 +32,7 @@ class TaskInfo:
     finished_at: float | None = None
     steps: list[str] = field(default_factory=list)
     log: list[str] = field(default_factory=list)
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
     def add_step(self, message: str) -> None:
         self.steps.append(message)
@@ -103,6 +105,8 @@ class TaskManager:
         def progress_cb(progress: float, message: str) -> None:
             self.update_progress(task_id, progress, message)
 
+        progress_cb.cancel_event = info.cancel_event  # type: ignore[attr-defined]
+
         def run() -> None:
             info.status = "running"
             self._broadcast_sync(task_id)
@@ -112,17 +116,20 @@ class TaskManager:
             root.addHandler(log_handler)
             try:
                 result = fn(progress_cb, *args)
-                info.status = "completed"
-                info.progress = 1.0
-                info.message = "Done"
-                info.result = result
+                if not info.cancel_event.is_set():
+                    info.status = "completed"
+                    info.progress = 1.0
+                    info.message = "Done"
+                    info.result = result
             except Exception as exc:
-                logger.exception("Task %s failed", task_id)
-                info.status = "failed"
-                info.error = str(exc)
+                if not info.cancel_event.is_set():
+                    logger.exception("Task %s failed", task_id)
+                    info.status = "failed"
+                    info.error = str(exc)
             finally:
                 root.removeHandler(log_handler)
-                info.finished_at = time.monotonic()
+                if info.finished_at is None:
+                    info.finished_at = time.monotonic()
                 self._audio_locks.pop(audio_path, None)
                 # Invalidate folder scan cache so next listing reflects changes
                 try:
@@ -139,7 +146,9 @@ class TaskManager:
         return info
 
     # Patterns that represent progress ticks, not meaningful step transitions
-    _TICK_RE = re.compile(r"^(Batch|Segment|Chunk)\s+\d+", re.IGNORECASE)
+    _TICK_RE = re.compile(
+        r"^(Batch|Segment|Chunk|Downloading|\[\d+/\d+\])\s*", re.IGNORECASE
+    )
 
     def update_progress(self, task_id: str, progress: float, message: str) -> None:
         info = self._tasks.get(task_id)
@@ -167,6 +176,19 @@ class TaskManager:
         if info and info.status in ("pending", "running"):
             return info
         return None
+
+    def cancel(self, task_id: str) -> bool:
+        """Request cancellation of a running task. Returns True if the event was set."""
+        info = self._tasks.get(task_id)
+        if not info or info.status not in ("pending", "running"):
+            return False
+        info.cancel_event.set()
+        info.status = "cancelled"
+        info.message = "Cancelled"
+        info.finished_at = time.monotonic()
+        self._audio_locks.pop(info.audio_path, None)
+        self._broadcast_sync(task_id)
+        return True
 
     def _broadcast_sync(self, task_id: str) -> None:
         """Schedule an async broadcast from a sync/thread context."""

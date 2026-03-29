@@ -3,6 +3,7 @@
 import type {
   AppConfig,
   AssembleRequest,
+  BatchRequest,
   CreateFromRSSResponse,
   DirListing,
   DownloadResult,
@@ -76,6 +77,20 @@ export const installExtra = (extra: string) =>
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ extra }),
+  });
+
+// ── Batch ──────────────────────────────────
+
+export const startBatch = (req: BatchRequest) =>
+  json<TaskResponse>("/api/batch/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+export const cancelTask = (taskId: string) =>
+  json<{ status: string; task_id: string }>(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: "POST",
   });
 
 // ── Config ──────────────────────────────────
