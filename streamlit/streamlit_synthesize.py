@@ -17,6 +17,7 @@ from constants import (
     DEFAULT_SILENCE_DURATION,
     DEFAULT_TARGET_LANG,
     TTS_MODEL_SIZES,
+    TTS_MODEL_SIZES_LIST,
     VOICE_MAX_DURATION,
     VOICE_MIN_DURATION,
     VOICE_TOP_K,
@@ -161,9 +162,9 @@ def render() -> None:
         with col_model:
             model_size = st.selectbox(
                 "TTS model size",
-                TTS_MODEL_SIZES,
+                TTS_MODEL_SIZES_LIST,
                 index=0,
-                help="Larger model (1.7B) gives better quality but requires more VRAM (~8GB). Smaller (0.6B) runs on ~4GB.",
+                help="\n".join(f"**{k}**: {v}" for k, v in TTS_MODEL_SIZES.items()),
             )
         with col_chunk:
             max_chunk_duration = st.number_input(

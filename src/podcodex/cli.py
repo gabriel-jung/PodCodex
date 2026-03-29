@@ -501,8 +501,9 @@ def cmd_rss(args: argparse.Namespace) -> None:
     new_count = 0
     existing_count = 0
     downloaded_count = 0
+    total = len(episodes)
 
-    for ep in episodes:
+    for i, ep in enumerate(episodes, 1):
         stem = rss_episode_stem(ep)
         output_dir = folder / stem
 
@@ -524,7 +525,8 @@ def cmd_rss(args: argparse.Namespace) -> None:
             new_count += 1
 
         has_audio = "🎵" if ep.audio_url else "  "
-        print(f"  {has_audio} {stem}  ←  {ep.title}")
+        prefix = f"[{i}/{total}]" if args.download else ""
+        print(f"  {prefix} {has_audio} {stem}  ←  {ep.title}")
 
         if args.download and ep.audio_url:
             if downloaded_count > 0:

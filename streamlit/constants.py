@@ -1,37 +1,38 @@
 """
 Shared constants for podcodex Streamlit UI.
 
-Centralizes magic strings and numbers that were previously scattered across tabs.
+Pipeline constants (models, providers, strategies) are imported from the
+core package so they stay in sync with the desktop API and frontend.
+Only Streamlit-specific constants (editor UI settings) are defined here.
 """
 
-# ── Whisper / transcription ──────────────────────────────────────────────────
+# Re-export pipeline constants from the single source of truth
+from podcodex.core.constants import (  # noqa: F401
+    ASSEMBLE_STRATEGIES,
+    AUDIO_EXTENSIONS,
+    DEFAULT_MAX_CHUNK_DURATION,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_SILENCE_DURATION,
+    DEFAULT_SOURCE_LANG,
+    DEFAULT_TARGET_LANG,
+    DEFAULT_TTS_MODEL_SIZE,
+    DEFAULT_WHISPER_MODEL,
+    LLM_PROVIDERS,
+    TTS_MODEL_SIZES,
+    VOICE_MAX_DURATION,
+    VOICE_MIN_DURATION,
+    VOICE_TOP_K,
+    WHISPER_MODELS,
+)
 
-WHISPER_MODELS = ["large-v3", "medium", "small"]
+# Backwards-compat: Streamlit tabs use the list form
+WHISPER_MODELS_LIST: list[str] = list(WHISPER_MODELS.keys())
+TTS_MODEL_SIZES_LIST: list[str] = list(TTS_MODEL_SIZES.keys())
+
 DEFAULT_LANGUAGE_CODE = "fr"
 
-# ── TTS / synthesis ──────────────────────────────────────────────────────────
-
-TTS_MODEL_SIZES = ["1.7B", "0.6B"]
-DEFAULT_MAX_CHUNK_DURATION = 20.0
-DEFAULT_SILENCE_DURATION = 0.5
-
-# Voice sample extraction defaults
-VOICE_MIN_DURATION = 3.0
-VOICE_MAX_DURATION = 0.0  # 0 = no limit
-VOICE_TOP_K = 3
-
-# ── Editor ───────────────────────────────────────────────────────────────────
+# ── Streamlit-only UI constants ──────────────────────────────────────────────
 
 PAGE_SIZES = [10, 20, 50]
 DEFAULT_PAGE_SIZE = 20
 AUDIO_PADDING = 0.3  # seconds of context before/after segment audio preview
-
-# ── LLM defaults ─────────────────────────────────────────────────────────────
-
-DEFAULT_SOURCE_LANG = "French"
-DEFAULT_TARGET_LANG = "English"
-DEFAULT_OLLAMA_MODEL = "qwen3:14b"
-
-# ── Audio file extensions ────────────────────────────────────────────────────
-
-AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}

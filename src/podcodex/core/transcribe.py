@@ -135,7 +135,14 @@ def transcribe_file(
 
     audio = whisperx.load_audio(str(p.audio_path))
 
-    model = whisperx.load_model(model_size, device, compute_type=compute_type)
+    from podcodex.core.cache import get_hf_cache_dir
+
+    model = whisperx.load_model(
+        model_size,
+        device,
+        compute_type=compute_type,
+        download_root=str(get_hf_cache_dir()),
+    )
     result = model.transcribe(audio, batch_size=batch_size, language=language)
     free_vram(model)
 
@@ -217,8 +224,10 @@ def diarize_file(
 
     logger.info(f"Diarizing {p.audio_path.name}")
 
+    from podcodex.core.cache import get_hf_cache_dir
     from whisperx.diarize import DiarizationPipeline
 
+    get_hf_cache_dir()  # ensure HF_HOME is set before pyannote downloads
     audio = whisperx.load_audio(str(p.audio_path))
     pipeline = DiarizationPipeline(token=token, device=device)
     diarize_segments = pipeline(

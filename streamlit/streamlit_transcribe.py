@@ -16,7 +16,12 @@ from podcodex.core.transcribe import (
     load_transcript_validated,
 )
 from podcodex.core.synthesize import is_hallucination
-from constants import AUDIO_EXTENSIONS, WHISPER_MODELS, DEFAULT_LANGUAGE_CODE
+from constants import (
+    AUDIO_EXTENSIONS,
+    WHISPER_MODELS,
+    WHISPER_MODELS_LIST,
+    DEFAULT_LANGUAGE_CODE,
+)
 from utils import fmt_time
 from streamlit_editor import render_segment_editor
 
@@ -353,9 +358,9 @@ def render() -> None:
 
         model_size = st.selectbox(
             "Whisper model",
-            WHISPER_MODELS,
+            WHISPER_MODELS_LIST,
             index=0,
-            help="Larger models are more accurate but slower and require more VRAM. 'large-v3' requires ~10GB VRAM, 'medium' ~5GB, 'small' ~2GB.",
+            help="\n".join(f"**{k}**: {v}" for k, v in WHISPER_MODELS.items()),
         )
 
         if st.button(

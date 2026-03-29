@@ -33,6 +33,7 @@ class RSSEpisode:
     duration: float = 0.0  # seconds
     episode_number: int | None = None  # from itunes:episode tag only
     season_number: int | None = None  # from itunes:season tag only
+    artwork_url: str = ""  # per-episode itunes:image
 
 
 def slug_from_title(title: str) -> str:
@@ -110,6 +111,15 @@ def _extract_audio_url(entry) -> str:
     return ""
 
 
+def feed_artwork(url: str) -> str:
+    """Extract the channel-level artwork URL from an RSS feed."""
+    feed = feedparser.parse(url)
+    # itunes:image is the most reliable source
+    img = feed.feed.get("image", {})
+    itunes_img = feed.feed.get("itunes_image", {})
+    return itunes_img.get("href", "") or img.get("href", "")
+
+
 def fetch_feed(url: str) -> list[RSSEpisode]:
     """Fetch and parse an RSS feed. Returns episodes in feed order."""
     feed = feedparser.parse(url)
@@ -136,10 +146,52 @@ def fetch_feed(url: str) -> list[RSSEpisode]:
                 duration=_parse_duration(entry.get("itunes_duration", "")),
                 episode_number=_parse_int_tag(entry.get("itunes_episode", "")),
                 season_number=_parse_int_tag(entry.get("itunes_season", "")),
+                artwork_url=(entry.get("itunes_image") or {}).get("href", "")
+                or (entry.get("image") or {}).get("href", ""),
             )
         )
 
     return episodes
+
+
+# ── iTunes / Apple Podcasts search ────────────
+
+
+@dataclass
+class PodcastSearchResult:
+    """A podcast found via the iTunes Search API."""
+
+    name: str
+    artist: str
+    feed_url: str
+    artwork_url: str = ""
+
+
+def search_itunes(query: str, limit: int = 8) -> list[PodcastSearchResult]:
+    """Search the iTunes/Apple Podcasts directory for podcasts."""
+    import urllib.parse
+    import urllib.request
+
+    params = urllib.parse.urlencode({"term": query, "media": "podcast", "limit": limit})
+    url = f"https://itunes.apple.com/search?{params}"
+    req = urllib.request.Request(url, headers={"User-Agent": "podcodex/1.0"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read())
+
+    results = []
+    for r in data.get("results", []):
+        feed = r.get("feedUrl", "")
+        if not feed:
+            continue
+        results.append(
+            PodcastSearchResult(
+                name=r.get("collectionName", ""),
+                artist=r.get("artistName", ""),
+                feed_url=feed,
+                artwork_url=r.get("artworkUrl60", ""),
+            )
+        )
+    return results
 
 
 # ── Feed cache ────────────────────────────────
