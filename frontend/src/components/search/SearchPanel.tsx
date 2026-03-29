@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { SearchResult } from "@/api/types";
-import { useEpisodeStore } from "@/stores";
+import { useEpisodeStore, useSearchStore } from "@/stores";
 import { getSearchConfig, getIndexStats, searchQuery, exactSearch, randomQuote } from "@/api/client";
 import { errorMessage, getShowName, selectClass } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -36,7 +36,8 @@ export default function SearchPanel(props: SearchPanelProps) {
   const episode = isShowScope ? undefined : storeEpisode;
   const audioPath = episode?.audio_path ?? undefined;
 
-  const [query, setQuery] = useState("");
+  const { lastQuery, addToHistory, setLastQuery } = useSearchStore();
+  const [query, setQuery] = useState(lastQuery);
   const [mode, setMode] = useState<SearchMode>("semantic");
   const [model, setModel] = useState("bge-m3");
   const [chunking, setChunking] = useState("semantic");
@@ -89,7 +90,11 @@ export default function SearchPanel(props: SearchPanelProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (query.trim()) searchMutation.mutate();
+    if (query.trim()) {
+      setLastQuery(query);
+      addToHistory(query);
+      searchMutation.mutate();
+    }
   };
 
   const isPending = searchMutation.isPending || randomMutation.isPending;

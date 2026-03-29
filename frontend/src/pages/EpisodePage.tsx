@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { getEpisodes, getShowMeta } from "@/api/client";
+import { getEpisodes, getShowMeta, exportZipUrl } from "@/api/client";
 import type { Episode, ShowMeta } from "@/api/types";
 import { useAudioStore, useEpisodeStore } from "@/stores";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ import {
   PanelLeftOpen,
   PanelLeftClose,
   Info,
+  Download,
 } from "lucide-react";
 
 type PipelineStep = "info" | "transcribe" | "polish" | "translate" | "synthesize" | "index" | "search";
@@ -155,7 +156,13 @@ export default function EpisodePage({
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-6 py-4 border-b border-border flex items-center gap-4">
+      <div className="px-6 py-4 border-b border-border flex items-center gap-4 relative overflow-hidden">
+        {artwork && (
+          <div
+            className="absolute inset-0 bg-cover bg-center opacity-[0.08] blur-2xl scale-110 pointer-events-none"
+            style={{ backgroundImage: `url(${artwork})` }}
+          />
+        )}
         <Button onClick={goBack} variant="ghost" size="sm">
           <ArrowLeft /> {isStandalone ? "Home" : "Episodes"}
         </Button>
@@ -193,6 +200,13 @@ export default function EpisodePage({
           >
             <Play className="w-3.5 h-3.5" /> Play
           </Button>
+        )}
+        {episode.audio_path && (
+          <a href={exportZipUrl(episode.audio_path)} download>
+            <Button variant="outline" size="sm" title="Download all files (ZIP)">
+              <Download className="w-3.5 h-3.5" /> ZIP
+            </Button>
+          </a>
         )}
       </div>
 

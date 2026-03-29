@@ -3,7 +3,6 @@
 import type {
   AppConfig,
   AssembleRequest,
-  CollectionInfo,
   CreateFromRSSResponse,
   DirListing,
   DownloadResult,
@@ -376,9 +375,6 @@ export const getIndexStatus = (audioPath: string, show: string) =>
   json<{ combinations: IndexStatus[]; db_exists: boolean }>(
     `/api/index/status?audio_path=${encodeURIComponent(audioPath)}&show=${encodeURIComponent(show)}`,
   );
-
-export const getIndexCollections = (audioPath: string) =>
-  json<CollectionInfo[]>(`/api/index/collections?audio_path=${encodeURIComponent(audioPath)}`);
 
 export const startIndex = (req: IndexRequest) =>
   json<TaskResponse>("/api/index/start", {

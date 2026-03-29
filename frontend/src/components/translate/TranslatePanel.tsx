@@ -7,18 +7,17 @@ import {
   getTranslateVersionInfo,
   saveTranslateSegments,
   getTranslateLanguages,
-  getPolishSegments,
-  getSegments,
   startTranslate,
   getTranslateManualPrompts,
   applyTranslateManual,
 } from "@/api/client";
-import { buildDefaultContext, errorMessage, selectClass } from "@/lib/utils";
+import { errorMessage, selectClass } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
+import { useLLMConfig, useBestSourceSegments } from "@/hooks/useLLMPipeline";
 import HelpLabel from "@/components/common/HelpLabel";
 import SegmentEditor from "@/components/editor/SegmentEditor";
 import PipelinePanel from "@/components/common/PipelinePanel";
-import LLMControls, { type LLMConfig } from "@/components/common/LLMControls";
+import LLMControls from "@/components/common/LLMControls";
 
 export default function TranslatePanel() {
   const episode = useEpisodeStore((s) => s.episode);
@@ -32,16 +31,7 @@ export default function TranslatePanel() {
   });
   const expanded = task.expanded || episode.translations.length === 0;
 
-  const [config, setConfig] = useState<LLMConfig>({
-    mode: "ollama",
-    provider: "openai",
-    model: "",
-    context: buildDefaultContext(episode, showMeta),
-    sourceLang: showMeta?.language || "French",
-    batchSize: 10,
-    apiBaseUrl: "",
-    apiKey: "",
-  });
+  const [config, setConfig] = useLLMConfig(episode, showMeta);
 
   const { data: languages } = useQuery({
     queryKey: ["translate", "languages", episode.audio_path],
@@ -49,17 +39,10 @@ export default function TranslatePanel() {
     enabled: !!episode.audio_path,
   });
 
-  const { data: referenceSegments } = useQuery({
-    queryKey: ["source-for-translate", episode.audio_path],
-    queryFn: async () => {
-      if (!episode.audio_path) return [];
-      try {
-        if (episode.polished) return await getPolishSegments(episode.audio_path);
-      } catch { /* fall through */ }
-      return getSegments(episode.audio_path);
-    },
-    enabled: !!episode.audio_path && episode.transcribed,
-  });
+  const { data: referenceSegments } = useBestSourceSegments(
+    episode.audio_path,
+    { enabled: episode.transcribed, polished: episode.polished },
+  );
 
   const startMutation = useMutation({
     mutationFn: () =>

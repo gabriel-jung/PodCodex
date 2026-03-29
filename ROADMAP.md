@@ -19,7 +19,8 @@
 
 | Phase | What | Status |
 |-------|------|--------|
-| G | **Frontend — model panel + export UI** — Settings page with ModelCachePanel (cache dir, VRAM bar, model table), export dropdown in EditorToolbar, ZIP download in episode header | Pending |
+| G | **Frontend — model panel + export UI** — Settings page with ModelCachePanel (cache dir, VRAM bar, model table), export dropdown in EditorToolbar, ZIP download in episode header | Done |
+| H | **Episode filtering** — min-duration filter (persisted), hide short bonus episodes | Done |
 
 ---
 

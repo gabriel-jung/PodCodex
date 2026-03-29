@@ -33,6 +33,7 @@ export default function AudioBar() {
   const [speed, setSpeed] = useState(1);
   const [showSegment, setShowSegment] = useState(false);
   const [hoverTime, setHoverTime] = useState<{ time: number; pct: number } | null>(null);
+  const [timeMode, setTimeMode] = useState<"remaining" | "elapsed" | "total">("remaining");
   const activeSeg = useMemo(() => findActiveSegment(audioSegments, currentTime), [audioSegments, currentTime]);
 
   // Save position to localStorage on pause/time update
@@ -47,12 +48,18 @@ export default function AudioBar() {
     return () => { save(); clearInterval(interval); };
   }, [audioPath, playing, currentTime, duration]);
 
-  // Reset when track changes — restore saved position
+  // Reset when track changes — restore saved speed
   useEffect(() => {
     setCurrentTime(0);
     setDuration(0);
     setPlaying(false);
-    // Apply speed to new track
+    if (audioPath) {
+      const savedSpeed = localStorage.getItem(`speed:${audioPath}`);
+      if (savedSpeed) {
+        const s = parseFloat(savedSpeed);
+        if (s >= 0.5 && s <= 3) setSpeed(s);
+      }
+    }
     if (audioRef.current) audioRef.current.playbackRate = speed;
   }, [audioPath]);
 
@@ -91,7 +98,8 @@ export default function AudioBar() {
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.playbackRate = speed;
-  }, [speed]);
+    if (audioPath) localStorage.setItem(`speed:${audioPath}`, String(speed));
+  }, [speed, audioPath]);
 
   const togglePlay = () => {
     const audio = audioRef.current;
@@ -302,9 +310,17 @@ export default function AudioBar() {
             </div>
           )}
         </div>
-        <span className="text-[10px] text-muted-foreground w-10 shrink-0 tabular-nums">
-          {formatTime(duration, false)}
-        </span>
+        <button
+          onClick={() => setTimeMode((m) => m === "remaining" ? "elapsed" : m === "elapsed" ? "total" : "remaining")}
+          className="text-[10px] text-muted-foreground w-12 shrink-0 tabular-nums text-left hover:text-foreground transition"
+          title="Click to toggle time display"
+        >
+          {timeMode === "remaining" && duration > 0
+            ? `-${formatTime(duration - currentTime, false)}`
+            : timeMode === "elapsed"
+              ? formatTime(currentTime, false)
+              : formatTime(duration, false)}
+        </button>
       </div>
     </div>
     </div>

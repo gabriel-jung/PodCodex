@@ -12,14 +12,15 @@ import {
   getPolishManualPrompts,
   applyPolishManual,
 } from "@/api/client";
-import { buildDefaultContext, errorMessage, selectClass } from "@/lib/utils";
+import { errorMessage, selectClass } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
+import { useLLMConfig } from "@/hooks/useLLMPipeline";
 import { Button } from "@/components/ui/button";
 import { SkipForward } from "lucide-react";
 import SegmentEditor from "@/components/editor/SegmentEditor";
 import PipelinePanel from "@/components/common/PipelinePanel";
 import HelpLabel from "@/components/common/HelpLabel";
-import LLMControls, { type LLMConfig } from "@/components/common/LLMControls";
+import LLMControls from "@/components/common/LLMControls";
 
 export default function PolishPanel() {
   const episode = useEpisodeStore((s) => s.episode);
@@ -28,16 +29,7 @@ export default function PolishPanel() {
   const task = usePipelineTask(episode.audio_path, "polish");
   const expanded = task.expanded || !episode.polished;
 
-  const [config, setConfig] = useState<LLMConfig>({
-    mode: "ollama",
-    provider: "openai",
-    model: "",
-    context: buildDefaultContext(episode, showMeta),
-    sourceLang: showMeta?.language || "French",
-    batchSize: 10,
-    apiBaseUrl: "",
-    apiKey: "",
-  });
+  const [config, setConfig] = useLLMConfig(episode, showMeta);
   const [engine, setEngine] = useState("Whisper");
 
   const { data: referenceSegments } = useQuery({

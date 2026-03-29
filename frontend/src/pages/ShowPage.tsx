@@ -10,15 +10,17 @@ import {
 } from "@/api/client";
 import type { Episode } from "@/api/types";
 import ProgressBar from "@/components/editor/ProgressBar";
-import { useAudioStore } from "@/stores";
+import { useAudioStore, useConfigStore } from "@/stores";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, RefreshCw, Play, ExternalLink, Download, CheckCircle, Trash2, Podcast, Search } from "lucide-react";
+import { ArrowLeft, RefreshCw, Podcast, Search } from "lucide-react";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import ShowSettings from "@/components/show/ShowSettings";
+import { EpisodeRow } from "@/components/show/EpisodeRow";
+import { EpisodeCard } from "@/components/show/EpisodeCard";
 import SearchPanel from "@/components/search/SearchPanel";
 
-import { errorMessage, formatDuration, formatDate } from "@/lib/utils";
+import { errorMessage } from "@/lib/utils";
 
 type ShowTab = "episodes" | "search" | "settings";
 type ViewMode = "list" | "card";
@@ -27,6 +29,7 @@ type StatusFilter = "all" | "downloaded" | "not_downloaded" | "transcribed" | "p
 export default function ShowPage({ folder }: { folder: string }) {
   const navigate = useNavigate();
   const { seekTo, setAudioMeta, audioPath } = useAudioStore();
+  const { minDurationMinutes, setMinDurationMinutes } = useConfigStore();
   const queryClient = useQueryClient();
 
   const [tab, setTab] = useState<ShowTab>("episodes");
@@ -75,6 +78,10 @@ export default function ShowPage({ folder }: { folder: string }) {
 
   const filtered = useMemo(() => {
     let list = all;
+    if (minDurationMinutes > 0) {
+      const minSec = minDurationMinutes * 60;
+      list = list.filter((e) => e.duration >= minSec);
+    }
     if (search) {
       const q = search.toLowerCase();
       list = list.filter((e) => e.title.toLowerCase().includes(q));
@@ -87,7 +94,7 @@ export default function ShowPage({ folder }: { folder: string }) {
     if (filter === "synthesized") list = list.filter((e) => e.synthesized);
     if (filter === "indexed") list = list.filter((e) => e.indexed);
     return list;
-  }, [all, search, filter]);
+  }, [all, search, filter, minDurationMinutes]);
 
   const showName = meta?.name || folder.replace(/\/+$/, "").split("/").pop() || "Show";
 
@@ -183,6 +190,19 @@ export default function ShowPage({ folder }: { folder: string }) {
           <option value="synthesized">Synthesized ({all.filter((e) => e.synthesized).length})</option>
           <option value="indexed">Indexed ({all.filter((e) => e.indexed).length})</option>
         </select>
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">Min</label>
+          <input
+            type="number"
+            min={0}
+            step={5}
+            value={minDurationMinutes || ""}
+            onChange={(e) => setMinDurationMinutes(Math.max(0, Number(e.target.value)))}
+            placeholder="0"
+            className="input w-14 py-1.5 text-xs text-center"
+          />
+          <span className="text-xs text-muted-foreground">min</span>
+        </div>
         <div className="flex-1" />
         <span className="text-xs text-muted-foreground">{filtered.length} shown</span>
         <div className="flex items-center gap-2">
@@ -333,156 +353,6 @@ export default function ShowPage({ folder }: { folder: string }) {
           hasIndex={all.some((e) => e.indexed)}
         />
       )}
-    </div>
-  );
-}
-
-function StatusDots({ ep }: { ep: Episode }) {
-  return (
-    <div className="flex gap-1.5 items-center">
-      {ep.transcribed && <span className="w-2 h-2 rounded-full bg-blue-500" title="Transcribed" />}
-      {ep.polished && <span className="w-2 h-2 rounded-full bg-purple-500" title="Polished" />}
-      {ep.translations.length > 0 && <span className="w-2 h-2 rounded-full bg-teal-500" title={`Translated (${ep.translations.join(", ")})`} />}
-      {ep.synthesized && <span className="w-2 h-2 rounded-full bg-orange-500" title="Synthesized" />}
-      {ep.indexed && <span className="w-2 h-2 rounded-full bg-yellow-500" title="Indexed" />}
-    </div>
-  );
-}
-
-function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying }: {
-  ep: Episode; selected: boolean; onToggle: () => void;
-  onOpen: () => void; onPlay: () => void; onDownload: () => void; onDelete: () => void; downloading: boolean; isPlaying: boolean;
-}) {
-  const canDownload = !ep.downloaded && !!ep.audio_url;
-  return (
-    <div className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
-      {canDownload ? (
-        <input type="checkbox" checked={selected} onChange={onToggle} className="accent-primary shrink-0" />
-      ) : ep.downloaded ? (
-        <CheckCircle className="w-4 h-4 text-green-500 shrink-0" title="Downloaded" />
-      ) : (
-        <div className="w-4" />
-      )}
-      {ep.artwork_url && (
-        <img src={ep.artwork_url} alt="" className="w-8 h-8 rounded shrink-0" loading="lazy" />
-      )}
-      {ep.episode_number != null && (
-        <span className="text-xs text-muted-foreground w-8 text-right shrink-0">#{ep.episode_number}</span>
-      )}
-      <button
-        onClick={onOpen}
-        className="flex-1 text-left text-sm truncate text-foreground hover:text-primary cursor-pointer"
-      >
-        {ep.title}
-      </button>
-      <StatusDots ep={ep} />
-      <span className="text-xs text-muted-foreground w-20 text-right shrink-0">{formatDate(ep.pub_date)}</span>
-      <span className="text-xs text-muted-foreground w-12 text-right shrink-0">{formatDuration(ep.duration)}</span>
-      <div className="w-20 flex justify-end gap-1 shrink-0">
-        {ep.audio_path && (
-          <button onClick={onPlay} title="Play" className={`opacity-0 group-hover:opacity-100 transition ${isPlaying ? "text-green-400 !opacity-100" : "text-muted-foreground hover:text-foreground"}`}>
-            <Play className="w-3.5 h-3.5" />
-          </button>
-        )}
-        {ep.audio_path && (
-          <button onClick={onDelete} title="Delete audio" className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition">
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        )}
-        {canDownload && !selected && (
-          <button onClick={onDownload} disabled={downloading} title="Download" className="text-green-400 hover:text-green-300 opacity-0 group-hover:opacity-100 transition">
-            <Download className="w-3.5 h-3.5" />
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PipelineBar({ ep }: { ep: Episode }) {
-  const steps = [ep.downloaded, ep.transcribed, ep.polished, ep.translations.length > 0, ep.synthesized, ep.indexed];
-  const done = steps.filter(Boolean).length;
-  const pct = (done / steps.length) * 100;
-  if (done === 0) return null;
-  const color = done === steps.length ? "bg-green-500" : "bg-primary";
-  return (
-    <div className="h-1 bg-muted/50 rounded-full overflow-hidden">
-      <div className={`h-full ${color} transition-all duration-300`} style={{ width: `${pct}%` }} />
-    </div>
-  );
-}
-
-function EpisodeCard({ ep, onOpen, onPlay, onDownload, downloading, isPlaying }: {
-  ep: Episode; onOpen: () => void; onPlay: () => void; onDownload: () => void; downloading: boolean; isPlaying: boolean;
-}) {
-  const canDownload = !ep.downloaded && !!ep.audio_url;
-  return (
-    <div
-      className="group relative bg-card border border-border rounded-xl overflow-hidden hover:border-muted-foreground/30 transition cursor-pointer"
-      onClick={onOpen}
-    >
-      {/* Artwork / placeholder */}
-      <div className="relative aspect-square bg-muted">
-        {ep.artwork_url ? (
-          <img src={ep.artwork_url} alt="" className="w-full h-full object-cover" loading="lazy" />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-muted-foreground/30">
-            <Play className="w-10 h-10" />
-          </div>
-        )}
-
-        {/* Hover overlay with play/download buttons */}
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center gap-3 opacity-0 group-hover:opacity-100">
-          {ep.audio_path && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onPlay(); }}
-              className={`w-10 h-10 rounded-full bg-white/90 flex items-center justify-center transition hover:scale-110 ${isPlaying ? "ring-2 ring-green-400" : ""}`}
-              title="Play"
-            >
-              <Play className="w-5 h-5 text-black fill-black ml-0.5" />
-            </button>
-          )}
-          {canDownload && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onDownload(); }}
-              disabled={downloading}
-              className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center transition hover:scale-110"
-              title="Download"
-            >
-              <Download className="w-5 h-5 text-black" />
-            </button>
-          )}
-        </div>
-
-        {/* Top-right: status badges */}
-        <div className="absolute top-2 right-2 flex gap-1">
-          <StatusDots ep={ep} />
-        </div>
-
-        {/* Top-left: episode number */}
-        {ep.episode_number != null && (
-          <span className="absolute top-2 left-2 text-[10px] bg-black/60 text-white px-1.5 py-0.5 rounded-md font-medium">
-            #{ep.episode_number}
-          </span>
-        )}
-
-        {/* Now playing indicator */}
-        {isPlaying && (
-          <span className="absolute bottom-2 right-2 text-[10px] bg-green-500 text-white px-1.5 py-0.5 rounded-md font-medium animate-pulse">
-            Playing
-          </span>
-        )}
-      </div>
-
-      {/* Text content */}
-      <div className="p-3 space-y-1.5">
-        <p className="text-sm font-medium line-clamp-2 leading-snug">{ep.title}</p>
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-          {ep.pub_date && <span>{formatDate(ep.pub_date)}</span>}
-          {ep.duration > 0 && <span>{formatDuration(ep.duration)}</span>}
-        </div>
-        <PipelineBar ep={ep} />
-      </div>
     </div>
   );
 }
