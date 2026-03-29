@@ -65,6 +65,7 @@ pub fn run() {
             // Plugins
             app.handle().plugin(tauri_plugin_shell::init())?;
             app.handle().plugin(tauri_plugin_dialog::init())?;
+            app.handle().plugin(tauri_plugin_window_state::Builder::default().build())?;
 
             // Health-check polling — show window once backend is ready
             let window = app
