@@ -32,7 +32,13 @@ import type {
   VoiceSample,
 } from "./types";
 
-const BASE = "";  // proxied by Vite in dev, same origin in prod
+// In Tauri production builds, the frontend is served from tauri:// protocol
+// so we need an absolute URL to reach the FastAPI backend.
+// In dev (Vite), the proxy handles it.
+const BASE =
+  (window as any).__TAURI__ && import.meta.env.PROD
+    ? "http://127.0.0.1:18811"
+    : "";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${url}`, init);
@@ -177,7 +183,7 @@ export const startTranscribe = (req: TranscribeRequest) =>
 export async function uploadTranscript(audioPath: string, file: File): Promise<{ status: string; count: number }> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`/api/transcribe/upload?audio_path=${encodeURIComponent(audioPath)}`, {
+  const res = await fetch(`${BASE}/api/transcribe/upload?audio_path=${encodeURIComponent(audioPath)}`, {
     method: "POST",
     body: form,
   });
@@ -300,7 +306,7 @@ export const createDirectory = (path: string, name: string) =>
 // ── Audio ───────────────────────────────────
 
 export const audioFileUrl = (path: string) =>
-  `/api/audio/file?path=${encodeURIComponent(path)}`;
+  `${BASE}/api/audio/file?path=${encodeURIComponent(path)}`;
 
 export const deleteAudioFile = (path: string) =>
   json<{ status: string; path: string }>(`/api/audio/file?path=${encodeURIComponent(path)}`, {
@@ -449,23 +455,23 @@ export const deleteModel = (modelId: string) =>
 export const exportTextUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
   const params = new URLSearchParams({ audio_path: audioPath, source });
   if (outputDir) params.set("output_dir", outputDir);
-  return `/api/export/text?${params}`;
+  return `${BASE}/api/export/text?${params}`;
 };
 
 export const exportSrtUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
   const params = new URLSearchParams({ audio_path: audioPath, source });
   if (outputDir) params.set("output_dir", outputDir);
-  return `/api/export/srt?${params}`;
+  return `${BASE}/api/export/srt?${params}`;
 };
 
 export const exportVttUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
   const params = new URLSearchParams({ audio_path: audioPath, source });
   if (outputDir) params.set("output_dir", outputDir);
-  return `/api/export/vtt?${params}`;
+  return `${BASE}/api/export/vtt?${params}`;
 };
 
 export const exportZipUrl = (audioPath: string, outputDir?: string) => {
   const params = new URLSearchParams({ audio_path: audioPath });
   if (outputDir) params.set("output_dir", outputDir);
-  return `/api/export/zip?${params}`;
+  return `${BASE}/api/export/zip?${params}`;
 };

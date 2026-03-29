@@ -2,7 +2,7 @@
 
 ## In Progress: Desktop App Improvements
 
-8 improvements organized into 7 phases. Phases A–F are complete; Phase G is next.
+10 improvements organized into 10 phases. All UI phases (A–J) are complete.
 
 ### Completed
 
@@ -12,15 +12,18 @@
 | B | **Eliminate prop drilling** — pipeline panels read episode/showMeta from `episodeStore` instead of props | Done |
 | C | **UI patterns + accent color** — CircleButton, SettingRow/Section components, EmptyState dashed variant, accent color with distinct chroma | Done |
 | D | **WaveSurfer.js waveform** — bar-style waveform in AudioBar replacing the seek slider, theme-aware colors via MutationObserver | Done |
-| E | **Platform abstraction** — `PlatformProvider` with interfaces for FS, window, lifecycle; web fallbacks; Tauri detection ready | Done |
+| E | **Platform abstraction** — `PlatformProvider` with interfaces for FS, window, lifecycle; web + Tauri implementations | Done |
 | F | **Backend — model cache + export** — centralized model cache (`~/.podcodex/models/`), VRAM monitoring, SRT/VTT/text/ZIP export endpoints | Done |
+| G | **Frontend — model panel + export UI** — Settings page with ModelCachePanel (cache dir, VRAM bar, model table), export dropdown in EditorToolbar, ZIP download in episode header | Done |
+| H | **Episode filtering + AudioBar UX** — min-duration filter, toggleable time display, per-episode speed persistence, blurred artwork background | Done |
+| I | **Frontend cleanup** — extract ShowPage/HomePage/SynthesizePanel sub-components, shared `useLLMPipeline` hook, wire SearchPanel to store, remove dead code | Done |
+| J | **Tauri integration** — backend sidecar spawn, health-check polling, window lifecycle, API base URL detection, native dialog provider, CORS for Tauri origins | Done |
 
 ### Next Up
 
 | Phase | What | Status |
 |-------|------|--------|
-| G | **Frontend — model panel + export UI** — Settings page with ModelCachePanel (cache dir, VRAM bar, model table), export dropdown in EditorToolbar, ZIP download in episode header | Done |
-| H | **Episode filtering** — min-duration filter (persisted), hide short bonus episodes | Done |
+| K | **Standalone distribution** — PyInstaller sidecar to bundle Python backend, `make build` produces shareable `.app`/`.deb`/`.exe` | Pending |
 
 ---
 

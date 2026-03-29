@@ -21,8 +21,10 @@ class ProgressManager {
   connect(): void {
     if (this.ws && this.ws.readyState <= WebSocket.OPEN) return;
 
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${window.location.host}/api/ws`;
+    const isTauriProd = (window as any).__TAURI__ && import.meta.env.PROD;
+    const url = isTauriProd
+      ? "ws://127.0.0.1:18811/api/ws"
+      : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/api/ws`;
     this.ws = new WebSocket(url);
 
     this.ws.onmessage = (event) => {

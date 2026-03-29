@@ -1,9 +1,20 @@
 # PodCodex Desktop App — Development & Build
 #
 # Prerequisites:
-#   brew install node
-#   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-#   cargo install tauri-cli --version "^2"
+#   All platforms:
+#     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+#     cargo install tauri-cli --version "^2"
+#
+#   macOS:
+#     brew install node
+#
+#   Ubuntu/Debian (WSL2 included):
+#     sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
+#       libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config
+#
+#   Fedora:
+#     sudo dnf install webkit2gtk4.1-devel gtk3-devel \
+#       libappindicator-gtk3-devel librsvg2-devel openssl-devel pkg-config
 #
 # Quick start:
 #   make setup   # one-time: install all deps
@@ -43,7 +54,7 @@ dev-frontend:  ## Start Vite dev server (port 5173)
 	cd frontend && npm run dev
 
 dev-tauri:  ## Start Tauri webview (connects to Vite dev server)
-	cd src-tauri && source $$HOME/.cargo/env && cargo tauri dev
+	cd src-tauri && PODCODEX_SKIP_BACKEND_SPAWN=1 . $$HOME/.cargo/env && cargo tauri dev
 
 dev-no-tauri:  ## Start just API + Vite (use browser at localhost:5173)
 	@trap 'kill 0' EXIT; \
@@ -55,7 +66,7 @@ dev-no-tauri:  ## Start just API + Vite (use browser at localhost:5173)
 
 build:  ## Build production .app / .exe
 	cd frontend && npm run build
-	cd src-tauri && source $$HOME/.cargo/env && cargo tauri build
+	cd src-tauri && . $$HOME/.cargo/env && cargo tauri build
 
 # ── Utilities ────────────────────────────────────────────
 

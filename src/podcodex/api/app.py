@@ -46,6 +46,8 @@ def create_app() -> FastAPI:
             "http://127.0.0.1:5173",
             "http://127.0.0.1:18811",
             "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
         ],
         allow_credentials=True,
         allow_methods=["*"],
