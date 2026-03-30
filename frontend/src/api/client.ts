@@ -6,7 +6,6 @@ import type {
   BatchRequest,
   CreateFromRSSResponse,
   DirListing,
-  DownloadResult,
   Episode,
   ExtrasResponse,
   ExtractVoicesRequest,
@@ -136,6 +135,13 @@ export const updateShowMeta = (folder: string, meta: ShowMeta) =>
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(meta),
+  });
+
+export const moveShow = (folder: string, newPath: string, moveFiles: boolean) =>
+  json<{ status: string; new_path: string }>(`/api/shows/${encodeURIComponent(folder)}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ new_path: newPath, move_files: moveFiles }),
   });
 
 // ── Episodes (unified: local + RSS merged) ──

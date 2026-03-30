@@ -117,7 +117,7 @@ export interface PolishRequest {
   model?: string;
   context?: string;
   source_lang?: string;
-  batch_size?: number;
+  batch_minutes?: number;
   engine?: string;
   api_base_url?: string;
   api_key?: string | null;
@@ -132,7 +132,7 @@ export interface TranslateRequest {
   context?: string;
   source_lang?: string;
   target_lang?: string;
-  batch_size?: number;
+  batch_minutes?: number;
   api_base_url?: string;
   api_key?: string | null;
 }
@@ -163,7 +163,7 @@ export interface BatchRequest {
   context?: string;
   source_lang?: string;
   target_lang?: string;
-  llm_batch_size?: number;
+  llm_batch_minutes?: number;
   engine?: string;
   // Index config
   show_name?: string;

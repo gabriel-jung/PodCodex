@@ -764,7 +764,7 @@ def run_ollama(
     segments: list[dict],
     system_prompt: str,
     model: str,
-    batch_size: int,
+    batch_minutes: float = DEFAULT_BATCH_MINUTES,
     instruction: str = "Process",
     min_length_ratio: float = 0.7,
     label: str = "",
@@ -775,11 +775,10 @@ def run_ollama(
 
     client = Client()
     results = []
-    n_batches = -(-len(segments) // batch_size)
+    batches = batch_segments_by_duration(segments, batch_minutes)
+    n_batches = len(batches)
 
-    for i in range(0, len(segments), batch_size):
-        batch = segments[i : i + batch_size]
-        batch_num = i // batch_size + 1
+    for batch_num, batch in enumerate(batches, 1):
         logger.info(f"{label} batch {batch_num}/{n_batches} via Ollama ({model})")
 
         def call_fn(messages):
@@ -812,7 +811,7 @@ def run_api(
     model: str,
     api_base_url: str,
     api_key: str | None,
-    batch_size: int,
+    batch_minutes: float = DEFAULT_BATCH_MINUTES,
     provider: str | None = None,
     instruction: str = "Process",
     min_length_ratio: float = 0.7,
@@ -841,11 +840,10 @@ def run_api(
     )
     client = OpenAI(api_key=key, base_url=api_base_url)
     results = []
-    n_batches = -(-len(segments) // batch_size)
+    batches = batch_segments_by_duration(segments, batch_minutes)
+    n_batches = len(batches)
 
-    for i in range(0, len(segments), batch_size):
-        batch = segments[i : i + batch_size]
-        batch_num = i // batch_size + 1
+    for batch_num, batch in enumerate(batches, 1):
         logger.info(f"{label} batch {batch_num}/{n_batches} via API ({model})")
 
         def call_fn(messages):

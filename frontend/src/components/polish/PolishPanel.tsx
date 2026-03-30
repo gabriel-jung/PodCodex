@@ -47,7 +47,7 @@ export default function PolishPanel() {
         model: config.model,
         context: config.context,
         source_lang: config.sourceLang,
-        batch_size: config.batchSize,
+        batch_minutes: config.batchMinutes,
         engine,
         api_base_url: config.apiBaseUrl || undefined,
         api_key: config.apiKey || undefined,

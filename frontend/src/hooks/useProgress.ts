@@ -63,6 +63,8 @@ class ProgressManager {
         set.delete(callback);
         if (set.size === 0) this.listeners.delete(taskId);
       }
+      // Disconnect when no listeners remain
+      if (this.listeners.size === 0) this.disconnect();
     };
   }
 

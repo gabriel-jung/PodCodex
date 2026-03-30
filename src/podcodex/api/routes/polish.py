@@ -84,7 +84,7 @@ class PolishRequest(BaseModel):
     model: str = ""
     context: str = ""
     source_lang: str = "French"
-    batch_size: int = 10
+    batch_minutes: float = 15.0
     engine: str = "Whisper"
     api_base_url: str = ""
     api_key: str | None = None
@@ -115,7 +115,7 @@ async def start_polish(req: PolishRequest) -> TaskResponse:
             context=req_data.context,
             source_lang=req_data.source_lang,
             model=req_data.model,
-            batch_size=req_data.batch_size,
+            batch_minutes=req_data.batch_minutes,
             provider=req_data.provider,
             engine=req_data.engine,
             api_base_url=req_data.api_base_url,

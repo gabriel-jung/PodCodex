@@ -16,19 +16,11 @@
 | H | **Episode filtering + AudioBar UX** — duration filter, toggleable time, per-episode speed, blurred artwork |
 | I | **Frontend cleanup** — component extraction, shared hooks, dead code removal |
 | J | **Tauri integration** — backend sidecar, health-check, window lifecycle, CORS |
+| K | **Batch pipeline** — multi-episode operations, global task bar, sortable episode list, move folder, duration-based LLM batching |
 
 ---
 
 ## Next Up
-
-### Phase K: Batch Pipeline Operations
-
-**Goal**: run pipeline steps across multiple episodes from the UI, replacing the external batch script.
-
-- **Episode queue** — select multiple episodes (or "all unprocessed"), pick pipeline steps to run
-- **Progress tracking** — overall batch progress (episode 3/17) + per-episode status via WebSocket
-- **Background execution** — browse/edit other episodes while batch runs
-- **Idempotent** — skip episodes that already have outputs for a given step
 
 ### Phase L: Speaker Entity + Auto-Mapping
 
@@ -86,15 +78,6 @@ PyInstaller sidecar to bundle the Python backend. `make build` produces shareabl
 - Per-segment volume/fade controls
 - Export assembled episode as single audio file
 
-### RSS Ingest
-
-**Goal**: fetch episodes from feed URL instead of managing audio files manually.
-
-- Feed parse (title, enclosure URL, pub date, description, guid)
-- Episode download with resume support
-- Deduplication by guid
-- Integration with `scan_folder()` / `EpisodeInfo`
-
 ### Discord Bot Improvements
 
 - Conversation context (thread-based or stateful per-user)
@@ -147,3 +130,4 @@ make build   # production .app bundle
 | Model cache management (`~/.podcodex/models/`) | `src/podcodex/core/cache.py` |
 | Export endpoints (text, SRT, VTT, ZIP) | `src/podcodex/api/routes/export.py` |
 | Window state persistence | `tauri-plugin-window-state` |
+| RSS ingest (feed parse, download, dedup by guid) | `src/podcodex/api/routes/rss.py`, `src/podcodex/ingest/` |

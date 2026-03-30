@@ -49,7 +49,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         model: "",
         context: "",
         sourceLang: "French",
-        batchSize: 10,
+        batchMinutes: 15,
         apiBaseUrl: "",
         apiKey: "",
       },

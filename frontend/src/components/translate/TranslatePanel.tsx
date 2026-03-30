@@ -55,7 +55,7 @@ export default function TranslatePanel() {
         context: config.context,
         source_lang: config.sourceLang,
         target_lang: targetLang,
-        batch_size: config.batchSize,
+        batch_minutes: config.batchMinutes,
         api_base_url: config.apiBaseUrl || undefined,
         api_key: config.apiKey || undefined,
       }),

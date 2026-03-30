@@ -39,7 +39,7 @@ class BatchRequest(BaseModel):
     context: str = ""
     source_lang: str = "French"
     target_lang: str = "English"
-    llm_batch_size: int = 10
+    llm_batch_minutes: float = 15.0
     engine: str = "Whisper"
     # Index config
     show_name: str = ""
@@ -96,9 +96,10 @@ def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
     from podcodex.api.tasks import task_manager
 
     cancel = getattr(progress_cb, "cancel_event", None)
-    # Capture the batch task_id for per-episode locking (the show_folder lock
-    # may be removed by cancel(), so we must not read it later).
-    batch_task_id = task_manager._audio_locks.get(req.show_folder, "batch")
+    # The batch task_id is the lock value set by submit() on req.show_folder.
+    # Read it once — cancel() may remove it later.
+    batch_task_id = task_manager.get_active(req.show_folder)
+    batch_task_id = batch_task_id.task_id if batch_task_id else "batch"
     total = len(req.audio_paths)
     weight = _enabled_weight(req)
     completed = 0
@@ -127,12 +128,12 @@ def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
 
         # Skip if an individual task is running on this episode
         if task_manager.get_active(audio_path):
-            progress_cb(i / total, f"[{i + 1}/{total}] Skipped (task already running)")
+            progress_cb((i + 1) / total, f"[{i + 1}/{total}] Skipped (task running)")
             skipped += 1
             continue
 
         # Lock this episode for the duration of processing
-        task_manager._audio_locks[audio_path] = batch_task_id
+        task_manager.lock(audio_path, batch_task_id)
 
         progress_cb(i / total, f"[{i + 1}/{total}] Starting...")
         ep_had_work = False
@@ -184,10 +185,9 @@ def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
             # ── Polish ──
             if req.polish and not _cancelled():
                 sw = _STEP_WEIGHTS["polish"]
-                has_polished = p.polished.exists() or p.polished_raw.exists()
-                has_transcript = p.transcript.exists() or p.transcript_raw.exists()
-
-                if not has_polished and has_transcript:
+                if not p.has_polished() and (
+                    p.transcript.exists() or p.transcript_raw.exists()
+                ):
                     ep_had_work = True
                     ep_progress(i, step_offset, sw, 0.0, "Polishing...")
 
@@ -202,7 +202,7 @@ def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
                             context=req.context,
                             source_lang=req.source_lang,
                             model=req.llm_model,
-                            batch_size=req.llm_batch_size,
+                            batch_minutes=req.llm_batch_minutes,
                             provider=req.llm_provider,
                             engine=req.engine,
                             api_base_url=req.llm_api_base_url,
@@ -217,18 +217,11 @@ def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
             # ── Translate ──
             if req.translate and req.target_lang and not _cancelled():
                 sw = _STEP_WEIGHTS["translate"]
-                has_translation = (
-                    p.translation(req.target_lang).exists()
-                    or p.translation_raw(req.target_lang).exists()
-                )
-                has_source = (
-                    p.polished.exists()
-                    or p.polished_raw.exists()
+                if not p.has_translation(req.target_lang) and (
+                    p.has_polished()
                     or p.transcript.exists()
                     or p.transcript_raw.exists()
-                )
-
-                if not has_translation and has_source:
+                ):
                     ep_had_work = True
                     ep_progress(i, step_offset, sw, 0.0, "Translating...")
 
@@ -246,7 +239,7 @@ def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
                         source_lang=req.source_lang,
                         target_lang=req.target_lang,
                         model=req.llm_model,
-                        batch_size=req.llm_batch_size,
+                        batch_minutes=req.llm_batch_minutes,
                         provider=req.llm_provider,
                         api_base_url=req.llm_api_base_url,
                         api_key=req.llm_api_key,
@@ -261,9 +254,8 @@ def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
             if req.index and not _cancelled():
                 sw = _STEP_WEIGHTS["index"]
                 marker = p.base.parent / ".rag_indexed"
-                has_transcript = p.transcript_best.exists()
 
-                if not marker.exists() and has_transcript:
+                if not marker.exists() and p.transcript_best.exists():
                     ep_had_work = True
                     ep_progress(i, step_offset, sw, 0.0, "Indexing...")
 
@@ -335,7 +327,7 @@ def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
 
         finally:
             # Release per-episode lock
-            task_manager._audio_locks.pop(audio_path, None)
+            task_manager.unlock(audio_path)
 
         # Invalidate scan cache after each episode so UI updates
         try:

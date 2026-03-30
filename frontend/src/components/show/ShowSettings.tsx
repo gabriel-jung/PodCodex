@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
-import { updateShowMeta, syncToQdrant, getPipelineConfig } from "@/api/client";
+import { updateShowMeta, syncToQdrant, getPipelineConfig, moveShow } from "@/api/client";
 import { usePipelineConfigStore, useConfigStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { errorMessage, selectClass } from "@/lib/utils";
 import SectionHeader from "@/components/common/SectionHeader";
 import ProgressBar from "@/components/editor/ProgressBar";
+import FolderPicker from "@/components/common/FolderPicker";
+import { FolderOpen } from "lucide-react";
 
 interface ShowSettingsProps {
   folder: string;
@@ -17,6 +21,7 @@ interface ShowSettingsProps {
 
 export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsProps) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   // ── Show info ──
   const [name, setName] = useState(meta.name);
@@ -25,6 +30,13 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
   const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
   const [syncTaskId, setSyncTaskId] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState(false);
+
+  // ── Move folder ──
+  const folderBasename = folder.split("/").filter(Boolean).pop() || folder;
+  const folderParent = folder.slice(0, folder.length - folderBasename.length).replace(/\/+$/, "") || "/";
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const moveFilesRef = useRef(true);
+  const [folderName, setFolderName] = useState(folderBasename);
 
   useEffect(() => {
     setName(meta.name);
@@ -70,6 +82,39 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
       syncToQdrant({ folder, show: meta.name || name, overwrite }),
     onSuccess: (data) => setSyncTaskId(data.task_id),
   });
+
+  const moveMutation = useMutation({
+    mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
+      moveShow(folder, newPath, mf),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(data.new_path) } });
+    },
+  });
+
+  const handlePickedFolder = (parentPath: string) => {
+    const dest = `${parentPath.replace(/\/+$/, "")}/${folderName}`;
+    if (dest === folder) return;
+    moveFilesRef.current = true;
+    confirmDialog.open({
+      title: "Move show folder?",
+      description: `${folder}  →  ${dest}`,
+      content: (
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            defaultChecked={true}
+            onChange={(e) => { moveFilesRef.current = e.target.checked; }}
+            className="accent-primary"
+          />
+          Move all files to the new location
+        </label>
+      ),
+      confirmLabel: "Move",
+      variant: "destructive",
+      onConfirm: () => moveMutation.mutate({ newPath: dest, moveFiles: moveFilesRef.current }),
+    });
+  };
 
   // ── Episode filters ──
   const {
@@ -133,6 +178,44 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         </div>
       )}
 
+      {/* ── Folder Location ── */}
+      <SettingSection title="Folder" description="Location of show files on disk.">
+        <SettingRow label="Current path">
+          <span className="text-xs text-muted-foreground font-mono truncate max-w-xs" title={folder}>{folder}</span>
+        </SettingRow>
+        <SettingRow label="Folder name" help="Rename the show folder (applied on move).">
+          <input
+            value={folderName}
+            onChange={(e) => setFolderName(e.target.value)}
+            className="input py-1 text-sm w-48 font-mono"
+          />
+        </SettingRow>
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={() => setPickerOpen(true)}
+            disabled={moveMutation.isPending || !folderName.trim()}
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+          >
+            <FolderOpen className="w-3.5 h-3.5" />
+            {moveMutation.isPending ? "Moving..." : "Move folder"}
+          </Button>
+          {moveMutation.isError && (
+            <span className="text-xs text-destructive">{errorMessage(moveMutation.error)}</span>
+          )}
+        </div>
+      </SettingSection>
+
+      <FolderPicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onSelect={handlePickedFolder}
+        initialPath={folderParent}
+        title={`Move "${folderName}" to...`}
+        description="Select the parent directory"
+      />
+
       {/* ── Episode Filters ── */}
       <SettingSection title="Episode Filters" description="Filter which episodes are shown in the list.">
         <SettingRow label="Min duration" help="Hide episodes shorter than this (minutes). 0 = show all.">
@@ -182,7 +265,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
       </SettingSection>
 
       {/* ── Transcription ── */}
-      <SettingSection title="Transcription" description="Whisper model and diarization settings for transcription.">
+      <SettingSection title="Transcription" description="Whisper model and diarization settings.">
         <SettingRow label="Model" help="The speech recognition model. Bigger = better but slower.">
           <select value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectClass}>
             {Object.keys(whisperModels).length > 0
@@ -209,10 +292,16 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         <SettingRow label="Batch size" help="GPU batch size for transcription.">
           <input type="number" value={tc.batchSize} onChange={(e) => setTc({ batchSize: Number(e.target.value) })} min={1} className="input py-1 text-sm w-16" />
         </SettingRow>
+        <SettingRow label="Transcript engine" help="Which engine produced the transcript (used in polish/translate prompts to guide error correction).">
+          <select value={engine} onChange={(e) => setEngine(e.target.value)} className={selectClass}>
+            <option value="Whisper">Whisper</option>
+            <option value="Voxtral">Voxtral</option>
+          </select>
+        </SettingRow>
       </SettingSection>
 
       {/* ── LLM Settings ── */}
-      <SettingSection title="LLM Settings" description="AI model configuration shared by Polish and Translate.">
+      <SettingSection title="LLM" description="AI model configuration for Polish and Translate steps.">
         <SettingRow label="Mode" help="Ollama = local GPU. API = cloud service.">
           <div className="flex gap-3">
             {(["ollama", "api"] as const).map((m) => (
@@ -252,12 +341,15 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
           </>
         )}
 
-        <SettingRow label="Source language" help="Language spoken in the podcast.">
-          <input value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className="input py-1 text-sm w-24" />
+        <SettingRow label="Batch duration" help="Maximum audio duration (minutes) per LLM request.">
+          <div className="flex items-center gap-1.5">
+            <input type="number" value={llm.batchMinutes} onChange={(e) => setLLM({ batchMinutes: Number(e.target.value) })} min={1} step={5} className="input py-1 text-sm w-16" />
+            <span className="text-xs text-muted-foreground">min</span>
+          </div>
         </SettingRow>
 
-        <SettingRow label="Batch size" help="Segments per LLM request.">
-          <input type="number" value={llm.batchSize} onChange={(e) => setLLM({ batchSize: Number(e.target.value) })} min={1} className="input py-1 text-sm w-16" />
+        <SettingRow label="Source language" help="Language spoken in the podcast.">
+          <input value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className="input py-1 text-sm w-24" />
         </SettingRow>
 
         <SettingRow
@@ -276,18 +368,8 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         </SettingRow>
       </SettingSection>
 
-      {/* ── Polish ── */}
-      <SettingSection title="Polish" description="AI correction engine for transcription errors.">
-        <SettingRow label="Engine" help="Which engine to use for correction.">
-          <select value={engine} onChange={(e) => setEngine(e.target.value)} className={selectClass}>
-            <option value="Whisper">Whisper</option>
-            <option value="Voxtral">Voxtral</option>
-          </select>
-        </SettingRow>
-      </SettingSection>
-
-      {/* ── Translate ── */}
-      <SettingSection title="Translation" description="AI translation to another language.">
+      {/* ── Translation ── */}
+      <SettingSection title="Translation" description="Target language for AI translation.">
         <SettingRow label="Target language" help="Language to translate into.">
           <input value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className="input py-1 text-sm w-24" />
         </SettingRow>

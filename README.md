@@ -22,8 +22,10 @@ Both paths share a segment editor (inline editing, speaker mapping, timestamp sn
 - Search and add podcasts by name (Apple Podcasts directory) or RSS URL
 - Import existing show folders
 - Browse episodes with status indicators (downloaded, transcribed, polished, translated, synthesized, indexed)
-- Filter episodes by minimum duration (hide short bonus clips)
+- Filter episodes by duration (min/max) and title (include/exclude)
+- Sortable episode list (date, title, duration, number)
 - Download episodes from RSS feeds (single or batch)
+- Move show folder with optional file relocation
 - Delete audio files
 - Export all episode files as ZIP
 
@@ -48,6 +50,13 @@ Both paths share a segment editor (inline editing, speaker mapping, timestamp sn
 - Extract voice samples from source audio per speaker
 - TTS generation segment-by-segment with cloned voices
 - Episode assembly from generated segments
+
+**Batch pipeline:**
+- Select multiple episodes and run pipeline steps (transcribe → polish → translate → index) in one go
+- Per-episode progress tracking with expandable status list and logs
+- Idempotent — skips steps already completed for each episode
+- Cancel at any time, with result summary (completed/skipped/failed)
+- GPU-safe sequential execution with per-episode locking
 
 **Indexing & search:**
 - Choose embedding model and chunking strategy
@@ -562,7 +571,9 @@ The FastAPI backend exposes these route groups (all under `/api`):
 |--------|-------------|
 | `/health` | Status and capability check |
 | `/config` | App configuration (show folders, save path) |
-| `/shows` | List shows, register folders, show metadata, episode lists |
+| `/shows` | List shows, register folders, show metadata, episode lists, move folder |
+| `/rss` | RSS feed parsing, episode download |
+| `/batch` | Multi-episode pipeline execution with progress tracking |
 | `/transcribe` | Load/save segments, start transcription, speaker map, upload |
 | `/polish` | Load/save segments, start correction, manual prompts |
 | `/translate` | Load/save segments, start translate, manual prompts, language list |
@@ -632,8 +643,9 @@ See [ROADMAP.md](ROADMAP.md) for the detailed plan.
 | Platform abstraction, model cache, export (text/SRT/VTT/ZIP) | Done |
 | Episode duration filter, per-episode playback speed | Done |
 | Tauri backend sidecar (dev mode) | Done |
-| **Standalone distribution** — PyInstaller sidecar for `.app`/`.deb`/`.exe` | Next |
-| **Semi-automatic speaker mapping** — voice embeddings for auto speaker ID | Planned |
+| Batch pipeline, global task bar, sortable episodes, move folder | Done |
+| **Semi-automatic speaker mapping** — voice embeddings for auto speaker ID | Next |
+| **Standalone distribution** — PyInstaller sidecar for `.app`/`.deb`/`.exe` | Planned |
 | **Generation versioning** — N versions per pipeline step with provenance | Planned |
 | **Timeline editor** — multi-track assembly with jingle/music insertion | Planned |
 

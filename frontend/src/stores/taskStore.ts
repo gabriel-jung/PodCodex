@@ -11,7 +11,9 @@ interface TaskBarState {
   /** Active batch pipeline task (one at a time). */
   batchTaskId: string | null;
   batchFolder: string | null;
-  setBatchTask: (taskId: string | null, folder?: string | null) => void;
+  batchEpisodeNames: string[];
+  batchStep: string | null;
+  setBatchTask: (taskId: string | null, folder?: string | null, episodeNames?: string[], step?: string | null) => void;
 }
 
 export const useTaskStore = create<TaskBarState>()((set) => ({
@@ -22,6 +24,8 @@ export const useTaskStore = create<TaskBarState>()((set) => ({
 
   batchTaskId: null,
   batchFolder: null,
-  setBatchTask: (taskId, folder = null) =>
-    set({ batchTaskId: taskId, batchFolder: folder }),
+  batchEpisodeNames: [],
+  batchStep: null,
+  setBatchTask: (taskId, folder = null, episodeNames = [], step = null) =>
+    set({ batchTaskId: taskId, batchFolder: folder, batchEpisodeNames: episodeNames, batchStep: step }),
 }));

@@ -53,6 +53,22 @@ class TaskManager:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._audio_locks: dict[str, str] = {}  # audio_path → task_id
 
+    # ── Public lock API ────────────────────────────
+
+    def lock(self, audio_path: str, task_id: str) -> None:
+        """Acquire a lock on an audio path for a given task."""
+        self._audio_locks[audio_path] = task_id
+
+    def unlock(self, audio_path: str) -> None:
+        """Release the lock on an audio path."""
+        self._audio_locks.pop(audio_path, None)
+
+    def release_locks_for_task(self, task_id: str) -> None:
+        """Release ALL locks held by a given task (used for batch cleanup)."""
+        stale = [k for k, v in self._audio_locks.items() if v == task_id]
+        for k in stale:
+            del self._audio_locks[k]
+
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         if self._loop is None or self._loop.is_closed():
             try:
@@ -114,6 +130,8 @@ class TaskManager:
             log_handler = _TaskLogHandler(info, self)
             root = logging.getLogger()
             root.addHandler(log_handler)
+            # Also capture loguru output (used by core pipeline modules)
+            loguru_sink_id = _add_loguru_sink(info, self)
             try:
                 result = fn(progress_cb, *args)
                 if not info.cancel_event.is_set():
@@ -128,6 +146,7 @@ class TaskManager:
                     info.error = str(exc)
             finally:
                 root.removeHandler(log_handler)
+                _remove_loguru_sink(loguru_sink_id)
                 if info.finished_at is None:
                     info.finished_at = time.monotonic()
                 self._audio_locks.pop(audio_path, None)
@@ -186,7 +205,9 @@ class TaskManager:
         info.status = "cancelled"
         info.message = "Cancelled"
         info.finished_at = time.monotonic()
+        # Release primary lock + any per-episode locks held by this task
         self._audio_locks.pop(info.audio_path, None)
+        self.release_locks_for_task(task_id)
         self._broadcast_sync(task_id)
         return True
 
@@ -254,6 +275,39 @@ class TaskManager:
 
     def unregister_ws(self, ws: WebSocket) -> None:
         self._ws_connections.discard(ws)
+
+
+def _add_loguru_sink(info: TaskInfo, manager: "TaskManager") -> int | None:
+    """Add a loguru sink that feeds into a task's log buffer."""
+    try:
+        from loguru import logger as loguru_logger
+
+        _last_broadcast: dict[str, float] = {"t": 0.0}
+
+        def sink(message: Any) -> None:
+            text = str(message).rstrip()
+            if not text:
+                return
+            info.add_log(text)
+            now = time.monotonic()
+            if now - _last_broadcast["t"] >= 1.0:
+                _last_broadcast["t"] = now
+                manager._broadcast_sync(info.task_id)
+
+        return loguru_logger.add(sink, level="INFO", format="{name}: {message}")
+    except ImportError:
+        return None
+
+
+def _remove_loguru_sink(sink_id: int | None) -> None:
+    if sink_id is None:
+        return
+    try:
+        from loguru import logger as loguru_logger
+
+        loguru_logger.remove(sink_id)
+    except Exception:
+        pass
 
 
 class _TaskLogHandler(logging.Handler):

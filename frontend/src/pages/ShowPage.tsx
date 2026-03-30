@@ -16,8 +16,8 @@ import { Button } from "@/components/ui/button";
 import {
   ArrowLeft, RefreshCw, Podcast, Search,
   Mic, Sparkles, Languages, Database,
-  SlidersHorizontal, ChevronDown, Download,
-  List, LayoutGrid,
+  SlidersHorizontal, ChevronDown, ChevronUp, Download,
+  List, LayoutGrid, ArrowUpDown,
 } from "lucide-react";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -40,7 +40,7 @@ const STEPS = [
 
 type StepKey = "transcribe" | "polish" | "translate" | "index";
 
-function StepConfigEditor({ step, onRun, onClose }: { step: StepKey; onRun: () => void; onClose: () => void }) {
+function StepConfigEditor({ step, episodes, onRun, onClose }: { step: StepKey; episodes: Episode[]; onRun: () => void; onClose: () => void }) {
   const tc = usePipelineConfigStore((s) => s.transcribe);
   const setTc = usePipelineConfigStore((s) => s.setTranscribe);
   const llm = usePipelineConfigStore((s) => s.llm);
@@ -180,8 +180,8 @@ function StepConfigEditor({ step, onRun, onClose }: { step: StepKey; onRun: () =
                   <input value={llm.model} onChange={(e) => setLLM({ model: e.target.value })} placeholder="default" className={inputClass} />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Batch size</label>
-                  <input type="number" value={llm.batchSize} onChange={(e) => setLLM({ batchSize: Number(e.target.value) })} min={1} className={inputClass} />
+                  <label className="text-sm font-medium">Batch (min)</label>
+                  <input type="number" value={llm.batchMinutes} onChange={(e) => setLLM({ batchMinutes: Number(e.target.value) })} min={1} step={5} className={inputClass} />
                 </div>
               </div>
               {llm.mode === "api" && (
@@ -200,10 +200,20 @@ function StepConfigEditor({ step, onRun, onClose }: { step: StepKey; onRun: () =
           )}
         </div>
 
+        {/* Episodes summary */}
+        <div className="px-5 py-3 border-t border-border">
+          <p className="text-xs font-medium text-muted-foreground mb-1.5">{episodes.length} episode{episodes.length !== 1 ? "s" : ""} selected</p>
+          <div className="max-h-24 overflow-y-auto space-y-0.5">
+            {episodes.map((ep) => (
+              <p key={ep.id} className="text-xs text-muted-foreground truncate">{ep.title}</p>
+            ))}
+          </div>
+        </div>
+
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-border">
           <Button onClick={onClose} variant="ghost" size="sm">Cancel</Button>
-          <Button onClick={onRun} size="sm">{stepInfo.label}</Button>
+          <Button onClick={onRun} size="sm">{stepInfo.label} {episodes.length} episode{episodes.length !== 1 ? "s" : ""}</Button>
         </div>
       </div>
     </div>
@@ -212,9 +222,11 @@ function StepConfigEditor({ step, onRun, onClose }: { step: StepKey; onRun: () =
 
 function PipelineButtons({
   disabled,
+  episodes,
   onRun,
 }: {
   disabled: boolean;
+  episodes: Episode[];
   onRun: (step: StepKey) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -281,6 +293,7 @@ function PipelineButtons({
       {confirmStep && (
         <StepConfigEditor
           step={confirmStep}
+          episodes={episodes}
           onRun={handleConfirm}
           onClose={() => setConfirmStep(null)}
         />
@@ -384,10 +397,38 @@ function FilterDropdown({
   );
 }
 
+/* ── Sortable column header ── */
+
+function SortHeader({
+  col, label, current, dir, onSort, className = "",
+}: {
+  col: string;
+  label: string;
+  current: string;
+  dir: "asc" | "desc";
+  onSort: (col: any) => void;
+  className?: string;
+}) {
+  const active = current === col;
+  return (
+    <button
+      onClick={() => onSort(col)}
+      className={`flex items-center gap-0.5 hover:text-foreground transition group ${active ? "text-foreground" : ""} ${className}`}
+    >
+      <span>{label}</span>
+      {active ? (
+        dir === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />
+      ) : (
+        <ArrowUpDown className="w-3 h-3 opacity-0 group-hover:opacity-50 transition-opacity" />
+      )}
+    </button>
+  );
+}
+
 type ShowTab = "episodes" | "search" | "speakers" | "settings";
 type ViewMode = "list" | "card";
 type StatusFilter = "all" | "downloaded" | "not_downloaded" | "transcribed" | "not_transcribed" | "polished" | "not_polished" | "translated" | "synthesized" | "indexed";
-type SortKey = "date_desc" | "date_asc" | "title_asc" | "title_desc" | "duration_desc" | "duration_asc";
+type SortKey = "date_desc" | "date_asc" | "title_asc" | "title_desc" | "duration_desc" | "duration_asc" | "number_desc" | "number_asc";
 
 export default function ShowPage({ folder }: { folder: string }) {
   const navigate = useNavigate();
@@ -412,6 +453,7 @@ export default function ShowPage({ folder }: { folder: string }) {
   // Pipeline config from store (for batch start)
   const tc = usePipelineConfigStore((s) => s.transcribe);
   const llm = usePipelineConfigStore((s) => s.llm);
+  const engine = usePipelineConfigStore((s) => s.engine);
   const targetLang = usePipelineConfigStore((s) => s.targetLang);
 
   const { data: meta } = useQuery({
@@ -432,7 +474,7 @@ export default function ShowPage({ folder }: { folder: string }) {
 
   const downloadMutation = useMutation({
     mutationFn: (guids: string[]) => downloadEpisodes(folder, guids),
-    onSuccess: (data) => { setDownloadTask(data.task_id, folder); setSelected(new Set()); },
+    onSuccess: (data) => { setDownloadTask(data.task_id, folder); },
   });
 
   const deleteMutation = useMutation({
@@ -440,9 +482,15 @@ export default function ShowPage({ folder }: { folder: string }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["episodes", folder] }),
   });
 
+  const batchMutationEpisodesRef = { current: { names: [] as string[], step: "" } };
   const batchMutation = useMutation({
-    mutationFn: startBatch,
-    onSuccess: (data) => { setBatchTask(data.task_id, folder); },
+    mutationFn: (args: Parameters<typeof startBatch>[0]) => {
+      batchMutationEpisodesRef.current.names = batchableSelected.map((e) => e.title);
+      return startBatch(args);
+    },
+    onSuccess: (data) => {
+      setBatchTask(data.task_id, folder, batchMutationEpisodesRef.current.names, batchMutationEpisodesRef.current.step);
+    },
   });
 
   const all = episodes ?? [];
@@ -481,12 +529,14 @@ export default function ShowPage({ folder }: { folder: string }) {
     // Sort
     list = [...list].sort((a, b) => {
       switch (sort) {
-        case "date_asc": return (a.pub_date ?? "").localeCompare(b.pub_date ?? "");
-        case "date_desc": return (b.pub_date ?? "").localeCompare(a.pub_date ?? "");
+        case "date_asc": return new Date(a.pub_date ?? 0).getTime() - new Date(b.pub_date ?? 0).getTime();
+        case "date_desc": return new Date(b.pub_date ?? 0).getTime() - new Date(a.pub_date ?? 0).getTime();
         case "title_asc": return a.title.localeCompare(b.title);
         case "title_desc": return b.title.localeCompare(a.title);
         case "duration_asc": return a.duration - b.duration;
         case "duration_desc": return b.duration - a.duration;
+        case "number_asc": return (a.episode_number ?? 0) - (b.episode_number ?? 0);
+        case "number_desc": return (b.episode_number ?? 0) - (a.episode_number ?? 0);
         default: return 0;
       }
     });
@@ -512,12 +562,27 @@ export default function ShowPage({ folder }: { folder: string }) {
     setSelected(allSelectableSelected ? new Set() : new Set(selectableEpisodes.map((e) => e.id)));
   };
 
+  const toggleSort = (col: "date" | "title" | "duration" | "number") => {
+    const pairs: Record<string, [SortKey, SortKey]> = {
+      date: ["date_desc", "date_asc"],
+      title: ["title_asc", "title_desc"],
+      duration: ["duration_desc", "duration_asc"],
+      number: ["number_desc", "number_asc"],
+    };
+    const [primary, alt] = pairs[col];
+    setSort(sort === primary ? alt : primary);
+  };
+
+  const sortCol = sort.replace(/_(?:asc|desc)$/, "");
+  const sortDir = sort.endsWith("_asc") ? "asc" : "desc";
+
   const goEpisode = (stem: string) =>
     navigate({ to: "/show/$folder/episode/$stem", params: { folder: encodeURIComponent(folder), stem: encodeURIComponent(stem) } });
 
   const runStep = (step: "transcribe" | "polish" | "translate" | "index") => {
     const audioPaths = batchableSelected.map((e) => e.audio_path).filter(Boolean) as string[];
     if (audioPaths.length === 0) return;
+    batchMutationEpisodesRef.current.step = step;
     batchMutation.mutate({
       show_folder: folder,
       audio_paths: audioPaths,
@@ -538,7 +603,8 @@ export default function ShowPage({ folder }: { folder: string }) {
       context: llm.context,
       source_lang: llm.sourceLang,
       target_lang: targetLang,
-      llm_batch_size: llm.batchSize,
+      llm_batch_minutes: llm.batchMinutes,
+      engine,
       show_name: meta?.name || "",
     });
   };
@@ -630,18 +696,6 @@ export default function ShowPage({ folder }: { folder: string }) {
           <option value="synthesized">Synthesized ({all.filter((e) => e.synthesized).length})</option>
           <option value="indexed">Indexed ({all.filter((e) => e.indexed).length})</option>
         </select>
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value as SortKey)}
-          className="bg-secondary text-secondary-foreground text-xs rounded px-2 py-1.5 border border-border"
-        >
-          <option value="date_desc">Newest first</option>
-          <option value="date_asc">Oldest first</option>
-          <option value="title_asc">Title A→Z</option>
-          <option value="title_desc">Title Z→A</option>
-          <option value="duration_desc">Longest first</option>
-          <option value="duration_asc">Shortest first</option>
-        </select>
         <FilterDropdown
           minDurationMinutes={minDurationMinutes} setMinDurationMinutes={setMinDurationMinutes}
           maxDurationMinutes={maxDurationMinutes} setMaxDurationMinutes={setMaxDurationMinutes}
@@ -686,6 +740,7 @@ export default function ShowPage({ folder }: { folder: string }) {
         </Button>
         <PipelineButtons
           disabled={batchableSelected.length === 0 || !!batchTaskId || batchMutation.isPending}
+          episodes={batchableSelected}
           onRun={runStep}
         />
         {batchMutation.isError && (
@@ -697,6 +752,16 @@ export default function ShowPage({ folder }: { folder: string }) {
       <div className="flex-1 overflow-y-auto">
         {view === "list" ? (
           <div className="divide-y divide-border/50">
+            {/* Column headers */}
+            <div className="flex items-center gap-3 px-6 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground select-none border-b border-border">
+              <div className="w-10 shrink-0" />
+              <SortHeader col="number" label="#" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-8 text-right shrink-0" />
+              <SortHeader col="title" label="Title" current={sortCol} dir={sortDir} onSort={toggleSort} className="flex-1 min-w-0" />
+              <div className="w-16 shrink-0" />
+              <SortHeader col="date" label="Date" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-20 text-right shrink-0" />
+              <SortHeader col="duration" label="Duration" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-12 text-right shrink-0" />
+              <div className="w-20 shrink-0" />
+            </div>
             {filtered.map((ep) => (
               <EpisodeRow
                 key={ep.id}
