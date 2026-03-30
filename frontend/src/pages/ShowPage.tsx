@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   downloadEpisodes,
   refreshRSS,
@@ -27,7 +27,7 @@ import { EpisodeRow } from "@/components/show/EpisodeRow";
 import { EpisodeCard } from "@/components/show/EpisodeCard";
 import SearchPanel from "@/components/search/SearchPanel";
 
-import { errorMessage } from "@/lib/utils";
+import { errorMessage, languageToISO } from "@/lib/utils";
 
 /* ── Pipeline step buttons (collapse to dropdown on small screens) ── */
 
@@ -40,7 +40,7 @@ const STEPS = [
 
 type StepKey = "transcribe" | "polish" | "translate" | "index";
 
-function StepConfigEditor({ step, episodes, onRun, onClose }: { step: StepKey; episodes: Episode[]; onRun: () => void; onClose: () => void }) {
+function StepConfigEditor({ step, episodes, showLanguage, onRun, onClose }: { step: StepKey; episodes: Episode[]; showLanguage: string; onRun: () => void; onClose: () => void }) {
   const tc = usePipelineConfigStore((s) => s.transcribe);
   const setTc = usePipelineConfigStore((s) => s.setTranscribe);
   const llm = usePipelineConfigStore((s) => s.llm);
@@ -94,6 +94,13 @@ function StepConfigEditor({ step, episodes, onRun, onClose }: { step: StepKey; e
                   }
                 </select>
               </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Language</label>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-mono">{languageToISO(showLanguage) || "auto-detect"}</span>
+                  {showLanguage && <span className="text-muted-foreground text-xs">({showLanguage})</span>}
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-sm font-medium">Batch size</label>
@@ -130,14 +137,30 @@ function StepConfigEditor({ step, episodes, onRun, onClose }: { step: StepKey; e
                 <label className="text-sm font-medium">Source language</label>
                 <input value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className={inputClass} />
               </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Context</label>
+                <textarea value={llm.context} onChange={(e) => setLLM({ context: e.target.value })} placeholder="Describe the podcast, hosts, topics..." className="input py-1.5 text-sm w-full resize-y min-h-[3rem]" />
+              </div>
             </>
           )}
 
           {step === "translate" && (
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Target language</label>
-              <input value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className={inputClass} />
-            </div>
+            <>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Source language</label>
+                  <input value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className={inputClass} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Target language</label>
+                  <input value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className={inputClass} />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Context</label>
+                <textarea value={llm.context} onChange={(e) => setLLM({ context: e.target.value })} placeholder="Describe the podcast, hosts, topics..." className="input py-1.5 text-sm w-full resize-y min-h-[3rem]" />
+              </div>
+            </>
           )}
 
           {step === "index" && (
@@ -223,10 +246,12 @@ function StepConfigEditor({ step, episodes, onRun, onClose }: { step: StepKey; e
 function PipelineButtons({
   disabled,
   episodes,
+  showLanguage,
   onRun,
 }: {
   disabled: boolean;
   episodes: Episode[];
+  showLanguage: string;
   onRun: (step: StepKey) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -294,6 +319,7 @@ function PipelineButtons({
         <StepConfigEditor
           step={confirmStep}
           episodes={episodes}
+          showLanguage={showLanguage}
           onRun={handleConfirm}
           onClose={() => setConfirmStep(null)}
         />
@@ -482,7 +508,7 @@ export default function ShowPage({ folder }: { folder: string }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["episodes", folder] }),
   });
 
-  const batchMutationEpisodesRef = { current: { names: [] as string[], step: "" } };
+  const batchMutationEpisodesRef = useRef({ names: [] as string[], step: "" });
   const batchMutation = useMutation({
     mutationFn: (args: Parameters<typeof startBatch>[0]) => {
       batchMutationEpisodesRef.current.names = batchableSelected.map((e) => e.title);
@@ -591,6 +617,7 @@ export default function ShowPage({ folder }: { folder: string }) {
       translate: step === "translate",
       index: step === "index",
       model_size: tc.modelSize,
+      language: languageToISO(meta?.language || ""),
       batch_size: tc.batchSize,
       diarize: tc.diarize,
       hf_token: tc.hfToken || undefined,
@@ -741,6 +768,7 @@ export default function ShowPage({ folder }: { folder: string }) {
         <PipelineButtons
           disabled={batchableSelected.length === 0 || !!batchTaskId || batchMutation.isPending}
           episodes={batchableSelected}
+          showLanguage={meta?.language || ""}
           onRun={runStep}
         />
         {batchMutation.isError && (

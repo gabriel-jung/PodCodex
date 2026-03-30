@@ -7,7 +7,7 @@ import { usePipelineConfigStore, useConfigStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
-import { errorMessage, selectClass } from "@/lib/utils";
+import { errorMessage, languageToISO, selectClass } from "@/lib/utils";
 import SectionHeader from "@/components/common/SectionHeader";
 import ProgressBar from "@/components/editor/ProgressBar";
 import FolderPicker from "@/components/common/FolderPicker";
@@ -266,6 +266,11 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
 
       {/* ── Transcription ── */}
       <SettingSection title="Transcription" description="Whisper model and diarization settings.">
+        <SettingRow label="Language" help="Derived from the show language above. This ISO code is passed to WhisperX for transcription and alignment.">
+          <span className="text-sm font-mono">
+            {languageToISO(language) || <span className="text-muted-foreground italic">auto-detect</span>}
+          </span>
+        </SettingRow>
         <SettingRow label="Model" help="The speech recognition model. Bigger = better but slower.">
           <select value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectClass}>
             {Object.keys(whisperModels).length > 0

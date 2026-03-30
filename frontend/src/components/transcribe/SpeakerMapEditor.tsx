@@ -259,8 +259,8 @@ export default function SpeakerMapEditor({ audioPath, onSaved }: SpeakerMapEdito
             <div className="flex items-start gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-sm">
               <AlertTriangle className="w-4 h-4 text-yellow-500 shrink-0 mt-0.5" />
               <div>
-                <p className="text-yellow-200 font-medium">Speaker map not set up</p>
-                <p className="text-yellow-200/70 text-xs mt-0.5">
+                <p className="text-foreground font-medium">Speaker map not set up</p>
+                <p className="text-muted-foreground text-xs mt-0.5">
                   Listen to the excerpts below to identify each speaker, then type their name.
                 </p>
               </div>
