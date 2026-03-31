@@ -19,10 +19,11 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
   const canDownload = !ep.downloaded && !!ep.audio_url;
   return (
     <div className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
-      {canDownload ? (
-        <input type="checkbox" checked={selected} onChange={onToggle} className="accent-primary shrink-0" />
-      ) : ep.downloaded ? (
-        <CheckCircle className="w-4 h-4 text-green-500 shrink-0" title="Downloaded" />
+      {canDownload || ep.downloaded ? (
+        <div className="flex items-center gap-1.5 shrink-0">
+          <input type="checkbox" checked={selected} onChange={onToggle} className="accent-primary" />
+          {ep.downloaded && <CheckCircle className="w-3.5 h-3.5 text-green-500" />}
+        </div>
       ) : (
         <div className="w-4" />
       )}
@@ -41,19 +42,19 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
       <StatusDots ep={ep} />
       <span className="text-xs text-muted-foreground w-20 text-right shrink-0">{formatDate(ep.pub_date)}</span>
       <span className="text-xs text-muted-foreground w-12 text-right shrink-0">{formatDuration(ep.duration)}</span>
-      <div className="w-20 flex justify-end gap-1 shrink-0">
+      <div className="w-20 flex justify-end gap-2.5 shrink-0">
         {ep.audio_path && (
-          <button onClick={onPlay} title="Play" className={`opacity-0 group-hover:opacity-100 transition ${isPlaying ? "text-green-400 !opacity-100" : "text-muted-foreground hover:text-foreground"}`}>
+          <button onClick={onPlay} title="Play" className={`transition ${isPlaying ? "text-green-400" : "text-muted-foreground hover:text-foreground"}`}>
             <Play className="w-3.5 h-3.5" />
           </button>
         )}
         {ep.audio_path && (
-          <button onClick={onDelete} title="Delete audio" className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition">
+          <button onClick={onDelete} title="Delete audio" className="text-muted-foreground hover:text-destructive transition">
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         )}
         {canDownload && !selected && (
-          <button onClick={onDownload} disabled={downloading} title="Download" className="text-green-400 hover:text-green-300 opacity-0 group-hover:opacity-100 transition">
+          <button onClick={onDownload} disabled={downloading} title="Download" className="text-green-400 hover:text-green-300 transition">
             <Download className="w-3.5 h-3.5" />
           </button>
         )}

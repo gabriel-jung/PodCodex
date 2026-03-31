@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Outlet } from "@tanstack/react-router";
 import { getHealth, getExtras } from "@/api/client";
 import AudioBar from "@/components/layout/AudioBar";
+import TaskBar from "@/components/layout/TaskBar";
 import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
 import { PlatformProvider } from "@/platform";
 import { useTheme } from "@/hooks/useTheme";
@@ -55,6 +56,7 @@ export default function RootLayout() {
         <main className="flex-1 overflow-hidden">
           <Outlet />
         </main>
+        <TaskBar />
         <AudioBar />
         <FloatingActions />
         <ConfirmDialogHost />

@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import logging
+import shutil
 from dataclasses import fields
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from podcodex.api.routes._helpers import is_downloaded, require_show_folder
 from podcodex.api.schemas import EpisodeOut, ShowMeta, UnifiedEpisodeOut
-from podcodex.ingest.folder import EpisodeInfo, scan_folder
+from podcodex.ingest.folder import EpisodeInfo, invalidate_scan_cache, scan_folder
 from podcodex.ingest.rss import episode_stem, load_episode_meta, load_feed_cache
 from podcodex.ingest.show import ShowMeta as _ShowMeta
 from podcodex.ingest.show import load_show_meta, save_show_meta
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # ── Episode serialization ────────────────────
 
@@ -152,3 +156,67 @@ async def unified_episodes(show_folder: str) -> list[dict]:
         )
 
     return result
+
+
+# ── Move / rename show folder ──────────────
+
+
+class MoveShowRequest(BaseModel):
+    new_path: str
+    move_files: bool = True
+
+
+@router.post("/{show_folder:path}/move")
+async def move_show(show_folder: str, req: MoveShowRequest) -> dict:
+    """Move or rename a show folder, optionally relocating all files."""
+    old_path = require_show_folder(show_folder)
+    new_path = Path(req.new_path).expanduser().resolve()
+
+    if new_path == old_path.resolve():
+        raise HTTPException(400, "Source and destination are the same")
+
+    if new_path.exists() and any(new_path.iterdir()):
+        raise HTTPException(
+            409, f"Destination already exists and is not empty: {new_path}"
+        )
+
+    # Check no tasks are running on this show
+    from podcodex.api.tasks import task_manager
+
+    active = task_manager.get_active(show_folder)
+    if active:
+        raise HTTPException(
+            409,
+            f"Task {active.task_id} is running on this show — wait for it to finish",
+        )
+
+    if req.move_files:
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old_path), str(new_path))
+        logger.info("Moved show folder %s → %s", old_path, new_path)
+    else:
+        # Just create the new folder with show metadata, leave files behind
+        new_path.mkdir(parents=True, exist_ok=True)
+        meta = load_show_meta(old_path)
+        if meta:
+            save_show_meta(new_path, meta)
+        logger.info(
+            "Created new show folder %s (files remain at %s)", new_path, old_path
+        )
+
+    # Update config.json: replace old path with new
+    from podcodex.api.routes.config import _load, _save
+
+    cfg = _load()
+    old_resolved = str(old_path.resolve())
+    cfg.show_folders = [
+        str(new_path) if str(Path(p).resolve()) == old_resolved else p
+        for p in cfg.show_folders
+    ]
+    _save(cfg)
+
+    # Invalidate caches
+    invalidate_scan_cache(old_path)
+    invalidate_scan_cache(new_path)
+
+    return {"status": "moved", "new_path": str(new_path)}

@@ -3,9 +3,9 @@
 import type {
   AppConfig,
   AssembleRequest,
+  BatchRequest,
   CreateFromRSSResponse,
   DirListing,
-  DownloadResult,
   Episode,
   ExtrasResponse,
   ExtractVoicesRequest,
@@ -78,6 +78,20 @@ export const installExtra = (extra: string) =>
     body: JSON.stringify({ extra }),
   });
 
+// ── Batch ──────────────────────────────────
+
+export const startBatch = (req: BatchRequest) =>
+  json<TaskResponse>("/api/batch/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+
+export const cancelTask = (taskId: string) =>
+  json<{ status: string; task_id: string }>(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: "POST",
+  });
+
 // ── Config ──────────────────────────────────
 
 export const getConfig = () => json<AppConfig>("/api/config");
@@ -121,6 +135,13 @@ export const updateShowMeta = (folder: string, meta: ShowMeta) =>
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(meta),
+  });
+
+export const moveShow = (folder: string, newPath: string, moveFiles: boolean) =>
+  json<{ status: string; new_path: string }>(`/api/shows/${encodeURIComponent(folder)}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ new_path: newPath, move_files: moveFiles }),
   });
 
 // ── Episodes (unified: local + RSS merged) ──

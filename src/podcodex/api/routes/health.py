@@ -102,6 +102,16 @@ async def get_active_task(
     return resp
 
 
+@router.post("/api/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str) -> dict:
+    """Cancel a running or pending task."""
+    from podcodex.api.tasks import task_manager
+
+    if task_manager.cancel(task_id):
+        return {"status": "cancelled", "task_id": task_id}
+    raise HTTPException(404, f"No active task with id '{task_id}'")
+
+
 class InstallExtraRequest(BaseModel):
     extra: str
 

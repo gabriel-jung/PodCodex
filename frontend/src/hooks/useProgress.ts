@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 export interface TaskProgress {
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   progress: number;
   message: string;
   steps?: string[];
@@ -63,6 +63,8 @@ class ProgressManager {
         set.delete(callback);
         if (set.size === 0) this.listeners.delete(taskId);
       }
+      // Disconnect when no listeners remain
+      if (this.listeners.size === 0) this.disconnect();
     };
   }
 

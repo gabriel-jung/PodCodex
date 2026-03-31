@@ -1,10 +1,11 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "./button";
 
 interface ConfirmOptions {
   title: string;
   description?: string;
+  content?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: "default" | "destructive";
@@ -61,6 +62,7 @@ export function ConfirmDialogHost() {
         {state.description && (
           <p className="text-sm text-muted-foreground mt-2">{state.description}</p>
         )}
+        {state.content && <div className="mt-3">{state.content}</div>}
         <div className="flex justify-end gap-3 mt-6">
           <Button variant="ghost" size="sm" onClick={() => confirmDialog.close()}>
             {state.cancelLabel || "Cancel"}

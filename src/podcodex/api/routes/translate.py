@@ -101,7 +101,7 @@ class TranslateRequest(BaseModel):
     context: str = ""
     source_lang: str = "French"
     target_lang: str = "English"
-    batch_size: int = 10
+    batch_minutes: float = 15.0
     api_base_url: str = ""
     api_key: str | None = None
 
@@ -129,7 +129,7 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
             source_lang=req_data.source_lang,
             target_lang=req_data.target_lang,
             model=req_data.model,
-            batch_size=req_data.batch_size,
+            batch_minutes=req_data.batch_minutes,
             provider=req_data.provider,
             api_base_url=req_data.api_base_url,
             api_key=req_data.api_key,

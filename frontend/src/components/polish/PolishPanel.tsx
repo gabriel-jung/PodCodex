@@ -1,6 +1,5 @@
-import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEpisodeStore } from "@/stores";
+import { useEpisodeStore, usePipelineConfigStore } from "@/stores";
 import {
   getPolishSegments,
   getPolishSegmentsRaw,
@@ -30,7 +29,8 @@ export default function PolishPanel() {
   const expanded = task.expanded || !episode.polished;
 
   const [config, setConfig] = useLLMConfig(episode, showMeta);
-  const [engine, setEngine] = useState("Whisper");
+  const engine = usePipelineConfigStore((s) => s.engine);
+  const setEngine = usePipelineConfigStore((s) => s.setEngine);
 
   const { data: referenceSegments } = useQuery({
     queryKey: ["transcribe", "segments", episode.audio_path],
@@ -47,7 +47,7 @@ export default function PolishPanel() {
         model: config.model,
         context: config.context,
         source_lang: config.sourceLang,
-        batch_size: config.batchSize,
+        batch_minutes: config.batchMinutes,
         engine,
         api_base_url: config.apiBaseUrl || undefined,
         api_key: config.apiKey || undefined,

@@ -138,7 +138,7 @@ def polish_segments(
     model: str = "",
     api_base_url: str = "",
     api_key: str | None = None,
-    batch_size: int = 10,
+    batch_minutes: float = DEFAULT_BATCH_MINUTES,
     original_segments: list[dict] | None = None,
     merge: bool = True,
     max_gap: float = DEFAULT_MAX_GAP,
@@ -158,7 +158,7 @@ def polish_segments(
         model             : LLM model name (auto-detected from provider if empty)
         api_base_url      : base URL for OpenAI-compatible API (auto-detected from provider if empty)
         api_key           : API key (None reads from provider's env variable)
-        batch_size        : number of segments per LLM call
+        batch_minutes     : maximum audio duration per LLM batch in minutes (default 15)
         merge             : merge consecutive same-speaker segments before processing (default True)
         max_gap           : maximum silence gap in seconds for merging (default 10.0)
         engine            : transcription engine name for the prompt (default "Whisper")
@@ -172,7 +172,7 @@ def polish_segments(
     """
     logger.info(f"Polishing {len(segments)} segments — mode={mode}")
     logger.debug(
-        f"Polish params: lang={source_lang}, engine={engine}, batch_size={batch_size}, merge={merge}"
+        f"Polish params: lang={source_lang}, engine={engine}, batch_minutes={batch_minutes}, merge={merge}"
     )
     if context:
         logger.debug(f"Context: {context[:100]}{'…' if len(context) > 100 else ''}")
@@ -192,7 +192,7 @@ def polish_segments(
             segments,
             system_prompt,
             model=model or "qwen3:4b",
-            batch_size=batch_size,
+            batch_minutes=batch_minutes,
             instruction="Correct",
             label="Polish",
             on_batch=on_batch,
@@ -204,7 +204,7 @@ def polish_segments(
             model=model,
             api_base_url=api_base_url,
             api_key=api_key,
-            batch_size=batch_size,
+            batch_minutes=batch_minutes,
             provider=provider,
             instruction="Correct",
             label="Polish",

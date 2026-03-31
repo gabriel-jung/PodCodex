@@ -146,13 +146,21 @@ def transcribe_file(
     result = model.transcribe(audio, batch_size=batch_size, language=language)
     free_vram(model)
 
-    model_a, metadata = whisperx.load_align_model(language_code=language, device=device)
+    # Use detected language when none was specified
+    detected_lang = result.get("language") or language
+    model_a, metadata = whisperx.load_align_model(
+        language_code=detected_lang, device=device
+    )
     result = whisperx.align(result["segments"], model_a, metadata, audio, device)
     free_vram(model_a)
 
     segments = result["segments"]
     duration = float(audio.shape[0]) / SAMPLE_RATE
-    meta = {"language": language, "duration": duration, "num_segments": len(segments)}
+    meta = {
+        "language": detected_lang,
+        "duration": duration,
+        "num_segments": len(segments),
+    }
 
     write_parquet(p.segments, segments)
     write_json(p.segments_meta, meta)

@@ -17,7 +17,7 @@ export interface LLMConfig {
   model: string;
   context: string;
   sourceLang: string;
-  batchSize: number;
+  batchMinutes: number;
   apiBaseUrl: string;
   apiKey: string;
 }
@@ -174,14 +174,18 @@ export default function LLMControls({
       {config.mode !== "manual" && (
         <AdvancedToggle className="border-t border-border/50 pt-3 space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
-            <HelpLabel label="Batch size" help="How many segments are processed at once. Smaller values (5-10) are safer but slower. Larger values (20-50) are faster but may fail if the AI can't handle that much text." />
-            <input
-              type="number"
-              value={config.batchSize}
-              onChange={(e) => onChange({ batchSize: Number(e.target.value) })}
-              min={1}
-              className="input py-1 text-sm w-20"
-            />
+            <HelpLabel label="Batch duration" help="Maximum audio duration (in minutes) per LLM request. Larger values process faster but may exceed the model's context window." />
+            <div className="flex items-center gap-1.5">
+              <input
+                type="number"
+                value={config.batchMinutes}
+                onChange={(e) => onChange({ batchMinutes: Number(e.target.value) })}
+                min={1}
+                step={5}
+                className="input py-1 text-sm w-20"
+              />
+              <span className="text-xs text-muted-foreground">min</span>
+            </div>
           </div>
         </AdvancedToggle>
       )}

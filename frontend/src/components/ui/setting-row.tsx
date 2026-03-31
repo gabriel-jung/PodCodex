@@ -33,10 +33,12 @@ interface SettingSectionProps {
 
 export function SettingSection({ title, description, children, className }: SettingSectionProps) {
   return (
-    <div className={cn("space-y-1", className)}>
-      <h4 className="text-sm font-medium">{title}</h4>
-      {description && <p className="text-xs text-muted-foreground">{description}</p>}
-      <div className="divide-y divide-border/60">{children}</div>
+    <div className={cn("space-y-2 border-t border-border pt-5 first:border-0 first:pt-0", className)}>
+      <div>
+        <h4 className="text-sm font-semibold">{title}</h4>
+        {description && <p className="text-xs text-muted-foreground mt-0.5">{description}</p>}
+      </div>
+      <div className="divide-y divide-border/40">{children}</div>
     </div>
   );
 }

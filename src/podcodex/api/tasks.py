@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -23,7 +24,7 @@ _MAX_DEBUG_LINES = 200
 class TaskInfo:
     task_id: str
     audio_path: str = ""
-    status: str = "pending"  # pending | running | completed | failed
+    status: str = "pending"  # pending | running | completed | failed | cancelled
     progress: float = 0.0
     message: str = ""
     result: Any = None
@@ -31,6 +32,7 @@ class TaskInfo:
     finished_at: float | None = None
     steps: list[str] = field(default_factory=list)
     log: list[str] = field(default_factory=list)
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
     def add_step(self, message: str) -> None:
         self.steps.append(message)
@@ -50,6 +52,22 @@ class TaskManager:
         self._ws_connections: set[WebSocket] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._audio_locks: dict[str, str] = {}  # audio_path → task_id
+
+    # ── Public lock API ────────────────────────────
+
+    def lock(self, audio_path: str, task_id: str) -> None:
+        """Acquire a lock on an audio path for a given task."""
+        self._audio_locks[audio_path] = task_id
+
+    def unlock(self, audio_path: str) -> None:
+        """Release the lock on an audio path."""
+        self._audio_locks.pop(audio_path, None)
+
+    def release_locks_for_task(self, task_id: str) -> None:
+        """Release ALL locks held by a given task (used for batch cleanup)."""
+        stale = [k for k, v in self._audio_locks.items() if v == task_id]
+        for k in stale:
+            del self._audio_locks[k]
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         if self._loop is None or self._loop.is_closed():
@@ -103,6 +121,8 @@ class TaskManager:
         def progress_cb(progress: float, message: str) -> None:
             self.update_progress(task_id, progress, message)
 
+        progress_cb.cancel_event = info.cancel_event  # type: ignore[attr-defined]
+
         def run() -> None:
             info.status = "running"
             self._broadcast_sync(task_id)
@@ -110,19 +130,25 @@ class TaskManager:
             log_handler = _TaskLogHandler(info, self)
             root = logging.getLogger()
             root.addHandler(log_handler)
+            # Also capture loguru output (used by core pipeline modules)
+            loguru_sink_id = _add_loguru_sink(info, self)
             try:
                 result = fn(progress_cb, *args)
-                info.status = "completed"
-                info.progress = 1.0
-                info.message = "Done"
-                info.result = result
+                if not info.cancel_event.is_set():
+                    info.status = "completed"
+                    info.progress = 1.0
+                    info.message = "Done"
+                    info.result = result
             except Exception as exc:
-                logger.exception("Task %s failed", task_id)
-                info.status = "failed"
-                info.error = str(exc)
+                if not info.cancel_event.is_set():
+                    logger.exception("Task %s failed", task_id)
+                    info.status = "failed"
+                    info.error = str(exc)
             finally:
                 root.removeHandler(log_handler)
-                info.finished_at = time.monotonic()
+                _remove_loguru_sink(loguru_sink_id)
+                if info.finished_at is None:
+                    info.finished_at = time.monotonic()
                 self._audio_locks.pop(audio_path, None)
                 # Invalidate folder scan cache so next listing reflects changes
                 try:
@@ -139,7 +165,9 @@ class TaskManager:
         return info
 
     # Patterns that represent progress ticks, not meaningful step transitions
-    _TICK_RE = re.compile(r"^(Batch|Segment|Chunk)\s+\d+", re.IGNORECASE)
+    _TICK_RE = re.compile(
+        r"^(Batch|Segment|Chunk|Downloading|\[\d+/\d+\])\s*", re.IGNORECASE
+    )
 
     def update_progress(self, task_id: str, progress: float, message: str) -> None:
         info = self._tasks.get(task_id)
@@ -167,6 +195,21 @@ class TaskManager:
         if info and info.status in ("pending", "running"):
             return info
         return None
+
+    def cancel(self, task_id: str) -> bool:
+        """Request cancellation of a running task. Returns True if the event was set."""
+        info = self._tasks.get(task_id)
+        if not info or info.status not in ("pending", "running"):
+            return False
+        info.cancel_event.set()
+        info.status = "cancelled"
+        info.message = "Cancelled"
+        info.finished_at = time.monotonic()
+        # Release primary lock + any per-episode locks held by this task
+        self._audio_locks.pop(info.audio_path, None)
+        self.release_locks_for_task(task_id)
+        self._broadcast_sync(task_id)
+        return True
 
     def _broadcast_sync(self, task_id: str) -> None:
         """Schedule an async broadcast from a sync/thread context."""
@@ -232,6 +275,39 @@ class TaskManager:
 
     def unregister_ws(self, ws: WebSocket) -> None:
         self._ws_connections.discard(ws)
+
+
+def _add_loguru_sink(info: TaskInfo, manager: "TaskManager") -> int | None:
+    """Add a loguru sink that feeds into a task's log buffer."""
+    try:
+        from loguru import logger as loguru_logger
+
+        _last_broadcast: dict[str, float] = {"t": 0.0}
+
+        def sink(message: Any) -> None:
+            text = str(message).rstrip()
+            if not text:
+                return
+            info.add_log(text)
+            now = time.monotonic()
+            if now - _last_broadcast["t"] >= 1.0:
+                _last_broadcast["t"] = now
+                manager._broadcast_sync(info.task_id)
+
+        return loguru_logger.add(sink, level="INFO", format="{name}: {message}")
+    except ImportError:
+        return None
+
+
+def _remove_loguru_sink(sink_id: int | None) -> None:
+    if sink_id is None:
+        return
+    try:
+        from loguru import logger as loguru_logger
+
+        loguru_logger.remove(sink_id)
+    except Exception:
+        pass
 
 
 class _TaskLogHandler(logging.Handler):

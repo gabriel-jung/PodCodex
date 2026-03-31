@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
-import { updateShowMeta, syncToQdrant } from "@/api/client";
+import { updateShowMeta, syncToQdrant, getPipelineConfig, moveShow } from "@/api/client";
+import { usePipelineConfigStore, useConfigStore } from "@/stores";
 import { Button } from "@/components/ui/button";
-import { X } from "lucide-react";
-import { errorMessage } from "@/lib/utils";
-import HelpLabel from "@/components/common/HelpLabel";
+import { SettingRow, SettingSection } from "@/components/ui/setting-row";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
+import { errorMessage, languageToISO, selectClass } from "@/lib/utils";
 import SectionHeader from "@/components/common/SectionHeader";
 import ProgressBar from "@/components/editor/ProgressBar";
+import FolderPicker from "@/components/common/FolderPicker";
+import { FolderOpen } from "lucide-react";
 
 interface ShowSettingsProps {
   folder: string;
@@ -17,31 +21,35 @@ interface ShowSettingsProps {
 
 export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsProps) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
+  // ── Show info ──
   const [name, setName] = useState(meta.name);
   const [language, setLanguage] = useState(meta.language);
   const [rssUrl, setRssUrl] = useState(meta.rss_url);
   const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
-  const [speakers, setSpeakers] = useState<string[]>(meta.speakers);
-  const [newSpeaker, setNewSpeaker] = useState("");
   const [syncTaskId, setSyncTaskId] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState(false);
 
-  // Reset form when meta changes (e.g. after save)
+  // ── Move folder ──
+  const folderBasename = folder.split("/").filter(Boolean).pop() || folder;
+  const folderParent = folder.slice(0, folder.length - folderBasename.length).replace(/\/+$/, "") || "/";
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const moveFilesRef = useRef(true);
+  const [folderName, setFolderName] = useState(folderBasename);
+
   useEffect(() => {
     setName(meta.name);
     setLanguage(meta.language);
     setRssUrl(meta.rss_url);
     setArtworkUrl(meta.artwork_url);
-    setSpeakers(meta.speakers);
   }, [meta]);
 
   const isDirty =
     name !== meta.name ||
     language !== meta.language ||
     rssUrl !== meta.rss_url ||
-    artworkUrl !== meta.artwork_url ||
-    JSON.stringify(speakers) !== JSON.stringify(meta.speakers);
+    artworkUrl !== meta.artwork_url;
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -49,7 +57,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         name,
         language,
         rss_url: rssUrl,
-        speakers,
+        speakers: meta.speakers,
         artwork_url: artworkUrl,
       }),
     onSuccess: () => {
@@ -58,7 +66,6 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
     },
   });
 
-  // Debounced auto-save: saves 1.5s after last change
   const saveTimer = useRef<ReturnType<typeof setTimeout>>();
   const autoSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -68,7 +75,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
   useEffect(() => {
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [name, language, rssUrl, artworkUrl, speakers]);
+  }, [name, language, rssUrl, artworkUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const syncMutation = useMutation({
     mutationFn: () =>
@@ -76,118 +83,304 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
     onSuccess: (data) => setSyncTaskId(data.task_id),
   });
 
-  const addSpeaker = () => {
-    const trimmed = newSpeaker.trim();
-    if (trimmed && !speakers.includes(trimmed)) {
-      setSpeakers([...speakers, trimmed]);
-      setNewSpeaker("");
-    }
+  const moveMutation = useMutation({
+    mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
+      moveShow(folder, newPath, mf),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(data.new_path) } });
+    },
+  });
+
+  const handlePickedFolder = (parentPath: string) => {
+    const dest = `${parentPath.replace(/\/+$/, "")}/${folderName}`;
+    if (dest === folder) return;
+    moveFilesRef.current = true;
+    confirmDialog.open({
+      title: "Move show folder?",
+      description: `${folder}  →  ${dest}`,
+      content: (
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            defaultChecked={true}
+            onChange={(e) => { moveFilesRef.current = e.target.checked; }}
+            className="accent-primary"
+          />
+          Move all files to the new location
+        </label>
+      ),
+      confirmLabel: "Move",
+      variant: "destructive",
+      onConfirm: () => moveMutation.mutate({ newPath: dest, moveFiles: moveFilesRef.current }),
+    });
   };
 
-  const removeSpeaker = (speaker: string) => {
-    setSpeakers(speakers.filter((s) => s !== speaker));
-  };
+  // ── Episode filters ──
+  const {
+    minDurationMinutes, setMinDurationMinutes,
+    maxDurationMinutes, setMaxDurationMinutes,
+    titleInclude, setTitleInclude,
+    titleExclude, setTitleExclude,
+  } = useConfigStore();
+
+  // ── Pipeline config (shared store) ──
+  const tc = usePipelineConfigStore((s) => s.transcribe);
+  const setTc = usePipelineConfigStore((s) => s.setTranscribe);
+  const llm = usePipelineConfigStore((s) => s.llm);
+  const setLLM = usePipelineConfigStore((s) => s.setLLM);
+  const engine = usePipelineConfigStore((s) => s.engine);
+  const setEngine = usePipelineConfigStore((s) => s.setEngine);
+  const targetLang = usePipelineConfigStore((s) => s.targetLang);
+  const setTargetLang = usePipelineConfigStore((s) => s.setTargetLang);
+
+  const { data: pipelineConfig } = useQuery({
+    queryKey: ["pipeline-config"],
+    queryFn: getPipelineConfig,
+    staleTime: Infinity,
+  });
+
+  const whisperModels = pipelineConfig?.whisper_models ?? {};
+  const detected = pipelineConfig?.detected_keys ?? {};
+  const apiProviders = pipelineConfig
+    ? Object.entries(pipelineConfig.llm_providers).filter(([k]) => k !== "ollama")
+    : [];
 
   return (
-    <div className="p-6 space-y-6 max-w-3xl">
-      {/* Form — two columns on wide screens */}
-      <div className="flex flex-col lg:flex-row gap-6">
-        {/* Left: basic fields */}
-        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm flex-1">
-          <HelpLabel label="Name" help="Display name for this podcast." />
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="input py-1 text-sm"
-          />
-
-          <HelpLabel label="Language" help="Primary spoken language of the podcast (e.g. French, English). Used as the default for transcription and polishing." />
-          <input
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            className="input py-1 text-sm"
-          />
-
-          <HelpLabel label="RSS URL" help="The podcast's RSS feed URL. Used to fetch episode metadata and download audio." />
-          <input
-            value={rssUrl}
-            onChange={(e) => setRssUrl(e.target.value)}
-            placeholder="https://..."
-            className="input py-1 text-sm"
-          />
-
-          <HelpLabel label="Artwork URL" help="URL to the podcast cover image. Shown in the show list and episode pages." />
+    <div className="flex-1 overflow-y-auto p-6 space-y-8 max-w-2xl">
+      {/* ── Show Info ── */}
+      <SettingSection title="Show Info" description="Basic metadata for this podcast.">
+        <SettingRow label="Name" help="Display name for this podcast.">
+          <input value={name} onChange={(e) => setName(e.target.value)} className="input py-1 text-sm w-48" />
+        </SettingRow>
+        <SettingRow label="Language" help="Primary spoken language (e.g. French, English).">
+          <input value={language} onChange={(e) => setLanguage(e.target.value)} className="input py-1 text-sm w-32" />
+        </SettingRow>
+        <SettingRow label="RSS URL" help="The podcast's RSS feed URL.">
+          <input value={rssUrl} onChange={(e) => setRssUrl(e.target.value)} placeholder="https://..." className="input py-1 text-sm w-64" />
+        </SettingRow>
+        <SettingRow label="Artwork" help="URL to the podcast cover image.">
           <div className="flex items-center gap-2">
-            <input
-              value={artworkUrl}
-              onChange={(e) => setArtworkUrl(e.target.value)}
-              placeholder="https://..."
-              className="input py-1 text-sm flex-1"
-            />
+            <input value={artworkUrl} onChange={(e) => setArtworkUrl(e.target.value)} placeholder="https://..." className="input py-1 text-sm w-48" />
             {artworkUrl && (
-              <img
-                src={artworkUrl}
-                alt="artwork"
-                className="w-8 h-8 rounded object-cover shrink-0"
-                onError={(e) => (e.currentTarget.style.display = "none")}
-              />
+              <img src={artworkUrl} alt="" className="w-7 h-7 rounded object-cover shrink-0" onError={(e) => (e.currentTarget.style.display = "none")} />
             )}
           </div>
-        </div>
-
-        {/* Right: speakers */}
-        <div className="flex flex-col gap-2 lg:flex-1 lg:border-l lg:border-border lg:pl-6">
-          <HelpLabel label="Speakers" help="Known speakers in this podcast. Used for speaker labeling and as LLM context." />
-          <div className="flex flex-wrap gap-1.5">
-            {speakers.map((s) => (
-              <span
-                key={s}
-                className="inline-flex items-center gap-1 bg-secondary text-secondary-foreground rounded-full px-2.5 py-1 text-xs border border-border"
-              >
-                {s}
-                <button
-                  onClick={() => removeSpeaker(s)}
-                  className="text-muted-foreground hover:text-foreground transition"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </span>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input
-              value={newSpeaker}
-              onChange={(e) => setNewSpeaker(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addSpeaker())}
-              placeholder="Add speaker..."
-              className="input py-1 text-sm flex-1"
-            />
-            <Button onClick={addSpeaker} variant="outline" size="sm" disabled={!newSpeaker.trim()}>
-              Add
-            </Button>
-          </div>
-        </div>
-      </div>
+        </SettingRow>
+      </SettingSection>
 
       {/* Save status */}
-      <div className="flex items-center gap-3">
-        {isDirty && (
+      {(isDirty || saveMutation.isSuccess || saveMutation.isError) && (
+        <div className="flex items-center gap-3 text-xs -mt-4">
+          {isDirty && <span className="text-yellow-400">Saving...</span>}
+          {saveMutation.isSuccess && !isDirty && <span className="text-green-400">Saved</span>}
+          {saveMutation.isError && <span className="text-destructive">{errorMessage(saveMutation.error)}</span>}
+        </div>
+      )}
+
+      {/* ── Folder Location ── */}
+      <SettingSection title="Folder" description="Location of show files on disk.">
+        <SettingRow label="Current path">
+          <span className="text-xs text-muted-foreground font-mono truncate max-w-xs" title={folder}>{folder}</span>
+        </SettingRow>
+        <SettingRow label="Folder name" help="Rename the show folder (applied on move).">
+          <input
+            value={folderName}
+            onChange={(e) => setFolderName(e.target.value)}
+            className="input py-1 text-sm w-48 font-mono"
+          />
+        </SettingRow>
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={() => setPickerOpen(true)}
+            disabled={moveMutation.isPending || !folderName.trim()}
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+          >
+            <FolderOpen className="w-3.5 h-3.5" />
+            {moveMutation.isPending ? "Moving..." : "Move folder"}
+          </Button>
+          {moveMutation.isError && (
+            <span className="text-xs text-destructive">{errorMessage(moveMutation.error)}</span>
+          )}
+        </div>
+      </SettingSection>
+
+      <FolderPicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onSelect={handlePickedFolder}
+        initialPath={folderParent}
+        title={`Move "${folderName}" to...`}
+        description="Select the parent directory"
+      />
+
+      {/* ── Episode Filters ── */}
+      <SettingSection title="Episode Filters" description="Filter which episodes are shown in the list.">
+        <SettingRow label="Min duration" help="Hide episodes shorter than this (minutes). 0 = show all.">
+          <div className="flex items-center gap-1.5">
+            <input
+              type="number"
+              min={0}
+              step={5}
+              value={minDurationMinutes || ""}
+              onChange={(e) => setMinDurationMinutes(Math.max(0, Number(e.target.value)))}
+              placeholder="0"
+              className="input w-16 py-1 text-sm text-center"
+            />
+            <span className="text-xs text-muted-foreground">min</span>
+          </div>
+        </SettingRow>
+        <SettingRow label="Max duration" help="Hide episodes longer than this (minutes). 0 = no limit.">
+          <div className="flex items-center gap-1.5">
+            <input
+              type="number"
+              min={0}
+              step={5}
+              value={maxDurationMinutes || ""}
+              onChange={(e) => setMaxDurationMinutes(Math.max(0, Number(e.target.value)))}
+              placeholder="0"
+              className="input w-16 py-1 text-sm text-center"
+            />
+            <span className="text-xs text-muted-foreground">min</span>
+          </div>
+        </SettingRow>
+        <SettingRow label="Title contains" help="Only show episodes whose title contains this text.">
+          <input
+            value={titleInclude}
+            onChange={(e) => setTitleInclude(e.target.value)}
+            placeholder="filter..."
+            className="input py-1 text-sm w-40"
+          />
+        </SettingRow>
+        <SettingRow label="Title excludes" help="Hide episodes whose title contains this text.">
+          <input
+            value={titleExclude}
+            onChange={(e) => setTitleExclude(e.target.value)}
+            placeholder="exclude..."
+            className="input py-1 text-sm w-40"
+          />
+        </SettingRow>
+      </SettingSection>
+
+      {/* ── Transcription ── */}
+      <SettingSection title="Transcription" description="Whisper model and diarization settings.">
+        <SettingRow label="Language" help="Derived from the show language above. This ISO code is passed to WhisperX for transcription and alignment.">
+          <span className="text-sm font-mono">
+            {languageToISO(language) || <span className="text-muted-foreground italic">auto-detect</span>}
+          </span>
+        </SettingRow>
+        <SettingRow label="Model" help="The speech recognition model. Bigger = better but slower.">
+          <select value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectClass}>
+            {Object.keys(whisperModels).length > 0
+              ? Object.entries(whisperModels).map(([key, label]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))
+              : <option value={tc.modelSize}>{tc.modelSize}</option>
+            }
+          </select>
+        </SettingRow>
+        <SettingRow label="Diarize" help="Detect and label different speakers.">
+          <input type="checkbox" checked={tc.diarize} onChange={(e) => setTc({ diarize: e.target.checked })} className="accent-primary" />
+        </SettingRow>
+        {tc.diarize && (
           <>
-            <span className="text-xs text-yellow-400">Saving...</span>
-            <Button onClick={() => { if (saveTimer.current) clearTimeout(saveTimer.current); saveMutation.mutate(); }} variant="ghost" size="sm" className="text-xs">
-              Save now
-            </Button>
+            <SettingRow label="HF token" help="HuggingFace token for pyannote speaker model.">
+              <input type="password" value={tc.hfToken} onChange={(e) => setTc({ hfToken: e.target.value })} placeholder={detected.hf_token || "from env"} className="input py-1 text-sm w-32" />
+            </SettingRow>
+            <SettingRow label="Speakers" help="Expected number of speakers (empty = auto).">
+              <input type="number" value={tc.numSpeakers} onChange={(e) => setTc({ numSpeakers: e.target.value })} placeholder="auto" min={1} className="input py-1 text-sm w-16" />
+            </SettingRow>
           </>
         )}
-        {saveMutation.isSuccess && !isDirty && (
-          <span className="text-xs text-green-400">Saved</span>
-        )}
-        {saveMutation.isError && (
-          <span className="text-xs text-destructive">{errorMessage(saveMutation.error)}</span>
-        )}
-      </div>
+        <SettingRow label="Batch size" help="GPU batch size for transcription.">
+          <input type="number" value={tc.batchSize} onChange={(e) => setTc({ batchSize: Number(e.target.value) })} min={1} className="input py-1 text-sm w-16" />
+        </SettingRow>
+        <SettingRow label="Transcript engine" help="Which engine produced the transcript (used in polish/translate prompts to guide error correction).">
+          <select value={engine} onChange={(e) => setEngine(e.target.value)} className={selectClass}>
+            <option value="Whisper">Whisper</option>
+            <option value="Voxtral">Voxtral</option>
+          </select>
+        </SettingRow>
+      </SettingSection>
 
-      {/* Qdrant sync */}
+      {/* ── LLM Settings ── */}
+      <SettingSection title="LLM" description="AI model configuration for Polish and Translate steps.">
+        <SettingRow label="Mode" help="Ollama = local GPU. API = cloud service.">
+          <div className="flex gap-3">
+            {(["ollama", "api"] as const).map((m) => (
+              <label key={m} className="flex items-center gap-1 cursor-pointer text-sm">
+                <input type="radio" checked={llm.mode === m} onChange={() => setLLM({ mode: m })} className="accent-primary" />
+                <span>{m}</span>
+              </label>
+            ))}
+          </div>
+        </SettingRow>
+
+        {llm.mode === "api" && (
+          <SettingRow label="Provider" help="Cloud AI service to use.">
+            <select value={llm.provider} onChange={(e) => setLLM({ provider: e.target.value })} className={selectClass}>
+              {apiProviders.length > 0
+                ? apiProviders.map(([key, spec]) => (
+                    <option key={key} value={key}>{spec.label}</option>
+                  ))
+                : <option value={llm.provider}>{llm.provider}</option>
+              }
+            </select>
+          </SettingRow>
+        )}
+
+        <SettingRow label="Model" help="AI model name (empty = provider default).">
+          <input value={llm.model} onChange={(e) => setLLM({ model: e.target.value })} placeholder="auto" className="input py-1 text-sm w-32" />
+        </SettingRow>
+
+        {llm.mode === "api" && (
+          <>
+            <SettingRow label="Endpoint" help="Custom API endpoint URL.">
+              <input value={llm.apiBaseUrl} onChange={(e) => setLLM({ apiBaseUrl: e.target.value })} placeholder="default" className="input py-1 text-sm w-40" />
+            </SettingRow>
+            <SettingRow label="API key" help="Authentication key.">
+              <input type="password" value={llm.apiKey} onChange={(e) => setLLM({ apiKey: e.target.value })} placeholder={detected[llm.provider] || "from env"} className="input py-1 text-sm w-32" />
+            </SettingRow>
+          </>
+        )}
+
+        <SettingRow label="Batch duration" help="Maximum audio duration (minutes) per LLM request.">
+          <div className="flex items-center gap-1.5">
+            <input type="number" value={llm.batchMinutes} onChange={(e) => setLLM({ batchMinutes: Number(e.target.value) })} min={1} step={5} className="input py-1 text-sm w-16" />
+            <span className="text-xs text-muted-foreground">min</span>
+          </div>
+        </SettingRow>
+
+        <SettingRow label="Source language" help="Language spoken in the podcast.">
+          <input value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className="input py-1 text-sm w-24" />
+        </SettingRow>
+
+        <SettingRow
+          label="Context"
+          help="Describe the podcast, hosts, topics for better AI results."
+          below={
+            <textarea
+              value={llm.context}
+              onChange={(e) => setLLM({ context: e.target.value })}
+              placeholder="Describe the podcast, hosts, topics..."
+              className="input py-1 text-sm resize-y w-full min-h-[4rem]"
+            />
+          }
+        >
+          <span />
+        </SettingRow>
+      </SettingSection>
+
+      {/* ── Translation ── */}
+      <SettingSection title="Translation" description="Target language for AI translation.">
+        <SettingRow label="Target language" help="Language to translate into.">
+          <input value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className="input py-1 text-sm w-24" />
+        </SettingRow>
+      </SettingSection>
+
+      {/* ── Qdrant Sync ── */}
       {hasIndex && (
         <div className="border-t border-border pt-6 space-y-3">
           <SectionHeader>Qdrant Sync</SectionHeader>
@@ -208,12 +401,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
                 {syncMutation.isPending ? "Starting..." : "Sync to Qdrant"}
               </Button>
               <label className="flex items-center gap-1.5 cursor-pointer text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={overwrite}
-                  onChange={(e) => setOverwrite(e.target.checked)}
-                  className="accent-primary"
-                />
+                <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} className="accent-primary" />
                 Overwrite existing
               </label>
               {syncMutation.isError && (
