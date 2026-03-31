@@ -53,8 +53,20 @@ async def save_translated_segments(
 ) -> dict:
     """Save validated translated segments."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    lang_norm = lang.lower().strip().replace(" ", "_")
+    provenance = {
+        "step": lang_norm,
+        "type": "validated",
+        "model": None,
+        "params": {},
+        "manual_edit": True,
+        "base": str(p.base),
+    }
     count = save_segments_json(
-        p.translation(lang), [s.model_dump() for s in segments], f"Translation ({lang})"
+        p.translation(lang),
+        [s.model_dump() for s in segments],
+        f"Translation ({lang})",
+        provenance=provenance,
     )
     return {"status": "saved", "count": count}
 
@@ -66,10 +78,14 @@ async def translate_version_info(
     output_dir: str | None = Query(None),
 ) -> dict:
     """Return which translation versions exist for a language."""
+    from podcodex.core.versions import version_count
+
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    lang_norm = lang.lower().strip().replace(" ", "_")
     return {
         "has_raw": p.translation_raw(lang).exists(),
         "has_validated": p.translation(lang).exists(),
+        "version_count": version_count(p.base, lang_norm),
     }
 
 
@@ -82,6 +98,41 @@ async def list_languages(
     from podcodex.core.translate import list_translations
 
     return list_translations(audio_path, output_dir=output_dir)
+
+
+# ── Version history ──────────────────────────────────────
+
+
+@router.get("/versions")
+async def list_translate_versions(
+    audio_path: str = Query(...),
+    lang: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> list[dict]:
+    """List all archived translation versions for a language (newest first)."""
+    from podcodex.core.versions import list_versions
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    lang_norm = lang.lower().strip().replace(" ", "_")
+    return list_versions(p.base, lang_norm)
+
+
+@router.get("/versions/{version_id}")
+async def load_translate_version(
+    version_id: str,
+    audio_path: str = Query(...),
+    lang: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> list[dict]:
+    """Load segments from a specific archived translation version."""
+    from podcodex.core.versions import load_version
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    lang_norm = lang.lower().strip().replace(" ", "_")
+    try:
+        return load_version(p.base, lang_norm, version_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Version {version_id} not found")
 
 
 # ── Pipeline execution ───────────────────────────────────
@@ -141,11 +192,26 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
         )
 
         progress_cb(0.95, "Saving...")
+        lang_norm = req_data.target_lang.lower().strip().replace(" ", "_")
+        provenance = {
+            "step": lang_norm,
+            "type": "raw",
+            "model": req_data.model,
+            "params": {
+                "mode": req_data.mode,
+                "provider": req_data.provider,
+                "source_lang": req_data.source_lang,
+                "target_lang": req_data.target_lang,
+                "batch_minutes": req_data.batch_minutes,
+            },
+            "manual_edit": False,
+        }
         save_translation_raw(
             req_data.audio_path,
             translated,
             req_data.target_lang,
             output_dir=req_data.output_dir,
+            provenance=provenance,
         )
         return {"count": len(translated), "lang": req_data.target_lang}
 
@@ -206,7 +272,19 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
         raise HTTPException(404, "No source segments found")
 
     translated = validate_manual(req.corrections, original)
+    lang_norm = req.lang.lower().strip().replace(" ", "_")
+    provenance = {
+        "step": lang_norm,
+        "type": "raw",
+        "model": None,
+        "params": {"mode": "manual"},
+        "manual_edit": True,
+    }
     save_translation_raw(
-        req.audio_path, translated, req.lang, output_dir=req.output_dir
+        req.audio_path,
+        translated,
+        req.lang,
+        output_dir=req.output_dir,
+        provenance=provenance,
     )
     return {"status": "saved", "count": len(translated)}

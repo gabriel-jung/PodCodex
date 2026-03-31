@@ -6,6 +6,8 @@ import {
   getSegmentsRaw,
   getPipelineConfig,
   getTranscribeVersionInfo,
+  getTranscribeVersions,
+  loadTranscribeVersion,
   saveSegments,
   startTranscribe,
   uploadTranscript,
@@ -287,6 +289,8 @@ function TranscribeEditor({ audioPath, duration, speakers }: { audioPath: string
       referenceSegments={referenceSegments}
       referenceLabel="Original"
       speakers={speakers}
+      loadVersions={() => getTranscribeVersions(audioPath)}
+      loadVersion={(id) => loadTranscribeVersion(audioPath, id)}
     />
   );
 }

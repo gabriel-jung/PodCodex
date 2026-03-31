@@ -229,6 +229,7 @@ def save_polished_raw(
     segments: list[dict],
     output_dir: str | Path | None = None,
     nodiar: bool = False,
+    provenance: dict | None = None,
 ) -> Path:
     """Save pipeline-generated polished segments to {stem}.polished.raw.json.
 
@@ -236,7 +237,11 @@ def save_polished_raw(
     to the validated {stem}.polished.json.
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    return save_segments_json(p.polished_raw, segments, "Polished transcript")
+    if provenance:
+        provenance["base"] = str(p.base)
+    return save_segments_json(
+        p.polished_raw, segments, "Polished transcript", provenance=provenance
+    )
 
 
 def save_polished(
@@ -244,10 +249,15 @@ def save_polished(
     segments: list[dict],
     output_dir: str | Path | None = None,
     nodiar: bool = False,
+    provenance: dict | None = None,
 ) -> Path:
     """Save validated/edited polished segments to {stem}.polished.json."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    return save_segments_json(p.polished, segments, "Polished transcript")
+    if provenance:
+        provenance["base"] = str(p.base)
+    return save_segments_json(
+        p.polished, segments, "Polished transcript", provenance=provenance
+    )
 
 
 def load_polished(

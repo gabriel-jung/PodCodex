@@ -1,4 +1,4 @@
-import type { Segment, TaskResponse, TranscribeRequest, VersionInfo } from "./types";
+import type { Segment, TaskResponse, TranscribeRequest, VersionEntry, VersionInfo } from "./types";
 import { BASE, json } from "./base";
 
 export const getSegments = (audioPath: string) =>
@@ -16,6 +16,12 @@ export const saveSegments = (audioPath: string, segments: Segment[]) =>
 
 export const getTranscribeVersionInfo = (audioPath: string) =>
   json<VersionInfo>(`/api/transcribe/version-info?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const getTranscribeVersions = (audioPath: string) =>
+  json<VersionEntry[]>(`/api/transcribe/versions?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const loadTranscribeVersion = (audioPath: string, versionId: string) =>
+  json<Segment[]>(`/api/transcribe/versions/${encodeURIComponent(versionId)}?audio_path=${encodeURIComponent(audioPath)}`);
 
 export const getSpeakerMap = (audioPath: string) =>
   json<Record<string, string>>(`/api/transcribe/speaker-map?audio_path=${encodeURIComponent(audioPath)}`);

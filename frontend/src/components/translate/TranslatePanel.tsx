@@ -5,6 +5,8 @@ import {
   getTranslateSegments,
   getTranslateSegmentsRaw,
   getTranslateVersionInfo,
+  getTranslateVersions,
+  loadTranslateVersion,
   saveTranslateSegments,
   getTranslateLanguages,
   startTranslate,
@@ -152,6 +154,8 @@ export default function TranslatePanel() {
           referenceSegments={referenceSegments}
           referenceLabel="Source text"
           speakers={showMeta?.speakers}
+          loadVersions={() => getTranslateVersions(episode.audio_path!, editingLang)}
+          loadVersion={(id) => loadTranslateVersion(episode.audio_path!, editingLang, id)}
         />
       )}
     </PipelinePanel>

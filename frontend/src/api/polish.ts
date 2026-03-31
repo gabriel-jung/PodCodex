@@ -1,4 +1,4 @@
-import type { PolishRequest, Segment, TaskResponse, VersionInfo } from "./types";
+import type { PolishRequest, Segment, TaskResponse, VersionEntry, VersionInfo } from "./types";
 import { json } from "./base";
 
 export const getPolishSegments = (audioPath: string) =>
@@ -16,6 +16,12 @@ export const savePolishSegments = (audioPath: string, segments: Segment[]) =>
 
 export const getPolishVersionInfo = (audioPath: string) =>
   json<VersionInfo>(`/api/polish/version-info?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const getPolishVersions = (audioPath: string) =>
+  json<VersionEntry[]>(`/api/polish/versions?audio_path=${encodeURIComponent(audioPath)}`);
+
+export const loadPolishVersion = (audioPath: string, versionId: string) =>
+  json<Segment[]>(`/api/polish/versions/${encodeURIComponent(versionId)}?audio_path=${encodeURIComponent(audioPath)}`);
 
 export const startPolish = (req: PolishRequest) =>
   json<TaskResponse>("/api/polish/start", {

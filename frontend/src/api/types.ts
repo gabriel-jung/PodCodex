@@ -89,6 +89,18 @@ export interface PodcastSearchResult {
 export interface VersionInfo {
   has_raw: boolean;
   has_validated: boolean;
+  version_count?: number;
+}
+
+export interface VersionEntry {
+  id: string;
+  timestamp: string;
+  type: "raw" | "validated";
+  model: string | null;
+  params: Record<string, unknown>;
+  content_hash: string;
+  segment_count: number;
+  manual_edit: boolean;
 }
 
 export interface TaskResponse {

@@ -47,8 +47,19 @@ async def save_polished_segments(
 ) -> dict:
     """Save validated polished segments."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    provenance = {
+        "step": "polished",
+        "type": "validated",
+        "model": None,
+        "params": {},
+        "manual_edit": True,
+        "base": str(p.base),
+    }
     count = save_segments_json(
-        p.polished, [s.model_dump() for s in segments], "Polished"
+        p.polished,
+        [s.model_dump() for s in segments],
+        "Polished",
+        provenance=provenance,
     )
     return {"status": "saved", "count": count}
 
@@ -60,10 +71,44 @@ async def polish_version_info(
 ) -> dict:
     """Return which polished versions exist."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    from podcodex.core.versions import version_count
+
     return {
         "has_raw": p.polished_raw.exists(),
         "has_validated": p.polished.exists(),
+        "version_count": version_count(p.base, "polished"),
     }
+
+
+# ── Version history ──────────────────────────────────────
+
+
+@router.get("/versions")
+async def list_polish_versions(
+    audio_path: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> list[dict]:
+    """List all archived polished versions (newest first)."""
+    from podcodex.core.versions import list_versions
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    return list_versions(p.base, "polished")
+
+
+@router.get("/versions/{version_id}")
+async def load_polish_version(
+    version_id: str,
+    audio_path: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> list[dict]:
+    """Load segments from a specific archived polished version."""
+    from podcodex.core.versions import load_version
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    try:
+        return load_version(p.base, "polished", version_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Version {version_id} not found")
 
 
 # ── Pipeline execution ───────────────────────────────────
@@ -126,7 +171,25 @@ async def start_polish(req: PolishRequest) -> TaskResponse:
         )
 
         progress_cb(0.95, "Saving...")
-        save_polished_raw(req_data.audio_path, polished, output_dir=req_data.output_dir)
+        provenance = {
+            "step": "polished",
+            "type": "raw",
+            "model": req_data.model or "qwen3:4b",
+            "params": {
+                "mode": req_data.mode,
+                "provider": req_data.provider,
+                "source_lang": req_data.source_lang,
+                "batch_minutes": req_data.batch_minutes,
+                "engine": req_data.engine,
+            },
+            "manual_edit": False,
+        }
+        save_polished_raw(
+            req_data.audio_path,
+            polished,
+            output_dir=req_data.output_dir,
+            provenance=provenance,
+        )
         return {"count": len(polished)}
 
     return submit_task("polish", req.audio_path, run_polish, req)
@@ -150,7 +213,19 @@ async def skip_polish(req: SkipRequest) -> dict:
     if not segments:
         raise HTTPException(404, "No transcript found to copy")
 
-    save_polished_raw(req.audio_path, segments, output_dir=req.output_dir)
+    provenance = {
+        "step": "polished",
+        "type": "raw",
+        "model": None,
+        "params": {"skipped": True},
+        "manual_edit": False,
+    }
+    save_polished_raw(
+        req.audio_path,
+        segments,
+        output_dir=req.output_dir,
+        provenance=provenance,
+    )
     return {"status": "saved", "count": len(segments)}
 
 
@@ -207,5 +282,17 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
         raise HTTPException(404, "No transcript found")
 
     polished = validate_manual(req.corrections, original)
-    save_polished_raw(req.audio_path, polished, output_dir=req.output_dir)
+    provenance = {
+        "step": "polished",
+        "type": "raw",
+        "model": None,
+        "params": {"mode": "manual"},
+        "manual_edit": True,
+    }
+    save_polished_raw(
+        req.audio_path,
+        polished,
+        output_dir=req.output_dir,
+        provenance=provenance,
+    )
     return {"status": "saved", "count": len(polished)}

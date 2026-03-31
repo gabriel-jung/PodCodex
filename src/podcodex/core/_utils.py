@@ -358,13 +358,17 @@ def save_segments_json(
     path: Path,
     segments: list[dict],
     label: str,
+    provenance: dict | None = None,
 ) -> Path:
     """Write a segment list to a JSON file with standard formatting.
 
     Args:
-        path     : output file path
-        segments : list of segment dicts (already cleaned)
-        label    : human-readable label for the log message (e.g. "Polished transcript")
+        path       : output file path
+        segments   : list of segment dicts (already cleaned)
+        label      : human-readable label for the log message (e.g. "Polished transcript")
+        provenance : optional version metadata dict with keys: step, type, model,
+                     params, manual_edit.  When provided, the segments
+                     are also archived in the .versions directory.
 
     Returns:
         The path written to.
@@ -374,6 +378,12 @@ def save_segments_json(
         json.dumps(segments, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     logger.success(f"{label} saved — {len(segments)} segments → {path.name}")
+
+    if provenance and "base" in provenance:
+        from podcodex.core.versions import maybe_archive
+
+        maybe_archive(Path(provenance["base"]), segments, provenance, path.name)
+
     return path
 
 

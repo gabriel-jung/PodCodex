@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Segment, VersionInfo } from "@/api/types";
+import type { Segment, VersionEntry, VersionInfo } from "@/api/types";
 import { useSegments } from "@/hooks/useSegments";
 import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
 import { useAudioStore } from "@/stores";
@@ -22,6 +22,8 @@ interface SegmentEditorProps {
   referenceSegments?: Segment[];
   referenceLabel?: string;
   speakers?: string[];
+  loadVersions?: () => Promise<VersionEntry[]>;
+  loadVersion?: (id: string) => Promise<Segment[]>;
 }
 
 /** Distribute timestamps proportionally across segments based on text length. */
@@ -52,6 +54,8 @@ export default function SegmentEditor({
   referenceSegments,
   referenceLabel = "Original",
   speakers: externalSpeakers,
+  loadVersions,
+  loadVersion,
 }: SegmentEditorProps) {
   const queryClient = useQueryClient();
 
@@ -63,6 +67,12 @@ export default function SegmentEditor({
   const { data: versionInfo } = useQuery({
     queryKey: [editorKey, "version-info", audioPath],
     queryFn: loadVersionInfo,
+  });
+
+  const { data: versions } = useQuery({
+    queryKey: [editorKey, "versions", audioPath],
+    queryFn: loadVersions!,
+    enabled: !!loadVersions,
   });
 
   const editor = useSegments(segments ?? []);
@@ -299,6 +309,13 @@ export default function SegmentEditor({
     editor.reset(data);
   };
 
+  const handleLoadVersion = loadVersion
+    ? async (id: string) => {
+        const data = await loadVersion(id);
+        editor.reset(data);
+      }
+    : undefined;
+
   // Ref for search input focus
   const searchRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -386,6 +403,8 @@ export default function SegmentEditor({
           for (const idx of indices) editor.deleteSegment(idx);
         }}
         isSaving={saveMutation.isPending}
+        versions={versions}
+        onLoadVersion={handleLoadVersion}
         audioPath={audioPath}
         exportSource={
           editorKey === "transcript" ? "transcript"

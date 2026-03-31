@@ -47,7 +47,19 @@ async def save_segments(
     from podcodex.core.transcribe import save_transcript
 
     seg_dicts = [s.model_dump() for s in segments]
-    save_transcript(audio_path, seg_dicts, output_dir=output_dir)
+    provenance = {
+        "step": "transcript",
+        "type": "validated",
+        "model": None,
+        "params": {},
+        "manual_edit": True,
+    }
+    save_transcript(
+        audio_path,
+        seg_dicts,
+        output_dir=output_dir,
+        provenance=provenance,
+    )
     return {"status": "saved", "count": len(seg_dicts)}
 
 
@@ -57,11 +69,45 @@ async def version_info(
     output_dir: str | None = Query(None),
 ) -> dict:
     """Return which transcript versions exist."""
+    from podcodex.core.versions import version_count
+
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     return {
         "has_raw": p.transcript_raw.exists(),
         "has_validated": p.transcript.exists(),
+        "version_count": version_count(p.base, "transcript"),
     }
+
+
+# ── Version history ──────────────────────────────────────
+
+
+@router.get("/versions")
+async def list_transcribe_versions(
+    audio_path: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> list[dict]:
+    """List all archived transcript versions (newest first)."""
+    from podcodex.core.versions import list_versions
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    return list_versions(p.base, "transcript")
+
+
+@router.get("/versions/{version_id}")
+async def load_transcribe_version(
+    version_id: str,
+    audio_path: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> list[dict]:
+    """Load segments from a specific archived transcript version."""
+    from podcodex.core.versions import load_version
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    try:
+        return load_version(p.base, "transcript", version_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Version {version_id} not found")
 
 
 # ── Speaker map ──────────────────────────────────────────
@@ -215,12 +261,25 @@ async def start_transcribe(req: TranscribeRequest) -> TaskResponse:
             )
 
         progress_cb(0.75, "Exporting transcript...")
+        provenance = {
+            "step": "transcript",
+            "type": "raw",
+            "model": req_data.model_size,
+            "params": {
+                "language": req_data.language or None,
+                "batch_size": req_data.batch_size,
+                "diarize": req_data.diarize,
+                "num_speakers": req_data.num_speakers,
+            },
+            "manual_edit": False,
+        }
         segments = export_transcript(
             req_data.audio_path,
             output_dir=req_data.output_dir,
             show=req_data.show,
             episode=req_data.episode,
             diarized=req_data.diarize,
+            provenance=provenance,
         )
         return {"count": len(segments)}
 

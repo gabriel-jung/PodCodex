@@ -4,6 +4,8 @@ import {
   getPolishSegments,
   getPolishSegmentsRaw,
   getPolishVersionInfo,
+  getPolishVersions,
+  loadPolishVersion,
   savePolishSegments,
   getSegments,
   startPolish,
@@ -153,6 +155,8 @@ export default function PolishPanel() {
           referenceSegments={referenceSegments}
           referenceLabel="Original transcript"
           speakers={showMeta?.speakers}
+          loadVersions={() => getPolishVersions(episode.audio_path!)}
+          loadVersion={(id) => loadPolishVersion(episode.audio_path!, id)}
         />
       )}
     </PipelinePanel>

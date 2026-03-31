@@ -233,6 +233,7 @@ def save_translation_raw(
     lang: str,
     output_dir: str | Path | None = None,
     nodiar: bool = False,
+    provenance: dict | None = None,
 ) -> Path:
     """Save pipeline-generated translation to {stem}.{lang_norm}.raw.json.
 
@@ -240,8 +241,13 @@ def save_translation_raw(
     to the validated {stem}.{lang_norm}.json.
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
+    if provenance:
+        provenance["base"] = str(p.base)
     return save_segments_json(
-        p.translation_raw(lang), segments, f"Translation ({lang})"
+        p.translation_raw(lang),
+        segments,
+        f"Translation ({lang})",
+        provenance=provenance,
     )
 
 
@@ -251,10 +257,18 @@ def save_translation(
     lang: str,
     output_dir: str | Path | None = None,
     nodiar: bool = False,
+    provenance: dict | None = None,
 ) -> Path:
     """Save validated/edited translation to {stem}.{lang_norm}.json."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    return save_segments_json(p.translation(lang), segments, f"Translation ({lang})")
+    if provenance:
+        provenance["base"] = str(p.base)
+    return save_segments_json(
+        p.translation(lang),
+        segments,
+        f"Translation ({lang})",
+        provenance=provenance,
+    )
 
 
 def load_translation(

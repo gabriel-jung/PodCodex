@@ -135,11 +135,23 @@ def _batch_transcribe(
     if not cancelled() and not status["exported"]:
         did_work = True
         ep_progress(i, step_offset, sw, 0.9, "Exporting transcript...")
+        provenance = {
+            "step": "transcript",
+            "type": "raw",
+            "model": req.model_size,
+            "params": {
+                "language": req.language or None,
+                "batch_size": req.batch_size,
+                "diarize": req.diarize,
+            },
+            "manual_edit": False,
+        }
         export_transcript(
             audio_path,
             show=req.show_name,
             episode=stem,
             diarized=req.diarize,
+            provenance=provenance,
         )
 
     return did_work
@@ -170,7 +182,19 @@ def _batch_polish(audio_path, p, req, cancelled, ep_progress, i, step_offset):
                 original_segments=segments,
                 merge=False,
             )
-            save_polished_raw(audio_path, polished)
+            provenance = {
+                "step": "polished",
+                "type": "raw",
+                "model": req.llm_model,
+                "params": {
+                    "mode": req.llm_mode,
+                    "provider": req.llm_provider,
+                    "source_lang": req.source_lang,
+                    "batch_minutes": req.llm_batch_minutes,
+                },
+                "manual_edit": False,
+            }
+            save_polished_raw(audio_path, polished, provenance=provenance)
             return True
     return False
 
@@ -201,7 +225,26 @@ def _batch_translate(audio_path, p, req, cancelled, ep_progress, i, step_offset)
             original_segments=segments,
             merge=False,
         )
-        save_translation_raw(audio_path, translated, req.target_lang)
+        lang_norm = req.target_lang.lower().strip().replace(" ", "_")
+        provenance = {
+            "step": lang_norm,
+            "type": "raw",
+            "model": req.llm_model,
+            "params": {
+                "mode": req.llm_mode,
+                "provider": req.llm_provider,
+                "source_lang": req.source_lang,
+                "target_lang": req.target_lang,
+                "batch_minutes": req.llm_batch_minutes,
+            },
+            "manual_edit": False,
+        }
+        save_translation_raw(
+            audio_path,
+            translated,
+            req.target_lang,
+            provenance=provenance,
+        )
         return True
     return False
 

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
-import { Search, X, SlidersHorizontal, Clock, Undo2, HelpCircle, FileInput, FilePen, Trash2, Download } from "lucide-react";
-import type { VersionInfo } from "@/api/types";
+import { Search, X, SlidersHorizontal, Clock, Undo2, HelpCircle, FileInput, FilePen, Trash2, Download, History } from "lucide-react";
+import type { VersionEntry, VersionInfo } from "@/api/types";
 import { exportTextUrl, exportSrtUrl, exportVttUrl, exportZipUrl } from "@/api/client";
 
 function Tip({ text }: { text: string }) {
@@ -57,6 +57,8 @@ interface EditorToolbarProps {
   isSaving: boolean;
   audioPath?: string;
   exportSource?: string;
+  versions?: VersionEntry[];
+  onLoadVersion?: (id: string) => void;
 }
 
 export default function EditorToolbar({
@@ -91,21 +93,28 @@ export default function EditorToolbar({
   isSaving,
   audioPath,
   exportSource,
+  versions,
+  onLoadVersion,
 }: EditorToolbarProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  const [showVersions, setShowVersions] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
+  const versionsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!showExport) return;
+    if (!showExport && !showVersions) return;
     const handler = (e: MouseEvent) => {
-      if (exportRef.current && !exportRef.current.contains(e.target as Node)) {
+      if (showExport && exportRef.current && !exportRef.current.contains(e.target as Node)) {
         setShowExport(false);
+      }
+      if (showVersions && versionsRef.current && !versionsRef.current.contains(e.target as Node)) {
+        setShowVersions(false);
       }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [showExport]);
+  }, [showExport, showVersions]);
   const hasRaw = versionInfo?.has_raw ?? false;
   const hasValidated = versionInfo?.has_validated ?? false;
 
@@ -140,7 +149,45 @@ export default function EditorToolbar({
             )}
           </div>
         )}
-        {(onLoadOriginal || onLoadEdits) && audioPath && (
+        {versions && versions.length > 0 && onLoadVersion && (
+          <div className="relative" ref={versionsRef}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6"
+              onClick={() => setShowVersions(!showVersions)}
+            >
+              <History className="w-3 h-3 mr-1" /> History ({versions.length})
+            </Button>
+            {showVersions && (
+              <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-56 max-h-64 overflow-y-auto">
+                {versions.map((v) => {
+                  const d = new Date(v.timestamp);
+                  const dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+                  const timeStr = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+                  const label = v.manual_edit
+                    ? "manual edit"
+                    : v.model || v.type;
+                  return (
+                    <button
+                      key={v.id}
+                      onClick={() => { onLoadVersion(v.id); setShowVersions(false); }}
+                      className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition"
+                    >
+                      <span className="text-muted-foreground">{dateStr}, {timeStr}</span>
+                      {" — "}
+                      <span>{label}</span>
+                      <span className="ml-1 text-muted-foreground/60">
+                        ({v.type}, {v.segment_count} seg)
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+        {(onLoadOriginal || onLoadEdits || (versions && versions.length > 0)) && audioPath && (
           <div className="w-px h-4 bg-border" />
         )}
         {audioPath && (

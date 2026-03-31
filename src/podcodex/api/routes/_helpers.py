@@ -107,10 +107,13 @@ def annotate_flags(segments: list[dict]) -> list[dict]:
 
 
 def save_segments_json(
-    path: Path, segments: list[dict], label: str = "Segments"
+    path: Path,
+    segments: list[dict],
+    label: str = "Segments",
+    provenance: dict | None = None,
 ) -> int:
     """Write segments to a JSON file. Returns the segment count."""
-    _core_save_segments(path, segments, label)
+    _core_save_segments(path, segments, label, provenance=provenance)
     return len(segments)
 
 

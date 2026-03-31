@@ -387,6 +387,7 @@ def export_transcript(
     episode: str = "",
     max_gap: float = DEFAULT_MAX_GAP,
     diarized: bool = True,
+    provenance: dict | None = None,
 ) -> list[dict]:
     """
     Generate the final JSON transcript with resolved speaker names.
@@ -454,6 +455,12 @@ def export_transcript(
     logger.success(
         f"Export done — {len(resolved)} → {len(export)} segments (merged) → {p.transcript_raw.name}"
     )
+
+    if provenance:
+        from podcodex.core.versions import maybe_archive
+
+        maybe_archive(p.base, export, provenance, p.transcript_raw.name)
+
     return export
 
 
@@ -602,6 +609,7 @@ def save_transcript(
     output_dir: str | Path | None = None,
     max_gap: float = DEFAULT_MAX_GAP,
     nodiar: bool = False,
+    provenance: dict | None = None,
 ) -> Path:
     """Save an edited segment list back to transcript.json, preserving metadata.
 
@@ -615,6 +623,7 @@ def save_transcript(
         max_gap    : maximum silence gap (seconds) to merge across (default 10s);
                      0 disables merging
         nodiar     : use nodiar file paths (default False)
+        provenance : optional version metadata for archiving
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
     full = load_transcript_full(audio_path, output_dir=output_dir, nodiar=nodiar)
@@ -624,6 +633,12 @@ def save_transcript(
     logger.info(
         f"Transcript saved → {p.transcript.name} ({len(segments)} → {len(merged)} segments)"
     )
+
+    if provenance:
+        from podcodex.core.versions import maybe_archive
+
+        maybe_archive(p.base, merged, provenance, p.transcript.name)
+
     return p.transcript
 
 
