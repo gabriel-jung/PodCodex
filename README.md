@@ -23,9 +23,11 @@ Both paths share a segment editor (inline editing, speaker mapping, timestamp sn
 - Import existing show folders
 - Browse episodes with status indicators (downloaded, transcribed, polished, translated, synthesized, indexed)
 - Filter episodes by duration (min/max) and title (include/exclude)
-- Sortable episode list (date, title, duration, number)
+- Sortable episode list (date, title, duration, number) with list and card views
 - Download episodes from RSS feeds (single or batch)
 - Move show folder with optional file relocation
+- Show-level speaker registry (define known speakers for better diarization and LLM context)
+- Per-show pipeline configuration (Whisper model, LLM provider, translation target, etc.)
 - Delete audio files
 - Export all episode files as ZIP
 
@@ -52,11 +54,13 @@ Both paths share a segment editor (inline editing, speaker mapping, timestamp sn
 - Episode assembly from generated segments
 
 **Batch pipeline:**
-- Select multiple episodes and run pipeline steps (transcribe → polish → translate → index) in one go
-- Per-episode progress tracking with expandable status list and logs
+- Select multiple episodes and run pipeline steps (transcribe → diarize → assign → export → polish → translate → index) in one go
+- Per-step configuration dialogs — customize model, language, and provider before running
+- Global task bar with real-time progress, per-episode status (pending/running/done/failed), and expandable logs
 - Idempotent — skips steps already completed for each episode
 - Cancel at any time, with result summary (completed/skipped/failed)
 - GPU-safe sequential execution with per-episode locking
+- Duration-based LLM batching for efficient polish/translate
 
 **Indexing & search:**
 - Choose embedding model and chunking strategy
@@ -91,15 +95,15 @@ Both paths share a segment editor (inline editing, speaker mapping, timestamp sn
 
 | Layer | Technology |
 |-------|-----------|
-| Desktop shell | Tauri (Rust) |
-| Frontend | React 19, TypeScript, Vite, Tailwind CSS, shadcn/ui |
-| State | Zustand (8 domain stores), TanStack Query |
-| Backend | FastAPI (Python), WebSocket for real-time progress |
-| Transcription | WhisperX + pyannote speaker diarization |
-| LLM | Ollama (local) or any OpenAI-compatible API |
-| Voice cloning | Qwen3-TTS (0.6B / 1.7B) |
-| Search | Qdrant + SQLite, BGE-M3 / E5 embeddings, hybrid retrieval |
-| Audio | WaveSurfer.js (frontend), ffmpeg + sox (backend) |
+| Desktop App | Tauri (Rust) |
+| Frontend | React 19, TypeScript, Tailwind CSS, shadcn/ui |
+| State | Zustand, TanStack Query |
+| Backend | FastAPI (Python) |
+| Transcription | WhisperX, pyannote (speaker diarization) |
+| LLM | Ollama (local), OpenAI, Anthropic, Mistral |
+| Voice Cloning | Qwen3-TTS |
+| Search | Qdrant, SQLite, BGE-M3 / E5 embeddings |
+| Audio | WaveSurfer.js, ffmpeg, sox |
 
 ---
 
@@ -570,7 +574,7 @@ The FastAPI backend exposes these route groups (all under `/api`):
 | Prefix | Description |
 |--------|-------------|
 | `/health` | Status and capability check |
-| `/config` | App configuration (show folders, save path) |
+| `/config` | App configuration (show folders, save path, pipeline constants) |
 | `/shows` | List shows, register folders, show metadata, episode lists, move folder |
 | `/rss` | RSS feed parsing, episode download |
 | `/batch` | Multi-episode pipeline execution with progress tracking |
@@ -582,6 +586,7 @@ The FastAPI backend exposes these route groups (all under `/api`):
 | `/synthesize` | Voice synthesis: samples, TTS generation, assembly |
 | `/index` | Vectorize episodes, manage embeddings |
 | `/search` | Semantic and keyword search across episodes |
+| `/tasks` | List active tasks, cancel running tasks |
 | `/ws` | WebSocket for real-time task progress |
 | `/export` | Export segments as text, SRT, VTT, or ZIP archive |
 | `/models` | Model cache management, VRAM monitoring |
@@ -643,7 +648,7 @@ See [ROADMAP.md](ROADMAP.md) for the detailed plan.
 | Platform abstraction, model cache, export (text/SRT/VTT/ZIP) | Done |
 | Episode duration filter, per-episode playback speed | Done |
 | Tauri backend sidecar (dev mode) | Done |
-| Batch pipeline, global task bar, sortable episodes, move folder | Done |
+| Batch pipeline, global task bar, per-step config, speakers panel, move folder | Done |
 | **Semi-automatic speaker mapping** — voice embeddings for auto speaker ID | Next |
 | **Standalone distribution** — PyInstaller sidecar for `.app`/`.deb`/`.exe` | Planned |
 | **Generation versioning** — N versions per pipeline step with provenance | Planned |
