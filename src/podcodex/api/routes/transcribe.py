@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import annotate_flags, read_segments, submit_task
+from podcodex.api.routes._helpers import load_segments_or_404, submit_task
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths, merge_consecutive_segments, write_json
 
@@ -24,10 +24,7 @@ async def get_segments(
 ) -> list[dict]:
     """Load transcript segments (prefers validated over raw)."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    data = read_segments(p.transcript_best)
-    if data is None:
-        raise HTTPException(404, "No transcript found")
-    return annotate_flags(data)
+    return load_segments_or_404(p.transcript_best, "transcript")
 
 
 @router.get("/segments/raw")
@@ -37,10 +34,7 @@ async def get_segments_raw(
 ) -> list[dict]:
     """Load raw (unvalidated) transcript segments."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    data = read_segments(p.transcript_raw)
-    if data is None:
-        raise HTTPException(404, "No raw transcript found")
-    return annotate_flags(data)
+    return load_segments_or_404(p.transcript_raw, "raw transcript")
 
 
 @router.put("/segments")
@@ -165,6 +159,20 @@ class TranscribeRequest(BaseModel):
     num_speakers: int | None = None
     show: str = ""
     episode: str = ""
+
+    @field_validator("batch_size")
+    @classmethod
+    def batch_size_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("batch_size must be at least 1")
+        return v
+
+    @field_validator("num_speakers")
+    @classmethod
+    def num_speakers_positive(cls, v: int | None) -> int | None:
+        if v is not None and v < 1:
+            raise ValueError("num_speakers must be at least 1")
+        return v
 
 
 @router.post("/start", response_model=TaskResponse)

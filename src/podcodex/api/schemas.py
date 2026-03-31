@@ -51,16 +51,6 @@ class RSSEpisodeOut(BaseModel):
     downloaded: bool = False
 
 
-class DownloadRequest(BaseModel):
-    guid: str
-
-
-class DownloadResult(BaseModel):
-    stem: str
-    audio_path: str | None
-    status: str  # "downloaded", "exists", "failed", "no_audio"
-
-
 class Segment(BaseModel):
     speaker: str = ""
     text: str = ""

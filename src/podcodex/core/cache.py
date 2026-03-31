@@ -18,7 +18,7 @@ from pathlib import Path
 def get_cache_dir() -> Path:
     """Return (and create) the PodCodex model cache directory."""
     path = Path(
-        os.environ.get("PODCODEX_CACHE_DIR", Path.home() / ".podcodex" / "models")
+        os.environ.get("PODCODEX_CACHE_DIR", str(Path.home() / ".podcodex" / "models"))
     )
     path.mkdir(parents=True, exist_ok=True)
     return path

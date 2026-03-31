@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment, VersionInfo } from "@/api/types";
 import { useSegments } from "@/hooks/useSegments";
+import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
 import { useAudioStore } from "@/stores";
 import EditorToolbar from "./EditorToolbar";
 import SegmentRow from "./SegmentRow";
@@ -104,14 +105,7 @@ export default function SegmentEditor({
     }
   }, [editor]);
 
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(20);
-  const [speakerFilter, setSpeakerFilter] = useState("");
-  const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
-  const [showChangedOnly, setShowChangedOnly] = useState(false);
-  const [densityThreshold, setDensityThreshold] = useState(2);
-  const [maxDensityThreshold, setMaxDensityThreshold] = useState(50);
-  const [searchQuery, setSearchQuery] = useState("");
+  const filters = useSegmentFiltering();
 
   // Build list of speakers
   const speakers = useMemo(() => {
@@ -124,31 +118,12 @@ export default function SegmentEditor({
     return Array.from(set).sort();
   }, [segments, externalSpeakers]);
 
-  // Lowercase search for case-insensitive matching
-  const searchLower = searchQuery.toLowerCase().trim();
-
-  const UNKNOWN_SPEAKERS = new Set(["UNKNOWN", "UNK", "None", "none", ""]);
-
   // Set of original indices whose flags have been manually dismissed
   const [dismissedFlags, setDismissedFlags] = useState<Set<number>>(new Set());
 
-  // Compute flag reason based on density threshold sliders
-  const flagReason = (seg: Segment): string | null => {
-    if (seg.speaker === "[BREAK]") return null;
-    if (UNKNOWN_SPEAKERS.has(seg.speaker)) return "Unknown speaker";
-    if (seg.speaker === "[remove]") return "Marked for removal";
-    const dur = seg.end - seg.start;
-    if (dur > 0) {
-      const density = seg.text.length / dur;
-      if (density < densityThreshold) return "Too little text for duration (sparse)";
-      if (density > maxDensityThreshold) return "Too much text for duration (dense)";
-    }
-    return null;
-  };
-
   const isFlaggedSeg = (seg: Segment, origIdx?: number): boolean => {
     if (origIdx != null && dismissedFlags.has(origIdx)) return false;
-    return flagReason(seg) !== null;
+    return flagReason(seg, filters.densityThreshold, filters.maxDensityThreshold) !== null;
   };
 
   const dismissFlag = (origIdx: number) => {
@@ -264,59 +239,12 @@ export default function SegmentEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor.editedSegments, editor.originalIndices, referenceSegments, skippedRefIndices]);
 
-  // Filter editedSegments for display
-  const displaySegments = useMemo(() => {
-    const result: { segment: Segment; originalIndex: number; displayIndex: number }[] = [];
-    if (!segments) return result;
-
-    let idx = 0;
-    for (let e = 0; e < editor.editedSegments.length; e++) {
-      const seg = editor.editedSegments[e];
-      const origIdx = editor.originalIndices[e];
-
-      // Speaker filter
-      if (speakerFilter && seg.speaker !== speakerFilter && seg.speaker !== "[BREAK]") continue;
-
-      // Flagged filter (use client-side density threshold)
-      if (showFlaggedOnly && showFlags && !isFlaggedSeg(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
-
-      // Changed filter
-      if (showChangedOnly && !isChanged(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
-
-      // Search filter
-      if (searchLower && !seg.text.toLowerCase().includes(searchLower) && seg.speaker !== "[BREAK]") continue;
-
-      // Skip consecutive breaks — only keep the first one
-      if (seg.speaker === "[BREAK]" && result.length > 0 && result[result.length - 1].segment.speaker === "[BREAK]") continue;
-
-      result.push({ segment: seg, originalIndex: origIdx, displayIndex: idx });
-      idx++;
-    }
-
-    // Trim leading/trailing breaks
-    while (result.length > 0 && result[0].segment.speaker === "[BREAK]") result.shift();
-    while (result.length > 0 && result[result.length - 1].segment.speaker === "[BREAK]") result.pop();
-
-    return result;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor.editedSegments, editor.originalIndices, segments, speakerFilter, showFlaggedOnly, showChangedOnly, showFlags, searchLower, referenceSegments, densityThreshold, maxDensityThreshold, dismissedFlags]);
-
-  const totalPages = Math.ceil(displaySegments.length / pageSize);
-  const pageSegments = displaySegments.slice(page * pageSize, (page + 1) * pageSize);
-
-  // Flagged count based on current density thresholds
-  const flaggedCount = useMemo(() => {
-    return editor.editedSegments.filter((seg, i) => isFlaggedSeg(seg, editor.originalIndices[i])).length;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor.editedSegments, editor.originalIndices, densityThreshold, maxDensityThreshold, dismissedFlags]);
-
-  // Reset page when filters change
-  useEffect(() => setPage(0), [speakerFilter, showFlaggedOnly, showChangedOnly, searchQuery]);
-
-  // Clamp page when total pages shrinks (e.g. after deleting segments)
-  useEffect(() => {
-    if (totalPages > 0 && page >= totalPages) setPage(totalPages - 1);
-  }, [totalPages, page]);
+  const { displaySegments, pageSegments, totalPages, flaggedCount } = useFilteredSegments(
+    editor.editedSegments,
+    editor.originalIndices,
+    filters,
+    { showFlags, dismissedFlags, isChanged },
+  );
 
   // Track which segment is currently playing
   const storeAudioPath = useAudioStore((s) => s.audioPath);
@@ -431,20 +359,20 @@ export default function SegmentEditor({
         flaggedCount={flaggedCount}
         deletedCount={editor.deletedCount}
         speakers={speakers}
-        speakerFilter={speakerFilter}
-        onSpeakerFilterChange={setSpeakerFilter}
-        showFlaggedOnly={showFlaggedOnly}
-        onFlaggedFilterChange={setShowFlaggedOnly}
-        showChangedOnly={showChangedOnly}
-        onChangedFilterChange={setShowChangedOnly}
+        speakerFilter={filters.speakerFilter}
+        onSpeakerFilterChange={filters.setSpeakerFilter}
+        showFlaggedOnly={filters.showFlaggedOnly}
+        onFlaggedFilterChange={filters.setShowFlaggedOnly}
+        showChangedOnly={filters.showChangedOnly}
+        onChangedFilterChange={filters.setShowChangedOnly}
         hasReference={!!referenceSegments}
         changedCount={changedCount}
-        densityThreshold={densityThreshold}
-        onDensityChange={setDensityThreshold}
-        maxDensityThreshold={maxDensityThreshold}
-        onMaxDensityChange={setMaxDensityThreshold}
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
+        densityThreshold={filters.densityThreshold}
+        onDensityChange={filters.setDensityThreshold}
+        maxDensityThreshold={filters.maxDensityThreshold}
+        onMaxDensityChange={filters.setMaxDensityThreshold}
+        searchQuery={filters.searchQuery}
+        onSearchChange={filters.setSearchQuery}
         searchRef={searchRef}
         onSave={() => saveMutation.mutate()}
         onLoadOriginal={handleLoadOriginal}
@@ -482,7 +410,7 @@ export default function SegmentEditor({
               totalCount={displaySegments.length}
               isEdited={editor.isDirty && (originalIndex >= segments.length || segment !== segments[originalIndex])}
               isFlagged={showFlags ? isFlaggedSeg(segment, originalIndex) : false}
-              flagReason={showFlags ? flagReason(segment) : null}
+              flagReason={showFlags ? flagReason(segment, filters.densityThreshold, filters.maxDensityThreshold) : null}
               onDismissFlag={showFlags ? () => dismissFlag(originalIndex) : undefined}
               isChanged={isChanged(segment, originalIndex)}
               isActive={activeOrigIdx === originalIndex}
@@ -513,13 +441,13 @@ export default function SegmentEditor({
 
       {totalPages > 1 && (
         <Pagination
-          page={page}
+          page={filters.page}
           totalPages={totalPages}
-          pageSize={pageSize}
-          onPageChange={setPage}
+          pageSize={filters.pageSize}
+          onPageChange={filters.setPage}
           onPageSizeChange={(s) => {
-            setPageSize(s);
-            setPage(0);
+            filters.setPageSize(s);
+            filters.setPage(0);
           }}
         />
       )}

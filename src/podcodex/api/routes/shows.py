@@ -2,23 +2,154 @@
 
 from __future__ import annotations
 
-import logging
+import re
 import shutil
 from dataclasses import fields
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 from pydantic import BaseModel
 
 from podcodex.api.routes._helpers import is_downloaded, require_show_folder
-from podcodex.api.schemas import EpisodeOut, ShowMeta, UnifiedEpisodeOut
+from podcodex.api.routes.config import _load, _register_folder, _save
+from podcodex.api.schemas import (
+    CreateFromRSSRequest,
+    CreateFromRSSResponse,
+    EpisodeOut,
+    RegisterShowRequest,
+    ShowMeta,
+    UnifiedEpisodeOut,
+)
 from podcodex.ingest.folder import EpisodeInfo, invalidate_scan_cache, scan_folder
-from podcodex.ingest.rss import episode_stem, load_episode_meta, load_feed_cache
+from podcodex.ingest.rss import (
+    episode_stem,
+    feed_artwork,
+    fetch_feed,
+    load_episode_meta,
+    load_feed_cache,
+    save_feed_cache,
+)
 from podcodex.ingest.show import ShowMeta as _ShowMeta
 from podcodex.ingest.show import load_show_meta, save_show_meta
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
+
+
+# ── Show listing & creation ─────────────────
+
+
+class ShowSummary(BaseModel):
+    name: str
+    path: str
+    episode_count: int = 0
+    has_rss: bool = False
+    artwork_url: str = ""
+    last_rss_update: str | None = None  # ISO timestamp of last feed cache write
+
+
+@router.get("/", response_model=list[ShowSummary])
+async def list_shows() -> list[ShowSummary]:
+    """List all known show folders."""
+    cfg = _load()
+    shows: list[ShowSummary] = []
+
+    for folder_path in cfg.show_folders:
+        child = Path(folder_path)
+        if not child.is_dir():
+            continue
+
+        meta = load_show_meta(child)
+        name = (meta.name if meta else None) or child.name
+        artwork = (meta.artwork_url if meta else "") or ""
+
+        audio_count = sum(
+            1
+            for f in child.iterdir()
+            if f.is_file() and f.suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac")
+        )
+
+        feed_cache = child / ".feed_cache.json"
+        has_rss = feed_cache.exists() or bool(meta and meta.rss_url)
+        last_rss: str | None = None
+        if feed_cache.exists():
+            from datetime import datetime, timezone
+
+            last_rss = datetime.fromtimestamp(
+                feed_cache.stat().st_mtime, tz=timezone.utc
+            ).isoformat()
+        shows.append(
+            ShowSummary(
+                name=name,
+                path=str(child),
+                episode_count=audio_count,
+                has_rss=has_rss,
+                artwork_url=artwork,
+                last_rss_update=last_rss,
+            )
+        )
+    return shows
+
+
+@router.post("/from-rss", response_model=CreateFromRSSResponse)
+async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
+    """Fetch an RSS feed and create a show folder for it."""
+    save_base = Path(req.save_path).expanduser()
+    if not save_base.is_dir():
+        raise HTTPException(400, f"Save path does not exist: {req.save_path}")
+
+    # Fetch the feed
+    episodes = fetch_feed(req.rss_url)
+    if not episodes:
+        raise HTTPException(502, "Feed returned no episodes")
+
+    # Determine folder name
+    folder_name = req.folder_name.strip()
+    if not folder_name:
+        folder_name = re.sub(r"https?://", "", req.rss_url)
+        folder_name = re.sub(r"[^a-zA-Z0-9]+", "_", folder_name).strip("_")[:40]
+
+    show_path = save_base / folder_name
+    show_path.mkdir(parents=True, exist_ok=True)
+
+    # Get artwork: prefer what was passed (from search), fall back to feed
+    artwork = req.artwork_url or feed_artwork(req.rss_url)
+
+    # Save show metadata — use the display name from search, fall back to folder name
+    show_name = req.name.strip() or folder_name
+    save_show_meta(
+        show_path,
+        _ShowMeta(
+            name=show_name,
+            rss_url=req.rss_url,
+            artwork_url=artwork,
+        ),
+    )
+
+    # Cache the feed
+    save_feed_cache(show_path, episodes)
+
+    # Register in config
+    cfg = _load()
+    _register_folder(cfg, str(show_path))
+
+    return CreateFromRSSResponse(
+        folder=str(show_path),
+        name=folder_name,
+        episode_count=len(episodes),
+    )
+
+
+@router.post("/register")
+async def register_show(req: RegisterShowRequest) -> dict:
+    """Register an existing folder as a known show."""
+    p = Path(req.path).expanduser().resolve()
+    if not p.is_dir():
+        raise HTTPException(400, f"Not a directory: {req.path}")
+    cfg = _load()
+    _register_folder(cfg, str(p))
+    return {"status": "ok", "path": str(p)}
+
 
 # ── Episode serialization ────────────────────
 
@@ -193,7 +324,7 @@ async def move_show(show_folder: str, req: MoveShowRequest) -> dict:
     if req.move_files:
         new_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(old_path), str(new_path))
-        logger.info("Moved show folder %s → %s", old_path, new_path)
+        logger.info("Moved show folder {} → {}", old_path, new_path)
     else:
         # Just create the new folder with show metadata, leave files behind
         new_path.mkdir(parents=True, exist_ok=True)
@@ -201,12 +332,10 @@ async def move_show(show_folder: str, req: MoveShowRequest) -> dict:
         if meta:
             save_show_meta(new_path, meta)
         logger.info(
-            "Created new show folder %s (files remain at %s)", new_path, old_path
+            "Created new show folder {} (files remain at {})", new_path, old_path
         )
 
     # Update config.json: replace old path with new
-    from podcodex.api.routes.config import _load, _save
-
     cfg = _load()
     old_resolved = str(old_path.resolve())
     cfg.show_folders = [

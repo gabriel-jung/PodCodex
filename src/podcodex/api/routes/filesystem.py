@@ -11,7 +11,7 @@ from podcodex.api.routes._helpers import AUDIO_EXTS
 router = APIRouter()
 
 
-@router.get("/api/fs/list")
+@router.get("/list")
 async def list_directory(
     path: str = Query(default="~", description="Directory to list"),
     show_files: bool = Query(
@@ -83,7 +83,7 @@ async def list_directory(
     }
 
 
-@router.post("/api/fs/mkdir")
+@router.post("/mkdir")
 async def make_directory(
     path: str = Query(..., description="Parent directory"),
     name: str = Query(..., description="New folder name"),

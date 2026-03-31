@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
-    annotate_flags,
-    read_segments,
+    load_segments_or_404,
     save_segments_json,
     submit_task,
 )
@@ -27,10 +26,7 @@ async def get_polished_segments(
 ) -> list[dict]:
     """Load polished segments (prefers validated over raw)."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    data = read_segments(p.polished_best)
-    if data is None:
-        raise HTTPException(404, "No polished segments found")
-    return annotate_flags(data)
+    return load_segments_or_404(p.polished_best, "polished segments")
 
 
 @router.get("/segments/raw")
@@ -40,10 +36,7 @@ async def get_polished_segments_raw(
 ) -> list[dict]:
     """Load raw polished segments."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    data = read_segments(p.polished_raw)
-    if data is None:
-        raise HTTPException(404, "No raw polished segments found")
-    return annotate_flags(data)
+    return load_segments_or_404(p.polished_raw, "raw polished segments")
 
 
 @router.put("/segments")
@@ -88,6 +81,13 @@ class PolishRequest(BaseModel):
     engine: str = "Whisper"
     api_base_url: str = ""
     api_key: str | None = None
+
+    @field_validator("batch_minutes")
+    @classmethod
+    def batch_minutes_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("batch_minutes must be positive")
+        return v
 
 
 @router.post("/start", response_model=TaskResponse)

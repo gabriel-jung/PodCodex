@@ -2,10 +2,13 @@
 
 from podcodex.api.routes import (
     audio,
+    batch,
     config,
+    export,
     filesystem,
     health,
     index,
+    models,
     polish,
     rss,
     search,
@@ -18,10 +21,13 @@ from podcodex.api.routes import (
 
 __all__ = [
     "audio",
+    "batch",
     "config",
+    "export",
     "filesystem",
     "health",
     "index",
+    "models",
     "polish",
     "rss",
     "search",

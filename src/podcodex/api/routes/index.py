@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import submit_task
 from podcodex.api.schemas import TaskResponse
@@ -134,6 +134,20 @@ class IndexRequest(BaseModel):
     chunk_size: int = 256
     threshold: float = 0.5
     overwrite: bool = False
+
+    @field_validator("chunk_size")
+    @classmethod
+    def chunk_size_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("chunk_size must be at least 1")
+        return v
+
+    @field_validator("threshold")
+    @classmethod
+    def threshold_in_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("threshold must be between 0.0 and 1.0")
+        return v
 
 
 @router.post("/start", response_model=TaskResponse)

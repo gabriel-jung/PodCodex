@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import load_best_source, submit_task
 from podcodex.api.schemas import TaskResponse
@@ -44,6 +44,13 @@ class ExtractVoicesRequest(BaseModel):
     min_duration: float | None = None
     max_duration: float | None = None
     top_k: int = 3
+
+    @field_validator("top_k")
+    @classmethod
+    def top_k_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("top_k must be at least 1")
+        return v
 
 
 @router.post("/extract-voices", response_model=TaskResponse)
@@ -228,6 +235,13 @@ class GenerateRequest(BaseModel):
     max_chunk_duration: float = 20.0
     force: bool = False
     only_speakers: list[str] | None = None
+
+    @field_validator("max_chunk_duration")
+    @classmethod
+    def max_chunk_duration_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("max_chunk_duration must be positive")
+        return v
 
 
 @router.post("/generate", response_model=TaskResponse)
@@ -451,6 +465,13 @@ class AssembleRequest(BaseModel):
     output_dir: str | None = None
     strategy: str = "original_timing"
     silence_duration: float = 0.5
+
+    @field_validator("silence_duration")
+    @classmethod
+    def silence_duration_non_negative(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("silence_duration must be non-negative")
+        return v
 
 
 @router.post("/assemble")

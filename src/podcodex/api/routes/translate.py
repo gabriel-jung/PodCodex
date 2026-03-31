@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
-    annotate_flags,
     load_best_source,
-    read_segments,
+    load_segments_or_404,
     save_segments_json,
     submit_task,
 )
@@ -29,10 +28,7 @@ async def get_translated_segments(
 ) -> list[dict]:
     """Load translated segments (prefers validated over raw)."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    data = read_segments(p.translation_best(lang))
-    if data is None:
-        raise HTTPException(404, f"No translation found for '{lang}'")
-    return annotate_flags(data)
+    return load_segments_or_404(p.translation_best(lang), f"translation for '{lang}'")
 
 
 @router.get("/segments/raw")
@@ -43,10 +39,9 @@ async def get_translated_segments_raw(
 ) -> list[dict]:
     """Load raw translated segments."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    data = read_segments(p.translation_raw(lang))
-    if data is None:
-        raise HTTPException(404, f"No raw translation found for '{lang}'")
-    return annotate_flags(data)
+    return load_segments_or_404(
+        p.translation_raw(lang), f"raw translation for '{lang}'"
+    )
 
 
 @router.put("/segments")
@@ -104,6 +99,13 @@ class TranslateRequest(BaseModel):
     batch_minutes: float = 15.0
     api_base_url: str = ""
     api_key: str | None = None
+
+    @field_validator("batch_minutes")
+    @classmethod
+    def batch_minutes_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("batch_minutes must be positive")
+        return v
 
 
 @router.post("/start", response_model=TaskResponse)
