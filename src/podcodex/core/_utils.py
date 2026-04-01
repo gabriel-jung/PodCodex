@@ -31,17 +31,12 @@ class AudioPaths:
         p = AudioPaths.from_audio("episode.mp3")
         p.transcript        # → …/episode/episode.transcript.json
         p.polished_raw      # → …/episode/episode.polished.raw.json
-        p.translation("en") # → …/episode/episode.en.json
+        p.translation("en") # → …/episode/episode.translated.en.json
         p.synthesized       # → …/episode/episode.synthesized.wav
     """
 
     audio_path: Path  # resolved source audio file
     base: Path  # output_root / stem — no extension
-    nodiar: bool = False  # True when diarization was skipped
-
-    def _suffix(self, name: str) -> str:
-        """Insert '.nodiar' before the logical suffix when diarization is skipped."""
-        return f".nodiar.{name}" if self.nodiar else f".{name}"
 
     @staticmethod
     def output_dir(
@@ -74,13 +69,12 @@ class AudioPaths:
         cls,
         audio_path: str | Path,
         output_dir: str | Path | None = None,
-        nodiar: bool = False,
     ) -> Self:
         audio_path = Path(audio_path)
         root = cls.output_dir(audio_path, output_dir)
         base = root / audio_path.stem
         base.parent.mkdir(parents=True, exist_ok=True)
-        return cls(audio_path=audio_path, base=base, nodiar=nodiar)
+        return cls(audio_path=audio_path, base=base)
 
     # — RAG —
 
@@ -122,11 +116,11 @@ class AudioPaths:
 
     @property
     def transcript_raw(self) -> Path:
-        return self.base.with_suffix(self._suffix("transcript.raw.json"))
+        return self.base.with_suffix(".transcript.raw.json")
 
     @property
     def transcript(self) -> Path:
-        return self.base.with_suffix(self._suffix("transcript.json"))
+        return self.base.with_suffix(".transcript.json")
 
     @property
     def transcript_best(self) -> Path:
@@ -137,67 +131,48 @@ class AudioPaths:
 
     @property
     def polished(self) -> Path:
-        return self.base.with_suffix(self._suffix("polished.json"))
+        return self.base.with_suffix(".polished.json")
 
     @property
     def polished_raw(self) -> Path:
-        return self.base.with_suffix(self._suffix("polished.raw.json"))
+        return self.base.with_suffix(".polished.raw.json")
 
     @property
     def polished_best(self) -> Path:
         """Validated polished if it exists, else raw."""
         return self.polished if self.polished.exists() else self.polished_raw
 
-    def has_polished(self) -> bool:
-        """True if either validated or raw polished file exists."""
-        return self.polished.exists() or self.polished_raw.exists()
-
-    def has_raw_polished(self) -> bool:
-        """True if polished.raw.json exists but polished.json (validated) does not."""
-        return self.polished_raw.exists() and not self.polished.exists()
-
-    def has_validated_polished(self) -> bool:
-        """True if the validated polished.json exists."""
-        return self.polished.exists()
-
-    def polished_raw_exists(self) -> bool:
-        """True if polished.raw.json exists (regardless of validated state)."""
-        return self.polished_raw.exists()
-
     # — Translation —
 
     def translation(self, lang: str) -> Path:
         lang = lang.lower().strip().replace(" ", "_")
-        prefix = "nodiar." if self.nodiar else ""
-        return self.base.parent / f"{self.base.name}.{prefix}{lang}.json"
+        return self.base.parent / f"{self.base.name}.translated.{lang}.json"
 
     def translation_raw(self, lang: str) -> Path:
         lang = lang.lower().strip().replace(" ", "_")
-        prefix = "nodiar." if self.nodiar else ""
-        return self.base.parent / f"{self.base.name}.{prefix}{lang}.raw.json"
+        return self.base.parent / f"{self.base.name}.translated.{lang}.raw.json"
+
+    def _translation_legacy(self, lang: str) -> Path:
+        """Old naming: {stem}.{lang}.json (before 'translated' prefix)."""
+        lang = lang.lower().strip().replace(" ", "_")
+        return self.base.parent / f"{self.base.name}.{lang}.json"
+
+    def _translation_raw_legacy(self, lang: str) -> Path:
+        """Old naming: {stem}.{lang}.raw.json."""
+        lang = lang.lower().strip().replace(" ", "_")
+        return self.base.parent / f"{self.base.name}.{lang}.raw.json"
 
     def translation_best(self, lang: str) -> Path:
-        """Validated translation if it exists, else raw."""
-        v = self.translation(lang)
-        return v if v.exists() else self.translation_raw(lang)
-
-    def has_translation(self, lang: str) -> bool:
-        """True if either validated or raw translation file exists."""
-        return self.translation(lang).exists() or self.translation_raw(lang).exists()
-
-    def has_raw_translation(self, lang: str) -> bool:
-        """True if {lang}.raw.json exists but {lang}.json (validated) does not."""
-        return (
-            self.translation_raw(lang).exists() and not self.translation(lang).exists()
-        )
-
-    def has_validated_translation(self, lang: str) -> bool:
-        """True if the validated {lang}.json exists."""
-        return self.translation(lang).exists()
-
-    def translation_raw_exists(self, lang: str) -> bool:
-        """True if {lang}.raw.json exists (regardless of validated state)."""
-        return self.translation_raw(lang).exists()
+        """Best translation file: new naming first, then legacy."""
+        for p in [
+            self.translation(lang),
+            self.translation_raw(lang),
+            self._translation_legacy(lang),
+            self._translation_raw_legacy(lang),
+        ]:
+            if p.exists():
+                return p
+        return self.translation(lang)  # default to new path
 
     # — Synthesis —
 
@@ -266,20 +241,12 @@ DEFAULT_TEMPERATURE = 0
 INTERNAL_SUFFIXES = frozenset(
     {
         "transcript",
-        "transcript.raw",
-        "nodiar.transcript",
-        "nodiar.transcript.raw",
-        "nodiar.polished",
-        "nodiar.polished.raw",
         "polished",
-        "polished.raw",
         "words",
         "diar",
         "assigned",
         "speaker_map",
         "imported",
-        "segments.meta",
-        "diarization.meta",
     }
 )
 
@@ -358,7 +325,6 @@ def save_segments_json(
     path: Path,
     segments: list[dict],
     label: str,
-    provenance: dict | None = None,
 ) -> Path:
     """Write a segment list to a JSON file with standard formatting.
 
@@ -366,9 +332,6 @@ def save_segments_json(
         path       : output file path
         segments   : list of segment dicts (already cleaned)
         label      : human-readable label for the log message (e.g. "Polished transcript")
-        provenance : optional version metadata dict with keys: step, type, model,
-                     params, manual_edit.  When provided, the segments
-                     are also archived in the .versions directory.
 
     Returns:
         The path written to.
@@ -378,12 +341,6 @@ def save_segments_json(
         json.dumps(segments, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     logger.success(f"{label} saved — {len(segments)} segments → {path.name}")
-
-    if provenance and "base" in provenance:
-        from podcodex.core.versions import maybe_archive
-
-        maybe_archive(Path(provenance["base"]), segments, provenance, path.name)
-
     return path
 
 
@@ -500,7 +457,9 @@ def _vtt_ts(seconds: float) -> str:
 
 
 def merge_consecutive_segments(
-    segments: list[dict], max_gap: float = DEFAULT_MAX_GAP
+    segments: list[dict],
+    max_gap: float = DEFAULT_MAX_GAP,
+    max_duration: float = 15.0,
 ) -> list[dict]:
     """
     Merge consecutive segments from the same speaker into single entries.
@@ -508,9 +467,11 @@ def merge_consecutive_segments(
     preventing merges across music breaks or long silences.
 
     Args:
-        segments : raw diarized segments
-        max_gap  : maximum silence gap (seconds) to merge across (default 10s);
-                   0 disables merging
+        segments     : raw diarized segments
+        max_gap      : maximum silence gap (seconds) to merge across (default 10s);
+                       0 disables merging
+        max_duration : maximum duration (seconds) for a merged segment (default 15s);
+                       keeps segments subtitle-sized for readability
 
     Returns:
         List of simplified segments [{speaker, start, end, text}]
@@ -532,14 +493,15 @@ def merge_consecutive_segments(
 
         prev = result[-1] if result else None
         if prev and prev["speaker"] == entry["speaker"]:
-            # With timestamps: merge only if gap <= max_gap
+            # With timestamps: merge only if gap <= max_gap and duration <= max_duration
             # Without timestamps: always merge consecutive same-speaker
             if has_times and "start" in prev:
                 gap = entry["start"] - prev["end"]
-                if gap <= max_gap:
+                merged_duration = entry["end"] - prev["start"]
+                if gap <= max_gap and merged_duration <= max_duration:
                     prev["end"] = entry["end"]
                     prev["text"] += " " + entry["text"]
-                else:
+                elif gap > max_gap:
                     result.append(
                         {
                             "speaker": BREAK_SPEAKER,
@@ -548,6 +510,9 @@ def merge_consecutive_segments(
                             "text": "",
                         }
                     )
+                    result.append(entry)
+                else:
+                    # Duration cap hit — start a new segment, no break
                     result.append(entry)
             else:
                 prev["text"] += " " + entry["text"]
@@ -569,7 +534,7 @@ def merge_consecutive_segments(
     n_breaks = sum(1 for s in result if s["speaker"] == BREAK_SPEAKER)
     logger.debug(
         f"merge_consecutive_segments: {n_input} → {len(result)} segments "
-        f"({n_breaks} breaks, max_gap={max_gap}s)"
+        f"({n_breaks} breaks, max_gap={max_gap}s, max_duration={max_duration}s)"
     )
     return result
 

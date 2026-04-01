@@ -3,9 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEpisodeStore, usePipelineConfigStore } from "@/stores";
 import {
   getSegments,
-  getSegmentsRaw,
   getPipelineConfig,
-  getTranscribeVersionInfo,
   getTranscribeVersions,
   loadTranscribeVersion,
   saveSegments,
@@ -268,26 +266,16 @@ function TranscribeForm({
 }
 
 function TranscribeEditor({ audioPath, duration, speakers }: { audioPath: string; duration: number; speakers?: string[] }) {
-  const { data: referenceSegments } = useQuery({
-    queryKey: ["transcribe", "segments-raw", audioPath],
-    queryFn: () => getSegmentsRaw(audioPath),
-    enabled: !!audioPath,
-  });
-
   return (
     <SegmentEditor
       editorKey="transcribe"
       audioPath={audioPath}
       episodeDuration={duration}
       loadSegments={() => getSegments(audioPath)}
-      loadRawSegments={() => getSegmentsRaw(audioPath)}
-      loadVersionInfo={() => getTranscribeVersionInfo(audioPath)}
       saveSegments={(segs) => saveSegments(audioPath, segs)}
       showDelete
       showFlags
       showSpeaker
-      referenceSegments={referenceSegments}
-      referenceLabel="Original"
       speakers={speakers}
       loadVersions={() => getTranscribeVersions(audioPath)}
       loadVersion={(id) => loadTranscribeVersion(audioPath, id)}

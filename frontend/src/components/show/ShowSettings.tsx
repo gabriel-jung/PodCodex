@@ -29,6 +29,13 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
   const [language, setLanguage] = useState(meta.language);
   const [rssUrl, setRssUrl] = useState(meta.rss_url);
   const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
+  const [pipeModelSize, setPipeModelSize] = useState(meta.pipeline?.model_size ?? "");
+  const [pipeDiarize, setPipeDiarize] = useState(meta.pipeline?.diarize ?? true);
+  const [pipeLlmMode, setPipeLlmMode] = useState(meta.pipeline?.llm_mode ?? "");
+  const [pipeLlmProvider, setPipeLlmProvider] = useState(meta.pipeline?.llm_provider ?? "");
+  const [pipeLlmModel, setPipeLlmModel] = useState(meta.pipeline?.llm_model ?? "");
+  const [pipeTargetLang, setPipeTargetLang] = useState(meta.pipeline?.target_lang ?? "");
+
   const [syncTaskId, setSyncTaskId] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState(false);
 
@@ -44,13 +51,25 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
     setLanguage(meta.language);
     setRssUrl(meta.rss_url);
     setArtworkUrl(meta.artwork_url);
+    setPipeModelSize(meta.pipeline?.model_size ?? "");
+    setPipeDiarize(meta.pipeline?.diarize ?? true);
+    setPipeLlmMode(meta.pipeline?.llm_mode ?? "");
+    setPipeLlmProvider(meta.pipeline?.llm_provider ?? "");
+    setPipeLlmModel(meta.pipeline?.llm_model ?? "");
+    setPipeTargetLang(meta.pipeline?.target_lang ?? "");
   }, [meta]);
 
   const isDirty =
     name !== meta.name ||
     language !== meta.language ||
     rssUrl !== meta.rss_url ||
-    artworkUrl !== meta.artwork_url;
+    artworkUrl !== meta.artwork_url ||
+    pipeModelSize !== (meta.pipeline?.model_size ?? "") ||
+    pipeDiarize !== (meta.pipeline?.diarize ?? true) ||
+    pipeLlmMode !== (meta.pipeline?.llm_mode ?? "") ||
+    pipeLlmProvider !== (meta.pipeline?.llm_provider ?? "") ||
+    pipeLlmModel !== (meta.pipeline?.llm_model ?? "") ||
+    pipeTargetLang !== (meta.pipeline?.target_lang ?? "");
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -60,6 +79,14 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         rss_url: rssUrl,
         speakers: meta.speakers,
         artwork_url: artworkUrl,
+        pipeline: {
+          model_size: pipeModelSize,
+          diarize: pipeDiarize,
+          llm_mode: pipeLlmMode,
+          llm_provider: pipeLlmProvider,
+          llm_model: pipeLlmModel,
+          target_lang: pipeTargetLang,
+        },
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["showMeta", folder] });
@@ -76,7 +103,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
   useEffect(() => {
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [name, language, rssUrl, artworkUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [name, language, rssUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeLlmMode, pipeLlmProvider, pipeLlmModel, pipeTargetLang]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const syncMutation = useMutation({
     mutationFn: () =>
@@ -244,6 +271,64 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
       </SettingSection>
 
       <PipelineSettings language={language} />
+
+      {/* ── Show Pipeline Defaults (overrides app-level for status comparison) ── */}
+      <SettingSection
+        title="Show Defaults"
+        description="Override app-level pipeline settings for this show. Empty values fall back to the global config above. Episodes run with different settings show as outdated."
+      >
+        <SettingRow label="Whisper model" help="Expected transcription model. Leave empty to use the global default.">
+          <input
+            value={pipeModelSize}
+            onChange={(e) => setPipeModelSize(e.target.value)}
+            placeholder="(use global)"
+            className="input py-1 text-sm w-32"
+          />
+        </SettingRow>
+        <SettingRow label="Diarize" help="Whether transcription should include speaker diarization.">
+          <input
+            type="checkbox"
+            checked={pipeDiarize}
+            onChange={(e) => setPipeDiarize(e.target.checked)}
+            className="accent-primary"
+          />
+        </SettingRow>
+        <SettingRow label="LLM mode" help="Expected LLM mode for polish/translate. Leave empty for global default.">
+          <select
+            value={pipeLlmMode}
+            onChange={(e) => setPipeLlmMode(e.target.value)}
+            className="bg-secondary text-secondary-foreground text-sm rounded px-2 py-1 border border-border"
+          >
+            <option value="">(use global)</option>
+            <option value="ollama">Ollama</option>
+            <option value="api">API</option>
+          </select>
+        </SettingRow>
+        <SettingRow label="LLM provider" help="Expected API provider (openai, anthropic, etc.). Leave empty for global default.">
+          <input
+            value={pipeLlmProvider}
+            onChange={(e) => setPipeLlmProvider(e.target.value)}
+            placeholder="(use global)"
+            className="input py-1 text-sm w-32"
+          />
+        </SettingRow>
+        <SettingRow label="LLM model" help="Expected LLM model name. Leave empty for global default.">
+          <input
+            value={pipeLlmModel}
+            onChange={(e) => setPipeLlmModel(e.target.value)}
+            placeholder="(use global)"
+            className="input py-1 text-sm w-32"
+          />
+        </SettingRow>
+        <SettingRow label="Target language" help="Expected translation target language. Leave empty for global default.">
+          <input
+            value={pipeTargetLang}
+            onChange={(e) => setPipeTargetLang(e.target.value)}
+            placeholder="(use global)"
+            className="input py-1 text-sm w-32"
+          />
+        </SettingRow>
+      </SettingSection>
 
       {/* ── Qdrant Sync ── */}
       {hasIndex && (

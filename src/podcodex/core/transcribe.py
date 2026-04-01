@@ -11,8 +11,9 @@ Files produced alongside the MP3:
     {stem}.diarization.meta.json     — num speakers, etc.
     {stem}.diarized_segments.parquet — segments with SPEAKER_XX assigned
     {stem}.speaker_map.json          — {SPEAKER_00: "Claude", ...}  (filled by UI)
-    {stem}.transcript.raw.json       — pipeline export (unvalidated)
-    {stem}.transcript.json           — validated/edited transcript
+    .versions/transcript/{id}.json   — versioned transcript segments (primary store)
+    {stem}.transcript.raw.json       — legacy copy of pipeline export
+    {stem}.transcript.json           — legacy copy of validated transcript
 """
 
 import json
@@ -37,6 +38,8 @@ from podcodex.core._utils import (
     write_json,
     write_parquet,
 )
+from podcodex.core.pipeline_db import mark_step
+from podcodex.core.versions import _get_db, load_latest, save_version
 
 # Suppress known harmless warnings from third-party libraries
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
@@ -48,22 +51,15 @@ warnings.filterwarnings("ignore", message=".*Lightning automatically upgraded.*"
 def processing_status(
     audio_path: Path | str,
     output_dir: str | Path | None = None,
-    nodiar: bool = False,
 ) -> dict[str, bool]:
     """Return the processing state of an audio file."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    pn = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=True)
-    exported = (
-        (pn.transcript.exists() or pn.transcript_raw.exists())
-        if nodiar
-        else (p.transcript.exists() or p.transcript_raw.exists())
-    )
     return {
         "transcribed": p.segments.exists() and p.segments_meta.exists(),
         "diarized": p.diarization.exists() and p.diarization_meta.exists(),
         "assigned": p.diarized_segments.exists(),
         "mapped": p.speaker_map.exists(),
-        "exported": exported,
+        "exported": p.transcript.exists() or p.transcript_raw.exists(),
     }
 
 
@@ -396,7 +392,8 @@ def export_transcript(
     speaker_map.json.  When False, uses raw WhisperX segments and assigns
     :data:`NARRATOR_SPEAKER` to every segment.
 
-    Saves transcript.raw.json (or nodiar.transcript.raw.json) in output_dir.
+    Saves a new version to ``.versions/transcript/`` and a legacy copy
+    to transcript.raw.json.
 
     The file format is:
         {"meta": {show, episode, diarized, speakers, duration, word_count},
@@ -414,7 +411,7 @@ def export_transcript(
     Returns:
         List of final segments [{start, end, speaker, text}]
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=not diarized)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     if diarized:
         segments = load_diarized_segments(audio_path, output_dir=output_dir)
@@ -456,11 +453,15 @@ def export_transcript(
         f"Export done — {len(resolved)} → {len(export)} segments (merged) → {p.transcript_raw.name}"
     )
 
+    # Store transcript meta in provenance params for version DB
     if provenance:
-        from podcodex.core.versions import maybe_archive
-
-        maybe_archive(p.base, export, provenance, p.transcript_raw.name)
-
+        provenance = {
+            **provenance,
+            "params": {**provenance.get("params", {}), "meta": meta},
+        }
+    save_version(p.base, "transcript", export, provenance)
+    prov_update = {"transcript": provenance} if provenance else {}
+    mark_step(p.show_dir, p.base.name, transcribed=True, provenance=prov_update)
     return export
 
 
@@ -478,52 +479,40 @@ def _load_transcript_file(path: Path) -> dict:
 def load_transcript_full(
     audio_path: Path | str,
     output_dir: str | Path | None = None,
-    nodiar: bool = False,
 ) -> dict:
     """Load the final transcript with metadata.
 
-    Prefers the validated transcript.json; falls back to transcript.raw.json.
+    Tries the version DB first, then falls back to legacy files.
 
     Returns:
         {"meta": {show, episode, speakers, duration, word_count}, "segments": [...]}
         If the file is in old list format, meta will be an empty dict.
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    # Try version DB
+    segments = load_latest(p.base, "transcript")
+    if segments is not None:
+        # Reconstruct meta from version params or compute from segments
+        try:
+            db = _get_db(p.base)
+            ver = db.get_latest_version(p.base.name, "transcript")
+            meta = ver["params"].get("meta", {}) if ver else {}
+        except Exception:
+            meta = {}
+        return {"meta": meta, "segments": segments}
+    # Legacy fallback
     return _load_transcript_file(p.transcript_best)
 
 
 def load_transcript(
     audio_path: Path | str,
     output_dir: str | Path | None = None,
-    nodiar: bool = False,
 ) -> list[dict]:
     """Load the final transcript segments as a plain list.
 
-    Prefers the validated transcript.json; falls back to transcript.raw.json.
+    Tries the version DB first, then falls back to legacy files.
     """
-    return load_transcript_full(audio_path, output_dir=output_dir, nodiar=nodiar)[
-        "segments"
-    ]
-
-
-def load_transcript_raw(
-    audio_path: Path | str,
-    output_dir: str | Path | None = None,
-    nodiar: bool = False,
-) -> list[dict]:
-    """Load segments specifically from transcript.raw.json (pipeline output)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    return _load_transcript_file(p.transcript_raw)["segments"]
-
-
-def load_transcript_validated(
-    audio_path: Path | str,
-    output_dir: str | Path | None = None,
-    nodiar: bool = False,
-) -> list[dict]:
-    """Load segments specifically from transcript.json (user-validated)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    return _load_transcript_file(p.transcript)["segments"]
+    return load_transcript_full(audio_path, output_dir=output_dir)["segments"]
 
 
 # ──────────────────────────────────────────────
@@ -608,7 +597,6 @@ def save_transcript(
     segments: list[dict],
     output_dir: str | Path | None = None,
     max_gap: float = DEFAULT_MAX_GAP,
-    nodiar: bool = False,
     provenance: dict | None = None,
 ) -> Path:
     """Save an edited segment list back to transcript.json, preserving metadata.
@@ -622,11 +610,10 @@ def save_transcript(
         output_dir : same output_dir used when the transcript was created
         max_gap    : maximum silence gap (seconds) to merge across (default 10s);
                      0 disables merging
-        nodiar     : use nodiar file paths (default False)
         provenance : optional version metadata for archiving
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    full = load_transcript_full(audio_path, output_dir=output_dir, nodiar=nodiar)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    full = load_transcript_full(audio_path, output_dir=output_dir)
     merged = merge_consecutive_segments(segments, max_gap=max_gap)
     full["segments"] = merged
     write_json(p.transcript, full)
@@ -634,11 +621,9 @@ def save_transcript(
         f"Transcript saved → {p.transcript.name} ({len(segments)} → {len(merged)} segments)"
     )
 
-    if provenance:
-        from podcodex.core.versions import maybe_archive
-
-        maybe_archive(p.base, merged, provenance, p.transcript.name)
-
+    save_version(p.base, "transcript", merged, provenance)
+    prov_update = {"transcript": provenance} if provenance else {}
+    mark_step(p.show_dir, p.base.name, transcribed=True, provenance=prov_update)
     return p.transcript
 
 

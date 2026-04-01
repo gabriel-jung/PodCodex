@@ -7,7 +7,6 @@ from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
     load_segments_or_404,
-    save_segments_json,
     submit_task,
 )
 from podcodex.api.schemas import Segment, TaskResponse
@@ -24,19 +23,15 @@ async def get_polished_segments(
     audio_path: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
-    """Load polished segments (prefers validated over raw)."""
+    """Load polished segments (latest version, falls back to legacy files)."""
+    from podcodex.api.routes._helpers import annotate_flags
+    from podcodex.core.versions import load_latest
+
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    segments = load_latest(p.base, "polished")
+    if segments is not None:
+        return annotate_flags(segments)
     return load_segments_or_404(p.polished_best, "polished segments")
-
-
-@router.get("/segments/raw")
-async def get_polished_segments_raw(
-    audio_path: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> list[dict]:
-    """Load raw polished segments."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    return load_segments_or_404(p.polished_raw, "raw polished segments")
 
 
 @router.put("/segments")
@@ -46,38 +41,18 @@ async def save_polished_segments(
     output_dir: str | None = Query(None),
 ) -> dict:
     """Save validated polished segments."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    from podcodex.core.polish import save_polished
+
+    seg_dicts = [s.model_dump() for s in segments]
     provenance = {
         "step": "polished",
         "type": "validated",
         "model": None,
         "params": {},
         "manual_edit": True,
-        "base": str(p.base),
     }
-    count = save_segments_json(
-        p.polished,
-        [s.model_dump() for s in segments],
-        "Polished",
-        provenance=provenance,
-    )
-    return {"status": "saved", "count": count}
-
-
-@router.get("/version-info")
-async def polish_version_info(
-    audio_path: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> dict:
-    """Return which polished versions exist."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    from podcodex.core.versions import version_count
-
-    return {
-        "has_raw": p.polished_raw.exists(),
-        "has_validated": p.polished.exists(),
-        "version_count": version_count(p.base, "polished"),
-    }
+    save_polished(audio_path, seg_dicts, output_dir=output_dir, provenance=provenance)
+    return {"status": "saved", "count": len(seg_dicts)}
 
 
 # ── Version history ──────────────────────────────────────

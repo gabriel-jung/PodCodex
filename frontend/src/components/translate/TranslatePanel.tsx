@@ -3,8 +3,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEpisodeStore, usePipelineConfigStore } from "@/stores";
 import {
   getTranslateSegments,
-  getTranslateSegmentsRaw,
-  getTranslateVersionInfo,
   getTranslateVersions,
   loadTranslateVersion,
   saveTranslateSegments,
@@ -145,8 +143,6 @@ export default function TranslatePanel() {
           audioPath={episode.audio_path ?? undefined}
           episodeDuration={episode.duration}
           loadSegments={() => getTranslateSegments(episode.audio_path!, editingLang)}
-          loadRawSegments={() => getTranslateSegmentsRaw(episode.audio_path!, editingLang)}
-          loadVersionInfo={() => getTranslateVersionInfo(episode.audio_path!, editingLang)}
           saveSegments={(segs) => saveTranslateSegments(episode.audio_path!, editingLang, segs)}
           showDelete
           showFlags={false}

@@ -17,10 +17,12 @@ from podcodex.api.schemas import (
     CreateFromRSSRequest,
     CreateFromRSSResponse,
     EpisodeOut,
+    PipelineDefaultsSchema,
     RegisterShowRequest,
     ShowMeta,
     UnifiedEpisodeOut,
 )
+from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
 from podcodex.ingest.folder import EpisodeInfo, invalidate_scan_cache, scan_folder
 from podcodex.ingest.rss import (
     episode_stem,
@@ -30,6 +32,7 @@ from podcodex.ingest.rss import (
     load_feed_cache,
     save_feed_cache,
 )
+from podcodex.ingest.show import PipelineDefaults as _PipelineDefaults
 from podcodex.ingest.show import ShowMeta as _ShowMeta
 from podcodex.ingest.show import load_show_meta, save_show_meta
 
@@ -182,6 +185,14 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
         language=meta.language,
         speakers=meta.speakers,
         artwork_url=meta.artwork_url,
+        pipeline=PipelineDefaultsSchema(
+            model_size=meta.pipeline.model_size,
+            diarize=meta.pipeline.diarize,
+            llm_mode=meta.pipeline.llm_mode,
+            llm_provider=meta.pipeline.llm_provider,
+            llm_model=meta.pipeline.llm_model,
+            target_lang=meta.pipeline.target_lang,
+        ),
     )
 
 
@@ -189,6 +200,7 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
 async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
     path = Path(show_folder)
     path.mkdir(parents=True, exist_ok=True)
+    p = meta.pipeline
     save_show_meta(
         path,
         _ShowMeta(
@@ -197,6 +209,14 @@ async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
             language=meta.language,
             speakers=meta.speakers,
             artwork_url=meta.artwork_url,
+            pipeline=_PipelineDefaults(
+                model_size=p.model_size,
+                diarize=p.diarize,
+                llm_mode=p.llm_mode,
+                llm_provider=p.llm_provider,
+                llm_model=p.llm_model,
+                target_lang=p.target_lang,
+            ),
         ),
     )
     return {"status": "saved"}
@@ -219,11 +239,41 @@ async def list_episodes(show_folder: str) -> list[dict]:
     "/{show_folder:path}/unified",
     response_model=list[UnifiedEpisodeOut],
 )
-async def unified_episodes(show_folder: str) -> list[dict]:
-    """Return a merged list of RSS + local episodes."""
+async def unified_episodes(
+    show_folder: str,
+    defaults: str | None = None,
+) -> list[dict]:
+    """Return a merged list of RSS + local episodes.
+
+    Pipeline status comes from the per-show SQLite DB (pipeline.db).
+    On first access the DB is populated from a filesystem scan.
+
+    Args:
+        defaults: Optional JSON string with app-level pipeline defaults
+                  (model_size, diarize, llm_mode, llm_provider, llm_model,
+                  target_lang). Show-level overrides take precedence.
+    """
+    import json as _json
+
     path = require_show_folder(show_folder)
 
-    local = {ep.stem: ep for ep in scan_folder(path)}
+    # ── Resolve effective defaults (app → show override) ──
+    app_defaults = _json.loads(defaults) if defaults else {}
+    show_meta = load_show_meta(path)
+    effective = _resolve_defaults(app_defaults, show_meta)
+
+    # ── Pipeline status from DB (or one-time migration) ──
+    db = get_pipeline_db(path)
+    if db.episode_count() == 0:
+        episodes = scan_folder(path)
+        if episodes:
+            db.populate_from_scan(episodes)
+
+    status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
+
+    # ── Audio file discovery (single scandir at show root) ──
+    local_audio = _scan_audio_files(path)
+
     rss = load_feed_cache(path) or []
 
     result: list[dict] = []
@@ -232,9 +282,11 @@ async def unified_episodes(show_folder: str) -> list[dict]:
     # RSS episodes first (preserves feed order)
     for r in rss:
         stem = episode_stem(r)
-        ep = local.get(stem)
+        st = status_map.get(stem, {}) if stem else {}
+        audio_path = local_audio.get(stem)
         if stem:
             seen_stems.add(stem)
+        prov = st.get("provenance", {})
         result.append(
             {
                 "id": r.guid,
@@ -245,48 +297,181 @@ async def unified_episodes(show_folder: str) -> list[dict]:
                 "audio_url": r.audio_url or None,
                 "duration": r.duration,
                 "episode_number": r.episode_number,
-                "audio_path": str(ep.audio_path) if ep and ep.audio_path else None,
-                "downloaded": is_downloaded(path, stem) if stem else False,
-                "transcribed": ep.transcribed if ep else False,
-                "polished": ep.polished if ep else False,
-                "indexed": ep.indexed if ep else False,
-                "synthesized": ep.synthesized if ep else False,
-                "translations": ep.translations if ep else [],
+                "audio_path": str(audio_path) if audio_path else st.get("audio_path"),
+                "downloaded": audio_path is not None or is_downloaded(path, stem)
+                if stem
+                else False,
+                "transcribed": st.get("transcribed", False),
+                "polished": st.get("polished", False),
+                "indexed": st.get("indexed", False),
+                "synthesized": st.get("synthesized", False),
+                "translations": st.get("translations", []),
                 "artwork_url": r.artwork_url or "",
-                "raw_transcript": ep.raw_transcript if ep else False,
-                "validated_transcript": ep.validated_transcript if ep else False,
+                "provenance": prov,
+                **_step_statuses(st, prov, effective),
             }
         )
 
-    # Local-only episodes (no RSS match) — restore cached RSS metadata if available
-    for ep in local.values():
-        if ep.stem in seen_stems:
+    # Local-only episodes (no RSS match)
+    for stem, st in status_map.items():
+        if stem in seen_stems:
             continue
-        meta = load_episode_meta(ep.output_dir) if ep.output_dir else None
+        output_dir = path / stem
+        meta = load_episode_meta(output_dir) if output_dir.is_dir() else None
+        audio_path = local_audio.get(stem)
+        prov = st.get("provenance", {})
         result.append(
             {
-                "id": meta.guid if meta else ep.stem,
-                "title": (meta.title if meta else None) or ep.title or ep.stem,
-                "stem": ep.stem,
+                "id": meta.guid if meta else stem,
+                "title": (meta.title if meta else None) or stem,
+                "stem": stem,
                 "pub_date": meta.pub_date if meta else None,
                 "description": (meta.description or "") if meta else "",
                 "audio_url": (meta.audio_url or None) if meta else None,
                 "duration": meta.duration if meta else 0,
                 "episode_number": meta.episode_number if meta else None,
-                "audio_path": str(ep.audio_path) if ep.audio_path else None,
-                "downloaded": bool(ep.audio_path),
-                "transcribed": ep.transcribed,
-                "polished": ep.polished,
-                "indexed": ep.indexed,
-                "synthesized": ep.synthesized,
-                "translations": ep.translations,
+                "audio_path": str(audio_path) if audio_path else st.get("audio_path"),
+                "downloaded": audio_path is not None,
+                "transcribed": st.get("transcribed", False),
+                "polished": st.get("polished", False),
+                "indexed": st.get("indexed", False),
+                "synthesized": st.get("synthesized", False),
+                "translations": st.get("translations", []),
                 "artwork_url": (meta.artwork_url or "") if meta else "",
-                "raw_transcript": ep.raw_transcript,
-                "validated_transcript": ep.validated_transcript,
+                "provenance": prov,
+                **_step_statuses(st, prov, effective),
             }
         )
 
     return result
+
+
+def _resolve_defaults(app_defaults: dict, show_meta: _ShowMeta | None) -> dict:
+    """Merge app-level defaults with show-level overrides.
+
+    Show-level non-empty values win; otherwise fall back to app defaults.
+    """
+    effective = dict(app_defaults)
+    if show_meta and show_meta.pipeline:
+        p = show_meta.pipeline
+        for key in (
+            "model_size",
+            "diarize",
+            "llm_mode",
+            "llm_provider",
+            "llm_model",
+            "target_lang",
+        ):
+            val = getattr(p, key, None)
+            # Only override if show has a non-default value
+            if val is not None and val != "" and val is not True:
+                effective[key] = val
+            elif key == "diarize" and not p.diarize:
+                # Explicitly set to False overrides
+                effective[key] = False
+    return effective
+
+
+def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
+    """Compute per-step status: 'none' | 'outdated' | 'done'.
+
+    Compares the episode's provenance against the effective defaults.
+    """
+
+    def _check_transcribe() -> str:
+        if not st.get("transcribed", False):
+            return "none"
+        prov = provenance.get("transcript")
+        if not prov or not effective:
+            return "done"  # no provenance or no defaults to compare → assume done
+        params = prov.get("params", {})
+        if effective.get("model_size") and prov.get("model") != effective["model_size"]:
+            return "outdated"
+        if "diarize" in effective and params.get("diarize") != effective["diarize"]:
+            return "outdated"
+        return "done"
+
+    def _check_polish() -> str:
+        if not st.get("polished", False):
+            return "none"
+        prov = provenance.get("polished")
+        if not prov or not effective:
+            return "done"
+        params = prov.get("params", {})
+        if effective.get("llm_mode") and params.get("mode") != effective["llm_mode"]:
+            return "outdated"
+        if (
+            effective.get("llm_provider")
+            and params.get("provider") != effective["llm_provider"]
+        ):
+            return "outdated"
+        if effective.get("llm_model") and prov.get("model") != effective["llm_model"]:
+            return "outdated"
+        return "done"
+
+    def _check_translate() -> str:
+        translations = st.get("translations", [])
+        if not translations:
+            return "none"
+        target = effective.get("target_lang", "").strip().lower()
+        if target and target not in translations:
+            return "none"  # target lang not translated at all
+        # Check provenance for the target language
+        lang_key = target or (translations[0] if translations else "")
+        prov = provenance.get(lang_key)
+        if not prov or not effective:
+            return "done"
+        params = prov.get("params", {})
+        if effective.get("llm_mode") and params.get("mode") != effective["llm_mode"]:
+            return "outdated"
+        if (
+            effective.get("llm_provider")
+            and params.get("provider") != effective["llm_provider"]
+        ):
+            return "outdated"
+        if effective.get("llm_model") and prov.get("model") != effective["llm_model"]:
+            return "outdated"
+        return "done"
+
+    return {
+        "transcribe_status": _check_transcribe(),
+        "polish_status": _check_polish(),
+        "translate_status": _check_translate(),
+    }
+
+
+@router.post("/{show_folder:path}/resync")
+async def resync_pipeline_db(show_folder: str) -> dict:
+    """Force-rebuild pipeline.db from filesystem scan."""
+    path = require_show_folder(show_folder)
+    close_pipeline_db(path)
+    db_file = path / "pipeline.db"
+    if db_file.exists():
+        db_file.unlink()
+    db = get_pipeline_db(path)
+    episodes = scan_folder(path)
+    if episodes:
+        db.populate_from_scan(episodes)
+    return {"status": "resynced", "episode_count": len(episodes)}
+
+
+def _scan_audio_files(show_folder: Path) -> dict[str, Path]:
+    """Quick scan of audio files at show root — single os.scandir call."""
+    import os
+    from podcodex.ingest.folder import AUDIO_EXTENSIONS
+
+    audio: dict[str, Path] = {}
+    try:
+        with os.scandir(show_folder) as it:
+            for entry in it:
+                if entry.is_file(follow_symlinks=False):
+                    name = entry.name
+                    dot = name.rfind(".")
+                    if dot > 0 and name[dot:].lower() in AUDIO_EXTENSIONS:
+                        audio[name[:dot]] = show_folder / name
+    except OSError:
+        pass
+    return audio
 
 
 # ── Move / rename show folder ──────────────
@@ -345,6 +530,7 @@ async def move_show(show_folder: str, req: MoveShowRequest) -> dict:
     _save(cfg)
 
     # Invalidate caches
+    close_pipeline_db(old_path)
     invalidate_scan_cache(old_path)
     invalidate_scan_cache(new_path)
 

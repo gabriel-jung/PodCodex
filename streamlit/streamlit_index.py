@@ -98,9 +98,9 @@ def _render_index_section(paths: "AudioPaths", output_dir: str, show_name: str) 
             help="\n".join(f"**{v.label}**: {v.description}" for v in MODELS.values()),
         )
     with col_chunkers:
-        _nodiar = st.session_state.get("skip_diarization", False)
+        _skip_diar = st.session_state.get("skip_diarization", False)
         _chunker_options = [
-            k for k in CHUNKING_STRATEGIES if not (_nodiar and k == "speaker")
+            k for k in CHUNKING_STRATEGIES if not (_skip_diar and k == "speaker")
         ]
         chunkings = st.multiselect(
             "Chunking strategies",
@@ -109,7 +109,7 @@ def _render_index_section(paths: "AudioPaths", output_dir: str, show_name: str) 
             format_func=lambda k: CHUNKING_STRATEGIES[k],
             key="rag_chunkings",
             help="Speaker chunking is unavailable without diarization."
-            if _nodiar
+            if _skip_diar
             else None,
         )
 

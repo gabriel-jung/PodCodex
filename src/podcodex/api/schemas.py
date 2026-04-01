@@ -5,12 +5,22 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class PipelineDefaultsSchema(BaseModel):
+    model_size: str = ""
+    diarize: bool = True
+    llm_mode: str = ""
+    llm_provider: str = ""
+    llm_model: str = ""
+    target_lang: str = ""
+
+
 class ShowMeta(BaseModel):
     name: str
     rss_url: str = ""
     language: str = ""
     speakers: list[str] = []
     artwork_url: str = ""
+    pipeline: PipelineDefaultsSchema = PipelineDefaultsSchema()
 
 
 class EpisodeOut(BaseModel):
@@ -28,13 +38,6 @@ class EpisodeOut(BaseModel):
     indexed: bool
     synthesized: bool
     translations: list[str]
-    # raw/validated status
-    raw_transcript: bool
-    validated_transcript: bool
-    raw_polished: bool
-    validated_polished: bool
-    raw_translations: list[str]
-    validated_translations: list[str]
 
 
 class RSSEpisodeOut(BaseModel):
@@ -76,8 +79,11 @@ class UnifiedEpisodeOut(BaseModel):
     synthesized: bool = False
     translations: list[str] = []
     artwork_url: str = ""
-    raw_transcript: bool = False
-    validated_transcript: bool = False
+    provenance: dict = {}
+    # Step status: "none" | "outdated" | "done"
+    transcribe_status: str = "none"
+    polish_status: str = "none"
+    translate_status: str = "none"
 
 
 class CreateFromRSSRequest(BaseModel):

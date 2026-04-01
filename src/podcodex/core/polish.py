@@ -9,8 +9,9 @@ Modes:
     - api     : external API (OpenAI, Anthropic, etc.)
 
 Output files:
-    {stem}.polished.raw.json  — pipeline output (unvalidated)
-    {stem}.polished.json      — validated/edited polished transcript
+    .versions/polished/{id}.json  — versioned polished segments (primary store)
+    {stem}.polished.raw.json      — legacy copy of pipeline output
+    {stem}.polished.json          — legacy copy of validated output
 """
 
 from collections.abc import Callable
@@ -32,6 +33,8 @@ from podcodex.core._utils import (
     save_segments_json,
     validate_manual,
 )
+from podcodex.core.pipeline_db import mark_step
+from podcodex.core.versions import load_latest, save_version
 
 
 # ──────────────────────────────────────────────
@@ -228,63 +231,45 @@ def save_polished_raw(
     audio_path: Path | str,
     segments: list[dict],
     output_dir: str | Path | None = None,
-    nodiar: bool = False,
     provenance: dict | None = None,
 ) -> Path:
-    """Save pipeline-generated polished segments to {stem}.polished.raw.json.
+    """Save pipeline-generated polished segments.
 
-    Use this for LLM/pipeline output. The user can then review and promote
-    to the validated {stem}.polished.json.
+    Creates a new version in ``.versions/polished/`` and a legacy file copy.
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    if provenance:
-        provenance["base"] = str(p.base)
-    return save_segments_json(
-        p.polished_raw, segments, "Polished transcript", provenance=provenance
-    )
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    save_segments_json(p.polished_raw, segments, "Polished transcript")
+    save_version(p.base, "polished", segments, provenance)
+    prov_update = {"polished": provenance} if provenance else {}
+    mark_step(p.show_dir, p.base.name, polished=True, provenance=prov_update)
+    return p.polished_raw
 
 
 def save_polished(
     audio_path: Path | str,
     segments: list[dict],
     output_dir: str | Path | None = None,
-    nodiar: bool = False,
     provenance: dict | None = None,
 ) -> Path:
-    """Save validated/edited polished segments to {stem}.polished.json."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    if provenance:
-        provenance["base"] = str(p.base)
-    return save_segments_json(
-        p.polished, segments, "Polished transcript", provenance=provenance
-    )
+    """Save validated/edited polished segments.
+
+    Creates a new version in ``.versions/polished/`` and a legacy file copy.
+    """
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    save_segments_json(p.polished, segments, "Polished transcript")
+    save_version(p.base, "polished", segments, provenance)
+    prov_update = {"polished": provenance} if provenance else {}
+    mark_step(p.show_dir, p.base.name, polished=True, provenance=prov_update)
+    return p.polished
 
 
 def load_polished(
     audio_path: Path | str,
     output_dir: str | Path | None = None,
-    nodiar: bool = False,
 ) -> list[dict]:
-    """Load polished segments. Prefers validated .polished.json, falls back to .polished.raw.json."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
+    """Load polished segments — latest version, falls back to legacy files."""
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    segments = load_latest(p.base, "polished")
+    if segments is not None:
+        return segments
     return read_json(p.polished_best)
-
-
-def load_polished_raw(
-    audio_path: Path | str,
-    output_dir: str | Path | None = None,
-    nodiar: bool = False,
-) -> list[dict]:
-    """Load specifically from .polished.raw.json (pipeline output)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    return read_json(p.polished_raw)
-
-
-def load_polished_validated(
-    audio_path: Path | str,
-    output_dir: str | Path | None = None,
-    nodiar: bool = False,
-) -> list[dict]:
-    """Load specifically from .polished.json (user-validated)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    return read_json(p.polished)

@@ -2,8 +2,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEpisodeStore, usePipelineConfigStore } from "@/stores";
 import {
   getPolishSegments,
-  getPolishSegmentsRaw,
-  getPolishVersionInfo,
   getPolishVersions,
   loadPolishVersion,
   savePolishSegments,
@@ -34,7 +32,7 @@ export default function PolishPanel() {
   const engine = usePipelineConfigStore((s) => s.engine);
   const setEngine = usePipelineConfigStore((s) => s.setEngine);
 
-  const { data: referenceSegments } = useQuery({
+  const { data: transcriptSegments } = useQuery({
     queryKey: ["transcribe", "segments", episode.audio_path],
     queryFn: () => getSegments(episode.audio_path!),
     enabled: !!episode.audio_path && episode.transcribed,
@@ -146,14 +144,12 @@ export default function PolishPanel() {
           audioPath={episode.audio_path ?? undefined}
           episodeDuration={episode.duration}
           loadSegments={() => getPolishSegments(episode.audio_path!)}
-          loadRawSegments={() => getPolishSegmentsRaw(episode.audio_path!)}
-          loadVersionInfo={() => getPolishVersionInfo(episode.audio_path!)}
           saveSegments={(segs) => savePolishSegments(episode.audio_path!, segs)}
           showDelete
           showFlags={false}
           showSpeaker
-          referenceSegments={referenceSegments}
-          referenceLabel="Original transcript"
+          referenceSegments={transcriptSegments}
+          referenceLabel="Input transcript"
           speakers={showMeta?.speakers}
           loadVersions={() => getPolishVersions(episode.audio_path!)}
           loadVersion={(id) => loadPolishVersion(episode.audio_path!, id)}

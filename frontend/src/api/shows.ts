@@ -3,6 +3,7 @@ import type {
   CreateFromRSSResponse,
   Episode,
   PipelineConfig,
+  PipelineDefaults,
   PodcastSearchResult,
   ShowMeta,
   ShowSummary,
@@ -64,8 +65,10 @@ export const moveShow = (folder: string, newPath: string, moveFiles: boolean) =>
 
 // ── Episodes (unified: local + RSS merged) ──
 
-export const getEpisodes = (folder: string) =>
-  json<Episode[]>(`/api/shows/${encodeURIComponent(folder)}/unified`);
+export const getEpisodes = (folder: string, defaults?: PipelineDefaults) => {
+  const params = defaults ? `?defaults=${encodeURIComponent(JSON.stringify(defaults))}` : "";
+  return json<Episode[]>(`/api/shows/${encodeURIComponent(folder)}/unified${params}`);
+};
 
 // ── RSS actions ─────────────────────────────
 

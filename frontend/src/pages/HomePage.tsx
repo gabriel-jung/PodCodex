@@ -17,7 +17,6 @@ import { Plus, FolderOpen, FileAudio, RefreshCw } from "lucide-react";
 export default function HomePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-
   const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig });
   const { data: shows } = useQuery({
     queryKey: ["shows"],

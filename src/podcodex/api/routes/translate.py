@@ -8,7 +8,6 @@ from pydantic import BaseModel, field_validator
 from podcodex.api.routes._helpers import (
     load_best_source,
     load_segments_or_404,
-    save_segments_json,
     submit_task,
 )
 from podcodex.api.schemas import Segment, TaskResponse
@@ -26,22 +25,16 @@ async def get_translated_segments(
     lang: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
-    """Load translated segments (prefers validated over raw)."""
+    """Load translated segments (latest version, falls back to legacy files)."""
+    from podcodex.api.routes._helpers import annotate_flags
+    from podcodex.core.versions import load_latest
+
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    lang_norm = lang.lower().strip().replace(" ", "_")
+    segments = load_latest(p.base, lang_norm)
+    if segments is not None:
+        return annotate_flags(segments)
     return load_segments_or_404(p.translation_best(lang), f"translation for '{lang}'")
-
-
-@router.get("/segments/raw")
-async def get_translated_segments_raw(
-    audio_path: str = Query(...),
-    lang: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> list[dict]:
-    """Load raw translated segments."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    return load_segments_or_404(
-        p.translation_raw(lang), f"raw translation for '{lang}'"
-    )
 
 
 @router.put("/segments")
@@ -52,41 +45,21 @@ async def save_translated_segments(
     output_dir: str | None = Query(None),
 ) -> dict:
     """Save validated translated segments."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    from podcodex.core.translate import save_translation
+
     lang_norm = lang.lower().strip().replace(" ", "_")
+    seg_dicts = [s.model_dump() for s in segments]
     provenance = {
         "step": lang_norm,
         "type": "validated",
         "model": None,
         "params": {},
         "manual_edit": True,
-        "base": str(p.base),
     }
-    count = save_segments_json(
-        p.translation(lang),
-        [s.model_dump() for s in segments],
-        f"Translation ({lang})",
-        provenance=provenance,
+    save_translation(
+        audio_path, seg_dicts, lang, output_dir=output_dir, provenance=provenance
     )
-    return {"status": "saved", "count": count}
-
-
-@router.get("/version-info")
-async def translate_version_info(
-    audio_path: str = Query(...),
-    lang: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> dict:
-    """Return which translation versions exist for a language."""
-    from podcodex.core.versions import version_count
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    lang_norm = lang.lower().strip().replace(" ", "_")
-    return {
-        "has_raw": p.translation_raw(lang).exists(),
-        "has_validated": p.translation(lang).exists(),
-        "version_count": version_count(p.base, lang_norm),
-    }
+    return {"status": "saved", "count": len(seg_dicts)}
 
 
 @router.get("/languages")

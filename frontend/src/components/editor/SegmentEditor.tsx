@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Segment, VersionEntry, VersionInfo } from "@/api/types";
+import type { Segment, VersionEntry } from "@/api/types";
 import { useSegments } from "@/hooks/useSegments";
 import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
 import { useAudioStore } from "@/stores";
@@ -13,8 +13,6 @@ interface SegmentEditorProps {
   audioPath?: string;
   episodeDuration?: number;
   loadSegments: () => Promise<Segment[]>;
-  loadRawSegments?: () => Promise<Segment[]>;
-  loadVersionInfo: () => Promise<VersionInfo>;
   saveSegments: (segments: Segment[]) => Promise<unknown>;
   showDelete?: boolean;
   showFlags?: boolean;
@@ -45,8 +43,6 @@ export default function SegmentEditor({
   audioPath,
   episodeDuration,
   loadSegments,
-  loadRawSegments,
-  loadVersionInfo,
   saveSegments,
   showDelete = true,
   showFlags = true,
@@ -62,11 +58,6 @@ export default function SegmentEditor({
   const { data: segments } = useQuery({
     queryKey: [editorKey, "segments", audioPath],
     queryFn: loadSegments,
-  });
-
-  const { data: versionInfo } = useQuery({
-    queryKey: [editorKey, "version-info", audioPath],
-    queryFn: loadVersionInfo,
   });
 
   const { data: versions } = useQuery({
@@ -95,7 +86,7 @@ export default function SegmentEditor({
     mutationFn: () => saveSegments(editor.editedSegments),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [editorKey, "segments", audioPath] });
-      queryClient.invalidateQueries({ queryKey: [editorKey, "version-info", audioPath] });
+      queryClient.invalidateQueries({ queryKey: [editorKey, "versions", audioPath] });
     },
   });
 
@@ -149,46 +140,30 @@ export default function SegmentEditor({
     return map;
   }, [editor.originalIndices]);
 
-  // Skipped reference indices — these are excluded from positional matching
-  const [skippedRefIndices, setSkippedRefIndices] = useState<Set<number>>(new Set());
-
-  const skipReference = (refIdx: number) => {
-    setSkippedRefIndices((prev) => new Set(prev).add(refIdx));
-  };
-
-  const unskipReference = (refIdx: number) => {
-    setSkippedRefIndices((prev) => {
-      const next = new Set(prev);
-      next.delete(refIdx);
-      return next;
-    });
-  };
-
   // Build adjusted reference lookup.
   // Both edited and reference segments started as parallel arrays. When an
   // edited segment is deleted, the corresponding reference position should
-  // also be consumed (auto-skipped). Manual skips add additional offsets.
+  // also be consumed (auto-skipped).
   //
-  // Strategy: build a list of "active" (non-skipped, non-deleted) reference
+  // Strategy: build a list of "active" (non-deleted) reference
   // indices, then assign them 1:1 to edited segments.
   const refMapping = useMemo(() => {
-    if (!referenceSegments) return null;
+    if (!effectiveReference) return null;
 
     // Detect which original positions were deleted by finding gaps in originalIndices
     const deletedOriginals = new Set<number>();
     const survivingSet = new Set(editor.originalIndices);
-    // originalIndices covers 0..maxOrigIdx; anything missing was deleted
     const maxOrig = editor.originalIndices.length > 0
-      ? Math.max(...editor.originalIndices, referenceSegments.length - 1)
-      : referenceSegments.length - 1;
+      ? Math.max(...editor.originalIndices, effectiveReference.length - 1)
+      : effectiveReference.length - 1;
     for (let i = 0; i <= maxOrig; i++) {
       if (!survivingSet.has(i)) deletedOriginals.add(i);
     }
 
-    // Active reference indices: skip both manually-skipped and auto-skipped (deleted)
+    // Active reference indices: skip auto-skipped (deleted)
     const activeRefIndices: number[] = [];
-    for (let i = 0; i < referenceSegments.length; i++) {
-      if (!skippedRefIndices.has(i) && !deletedOriginals.has(i)) {
+    for (let i = 0; i < effectiveReference.length; i++) {
+      if (!deletedOriginals.has(i)) {
         activeRefIndices.push(i);
       }
     }
@@ -199,40 +174,22 @@ export default function SegmentEditor({
       map.set(e, activeRefIndices[e]);
     }
     return map;
-  }, [referenceSegments, skippedRefIndices, editor.editedSegments, editor.originalIndices]);
+  }, [effectiveReference, editor.editedSegments, editor.originalIndices]);
 
   // Get reference segment for a given edited position
   const getRef = (editedIdx: number) => {
-    if (!referenceSegments || !refMapping) return undefined;
+    if (!effectiveReference || !refMapping) return undefined;
     const refIdx = refMapping.get(editedIdx);
-    return refIdx != null ? referenceSegments[refIdx] : undefined;
+    return refIdx != null ? effectiveReference[refIdx] : undefined;
   };
 
   const getRefIdx = (editedIdx: number) => {
     return refMapping?.get(editedIdx);
   };
 
-  // Get manually-skipped reference segments that fall before a given editedIdx
-  // (auto-skipped from deletes are not shown — they follow their deleted segment)
-  const getSkippedBefore = (editedIdx: number) => {
-    if (!referenceSegments || skippedRefIndices.size === 0) return undefined;
-    const myRefIdx = refMapping?.get(editedIdx);
-    const prevRefIdx = editedIdx > 0 ? refMapping?.get(editedIdx - 1) : -1;
-    if (myRefIdx == null) return undefined;
-
-    const skipped: Array<{ refIdx: number; text: string }> = [];
-    const start = prevRefIdx != null ? prevRefIdx + 1 : 0;
-    for (let i = start; i < myRefIdx; i++) {
-      if (skippedRefIndices.has(i)) {
-        skipped.push({ refIdx: i, text: referenceSegments[i].text });
-      }
-    }
-    return skipped.length > 0 ? skipped : undefined;
-  };
-
   // Check if a segment differs from its reference (positional — shifts with deletes)
   const isChanged = (seg: Segment, origIdx: number) => {
-    if (!referenceSegments || seg.speaker === "[BREAK]") return false;
+    if (!effectiveReference || seg.speaker === "[BREAK]") return false;
     const editedIdx = origToEditedIdx.get(origIdx) ?? origIdx;
     const ref = getRef(editedIdx);
     return ref != null && ref.text !== seg.text;
@@ -240,14 +197,14 @@ export default function SegmentEditor({
 
   // Count changed segments
   const changedCount = useMemo(() => {
-    if (!referenceSegments) return 0;
+    if (!effectiveReference) return 0;
     let count = 0;
     for (let e = 0; e < editor.editedSegments.length; e++) {
       if (isChanged(editor.editedSegments[e], editor.originalIndices[e])) count++;
     }
     return count;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor.editedSegments, editor.originalIndices, referenceSegments, skippedRefIndices]);
+  }, [editor.editedSegments, editor.originalIndices, effectiveReference]);
 
   const { displaySegments, pageSegments, totalPages, flaggedCount } = useFilteredSegments(
     editor.editedSegments,
@@ -297,24 +254,54 @@ export default function SegmentEditor({
     editor.reset(withTimestamps);
   };
 
-  const handleLoadOriginal = loadRawSegments
-    ? async () => {
-        const raw = await loadRawSegments();
-        editor.reset(raw);
-      }
-    : undefined;
-
-  const handleLoadEdits = async () => {
-    const data = await loadSegments();
-    editor.reset(data);
-  };
-
   const handleLoadVersion = loadVersion
     ? async (id: string) => {
         const data = await loadVersion(id);
         editor.reset(data);
       }
     : undefined;
+
+  // ── Compare-with selector ────────────────────────────
+  // "default" = parent-supplied referenceSegments, "none" = no diff, version id = load that version
+  const [refChoice, setRefChoice] = useState<"default" | "none" | string>(
+    referenceSegments ? "default" : "none",
+  );
+  // Reset choice when the parent-supplied reference changes
+  useEffect(() => {
+    setRefChoice(referenceSegments ? "default" : "none");
+  }, [referenceSegments]);
+
+  const [versionRefSegments, setVersionRefSegments] = useState<Segment[] | null>(null);
+  const [versionRefLabel, setVersionRefLabel] = useState("");
+
+  const handleRefChoiceChange = async (choice: string) => {
+    setRefChoice(choice);
+    if (choice === "default" || choice === "none") {
+      setVersionRefSegments(null);
+      setVersionRefLabel("");
+      return;
+    }
+    // Load a version as reference
+    if (loadVersion) {
+      try {
+        const data = await loadVersion(choice);
+        setVersionRefSegments(data);
+        const v = versions?.find((ver) => ver.id === choice);
+        setVersionRefLabel(v ? `Version ${new Date(v.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "Version");
+      } catch {
+        setVersionRefSegments(null);
+        setVersionRefLabel("");
+        setRefChoice("none");
+      }
+    }
+  };
+
+  const effectiveReference = refChoice === "default" ? referenceSegments
+    : refChoice === "none" ? undefined
+    : versionRefSegments ?? undefined;
+  const effectiveRefLabel = refChoice === "default" ? referenceLabel
+    : refChoice === "none" ? ""
+    : versionRefLabel;
 
   // Ref for search input focus
   const searchRef = useRef<HTMLInputElement>(null);
@@ -372,7 +359,6 @@ export default function SegmentEditor({
         totalSegments={editor.editedSegments.length}
         visibleCount={displaySegments.length}
         isDirty={editor.isDirty}
-        versionInfo={versionInfo ?? null}
         flaggedCount={flaggedCount}
         deletedCount={editor.deletedCount}
         speakers={speakers}
@@ -382,7 +368,7 @@ export default function SegmentEditor({
         onFlaggedFilterChange={filters.setShowFlaggedOnly}
         showChangedOnly={filters.showChangedOnly}
         onChangedFilterChange={filters.setShowChangedOnly}
-        hasReference={!!referenceSegments}
+        hasReference={!!effectiveReference}
         changedCount={changedCount}
         densityThreshold={filters.densityThreshold}
         onDensityChange={filters.setDensityThreshold}
@@ -392,8 +378,6 @@ export default function SegmentEditor({
         onSearchChange={filters.setSearchQuery}
         searchRef={searchRef}
         onSave={() => saveMutation.mutate()}
-        onLoadOriginal={handleLoadOriginal}
-        onLoadEdits={versionInfo?.has_validated ? handleLoadEdits : undefined}
         onUndo={editor.canUndo ? editor.undo : undefined}
         onEstimateTimestamps={missingTimestamps && episodeDuration ? handleEstimateTimestamps : undefined}
         onDeleteFlagged={() => {
@@ -414,13 +398,39 @@ export default function SegmentEditor({
         }
       />
 
+      {/* Compare-with selector */}
+      {(referenceSegments || (versions && versions.length > 0)) && (
+        <div className="px-4 py-1.5 border-b border-border/50 flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Compare with:</span>
+          <select
+            value={refChoice}
+            onChange={(e) => handleRefChoiceChange(e.target.value)}
+            className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-xs"
+          >
+            <option value="none">None</option>
+            {referenceSegments && (
+              <option value="default">{referenceLabel}</option>
+            )}
+            {versions && versions.map((v) => {
+              const d = new Date(v.timestamp);
+              const dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+              const model = v.manual_edit ? "edit" : v.model || v.type;
+              return (
+                <option key={v.id} value={v.id}>
+                  {dateStr} — {model} ({v.segment_count} seg)
+                </option>
+              );
+            })}
+          </select>
+        </div>
+      )}
+
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {pageSegments.map(({ segment, originalIndex, displayIndex }) => {
           const isBreak = segment.speaker === "[BREAK]";
           const editedIdx = origToEditedIdx.get(originalIndex) ?? originalIndex;
           const ref = getRef(editedIdx);
           const refIdx = getRefIdx(editedIdx);
-          const skippedBefore = getSkippedBefore(editedIdx);
           return (
             <div key={`${editorKey}-${originalIndex}`} data-orig-idx={originalIndex}>
             <SegmentRow
@@ -436,11 +446,8 @@ export default function SegmentEditor({
               isBreak={isBreak}
               audioPath={audioPath}
               referenceText={ref && !isBreak ? ref.text : undefined}
-              referenceLabel={referenceLabel}
+              referenceLabel={effectiveRefLabel}
               referenceIndex={refIdx}
-              skippedBefore={!isBreak ? skippedBefore : undefined}
-              onSkipReference={ref && !isBreak ? () => skipReference(refIdx!) : undefined}
-              onUnskipReference={!isBreak ? unskipReference : undefined}
               speakers={speakers}
               showDelete={showDelete}
               showSpeaker={showSpeaker && !isBreak}

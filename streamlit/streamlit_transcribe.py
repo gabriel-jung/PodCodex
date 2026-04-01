@@ -27,7 +27,7 @@ from streamlit_editor import render_segment_editor
 
 
 def _render_transcript_import(
-    audio_path: str, output_dir: str, nodiar: bool, *, wrap_expander: bool = False
+    audio_path: str, output_dir: str, *, wrap_expander: bool = False
 ) -> None:
     """Render the transcript JSON upload UI. Saves to .transcript.raw.json on import."""
     uploaded_json = st.file_uploader(
@@ -60,9 +60,7 @@ def _render_transcript_import(
                         ),
                         "word_count": sum(len(s.get("text", "").split()) for s in data),
                     }
-                    p = AudioPaths.from_audio(
-                        audio_path, output_dir=output_dir, nodiar=nodiar
-                    )
+                    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
                     p.transcript_raw.parent.mkdir(parents=True, exist_ok=True)
                     payload = {"meta": meta, "segments": data}
                     p.transcript_raw.write_text(
@@ -179,7 +177,6 @@ def render() -> None:
     if st.session_state.get("transcript_only"):
         audio_path = st.session_state.get("audio_path", "")
         output_dir = st.session_state.get("output_dir", "")
-        nodiar = st.session_state.get("skip_diarization", False)
         audio_exists = audio_path and Path(audio_path).is_file()
 
         # Unified audio container: download / upload / player
@@ -194,11 +191,11 @@ def render() -> None:
             st.caption(
                 "Already have a transcript? Import it and skip audio processing."
             )
-            _render_transcript_import(audio_path, output_dir, nodiar)
+            _render_transcript_import(audio_path, output_dir)
 
         # Editor
         if has_transcript:
-            _render_transcript_editor(audio_path, output_dir, nodiar=nodiar)
+            _render_transcript_editor(audio_path, output_dir)
 
         # Pipeline steps (only available when audio exists)
         if audio_exists:
@@ -255,7 +252,6 @@ def render() -> None:
     # Default to skip when no HF key is available
     if "skip_diarization" not in st.session_state:
         st.session_state["skip_diarization"] = not _has_hf_token
-    _prev_skip = st.session_state.get("_prev_skip_diarization")
     skip_diarization = st.checkbox(
         "Skip diarization (no speaker detection)",
         key="skip_diarization",
@@ -263,54 +259,10 @@ def render() -> None:
         "Useful when you don't have a HuggingFace API key for pyannote."
         + ("" if _has_hf_token else " **No HF_TOKEN detected — defaulting to skip.**"),
     )
-    nodiar = skip_diarization
-    # Clear cached data when the toggle changes to avoid stale state
-    if _prev_skip is not None and _prev_skip != nodiar:
-        keys_to_clear = [
-            "transcript",
-            "polished",
-            "translations",
-            "translation",
-            "indexed",
-            f"editor_transcript_{audio_path}",
-            f"editor_polished_{audio_path}",
-            f"transcript_{audio_path}_dirty",
-            f"polish_{audio_path}_dirty",
-        ]
-        # Also clear per-language translation editor keys
-        for k in list(st.session_state.keys()):
-            if k.startswith(f"editor_translate_{audio_path}_") or k.startswith(
-                f"translate_{audio_path}_"
-            ):
-                keys_to_clear.append(k)
-        for k in keys_to_clear:
-            st.session_state.pop(k, None)
-        # Auto-export transcript for the new mode if raw segments exist
-        _new_status = transcribe.processing_status(
-            audio_path, output_dir=output_dir, nodiar=nodiar
-        )
-        if _new_status["transcribed"] and not _new_status["exported"]:
-            _prereq = (
-                _new_status["transcribed"]
-                if nodiar
-                else _new_status.get("mapped", False)
-            )
-            if _prereq:
-                try:
-                    result = transcribe.export_transcript(
-                        audio_path, output_dir=output_dir, diarized=not nodiar
-                    )
-                    st.session_state.transcript = result
-                except (OSError, ValueError, KeyError):
-                    pass  # Will show export button instead
-        st.rerun()
-    st.session_state["_prev_skip_diarization"] = nodiar
 
     # ── Status bar ──
-    status = transcribe.processing_status(
-        audio_path, output_dir=output_dir, nodiar=nodiar
-    )
-    _render_status(status, nodiar=nodiar)
+    status = transcribe.processing_status(audio_path, output_dir=output_dir)
+    _render_status(status, skip_diarization=skip_diarization)
 
     st.divider()
 
@@ -321,17 +273,17 @@ def render() -> None:
         "📂 **Import existing transcript** — skip transcription and diarization",
         expanded=not has_transcript,
     ):
-        _render_transcript_import(audio_path, output_dir, nodiar)
+        _render_transcript_import(audio_path, output_dir)
 
     # ── Transcript editor (shown first when transcript exists) ──
     # Auto-load transcript into session if exported but not yet loaded
     if already_exported and not st.session_state.get("transcript"):
         st.session_state.transcript = transcribe.load_transcript(
-            audio_path, output_dir=output_dir, nodiar=nodiar
+            audio_path, output_dir=output_dir
         )
 
     if st.session_state.get("transcript"):
-        _render_transcript_editor(audio_path, output_dir, nodiar=nodiar)
+        _render_transcript_editor(audio_path, output_dir)
 
     # ── Audio processing steps (collapsed when transcript exists) ──
     show_pipeline = st.checkbox(
@@ -398,11 +350,11 @@ def render() -> None:
                         f"... {result['num_segments'] - 20} more segments not shown"
                     )
 
-    # ── Steps 2–3: Diarization & Speaker Map (skipped when nodiar) ──
+    # ── Steps 2–3: Diarization & Speaker Map (skipped when skip_diarization) ──
     if not status["transcribed"]:
         return  # Nothing more to show until transcription is done
 
-    if nodiar:
+    if skip_diarization:
         st.info(
             "⏭️ Diarization skipped — all segments will be attributed to a single narrator."
         )
@@ -513,16 +465,16 @@ def render() -> None:
 
     # ── Export ──
     # Progressive disclosure: show export only when prerequisites are met
-    _export_ready = status["transcribed"] if nodiar else status["mapped"]
+    _export_ready = status["transcribed"] if skip_diarization else status["mapped"]
     if not _export_ready and not status["exported"]:
         return  # Don't show export until prerequisites are done
 
     with st.container(border=True):
         col_title, col_force = st.columns([4, 1])
         with col_title:
-            step_label = "Step 2" if nodiar else "Step 4"
+            step_label = "Step 2" if skip_diarization else "Step 4"
             st.markdown(f"### 📝 {step_label} — Export Transcript")
-            if nodiar:
+            if skip_diarization:
                 st.caption(
                     "Generate the final JSON transcript (single narrator, no speaker detection)."
                 )
@@ -551,7 +503,7 @@ def render() -> None:
         ):
             with st.spinner("Exporting..."):
                 transcript = transcribe.export_transcript(
-                    audio_path, output_dir=output_dir, diarized=not nodiar
+                    audio_path, output_dir=output_dir, diarized=not skip_diarization
                 )
                 # Load the new export into the editor cache
                 t_key = f"editor_transcript_{audio_path}"
@@ -681,8 +633,8 @@ def _render_audio_trim(output_dir: str) -> None:
             st.warning("Could not read audio duration — ffprobe may not be available.")
 
 
-def _render_status(status: dict, nodiar: bool = False) -> None:
-    """Show the pipeline status bar, hiding diarization steps when nodiar."""
+def _render_status(status: dict, skip_diarization: bool = False) -> None:
+    """Show the pipeline status bar, hiding diarization steps when skip_diarization."""
     labels = {
         "transcribed": "Transcribed",
         "diarized": "Diarized",
@@ -690,7 +642,7 @@ def _render_status(status: dict, nodiar: bool = False) -> None:
         "mapped": "Speaker map",
         "exported": "Exported",
     }
-    skip_keys = {"diarized", "assigned", "mapped"} if nodiar else set()
+    skip_keys = {"diarized", "assigned", "mapped"} if skip_diarization else set()
     visible = {k: v for k, v in status.items() if k not in skip_keys}
     cols = st.columns(len(visible))
     for col, (key, done) in zip(cols, visible.items()):
@@ -891,30 +843,26 @@ def _load_diarized_segments_cached(audio_path: str, output_dir: str) -> list:
     return transcribe.load_diarized_segments(Path(audio_path), output_dir=output_dir)
 
 
-def _render_transcript_editor(
-    audio_path: Path | str, output_dir: str, nodiar: bool = False
-) -> None:
+def _render_transcript_editor(audio_path: Path | str, output_dir: str) -> None:
     """Render the transcript editor with load original/edits buttons and segment editor."""
     audio_path = Path(audio_path)
     t_key = f"editor_transcript_{audio_path}"
     source_key = f"transcript_{audio_path}_source"
     if t_key not in st.session_state:
-        paths_init = AudioPaths.from_audio(
-            audio_path, output_dir=output_dir, nodiar=nodiar
-        )
+        paths_init = AudioPaths.from_audio(audio_path, output_dir=output_dir)
         if paths_init.transcript.exists():
             st.session_state[t_key] = load_transcript_validated(
-                audio_path, output_dir=output_dir, nodiar=nodiar
+                audio_path, output_dir=output_dir
             )
             st.session_state[source_key] = "edited"
         else:
             st.session_state[t_key] = load_transcript_raw(
-                audio_path, output_dir=output_dir, nodiar=nodiar
+                audio_path, output_dir=output_dir
             )
             st.session_state[source_key] = "raw"
     transcript = st.session_state[t_key]
 
-    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
+    paths = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     _dirty = st.session_state.get(f"transcript_{audio_path}_dirty", False)
     _src = st.session_state.get(source_key, "")
@@ -967,7 +915,7 @@ def _render_transcript_editor(
                     "↩ Load original", use_container_width=True, disabled=not has_raw
                 ):
                     st.session_state[t_key] = load_transcript_raw(
-                        audio_path, output_dir=output_dir, nodiar=nodiar
+                        audio_path, output_dir=output_dir
                     )
                     st.session_state[source_key] = "raw"
                     st.session_state[f"transcript_{audio_path}_dirty"] = False
@@ -977,7 +925,7 @@ def _render_transcript_editor(
                     "✏️ Load edits", use_container_width=True, disabled=not has_validated
                 ):
                     st.session_state[t_key] = load_transcript_validated(
-                        audio_path, output_dir=output_dir, nodiar=nodiar
+                        audio_path, output_dir=output_dir
                     )
                     st.session_state[source_key] = "edited"
                     st.session_state[f"transcript_{audio_path}_dirty"] = False
@@ -1010,15 +958,16 @@ def _render_transcript_editor(
                 parts.append(f"**{duration_str}**")
             st.caption(" · ".join(parts))
 
+        skip_diar = st.session_state.get("skip_diarization", False)
         if not transcript or not transcript[0].get("speaker"):
-            if not nodiar and not st.session_state.get("transcript_only"):
+            if not skip_diar and not st.session_state.get("transcript_only"):
                 st.warning(
                     "Transcript has no speaker info — save the speaker map and re-export first."
                 )
                 return
 
         def _on_save(merged):
-            save_transcript(audio_path, merged, output_dir=output_dir, nodiar=nodiar)
+            save_transcript(audio_path, merged, output_dir=output_dir)
             st.session_state[t_key] = merged
             st.session_state[source_key] = "edited"
             st.session_state.transcript = merged
@@ -1033,8 +982,8 @@ def _render_transcript_editor(
             show_timestamps=has_timestamps,
             show_delete=True,
             show_flags=True,
-            show_speaker=not nodiar,
-            diarized=not nodiar,
+            show_speaker=not skip_diar,
+            diarized=not skip_diar,
             is_saved=paths.transcript.exists()
             and st.session_state.get(source_key, "") != "raw",
             export_fn=segments_to_text,

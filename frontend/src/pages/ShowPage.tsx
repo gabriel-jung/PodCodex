@@ -33,10 +33,10 @@ import { errorMessage, languageToISO } from "@/lib/utils";
 
 type ShowTab = "episodes" | "search" | "speakers" | "settings";
 type ViewMode = "list" | "card";
-type StatusFilter = "all" | "downloaded" | "not_downloaded" | "transcribed" | "not_transcribed" | "polished" | "not_polished" | "translated" | "synthesized" | "indexed";
+type StatusFilter = "all" | "downloaded" | "not_downloaded" | "transcribed" | "not_transcribed" | "polished" | "not_polished" | "translated" | "synthesized" | "indexed" | "outdated";
 type SortKey = "date_desc" | "date_asc" | "title_asc" | "title_desc" | "duration_desc" | "duration_asc" | "number_desc" | "number_asc";
 
-export default function ShowPage({ folder }: { folder: string }) {
+export default function ShowPage({ folder, initialTab }: { folder: string; initialTab?: string }) {
   const navigate = useNavigate();
   const { seekTo, setAudioMeta, audioPath } = useAudioStore();
   const {
@@ -47,7 +47,11 @@ export default function ShowPage({ folder }: { folder: string }) {
   } = useConfigStore();
   const queryClient = useQueryClient();
 
-  const [tab, setTab] = useState<ShowTab>("episodes");
+  const [tab, setTab] = useState<ShowTab>(
+    (["episodes", "search", "speakers", "settings"] as ShowTab[]).includes(initialTab as ShowTab)
+      ? (initialTab as ShowTab)
+      : "episodes",
+  );
   const [view, setView] = useState<ViewMode>("list");
   const [cardSize, setCardSize] = useState(3);
   const [search, setSearch] = useState("");
@@ -59,14 +63,24 @@ export default function ShowPage({ folder }: { folder: string }) {
   // Pipeline config from store (for batch start)
   const { tc, llm, engine, targetLang } = usePipelineConfig();
 
+  // Build app-level defaults for step status comparison
+  const pipelineDefaults = useMemo(() => ({
+    model_size: tc.modelSize,
+    diarize: tc.diarize,
+    llm_mode: llm.mode === "api" ? "api" : "ollama",
+    llm_provider: llm.mode === "api" ? llm.provider : "",
+    llm_model: llm.model,
+    target_lang: targetLang,
+  }), [tc.modelSize, tc.diarize, llm.mode, llm.provider, llm.model, targetLang]);
+
   const { data: meta } = useQuery({
     queryKey: ["showMeta", folder],
     queryFn: () => getShowMeta(folder),
   });
 
   const { data: episodes, isLoading: episodesLoading } = useQuery({
-    queryKey: ["episodes", folder],
-    queryFn: () => getEpisodes(folder),
+    queryKey: ["episodes", folder, pipelineDefaults],
+    queryFn: () => getEpisodes(folder, pipelineDefaults),
     refetchInterval: downloadTaskId || batchTaskId ? 5000 : false,
   });
 
@@ -129,6 +143,7 @@ export default function ShowPage({ folder }: { folder: string }) {
     if (filter === "translated") list = list.filter((e) => e.translations.length > 0);
     if (filter === "synthesized") list = list.filter((e) => e.synthesized);
     if (filter === "indexed") list = list.filter((e) => e.indexed);
+    if (filter === "outdated") list = list.filter((e) => e.transcribe_status === "outdated" || e.polish_status === "outdated" || e.translate_status === "outdated");
     // Sort
     list = [...list].sort((a, b) => {
       switch (sort) {
@@ -299,6 +314,7 @@ export default function ShowPage({ folder }: { folder: string }) {
           <option value="translated">Translated ({all.filter((e) => e.translations.length > 0).length})</option>
           <option value="synthesized">Synthesized ({all.filter((e) => e.synthesized).length})</option>
           <option value="indexed">Indexed ({all.filter((e) => e.indexed).length})</option>
+          <option value="outdated">Outdated ({all.filter((e) => e.transcribe_status === "outdated" || e.polish_status === "outdated" || e.translate_status === "outdated").length})</option>
         </select>
         <FilterDropdown
           minDurationMinutes={minDurationMinutes} setMinDurationMinutes={setMinDurationMinutes}

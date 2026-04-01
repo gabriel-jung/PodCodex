@@ -1,11 +1,8 @@
-import type { Segment, TaskResponse, TranslateRequest, VersionEntry, VersionInfo } from "./types";
+import type { Segment, TaskResponse, TranslateRequest, VersionEntry } from "./types";
 import { json } from "./base";
 
 export const getTranslateSegments = (audioPath: string, lang: string) =>
   json<Segment[]>(`/api/translate/segments?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`);
-
-export const getTranslateSegmentsRaw = (audioPath: string, lang: string) =>
-  json<Segment[]>(`/api/translate/segments/raw?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`);
 
 export const saveTranslateSegments = (audioPath: string, lang: string, segments: Segment[]) =>
   json<{ status: string; count: number }>(`/api/translate/segments?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`, {
@@ -13,9 +10,6 @@ export const saveTranslateSegments = (audioPath: string, lang: string, segments:
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(segments),
   });
-
-export const getTranslateVersionInfo = (audioPath: string, lang: string) =>
-  json<VersionInfo>(`/api/translate/version-info?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`);
 
 export const getTranslateVersions = (audioPath: string, lang: string) =>
   json<VersionEntry[]>(`/api/translate/versions?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`);

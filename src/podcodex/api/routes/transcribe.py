@@ -10,6 +10,8 @@ from pydantic import BaseModel, field_validator
 from podcodex.api.routes._helpers import load_segments_or_404, submit_task
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths, merge_consecutive_segments, write_json
+from podcodex.core.pipeline_db import mark_step
+from podcodex.core.versions import save_version
 
 router = APIRouter()
 
@@ -22,19 +24,15 @@ async def get_segments(
     audio_path: str = Query(..., description="Absolute path to audio file"),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
-    """Load transcript segments (prefers validated over raw)."""
+    """Load transcript segments (latest version, falls back to legacy files)."""
+    from podcodex.api.routes._helpers import annotate_flags
+    from podcodex.core.versions import load_latest
+
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    segments = load_latest(p.base, "transcript")
+    if segments is not None:
+        return annotate_flags(segments)
     return load_segments_or_404(p.transcript_best, "transcript")
-
-
-@router.get("/segments/raw")
-async def get_segments_raw(
-    audio_path: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> list[dict]:
-    """Load raw (unvalidated) transcript segments."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    return load_segments_or_404(p.transcript_raw, "raw transcript")
 
 
 @router.put("/segments")
@@ -61,22 +59,6 @@ async def save_segments(
         provenance=provenance,
     )
     return {"status": "saved", "count": len(seg_dicts)}
-
-
-@router.get("/version-info")
-async def version_info(
-    audio_path: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> dict:
-    """Return which transcript versions exist."""
-    from podcodex.core.versions import version_count
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    return {
-        "has_raw": p.transcript_raw.exists(),
-        "has_validated": p.transcript.exists(),
-        "version_count": version_count(p.base, "transcript"),
-    }
 
 
 # ── Version history ──────────────────────────────────────
@@ -187,6 +169,19 @@ async def upload_transcript(
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     p.base.parent.mkdir(parents=True, exist_ok=True)
     write_json(p.transcript_raw, {"segments": segments})
+
+    provenance = {
+        "step": "transcript",
+        "type": "raw",
+        "model": None,
+        "params": {"source": "upload", "filename": file.filename},
+        "manual_edit": False,
+    }
+    save_version(p.base, "transcript", segments, provenance)
+    mark_step(
+        p.show_dir, p.base.name, transcribed=True, provenance={"transcript": provenance}
+    )
+
     return {"status": "uploaded", "count": len(segments)}
 
 

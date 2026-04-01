@@ -95,9 +95,14 @@ async def start_batch(req: BatchRequest) -> TaskResponse:
 
 
 def _batch_transcribe(
-    audio_path, stem, req, status, cancelled, ep_progress, i, step_offset
+    audio_path, stem, p, req, status, cancelled, ep_progress, i, step_offset
 ):
-    """Run transcribe sub-steps. Returns True if work was done."""
+    """Run transcribe sub-steps. Returns True if work was done.
+
+    Sub-steps (transcribe, diarize, assign) use filesystem status flags
+    since they produce intermediate parquet files, not versioned outputs.
+    The final export step checks the version DB for param matching.
+    """
     from podcodex.core.transcribe import (
         assign_speakers,
         diarize_file,
@@ -107,6 +112,18 @@ def _batch_transcribe(
 
     sw = _STEP_WEIGHTS["transcribe"]
     did_work = False
+
+    # Check if a matching transcript version already exists (skip the whole thing)
+    from podcodex.core.versions import has_matching_version
+
+    match_params = {
+        "model": req.model_size,
+        "diarize": req.diarize,
+    }
+    if req.language:
+        match_params["language"] = req.language
+    if has_matching_version(p.base, "transcript", match_params):
+        return False
 
     if not status["transcribed"]:
         did_work = True
@@ -143,6 +160,7 @@ def _batch_transcribe(
                 "language": req.language or None,
                 "batch_size": req.batch_size,
                 "diarize": req.diarize,
+                "num_speakers": req.num_speakers,
             },
             "manual_edit": False,
         }
@@ -158,95 +176,130 @@ def _batch_transcribe(
 
 
 def _batch_polish(audio_path, p, req, cancelled, ep_progress, i, step_offset):
-    """Run polish step. Returns True if work was done."""
+    """Run polish step. Returns True if work was done.
+
+    Skips if a version already exists with matching LLM params.
+    """
+    from podcodex.core.versions import has_matching_version
+
     sw = _STEP_WEIGHTS["polish"]
-    if not p.has_polished() and (p.transcript.exists() or p.transcript_raw.exists()):
-        ep_progress(i, step_offset, sw, 0.0, "Polishing...")
+    match_params = {
+        "model": req.llm_model,
+        "mode": req.llm_mode,
+        "provider": req.llm_provider,
+        "source_lang": req.source_lang,
+    }
+    if has_matching_version(p.base, "polished", match_params):
+        return False
 
-        from podcodex.core.polish import polish_segments, save_polished_raw
-        from podcodex.core.transcribe import load_transcript
+    # Need source segments to polish
+    from podcodex.core.transcribe import load_transcript
 
-        segments = load_transcript(audio_path)
-        if segments:
-            polished = polish_segments(
-                segments,
-                mode=req.llm_mode,
-                context=req.context,
-                source_lang=req.source_lang,
-                model=req.llm_model,
-                batch_minutes=req.llm_batch_minutes,
-                provider=req.llm_provider,
-                engine=req.engine,
-                api_base_url=req.llm_api_base_url,
-                api_key=req.llm_api_key,
-                original_segments=segments,
-                merge=False,
-            )
-            provenance = {
-                "step": "polished",
-                "type": "raw",
-                "model": req.llm_model,
-                "params": {
-                    "mode": req.llm_mode,
-                    "provider": req.llm_provider,
-                    "source_lang": req.source_lang,
-                    "batch_minutes": req.llm_batch_minutes,
-                },
-                "manual_edit": False,
-            }
-            save_polished_raw(audio_path, polished, provenance=provenance)
-            return True
-    return False
+    segments = load_transcript(audio_path)
+    if not segments:
+        return False
+
+    ep_progress(i, step_offset, sw, 0.0, "Polishing...")
+
+    from podcodex.core.polish import polish_segments, save_polished_raw
+
+    polished = polish_segments(
+        segments,
+        mode=req.llm_mode,
+        context=req.context,
+        source_lang=req.source_lang,
+        model=req.llm_model,
+        batch_minutes=req.llm_batch_minutes,
+        provider=req.llm_provider,
+        engine=req.engine,
+        api_base_url=req.llm_api_base_url,
+        api_key=req.llm_api_key,
+        original_segments=segments,
+        merge=False,
+    )
+    provenance = {
+        "step": "polished",
+        "type": "raw",
+        "model": req.llm_model,
+        "params": {
+            "mode": req.llm_mode,
+            "provider": req.llm_provider,
+            "source_lang": req.source_lang,
+            "batch_minutes": req.llm_batch_minutes,
+            "engine": req.engine,
+        },
+        "manual_edit": False,
+    }
+    save_polished_raw(audio_path, polished, provenance=provenance)
+    return True
 
 
 def _batch_translate(audio_path, p, req, cancelled, ep_progress, i, step_offset):
-    """Run translate step. Returns True if work was done."""
+    """Run translate step. Returns True if work was done.
+
+    Skips if a version already exists with matching LLM params for the
+    target language.
+    """
+    from podcodex.core.versions import has_matching_version
+
     sw = _STEP_WEIGHTS["translate"]
-    if not p.has_translation(req.target_lang) and (
-        p.has_polished() or p.transcript.exists() or p.transcript_raw.exists()
-    ):
-        ep_progress(i, step_offset, sw, 0.0, "Translating...")
+    lang_norm = req.target_lang.lower().strip().replace(" ", "_")
+    match_params = {
+        "model": req.llm_model,
+        "mode": req.llm_mode,
+        "provider": req.llm_provider,
+        "source_lang": req.source_lang,
+        "target_lang": req.target_lang,
+    }
+    if has_matching_version(p.base, lang_norm, match_params):
+        return False
 
-        from podcodex.api.routes._helpers import load_best_source
-        from podcodex.core.translate import save_translation_raw, translate_segments
+    # Need source segments to translate
+    from podcodex.api.routes._helpers import load_best_source
 
+    try:
         segments = load_best_source(audio_path)
-        translated = translate_segments(
-            segments,
-            mode=req.llm_mode,
-            context=req.context,
-            source_lang=req.source_lang,
-            target_lang=req.target_lang,
-            model=req.llm_model,
-            batch_minutes=req.llm_batch_minutes,
-            provider=req.llm_provider,
-            api_base_url=req.llm_api_base_url,
-            api_key=req.llm_api_key,
-            original_segments=segments,
-            merge=False,
-        )
-        lang_norm = req.target_lang.lower().strip().replace(" ", "_")
-        provenance = {
-            "step": lang_norm,
-            "type": "raw",
-            "model": req.llm_model,
-            "params": {
-                "mode": req.llm_mode,
-                "provider": req.llm_provider,
-                "source_lang": req.source_lang,
-                "target_lang": req.target_lang,
-                "batch_minutes": req.llm_batch_minutes,
-            },
-            "manual_edit": False,
-        }
-        save_translation_raw(
-            audio_path,
-            translated,
-            req.target_lang,
-            provenance=provenance,
-        )
-        return True
-    return False
+    except ValueError:
+        return False
+
+    ep_progress(i, step_offset, sw, 0.0, "Translating...")
+
+    from podcodex.core.translate import save_translation_raw, translate_segments
+
+    translated = translate_segments(
+        segments,
+        mode=req.llm_mode,
+        context=req.context,
+        source_lang=req.source_lang,
+        target_lang=req.target_lang,
+        model=req.llm_model,
+        batch_minutes=req.llm_batch_minutes,
+        provider=req.llm_provider,
+        api_base_url=req.llm_api_base_url,
+        api_key=req.llm_api_key,
+        original_segments=segments,
+        merge=False,
+    )
+    provenance = {
+        "step": lang_norm,
+        "type": "raw",
+        "model": req.llm_model,
+        "params": {
+            "mode": req.llm_mode,
+            "provider": req.llm_provider,
+            "source_lang": req.source_lang,
+            "target_lang": req.target_lang,
+            "batch_minutes": req.llm_batch_minutes,
+        },
+        "manual_edit": False,
+    }
+    save_translation_raw(
+        audio_path,
+        translated,
+        req.target_lang,
+        provenance=provenance,
+    )
+    return True
 
 
 def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offset):
@@ -256,16 +309,27 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
     sw = _STEP_WEIGHTS["index"]
     marker = p.base.parent / ".rag_indexed"
 
-    if not marker.exists() and p.transcript_best.exists():
-        ep_progress(i, step_offset, sw, 0.0, "Indexing...")
+    if marker.exists():
+        return False
 
-        from podcodex.cli import _resolve_source, _source_label, vectorize_batch
-        from podcodex.rag.localstore import LocalStore
+    # Need a transcript to index — try version DB first, then legacy files
+    from podcodex.core.transcribe import load_transcript
 
-        transcript_path = p.transcript_best
+    segments = load_transcript(audio_path)
+    if not segments:
+        return False
+
+    ep_progress(i, step_offset, sw, 0.0, "Indexing...")
+
+    # Build transcript dict for the vectorize pipeline
+    # Try to use the best source file for the resolver; fall back to segments
+    from podcodex.cli import _resolve_source, _source_label, vectorize_batch
+    from podcodex.rag.localstore import LocalStore
+
+    transcript_path = p.transcript_best
+    if transcript_path.exists():
         source_path = _resolve_source(transcript_path, "auto")
         source_label = _source_label(source_path, transcript_path)
-
         data = json.loads(source_path.read_text(encoding="utf-8"))
         if isinstance(data, list):
             transcript = {
@@ -282,23 +346,46 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
             transcript["meta"].setdefault("show", req.show_name)
             transcript["meta"].setdefault("episode", stem)
             transcript["meta"].setdefault("source", source_label)
+    else:
+        # No legacy file — use version-loaded segments directly
+        transcript = {
+            "meta": {
+                "show": req.show_name,
+                "episode": stem,
+                "source": "version",
+            },
+            "segments": segments,
+        }
 
-        db_path = p.vectors_db
-        local = LocalStore(db_path)
-        try:
-            vectorize_batch(
-                transcript,
-                req.show_name,
-                stem,
-                req.index_model_keys,
-                req.index_chunkings,
-                local,
-            )
-        finally:
-            local.close()
-        marker.touch()
-        return True
-    return False
+    db_path = p.vectors_db
+    local = LocalStore(db_path)
+    try:
+        vectorize_batch(
+            transcript,
+            req.show_name,
+            stem,
+            req.index_model_keys,
+            req.index_chunkings,
+            local,
+        )
+    finally:
+        local.close()
+    marker.touch()
+
+    from podcodex.core.pipeline_db import mark_step
+
+    provenance = {
+        "step": "indexed",
+        "type": "raw",
+        "model": (req.index_model_keys or ["bge-m3"])[0],
+        "params": {
+            "model_keys": req.index_model_keys,
+            "chunkings": req.index_chunkings,
+        },
+        "manual_edit": False,
+    }
+    mark_step(p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance})
+    return True
 
 
 def _run_batch(progress_cb, req: BatchRequest):
@@ -354,6 +441,7 @@ def _run_batch(progress_cb, req: BatchRequest):
                 if _batch_transcribe(
                     audio_path,
                     stem,
+                    p,
                     req,
                     status,
                     _cancelled,

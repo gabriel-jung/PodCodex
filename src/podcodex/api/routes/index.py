@@ -189,6 +189,18 @@ async def start_index(req: IndexRequest) -> TaskResponse:
             transcript["meta"].setdefault("episode", episode)
             transcript["meta"].setdefault("source", source_label)
 
+        # Inject RSS metadata (episode title, pub_date) for chunker
+        from podcodex.ingest.rss import load_episode_meta
+
+        ep_meta = load_episode_meta(p.base.parent)
+        if ep_meta:
+            if ep_meta.title:
+                transcript["meta"].setdefault("rss_title", ep_meta.title)
+            if ep_meta.pub_date:
+                transcript["meta"].setdefault("rss_pub_date", ep_meta.pub_date)
+            if ep_meta.episode_number is not None:
+                transcript["meta"].setdefault("episode_number", ep_meta.episode_number)
+
         # Open LocalStore at show level
         db_path = p.vectors_db
         local = LocalStore(db_path)
@@ -218,6 +230,25 @@ async def start_index(req: IndexRequest) -> TaskResponse:
         # Touch marker file for status detection
         marker = p.base.parent / ".rag_indexed"
         marker.touch()
+
+        from podcodex.core.pipeline_db import mark_step
+
+        provenance = {
+            "step": "indexed",
+            "type": "raw",
+            "model": (req_data.model_keys or ["bge-m3"])[0],
+            "params": {
+                "model_keys": req_data.model_keys,
+                "chunkings": req_data.chunkings,
+                "chunk_size": req_data.chunk_size,
+                "threshold": req_data.threshold,
+                "overwrite": req_data.overwrite,
+            },
+            "manual_edit": False,
+        }
+        mark_step(
+            p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance}
+        )
 
         return {
             "chunks_upserted": total_upserted,

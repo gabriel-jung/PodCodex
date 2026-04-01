@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
-import { Search, X, SlidersHorizontal, Clock, Undo2, HelpCircle, FileInput, FilePen, Trash2, Download, History } from "lucide-react";
-import type { VersionEntry, VersionInfo } from "@/api/types";
+import { Search, X, SlidersHorizontal, Clock, Undo2, HelpCircle, Trash2, Download, History } from "lucide-react";
+import type { VersionEntry } from "@/api/types";
 import { exportTextUrl, exportSrtUrl, exportVttUrl, exportZipUrl } from "@/api/client";
 
 function Tip({ text }: { text: string }) {
@@ -25,11 +25,45 @@ function Tip({ text }: { text: string }) {
   );
 }
 
+/** Build a compact label for the version list row. */
+function versionLabel(v: VersionEntry): string {
+  const p = v.params as Record<string, unknown>;
+  if (v.manual_edit || v.type === "validated") return "Manual edit";
+  if (p.skipped) return "Skipped (copied)";
+  const parts: string[] = [];
+  if (v.model) parts.push(v.model);
+  if (p.provider) parts.push(String(p.provider));
+  else if (p.mode) parts.push(String(p.mode));
+  if (p.language) parts.push(String(p.language));
+  else if (p.source_lang && p.target_lang) parts.push(`${p.source_lang} → ${p.target_lang}`);
+  else if (p.source_lang) parts.push(String(p.source_lang));
+  if (p.diarize === false) parts.push("no diar");
+  return parts.join(", ") || "Pipeline";
+}
+
+/** Params to hide from the version info box (internal / not user-relevant). */
+const HIDDEN_PARAMS = new Set(["meta", "batch_size", "batch_minutes", "engine", "skipped"]);
+
+/** Format all params as key: value lines for the info box. */
+function versionInfo(v: VersionEntry): { key: string; value: string }[] {
+  const rows: { key: string; value: string }[] = [];
+  if (v.model) rows.push({ key: "Model", value: v.model });
+  rows.push({ key: "Type", value: v.type === "validated" ? "Saved edit" : "Generated" });
+  rows.push({ key: "Segments", value: String(v.segment_count) });
+  rows.push({ key: "Hash", value: v.content_hash.replace("sha256:", "").slice(0, 8) });
+  const p = v.params as Record<string, unknown>;
+  for (const [k, val] of Object.entries(p)) {
+    if (HIDDEN_PARAMS.has(k) || val === null || val === undefined) continue;
+    const label = k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    rows.push({ key: label, value: typeof val === "boolean" ? (val ? "yes" : "no") : String(val) });
+  }
+  return rows;
+}
+
 interface EditorToolbarProps {
   totalSegments: number;
   visibleCount: number;
   isDirty: boolean;
-  versionInfo: VersionInfo | null;
   flaggedCount: number;
   deletedCount: number;
   speakers: string[];
@@ -50,8 +84,6 @@ interface EditorToolbarProps {
   searchRef?: RefObject<HTMLInputElement | null>;
   onSave: () => void;
   onUndo?: () => void;
-  onLoadOriginal?: () => void;
-  onLoadEdits?: () => void;
   onDeleteFlagged: () => void;
   onEstimateTimestamps?: () => void;
   isSaving: boolean;
@@ -65,7 +97,6 @@ export default function EditorToolbar({
   totalSegments,
   visibleCount,
   isDirty,
-  versionInfo,
   flaggedCount,
   deletedCount,
   speakers,
@@ -86,8 +117,6 @@ export default function EditorToolbar({
   searchRef,
   onSave,
   onUndo,
-  onLoadOriginal,
-  onLoadEdits,
   onDeleteFlagged,
   onEstimateTimestamps,
   isSaving,
@@ -99,6 +128,7 @@ export default function EditorToolbar({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
+  const [expandedVersion, setExpandedVersion] = useState<string | null>(null);
   const exportRef = useRef<HTMLDivElement>(null);
   const versionsRef = useRef<HTMLDivElement>(null);
 
@@ -115,8 +145,6 @@ export default function EditorToolbar({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showExport, showVersions]);
-  const hasRaw = versionInfo?.has_raw ?? false;
-  const hasValidated = versionInfo?.has_validated ?? false;
 
   return (
     <div className="border-b border-border text-xs">
@@ -135,20 +163,6 @@ export default function EditorToolbar({
 
         <div className="flex-1" />
 
-        {(onLoadOriginal || onLoadEdits) && (
-          <div className="flex items-center gap-1.5">
-            {onLoadOriginal && (
-              <Button onClick={onLoadOriginal} disabled={!hasRaw} variant="outline" size="sm" className="h-6" title="Reload the raw pipeline output">
-                <FileInput className="w-3 h-3 mr-1" /> Original
-              </Button>
-            )}
-            {onLoadEdits && (
-              <Button onClick={onLoadEdits} disabled={!hasValidated} variant="outline" size="sm" className="h-6" title="Reload the last saved version">
-                <FilePen className="w-3 h-3 mr-1" /> Edits
-              </Button>
-            )}
-          </div>
-        )}
         {versions && versions.length > 0 && onLoadVersion && (
           <div className="relative" ref={versionsRef}>
             <Button
@@ -160,34 +174,59 @@ export default function EditorToolbar({
               <History className="w-3 h-3 mr-1" /> History ({versions.length})
             </Button>
             {showVersions && (
-              <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-56 max-h-64 overflow-y-auto">
+              <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-72 max-h-80 overflow-y-auto">
+                <div className="px-3 py-1 text-muted-foreground/60 flex items-center gap-3 border-b border-border/50 mb-1">
+                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" /> generated</span>
+                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-green-500" /> saved edit</span>
+                </div>
                 {versions.map((v) => {
                   const d = new Date(v.timestamp);
                   const dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
                   const timeStr = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-                  const label = v.manual_edit
-                    ? "manual edit"
-                    : v.model || v.type;
+                  const label = versionLabel(v);
+                  const isExpanded = expandedVersion === v.id;
+                  const info = isExpanded ? versionInfo(v) : [];
                   return (
-                    <button
-                      key={v.id}
-                      onClick={() => { onLoadVersion(v.id); setShowVersions(false); }}
-                      className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition"
-                    >
-                      <span className="text-muted-foreground">{dateStr}, {timeStr}</span>
-                      {" — "}
-                      <span>{label}</span>
-                      <span className="ml-1 text-muted-foreground/60">
-                        ({v.type}, {v.segment_count} seg)
-                      </span>
-                    </button>
+                    <div key={v.id} className="border-b border-border/30 last:border-0">
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 text-xs hover:bg-accent transition">
+                        <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${v.type === "validated" ? "bg-green-500" : "bg-blue-500"}`} />
+                        <button
+                          className="flex-1 text-left truncate"
+                          onClick={() => { onLoadVersion(v.id); setShowVersions(false); }}
+                        >
+                          <span className="text-muted-foreground">{dateStr}, {timeStr}</span>
+                          {" — "}
+                          <span className="font-medium">{label}</span>
+                          <span className="ml-1 text-muted-foreground/60">({v.segment_count} seg)</span>
+                        </button>
+                        <button
+                          className="shrink-0 text-muted-foreground/40 hover:text-muted-foreground p-0.5"
+                          onClick={() => setExpandedVersion(isExpanded ? null : v.id)}
+                          title="Version details"
+                        >
+                          <HelpCircle className="w-3 h-3" />
+                        </button>
+                      </div>
+                      {isExpanded && (
+                        <div className="px-3 pb-2 ml-3 text-xs">
+                          <div className="bg-secondary/50 rounded border border-border/50 px-2 py-1.5 space-y-0.5">
+                            {info.map(({ key, value }) => (
+                              <div key={key} className="flex gap-2">
+                                <span className="text-muted-foreground shrink-0 w-24">{key}</span>
+                                <span className="truncate">{value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>
             )}
           </div>
         )}
-        {(onLoadOriginal || onLoadEdits || (versions && versions.length > 0)) && audioPath && (
+        {versions && versions.length > 0 && audioPath && (
           <div className="w-px h-4 bg-border" />
         )}
         {audioPath && (
@@ -230,9 +269,10 @@ export default function EditorToolbar({
             )}
           </div>
         )}
-        <Button onClick={onSave} disabled={(!isDirty && hasValidated) || isSaving} size="sm" className="h-6">
+        <Button onClick={onSave} disabled={isSaving} size="sm" className="h-6">
           {isSaving ? "Saving..." : isDirty ? "Save*" : "Save"}
         </Button>
+        {!isDirty && !isSaving && <span className="text-green-500">up to date</span>}
       </div>
 
       {/* Row 2: Filters, undo, search */}

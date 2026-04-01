@@ -9,10 +9,7 @@ from fastapi import HTTPException
 from loguru import logger
 
 from podcodex.api.schemas import TaskResponse
-from podcodex.core._utils import (
-    UNKNOWN_SPEAKERS,
-    save_segments_json as _core_save_segments,
-)
+from podcodex.core._utils import UNKNOWN_SPEAKERS
 
 # ── Shared constants ────────────────────────────
 
@@ -104,17 +101,6 @@ def annotate_flags(segments: list[dict]) -> list[dict]:
     for seg in segments:
         seg["flagged"] = is_flagged(seg)
     return segments
-
-
-def save_segments_json(
-    path: Path,
-    segments: list[dict],
-    label: str = "Segments",
-    provenance: dict | None = None,
-) -> int:
-    """Write segments to a JSON file. Returns the segment count."""
-    _core_save_segments(path, segments, label, provenance=provenance)
-    return len(segments)
 
 
 def load_segments_or_404(path: Path, label: str = "segments") -> list[dict]:

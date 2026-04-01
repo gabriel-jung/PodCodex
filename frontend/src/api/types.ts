@@ -30,12 +30,22 @@ export interface ShowSummary {
   last_rss_update: string | null;
 }
 
+export interface PipelineDefaults {
+  model_size: string;
+  diarize: boolean;
+  llm_mode: string;
+  llm_provider: string;
+  llm_model: string;
+  target_lang: string;
+}
+
 export interface ShowMeta {
   name: string;
   rss_url: string;
   language: string;
   speakers: string[];
   artwork_url: string;
+  pipeline?: PipelineDefaults;
 }
 
 export interface Episode {
@@ -55,8 +65,10 @@ export interface Episode {
   synthesized: boolean;
   translations: string[];
   artwork_url: string;
-  raw_transcript: boolean;
-  validated_transcript: boolean;
+  provenance: Record<string, unknown>;
+  transcribe_status: "none" | "outdated" | "done";
+  polish_status: "none" | "outdated" | "done";
+  translate_status: "none" | "outdated" | "done";
 }
 
 export interface DownloadResult {
@@ -84,12 +96,6 @@ export interface PodcastSearchResult {
   artist: string;
   feed_url: string;
   artwork_url: string;
-}
-
-export interface VersionInfo {
-  has_raw: boolean;
-  has_validated: boolean;
-  version_count?: number;
 }
 
 export interface VersionEntry {

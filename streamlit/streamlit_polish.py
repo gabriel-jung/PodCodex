@@ -26,7 +26,7 @@ from streamlit_editor import render_segment_editor
 
 
 def _render_polish_editor(
-    audio_path: str, output_dir: str, nodiar: bool, transcript: list[dict], paths
+    audio_path: str, output_dir: str, transcript: list[dict], paths
 ) -> None:
     """Render the polished transcript editor with load original/edits buttons."""
     p_key = f"editor_polished_{audio_path}"
@@ -34,12 +34,12 @@ def _render_polish_editor(
     if p_key not in st.session_state:
         if paths.has_validated_polished():
             st.session_state[p_key] = load_polished_validated(
-                audio_path, output_dir=output_dir, nodiar=nodiar
+                audio_path, output_dir=output_dir
             )
             st.session_state[source_key] = "edited"
         else:
             st.session_state[p_key] = load_polished_raw(
-                audio_path, output_dir=output_dir, nodiar=nodiar
+                audio_path, output_dir=output_dir
             )
             st.session_state[source_key] = "raw"
     polished = st.session_state[p_key]
@@ -88,7 +88,7 @@ def _render_polish_editor(
                 disabled=not has_raw,
             ):
                 st.session_state[p_key] = load_polished_raw(
-                    audio_path, output_dir=output_dir, nodiar=nodiar
+                    audio_path, output_dir=output_dir
                 )
                 st.session_state[source_key] = "raw"
                 st.session_state[f"polish_{audio_path}_dirty"] = False
@@ -101,7 +101,7 @@ def _render_polish_editor(
                 disabled=not has_validated,
             ):
                 st.session_state[p_key] = load_polished_validated(
-                    audio_path, output_dir=output_dir, nodiar=nodiar
+                    audio_path, output_dir=output_dir
                 )
                 st.session_state[source_key] = "edited"
                 st.session_state[f"polish_{audio_path}_dirty"] = False
@@ -130,9 +130,7 @@ def _render_polish_editor(
             st.caption(" · ".join(parts))
 
         def _on_save(merged):
-            polish_mod.save_polished(
-                audio_path, merged, output_dir=output_dir, nodiar=nodiar
-            )
+            polish_mod.save_polished(audio_path, merged, output_dir=output_dir)
             st.session_state[p_key] = merged
             st.session_state[source_key] = "edited"
             st.session_state.polished = merged
@@ -167,7 +165,6 @@ def _run_polish_button(
     transcript: list[dict],
     audio_path: str,
     output_dir: str,
-    nodiar: bool = False,
 ) -> None:
     """Render the 'Polish' action button and run the pipeline on click.
 
@@ -186,9 +183,7 @@ def _run_polish_button(
         with st.spinner(f"Processing {len(transcript)} segments..."):
             try:
                 result = polish_mod.polish_segments(transcript, **kwargs)
-                polish_mod.save_polished_raw(
-                    audio_path, result, output_dir=output_dir, nodiar=nodiar
-                )
+                polish_mod.save_polished_raw(audio_path, result, output_dir=output_dir)
                 # Load the new raw into the editor cache so it shows
                 # the fresh run, not the old validated version.
                 p_key = f"editor_polished_{audio_path}"
@@ -215,7 +210,6 @@ def render() -> None:
 
     audio_path = st.session_state.get("audio_path")
     output_dir = st.session_state.get("output_dir", str(Path.cwd() / "Transcriptions"))
-    nodiar = st.session_state.get("skip_diarization", False)
 
     # ── Episode header ──
     with st.container(border=True):
@@ -263,9 +257,7 @@ def render() -> None:
                 type="primary",
                 key="polish_skip",
             ):
-                polish_mod.save_polished(
-                    audio_path, transcript, output_dir=output_dir, nodiar=nodiar
-                )
+                polish_mod.save_polished(audio_path, transcript, output_dir=output_dir)
                 p_key = f"editor_polished_{audio_path}"
                 st.session_state[p_key] = transcript
                 st.session_state[f"polish_{audio_path}_source"] = "edited"
@@ -304,7 +296,7 @@ def render() -> None:
                         st.error("Missing 'text' field in segments.")
                     else:
                         polish_mod.save_polished_raw(
-                            audio_path, data, output_dir=output_dir, nodiar=nodiar
+                            audio_path, data, output_dir=output_dir
                         )
                         p_key = f"editor_polished_{audio_path}"
                         st.session_state[p_key] = data
@@ -318,7 +310,7 @@ def render() -> None:
 
     # ── Editor (shown first when polished exists) ──
     if paths.has_polished():
-        _render_polish_editor(audio_path, output_dir, nodiar, transcript, paths)
+        _render_polish_editor(audio_path, output_dir, transcript, paths)
 
     # ── LLM processing steps (collapsed when polished exists) ──
     show_llm_steps = st.checkbox(
@@ -421,7 +413,6 @@ def render() -> None:
                 transcript,
                 audio_path,
                 output_dir,
-                nodiar,
             )
 
         elif mode == "ollama":
@@ -442,7 +433,6 @@ def render() -> None:
                 transcript,
                 audio_path,
                 output_dir,
-                nodiar,
             )
 
         elif mode == "manual":
@@ -573,7 +563,6 @@ def render() -> None:
                             audio_path,
                             all_results,
                             output_dir=output_dir,
-                            nodiar=nodiar,
                         )
                         p_key = f"editor_polished_{audio_path}"
                         st.session_state[p_key] = all_results

@@ -219,12 +219,13 @@ def _local_search(
     return results
 
 
-def _resolve_vectors_db(req: SearchRequest) -> Path:
+def _resolve_vectors_db(req) -> Path:
     """Resolve vectors.db path from either audio_path or folder."""
-    if req.folder:
+    if getattr(req, "folder", None):
         return Path(req.folder) / "vectors.db"
-    if req.audio_path:
-        p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
+    if getattr(req, "audio_path", None):
+        output_dir = getattr(req, "output_dir", None)
+        p = AudioPaths.from_audio(req.audio_path, output_dir=output_dir)
         return p.vectors_db
     raise HTTPException(400, "Either audio_path or folder is required")
 
@@ -233,7 +234,7 @@ def _result_to_dict(r: dict) -> dict:
     """Normalize a retriever result into the SearchResult shape."""
     return {
         "text": r.get("text", ""),
-        "episode": r.get("episode", ""),
+        "episode": r.get("episode_title") or r.get("episode", ""),
         "speaker": r.get("dominant_speaker", r.get("speaker", "")),
         "start": r.get("start", 0.0),
         "end": r.get("end", 0.0),
@@ -345,7 +346,7 @@ async def exact_search(req: ExactRequest) -> list[dict]:
     from podcodex.rag.localstore import LocalStore
     from podcodex.rag.store import collection_name
 
-    db_path = _resolve_vectors_db(req)  # type: ignore[arg-type]
+    db_path = _resolve_vectors_db(req)
     if not db_path.exists():
         return []
 
@@ -404,7 +405,7 @@ async def random_quote(req: RandomRequest) -> dict | None:
     from podcodex.rag.localstore import LocalStore
     from podcodex.rag.store import collection_name
 
-    db_path = _resolve_vectors_db(req)  # type: ignore[arg-type]
+    db_path = _resolve_vectors_db(req)
     if not db_path.exists():
         return None
 
@@ -448,6 +449,7 @@ async def random_quote(req: RandomRequest) -> dict | None:
         return _result_to_dict(
             {
                 "episode": chunk.get("episode", ep),
+                "episode_title": chunk.get("episode_title"),
                 "source": chunk.get("source", ""),
                 "speaker": turn.get("speaker", ""),
                 "text": turn.get("text", ""),
