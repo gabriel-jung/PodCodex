@@ -83,6 +83,12 @@ LLM_PROVIDERS: dict[str, dict[str, str]] = {
         "label": "Anthropic",
         "env_var": "ANTHROPIC_API_KEY",
     },
+    "groq": {
+        "url": "https://api.groq.com/openai/v1",
+        "model": "llama-3.3-70b-versatile",
+        "label": "Groq",
+        "env_var": "GROQ_API_KEY",
+    },
     "custom": {
         "url": "",
         "model": "",

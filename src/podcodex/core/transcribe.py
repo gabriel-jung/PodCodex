@@ -52,7 +52,20 @@ def processing_status(
     audio_path: Path | str,
     output_dir: str | Path | None = None,
 ) -> dict[str, bool]:
-    """Return the processing state of an audio file."""
+    """Return the processing state of an audio file.
+
+    Checks for the existence of each pipeline artifact (parquet, meta JSON,
+    speaker map, transcript) to determine which steps have been completed.
+
+    Args:
+        audio_path: Source audio file.
+        output_dir: Output directory override (see ``AudioPaths.output_dir``
+            for resolution rules).
+
+    Returns:
+        Dict with boolean flags: ``transcribed``, ``diarized``, ``assigned``,
+        ``mapped``, ``exported``.
+    """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     return {
         "transcribed": p.segments.exists() and p.segments_meta.exists(),
@@ -168,8 +181,14 @@ def transcribe_file(
 def load_segments(audio_path: Path | str, output_dir: str | Path | None = None) -> dict:
     """Load raw WhisperX segments from parquet + meta.json.
 
+    Args:
+        audio_path: Source audio file.
+        output_dir: Output directory override (see ``AudioPaths.output_dir``
+            for resolution rules).
+
     Returns:
-        dict with keys 'segments', 'language', 'duration', 'num_segments'
+        Dict with keys ``segments``, ``language``, ``duration``,
+        ``num_segments``.
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     segments = read_parquet(p.segments)
@@ -267,7 +286,17 @@ def diarize_file(
 def load_diarization(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> dict:
-    """Load diarization from parquet + meta.json."""
+    """Load diarization from parquet + meta.json.
+
+    Args:
+        audio_path: Source audio file.
+        output_dir: Output directory override (see ``AudioPaths.output_dir``
+            for resolution rules).
+
+    Returns:
+        Dict with keys ``speakers`` (list of {start, end, speaker} dicts)
+        and ``num_speakers``.
+    """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     speakers = read_parquet(p.diarization)
     meta = read_json(p.diarization_meta)
@@ -307,6 +336,7 @@ def assign_speakers(
         return load_diarized_segments(audio_path, output_dir=output_dir)
 
     def _has_timestamps(d: dict) -> bool:
+        """Return True if the dict has non-None ``start`` and ``end`` keys."""
         return d.get("start") is not None and d.get("end") is not None
 
     diarization = load_diarization(audio_path, output_dir=output_dir)
@@ -331,7 +361,16 @@ def assign_speakers(
 def load_diarized_segments(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> list[dict]:
-    """Load diarized segments from parquet."""
+    """Load diarized segments from parquet.
+
+    Args:
+        audio_path: Source audio file.
+        output_dir: Output directory override (see ``AudioPaths.output_dir``
+            for resolution rules).
+
+    Returns:
+        List of segment dicts with ``speaker`` key assigned.
+    """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     return read_parquet(p.diarized_segments)
 
@@ -344,7 +383,18 @@ def load_diarized_segments(
 def load_speaker_map(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> dict[str, str]:
-    """Load SPEAKER_XX → name mapping. Returns {} if file does not exist."""
+    """Load SPEAKER_XX → name mapping.
+
+    Args:
+        audio_path: Source audio file.
+        output_dir: Output directory override (see ``AudioPaths.output_dir``
+            for resolution rules).
+
+    Returns:
+        Dict mapping diarization labels (e.g. ``"SPEAKER_00"``) to display
+        names (e.g. ``"Alice"``).  Returns an empty dict if the speaker map
+        file does not exist yet.
+    """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     if not p.speaker_map.exists():
         return {}
@@ -359,8 +409,14 @@ def save_speaker_map(
     """Save SPEAKER_XX → human name mapping.
 
     The mapping keys must match the speaker labels from diarization
-    (e.g. "SPEAKER_00", "SPEAKER_01"). Values are display names used
-    in the exported transcript.
+    (e.g. ``"SPEAKER_00"``, ``"SPEAKER_01"``). Values are display names
+    used in the exported transcript.
+
+    Args:
+        audio_path: Source audio file.
+        mapping: Dict mapping diarization labels to human-readable names.
+        output_dir: Output directory override (see ``AudioPaths.output_dir``
+            for resolution rules).
 
     Example::
 
@@ -407,6 +463,7 @@ def export_transcript(
         max_gap    : maximum silence gap (seconds) to merge across (default 10s);
                      0 disables merging
         diarized   : whether diarization was performed (default True)
+        provenance : optional version metadata dict for archiving
 
     Returns:
         List of final segments [{start, end, speaker, text}]
@@ -466,10 +523,7 @@ def export_transcript(
 
 
 def _load_transcript_file(path: Path) -> dict:
-    """Load a transcript JSON file, handling both old (list) and new (dict) formats.
-
-    Returns {"meta": {...}, "segments": [...]}
-    """
+    """Load a transcript JSON file, normalizing old (list) and new (dict) formats."""
     data = read_json(path)
     if isinstance(data, dict):
         return data
@@ -484,9 +538,15 @@ def load_transcript_full(
 
     Tries the version DB first, then falls back to legacy files.
 
+    Args:
+        audio_path: Source audio file.
+        output_dir: Output directory override (see ``AudioPaths.output_dir``
+            for resolution rules).
+
     Returns:
-        {"meta": {show, episode, speakers, duration, word_count}, "segments": [...]}
-        If the file is in old list format, meta will be an empty dict.
+        Dict with keys ``meta`` (show, episode, speakers, duration,
+        word_count) and ``segments`` (list of segment dicts).  If loaded
+        from an old list-format file, ``meta`` will be an empty dict.
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     # Try version DB
@@ -510,7 +570,17 @@ def load_transcript(
 ) -> list[dict]:
     """Load the final transcript segments as a plain list.
 
-    Tries the version DB first, then falls back to legacy files.
+    Convenience wrapper around :func:`load_transcript_full` that returns
+    only the segment list, discarding metadata.
+
+    Args:
+        audio_path: Source audio file.
+        output_dir: Output directory override (see ``AudioPaths.output_dir``
+            for resolution rules).
+
+    Returns:
+        List of segment dicts (each with ``speaker``, ``start``, ``end``,
+        ``text``).
     """
     return load_transcript_full(audio_path, output_dir=output_dir)["segments"]
 
@@ -525,7 +595,15 @@ REMOVE_SPEAKERS = {"[remove]"}
 
 
 def segment_speech_density(seg: dict) -> float | None:
-    """Return chars/second for a segment, or None if duration is too short to measure."""
+    """Return chars/second for a segment, or None if duration is too short.
+
+    Args:
+        seg: Segment dict with ``text``, ``start``, and ``end`` keys.
+
+    Returns:
+        Speech density as characters per second, or ``None`` when segment
+        duration is below 0.5 s (too short for a meaningful measurement).
+    """
     text = str(seg.get("text", "")).strip()
     dur = float(seg.get("end", 0)) - float(seg.get("start", 0))
     if dur < 0.5:
@@ -537,13 +615,22 @@ def is_segment_flagged(seg: dict, diarized: bool = True) -> bool:
     """Return True if a segment is suspicious and should be reviewed or removed.
 
     A segment is flagged when:
-    - speaker is missing or an unresolved placeholder (UNKNOWN, UNK, …)
+
+    - speaker is missing or an unresolved placeholder (UNKNOWN, UNK, ...)
     - speaker is a reserved remove marker ([remove])
     - speech density is abnormally low (< 2 chars/s), indicating music, noise,
       or a Whisper hallucination artifact
 
     When *diarized* is False, speaker-based checks are skipped (only density
     is used) since all segments share a generic narrator label.
+
+    Args:
+        seg: Segment dict with ``speaker``, ``text``, ``start``, ``end``.
+        diarized: Whether diarization was performed.  When False, only
+            density-based flagging is applied.
+
+    Returns:
+        True if the segment should be flagged for review.
     """
     speaker = seg.get("speaker", "")
     if speaker == BREAK_SPEAKER:
@@ -611,6 +698,9 @@ def save_transcript(
         max_gap    : maximum silence gap (seconds) to merge across (default 10s);
                      0 disables merging
         provenance : optional version metadata for archiving
+
+    Returns:
+        Path to the saved transcript.json file.
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     full = load_transcript_full(audio_path, output_dir=output_dir)
@@ -630,7 +720,12 @@ def save_transcript(
 def audio_duration(path: Path | str) -> float | None:
     """Return audio duration in seconds, trying soundfile then ffprobe.
 
-    Returns None if neither method is available.
+    Args:
+        path: Path to the audio file.
+
+    Returns:
+        Duration in seconds, or ``None`` if neither soundfile nor ffprobe
+        can read the file.
     """
     path = Path(path)
     try:
@@ -669,12 +764,24 @@ def trim_audio(
     ``{stem}_trim_{start}_{end}/`` next to output_dir, keeping the original
     filename so downstream pipeline outputs have clean names.
 
-    Returns the path to the trimmed audio file (skips if it already exists).
+    Args:
+        audio_path: Source audio file.
+        start: Start time in seconds.
+        end: End time in seconds.
+        output_dir: Output directory override (see ``AudioPaths.output_dir``
+            for resolution rules).
+
+    Returns:
+        Path to the trimmed audio file (skips ffmpeg if it already exists).
+
+    Raises:
+        subprocess.CalledProcessError: If ffmpeg fails.
     """
     audio_path = Path(audio_path)
     out = AudioPaths.output_dir(audio_path, output_dir)
 
     def _mmss(s: float) -> str:
+        """Format seconds as a compact ``XmYYs`` string for directory naming."""
         return f"{int(s) // 60}m{int(s) % 60:02d}s"
 
     # Place trim dir next to output_dir, not inside it

@@ -29,6 +29,7 @@ from podcodex.core._utils import (
     build_llm_prompt,
     format_segments,
     merge_consecutive_segments,
+    normalize_lang,
     read_json,
     run_api,
     run_ollama,
@@ -245,7 +246,7 @@ def save_translation_raw(
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     path = p.translation_raw(lang)
     save_segments_json(path, segments, f"Translation ({lang})")
-    lang_norm = lang.strip().lower()
+    lang_norm = normalize_lang(lang)
     save_version(p.base, lang_norm, segments, provenance)
     prov_update = {lang_norm: provenance} if provenance else {}
     translations = list_translations(audio_path, output_dir=output_dir)
@@ -269,7 +270,7 @@ def save_translation(
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     path = p.translation(lang)
     save_segments_json(path, segments, f"Translation ({lang})")
-    lang_norm = lang.strip().lower()
+    lang_norm = normalize_lang(lang)
     save_version(p.base, lang_norm, segments, provenance)
     prov_update = {lang_norm: provenance} if provenance else {}
     translations = list_translations(audio_path, output_dir=output_dir)
@@ -286,7 +287,7 @@ def load_translation(
 ) -> list[dict]:
     """Load translated segments — latest version, falls back to legacy files."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    lang_norm = lang.strip().lower()
+    lang_norm = normalize_lang(lang)
     segments = load_latest(p.base, lang_norm)
     if segments is not None:
         return segments

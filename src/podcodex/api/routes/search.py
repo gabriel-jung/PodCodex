@@ -62,6 +62,7 @@ class SearchRequest(BaseModel):
     @field_validator("top_k")
     @classmethod
     def top_k_positive(cls, v: int) -> int:
+        """Validate that top_k is at least 1."""
         if v < 1:
             raise ValueError("top_k must be at least 1")
         return v
@@ -69,6 +70,7 @@ class SearchRequest(BaseModel):
     @field_validator("alpha")
     @classmethod
     def alpha_in_range(cls, v: float) -> float:
+        """Validate that alpha is between 0.0 and 1.0 inclusive."""
         if not 0.0 <= v <= 1.0:
             raise ValueError("alpha must be between 0.0 and 1.0")
         return v
@@ -172,6 +174,7 @@ class ExactRequest(BaseModel):
     @field_validator("top_k")
     @classmethod
     def top_k_positive(cls, v: int) -> int:
+        """Validate that top_k is at least 1."""
         if v < 1:
             raise ValueError("top_k must be at least 1")
         return v

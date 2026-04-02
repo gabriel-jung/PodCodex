@@ -12,6 +12,23 @@ export interface TranscribeConfig {
   numSpeakers: string;
 }
 
+// ── Pipeline presets ─────────────────────────────────────
+
+export interface PipelinePreset {
+  label: string;
+  desc: string;
+  whisperModel: string;
+  embedModel: string;
+}
+
+export const PIPELINE_PRESETS: Record<string, PipelinePreset> = {
+  heavy: { label: "Heavy", desc: "8 GB+ GPU", whisperModel: "large-v3-turbo", embedModel: "bge-m3" },
+  medium: { label: "Medium", desc: "4 GB+ GPU", whisperModel: "large-v3", embedModel: "bge-m3" },
+  light: { label: "Light", desc: "CPU ok", whisperModel: "small", embedModel: "bge-m3" },
+};
+
+// ── Pipeline config state ────────────────────────────────
+
 export interface PipelineConfigState {
   // Transcribe
   transcribe: TranscribeConfig;
@@ -28,6 +45,10 @@ export interface PipelineConfigState {
   // Translate-specific
   targetLang: string;
   setTargetLang: (lang: string) => void;
+
+  // Preset (simple mode)
+  preset: string;
+  setPreset: (preset: string) => void;
 }
 
 export const usePipelineConfigStore = create<PipelineConfigState>()(
@@ -60,6 +81,9 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
 
       targetLang: "English",
       setTargetLang: (targetLang) => set({ targetLang }),
+
+      preset: "medium",
+      setPreset: (preset) => set({ preset }),
     }),
     {
       name: "podcodex-pipeline-config",
@@ -69,6 +93,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         llm: { ...s.llm, apiKey: "" },
         engine: s.engine,
         targetLang: s.targetLang,
+        preset: s.preset,
       }),
     },
   ),

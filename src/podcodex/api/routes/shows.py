@@ -175,6 +175,7 @@ def _episode_to_dict(ep: EpisodeInfo) -> dict:
 
 @router.get("/{show_folder:path}/meta", response_model=ShowMeta)
 async def get_show_meta(show_folder: str) -> ShowMeta:
+    """Return metadata for a show folder."""
     path = require_show_folder(show_folder)
     meta = load_show_meta(path)
     if meta is None:
@@ -198,6 +199,7 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
 
 @router.put("/{show_folder:path}/meta")
 async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
+    """Persist updated show metadata to show.toml."""
     path = Path(show_folder)
     path.mkdir(parents=True, exist_ok=True)
     p = meta.pipeline
@@ -227,6 +229,7 @@ async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
 
 @router.get("/{show_folder:path}/episodes", response_model=list[EpisodeOut])
 async def list_episodes(show_folder: str) -> list[dict]:
+    """List locally scanned episodes for a show folder."""
     path = require_show_folder(show_folder)
     episodes = scan_folder(path)
     return [_episode_to_dict(ep) for ep in episodes]
@@ -379,6 +382,7 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
     """
 
     def _check_transcribe() -> str:
+        """Return transcribe status by comparing stored provenance with effective defaults."""
         if not st.get("transcribed", False):
             return "none"
         prov = provenance.get("transcript")
@@ -392,6 +396,7 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
         return "done"
 
     def _check_polish() -> str:
+        """Return polish status by comparing stored provenance with effective defaults."""
         if not st.get("polished", False):
             return "none"
         prov = provenance.get("polished")
@@ -410,6 +415,7 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
         return "done"
 
     def _check_translate() -> str:
+        """Return translate status by comparing stored provenance with effective defaults."""
         translations = st.get("translations", [])
         if not translations:
             return "none"

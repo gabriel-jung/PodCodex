@@ -7,6 +7,7 @@ import { errorMessage, getShowName, selectClass } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Settings2, Shuffle } from "lucide-react";
 import { useCapabilities } from "@/hooks/useCapabilities";
+import FormGrid from "@/components/common/FormGrid";
 import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
 import SearchResultCard from "./SearchResultCard";
@@ -220,7 +221,7 @@ export default function SearchPanel(props: SearchPanelProps) {
 
           {/* Advanced settings */}
           {showAdvanced && (
-            <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
+            <FormGrid className="pl-3 border-l-2 border-border">
               <HelpLabel label="Embedding model" help="Embedding model used during indexing. Must match what you selected in the Index tab." />
               {config ? (
                 <select
@@ -278,7 +279,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                   </div>
                 </>
               )}
-            </div>
+            </FormGrid>
           )}
         </div>
 

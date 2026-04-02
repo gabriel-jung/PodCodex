@@ -1,8 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { getPipelineConfig } from "@/api/client";
 import { selectClass } from "@/lib/utils";
 import { useCapabilities } from "@/hooks/useCapabilities";
+import { useLLMProviders } from "@/hooks/useLLMProviders";
+import FormGrid from "./FormGrid";
 import HelpLabel from "./HelpLabel";
 import MissingDependency from "./MissingDependency";
 import ManualModePanel from "./ManualModePanel";
@@ -51,20 +51,8 @@ export default function LLMControls({
   const hasLLM = hasOllama || hasOpenAI;
   const modes: LLMMode[] = manualPrompts ? ["api", "ollama", "manual"] : ["api", "ollama"];
 
-  const { data: pipelineConfig } = useQuery({
-    queryKey: ["pipeline-config"],
-    queryFn: getPipelineConfig,
-    staleTime: Infinity,
-  });
-
-  const apiProviders = pipelineConfig
-    ? Object.entries(pipelineConfig.llm_providers).filter(([k]) => k !== "ollama")
-    : [];
-
-  // Current provider info (env var name, default model, etc.)
-  const providerInfo = pipelineConfig?.llm_providers[config.provider] as
-    | { url?: string; model?: string; label?: string; env_var?: string }
-    | undefined;
+  const { apiProviders, getProviderInfo } = useLLMProviders();
+  const providerInfo = getProviderInfo(config.provider);
 
   return (
     <div className="px-4 pb-3 space-y-3">
@@ -78,7 +66,7 @@ export default function LLMControls({
 
       {/* ── Section 1: Mode + model ── */}
       <div className="text-sm">
-        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 max-w-lg items-start sm:items-center">
+        <FormGrid className="max-w-lg">
           <HelpLabel label="Mode" help="Ollama runs locally on your computer (free, needs a GPU). API calls a cloud service like OpenAI or Mistral (requires an API key). Manual generates prompts you can paste into any chatbot yourself." />
           <div className="flex gap-3">
             {modes.map((m) => (
@@ -105,10 +93,10 @@ export default function LLMControls({
               />
             </>
           )}
-        </div>
+        </FormGrid>
 
         {config.mode === "api" && (
-          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 max-w-lg items-start sm:items-center mt-2 pl-6 border-l-2 border-border/40">
+          <FormGrid className="max-w-lg mt-2 pl-6 border-l-2 border-border/40">
             <HelpLabel label="Provider" help="Which cloud AI service to use. Each provider requires its own API key, set as an environment variable (e.g. OPENAI_API_KEY for OpenAI)." />
             <select
               value={config.provider}
@@ -140,11 +128,11 @@ export default function LLMControls({
               className="input py-1 text-sm"
             />
 
-          </div>
+          </FormGrid>
         )}
 
         {config.mode === "api" && (
-          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 max-w-lg items-start sm:items-center mt-2">
+          <FormGrid className="max-w-lg mt-2">
             <HelpLabel label="Model" help="The AI model to use (e.g. gpt-4o for OpenAI, mistral-large for Mistral). Leave empty to use the provider's recommended default." />
             <input
               value={config.model}
@@ -152,13 +140,13 @@ export default function LLMControls({
               placeholder={providerInfo?.model || "default"}
               className="input py-1 text-sm"
             />
-          </div>
+          </FormGrid>
         )}
       </div>
 
       {/* ── Section 2: Common settings ── */}
       <div className="border-t border-border/50 pt-3 text-sm space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 max-w-lg items-start sm:items-center">
+        <FormGrid className="max-w-lg">
           <HelpLabel label="Source language" help="The language spoken in the podcast. Helps the AI produce better corrections and translations." />
           <input
             value={config.sourceLang}
@@ -180,7 +168,7 @@ export default function LLMControls({
             />
             <span className="text-xs text-muted-foreground">min</span>
           </div>
-        </div>
+        </FormGrid>
 
         {/* Context — full width */}
         <div>

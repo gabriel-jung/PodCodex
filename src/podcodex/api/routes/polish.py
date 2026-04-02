@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
+    batch_progress,
+    build_provenance,
     load_segments_or_404,
     submit_task,
 )
@@ -44,13 +46,7 @@ async def save_polished_segments(
     from podcodex.core.polish import save_polished
 
     seg_dicts = [s.model_dump() for s in segments]
-    provenance = {
-        "step": "polished",
-        "type": "validated",
-        "model": None,
-        "params": {},
-        "manual_edit": True,
-    }
+    provenance = build_provenance("polished", ptype="validated", manual_edit=True)
     save_polished(audio_path, seg_dicts, output_dir=output_dir, provenance=provenance)
     return {"status": "saved", "count": len(seg_dicts)}
 
@@ -125,10 +121,6 @@ async def start_polish(req: PolishRequest) -> TaskResponse:
 
         progress_cb(0.1, "Starting polish...")
 
-        def on_batch(batch_num, total):
-            frac = 0.1 + 0.8 * (batch_num / total)
-            progress_cb(frac, f"Batch {batch_num} of {total}")
-
         polished = polish_segments(
             segments,
             mode=req_data.mode,
@@ -142,23 +134,21 @@ async def start_polish(req: PolishRequest) -> TaskResponse:
             api_key=req_data.api_key,
             original_segments=segments,
             merge=False,  # transcript is already merged on load/upload
-            on_batch=on_batch,
+            on_batch=batch_progress(progress_cb),
         )
 
         progress_cb(0.95, "Saving...")
-        provenance = {
-            "step": "polished",
-            "type": "raw",
-            "model": req_data.model or "qwen3:4b",
-            "params": {
+        provenance = build_provenance(
+            "polished",
+            model=req_data.model or "qwen3:4b",
+            params={
                 "mode": req_data.mode,
                 "provider": req_data.provider,
                 "source_lang": req_data.source_lang,
                 "batch_minutes": req_data.batch_minutes,
                 "engine": req_data.engine,
             },
-            "manual_edit": False,
-        }
+        )
         save_polished_raw(
             req_data.audio_path,
             polished,
@@ -188,13 +178,7 @@ async def skip_polish(req: SkipRequest) -> dict:
     if not segments:
         raise HTTPException(404, "No transcript found to copy")
 
-    provenance = {
-        "step": "polished",
-        "type": "raw",
-        "model": None,
-        "params": {"skipped": True},
-        "manual_edit": False,
-    }
+    provenance = build_provenance("polished", params={"skipped": True})
     save_polished_raw(
         req.audio_path,
         segments,
@@ -257,13 +241,11 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
         raise HTTPException(404, "No transcript found")
 
     polished = validate_manual(req.corrections, original)
-    provenance = {
-        "step": "polished",
-        "type": "raw",
-        "model": None,
-        "params": {"mode": "manual"},
-        "manual_edit": True,
-    }
+    provenance = build_provenance(
+        "polished",
+        params={"mode": "manual"},
+        manual_edit=True,
+    )
     save_polished_raw(
         req.audio_path,
         polished,

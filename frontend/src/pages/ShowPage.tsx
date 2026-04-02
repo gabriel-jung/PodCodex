@@ -12,6 +12,7 @@ import {
 import type { Episode } from "@/api/types";
 import { useAudioStore, useConfigStore, useTaskStore } from "@/stores";
 import { usePipelineConfig } from "@/hooks/usePipelineConfig";
+import { PIPELINE_PRESETS, usePipelineConfigStore } from "@/stores/pipelineConfigStore";
 import { Button } from "@/components/ui/button";
 import {
   ArrowLeft, RefreshCw, Podcast, Search,
@@ -25,13 +26,13 @@ import { EpisodeRow } from "@/components/show/EpisodeRow";
 import { EpisodeCard } from "@/components/show/EpisodeCard";
 import SearchPanel from "@/components/search/SearchPanel";
 import PipelineButtons from "@/components/show/PipelineButtons";
+import ProcessDialog from "@/components/show/ProcessDialog";
 import FilterDropdown from "@/components/show/FilterDropdown";
 import SortHeader from "@/components/show/SortHeader";
-import type { StepKey } from "@/components/show/StepConfigEditor";
-
 import { errorMessage, languageToISO } from "@/lib/utils";
 
 type ShowTab = "episodes" | "search" | "speakers" | "settings";
+const TABS: ShowTab[] = ["episodes", "search", "speakers", "settings"];
 type ViewMode = "list" | "card";
 type StatusFilter = "all" | "downloaded" | "not_downloaded" | "transcribed" | "not_transcribed" | "polished" | "not_polished" | "translated" | "synthesized" | "indexed" | "outdated";
 type SortKey = "date_desc" | "date_asc" | "title_asc" | "title_desc" | "duration_desc" | "duration_asc" | "number_desc" | "number_asc";
@@ -47,10 +48,9 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   } = useConfigStore();
   const queryClient = useQueryClient();
 
+  const [processDialogOpen, setProcessDialogOpen] = useState(false);
   const [tab, setTab] = useState<ShowTab>(
-    (["episodes", "search", "speakers", "settings"] as ShowTab[]).includes(initialTab as ShowTab)
-      ? (initialTab as ShowTab)
-      : "episodes",
+    TABS.includes(initialTab as ShowTab) ? (initialTab as ShowTab) : "episodes",
   );
   const [view, setView] = useState<ViewMode>("list");
   const [cardSize, setCardSize] = useState(3);
@@ -228,6 +228,46 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     });
   };
 
+  const runQuickProcess = (opts: {
+    preset: string;
+    transcribe: boolean;
+    polish: boolean;
+    translate: boolean;
+    index: boolean;
+  }) => {
+    const audioPaths = batchableSelected.map((e) => e.audio_path).filter(Boolean) as string[];
+    if (audioPaths.length === 0) return;
+    const p = PIPELINE_PRESETS[opts.preset] || PIPELINE_PRESETS.medium;
+    const steps = [opts.transcribe && "transcribe", opts.polish && "polish", opts.translate && "translate", opts.index && "index"].filter(Boolean).join("+");
+    batchMutationEpisodesRef.current.step = steps;
+    batchMutation.mutate({
+      show_folder: folder,
+      audio_paths: audioPaths,
+      transcribe: opts.transcribe,
+      polish: opts.polish,
+      translate: opts.translate,
+      index: opts.index,
+      model_size: p.whisperModel,
+      language: languageToISO(meta?.language || ""),
+      batch_size: tc.batchSize,
+      diarize: tc.diarize,
+      hf_token: tc.hfToken || undefined,
+      num_speakers: tc.numSpeakers ? Number(tc.numSpeakers) : undefined,
+      llm_mode: llm.mode === "api" ? "api" : "ollama",
+      llm_provider: llm.mode === "api" ? llm.provider : undefined,
+      llm_model: llm.model || undefined,
+      llm_api_base_url: llm.apiBaseUrl || undefined,
+      llm_api_key: llm.apiKey || undefined,
+      context: llm.context,
+      source_lang: llm.sourceLang,
+      target_lang: targetLang,
+      llm_batch_minutes: llm.batchMinutes,
+      engine,
+      show_name: meta?.name || "",
+      index_model_keys: [p.embedModel],
+    });
+  };
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* Top bar */}
@@ -262,7 +302,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       {/* Tabs + view toggle */}
       <div className="px-6 border-b border-border flex items-center">
         <div className="flex gap-1">
-          {(["episodes", "search", "speakers", "settings"] as ShowTab[]).map((t) => (
+          {TABS.map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -331,7 +371,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         />
       </div>
 
-      {/* Selection info + pipeline actions (always visible) */}
+      {/* Selection info + pipeline actions */}
       <div className="relative px-6 py-2 border-b border-border flex items-center gap-3 text-xs">
         <input
           type="checkbox"
@@ -358,6 +398,22 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         >
           <Download className="w-3 h-3 mr-1" /> Download{downloadableSelected.length > 0 ? ` ${downloadableSelected.length}` : ""}
         </Button>
+        <Button
+          onClick={() => setProcessDialogOpen(true)}
+          disabled={batchableSelected.length === 0 || !!batchTaskId || batchMutation.isPending}
+          variant="default"
+          size="sm"
+          className="text-xs h-7 px-3"
+        >
+          Quick Process{batchableSelected.length > 0 ? ` ${batchableSelected.length}` : ""}
+        </Button>
+        <ProcessDialog
+          open={processDialogOpen}
+          onOpenChange={setProcessDialogOpen}
+          onRun={runQuickProcess}
+          disabled={!!batchTaskId || batchMutation.isPending}
+          episodeCount={batchableSelected.length}
+        />
         <PipelineButtons
           disabled={batchableSelected.length === 0 || !!batchTaskId || batchMutation.isPending}
           episodes={batchableSelected}

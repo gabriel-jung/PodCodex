@@ -41,6 +41,11 @@ class PplxEmbedder:
     """
 
     def __init__(self, device: str = "cpu"):
+        """Initialize the Perplexity embedder, loading both context and query models.
+
+        Args:
+            device: Torch device string (e.g. ``"cpu"``, ``"cuda"``, ``"mps"``).
+        """
         from transformers import AutoModel
         from sentence_transformers import SentenceTransformer
 
@@ -84,7 +89,14 @@ class PplxEmbedder:
         return result
 
     def encode_query(self, query: str) -> np.ndarray:
-        """Returns float32 vector of dim from MODELS registry."""
+        """Encode a single query string using the separate query model.
+
+        Args:
+            query: Natural language query text.
+
+        Returns:
+            Float32 vector of shape ``(dim,)``.
+        """
         emb = self._query_model.encode(query)
         return np.array(emb, dtype=np.float32)
 
@@ -108,6 +120,13 @@ class E5Embedder:
         device: str = "cpu",
         batch_size: int = 64,
     ):
+        """Initialize the E5 embedder.
+
+        Args:
+            model_key: Registry key (``"e5-small"`` or ``"e5-large"``).
+            device: Torch device string.
+            batch_size: Encoding batch size.
+        """
         from sentence_transformers import SentenceTransformer
 
         hf_model = MODELS[model_key].hf_model
@@ -122,9 +141,13 @@ class E5Embedder:
         self._batch_size = batch_size
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
-        """
+        """Encode passage chunks with the ``"passage: "`` prefix.
+
+        Args:
+            chunks: List of chunk dicts, each containing a ``"text"`` key.
+
         Returns:
-            np.ndarray of shape (n, dim), dtype float32, L2-normalized
+            L2-normalized float32 array of shape ``(n, dim)``.
         """
         texts = ["passage: " + c["text"] for c in chunks]
         embs = self._model.encode(
@@ -137,7 +160,14 @@ class E5Embedder:
         return np.array(embs, dtype=np.float32)
 
     def encode_query(self, query: str) -> np.ndarray:
-        """Returns normalized float32 vector."""
+        """Encode a single query string with the ``"query: "`` prefix.
+
+        Args:
+            query: Natural language query text.
+
+        Returns:
+            L2-normalized float32 vector of shape ``(dim,)``.
+        """
         emb = self._model.encode("query: " + query, normalize_embeddings=True)
         return np.array(emb, dtype=np.float32).squeeze()
 
@@ -163,6 +193,13 @@ class BGEEmbedder:
     def __init__(
         self, device: str = "cpu", use_fp16: bool = True, batch_size: int = 32
     ):
+        """Initialize the BGE-M3 embedder.
+
+        Args:
+            device: Torch device string.
+            use_fp16: Whether to use half-precision for faster inference.
+            batch_size: Encoding batch size.
+        """
         from FlagEmbedding import BGEM3FlagModel
         from podcodex.core.cache import get_hf_cache_dir
 
@@ -173,9 +210,13 @@ class BGEEmbedder:
         self._batch_size = batch_size
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
-        """
+        """Encode passage chunks using BGE-M3 dense encoding.
+
+        Args:
+            chunks: List of chunk dicts, each containing a ``"text"`` key.
+
         Returns:
-            np.ndarray of shape (n, 1024), dtype float32
+            Float32 array of shape ``(n, 1024)``.
         """
         texts = [c["text"] for c in chunks]
         output = self._model.encode(
@@ -185,7 +226,14 @@ class BGEEmbedder:
         return np.array(output["dense_vecs"], dtype=np.float32)
 
     def encode_query(self, query: str) -> np.ndarray:
-        """Returns float32 vector of dim 1024."""
+        """Encode a single query string.
+
+        Args:
+            query: Natural language query text.
+
+        Returns:
+            Float32 vector of shape ``(1024,)``.
+        """
         output = self._model.encode([query], **self._ENCODE_OPTS)
         return np.array(output["dense_vecs"][0], dtype=np.float32)
 

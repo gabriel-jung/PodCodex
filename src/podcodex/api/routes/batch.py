@@ -9,6 +9,7 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import submit_task
+from podcodex.core._utils import normalize_lang
 from podcodex.api.schemas import TaskResponse
 
 router = APIRouter()
@@ -243,7 +244,7 @@ def _batch_translate(audio_path, p, req, cancelled, ep_progress, i, step_offset)
     from podcodex.core.versions import has_matching_version
 
     sw = _STEP_WEIGHTS["translate"]
-    lang_norm = req.target_lang.lower().strip().replace(" ", "_")
+    lang_norm = normalize_lang(req.target_lang)
     match_params = {
         "model": req.llm_model,
         "mode": req.llm_mode,

@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment } from "@/api/types";
-import { useEpisodeStore } from "@/stores";
+import { useEpisodeStore, useAudioStore } from "@/stores";
 import {
   getSynthesisStatus,
   getVoiceSamples,
@@ -19,7 +19,6 @@ import { useCapabilities } from "@/hooks/useCapabilities";
 import MissingDependency from "@/components/common/MissingDependency";
 import ProgressBar from "@/components/editor/ProgressBar";
 import PipelinePanel from "@/components/common/PipelinePanel";
-import { useAudioStore } from "@/stores";
 import VoiceExtractionSection, { segKey } from "./VoiceExtractionSection";
 import TTSGenerationSection from "./TTSGenerationSection";
 import AssemblySection from "./AssemblySection";

@@ -169,6 +169,7 @@ def polish_segments(
                             — sets api_base_url, model, and api_key env var automatically
         original_segments : only for manual mode — the original source segments
                             (used to merge metadata with the LLM-provided corrections)
+        on_batch          : optional callback(batch_num, total_batches) for progress
 
     Returns:
         List of segments with corrected text field.

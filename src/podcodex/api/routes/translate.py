@@ -6,12 +6,14 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
+    batch_progress,
+    build_provenance,
     load_best_source,
     load_segments_or_404,
     submit_task,
 )
 from podcodex.api.schemas import Segment, TaskResponse
-from podcodex.core._utils import AudioPaths
+from podcodex.core._utils import AudioPaths, normalize_lang
 
 router = APIRouter()
 
@@ -30,7 +32,7 @@ async def get_translated_segments(
     from podcodex.core.versions import load_latest
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    lang_norm = lang.lower().strip().replace(" ", "_")
+    lang_norm = normalize_lang(lang)
     segments = load_latest(p.base, lang_norm)
     if segments is not None:
         return annotate_flags(segments)
@@ -47,15 +49,9 @@ async def save_translated_segments(
     """Save validated translated segments."""
     from podcodex.core.translate import save_translation
 
-    lang_norm = lang.lower().strip().replace(" ", "_")
+    lang_norm = normalize_lang(lang)
     seg_dicts = [s.model_dump() for s in segments]
-    provenance = {
-        "step": lang_norm,
-        "type": "validated",
-        "model": None,
-        "params": {},
-        "manual_edit": True,
-    }
+    provenance = build_provenance(lang_norm, ptype="validated", manual_edit=True)
     save_translation(
         audio_path, seg_dicts, lang, output_dir=output_dir, provenance=provenance
     )
@@ -86,7 +82,7 @@ async def list_translate_versions(
     from podcodex.core.versions import list_versions
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    lang_norm = lang.lower().strip().replace(" ", "_")
+    lang_norm = normalize_lang(lang)
     return list_versions(p.base, lang_norm)
 
 
@@ -101,7 +97,7 @@ async def load_translate_version(
     from podcodex.core.versions import load_version
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    lang_norm = lang.lower().strip().replace(" ", "_")
+    lang_norm = normalize_lang(lang)
     try:
         return load_version(p.base, lang_norm, version_id)
     except FileNotFoundError:
@@ -127,6 +123,7 @@ class TranslateRequest(BaseModel):
     @field_validator("batch_minutes")
     @classmethod
     def batch_minutes_positive(cls, v: float) -> float:
+        """Validate that batch_minutes is a positive number."""
         if v <= 0:
             raise ValueError("batch_minutes must be positive")
         return v
@@ -137,16 +134,13 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
     """Start the translate pipeline as a background task."""
 
     def run_translate(progress_cb, req_data):
+        """Load source segments, run translation in batches, and save the raw output."""
         from podcodex.core.translate import save_translation_raw, translate_segments
 
         progress_cb(0.0, "Loading source segments...")
         segments = load_best_source(req_data.audio_path, req_data.output_dir)
 
         progress_cb(0.1, "Starting translation...")
-
-        def on_batch(batch_num, total):
-            frac = 0.1 + 0.8 * (batch_num / total)
-            progress_cb(frac, f"Batch {batch_num} of {total}")
 
         translated = translate_segments(
             segments,
@@ -161,24 +155,22 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
             api_key=req_data.api_key,
             original_segments=segments,
             merge=False,  # source segments are already merged on load/upload
-            on_batch=on_batch,
+            on_batch=batch_progress(progress_cb),
         )
 
         progress_cb(0.95, "Saving...")
-        lang_norm = req_data.target_lang.lower().strip().replace(" ", "_")
-        provenance = {
-            "step": lang_norm,
-            "type": "raw",
-            "model": req_data.model,
-            "params": {
+        lang_norm = normalize_lang(req_data.target_lang)
+        provenance = build_provenance(
+            lang_norm,
+            model=req_data.model,
+            params={
                 "mode": req_data.mode,
                 "provider": req_data.provider,
                 "source_lang": req_data.source_lang,
                 "target_lang": req_data.target_lang,
                 "batch_minutes": req_data.batch_minutes,
             },
-            "manual_edit": False,
-        }
+        )
         save_translation_raw(
             req_data.audio_path,
             translated,
@@ -245,14 +237,12 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
         raise HTTPException(404, "No source segments found")
 
     translated = validate_manual(req.corrections, original)
-    lang_norm = req.lang.lower().strip().replace(" ", "_")
-    provenance = {
-        "step": lang_norm,
-        "type": "raw",
-        "model": None,
-        "params": {"mode": "manual"},
-        "manual_edit": True,
-    }
+    lang_norm = normalize_lang(req.lang)
+    provenance = build_provenance(
+        lang_norm,
+        params={"mode": "manual"},
+        manual_edit=True,
+    )
     save_translation_raw(
         req.audio_path,
         translated,

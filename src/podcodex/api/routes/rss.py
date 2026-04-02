@@ -85,6 +85,7 @@ async def rss_download(
             raise HTTPException(404, "No matching episodes found for the given GUIDs")
 
     def run_downloads(progress_cb, episodes=targets, show_path=path):
+        """Download each episode in sequence, reporting progress via callback."""
         from podcodex.ingest.folder import invalidate_scan_cache
 
         cancel = getattr(progress_cb, "cancel_event", None)

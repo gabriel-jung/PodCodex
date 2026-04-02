@@ -18,13 +18,22 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ModelSpec:
-    label: str  # human-readable display name
-    hf_model: str  # HuggingFace model ID for passage encoding
-    dim: int  # dense vector dimension
-    description: str  # human-readable, also used in Discord command choices
-    hf_query_model: str = (
-        ""  # separate query model if different from hf_model (pplx only)
-    )
+    """Specification for a supported embedding model.
+
+    Attributes:
+        label: Human-readable display name.
+        hf_model: HuggingFace model ID for passage encoding.
+        dim: Dense vector dimensionality.
+        description: Human-readable summary, also used in Discord command choices.
+        hf_query_model: Separate query model if different from ``hf_model``
+            (used by Perplexity only; empty string otherwise).
+    """
+
+    label: str
+    hf_model: str
+    dim: int
+    description: str
+    hf_query_model: str = ""
 
 
 MODELS: dict[str, ModelSpec] = {

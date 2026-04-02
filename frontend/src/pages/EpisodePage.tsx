@@ -1,8 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getEpisodes, getShowMeta, exportZipUrl } from "@/api/client";
-import { audioFileUrl } from "@/api/filesystem";
+import { audioFileUrl } from "@/api/client";
+import { uploadTranscript } from "@/api/transcribe";
+import { useDropZone } from "@/hooks/useDropZone";
+import DropOverlay from "@/components/common/DropOverlay";
 import type { Episode, ShowMeta } from "@/api/types";
 import { useAudioStore, useEpisodeStore } from "@/stores";
 import { Button } from "@/components/ui/button";
@@ -24,11 +27,11 @@ import {
   AudioLines,
   Database,
   Search,
-  PanelLeftOpen,
-  PanelLeftClose,
   Info,
   Download,
   Settings,
+  PanelLeftOpen,
+  PanelLeftClose,
 } from "lucide-react";
 
 type PipelineStep = "info" | "transcribe" | "polish" | "translate" | "synthesize" | "index" | "search";
@@ -43,6 +46,17 @@ const PIPELINE_STEPS: { key: PipelineStep; label: string; icon: typeof Mic }[] =
   { key: "search", label: "Search", icon: Search },
 ];
 
+function stepDoneCheck(step: PipelineStep, episode: Episode): boolean {
+  switch (step) {
+    case "transcribe": return episode.transcribed;
+    case "polish": return episode.polished;
+    case "translate": return episode.translations.length > 0;
+    case "synthesize": return episode.synthesized;
+    case "index": return episode.indexed;
+    default: return false;
+  }
+}
+
 export default function EpisodePage({
   folder,
   stem,
@@ -53,6 +67,7 @@ export default function EpisodePage({
   audioFilePath?: string;
 }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { seekTo, setAudioMeta } = useAudioStore();
   const [activeStep, setActiveStep] = useState<PipelineStep>("info");
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
@@ -105,7 +120,6 @@ export default function EpisodePage({
 
   const artwork = episode?.artwork_url || meta?.artwork_url || "";
 
-  // Keep audio bar metadata in sync when this episode is playing
   useEffect(() => {
     if (!episode?.audio_path) return;
     setAudioMeta(episode.audio_path, {
@@ -117,7 +131,6 @@ export default function EpisodePage({
     });
   }, [episode?.audio_path, episode?.title, artwork, meta?.name, folder, episode?.stem, setAudioMeta]);
 
-  // Sync episode + show context into stores for downstream panels
   const setEpisode = useEpisodeStore((s) => s.setEpisode);
   const setShowMeta = useEpisodeStore((s) => s.setShowMeta);
   useEffect(() => {
@@ -128,7 +141,28 @@ export default function EpisodePage({
     setShowMeta(meta ?? null);
   }, [meta, setShowMeta]);
 
-  // Still loading episodes list
+  const handleFileDrop = useCallback(
+    async (files: File[]) => {
+      const audioPath = episode?.audio_path;
+      if (!audioPath || files.length === 0) return;
+      try {
+        await uploadTranscript(audioPath, files[0]);
+        queryClient.invalidateQueries({ queryKey: ["segments"] });
+        queryClient.invalidateQueries({ queryKey: ["episodes"] });
+        setActiveStep("transcribe");
+      } catch (e) {
+        console.error("Transcript drop import failed:", e);
+      }
+    },
+    [episode?.audio_path, queryClient],
+  );
+
+  const { isDragging } = useDropZone({
+    accept: [".json"],
+    onDrop: handleFileDrop,
+    disabled: !episode?.audio_path,
+  });
+
   if (!isStandalone && !episodes) {
     return <div className="p-6 text-muted-foreground">Loading...</div>;
   }
@@ -144,19 +178,9 @@ export default function EpisodePage({
     );
   }
 
-  const stepDone = (step: PipelineStep): boolean => {
-    switch (step) {
-      case "transcribe": return episode.transcribed;
-      case "polish": return episode.polished;
-      case "translate": return episode.translations.length > 0;
-      case "synthesize": return episode.synthesized;
-      case "index": return episode.indexed;
-      default: return false;
-    }
-  };
-
   return (
     <div className="flex flex-col h-full">
+      {isDragging && <DropOverlay message="Drop transcript JSON to import" />}
       {/* Header */}
       <div className="px-6 py-4 border-b border-border flex items-center gap-4 relative overflow-hidden">
         {artwork && (
@@ -241,7 +265,7 @@ export default function EpisodePage({
               >
                 <Icon className="w-5 h-5 shrink-0" />
                 {sidebarExpanded && <span className="truncate">{label}</span>}
-                {stepDone(key) && (
+                {stepDoneCheck(key, episode) && (
                   <span className={`w-1.5 h-1.5 rounded-full bg-green-500 shrink-0 ${sidebarExpanded ? "ml-auto" : ""}`} />
                 )}
               </button>
@@ -268,38 +292,42 @@ export default function EpisodePage({
   );
 }
 
-function StepContent({ step, episode, folder, meta, episodes }: { step: PipelineStep; episode: Episode; folder?: string; meta?: ShowMeta; episodes?: Episode[] }) {
+function EpisodeDetails({ episode }: { episode: Episode }) {
+  if (episode.episode_number == null && !episode.pub_date && episode.duration <= 0) return null;
+  return (
+    <div className="space-y-3">
+      <h4 className="text-sm font-medium">Details</h4>
+      <div className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm max-w-md">
+        {episode.episode_number != null && (
+          <>
+            <span className="text-muted-foreground">Episode</span>
+            <span>#{episode.episode_number}</span>
+          </>
+        )}
+        {episode.pub_date && (
+          <>
+            <span className="text-muted-foreground">Published</span>
+            <span>{formatDate(episode.pub_date)}</span>
+          </>
+        )}
+        {episode.duration > 0 && (
+          <>
+            <span className="text-muted-foreground">Duration</span>
+            <span>{formatDuration(episode.duration)}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StepContent({ step, episode, folder, meta }: { step: PipelineStep; episode: Episode; folder?: string; meta?: ShowMeta }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   switch (step) {
     case "info":
       return (
         <div className="p-6 space-y-6">
-          {/* Episode details */}
-          {(episode.episode_number != null || episode.pub_date || episode.duration > 0) && (
-            <div className="space-y-3">
-              <h4 className="text-sm font-medium">Details</h4>
-              <div className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm max-w-md">
-                {episode.episode_number != null && (
-                  <>
-                    <span className="text-muted-foreground">Episode</span>
-                    <span>#{episode.episode_number}</span>
-                  </>
-                )}
-                {episode.pub_date && (
-                  <>
-                    <span className="text-muted-foreground">Published</span>
-                    <span>{formatDate(episode.pub_date)}</span>
-                  </>
-                )}
-                {episode.duration > 0 && (
-                  <>
-                    <span className="text-muted-foreground">Duration</span>
-                    <span>{formatDuration(episode.duration)}</span>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
+          <EpisodeDetails episode={episode} />
 
           {/* Pipeline status */}
           <div className="space-y-3">
@@ -381,33 +409,32 @@ function StepContent({ step, episode, folder, meta, episodes }: { step: Pipeline
   }
 }
 
-function PipelineStatus({ episode }: { episode: Episode }) {
-  const steps = [
-    { key: "transcribed", label: "Transcribed", done: episode.transcribed },
-    { key: "polished", label: "Polished", done: episode.polished },
-    {
-      key: "translated",
-      label: "Translated",
-      done: episode.translations.length > 0,
-    },
-    { key: "synthesized", label: "Synthesized", done: episode.synthesized },
-    { key: "indexed", label: "Indexed", done: episode.indexed },
-  ];
+const STATUS_BADGES: { step: PipelineStep; label: string }[] = [
+  { step: "transcribe", label: "Transcribed" },
+  { step: "polish", label: "Polished" },
+  { step: "translate", label: "Translated" },
+  { step: "synthesize", label: "Synthesized" },
+  { step: "index", label: "Indexed" },
+];
 
+function PipelineStatus({ episode }: { episode: Episode }) {
   return (
     <div className="flex gap-2 mt-1">
-      {steps.map((step) => (
-        <span
-          key={step.key}
-          className={`text-xs px-2 py-0.5 rounded-full ${
-            step.done
-              ? "bg-green-900/40 text-green-400"
-              : "bg-muted text-muted-foreground"
-          }`}
-        >
-          {step.label}
-        </span>
-      ))}
+      {STATUS_BADGES.map(({ step, label }) => {
+        const done = stepDoneCheck(step, episode);
+        return (
+          <span
+            key={step}
+            className={`text-xs px-2 py-0.5 rounded-full ${
+              done
+                ? "bg-green-900/40 text-green-400"
+                : "bg-muted text-muted-foreground"
+            }`}
+          >
+            {label}
+          </span>
+        );
+      })}
     </div>
   );
 }

@@ -1,9 +1,10 @@
 import type { UseMutationResult } from "@tanstack/react-query";
 import type { PipelineConfig, GeneratedSegment, SynthesisStatus } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import SectionHeader from "@/components/common/SectionHeader";
-import HelpLabel from "@/components/common/HelpLabel";
 import AdvancedToggle from "@/components/common/AdvancedToggle";
+import FormGrid from "@/components/common/FormGrid";
+import HelpLabel from "@/components/common/HelpLabel";
+import SectionHeader from "@/components/common/SectionHeader";
 import { errorMessage, selectClass } from "@/lib/utils";
 
 export interface TTSGenerationSectionProps {
@@ -50,7 +51,7 @@ export default function TTSGenerationSection({
     <section className="space-y-3 border-t border-border/50 pt-3">
       <SectionHeader>2. Generate TTS Segments</SectionHeader>
 
-      <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm">
+      <FormGrid>
         <HelpLabel label="Language" help="The language the generated speech should sound like." />
         <input
           value={language}
@@ -85,11 +86,11 @@ export default function TTSGenerationSection({
             </select>
           </>
         )}
-      </div>
+      </FormGrid>
 
       {/* Advanced TTS settings */}
       <AdvancedToggle className="space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
+        <FormGrid className="pl-3 border-l-2 border-border">
           <HelpLabel label="Max chunk (s)" help="Maximum duration per TTS chunk in seconds. Shorter chunks are more stable, longer ones sound more natural." />
           <input
             type="number"
@@ -99,7 +100,7 @@ export default function TTSGenerationSection({
             min={5}
             max={60}
           />
-        </div>
+        </FormGrid>
       </AdvancedToggle>
 
       <div className="flex items-center gap-3">

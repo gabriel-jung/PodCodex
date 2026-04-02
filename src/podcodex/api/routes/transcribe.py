@@ -7,7 +7,11 @@ import json
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import load_segments_or_404, submit_task
+from podcodex.api.routes._helpers import (
+    build_provenance,
+    load_segments_or_404,
+    submit_task,
+)
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths, merge_consecutive_segments, write_json
 from podcodex.core.pipeline_db import mark_step
@@ -45,13 +49,7 @@ async def save_segments(
     from podcodex.core.transcribe import save_transcript
 
     seg_dicts = [s.model_dump() for s in segments]
-    provenance = {
-        "step": "transcript",
-        "type": "validated",
-        "model": None,
-        "params": {},
-        "manual_edit": True,
-    }
+    provenance = build_provenance("transcript", ptype="validated", manual_edit=True)
     save_transcript(
         audio_path,
         seg_dicts,
@@ -170,13 +168,10 @@ async def upload_transcript(
     p.base.parent.mkdir(parents=True, exist_ok=True)
     write_json(p.transcript_raw, {"segments": segments})
 
-    provenance = {
-        "step": "transcript",
-        "type": "raw",
-        "model": None,
-        "params": {"source": "upload", "filename": file.filename},
-        "manual_edit": False,
-    }
+    provenance = build_provenance(
+        "transcript",
+        params={"source": "upload", "filename": file.filename},
+    )
     save_version(p.base, "transcript", segments, provenance)
     mark_step(
         p.show_dir, p.base.name, transcribed=True, provenance={"transcript": provenance}

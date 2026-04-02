@@ -77,6 +77,9 @@ clean:  ## Remove build artifacts
 test:  ## Run Python tests
 	.venv/bin/python -m pytest tests/ -x -q
 
+types:  ## Regenerate frontend TS types from Pydantic models
+	.venv/bin/python scripts/generate_types.py
+
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'

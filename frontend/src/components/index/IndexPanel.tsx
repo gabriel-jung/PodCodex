@@ -13,6 +13,7 @@ import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { Button } from "@/components/ui/button";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import AdvancedToggle from "@/components/common/AdvancedToggle";
+import FormGrid from "@/components/common/FormGrid";
 import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
 import SectionHeader from "@/components/common/SectionHeader";
@@ -225,7 +226,7 @@ export default function IndexPanel() {
 
           {/* Advanced settings */}
           <AdvancedToggle className="border-t border-border/50 pt-3 space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
+            <FormGrid className="pl-3 border-l-2 border-border">
               <HelpLabel label="Chunk size" help="Number of tokens per chunk. Smaller chunks give more precise search results, larger chunks preserve more context." />
               <input
                 type="number"
@@ -255,7 +256,7 @@ export default function IndexPanel() {
                 />
                 <span className="text-xs text-muted-foreground">Replace existing index</span>
               </label>
-            </div>
+            </FormGrid>
           </AdvancedToggle>
 
           {/* Run button */}

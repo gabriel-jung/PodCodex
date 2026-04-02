@@ -16,6 +16,34 @@ from podcodex.core._utils import UNKNOWN_SPEAKERS
 AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".opus", ".wma"}
 
 
+def build_provenance(
+    step: str,
+    ptype: str = "raw",
+    model: str | None = None,
+    params: dict | None = None,
+    manual_edit: bool = False,
+) -> dict:
+    """Build a standard provenance dict for version tracking."""
+    return {
+        "step": step,
+        "type": ptype,
+        "model": model,
+        "params": params or {},
+        "manual_edit": manual_edit,
+    }
+
+
+def batch_progress(progress_cb, start: float = 0.1, end: float = 0.9):
+    """Return a callback for reporting batch progress to the task manager."""
+
+    def on_batch(batch_num: int, total: int) -> None:
+        """Report progress for a single completed batch."""
+        frac = start + (end - start) * (batch_num / total)
+        progress_cb(frac, f"Batch {batch_num} of {total}")
+
+    return on_batch
+
+
 # ── Path helpers ────────────────────────────────
 
 

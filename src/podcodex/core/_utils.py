@@ -145,21 +145,21 @@ class AudioPaths:
     # — Translation —
 
     def translation(self, lang: str) -> Path:
-        lang = lang.lower().strip().replace(" ", "_")
+        lang = normalize_lang(lang)
         return self.base.parent / f"{self.base.name}.translated.{lang}.json"
 
     def translation_raw(self, lang: str) -> Path:
-        lang = lang.lower().strip().replace(" ", "_")
+        lang = normalize_lang(lang)
         return self.base.parent / f"{self.base.name}.translated.{lang}.raw.json"
 
     def _translation_legacy(self, lang: str) -> Path:
         """Old naming: {stem}.{lang}.json (before 'translated' prefix)."""
-        lang = lang.lower().strip().replace(" ", "_")
+        lang = normalize_lang(lang)
         return self.base.parent / f"{self.base.name}.{lang}.json"
 
     def _translation_raw_legacy(self, lang: str) -> Path:
         """Old naming: {stem}.{lang}.raw.json."""
-        lang = lang.lower().strip().replace(" ", "_")
+        lang = normalize_lang(lang)
         return self.base.parent / f"{self.base.name}.{lang}.raw.json"
 
     def translation_best(self, lang: str) -> Path:
@@ -198,23 +198,6 @@ class AudioPaths:
 # ──────────────────────────────────────────────
 
 
-# LLM API provider presets: name → (base_url, env_var for key, default model).
-API_PROVIDERS = {
-    "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY", "gpt-4o-mini"),
-    "anthropic": (
-        "https://api.anthropic.com/v1/",
-        "ANTHROPIC_API_KEY",
-        "claude-sonnet-4-20250514",
-    ),
-    "mistral": ("https://api.mistral.ai/v1", "MISTRAL_API_KEY", "mistral-small-latest"),
-    "groq": (
-        "https://api.groq.com/openai/v1",
-        "GROQ_API_KEY",
-        "llama-3.3-70b-versatile",
-    ),
-}
-
-
 # Speaker labels that don't represent a real person (unresolved diarization placeholders).
 # Used by transcribe.py (filtering) and synthesize.py (voice sample extraction).
 UNKNOWN_SPEAKERS = frozenset({"UNKNOWN", "UNK", "None", "none"})
@@ -227,6 +210,15 @@ BREAK_SPEAKER = "[BREAK]"
 
 # Audio sample rate used by Whisper / TTS pipeline (16 kHz mono).
 SAMPLE_RATE = 16000
+
+
+def normalize_lang(lang: str) -> str:
+    """Normalize a language name: lowercase, strip, collapse spaces to underscores.
+
+    Used everywhere a language becomes a file-path component or version step name.
+    """
+    return lang.strip().lower().replace(" ", "_")
+
 
 # Default time-based thresholds shared across pipeline modules.
 DEFAULT_MAX_GAP = 10.0
@@ -745,7 +737,21 @@ def run_ollama(
     label: str = "",
     on_batch: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
-    """Run segments through a local Ollama model."""
+    """Run segments through a local Ollama model.
+
+    Args:
+        segments: source segments to process.
+        system_prompt: system prompt for the LLM.
+        model: Ollama model name.
+        batch_minutes: max audio duration per batch in minutes.
+        instruction: verb for user-message formatting (e.g. "Correct", "Translate").
+        min_length_ratio: minimum output/input length ratio before flagging.
+        label: human-readable label for log messages.
+        on_batch: optional callback(batch_num, total_batches) for progress.
+
+    Returns:
+        Processed segments with updated text fields.
+    """
     from ollama import Client
 
     client = Client()
@@ -793,16 +799,35 @@ def run_api(
     label: str = "",
     on_batch: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
-    """Run segments through an OpenAI-compatible API."""
+    """Run segments through an OpenAI-compatible API.
+
+    Args:
+        segments: source segments to process.
+        system_prompt: system prompt for the LLM.
+        model: model name (auto-detected from provider if empty).
+        api_base_url: base URL (auto-detected from provider if empty).
+        api_key: API key (None reads from provider's env variable).
+        batch_minutes: max audio duration per batch in minutes.
+        provider: provider shorthand ("openai", "anthropic", "mistral", "groq").
+        instruction: verb for user-message formatting.
+        min_length_ratio: minimum output/input length ratio before flagging.
+        label: human-readable label for log messages.
+        on_batch: optional callback(batch_num, total_batches) for progress.
+
+    Returns:
+        Processed segments with updated text fields.
+    """
     import os
 
     from openai import OpenAI
 
-    if provider and provider in API_PROVIDERS:
-        base_url, env_var, default_model = API_PROVIDERS[provider]
-        api_base_url = api_base_url or base_url
-        model = model or default_model
-        api_key = api_key or os.environ.get(env_var)
+    from podcodex.core.constants import LLM_PROVIDERS
+
+    if provider and provider in LLM_PROVIDERS:
+        spec = LLM_PROVIDERS[provider]
+        api_base_url = api_base_url or spec["url"]
+        model = model or spec["model"]
+        api_key = api_key or os.environ.get(spec.get("env_var", ""))
 
     key = api_key or os.environ.get("API_KEY")
     if not key:

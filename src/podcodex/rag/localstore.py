@@ -70,6 +70,12 @@ class LocalStore:
     """
 
     def __init__(self, db_path: Path | str | None = None):
+        """Open (or create) the SQLite database and ensure the schema exists.
+
+        Args:
+            db_path: Path to the SQLite file. Use ``":memory:"`` for
+                in-process tests. Defaults to ``DEFAULT_DB_PATH``.
+        """
         if db_path is None:
             db_path = DEFAULT_DB_PATH
         self._path = str(db_path)
@@ -102,7 +108,15 @@ class LocalStore:
     def ensure_collection(
         self, name: str, show: str, model: str, chunker: str, dim: int
     ) -> None:
-        """Create collection row if it does not already exist (idempotent)."""
+        """Create collection row if it does not already exist (idempotent).
+
+        Args:
+            name: Canonical collection name (see ``store.collection_name``).
+            show: Human-readable show name.
+            model: Embedding model key.
+            chunker: Chunking strategy key.
+            dim: Embedding vector dimensionality.
+        """
         self._conn.execute(
             """
             INSERT OR IGNORE INTO collections(name, show, model, chunker, dim, created_at)
@@ -117,8 +131,16 @@ class LocalStore:
     ) -> list[str]:
         """List collection names, optionally filtered by show, model, and/or chunker.
 
-        Note: filters match the raw values stored in the collections table
-        (exact match).
+        Filters use exact match against the values stored in the collections
+        table.
+
+        Args:
+            show: Filter by show name (empty string means no filter).
+            model: Filter by embedding model key.
+            chunker: Filter by chunking strategy key.
+
+        Returns:
+            Alphabetically sorted list of matching collection names.
         """
         q = "SELECT name FROM collections WHERE 1=1"
         params: list = []
@@ -135,7 +157,11 @@ class LocalStore:
         return [r[0] for r in self._conn.execute(q, params).fetchall()]
 
     def delete_collection(self, name: str) -> None:
-        """Delete collection; ON DELETE CASCADE removes chunks + embeddings."""
+        """Delete a collection and all its chunks and embeddings (via CASCADE).
+
+        Args:
+            name: Collection name to delete.
+        """
         self._conn.execute("DELETE FROM collections WHERE name=?", (name,))
         self._conn.commit()
         logger.debug(f"Deleted collection '{name}'")
@@ -143,7 +169,12 @@ class LocalStore:
     # ── Episode-level ──────────────────────────────────────────────────
 
     def episode_is_indexed(self, collection: str, episode: str) -> bool:
-        """Return True if at least one chunk exists for this episode in the collection."""
+        """Return True if at least one chunk exists for this episode in the collection.
+
+        Args:
+            collection: Collection name.
+            episode: Episode identifier.
+        """
         cur = self._conn.execute(
             "SELECT 1 FROM chunks WHERE collection=? AND episode=? LIMIT 1",
             (collection, episode),
@@ -151,7 +182,12 @@ class LocalStore:
         return cur.fetchone() is not None
 
     def episode_chunk_count(self, collection: str, episode: str) -> int:
-        """Return the number of chunks for an episode in a collection."""
+        """Return the number of chunks for an episode in a collection.
+
+        Args:
+            collection: Collection name.
+            episode: Episode identifier.
+        """
         cur = self._conn.execute(
             "SELECT COUNT(*) FROM chunks WHERE collection=? AND episode=?",
             (collection, episode),
@@ -159,7 +195,12 @@ class LocalStore:
         return cur.fetchone()[0]
 
     def delete_episode(self, collection: str, episode: str) -> None:
-        """Delete all chunks (and their embeddings via CASCADE) for an episode."""
+        """Delete all chunks (and their embeddings via CASCADE) for an episode.
+
+        Args:
+            collection: Collection name.
+            episode: Episode identifier.
+        """
         self._conn.execute(
             "DELETE FROM chunks WHERE collection=? AND episode=?",
             (collection, episode),
@@ -168,7 +209,15 @@ class LocalStore:
         logger.debug(f"Deleted episode '{episode}' from '{collection}'")
 
     def get_collection_info(self, name: str) -> dict | None:
-        """Return {show, model, chunker, dim} for a collection, or None if not found."""
+        """Return collection metadata.
+
+        Args:
+            name: Collection name.
+
+        Returns:
+            A dict with keys ``{show, model, chunker, dim}``, or ``None``
+            if the collection does not exist.
+        """
         row = self._conn.execute(
             "SELECT show, model, chunker, dim FROM collections WHERE name=?", (name,)
         ).fetchone()
@@ -177,7 +226,11 @@ class LocalStore:
         return {"show": row[0], "model": row[1], "chunker": row[2], "dim": row[3]}
 
     def list_episodes(self, collection: str) -> list[str]:
-        """Return sorted list of distinct episode names in the collection."""
+        """Return sorted list of distinct episode names in the collection.
+
+        Args:
+            collection: Collection name.
+        """
         rows = self._conn.execute(
             "SELECT DISTINCT episode FROM chunks WHERE collection=? ORDER BY episode",
             (collection,),
@@ -193,12 +246,19 @@ class LocalStore:
         chunks: list[dict],
         embeddings: np.ndarray,
     ) -> None:
-        """Save chunks and embeddings atomically.
+        """Save chunks and their embeddings atomically in a single transaction.
+
+        Args:
+            collection: Target collection name (must already exist).
+            episode: Episode identifier.
+            chunks: List of chunk dicts, each with at least a ``"text"`` key.
+                Remaining keys are stored as JSON metadata.
+            embeddings: Float32 array of shape ``(n, dim)`` aligned with *chunks*.
 
         Raises:
-            ValueError: if len(chunks) != len(embeddings).
-            sqlite3.IntegrityError: if (collection, episode, chunk_index)
-                already exists. Call delete_episode() first to overwrite.
+            ValueError: If ``len(chunks) != len(embeddings)``.
+            sqlite3.IntegrityError: If ``(collection, episode, chunk_index)``
+                already exists. Call ``delete_episode()`` first to overwrite.
         """
         if len(chunks) != len(embeddings):
             raise ValueError(
@@ -225,7 +285,18 @@ class LocalStore:
     # ── Read ───────────────────────────────────────────────────────────
 
     def load_chunks(self, collection: str, episode: str) -> list[dict]:
-        """Load chunks ordered by chunk_index; adds 'embedding': np.ndarray."""
+        """Load chunks ordered by chunk_index, including their embedding vectors.
+
+        Each returned dict contains all stored metadata, a ``"text"`` key,
+        and an ``"embedding"`` key holding a float32 numpy array.
+
+        Args:
+            collection: Collection name.
+            episode: Episode identifier.
+
+        Returns:
+            List of chunk dicts sorted by ``chunk_index``.
+        """
         rows = self._conn.execute(
             """
             SELECT c.chunk_index, c.text, c.meta_json, e.vector
@@ -249,7 +320,15 @@ class LocalStore:
         return result
 
     def load_chunks_no_embeddings(self, collection: str, episode: str) -> list[dict]:
-        """Load chunks without pulling embedding blobs."""
+        """Load chunks without pulling embedding blobs (lighter query).
+
+        Args:
+            collection: Collection name.
+            episode: Episode identifier.
+
+        Returns:
+            List of chunk dicts (metadata + text, no ``"embedding"`` key).
+        """
         rows = self._conn.execute(
             """
             SELECT chunk_index, text, meta_json
@@ -267,9 +346,15 @@ class LocalStore:
         return result
 
     def enrich_chunk_meta(self, collection: str, episode: str, extras: dict) -> int:
-        """Merge *extras* into meta_json for all chunks of an episode.
+        """Merge *extras* into ``meta_json`` for all chunks of an episode.
 
-        Returns the number of updated rows.
+        Args:
+            collection: Collection name.
+            episode: Episode identifier.
+            extras: Key-value pairs to merge into each chunk's metadata.
+
+        Returns:
+            The number of updated rows.
         """
         rows = self._conn.execute(
             "SELECT id, meta_json FROM chunks WHERE collection=? AND episode=?",
@@ -290,7 +375,11 @@ class LocalStore:
     # ── Bulk read (for search) ────────────────────────────────────────
 
     def collection_chunk_count(self, collection: str) -> int:
-        """Return total number of chunks in a collection."""
+        """Return total number of chunks in a collection.
+
+        Args:
+            collection: Collection name.
+        """
         cur = self._conn.execute(
             "SELECT COUNT(*) FROM chunks WHERE collection=?", (collection,)
         )
@@ -302,8 +391,11 @@ class LocalStore:
         """Load all chunks (without embeddings) for a collection.
 
         Args:
-            collection : collection name
-            episode    : if set, restrict to this episode
+            collection: Collection name.
+            episode: If set, restrict results to this single episode.
+
+        Returns:
+            List of chunk dicts ordered by ``(episode, chunk_index)``.
         """
         if episode:
             rows = self._conn.execute(
@@ -331,12 +423,16 @@ class LocalStore:
         return result
 
     def load_all_vectors(self, collection: str) -> tuple[np.ndarray, list[dict]]:
-        """Load all embeddings + metadata for a collection in one query.
+        """Load all embeddings and metadata for a collection in one query.
+
+        Args:
+            collection: Collection name.
 
         Returns:
-            (matrix, chunks) where matrix is shape (N, dim) float32
-            and chunks is a list of metadata dicts (with 'text' field).
-            Returns (empty 0×0 array, []) if collection has no chunks.
+            A ``(matrix, chunks)`` tuple where *matrix* is a float32 array of
+            shape ``(N, dim)`` and *chunks* is the corresponding metadata list
+            (with ``"text"`` key). Returns ``(empty 0x0 array, [])`` when the
+            collection has no chunks.
         """
         rows = self._conn.execute(
             """
@@ -365,7 +461,11 @@ class LocalStore:
         return matrix, chunks
 
     def list_sources(self, collection: str) -> list[str]:
-        """Return sorted list of distinct source values in a collection."""
+        """Return sorted list of distinct ``source`` values in a collection.
+
+        Args:
+            collection: Collection name.
+        """
         rows = self._conn.execute(
             "SELECT DISTINCT meta_json FROM chunks WHERE collection=?",
             (collection,),
@@ -379,7 +479,11 @@ class LocalStore:
         return sorted(sources)
 
     def list_speakers(self, collection: str) -> list[str]:
-        """Return sorted list of distinct speaker/dominant_speaker values."""
+        """Return sorted list of distinct speaker/dominant_speaker values.
+
+        Args:
+            collection: Collection name.
+        """
         rows = self._conn.execute(
             "SELECT DISTINCT meta_json FROM chunks WHERE collection=?",
             (collection,),
@@ -393,7 +497,15 @@ class LocalStore:
         return sorted(speakers)
 
     def get_episode_stats(self, collection: str) -> list[dict]:
-        """Return per-episode stats: chunk count, duration, speakers."""
+        """Return per-episode statistics for a collection.
+
+        Args:
+            collection: Collection name.
+
+        Returns:
+            List of dicts, each with keys ``{episode, chunk_count, duration,
+            speakers}``, sorted by episode name.
+        """
         episodes = self._conn.execute(
             "SELECT DISTINCT episode FROM chunks WHERE collection=? ORDER BY episode",
             (collection,),

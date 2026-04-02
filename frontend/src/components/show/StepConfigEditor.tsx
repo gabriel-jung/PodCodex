@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { getPipelineConfig } from "@/api/client";
 import type { Episode } from "@/api/types";
 import { usePipelineConfig } from "@/hooks/usePipelineConfig";
+import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { Button } from "@/components/ui/button";
 import { Mic, Sparkles, Languages, Database } from "lucide-react";
 import { languageToISO } from "@/lib/utils";
@@ -21,17 +20,7 @@ export { STEPS };
 export default function StepConfigEditor({ step, episodes, showLanguage, onRun, onClose }: { step: StepKey; episodes: Episode[]; showLanguage: string; onRun: () => void; onClose: () => void }) {
   const { tc, setTc, llm, setLLM, engine, setEngine, targetLang, setTargetLang } = usePipelineConfig();
 
-  const { data: pipelineConfig } = useQuery({
-    queryKey: ["pipeline-config"],
-    queryFn: getPipelineConfig,
-    staleTime: Infinity,
-  });
-
-  const whisperModels = pipelineConfig?.whisper_models ?? {};
-  const detected = pipelineConfig?.detected_keys ?? {};
-  const apiProviders = pipelineConfig
-    ? Object.entries(pipelineConfig.llm_providers).filter(([k]) => k !== "ollama")
-    : [];
+  const { whisperModels, detectedKeys: detected, apiProviders } = useLLMProviders();
 
   const selClass = "bg-secondary text-secondary-foreground rounded px-2 py-1.5 border border-border text-sm w-full";
   const inputClass = "input py-1.5 text-sm w-full";

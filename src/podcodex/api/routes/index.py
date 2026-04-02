@@ -64,7 +64,16 @@ async def index_sources(
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     def _version_detail(step: str, lang: str | None = None) -> str:
-        """Build a short detail string from the latest version's provenance."""
+        """Build a short human-readable detail string from the latest version's provenance.
+
+        Args:
+            step: Pipeline step name (e.g. "transcript", "polished", or a language key).
+            lang: Optional language code; when provided, appended as a title-cased label.
+
+        Returns:
+            Comma-separated string of provenance parts (model, provider/mode, lang,
+            "edited" flag), or an empty string if no provenance is available.
+        """
         try:
             _, meta = load_latest(audio_path, step, output_dir=output_dir)
             if not meta:
@@ -221,6 +230,7 @@ class IndexRequest(BaseModel):
     @field_validator("chunk_size")
     @classmethod
     def chunk_size_positive(cls, v: int) -> int:
+        """Validate that chunk_size is at least 1."""
         if v < 1:
             raise ValueError("chunk_size must be at least 1")
         return v
@@ -228,6 +238,7 @@ class IndexRequest(BaseModel):
     @field_validator("threshold")
     @classmethod
     def threshold_in_range(cls, v: float) -> float:
+        """Validate that threshold is between 0.0 and 1.0 inclusive."""
         if not 0.0 <= v <= 1.0:
             raise ValueError("threshold must be between 0.0 and 1.0")
         return v
@@ -238,6 +249,16 @@ async def start_index(req: IndexRequest) -> TaskResponse:
     """Vectorize an episode into LocalStore as a background task."""
 
     def run_index(progress_cb, req_data):
+        """Execute the full vectorization pipeline for one episode.
+
+        Args:
+            progress_cb: Callable(fraction, message) used to broadcast progress
+                over WebSocket to the frontend.
+            req_data: IndexRequest instance carrying all vectorization parameters.
+
+        Returns:
+            Dict with ``chunks_upserted`` (int) and ``source`` (str) keys.
+        """
         from podcodex.cli import _resolve_source, _source_label, vectorize_batch
         from podcodex.core.versions import load_version
         from podcodex.rag.localstore import LocalStore
@@ -308,6 +329,7 @@ async def start_index(req: IndexRequest) -> TaskResponse:
             progress_cb(0.05, "Starting vectorization...")
 
             def on_progress(step, total, label):
+                """Forward per-batch progress from vectorize_batch to the task progress callback."""
                 frac = 0.05 + 0.9 * (step / max(total, 1))
                 progress_cb(frac, f"{label} ({step + 1}/{total})")
 

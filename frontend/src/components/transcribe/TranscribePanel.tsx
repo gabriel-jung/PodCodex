@@ -3,23 +3,25 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEpisodeStore, usePipelineConfigStore } from "@/stores";
 import {
   getSegments,
-  getPipelineConfig,
   getTranscribeVersions,
   loadTranscribeVersion,
   saveSegments,
   startTranscribe,
   uploadTranscript,
 } from "@/api/client";
+import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { Button } from "@/components/ui/button";
 import { Upload } from "lucide-react";
 import { errorMessage, languageToISO, selectClass } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import AdvancedToggle from "@/components/common/AdvancedToggle";
+import FormGrid from "@/components/common/FormGrid";
 import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
 import SectionHeader from "@/components/common/SectionHeader";
 import SegmentEditor from "@/components/editor/SegmentEditor";
+import ReadOnlyTranscript from "@/components/editor/ReadOnlyTranscript";
 import PipelinePanel from "@/components/common/PipelinePanel";
 import SpeakerMapEditor from "./SpeakerMapEditor";
 
@@ -32,13 +34,10 @@ export default function TranscribePanel() {
   const hasWhisperX = hasCap("whisperx");
   const task = usePipelineTask(episode.audio_path, "transcribe");
   const expanded = task.expanded || !episode.transcribed;
+  const [editing, setEditing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { data: pipelineConfig } = useQuery({
-    queryKey: ["pipeline-config"],
-    queryFn: getPipelineConfig,
-    staleTime: Infinity,
-  });
+  const { whisperModels: whisperModelsMap } = useLLMProviders();
 
   // Form state — shared with batch modal via store
   const tc = usePipelineConfigStore((s) => s.transcribe);
@@ -87,7 +86,7 @@ export default function TranscribePanel() {
       rerunLabel="Re-run transcription"
       settingsLabel="Transcription settings"
       taskId={task.activeTaskId}
-      onTaskComplete={task.handleComplete}
+      onTaskComplete={() => { task.handleComplete(); setEditing(false); }}
       onRetry={task.handleRetry}
       onDismiss={task.handleDismiss}
       emptyMessage="No transcript yet. Run the transcription pipeline to get started."
@@ -100,7 +99,7 @@ export default function TranscribePanel() {
             diarize={tc.diarize} setDiarize={(v) => setTc({ diarize: v })}
             hfToken={tc.hfToken} setHfToken={(v) => setTc({ hfToken: v })}
             numSpeakers={tc.numSpeakers} setNumSpeakers={(v) => setTc({ numSpeakers: v })}
-            whisperModels={pipelineConfig?.whisper_models}
+            whisperModels={whisperModelsMap}
             hasWhisperX={hasWhisperX}
             onRun={() => startMutation.mutate()}
             onUpload={() => fileInputRef.current?.click()}
@@ -113,19 +112,26 @@ export default function TranscribePanel() {
         </>
       }
     >
-      {/* Speaker map */}
       {episode.transcribed && !task.activeTaskId && (
-        <SpeakerMapEditor
-          audioPath={episode.audio_path}
-          onSaved={() => {
-            queryClient.invalidateQueries({ queryKey: ["transcribe", "segments", episode.audio_path] });
-          }}
-        />
-      )}
-
-      {/* Segment editor */}
-      {episode.transcribed && !task.activeTaskId && (
-        <TranscribeEditor audioPath={episode.audio_path!} duration={episode.duration} speakers={showMeta?.speakers} />
+        editing ? (
+          <>
+            <SpeakerMapEditor
+              audioPath={episode.audio_path}
+              onSaved={() => {
+                queryClient.invalidateQueries({ queryKey: ["transcribe", "segments", episode.audio_path] });
+              }}
+            />
+            <TranscribeEditor audioPath={episode.audio_path!} duration={episode.duration} speakers={showMeta?.speakers} />
+          </>
+        ) : (
+          <ReadOnlyTranscript
+            audioPath={episode.audio_path!}
+            loadSegments={() => getSegments(episode.audio_path!)}
+            queryKey={["segments", episode.audio_path!]}
+            sourceLabel="raw transcript"
+            onEdit={() => setEditing(true)}
+          />
+        )
       )}
     </PipelinePanel>
   );
@@ -167,7 +173,7 @@ function TranscribeForm({
       <div className="flex flex-col lg:flex-row gap-6">
         <div className="space-y-3 flex-1">
           <SectionHeader>Transcription</SectionHeader>
-          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 text-sm items-start sm:items-center">
+          <FormGrid>
             <HelpLabel label="Model" help="Speech recognition model. Bigger models make fewer mistakes but are slower and need more GPU memory." />
             <select
               value={modelSize}
@@ -189,7 +195,7 @@ function TranscribeForm({
               placeholder="e.g. fr, en, de"
               className="input py-1 text-sm"
             />
-          </div>
+          </FormGrid>
         </div>
 
         <div className="space-y-3 flex-1 lg:border-l lg:border-border lg:pl-6">
@@ -207,7 +213,7 @@ function TranscribeForm({
           </div>
 
           {diarize && (
-            <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 text-sm items-start sm:items-center">
+            <FormGrid>
               <HelpLabel label="Num speakers" help="How many speakers are in the episode (e.g. 2 for an interview). Leave empty to auto-detect. Setting it helps tell speakers apart more reliably." />
               <input
                 value={numSpeakers}
@@ -215,13 +221,13 @@ function TranscribeForm({
                 placeholder="auto-detect"
                 className="input py-1 text-sm w-20"
               />
-            </div>
+            </FormGrid>
           )}
         </div>
       </div>
 
       <AdvancedToggle className="border-t border-border/50 pt-3 space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
+        <FormGrid className="pl-3 border-l-2 border-border">
           <HelpLabel label="Batch size" help="How many audio chunks to process in parallel. Higher is faster but uses more GPU memory. Lower this if you run out of memory." />
           <input
             type="number"
@@ -243,7 +249,7 @@ function TranscribeForm({
               />
             </>
           )}
-        </div>
+        </FormGrid>
       </AdvancedToggle>
 
       <div className="flex items-center gap-3 border-t border-border/50 pt-3">

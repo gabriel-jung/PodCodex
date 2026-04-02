@@ -3,6 +3,7 @@ import { Outlet } from "@tanstack/react-router";
 import { getHealth, getExtras } from "@/api/client";
 import AudioBar from "@/components/layout/AudioBar";
 import TaskBar from "@/components/layout/TaskBar";
+import CommandPalette from "@/components/CommandPalette";
 import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
 import { PlatformProvider } from "@/platform";
 import { useState } from "react";
@@ -63,6 +64,7 @@ export default function RootLayout() {
           <AudioBar />
         </div>
         <ConfirmDialogHost />
+        <CommandPalette />
       </div>
     </PlatformProvider>
   );
@@ -75,7 +77,7 @@ function AppSidebar() {
   const nextTheme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
 
-  const items = [
+  const appItems = [
     { icon: Home, label: "Home", onClick: () => navigate({ to: "/" }) },
     { icon: Settings, label: "Settings", onClick: () => navigate({ to: "/settings" }) },
     { icon: ThemeIcon, label: `Theme: ${theme}`, onClick: () => setTheme(nextTheme) },
@@ -87,8 +89,8 @@ function AppSidebar() {
         expanded ? "w-44" : "w-11"
       }`}
     >
-      <nav className="flex-1 py-3 flex flex-col gap-1">
-        {items.map(({ icon: Icon, label, onClick }) => (
+      <nav className="py-3 flex flex-col gap-1">
+        {appItems.map(({ icon: Icon, label, onClick }) => (
           <button
             key={label}
             onClick={onClick}
@@ -100,6 +102,9 @@ function AppSidebar() {
           </button>
         ))}
       </nav>
+
+      <div className="flex-1" />
+
       <button
         onClick={() => setExpanded(!expanded)}
         className="px-3 py-2 text-muted-foreground hover:text-foreground transition border-t border-border"

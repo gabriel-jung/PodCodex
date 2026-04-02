@@ -48,6 +48,7 @@ class ExtractVoicesRequest(BaseModel):
     @field_validator("top_k")
     @classmethod
     def top_k_positive(cls, v: int) -> int:
+        """Validate that top_k is at least 1."""
         if v < 1:
             raise ValueError("top_k must be at least 1")
         return v
@@ -58,6 +59,7 @@ async def extract_voices(req: ExtractVoicesRequest) -> TaskResponse:
     """Extract voice samples for cloning as a background task."""
 
     def run_extract(progress_cb, req_data):
+        """Load transcript and extract speaker voice samples."""
         from podcodex.core.synthesize import extract_voice_samples
         from podcodex.core.transcribe import load_transcript
 
@@ -239,6 +241,7 @@ class GenerateRequest(BaseModel):
     @field_validator("max_chunk_duration")
     @classmethod
     def max_chunk_duration_positive(cls, v: float) -> float:
+        """Validate that max_chunk_duration is a positive number."""
         if v <= 0:
             raise ValueError("max_chunk_duration must be positive")
         return v
@@ -254,6 +257,7 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
     """
 
     def run_generate(progress_cb, req_data):
+        """Load source segments, run incremental TTS generation, and save a manifest."""
         from podcodex.core._utils import free_vram
         from podcodex.core.synthesize import (
             _sample_key,
@@ -469,6 +473,7 @@ class AssembleRequest(BaseModel):
     @field_validator("silence_duration")
     @classmethod
     def silence_duration_non_negative(cls, v: float) -> float:
+        """Validate that silence_duration is zero or positive."""
         if v < 0:
             raise ValueError("silence_duration must be non-negative")
         return v

@@ -124,6 +124,7 @@ class PipelineDB:
                 self._conn.executescript(apply_sql)
 
     def close(self) -> None:
+        """Close the underlying SQLite connection."""
         self._conn.close()
 
     # ── Read ──────────────────────────────────────────────

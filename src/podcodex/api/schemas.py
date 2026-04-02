@@ -6,6 +6,8 @@ from pydantic import BaseModel
 
 
 class PipelineDefaultsSchema(BaseModel):
+    """Per-show pipeline default settings (mirrors ``show.toml [pipeline]``)."""
+
     model_size: str = ""
     diarize: bool = True
     llm_mode: str = ""
@@ -15,6 +17,8 @@ class PipelineDefaultsSchema(BaseModel):
 
 
 class ShowMeta(BaseModel):
+    """Editable metadata for a show (read/write via the settings panel)."""
+
     name: str
     rss_url: str = ""
     language: str = ""
