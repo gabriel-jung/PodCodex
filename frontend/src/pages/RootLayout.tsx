@@ -5,9 +5,10 @@ import AudioBar from "@/components/layout/AudioBar";
 import TaskBar from "@/components/layout/TaskBar";
 import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
 import { PlatformProvider } from "@/platform";
-import { useTheme } from "@/hooks/useTheme";
+import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { Sun, Moon, Monitor, Settings } from "lucide-react";
+import { useTheme } from "@/hooks/useTheme";
+import { Home, Sun, Moon, Monitor, Settings, PanelLeftOpen, PanelLeftClose } from "lucide-react";
 
 export default function RootLayout() {
   const { data: health, error } = useQuery({
@@ -52,40 +53,58 @@ export default function RootLayout() {
 
   return (
     <PlatformProvider>
-      <div className="flex flex-col h-screen bg-background text-foreground">
-        <main className="flex-1 overflow-hidden">
-          <Outlet />
-        </main>
-        <TaskBar />
-        <AudioBar />
-        <FloatingActions />
+      <div className="flex h-screen bg-background text-foreground">
+        <AppSidebar />
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <main className="flex-1 overflow-hidden">
+            <Outlet />
+          </main>
+          <TaskBar />
+          <AudioBar />
+        </div>
         <ConfirmDialogHost />
       </div>
     </PlatformProvider>
   );
 }
 
-function FloatingActions() {
+function AppSidebar() {
   const navigate = useNavigate();
+  const [expanded, setExpanded] = useState(false);
   const { theme, setTheme } = useTheme();
-  const next = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
+  const nextTheme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
+
+  const items = [
+    { icon: Home, label: "Home", onClick: () => navigate({ to: "/" }) },
+    { icon: Settings, label: "Settings", onClick: () => navigate({ to: "/settings" }) },
+    { icon: ThemeIcon, label: `Theme: ${theme}`, onClick: () => setTheme(nextTheme) },
+  ];
+
   return (
-    <div className="fixed bottom-24 right-4 flex items-center gap-px rounded-lg bg-card border border-border shadow-sm z-50 overflow-hidden">
+    <div
+      className={`border-r border-border flex flex-col shrink-0 transition-all duration-200 ${
+        expanded ? "w-44" : "w-11"
+      }`}
+    >
+      <nav className="flex-1 py-3 flex flex-col gap-1">
+        {items.map(({ icon: Icon, label, onClick }) => (
+          <button
+            key={label}
+            onClick={onClick}
+            title={expanded ? undefined : label}
+            className="w-full flex items-center gap-3 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/50 transition"
+          >
+            <Icon className="w-4 h-4 shrink-0" />
+            {expanded && <span className="truncate text-xs">{label}</span>}
+          </button>
+        ))}
+      </nav>
       <button
-        onClick={() => navigate({ to: "/settings" })}
-        title="Settings"
-        className="p-2 text-muted-foreground hover:text-foreground hover:bg-accent transition"
+        onClick={() => setExpanded(!expanded)}
+        className="px-3 py-2 text-muted-foreground hover:text-foreground transition border-t border-border"
       >
-        <Settings className="w-4 h-4" />
-      </button>
-      <div className="w-px h-5 bg-border" />
-      <button
-        onClick={() => setTheme(next)}
-        title={`Theme: ${theme} (click for ${next})`}
-        className="p-2 text-muted-foreground hover:text-foreground hover:bg-accent transition"
-      >
-        <ThemeIcon className="w-4 h-4" />
+        {expanded ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
       </button>
     </div>
   );

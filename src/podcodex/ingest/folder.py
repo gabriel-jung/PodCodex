@@ -31,8 +31,6 @@ _TRANSCRIPT_MARKERS = frozenset(
     {
         "transcript.json",
         "transcript.raw.json",
-        "nodiar.transcript.json",
-        "nodiar.transcript.raw.json",
     }
 )
 
@@ -55,13 +53,6 @@ class EpisodeInfo:
     indexed: bool = False
     synthesized: bool = False
     translations: list[str] = field(default_factory=list)
-    # raw/validated status per step
-    raw_transcript: bool = False
-    validated_transcript: bool = False
-    raw_polished: bool = False
-    validated_polished: bool = False
-    raw_translations: list[str] = field(default_factory=list)
-    validated_translations: list[str] = field(default_factory=list)
 
     @property
     def path(self) -> Path | None:
@@ -84,41 +75,32 @@ def _episode_status(stem: str, existing: set[str]) -> dict:
 
     transcript_raw = f"{stem}.transcript.raw.json" in existing
     transcript_val = f"{stem}.transcript.json" in existing
-    nodiar_transcript_raw = f"{stem}.nodiar.transcript.raw.json" in existing
-    nodiar_transcript_val = f"{stem}.nodiar.transcript.json" in existing
-    transcribed = (
-        transcript_raw
-        or transcript_val
-        or nodiar_transcript_raw
-        or nodiar_transcript_val
-    )
+    transcribed = transcript_raw or transcript_val
 
     polished_raw = f"{stem}.polished.raw.json" in existing
     polished_val = f"{stem}.polished.json" in existing
-    nodiar_polished_raw = f"{stem}.nodiar.polished.raw.json" in existing
-    nodiar_polished_val = f"{stem}.nodiar.polished.json" in existing
-    polished = (
-        polished_raw or polished_val or nodiar_polished_raw or nodiar_polished_val
-    )
+    polished = polished_raw or polished_val
 
     indexed = ".rag_indexed" in existing
     synthesized = f"{stem}.synthesized.wav" in existing
 
     # Translations: derive from filenames
-    langs_validated: set[str] = set()
-    langs_raw: set[str] = set()
+    # New convention: {stem}.translated.{lang}.(raw.)json
+    # Legacy convention: {stem}.{lang}.(raw.)json (simple name, no dots)
+    langs: set[str] = set()
     for fname in existing:
         if not fname.startswith(f"{stem}.") or not fname.endswith(".json"):
             continue
-        suffix = fname[len(stem) + 1 : -5]
-        if suffix in _INTERNAL_SUFFIXES:
-            continue
+        suffix = fname[len(stem) + 1 : -5]  # strip "{stem}." and ".json"
         if suffix.endswith(".raw"):
-            base = suffix[:-4]
-            if base not in _INTERNAL_SUFFIXES:
-                langs_raw.add(base.removeprefix("nodiar."))
-        else:
-            langs_validated.add(suffix.removeprefix("nodiar."))
+            suffix = suffix[:-4]
+        # New convention: translated.{lang}
+        if suffix.startswith("translated."):
+            langs.add(suffix[len("translated.") :])
+            continue
+        # Legacy: simple name with no dots, not an internal suffix
+        if "." not in suffix and suffix not in _INTERNAL_SUFFIXES:
+            langs.add(suffix)
 
     return {
         "segments_ready": segments_ready,
@@ -129,19 +111,7 @@ def _episode_status(stem: str, existing: set[str]) -> dict:
         "polished": polished,
         "indexed": indexed,
         "synthesized": synthesized,
-        "translations": sorted(langs_validated | langs_raw),
-        "raw_transcript": (
-            (transcript_raw and not transcript_val)
-            or (nodiar_transcript_raw and not nodiar_transcript_val)
-        ),
-        "validated_transcript": transcript_val or nodiar_transcript_val,
-        "raw_polished": (
-            (polished_raw and not polished_val)
-            or (nodiar_polished_raw and not nodiar_polished_val)
-        ),
-        "validated_polished": polished_val or nodiar_polished_val,
-        "raw_translations": sorted(langs_raw - langs_validated),
-        "validated_translations": sorted(langs_validated),
+        "translations": sorted(langs),
     }
 
 

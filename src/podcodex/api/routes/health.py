@@ -45,7 +45,7 @@ def _get_capabilities() -> dict[str, bool]:
     return {name: _has(pkg) for name, pkg in _CAPABILITY_CHECKS.items()}
 
 
-@router.get("/api/health")
+@router.get("/health")
 async def health() -> dict:
     """Return API status and detected capabilities."""
     return {
@@ -54,7 +54,7 @@ async def health() -> dict:
     }
 
 
-@router.get("/api/system/extras")
+@router.get("/system/extras")
 async def list_extras() -> dict:
     """List installable extras and their install status."""
     caps = _get_capabilities()
@@ -77,7 +77,7 @@ async def list_extras() -> dict:
     }
 
 
-@router.get("/api/tasks/active")
+@router.get("/tasks/active")
 async def get_active_task(
     audio_path: str | None = None,
 ) -> dict | None:
@@ -102,7 +102,7 @@ async def get_active_task(
     return resp
 
 
-@router.post("/api/tasks/{task_id}/cancel")
+@router.post("/tasks/{task_id}/cancel")
 async def cancel_task(task_id: str) -> dict:
     """Cancel a running or pending task."""
     from podcodex.api.tasks import task_manager
@@ -116,7 +116,7 @@ class InstallExtraRequest(BaseModel):
     extra: str
 
 
-@router.post("/api/system/install-extra")
+@router.post("/system/install-extra")
 async def install_extra(req: InstallExtraRequest) -> dict:
     """Install a Python extra via uv sync as a background task."""
     if req.extra not in INSTALLABLE_EXTRAS:

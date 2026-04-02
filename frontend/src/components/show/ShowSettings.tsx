@@ -1,16 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
-import { updateShowMeta, syncToQdrant, getPipelineConfig, moveShow } from "@/api/client";
-import { usePipelineConfigStore, useConfigStore } from "@/stores";
+import { updateShowMeta, syncToQdrant, moveShow } from "@/api/client";
+import { useConfigStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
-import { errorMessage, languageToISO, selectClass } from "@/lib/utils";
+import { errorMessage } from "@/lib/utils";
 import SectionHeader from "@/components/common/SectionHeader";
 import ProgressBar from "@/components/editor/ProgressBar";
 import FolderPicker from "@/components/common/FolderPicker";
+import PipelineSettings from "./PipelineSettings";
 import { FolderOpen } from "lucide-react";
 
 interface ShowSettingsProps {
@@ -28,6 +29,13 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
   const [language, setLanguage] = useState(meta.language);
   const [rssUrl, setRssUrl] = useState(meta.rss_url);
   const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
+  const [pipeModelSize, setPipeModelSize] = useState(meta.pipeline?.model_size ?? "");
+  const [pipeDiarize, setPipeDiarize] = useState(meta.pipeline?.diarize ?? true);
+  const [pipeLlmMode, setPipeLlmMode] = useState(meta.pipeline?.llm_mode ?? "");
+  const [pipeLlmProvider, setPipeLlmProvider] = useState(meta.pipeline?.llm_provider ?? "");
+  const [pipeLlmModel, setPipeLlmModel] = useState(meta.pipeline?.llm_model ?? "");
+  const [pipeTargetLang, setPipeTargetLang] = useState(meta.pipeline?.target_lang ?? "");
+
   const [syncTaskId, setSyncTaskId] = useState<string | null>(null);
   const [overwrite, setOverwrite] = useState(false);
 
@@ -43,13 +51,25 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
     setLanguage(meta.language);
     setRssUrl(meta.rss_url);
     setArtworkUrl(meta.artwork_url);
+    setPipeModelSize(meta.pipeline?.model_size ?? "");
+    setPipeDiarize(meta.pipeline?.diarize ?? true);
+    setPipeLlmMode(meta.pipeline?.llm_mode ?? "");
+    setPipeLlmProvider(meta.pipeline?.llm_provider ?? "");
+    setPipeLlmModel(meta.pipeline?.llm_model ?? "");
+    setPipeTargetLang(meta.pipeline?.target_lang ?? "");
   }, [meta]);
 
   const isDirty =
     name !== meta.name ||
     language !== meta.language ||
     rssUrl !== meta.rss_url ||
-    artworkUrl !== meta.artwork_url;
+    artworkUrl !== meta.artwork_url ||
+    pipeModelSize !== (meta.pipeline?.model_size ?? "") ||
+    pipeDiarize !== (meta.pipeline?.diarize ?? true) ||
+    pipeLlmMode !== (meta.pipeline?.llm_mode ?? "") ||
+    pipeLlmProvider !== (meta.pipeline?.llm_provider ?? "") ||
+    pipeLlmModel !== (meta.pipeline?.llm_model ?? "") ||
+    pipeTargetLang !== (meta.pipeline?.target_lang ?? "");
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -59,6 +79,14 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         rss_url: rssUrl,
         speakers: meta.speakers,
         artwork_url: artworkUrl,
+        pipeline: {
+          model_size: pipeModelSize,
+          diarize: pipeDiarize,
+          llm_mode: pipeLlmMode,
+          llm_provider: pipeLlmProvider,
+          llm_model: pipeLlmModel,
+          target_lang: pipeTargetLang,
+        },
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["showMeta", folder] });
@@ -75,7 +103,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
   useEffect(() => {
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [name, language, rssUrl, artworkUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [name, language, rssUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeLlmMode, pipeLlmProvider, pipeLlmModel, pipeTargetLang]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const syncMutation = useMutation({
     mutationFn: () =>
@@ -123,28 +151,6 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
     titleInclude, setTitleInclude,
     titleExclude, setTitleExclude,
   } = useConfigStore();
-
-  // ── Pipeline config (shared store) ──
-  const tc = usePipelineConfigStore((s) => s.transcribe);
-  const setTc = usePipelineConfigStore((s) => s.setTranscribe);
-  const llm = usePipelineConfigStore((s) => s.llm);
-  const setLLM = usePipelineConfigStore((s) => s.setLLM);
-  const engine = usePipelineConfigStore((s) => s.engine);
-  const setEngine = usePipelineConfigStore((s) => s.setEngine);
-  const targetLang = usePipelineConfigStore((s) => s.targetLang);
-  const setTargetLang = usePipelineConfigStore((s) => s.setTargetLang);
-
-  const { data: pipelineConfig } = useQuery({
-    queryKey: ["pipeline-config"],
-    queryFn: getPipelineConfig,
-    staleTime: Infinity,
-  });
-
-  const whisperModels = pipelineConfig?.whisper_models ?? {};
-  const detected = pipelineConfig?.detected_keys ?? {};
-  const apiProviders = pipelineConfig
-    ? Object.entries(pipelineConfig.llm_providers).filter(([k]) => k !== "ollama")
-    : [];
 
   return (
     <div className="flex-1 overflow-y-auto p-6 space-y-8 max-w-2xl">
@@ -264,119 +270,63 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         </SettingRow>
       </SettingSection>
 
-      {/* ── Transcription ── */}
-      <SettingSection title="Transcription" description="Whisper model and diarization settings.">
-        <SettingRow label="Language" help="Derived from the show language above. This ISO code is passed to WhisperX for transcription and alignment.">
-          <span className="text-sm font-mono">
-            {languageToISO(language) || <span className="text-muted-foreground italic">auto-detect</span>}
-          </span>
+      <PipelineSettings language={language} />
+
+      {/* ── Show Pipeline Defaults (overrides app-level for status comparison) ── */}
+      <SettingSection
+        title="Show Defaults"
+        description="Override app-level pipeline settings for this show. Empty values fall back to the global config above. Episodes run with different settings show as outdated."
+      >
+        <SettingRow label="Whisper model" help="Expected transcription model. Leave empty to use the global default.">
+          <input
+            value={pipeModelSize}
+            onChange={(e) => setPipeModelSize(e.target.value)}
+            placeholder="(use global)"
+            className="input py-1 text-sm w-32"
+          />
         </SettingRow>
-        <SettingRow label="Model" help="The speech recognition model. Bigger = better but slower.">
-          <select value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectClass}>
-            {Object.keys(whisperModels).length > 0
-              ? Object.entries(whisperModels).map(([key, label]) => (
-                  <option key={key} value={key}>{label}</option>
-                ))
-              : <option value={tc.modelSize}>{tc.modelSize}</option>
-            }
+        <SettingRow label="Diarize" help="Whether transcription should include speaker diarization.">
+          <input
+            type="checkbox"
+            checked={pipeDiarize}
+            onChange={(e) => setPipeDiarize(e.target.checked)}
+            className="accent-primary"
+          />
+        </SettingRow>
+        <SettingRow label="LLM mode" help="Expected LLM mode for polish/translate. Leave empty for global default.">
+          <select
+            value={pipeLlmMode}
+            onChange={(e) => setPipeLlmMode(e.target.value)}
+            className="bg-secondary text-secondary-foreground text-sm rounded px-2 py-1 border border-border"
+          >
+            <option value="">(use global)</option>
+            <option value="ollama">Ollama</option>
+            <option value="api">API</option>
           </select>
         </SettingRow>
-        <SettingRow label="Diarize" help="Detect and label different speakers.">
-          <input type="checkbox" checked={tc.diarize} onChange={(e) => setTc({ diarize: e.target.checked })} className="accent-primary" />
+        <SettingRow label="LLM provider" help="Expected API provider (openai, anthropic, etc.). Leave empty for global default.">
+          <input
+            value={pipeLlmProvider}
+            onChange={(e) => setPipeLlmProvider(e.target.value)}
+            placeholder="(use global)"
+            className="input py-1 text-sm w-32"
+          />
         </SettingRow>
-        {tc.diarize && (
-          <>
-            <SettingRow label="HF token" help="HuggingFace token for pyannote speaker model.">
-              <input type="password" value={tc.hfToken} onChange={(e) => setTc({ hfToken: e.target.value })} placeholder={detected.hf_token || "from env"} className="input py-1 text-sm w-32" />
-            </SettingRow>
-            <SettingRow label="Speakers" help="Expected number of speakers (empty = auto).">
-              <input type="number" value={tc.numSpeakers} onChange={(e) => setTc({ numSpeakers: e.target.value })} placeholder="auto" min={1} className="input py-1 text-sm w-16" />
-            </SettingRow>
-          </>
-        )}
-        <SettingRow label="Batch size" help="GPU batch size for transcription.">
-          <input type="number" value={tc.batchSize} onChange={(e) => setTc({ batchSize: Number(e.target.value) })} min={1} className="input py-1 text-sm w-16" />
+        <SettingRow label="LLM model" help="Expected LLM model name. Leave empty for global default.">
+          <input
+            value={pipeLlmModel}
+            onChange={(e) => setPipeLlmModel(e.target.value)}
+            placeholder="(use global)"
+            className="input py-1 text-sm w-32"
+          />
         </SettingRow>
-        <SettingRow label="Transcript engine" help="Which engine produced the transcript (used in polish/translate prompts to guide error correction).">
-          <select value={engine} onChange={(e) => setEngine(e.target.value)} className={selectClass}>
-            <option value="Whisper">Whisper</option>
-            <option value="Voxtral">Voxtral</option>
-          </select>
-        </SettingRow>
-      </SettingSection>
-
-      {/* ── LLM Settings ── */}
-      <SettingSection title="LLM" description="AI model configuration for Polish and Translate steps.">
-        <SettingRow label="Mode" help="Ollama = local GPU. API = cloud service.">
-          <div className="flex gap-3">
-            {(["ollama", "api"] as const).map((m) => (
-              <label key={m} className="flex items-center gap-1 cursor-pointer text-sm">
-                <input type="radio" checked={llm.mode === m} onChange={() => setLLM({ mode: m })} className="accent-primary" />
-                <span>{m}</span>
-              </label>
-            ))}
-          </div>
-        </SettingRow>
-
-        {llm.mode === "api" && (
-          <SettingRow label="Provider" help="Cloud AI service to use.">
-            <select value={llm.provider} onChange={(e) => setLLM({ provider: e.target.value })} className={selectClass}>
-              {apiProviders.length > 0
-                ? apiProviders.map(([key, spec]) => (
-                    <option key={key} value={key}>{spec.label}</option>
-                  ))
-                : <option value={llm.provider}>{llm.provider}</option>
-              }
-            </select>
-          </SettingRow>
-        )}
-
-        <SettingRow label="Model" help="AI model name (empty = provider default).">
-          <input value={llm.model} onChange={(e) => setLLM({ model: e.target.value })} placeholder="auto" className="input py-1 text-sm w-32" />
-        </SettingRow>
-
-        {llm.mode === "api" && (
-          <>
-            <SettingRow label="Endpoint" help="Custom API endpoint URL.">
-              <input value={llm.apiBaseUrl} onChange={(e) => setLLM({ apiBaseUrl: e.target.value })} placeholder="default" className="input py-1 text-sm w-40" />
-            </SettingRow>
-            <SettingRow label="API key" help="Authentication key.">
-              <input type="password" value={llm.apiKey} onChange={(e) => setLLM({ apiKey: e.target.value })} placeholder={detected[llm.provider] || "from env"} className="input py-1 text-sm w-32" />
-            </SettingRow>
-          </>
-        )}
-
-        <SettingRow label="Batch duration" help="Maximum audio duration (minutes) per LLM request.">
-          <div className="flex items-center gap-1.5">
-            <input type="number" value={llm.batchMinutes} onChange={(e) => setLLM({ batchMinutes: Number(e.target.value) })} min={1} step={5} className="input py-1 text-sm w-16" />
-            <span className="text-xs text-muted-foreground">min</span>
-          </div>
-        </SettingRow>
-
-        <SettingRow label="Source language" help="Language spoken in the podcast.">
-          <input value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className="input py-1 text-sm w-24" />
-        </SettingRow>
-
-        <SettingRow
-          label="Context"
-          help="Describe the podcast, hosts, topics for better AI results."
-          below={
-            <textarea
-              value={llm.context}
-              onChange={(e) => setLLM({ context: e.target.value })}
-              placeholder="Describe the podcast, hosts, topics..."
-              className="input py-1 text-sm resize-y w-full min-h-[4rem]"
-            />
-          }
-        >
-          <span />
-        </SettingRow>
-      </SettingSection>
-
-      {/* ── Translation ── */}
-      <SettingSection title="Translation" description="Target language for AI translation.">
-        <SettingRow label="Target language" help="Language to translate into.">
-          <input value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className="input py-1 text-sm w-24" />
+        <SettingRow label="Target language" help="Expected translation target language. Leave empty for global default.">
+          <input
+            value={pipeTargetLang}
+            onChange={(e) => setPipeTargetLang(e.target.value)}
+            placeholder="(use global)"
+            className="input py-1 text-sm w-32"
+          />
         </SettingRow>
       </SettingSection>
 

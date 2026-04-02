@@ -14,18 +14,11 @@
 
 **Ingest** — RSS feed parsing, episode download, folder scanning, transcript import
 
+**Generation versioning** — `.versions/{step}/` per episode archives every pipeline output with provenance (model, params, manual edit flag, content hash), History dropdown in editor toolbar, API endpoints per step
+
 ---
 
 ## Next Up
-
-### Phase L: Generation Versioning
-
-**Goal**: keep N versions of each pipeline step output with full provenance.
-
-- Timestamp, model name/size, pipeline parameters per version
-- Content hash, manual edit flag, parent version link
-- Version picker per pipeline step in UI
-- Schema change that other features (speaker entity, simple mode) can build on
 
 ### Phase M: Speaker Entity + Auto-Mapping
 

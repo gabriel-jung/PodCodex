@@ -12,7 +12,7 @@ from podcodex.api.routes._helpers import AUDIO_EXTS
 router = APIRouter()
 
 
-@router.get("/api/audio/file")
+@router.get("/file")
 async def serve_audio_file(
     path: str = Query(..., description="Absolute path to audio file"),
 ):
@@ -32,7 +32,7 @@ async def serve_audio_file(
     return FileResponse(p, media_type=media_type)
 
 
-@router.get("/api/audio/clip")
+@router.get("/clip")
 async def serve_audio_clip(
     path: str = Query(...),
     start: float = Query(0.0),
@@ -75,7 +75,7 @@ async def serve_audio_clip(
         return FileResponse(p, media_type="audio/mpeg")
 
 
-@router.delete("/api/audio/file")
+@router.delete("/file")
 async def delete_audio_file(
     path: str = Query(..., description="Absolute path to audio file"),
 ):

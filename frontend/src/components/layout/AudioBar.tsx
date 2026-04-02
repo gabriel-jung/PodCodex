@@ -134,7 +134,6 @@ export default function AudioBar() {
       <audio
         ref={audioRef}
         src={audioFileUrl(audioPath)}
-        autoPlay
         onPlay={() => { setPlaying(true); useAudioStore.setState({ isPlaying: true }); }}
         onPause={() => { setPlaying(false); useAudioStore.setState({ isPlaying: false }); }}
         onEnded={() => { setPlaying(false); useAudioStore.setState({ isPlaying: false }); }}

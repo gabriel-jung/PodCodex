@@ -161,43 +161,26 @@ def _select_episode(episode) -> None:
 
     od = str(episode.output_dir)
 
-    # Auto-detect nodiar mode
+    # Auto-detect whether diarization was used (for UI toggle state)
+    skip_diar = False
     if episode.path:
-        nodiar = False
-        p_diar = AudioPaths.from_audio(episode.path, output_dir=od)
-        p_nodiar = AudioPaths.from_audio(episode.path, output_dir=od, nodiar=True)
-        if p_nodiar.transcript_best.exists() and not p_diar.transcript_best.exists():
-            nodiar = True
-        elif p_diar.transcript_best.exists():
+        p = AudioPaths.from_audio(episode.path, output_dir=od)
+        if p.transcript_best.exists():
             full = load_transcript_full(episode.path, output_dir=od)
-            nodiar = not full.get("meta", {}).get("diarized", True)
-    else:
-        # Transcript-only: detect nodiar from file naming (same logic as audio)
-        pseudo = episode.output_dir / f"{episode.stem}.audio"
-        p_diar = AudioPaths.from_audio(pseudo, output_dir=od)
-        p_nodiar = AudioPaths.from_audio(pseudo, output_dir=od, nodiar=True)
-        nodiar = (
-            p_nodiar.transcript_best.exists() and not p_diar.transcript_best.exists()
-        )
-    st.session_state["skip_diarization"] = nodiar
-    st.session_state["_prev_skip_diarization"] = nodiar
-    logger.debug(f"nodiar={nodiar}, audio_path={audio_path}")
+            skip_diar = not full.get("meta", {}).get("diarized", True)
+    st.session_state["skip_diarization"] = skip_diar
+    logger.debug(f"skip_diarization={skip_diar}, audio_path={audio_path}")
 
     # Load transcript, polished, and translations using the (pseudo) audio path
     st.session_state.transcript = (
-        load_transcript(audio_path, output_dir=od, nodiar=nodiar)
-        if episode.transcribed
-        else None
+        load_transcript(audio_path, output_dir=od) if episode.transcribed else None
     )
     st.session_state.polished = (
-        load_polished(audio_path, output_dir=od, nodiar=nodiar)
-        if episode.polished
-        else None
+        load_polished(audio_path, output_dir=od) if episode.polished else None
     )
-    langs = list_translations(audio_path, output_dir=od, nodiar=nodiar)
+    langs = list_translations(audio_path, output_dir=od)
     st.session_state.translations = {
-        lang: load_translation(audio_path, lang, output_dir=od, nodiar=nodiar)
-        for lang in langs
+        lang: load_translation(audio_path, lang, output_dir=od) for lang in langs
     }
 
     n_segs = len(st.session_state.transcript) if st.session_state.transcript else 0

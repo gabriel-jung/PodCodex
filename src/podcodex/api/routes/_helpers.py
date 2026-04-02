@@ -6,12 +6,10 @@ import json
 from pathlib import Path
 
 from fastapi import HTTPException
+from loguru import logger
 
 from podcodex.api.schemas import TaskResponse
-from podcodex.core._utils import (
-    UNKNOWN_SPEAKERS,
-    save_segments_json as _core_save_segments,
-)
+from podcodex.core._utils import UNKNOWN_SPEAKERS
 
 # ── Shared constants ────────────────────────────
 
@@ -71,7 +69,8 @@ def read_segments(path: Path) -> list[dict] | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Failed to read segments from {}: {}", path, exc)
         return None
 
     if isinstance(data, list):
@@ -104,12 +103,12 @@ def annotate_flags(segments: list[dict]) -> list[dict]:
     return segments
 
 
-def save_segments_json(
-    path: Path, segments: list[dict], label: str = "Segments"
-) -> int:
-    """Write segments to a JSON file. Returns the segment count."""
-    _core_save_segments(path, segments, label)
-    return len(segments)
+def load_segments_or_404(path: Path, label: str = "segments") -> list[dict]:
+    """Load and annotate segments from a path, raising 404 if not found."""
+    data = read_segments(path)
+    if data is None:
+        raise HTTPException(404, f"No {label} found")
+    return annotate_flags(data)
 
 
 def load_best_source(audio_path: str, output_dir: str | None = None) -> list[dict]:

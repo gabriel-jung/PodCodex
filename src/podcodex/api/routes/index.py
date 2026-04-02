@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import submit_task
 from podcodex.api.schemas import TaskResponse
@@ -135,6 +135,20 @@ class IndexRequest(BaseModel):
     threshold: float = 0.5
     overwrite: bool = False
 
+    @field_validator("chunk_size")
+    @classmethod
+    def chunk_size_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("chunk_size must be at least 1")
+        return v
+
+    @field_validator("threshold")
+    @classmethod
+    def threshold_in_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("threshold must be between 0.0 and 1.0")
+        return v
+
 
 @router.post("/start", response_model=TaskResponse)
 async def start_index(req: IndexRequest) -> TaskResponse:
@@ -175,6 +189,18 @@ async def start_index(req: IndexRequest) -> TaskResponse:
             transcript["meta"].setdefault("episode", episode)
             transcript["meta"].setdefault("source", source_label)
 
+        # Inject RSS metadata (episode title, pub_date) for chunker
+        from podcodex.ingest.rss import load_episode_meta
+
+        ep_meta = load_episode_meta(p.base.parent)
+        if ep_meta:
+            if ep_meta.title:
+                transcript["meta"].setdefault("rss_title", ep_meta.title)
+            if ep_meta.pub_date:
+                transcript["meta"].setdefault("rss_pub_date", ep_meta.pub_date)
+            if ep_meta.episode_number is not None:
+                transcript["meta"].setdefault("episode_number", ep_meta.episode_number)
+
         # Open LocalStore at show level
         db_path = p.vectors_db
         local = LocalStore(db_path)
@@ -204,6 +230,25 @@ async def start_index(req: IndexRequest) -> TaskResponse:
         # Touch marker file for status detection
         marker = p.base.parent / ".rag_indexed"
         marker.touch()
+
+        from podcodex.core.pipeline_db import mark_step
+
+        provenance = {
+            "step": "indexed",
+            "type": "raw",
+            "model": (req_data.model_keys or ["bge-m3"])[0],
+            "params": {
+                "model_keys": req_data.model_keys,
+                "chunkings": req_data.chunkings,
+                "chunk_size": req_data.chunk_size,
+                "threshold": req_data.threshold,
+                "overwrite": req_data.overwrite,
+            },
+            "manual_edit": False,
+        }
+        mark_step(
+            p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance}
+        )
 
         return {
             "chunks_upserted": total_upserted,

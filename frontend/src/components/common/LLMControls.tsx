@@ -9,7 +9,7 @@ import HelpLabel from "./HelpLabel";
 import MissingDependency from "./MissingDependency";
 import ManualModePanel from "./ManualModePanel";
 
-export type LLMMode = "ollama" | "api" | "manual";
+export type LLMMode = "api" | "ollama" | "manual";
 
 export interface LLMConfig {
   mode: LLMMode;
@@ -51,7 +51,7 @@ export default function LLMControls({
   const hasOllama = hasCap("ollama");
   const hasOpenAI = hasCap("openai");
   const hasLLM = hasOllama || hasOpenAI;
-  const modes: LLMMode[] = manualPrompts ? ["ollama", "api", "manual"] : ["ollama", "api"];
+  const modes: LLMMode[] = manualPrompts ? ["api", "ollama", "manual"] : ["api", "ollama"];
 
   const { data: pipelineConfig } = useQuery({
     queryKey: ["pipeline-config"],

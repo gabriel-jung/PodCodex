@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import annotate_flags, read_segments, submit_task
+from podcodex.api.routes._helpers import load_segments_or_404, submit_task
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths, merge_consecutive_segments, write_json
+from podcodex.core.pipeline_db import mark_step
+from podcodex.core.versions import save_version
 
 router = APIRouter()
 
@@ -22,25 +24,15 @@ async def get_segments(
     audio_path: str = Query(..., description="Absolute path to audio file"),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
-    """Load transcript segments (prefers validated over raw)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    data = read_segments(p.transcript_best)
-    if data is None:
-        raise HTTPException(404, "No transcript found")
-    return annotate_flags(data)
+    """Load transcript segments (latest version, falls back to legacy files)."""
+    from podcodex.api.routes._helpers import annotate_flags
+    from podcodex.core.versions import load_latest
 
-
-@router.get("/segments/raw")
-async def get_segments_raw(
-    audio_path: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> list[dict]:
-    """Load raw (unvalidated) transcript segments."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    data = read_segments(p.transcript_raw)
-    if data is None:
-        raise HTTPException(404, "No raw transcript found")
-    return annotate_flags(data)
+    segments = load_latest(p.base, "transcript")
+    if segments is not None:
+        return annotate_flags(segments)
+    return load_segments_or_404(p.transcript_best, "transcript")
 
 
 @router.put("/segments")
@@ -53,21 +45,51 @@ async def save_segments(
     from podcodex.core.transcribe import save_transcript
 
     seg_dicts = [s.model_dump() for s in segments]
-    save_transcript(audio_path, seg_dicts, output_dir=output_dir)
+    provenance = {
+        "step": "transcript",
+        "type": "validated",
+        "model": None,
+        "params": {},
+        "manual_edit": True,
+    }
+    save_transcript(
+        audio_path,
+        seg_dicts,
+        output_dir=output_dir,
+        provenance=provenance,
+    )
     return {"status": "saved", "count": len(seg_dicts)}
 
 
-@router.get("/version-info")
-async def version_info(
+# ── Version history ──────────────────────────────────────
+
+
+@router.get("/versions")
+async def list_transcribe_versions(
     audio_path: str = Query(...),
     output_dir: str | None = Query(None),
-) -> dict:
-    """Return which transcript versions exist."""
+) -> list[dict]:
+    """List all archived transcript versions (newest first)."""
+    from podcodex.core.versions import list_versions
+
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    return {
-        "has_raw": p.transcript_raw.exists(),
-        "has_validated": p.transcript.exists(),
-    }
+    return list_versions(p.base, "transcript")
+
+
+@router.get("/versions/{version_id}")
+async def load_transcribe_version(
+    version_id: str,
+    audio_path: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> list[dict]:
+    """Load segments from a specific archived transcript version."""
+    from podcodex.core.versions import load_version
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    try:
+        return load_version(p.base, "transcript", version_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Version {version_id} not found")
 
 
 # ── Speaker map ──────────────────────────────────────────
@@ -147,6 +169,19 @@ async def upload_transcript(
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     p.base.parent.mkdir(parents=True, exist_ok=True)
     write_json(p.transcript_raw, {"segments": segments})
+
+    provenance = {
+        "step": "transcript",
+        "type": "raw",
+        "model": None,
+        "params": {"source": "upload", "filename": file.filename},
+        "manual_edit": False,
+    }
+    save_version(p.base, "transcript", segments, provenance)
+    mark_step(
+        p.show_dir, p.base.name, transcribed=True, provenance={"transcript": provenance}
+    )
+
     return {"status": "uploaded", "count": len(segments)}
 
 
@@ -165,6 +200,20 @@ class TranscribeRequest(BaseModel):
     num_speakers: int | None = None
     show: str = ""
     episode: str = ""
+
+    @field_validator("batch_size")
+    @classmethod
+    def batch_size_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("batch_size must be at least 1")
+        return v
+
+    @field_validator("num_speakers")
+    @classmethod
+    def num_speakers_positive(cls, v: int | None) -> int | None:
+        if v is not None and v < 1:
+            raise ValueError("num_speakers must be at least 1")
+        return v
 
 
 @router.post("/start", response_model=TaskResponse)
@@ -207,12 +256,25 @@ async def start_transcribe(req: TranscribeRequest) -> TaskResponse:
             )
 
         progress_cb(0.75, "Exporting transcript...")
+        provenance = {
+            "step": "transcript",
+            "type": "raw",
+            "model": req_data.model_size,
+            "params": {
+                "language": req_data.language or None,
+                "batch_size": req_data.batch_size,
+                "diarize": req_data.diarize,
+                "num_speakers": req_data.num_speakers,
+            },
+            "manual_edit": False,
+        }
         segments = export_transcript(
             req_data.audio_path,
             output_dir=req_data.output_dir,
             show=req_data.show,
             episode=req_data.episode,
             diarized=req_data.diarize,
+            provenance=provenance,
         )
         return {"count": len(segments)}
 

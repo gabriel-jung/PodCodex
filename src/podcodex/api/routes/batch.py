@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from loguru import logger
+from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import submit_task
 from podcodex.api.schemas import TaskResponse
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
 
 
 class BatchRequest(BaseModel):
@@ -45,6 +44,20 @@ class BatchRequest(BaseModel):
     show_name: str = ""
     index_model_keys: list[str] = ["bge-m3"]
     index_chunkings: list[str] = ["semantic"]
+
+    @field_validator("batch_size")
+    @classmethod
+    def batch_size_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("batch_size must be at least 1")
+        return v
+
+    @field_validator("llm_batch_minutes")
+    @classmethod
+    def batch_minutes_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("llm_batch_minutes must be positive")
+        return v
 
 
 # Step weights for progress calculation (must sum to 1.0 when all enabled)
@@ -81,23 +94,309 @@ async def start_batch(req: BatchRequest) -> TaskResponse:
     return submit_task("batch", req.show_folder, _run_batch, req)
 
 
-def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
-    """Sequential batch pipeline: loop episodes, run enabled steps."""
-    from podcodex.core._utils import AudioPaths
+def _batch_transcribe(
+    audio_path, stem, p, req, status, cancelled, ep_progress, i, step_offset
+):
+    """Run transcribe sub-steps. Returns True if work was done.
+
+    Sub-steps (transcribe, diarize, assign) use filesystem status flags
+    since they produce intermediate parquet files, not versioned outputs.
+    The final export step checks the version DB for param matching.
+    """
     from podcodex.core.transcribe import (
         assign_speakers,
         diarize_file,
         export_transcript,
-        processing_status,
         transcribe_file,
     )
+
+    sw = _STEP_WEIGHTS["transcribe"]
+    did_work = False
+
+    # Check if a matching transcript version already exists (skip the whole thing)
+    from podcodex.core.versions import has_matching_version
+
+    match_params = {
+        "model": req.model_size,
+        "diarize": req.diarize,
+    }
+    if req.language:
+        match_params["language"] = req.language
+    if has_matching_version(p.base, "transcript", match_params):
+        return False
+
+    if not status["transcribed"]:
+        did_work = True
+        ep_progress(i, step_offset, sw, 0.0, "Transcribing...")
+        transcribe_file(
+            audio_path,
+            model_size=req.model_size,
+            language=req.language or None,
+            batch_size=req.batch_size,
+        )
+
+    if not cancelled() and req.diarize and not status["diarized"]:
+        did_work = True
+        ep_progress(i, step_offset, sw, 0.4, "Diarizing...")
+        diarize_file(
+            audio_path,
+            hf_token=req.hf_token,
+            num_speakers=req.num_speakers,
+        )
+
+    if not cancelled() and req.diarize and not status["assigned"]:
+        did_work = True
+        ep_progress(i, step_offset, sw, 0.7, "Assigning speakers...")
+        assign_speakers(audio_path)
+
+    if not cancelled() and not status["exported"]:
+        did_work = True
+        ep_progress(i, step_offset, sw, 0.9, "Exporting transcript...")
+        provenance = {
+            "step": "transcript",
+            "type": "raw",
+            "model": req.model_size,
+            "params": {
+                "language": req.language or None,
+                "batch_size": req.batch_size,
+                "diarize": req.diarize,
+                "num_speakers": req.num_speakers,
+            },
+            "manual_edit": False,
+        }
+        export_transcript(
+            audio_path,
+            show=req.show_name,
+            episode=stem,
+            diarized=req.diarize,
+            provenance=provenance,
+        )
+
+    return did_work
+
+
+def _batch_polish(audio_path, p, req, cancelled, ep_progress, i, step_offset):
+    """Run polish step. Returns True if work was done.
+
+    Skips if a version already exists with matching LLM params.
+    """
+    from podcodex.core.versions import has_matching_version
+
+    sw = _STEP_WEIGHTS["polish"]
+    match_params = {
+        "model": req.llm_model,
+        "mode": req.llm_mode,
+        "provider": req.llm_provider,
+        "source_lang": req.source_lang,
+    }
+    if has_matching_version(p.base, "polished", match_params):
+        return False
+
+    # Need source segments to polish
+    from podcodex.core.transcribe import load_transcript
+
+    segments = load_transcript(audio_path)
+    if not segments:
+        return False
+
+    ep_progress(i, step_offset, sw, 0.0, "Polishing...")
+
+    from podcodex.core.polish import polish_segments, save_polished_raw
+
+    polished = polish_segments(
+        segments,
+        mode=req.llm_mode,
+        context=req.context,
+        source_lang=req.source_lang,
+        model=req.llm_model,
+        batch_minutes=req.llm_batch_minutes,
+        provider=req.llm_provider,
+        engine=req.engine,
+        api_base_url=req.llm_api_base_url,
+        api_key=req.llm_api_key,
+        original_segments=segments,
+        merge=False,
+    )
+    provenance = {
+        "step": "polished",
+        "type": "raw",
+        "model": req.llm_model,
+        "params": {
+            "mode": req.llm_mode,
+            "provider": req.llm_provider,
+            "source_lang": req.source_lang,
+            "batch_minutes": req.llm_batch_minutes,
+            "engine": req.engine,
+        },
+        "manual_edit": False,
+    }
+    save_polished_raw(audio_path, polished, provenance=provenance)
+    return True
+
+
+def _batch_translate(audio_path, p, req, cancelled, ep_progress, i, step_offset):
+    """Run translate step. Returns True if work was done.
+
+    Skips if a version already exists with matching LLM params for the
+    target language.
+    """
+    from podcodex.core.versions import has_matching_version
+
+    sw = _STEP_WEIGHTS["translate"]
+    lang_norm = req.target_lang.lower().strip().replace(" ", "_")
+    match_params = {
+        "model": req.llm_model,
+        "mode": req.llm_mode,
+        "provider": req.llm_provider,
+        "source_lang": req.source_lang,
+        "target_lang": req.target_lang,
+    }
+    if has_matching_version(p.base, lang_norm, match_params):
+        return False
+
+    # Need source segments to translate
+    from podcodex.api.routes._helpers import load_best_source
+
+    try:
+        segments = load_best_source(audio_path)
+    except ValueError:
+        return False
+
+    ep_progress(i, step_offset, sw, 0.0, "Translating...")
+
+    from podcodex.core.translate import save_translation_raw, translate_segments
+
+    translated = translate_segments(
+        segments,
+        mode=req.llm_mode,
+        context=req.context,
+        source_lang=req.source_lang,
+        target_lang=req.target_lang,
+        model=req.llm_model,
+        batch_minutes=req.llm_batch_minutes,
+        provider=req.llm_provider,
+        api_base_url=req.llm_api_base_url,
+        api_key=req.llm_api_key,
+        original_segments=segments,
+        merge=False,
+    )
+    provenance = {
+        "step": lang_norm,
+        "type": "raw",
+        "model": req.llm_model,
+        "params": {
+            "mode": req.llm_mode,
+            "provider": req.llm_provider,
+            "source_lang": req.source_lang,
+            "target_lang": req.target_lang,
+            "batch_minutes": req.llm_batch_minutes,
+        },
+        "manual_edit": False,
+    }
+    save_translation_raw(
+        audio_path,
+        translated,
+        req.target_lang,
+        provenance=provenance,
+    )
+    return True
+
+
+def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offset):
+    """Run index step. Returns True if work was done."""
+    import json
+
+    sw = _STEP_WEIGHTS["index"]
+    marker = p.base.parent / ".rag_indexed"
+
+    if marker.exists():
+        return False
+
+    # Need a transcript to index — try version DB first, then legacy files
+    from podcodex.core.transcribe import load_transcript
+
+    segments = load_transcript(audio_path)
+    if not segments:
+        return False
+
+    ep_progress(i, step_offset, sw, 0.0, "Indexing...")
+
+    # Build transcript dict for the vectorize pipeline
+    # Try to use the best source file for the resolver; fall back to segments
+    from podcodex.cli import _resolve_source, _source_label, vectorize_batch
+    from podcodex.rag.localstore import LocalStore
+
+    transcript_path = p.transcript_best
+    if transcript_path.exists():
+        source_path = _resolve_source(transcript_path, "auto")
+        source_label = _source_label(source_path, transcript_path)
+        data = json.loads(source_path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            transcript = {
+                "meta": {
+                    "show": req.show_name,
+                    "episode": stem,
+                    "source": source_label,
+                },
+                "segments": data,
+            }
+        else:
+            transcript = data
+            transcript.setdefault("meta", {})
+            transcript["meta"].setdefault("show", req.show_name)
+            transcript["meta"].setdefault("episode", stem)
+            transcript["meta"].setdefault("source", source_label)
+    else:
+        # No legacy file — use version-loaded segments directly
+        transcript = {
+            "meta": {
+                "show": req.show_name,
+                "episode": stem,
+                "source": "version",
+            },
+            "segments": segments,
+        }
+
+    db_path = p.vectors_db
+    local = LocalStore(db_path)
+    try:
+        vectorize_batch(
+            transcript,
+            req.show_name,
+            stem,
+            req.index_model_keys,
+            req.index_chunkings,
+            local,
+        )
+    finally:
+        local.close()
+    marker.touch()
+
+    from podcodex.core.pipeline_db import mark_step
+
+    provenance = {
+        "step": "indexed",
+        "type": "raw",
+        "model": (req.index_model_keys or ["bge-m3"])[0],
+        "params": {
+            "model_keys": req.index_model_keys,
+            "chunkings": req.index_chunkings,
+        },
+        "manual_edit": False,
+    }
+    mark_step(p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance})
+    return True
+
+
+def _run_batch(progress_cb, req: BatchRequest):
+    """Sequential batch pipeline: loop episodes, run enabled steps."""
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.transcribe import processing_status
     from podcodex.ingest.folder import invalidate_scan_cache
 
     from podcodex.api.tasks import task_manager
 
     cancel = getattr(progress_cb, "cancel_event", None)
-    # The batch task_id is the lock value set by submit() on req.show_folder.
-    # Read it once — cancel() may remove it later.
     batch_task_id = task_manager.get_active(req.show_folder)
     batch_task_id = batch_task_id.task_id if batch_task_id else "batch"
     total = len(req.audio_paths)
@@ -113,28 +412,23 @@ def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
     def ep_progress(
         ep_idx: int, step_offset: float, step_weight: float, frac: float, msg: str
     ):
-        """Report compound progress: episode position + step fraction."""
         ep_frac = (step_offset + frac * step_weight) / weight
         overall = (ep_idx + ep_frac) / total
         progress_cb(overall, f"[{ep_idx + 1}/{total}] {msg}")
 
     for i, audio_path in enumerate(req.audio_paths):
-        # Check cancellation between episodes
         if _cancelled():
             progress_cb(i / total, "Cancelled")
             break
 
         stem = Path(audio_path).stem
 
-        # Skip if an individual task is running on this episode
         if task_manager.get_active(audio_path):
             progress_cb((i + 1) / total, f"[{i + 1}/{total}] Skipped (task running)")
             skipped += 1
             continue
 
-        # Lock this episode for the duration of processing
         task_manager.lock(audio_path, batch_task_id)
-
         progress_cb(i / total, f"[{i + 1}/{total}] Starting...")
         ep_had_work = False
 
@@ -143,169 +437,42 @@ def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
             p = AudioPaths.from_audio(audio_path)
             step_offset = 0.0
 
-            # ── Transcribe ──
             if req.transcribe and not _cancelled():
-                sw = _STEP_WEIGHTS["transcribe"]
-                if not status["transcribed"]:
+                if _batch_transcribe(
+                    audio_path,
+                    stem,
+                    p,
+                    req,
+                    status,
+                    _cancelled,
+                    ep_progress,
+                    i,
+                    step_offset,
+                ):
                     ep_had_work = True
-                    ep_progress(i, step_offset, sw, 0.0, "Transcribing...")
-                    transcribe_file(
-                        audio_path,
-                        model_size=req.model_size,
-                        language=req.language or None,
-                        batch_size=req.batch_size,
-                    )
+                step_offset += _STEP_WEIGHTS["transcribe"]
 
-                if not _cancelled() and req.diarize and not status["diarized"]:
-                    ep_had_work = True
-                    ep_progress(i, step_offset, sw, 0.4, "Diarizing...")
-                    diarize_file(
-                        audio_path,
-                        hf_token=req.hf_token,
-                        num_speakers=req.num_speakers,
-                    )
-
-                if not _cancelled() and req.diarize and not status["assigned"]:
-                    ep_had_work = True
-                    ep_progress(i, step_offset, sw, 0.7, "Assigning speakers...")
-                    assign_speakers(audio_path)
-
-                if not _cancelled() and not status["exported"]:
-                    ep_had_work = True
-                    ep_progress(i, step_offset, sw, 0.9, "Exporting transcript...")
-                    export_transcript(
-                        audio_path,
-                        show=req.show_name,
-                        episode=stem,
-                        diarized=req.diarize,
-                    )
-
-                step_offset += sw
-
-            # ── Polish ──
             if req.polish and not _cancelled():
-                sw = _STEP_WEIGHTS["polish"]
-                if not p.has_polished() and (
-                    p.transcript.exists() or p.transcript_raw.exists()
+                if _batch_polish(
+                    audio_path, p, req, _cancelled, ep_progress, i, step_offset
                 ):
                     ep_had_work = True
-                    ep_progress(i, step_offset, sw, 0.0, "Polishing...")
+                step_offset += _STEP_WEIGHTS["polish"]
 
-                    from podcodex.core.polish import polish_segments, save_polished_raw
-                    from podcodex.core.transcribe import load_transcript
-
-                    segments = load_transcript(audio_path)
-                    if segments:
-                        polished = polish_segments(
-                            segments,
-                            mode=req.llm_mode,
-                            context=req.context,
-                            source_lang=req.source_lang,
-                            model=req.llm_model,
-                            batch_minutes=req.llm_batch_minutes,
-                            provider=req.llm_provider,
-                            engine=req.engine,
-                            api_base_url=req.llm_api_base_url,
-                            api_key=req.llm_api_key,
-                            original_segments=segments,
-                            merge=False,
-                        )
-                        save_polished_raw(audio_path, polished)
-
-                step_offset += sw
-
-            # ── Translate ──
             if req.translate and req.target_lang and not _cancelled():
-                sw = _STEP_WEIGHTS["translate"]
-                if not p.has_translation(req.target_lang) and (
-                    p.has_polished()
-                    or p.transcript.exists()
-                    or p.transcript_raw.exists()
+                if _batch_translate(
+                    audio_path, p, req, _cancelled, ep_progress, i, step_offset
                 ):
                     ep_had_work = True
-                    ep_progress(i, step_offset, sw, 0.0, "Translating...")
+                step_offset += _STEP_WEIGHTS["translate"]
 
-                    from podcodex.api.routes._helpers import load_best_source
-                    from podcodex.core.translate import (
-                        save_translation_raw,
-                        translate_segments,
-                    )
-
-                    segments = load_best_source(audio_path)
-                    translated = translate_segments(
-                        segments,
-                        mode=req.llm_mode,
-                        context=req.context,
-                        source_lang=req.source_lang,
-                        target_lang=req.target_lang,
-                        model=req.llm_model,
-                        batch_minutes=req.llm_batch_minutes,
-                        provider=req.llm_provider,
-                        api_base_url=req.llm_api_base_url,
-                        api_key=req.llm_api_key,
-                        original_segments=segments,
-                        merge=False,
-                    )
-                    save_translation_raw(audio_path, translated, req.target_lang)
-
-                step_offset += sw
-
-            # ── Index ──
             if req.index and not _cancelled():
-                sw = _STEP_WEIGHTS["index"]
-                marker = p.base.parent / ".rag_indexed"
-
-                if not marker.exists() and p.transcript_best.exists():
+                if _batch_index(
+                    audio_path, stem, p, req, _cancelled, ep_progress, i, step_offset
+                ):
                     ep_had_work = True
-                    ep_progress(i, step_offset, sw, 0.0, "Indexing...")
-
-                    import json
-
-                    from podcodex.cli import (
-                        _resolve_source,
-                        _source_label,
-                        vectorize_batch,
-                    )
-                    from podcodex.rag.localstore import LocalStore
-
-                    transcript_path = p.transcript_best
-                    source_path = _resolve_source(transcript_path, "auto")
-                    source_label = _source_label(source_path, transcript_path)
-
-                    data = json.loads(source_path.read_text(encoding="utf-8"))
-                    if isinstance(data, list):
-                        transcript = {
-                            "meta": {
-                                "show": req.show_name,
-                                "episode": stem,
-                                "source": source_label,
-                            },
-                            "segments": data,
-                        }
-                    else:
-                        transcript = data
-                        transcript.setdefault("meta", {})
-                        transcript["meta"].setdefault("show", req.show_name)
-                        transcript["meta"].setdefault("episode", stem)
-                        transcript["meta"].setdefault("source", source_label)
-
-                    db_path = p.vectors_db
-                    local = LocalStore(db_path)
-                    try:
-                        vectorize_batch(
-                            transcript,
-                            req.show_name,
-                            stem,
-                            req.index_model_keys,
-                            req.index_chunkings,
-                            local,
-                        )
-                    finally:
-                        local.close()
-                    marker.touch()
 
             if _cancelled():
-                # Partially processed — count what was done but don't mark complete
                 if ep_had_work:
                     completed += 1
                 progress_cb((i + 1) / total, f"[{i + 1}/{total}] Cancelled")
@@ -320,21 +487,20 @@ def _run_batch(progress_cb, req: BatchRequest):  # noqa: C901
                 progress_cb((i + 1) / total, f"[{i + 1}/{total}] Done")
 
         except Exception as exc:
-            logger.exception("Batch: episode %s failed", stem)
+            logger.exception("Batch: episode {} failed", stem)
             failed += 1
             errors.append({"episode": stem, "error": str(exc)})
             progress_cb((i + 1) / total, f"[{i + 1}/{total}] Failed: {exc}")
 
         finally:
-            # Release per-episode lock
             task_manager.unlock(audio_path)
 
-        # Invalidate scan cache after each episode so UI updates
         try:
-            ap = Path(audio_path)
-            invalidate_scan_cache(ap.parent)
+            invalidate_scan_cache(Path(audio_path).parent)
         except Exception:
-            pass
+            logger.opt(exception=True).debug(
+                "Failed to invalidate scan cache for {}", audio_path
+            )
 
     return {
         "total": total,

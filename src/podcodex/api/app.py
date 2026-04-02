@@ -55,10 +55,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(health.router)
-    app.include_router(config.router, tags=["config"])
-    app.include_router(audio.router)
-    app.include_router(filesystem.router)
+    app.include_router(health.router, prefix="/api", tags=["system"])
+    app.include_router(config.router, prefix="/api", tags=["config"])
+    app.include_router(audio.router, prefix="/api/audio", tags=["audio"])
+    app.include_router(filesystem.router, prefix="/api/fs", tags=["filesystem"])
     app.include_router(shows.router, prefix="/api/shows", tags=["shows"])
     app.include_router(rss.router, prefix="/api/shows", tags=["rss"])
     app.include_router(transcribe.router, prefix="/api/transcribe", tags=["transcribe"])

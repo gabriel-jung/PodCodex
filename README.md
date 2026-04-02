@@ -603,15 +603,20 @@ The FastAPI backend exposes these route groups (all under `/api`):
 | `podcodex.core.polish` | LLM-based transcript correction (proper nouns, spelling, punctuation) |
 | `podcodex.core.translate` | LLM-based translation (Ollama, OpenAI-compatible API, or manual) |
 | `podcodex.core.synthesize` | Qwen3-TTS voice cloning + episode assembly |
+| `podcodex.core.versions` | Generation versioning — save, load, list, prune pipeline output versions |
+| `podcodex.core.pipeline_db` | Per-show SQLite DB for episode status and version metadata |
 | `podcodex.ingest` | Folder scanning, RSS feed parsing, transcript import, show metadata |
 
 ### Output files
 
-Outputs are organised per episode under the show folder. Each step produces a `.raw.json` (pipeline output) and a `.json` (user-validated) version:
+Outputs are organised per episode under the show folder. Every pipeline save (transcribe, polish, translate, manual edit) creates a **version** — a timestamped JSON snapshot stored in `.versions/`. Metadata (provenance, content hash, model, params) lives in `pipeline.db`. The most recent version is shown by default; users can browse and restore any version from the History dropdown.
+
+Legacy flat files (`{stem}.transcript.json`, etc.) are still written alongside versions for backward compatibility.
 
 ```text
 /shows/my_podcast/
 ├── show.toml                          ← show settings (name, RSS, language, speakers)
+├── pipeline.db                        ← per-show SQLite (episode status + version metadata)
 ├── .feed_cache.json                   ← cached RSS feed data
 ├── ep01.mp3
 ├── ep01/
@@ -622,12 +627,20 @@ Outputs are organised per episode under the show folder. Each step produces a `.
 │   ├── ep01.diarization.meta.json
 │   ├── ep01.diarized_segments.parquet
 │   ├── ep01.speaker_map.json
-│   ├── ep01.transcript.raw.json       ← exported transcript (raw)
-│   ├── ep01.transcript.json           ← validated transcript
-│   ├── ep01.polished.raw.json         ← LLM-corrected (raw)
-│   ├── ep01.polished.json             ← validated corrected
-│   ├── ep01.english.raw.json          ← translation (raw)
-│   ├── ep01.english.json              ← validated translation
+│   ├── .versions/                     ← versioned pipeline outputs (primary store)
+│   │   ├── transcript/
+│   │   │   ├── 20260401T103000Z_raw.json
+│   │   │   └── 20260401T120000Z_validated.json
+│   │   ├── polished/
+│   │   │   └── ...
+│   │   └── english/
+│   │       └── ...
+│   ├── ep01.transcript.raw.json       ← legacy copy (pipeline export)
+│   ├── ep01.transcript.json           ← legacy copy (validated)
+│   ├── ep01.polished.raw.json         ← legacy copy
+│   ├── ep01.polished.json             ← legacy copy
+│   ├── ep01.english.raw.json          ← legacy copy
+│   ├── ep01.english.json              ← legacy copy
 │   ├── ep01.synthesized.wav           ← assembled episode
 │   ├── voice_samples/
 │   └── tts_segments/
@@ -651,7 +664,7 @@ See [ROADMAP.md](ROADMAP.md) for the detailed plan.
 | Batch pipeline, global task bar, per-step config, speakers panel, move folder | Done |
 | **Semi-automatic speaker mapping** — voice embeddings for auto speaker ID | Next |
 | **Standalone distribution** — PyInstaller sidecar for `.app`/`.deb`/`.exe` | Planned |
-| **Generation versioning** — N versions per pipeline step with provenance | Planned |
+| **Generation versioning** — N versions per pipeline step with provenance | Done |
 | **Timeline editor** — multi-track assembly with jingle/music insertion | Planned |
 
 ## Notes

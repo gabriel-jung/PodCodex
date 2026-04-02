@@ -40,7 +40,7 @@ export default function IndexPanel() {
   const [selectedChunkings, setSelectedChunkings] = useState<string[]>(["semantic"]);
   const [chunkSize, setChunkSize] = useState(256);
   const [threshold, setThreshold] = useState(0.5);
-  const [overwrite, setOverwrite] = useState(false);
+  const [overwrite, setOverwrite] = useState(episode.indexed);
 
   const startMutation = useMutation({
     mutationFn: () =>

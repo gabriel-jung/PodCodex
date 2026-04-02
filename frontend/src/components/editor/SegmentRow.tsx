@@ -1,8 +1,9 @@
 import { useRef, useEffect, useState, useMemo } from "react";
 import { Button } from "@/components/ui/button";
-import { Play, Pause, Trash2, ChevronDown, ChevronRight, Diff, Merge, Scissors, X, AlertTriangle, EyeOff, Undo2 } from "lucide-react";
+import { Play, Pause, Trash2, ChevronDown, ChevronRight, Diff, Merge, Scissors, X, AlertTriangle } from "lucide-react";
 import type { Segment } from "@/api/types";
 import { formatTime } from "@/lib/utils";
+import { computeWordDiff } from "@/lib/diffUtils";
 import { useAudioStore } from "@/stores";
 
 interface SegmentRowProps {
@@ -20,9 +21,6 @@ interface SegmentRowProps {
   referenceText?: string;
   referenceLabel?: string;
   referenceIndex?: number;
-  skippedBefore?: Array<{ refIdx: number; text: string }>;
-  onSkipReference?: () => void;
-  onUnskipReference?: (refIdx: number) => void;
   speakers: string[];
   showDelete: boolean;
   showSpeaker: boolean;
@@ -83,67 +81,6 @@ function DiffView({ original, current }: { original: string; current: string }) 
   );
 }
 
-type DiffPart = { type: "same" | "removed" | "added"; text: string };
-
-function computeWordDiff(original: string, current: string): DiffPart[] {
-  const a = original.split(/\s+/).filter(Boolean);
-  const b = current.split(/\s+/).filter(Boolean);
-
-  const m = a.length, n = b.length;
-  // For very long segments, use a sliding-window approach instead of full LCS
-  if (m * n > 50000) {
-    // Find common prefix and suffix, diff only the middle
-    let prefix = 0;
-    while (prefix < m && prefix < n && a[prefix] === b[prefix]) prefix++;
-    let suffix = 0;
-    while (suffix < m - prefix && suffix < n - prefix && a[m - 1 - suffix] === b[n - 1 - suffix]) suffix++;
-    const parts: DiffPart[] = [];
-    if (prefix > 0) parts.push({ type: "same", text: a.slice(0, prefix).join(" ") });
-    const removedMiddle = a.slice(prefix, m - suffix);
-    const addedMiddle = b.slice(prefix, n - suffix);
-    if (removedMiddle.length > 0) parts.push({ type: "removed", text: removedMiddle.join(" ") });
-    if (addedMiddle.length > 0) parts.push({ type: "added", text: addedMiddle.join(" ") });
-    if (suffix > 0) parts.push({ type: "same", text: a.slice(m - suffix).join(" ") });
-    return parts;
-  }
-
-  // LCS table
-  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
-    }
-  }
-
-  // Backtrack
-  const stack: DiffPart[] = [];
-  let i = m, j = n;
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
-      stack.push({ type: "same", text: a[i - 1] });
-      i--; j--;
-    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      stack.push({ type: "added", text: b[j - 1] });
-      j--;
-    } else {
-      stack.push({ type: "removed", text: a[i - 1] });
-      i--;
-    }
-  }
-  stack.reverse();
-
-  // Merge consecutive same-type parts, joining with spaces
-  const parts: DiffPart[] = [];
-  for (const part of stack) {
-    if (parts.length > 0 && parts[parts.length - 1].type === part.type) {
-      parts[parts.length - 1].text += " " + part.text;
-    } else {
-      parts.push({ ...part });
-    }
-  }
-  return parts;
-}
-
 function hasValidTime(seg: Segment): boolean {
   return isFinite(seg.start) && isFinite(seg.end) && (seg.start > 0 || seg.end > 0);
 }
@@ -163,9 +100,6 @@ export default function SegmentRow({
   referenceText,
   referenceLabel,
   referenceIndex,
-  skippedBefore,
-  onSkipReference,
-  onUnskipReference,
   speakers,
   showDelete,
   showSpeaker,
@@ -398,26 +332,6 @@ export default function SegmentRow({
         rows={1}
       />
 
-      {/* Skipped reference segments — show above the current reference so user can re-add them */}
-      {skippedBefore && skippedBefore.length > 0 && (
-        <div className="ml-10 space-y-0.5">
-          {skippedBefore.map(({ refIdx, text }) => (
-            <div key={refIdx} className="flex items-start gap-1 text-[10px] text-muted-foreground/40 group">
-              <span className="line-through flex-1 py-0.5">{text.length > 120 ? text.slice(0, 120) + "…" : text}</span>
-              {onUnskipReference && (
-                <button
-                  onClick={() => onUnskipReference(refIdx)}
-                  className="shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition p-0.5"
-                  title="Restore this reference segment"
-                >
-                  <Undo2 className="w-3 h-3" />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* Reference text — always shown when available, diff highlighted when different */}
       {hasRef && (
         <div className="ml-10">
@@ -430,15 +344,6 @@ export default function SegmentRow({
               <span>{referenceLabel}{!hasDiff && " ✓"}</span>
               {refExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
             </button>
-            {onSkipReference && (
-              <button
-                onClick={onSkipReference}
-                className="text-[10px] text-muted-foreground/40 hover:text-muted-foreground transition p-0.5"
-                title="Skip this reference segment (fixes alignment shift)"
-              >
-                <EyeOff className="w-3 h-3" />
-              </button>
-            )}
           </div>
           {refExpanded && (
             hasDiff

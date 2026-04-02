@@ -5,6 +5,8 @@ import { getEpisodes, getShowMeta, exportZipUrl } from "@/api/client";
 import type { Episode, ShowMeta } from "@/api/types";
 import { useAudioStore, useEpisodeStore } from "@/stores";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import ShowSettings from "@/components/show/ShowSettings";
 import TranscribePanel from "@/components/transcribe/TranscribePanel";
 import PolishPanel from "@/components/polish/PolishPanel";
 import TranslatePanel from "@/components/translate/TranslatePanel";
@@ -25,6 +27,7 @@ import {
   PanelLeftClose,
   Info,
   Download,
+  Settings,
 } from "lucide-react";
 
 type PipelineStep = "info" | "transcribe" | "polish" | "translate" | "synthesize" | "index" | "search";
@@ -85,8 +88,6 @@ export default function EpisodePage({
         synthesized: false,
         translations: [] as string[],
         artwork_url: "",
-        raw_transcript: false,
-        validated_transcript: false,
       }
     : episodes?.find((e) => e.stem === stem || e.id === stem);
 
@@ -259,14 +260,15 @@ export default function EpisodePage({
 
         {/* Main content */}
         <div className="flex-1 overflow-y-auto">
-          <StepContent step={activeStep} episode={episode} />
+          <StepContent step={activeStep} episode={episode} folder={folder} meta={meta} episodes={episodes} />
         </div>
       </div>
     </div>
   );
 }
 
-function StepContent({ step, episode }: { step: PipelineStep; episode: Episode }) {
+function StepContent({ step, episode, folder, meta, episodes }: { step: PipelineStep; episode: Episode; folder?: string; meta?: ShowMeta; episodes?: Episode[] }) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   switch (step) {
     case "info":
       return (
@@ -325,6 +327,23 @@ function StepContent({ step, episode }: { step: PipelineStep; episode: Episode }
               <h4 className="text-sm font-medium">File</h4>
               <p className="text-xs text-muted-foreground font-mono break-all">{episode.audio_path}</p>
             </div>
+          )}
+
+          {/* Show settings dialog */}
+          {folder && meta && (
+            <>
+              <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+                <Settings className="w-3.5 h-3.5" /> Show Settings
+              </Button>
+              <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+                <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+                  <DialogHeader>
+                    <DialogTitle>Show Settings — {meta.name}</DialogTitle>
+                  </DialogHeader>
+                  <ShowSettings folder={folder} meta={meta} hasIndex={!!episodes?.some((e) => e.indexed)} />
+                </DialogContent>
+              </Dialog>
+            </>
           )}
         </div>
       );

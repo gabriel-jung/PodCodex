@@ -89,8 +89,6 @@ def test_scan_folder_transcribed_via_raw(tmp_path):
     result = scan_folder(tmp_path)
 
     assert result[0].transcribed is True
-    assert result[0].raw_transcript is True
-    assert result[0].validated_transcript is False
 
 
 def test_scan_folder_transcribed_false(tmp_path):
@@ -113,8 +111,7 @@ def test_scan_folder_validated_transcript(tmp_path):
 
     result = scan_folder(tmp_path)
 
-    assert result[0].validated_transcript is True
-    assert result[0].raw_transcript is False
+    assert result[0].transcribed is True
 
 
 # ──────────────────────────────────────────────
@@ -133,8 +130,6 @@ def test_scan_folder_polished_validated(tmp_path):
     result = scan_folder(tmp_path)
 
     assert result[0].polished is True
-    assert result[0].validated_polished is True
-    assert result[0].raw_polished is False
 
 
 def test_scan_folder_polished_raw_only(tmp_path):
@@ -148,8 +143,6 @@ def test_scan_folder_polished_raw_only(tmp_path):
     result = scan_folder(tmp_path)
 
     assert result[0].polished is True
-    assert result[0].raw_polished is True
-    assert result[0].validated_polished is False
 
 
 # ──────────────────────────────────────────────
@@ -168,8 +161,6 @@ def test_scan_folder_translation_validated(tmp_path):
     result = scan_folder(tmp_path)
 
     assert result[0].translations == ["english"]
-    assert result[0].validated_translations == ["english"]
-    assert result[0].raw_translations == []
 
 
 def test_scan_folder_translation_raw_only(tmp_path):
@@ -183,8 +174,6 @@ def test_scan_folder_translation_raw_only(tmp_path):
     result = scan_folder(tmp_path)
 
     assert result[0].translations == ["english"]
-    assert result[0].raw_translations == ["english"]
-    assert result[0].validated_translations == []
 
 
 def test_scan_folder_translation_both_raw_and_validated(tmp_path):
@@ -199,8 +188,34 @@ def test_scan_folder_translation_both_raw_and_validated(tmp_path):
     result = scan_folder(tmp_path)
 
     assert result[0].translations == ["english"]
-    assert result[0].validated_translations == ["english"]
-    assert result[0].raw_translations == []  # validated exists, so not raw-only
+
+
+def test_scan_folder_translation_new_naming(tmp_path):
+    """New convention: {stem}.translated.{lang}.json."""
+    from podcodex.ingest.folder import scan_folder
+
+    (tmp_path / "ep01.mp3").touch()
+    ep_dir = tmp_path / "ep01"
+    ep_dir.mkdir()
+    (ep_dir / "ep01.translated.english.json").touch()
+
+    result = scan_folder(tmp_path)
+
+    assert result[0].translations == ["english"]
+
+
+def test_scan_folder_translation_new_naming_raw(tmp_path):
+    """New convention raw: {stem}.translated.{lang}.raw.json."""
+    from podcodex.ingest.folder import scan_folder
+
+    (tmp_path / "ep01.mp3").touch()
+    ep_dir = tmp_path / "ep01"
+    ep_dir.mkdir()
+    (ep_dir / "ep01.translated.spanish.raw.json").touch()
+
+    result = scan_folder(tmp_path)
+
+    assert result[0].translations == ["spanish"]
 
 
 def test_scan_folder_internal_suffixes_excluded(tmp_path):
@@ -215,6 +230,9 @@ def test_scan_folder_internal_suffixes_excluded(tmp_path):
     (ep_dir / "ep01.speaker_map.json").touch()
     (ep_dir / "ep01.segments.meta.json").touch()
     (ep_dir / "ep01.diarization.meta.json").touch()
+    (ep_dir / "ep01.nodiar.transcript.json").touch()
+    (ep_dir / "ep01.transcript.raw.json").touch()
+    (ep_dir / "ep01.polished.raw.json").touch()
 
     result = scan_folder(tmp_path)
 
@@ -287,8 +305,6 @@ def test_scan_folder_no_output_dir_yet(tmp_path):
     assert ep.polished is False
     assert ep.indexed is False
     assert ep.translations == []
-    assert ep.raw_transcript is False
-    assert ep.validated_transcript is False
 
 
 # ──────────────────────────────────────────────
@@ -325,7 +341,7 @@ def test_scan_folder_transcript_only_raw(tmp_path):
 
     assert len(result) == 1
     assert result[0].audio_path is None
-    assert result[0].raw_transcript is True
+    assert result[0].transcribed is True
 
 
 def test_scan_folder_audio_takes_priority(tmp_path):

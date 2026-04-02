@@ -10,7 +10,9 @@ Modes:
     - api     : external API (OpenAI, Anthropic, etc.)
 
 Output files:
-    {stem}.{lang_norm}.json  — translated segments, e.g. {stem}.english.json
+    .versions/{lang}/{id}.json  — versioned translated segments (primary store)
+    {stem}.{lang_norm}.raw.json — legacy copy of pipeline output
+    {stem}.{lang_norm}.json     — legacy copy of validated output
 """
 
 from collections.abc import Callable
@@ -33,6 +35,8 @@ from podcodex.core._utils import (
     save_segments_json,
     validate_manual,
 )
+from podcodex.core.pipeline_db import mark_step
+from podcodex.core.versions import _get_db, load_latest, save_version
 
 
 # ──────────────────────────────────────────────
@@ -232,17 +236,23 @@ def save_translation_raw(
     segments: list[dict],
     lang: str,
     output_dir: str | Path | None = None,
-    nodiar: bool = False,
+    provenance: dict | None = None,
 ) -> Path:
-    """Save pipeline-generated translation to {stem}.{lang_norm}.raw.json.
+    """Save pipeline-generated translated segments.
 
-    Use this for LLM/pipeline output. The user can then review and promote
-    to the validated {stem}.{lang_norm}.json.
+    Creates a new version in ``.versions/{lang}/`` and a legacy file copy.
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    return save_segments_json(
-        p.translation_raw(lang), segments, f"Translation ({lang})"
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    path = p.translation_raw(lang)
+    save_segments_json(path, segments, f"Translation ({lang})")
+    lang_norm = lang.strip().lower()
+    save_version(p.base, lang_norm, segments, provenance)
+    prov_update = {lang_norm: provenance} if provenance else {}
+    translations = list_translations(audio_path, output_dir=output_dir)
+    mark_step(
+        p.show_dir, p.base.name, translations=translations, provenance=prov_update
     )
+    return path
 
 
 def save_translation(
@@ -250,72 +260,76 @@ def save_translation(
     segments: list[dict],
     lang: str,
     output_dir: str | Path | None = None,
-    nodiar: bool = False,
+    provenance: dict | None = None,
 ) -> Path:
-    """Save validated/edited translation to {stem}.{lang_norm}.json."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    return save_segments_json(p.translation(lang), segments, f"Translation ({lang})")
+    """Save validated/edited translated segments.
+
+    Creates a new version in ``.versions/{lang}/`` and a legacy file copy.
+    """
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    path = p.translation(lang)
+    save_segments_json(path, segments, f"Translation ({lang})")
+    lang_norm = lang.strip().lower()
+    save_version(p.base, lang_norm, segments, provenance)
+    prov_update = {lang_norm: provenance} if provenance else {}
+    translations = list_translations(audio_path, output_dir=output_dir)
+    mark_step(
+        p.show_dir, p.base.name, translations=translations, provenance=prov_update
+    )
+    return path
 
 
 def load_translation(
     audio_path: Path | str,
     lang: str,
     output_dir: str | Path | None = None,
-    nodiar: bool = False,
 ) -> list[dict]:
-    """Load translated segments. Prefers validated .json, falls back to .raw.json."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
+    """Load translated segments — latest version, falls back to legacy files."""
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    lang_norm = lang.strip().lower()
+    segments = load_latest(p.base, lang_norm)
+    if segments is not None:
+        return segments
     return read_json(p.translation_best(lang))
-
-
-def load_translation_raw(
-    audio_path: Path | str,
-    lang: str,
-    output_dir: str | Path | None = None,
-    nodiar: bool = False,
-) -> list[dict]:
-    """Load specifically from .{lang}.raw.json (pipeline output)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    return read_json(p.translation_raw(lang))
-
-
-def load_translation_validated(
-    audio_path: Path | str,
-    lang: str,
-    output_dir: str | Path | None = None,
-    nodiar: bool = False,
-) -> list[dict]:
-    """Load specifically from .{lang}.json (user-validated)."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir, nodiar=nodiar)
-    return read_json(p.translation(lang))
 
 
 def list_translations(
     audio_path: Path | str,
     output_dir: str | Path | None = None,
-    nodiar: bool = False,
 ) -> list[str]:
     """Return sorted list of available translation language names for this episode.
 
-    Scans for {stem}.*.json files in output_dir, excluding internal suffixes.
-    Merges raw and validated: english.json and english.raw.json both contribute
-    "english" once. Returns normalised language names, e.g. ["english", "spanish"].
-
-    When *nodiar* is True, only returns languages from nodiar translation files.
-    When False (default), only returns languages from diarized translation files.
+    Tries the version DB first, falls back to filesystem scan.
     """
     audio_path = Path(audio_path)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+
+    # Try DB first
+    try:
+        db = _get_db(p.base)
+        steps = db.list_steps(p.base.name)
+        # Filter out non-translation steps
+        non_translation = {"transcript", "polished", "indexed"}
+        langs = [s for s in steps if s not in non_translation]
+        if langs:
+            return sorted(langs)
+    except Exception:
+        pass
+
+    # Legacy fallback: scan filesystem
+    # New convention: {stem}.translated.{lang}.(raw.)json
+    # Legacy convention: {stem}.{lang}.(raw.)json (simple name, no dots)
     root = AudioPaths.output_dir(audio_path, output_dir)
-    prefix = "nodiar." if nodiar else ""
-    langs: set[str] = set()
-    for f in sorted(root.glob(f"{audio_path.stem}.{prefix}*.json")):
+    langs_set: set[str] = set()
+    for f in sorted(root.glob(f"{audio_path.stem}.*.json")):
         suffix = f.stem[len(audio_path.stem) + 1 :]
-        if suffix in INTERNAL_SUFFIXES:
-            continue
         if suffix.endswith(".raw"):
-            base = suffix[:-4]  # strip ".raw"
-            if base not in INTERNAL_SUFFIXES:
-                langs.add(base.removeprefix("nodiar."))
-        else:
-            langs.add(suffix.removeprefix("nodiar."))
-    return sorted(langs)
+            suffix = suffix[:-4]
+        # New convention: translated.{lang}
+        if suffix.startswith("translated."):
+            langs_set.add(suffix[len("translated.") :])
+            continue
+        # Legacy: simple name with no dots, not an internal suffix
+        if "." not in suffix and suffix not in INTERNAL_SUFFIXES:
+            langs_set.add(suffix)
+    return sorted(langs_set)
