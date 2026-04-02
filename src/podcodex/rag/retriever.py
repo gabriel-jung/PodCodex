@@ -9,44 +9,59 @@ Hybrid search = alpha * dense_vector_search + (1 - alpha) * BM25_text_search
 
 BM25 is computed client-side via bm25s, independently of the embedding
 model. This means ALL models support hybrid search.
+
+Dense search uses numpy brute-force cosine similarity over vectors
+loaded from the SQLite LocalStore.
 """
 
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+import threading
+import time
+from dataclasses import dataclass, field
 
+import numpy as np
 from loguru import logger
 
-from podcodex.rag.store import QdrantStore, _search_filter
-
 import bm25s
+
+from podcodex.rag.localstore import LocalStore
 
 
 @dataclass
 class _BM25Cache:
     bm25: bm25s.BM25
     chunks: list[dict]
-    point_count: int
+    chunk_count: int
+
+
+@dataclass
+class _VectorCache:
+    matrix: np.ndarray  # (N, dim) L2-normalized float32
+    chunks: list[dict]  # metadata for each row (no embeddings)
+    chunk_count: int  # for staleness check
+    created: float = field(default_factory=time.monotonic)
 
 
 class Retriever:
     """
-    Combines an embedding model + Qdrant dense search + bm25s text search.
+    Combines an embedding model + numpy dense search + bm25s text search,
+    backed by a SQLite LocalStore.
 
     Args:
-        model      : model key from MODELS registry (default: "bge-m3")
-        qdrant_url : Qdrant server URL (defaults to QDRANT_URL env or localhost:6333)
-        store      : optional pre-built QdrantStore
-        device     : torch device for the embedder (default: "cpu")
+        model  : model key from MODELS registry (default: "bge-m3")
+        local  : LocalStore instance (created with default path if None)
+        device : torch device for the embedder (default: "cpu")
+        ttl    : cache time-to-live in seconds (default: 180)
     """
 
     def __init__(
         self,
         model: str = "bge-m3",
-        qdrant_url: str | None = None,
-        store: QdrantStore | None = None,
+        local: LocalStore | None = None,
         device: str = "cpu",
+        ttl: float = 180.0,
     ):
         from podcodex.rag.defaults import MODELS
         from podcodex.rag.embedder import get_embedder
@@ -58,8 +73,11 @@ class Retriever:
 
         self._model_key = model
         self._embedder = get_embedder(model, device=device)
-        self._store = store or QdrantStore(url=qdrant_url)
+        self._local = local or LocalStore()
+        self._ttl = ttl
+        self._vector_cache: dict[str, _VectorCache] = {}
         self._bm25_cache: dict[str, _BM25Cache] = {}
+        self._lock = threading.Lock()
         logger.info(f"Retriever ready (model={model})")
 
     def retrieve(
@@ -77,7 +95,7 @@ class Retriever:
 
         Args:
             query      : natural language query
-            collection : Qdrant collection name
+            collection : collection name
             top_k      : number of results to return
             alpha      : blend between BM25 (0.0) and dense vector (1.0)
             episode    : if set, restrict search to this episode
@@ -117,6 +135,61 @@ class Retriever:
 
     # ── Private search methods ─────────────────
 
+    def _get_vectors(self, collection: str) -> _VectorCache:
+        """Return cached (matrix, chunks) for a collection, rebuilding if stale."""
+        now = time.monotonic()
+        with self._lock:
+            cache = self._vector_cache.get(collection)
+            if cache is not None:
+                age = now - cache.created
+                current_count = self._local.collection_chunk_count(collection)
+                if age < self._ttl and cache.chunk_count == current_count:
+                    return cache
+
+        # Build outside the lock (I/O-heavy)
+        matrix, chunks = self._local.load_all_vectors(collection)
+        if matrix.size == 0:
+            vc = _VectorCache(
+                matrix=np.empty((0, 0), dtype=np.float32),
+                chunks=[],
+                chunk_count=0,
+            )
+            with self._lock:
+                self._vector_cache[collection] = vc
+            return vc
+
+        # L2-normalize once at cache time
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-8)
+        matrix = matrix / norms
+
+        vc = _VectorCache(matrix=matrix, chunks=chunks, chunk_count=len(chunks))
+        with self._lock:
+            self._vector_cache[collection] = vc
+        logger.debug(f"Vector cache built for '{collection}': {len(chunks)} vectors")
+        return vc
+
+    @staticmethod
+    def _filter_mask(
+        chunks: list[dict],
+        episode: str | None = None,
+        source: str | None = None,
+        speaker: str | None = None,
+    ) -> np.ndarray:
+        """Return a boolean mask for metadata filters."""
+        n = len(chunks)
+        mask = np.ones(n, dtype=bool)
+        if not (episode or source or speaker):
+            return mask
+        for i, c in enumerate(chunks):
+            if episode and c.get("episode") != episode:
+                mask[i] = False
+            elif source and c.get("source") != source:
+                mask[i] = False
+            elif speaker and (c.get("dominant_speaker", c.get("speaker")) != speaker):
+                mask[i] = False
+        return mask
+
     def _dense_search(
         self,
         query: str,
@@ -127,11 +200,29 @@ class Retriever:
         source: str | None = None,
         speaker: str | None = None,
     ) -> list[dict]:
+        vc = self._get_vectors(collection)
+        if vc.matrix.size == 0:
+            return []
+
         query_vec = self._embedder.encode_query(query)
-        query_filter = _search_filter(episode, source, speaker)
-        return self._store.search_points(
-            collection, query_vec.tolist(), top_k, query_filter
-        )
+        query_norm = query_vec / max(np.linalg.norm(query_vec), 1e-8)
+
+        scores = vc.matrix @ query_norm
+        mask = self._filter_mask(vc.chunks, episode, source, speaker)
+        scores[~mask] = -1.0
+
+        k = min(top_k, int(mask.sum()))
+        if k == 0:
+            return []
+        top_indices = np.argsort(scores)[::-1][:k]
+
+        results = []
+        for idx in top_indices:
+            score = float(scores[idx])
+            if score < 0.01:
+                continue
+            results.append({**vc.chunks[idx], "score": score})
+        return results
 
     def _bm25_search(
         self,
@@ -144,7 +235,7 @@ class Retriever:
         speaker: str | None = None,
     ) -> list[dict]:
         if episode or source or speaker:
-            return self._bm25_search_uncached(
+            return self._bm25_search_filtered(
                 query,
                 collection,
                 top_k,
@@ -155,21 +246,22 @@ class Retriever:
 
         # Full-collection query — use cache
         cache = self._bm25_cache.get(collection)
-        current_count = self._store.collection_point_count(collection)
+        current_count = self._local.collection_chunk_count(collection)
 
-        if cache is not None and cache.point_count == current_count:
-            logger.debug(f"BM25 cache hit for '{collection}' ({current_count} points)")
+        if cache is not None and cache.chunk_count == current_count:
+            logger.debug(f"BM25 cache hit for '{collection}' ({current_count} chunks)")
         else:
             logger.debug(f"BM25 cache miss for '{collection}' — rebuilding")
-            chunks, bm25_inst = self._build_bm25_index(collection)
+            chunks = self._local.load_all_chunks(collection)
             if not chunks:
                 return []
-            cache = _BM25Cache(bm25=bm25_inst, chunks=chunks, point_count=current_count)
+            bm25_inst = self._build_bm25_index(chunks)
+            cache = _BM25Cache(bm25=bm25_inst, chunks=chunks, chunk_count=current_count)
             self._bm25_cache[collection] = cache
 
         return self._query_bm25(query, cache.bm25, cache.chunks, top_k)
 
-    def _bm25_search_uncached(
+    def _bm25_search_filtered(
         self,
         query: str,
         collection: str,
@@ -179,26 +271,31 @@ class Retriever:
         source: str | None = None,
         speaker: str | None = None,
     ) -> list[dict]:
-        """BM25 search without caching (for filtered queries)."""
-        scroll_filter = _search_filter(episode, source, speaker)
-        chunks, bm25_inst = self._build_bm25_index(collection, scroll_filter)
+        """BM25 search with metadata filters (not cached)."""
+        chunks = self._local.load_all_chunks(collection, episode=episode)
+        if source or speaker:
+            chunks = [
+                c
+                for c in chunks
+                if (not source or c.get("source") == source)
+                and (
+                    not speaker
+                    or c.get("dominant_speaker", c.get("speaker")) == speaker
+                )
+            ]
         if not chunks:
             return []
+        bm25_inst = self._build_bm25_index(chunks)
         return self._query_bm25(query, bm25_inst, chunks, top_k)
 
-    def _build_bm25_index(
-        self, collection: str, scroll_filter=None
-    ) -> tuple[list[dict], "bm25s.BM25 | None"]:
-        """Scroll all points and build a BM25 index. Returns (chunks, bm25_instance)."""
-        chunks = self._store.scroll_payloads(collection, scroll_filter=scroll_filter)
-        if not chunks:
-            return [], None
-
+    @staticmethod
+    def _build_bm25_index(chunks: list[dict]) -> bm25s.BM25:
+        """Build a BM25 index from chunk texts."""
         texts = [c.get("text", "") for c in chunks]
         corpus_tokens = bm25s.tokenize(texts)
         bm25_inst = bm25s.BM25()
         bm25_inst.index(corpus_tokens)
-        return chunks, bm25_inst
+        return bm25_inst
 
     @staticmethod
     def _query_bm25(
@@ -216,12 +313,18 @@ class Retriever:
         ]
         return _normalize(hits)
 
-    def invalidate_bm25_cache(self, collection: str | None = None) -> None:
-        """Clear BM25 cache for a collection, or all collections if None."""
-        if collection is None:
-            self._bm25_cache.clear()
-        else:
-            self._bm25_cache.pop(collection, None)
+    def invalidate(self, collection: str | None = None) -> None:
+        """Clear vector and BM25 caches for a collection, or all."""
+        with self._lock:
+            if collection is None:
+                self._vector_cache.clear()
+                self._bm25_cache.clear()
+            else:
+                self._vector_cache.pop(collection, None)
+                self._bm25_cache.pop(collection, None)
+
+    # Keep old name as alias for compatibility
+    invalidate_bm25_cache = invalidate
 
     def _weighted_search(
         self,
@@ -272,14 +375,24 @@ class Retriever:
         Pick a random chunk. If the chunk has multiple speaker turns,
         select one turn at random and return it as a single-speaker segment.
         """
-        scroll_filter = _search_filter(episode, source, speaker)
-        chunk = self._store.random_point(collection, scroll_filter)
-        if chunk is None:
+        chunks = self._local.load_all_chunks(collection, episode=episode)
+        if source or speaker:
+            chunks = [
+                c
+                for c in chunks
+                if (not source or c.get("source") == source)
+                and (
+                    not speaker
+                    or c.get("dominant_speaker", c.get("speaker")) == speaker
+                )
+            ]
+        if not chunks:
             return None
+
+        chunk = random.choice(chunks)
 
         turns: list[dict] = chunk.get("speakers") or []
         if len(turns) > 1:
-            # If speaker filter is set, narrow to matching turns
             if speaker:
                 matching = [t for t in turns if t.get("speaker") == speaker]
                 turns = matching or turns
@@ -307,24 +420,22 @@ class Retriever:
     ) -> list[dict]:
         """
         True substring search — case-insensitive, no scoring.
-        Requires a full-text payload index on 'text' (created by QdrantStore.create_collection).
         Results sorted by start time, all scored 1.0.
         """
-        from qdrant_client.models import FieldCondition, Filter, MatchText
-
-        base = _search_filter(episode, source, speaker)
-        text_cond = FieldCondition(key="text", match=MatchText(text=query))
-        conditions = [text_cond] + (base.must if base else [])
-
-        # MatchText is tokenized (matches individual words, not phrases).
-        # Over-fetch from Qdrant, then filter for true substring match.
-        candidates = self._store.scroll_payloads(
-            collection, scroll_filter=Filter(must=conditions), limit=top_k * 4
-        )
+        chunks = self._local.load_all_chunks(collection, episode=episode)
         query_lower = query.lower()
-        chunks = [c for c in candidates if query_lower in c.get("text", "").lower()]
-        chunks.sort(key=lambda c: c.get("start", 0.0))
-        return [{**c, "score": 1.0} for c in chunks[:top_k]]
+        results = []
+        for c in chunks:
+            if query_lower not in c.get("text", "").lower():
+                continue
+            if source and c.get("source") != source:
+                continue
+            if speaker and c.get("dominant_speaker", c.get("speaker")) != speaker:
+                continue
+            results.append(c)
+
+        results.sort(key=lambda c: c.get("start", 0.0))
+        return [{**c, "score": 1.0} for c in results[:top_k]]
 
 
 # ──────────────────────────────────────────────

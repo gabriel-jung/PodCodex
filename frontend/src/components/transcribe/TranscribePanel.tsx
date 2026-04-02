@@ -168,7 +168,7 @@ function TranscribeForm({
         <div className="space-y-3 flex-1">
           <SectionHeader>Transcription</SectionHeader>
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 text-sm items-start sm:items-center">
-            <HelpLabel label="Model" help="The speech recognition model. Bigger models understand speech better (fewer mistakes) but take longer and need a more powerful GPU." />
+            <HelpLabel label="Model" help="Speech recognition model. Bigger models make fewer mistakes but are slower and need more GPU memory." />
             <select
               value={modelSize}
               onChange={(e) => setModelSize(e.target.value)}
@@ -182,7 +182,7 @@ function TranscribeForm({
               }
             </select>
 
-            <HelpLabel label="Language" help="ISO code of the spoken language (e.g. fr, en, de). Leave empty to auto-detect. Setting it improves accuracy and enables word-level alignment." />
+            <HelpLabel label="Language" help="ISO code of the spoken language (e.g. fr, en, de). Leave empty to auto-detect. Setting it improves accuracy and word-level alignment." />
             <input
               value={language}
               onChange={(e) => setLanguage(e.target.value)}
@@ -208,7 +208,7 @@ function TranscribeForm({
 
           {diarize && (
             <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 text-sm items-start sm:items-center">
-              <HelpLabel label="Num speakers" help="How many different people are talking (e.g. 2 for an interview). Leave empty and it will guess. Filling this in helps it tell speakers apart more reliably." />
+              <HelpLabel label="Num speakers" help="How many speakers are in the episode (e.g. 2 for an interview). Leave empty to auto-detect. Setting it helps tell speakers apart more reliably." />
               <input
                 value={numSpeakers}
                 onChange={(e) => setNumSpeakers(e.target.value)}
@@ -222,7 +222,7 @@ function TranscribeForm({
 
       <AdvancedToggle className="border-t border-border/50 pt-3 space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
-          <HelpLabel label="Batch size" help="How many audio chunks are processed at the same time. Higher = faster but uses more GPU memory. Lower this if you get out-of-memory errors." />
+          <HelpLabel label="Batch size" help="How many audio chunks to process in parallel. Higher is faster but uses more GPU memory. Lower this if you run out of memory." />
           <input
             type="number"
             value={batchSize}
@@ -233,7 +233,7 @@ function TranscribeForm({
 
           {diarize && (
             <>
-              <HelpLabel label="HF token" help="A HuggingFace access token, needed to download the speaker detection model. Get one free at huggingface.co/settings/tokens. If left empty, it looks for a HF_TOKEN environment variable." />
+              <HelpLabel label="HF token" help="HuggingFace access token, needed to download the speaker detection model. Get one free at huggingface.co/settings/tokens. Falls back to the HF_TOKEN environment variable." />
               <input
                 type="password"
                 value={hfToken}

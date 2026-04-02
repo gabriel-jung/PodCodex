@@ -8,8 +8,6 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import submit_task
-from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import AudioPaths
 
 router = APIRouter()
@@ -89,46 +87,32 @@ class SearchResult(BaseModel):
 
 @router.post("/query", response_model=list[SearchResult])
 async def search_query(req: SearchRequest) -> list[dict]:
-    """Hybrid search: tries Qdrant first, falls back to local SQLite."""
+    """Hybrid search over locally indexed episodes."""
     from podcodex.rag.defaults import MODELS
+    from podcodex.rag.localstore import LocalStore
+    from podcodex.rag.retriever import Retriever
     from podcodex.rag.store import collection_name
 
     if req.model not in MODELS:
         raise HTTPException(400, f"Unknown model: {req.model}")
 
     col = collection_name(req.show, req.model, req.chunking)
+    db_path = _resolve_vectors_db(req)
+    logger.info(
+        "Search: show={!r} col={!r} db={} exists={} episode={!r}",
+        req.show,
+        col,
+        db_path,
+        db_path.exists(),
+        req.episode,
+    )
+    if not db_path.exists():
+        return []
 
-    # Try Qdrant-backed retriever first
-    results = _try_qdrant_search(req, col)
-
-    # Fall back to local SQLite search
-    if results is None:
-        db_path = _resolve_vectors_db(req)
-        results = _local_search(
-            db_path=db_path,
-            collection=col,
-            query=req.query,
-            model=req.model,
-            top_k=req.top_k,
-            episode=req.episode,
-            speaker=req.speaker,
-        )
-
-    return [_result_to_dict(r) for r in results]
-
-
-def _try_qdrant_search(req: SearchRequest, col: str) -> list[dict] | None:
-    """Attempt Qdrant search. Returns None if Qdrant is unavailable."""
-    from podcodex.rag.store import qdrant_available
-
-    if not qdrant_available():
-        return None
-
+    local = LocalStore(db_path)
     try:
-        from podcodex.rag.retriever import Retriever
-
-        retriever = Retriever(model=req.model)
-        return retriever.retrieve(
+        retriever = Retriever(model=req.model, local=local)
+        results = retriever.retrieve(
             req.query,
             col,
             top_k=req.top_k,
@@ -137,86 +121,13 @@ def _try_qdrant_search(req: SearchRequest, col: str) -> list[dict] | None:
             speaker=req.speaker,
         )
     except Exception:
-        logger.opt(exception=True).warning(
-            "Qdrant search failed for collection {}, falling back to local", col
-        )
-        return None
-
-
-def _local_search(
-    db_path,
-    collection: str,
-    query: str,
-    model: str,
-    top_k: int,
-    episode: str | None = None,
-    speaker: str | None = None,
-) -> list[dict]:
-    """Dense-only search over LocalStore embeddings (no BM25)."""
-    import numpy as np
-
-    from podcodex.rag.embedder import get_embedder
-    from podcodex.rag.localstore import LocalStore
-
-    if not db_path.exists():
-        return []
-
-    local = LocalStore(db_path)
-    try:
-        # Get all episodes in this collection
-        episodes = local.list_episodes(collection)
-        if not episodes:
-            return []
-
-        if episode:
-            episodes = [e for e in episodes if e == episode]
-
-        # Load all chunks with embeddings
-        all_chunks = []
-        all_embeddings = []
-        for ep in episodes:
-            chunks = local.load_chunks(collection, ep)
-            for chunk in chunks:
-                if (
-                    speaker
-                    and chunk.get("dominant_speaker", chunk.get("speaker")) != speaker
-                ):
-                    continue
-                emb = chunk.pop("embedding", None)
-                if emb is not None:
-                    all_chunks.append(chunk)
-                    all_embeddings.append(emb)
+        logger.opt(exception=True).warning("Search failed for collection {}", col)
+        results = []
     finally:
         local.close()
 
-    if not all_chunks:
-        return []
-
-    # Embed the query
-    embedder = get_embedder(model, device="cpu")
-    query_vec = embedder.encode_query(query)
-
-    # Cosine similarity
-    embeddings_matrix = np.stack(all_embeddings)
-    norms = np.linalg.norm(embeddings_matrix, axis=1, keepdims=True)
-    norms = np.maximum(norms, 1e-8)
-    normalized = embeddings_matrix / norms
-
-    query_norm = query_vec / max(np.linalg.norm(query_vec), 1e-8)
-    scores = normalized @ query_norm
-
-    # Top-k
-    k = min(top_k, len(scores))
-    top_indices = np.argsort(scores)[::-1][:k]
-
-    results = []
-    for idx in top_indices:
-        score = float(scores[idx])
-        if score < 0.01:
-            continue
-        results.append({**all_chunks[idx], "score": score})
-
-    return results
+    logger.info("Search: {} result(s)", len(results))
+    return [_result_to_dict(r) for r in results]
 
 
 def _resolve_vectors_db(req) -> Path:
@@ -242,80 +153,6 @@ def _result_to_dict(r: dict) -> dict:
         "source": r.get("source", ""),
         "speakers": r.get("speakers"),
     }
-
-
-# ── Sync to Qdrant ───────────────────────────────────────
-
-
-class SyncRequest(BaseModel):
-    folder: str
-    show: str
-    overwrite: bool = False
-    qdrant_url: str | None = None
-
-
-@router.post("/sync")
-async def sync_to_qdrant(req: SyncRequest) -> TaskResponse:
-    """Push indexed episodes from LocalStore (SQLite) to Qdrant."""
-    db_path = Path(req.folder) / "vectors.db"
-    if not db_path.exists():
-        raise HTTPException(404, "No vectors.db found — index episodes first")
-
-    def run_sync(progress_cb):
-        import numpy as np
-
-        from podcodex.rag.localstore import LocalStore
-        from podcodex.rag.store import QdrantStore
-
-        local = LocalStore(db_path=db_path)
-        try:
-            store = QdrantStore(url=req.qdrant_url)
-
-            collections = local.list_collections(show=req.show)
-            if not collections:
-                progress_cb(1.0, "No collections found")
-                return
-
-            total_chunks = 0
-            for ci, col in enumerate(collections):
-                info = local.get_collection_info(col)
-                if info is None:
-                    continue
-
-                store.create_collection(
-                    col, model=info["model"], overwrite=req.overwrite
-                )
-
-                episodes = local.list_episodes(col)
-                for ei, ep in enumerate(episodes):
-                    cached = local.load_chunks(col, ep)
-                    if not cached:
-                        continue
-
-                    local_count = len(cached)
-
-                    if not req.overwrite:
-                        qdrant_count = store.episode_point_count(col, ep)
-                        if local_count == qdrant_count:
-                            continue
-                        if qdrant_count > 0:
-                            store.delete_episode_points(col, ep)
-
-                    chunks = [
-                        {k: v for k, v in c.items() if k != "embedding"} for c in cached
-                    ]
-                    embeddings = np.stack([c["embedding"] for c in cached])
-                    store.upsert(col, chunks, embeddings)
-                    total_chunks += len(chunks)
-
-                    frac = (ci + (ei + 1) / len(episodes)) / len(collections)
-                    progress_cb(frac, f"Synced {ep} ({len(chunks)} chunks)")
-
-            progress_cb(1.0, f"Done — {total_chunks} chunks pushed to Qdrant")
-        finally:
-            local.close()
-
-    return submit_task("sync", req.folder, run_sync)
 
 
 # ── Exact (substring) search ────────────────────────────

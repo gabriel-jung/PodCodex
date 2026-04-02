@@ -1,46 +1,68 @@
-"""Tests for podcodex.rag.retriever — all heavy deps mocked."""
+"""Tests for podcodex.rag.retriever — uses in-memory LocalStore."""
 
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
+from podcodex.rag.localstore import LocalStore
+
 
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
 
-
-def _dense_vec(dim: int = 1024) -> np.ndarray:
-    return np.random.rand(dim).astype(np.float32)
+DIM = 4
 
 
-def _make_scored_point(payload: dict, score: float = 0.9) -> MagicMock:
-    pt = MagicMock()
-    pt.payload = payload
-    pt.score = score
-    return pt
+def _seed_local(episodes: dict[str, int] | None = None) -> tuple[LocalStore, str]:
+    """Create an in-memory LocalStore with seeded data. Returns (store, collection_name)."""
+    local = LocalStore(db_path=":memory:")
+    col = "test__bge-m3__semantic"
+    local.ensure_collection(
+        col, show="test", model="bge-m3", chunker="semantic", dim=DIM
+    )
+
+    if episodes is None:
+        episodes = {"ep1": 3, "ep2": 2}
+
+    for ep, n in episodes.items():
+        chunks = [
+            {
+                "episode": ep,
+                "show": "test",
+                "start": float(i),
+                "end": float(i + 1),
+                "speaker": "Alice" if i % 2 == 0 else "Bob",
+                "dominant_speaker": "Alice" if i % 2 == 0 else "Bob",
+                "source": "polished",
+                "text": f"chunk {i} of {ep} about neural networks and podcasting",
+            }
+            for i in range(n)
+        ]
+        embeddings = np.random.rand(n, DIM).astype(np.float32)
+        local.save_chunks(col, ep, chunks, embeddings)
+    return local, col
 
 
-def _make_retriever(model: str = "bge-m3"):
-    """Return (retriever, mock_embedder, mock_store)."""
+def _make_retriever(local: LocalStore | None = None, col: str = ""):
+    """Return a retriever with mocked embedder (to avoid loading torch)."""
+    if local is None:
+        local, col = _seed_local()
+
     mock_emb = MagicMock()
-    mock_emb.encode_query.return_value = _dense_vec()
-    mock_store = MagicMock()
+    mock_emb.encode_query.return_value = np.random.rand(DIM).astype(np.float32)
 
-    with (
-        patch("podcodex.rag.embedder.get_embedder", return_value=mock_emb),
-        patch("podcodex.rag.retriever.QdrantStore", return_value=mock_store),
-    ):
+    with patch("podcodex.rag.embedder.get_embedder", return_value=mock_emb):
         from podcodex.rag.retriever import Retriever
 
-        retriever = Retriever(model=model)
+        retriever = Retriever(model="bge-m3", local=local)
 
-    return retriever, mock_emb, mock_store
+    return retriever, mock_emb, col
 
 
 # ──────────────────────────────────────────────
-# Retriever constructor
+# Constructor
 # ──────────────────────────────────────────────
 
 
@@ -53,31 +75,27 @@ def test_retriever_unknown_model_raises():
 
 def test_retriever_uses_get_embedder():
     mock_emb = MagicMock()
-    mock_emb.encode_query.return_value = _dense_vec()
-    mock_store = MagicMock()
-
     mock_factory = MagicMock(return_value=mock_emb)
-    with (
-        patch("podcodex.rag.embedder.get_embedder", mock_factory),
-        patch("podcodex.rag.retriever.QdrantStore", return_value=mock_store),
-    ):
+    local = LocalStore(db_path=":memory:")
+
+    with patch("podcodex.rag.embedder.get_embedder", mock_factory):
         from podcodex.rag.retriever import Retriever
 
-        Retriever(model="e5-small")
+        Retriever(model="e5-small", local=local)
 
     mock_factory.assert_called_once_with("e5-small", device="cpu")
 
 
-def test_retriever_accepts_prebuilt_store():
+def test_retriever_accepts_local_store():
+    local = LocalStore(db_path=":memory:")
     mock_emb = MagicMock()
-    mock_store = MagicMock()
 
     with patch("podcodex.rag.embedder.get_embedder", return_value=mock_emb):
         from podcodex.rag.retriever import Retriever
 
-        r = Retriever(model="bge-m3", store=mock_store)
+        r = Retriever(model="bge-m3", local=local)
 
-    assert r._store is mock_store
+    assert r._local is local
 
 
 # ──────────────────────────────────────────────
@@ -85,33 +103,25 @@ def test_retriever_accepts_prebuilt_store():
 # ──────────────────────────────────────────────
 
 
-def test_dense_search_calls_search_points():
-    retriever, _, mock_store = _make_retriever()
-    mock_store.search_points.return_value = [
-        {"text": "hello", "episode": "E1", "start": 0.0, "score": 0.85}
-    ]
-
-    results = retriever.retrieve("my query", "col", top_k=3, alpha=1.0)
-
-    mock_store.search_points.assert_called_once()
-    args = mock_store.search_points.call_args
-    assert args[0][0] == "col"  # collection
-    assert args[0][2] == 3  # top_k
-    assert len(results) == 1
-    assert results[0]["score"] == pytest.approx(0.85)
-    assert results[0]["text"] == "hello"
+def test_dense_search_returns_results():
+    retriever, _, col = _make_retriever()
+    results = retriever.retrieve("neural networks", col, top_k=3, alpha=1.0)
+    assert len(results) > 0
+    assert all("score" in r for r in results)
+    assert all("text" in r for r in results)
 
 
-def test_dense_search_result_has_payload_fields():
-    retriever, _, mock_store = _make_retriever()
-    mock_store.search_points.return_value = [
-        {"episode": "E1", "start": 5.0, "score": 0.77}
-    ]
+def test_dense_search_respects_top_k():
+    retriever, _, col = _make_retriever()
+    results = retriever.retrieve("q", col, top_k=2, alpha=1.0)
+    assert len(results) <= 2
 
-    results = retriever.retrieve("q", "col", alpha=1.0)
 
-    assert results[0]["score"] == pytest.approx(0.77)
-    assert results[0]["episode"] == "E1"
+def test_dense_search_empty_collection():
+    local = LocalStore(db_path=":memory:")
+    retriever, _, _ = _make_retriever(local=local)
+    results = retriever.retrieve("q", "nonexistent", top_k=5, alpha=1.0)
+    assert results == []
 
 
 # ──────────────────────────────────────────────
@@ -119,123 +129,118 @@ def test_dense_search_result_has_payload_fields():
 # ──────────────────────────────────────────────
 
 
-def test_bm25_search_uses_bm25s():
-    retriever, _, mock_store = _make_retriever()
-
-    chunk = {"text": "hello podcast world", "episode": "E1", "start": 0.0}
-    mock_store.scroll_payloads.return_value = [chunk]
-    mock_store.collection_point_count.return_value = 1
-
-    mock_bm25_inst = MagicMock()
-    mock_bm25_inst.retrieve.return_value = ([[0]], [[0.8]])
-
-    mock_bm25s = MagicMock()
-    mock_bm25s.BM25.return_value = mock_bm25_inst
-
-    with patch("podcodex.rag.retriever.bm25s", mock_bm25s):
-        results = retriever.retrieve("podcast", "col", top_k=5, alpha=0.0)
-
-    mock_store.scroll_payloads.assert_called_once()
-    assert len(results) == 1
-    assert results[0]["text"] == "hello podcast world"
+def test_bm25_search_returns_results():
+    retriever, _, col = _make_retriever()
+    results = retriever.retrieve("neural", col, top_k=5, alpha=0.0)
+    assert len(results) > 0
 
 
 def test_bm25_search_empty_collection():
-    retriever, _, mock_store = _make_retriever()
-    mock_store.scroll_payloads.return_value = []
-    mock_store.collection_point_count.return_value = 0
-
-    with patch("podcodex.rag.retriever.bm25s"):
-        results = retriever.retrieve("q", "col", alpha=0.0)
-
+    local = LocalStore(db_path=":memory:")
+    retriever, _, _ = _make_retriever(local=local)
+    results = retriever.retrieve("q", "nonexistent", alpha=0.0)
     assert results == []
 
 
 # ──────────────────────────────────────────────
-# Hybrid / alpha-weighted search (default alpha=0.5)
+# Hybrid search (default alpha=0.5)
 # ──────────────────────────────────────────────
 
 
-def test_weighted_search_calls_both_dense_and_bm25():
-    """alpha=0.5 → calls search_points (dense) and scroll_payloads (BM25)."""
-    retriever, _, mock_store = _make_retriever()
-
-    chunk = {"text": "hello", "episode": "E1", "start": 0.0}
-    mock_store.search_points.return_value = [{**chunk, "score": 0.6}]
-    mock_store.scroll_payloads.return_value = [chunk]
-    mock_store.collection_point_count.return_value = 1
-
-    mock_bm25_inst = MagicMock()
-    mock_bm25_inst.retrieve.return_value = ([[0]], [[0.5]])
-
-    mock_bm25s = MagicMock()
-    mock_bm25s.BM25.return_value = mock_bm25_inst
-
-    with patch("podcodex.rag.retriever.bm25s", mock_bm25s):
-        results = retriever.retrieve("hello", "col", top_k=5)
-
-    mock_store.search_points.assert_called()
-    mock_store.scroll_payloads.assert_called()
-    assert len(results) >= 1
+def test_weighted_search_returns_results():
+    retriever, _, col = _make_retriever()
+    results = retriever.retrieve("podcasting neural", col, top_k=5, alpha=0.5)
+    assert len(results) > 0
 
 
-def test_weighted_search_alpha_1_uses_dense_only():
-    """alpha=1.0 → only search_points, no scroll."""
-    retriever, _, mock_store = _make_retriever()
-    mock_store.search_points.return_value = [
-        {"text": "hi", "episode": "E1", "start": 0.0, "score": 0.9}
-    ]
-
-    results = retriever.retrieve("q", "col", alpha=1.0)
-
-    mock_store.search_points.assert_called_once()
-    mock_store.scroll_payloads.assert_not_called()
-    assert results[0]["score"] == pytest.approx(0.9)
-
-
-def test_weighted_search_alpha_0_uses_bm25_only():
-    """alpha=0.0 → only scroll, no search_points."""
-    retriever, _, mock_store = _make_retriever()
-    chunk = {"text": "kw", "episode": "E1", "start": 0.0}
-    mock_store.scroll_payloads.return_value = [chunk]
-    mock_store.collection_point_count.return_value = 1
-
-    mock_bm25_inst = MagicMock()
-    mock_bm25_inst.retrieve.return_value = ([[0]], [[0.5]])
-
-    mock_bm25s = MagicMock()
-    mock_bm25s.BM25.return_value = mock_bm25_inst
-
-    with patch("podcodex.rag.retriever.bm25s", mock_bm25s):
-        results = retriever.retrieve("q", "col", alpha=0.0)
-
-    mock_store.search_points.assert_not_called()
-    assert results[0]["text"] == "kw"
+def test_weighted_search_blends_scores():
+    retriever, _, col = _make_retriever()
+    results = retriever.retrieve("neural", col, top_k=5, alpha=0.5)
+    # Results should have scores between 0 and ~2 (dense + BM25 combined)
+    assert all(r["score"] >= 0 for r in results)
 
 
 # ──────────────────────────────────────────────
-# _result_to_dict
+# Filters
 # ──────────────────────────────────────────────
 
 
-def test_result_to_dict_injects_score():
-    from podcodex.rag.store import _result_to_dict
-
-    pt = _make_scored_point({"text": "hi", "start": 1.0}, score=0.99)
-    d = _result_to_dict(pt)
-    assert d["score"] == pytest.approx(0.99)
-    assert d["text"] == "hi"
-    assert d["start"] == 1.0
+def test_dense_search_episode_filter():
+    retriever, _, col = _make_retriever()
+    results = retriever.retrieve("q", col, top_k=10, alpha=1.0, episode="ep1")
+    assert all(r.get("episode") == "ep1" for r in results)
 
 
-def test_result_to_dict_empty_payload():
-    from podcodex.rag.store import _result_to_dict
+def test_dense_search_speaker_filter():
+    retriever, _, col = _make_retriever()
+    results = retriever.retrieve("q", col, top_k=10, alpha=1.0, speaker="Alice")
+    assert all(r.get("dominant_speaker") == "Alice" for r in results)
 
-    pt = MagicMock()
-    pt.payload = None
-    pt.score = 0.5
-    d = _result_to_dict(pt)
-    assert d == {"score": 0.5}
+
+# ──────────────────────────────────────────────
+# Exact search (find)
+# ──────────────────────────────────────────────
+
+
+def test_find_substring_search():
+    retriever, _, col = _make_retriever()
+    results = retriever.find("neural", col, top_k=25)
+    assert len(results) > 0
+    assert all("neural" in r["text"].lower() for r in results)
+    assert all(r["score"] == 1.0 for r in results)
+
+
+def test_find_no_match():
+    retriever, _, col = _make_retriever()
+    results = retriever.find("xyznonexistent", col, top_k=25)
+    assert results == []
+
+
+# ──────────────────────────────────────────────
+# Random
+# ──────────────────────────────────────────────
+
+
+def test_random_returns_chunk():
+    retriever, _, col = _make_retriever()
+    result = retriever.random(col)
+    assert result is not None
+    assert "text" in result
+
+
+def test_random_empty_collection():
+    local = LocalStore(db_path=":memory:")
+    retriever, _, _ = _make_retriever(local=local)
+    result = retriever.random("nonexistent")
+    assert result is None
+
+
+# ──────────────────────────────────────────────
+# Cache invalidation
+# ──────────────────────────────────────────────
+
+
+def test_invalidate_clears_caches():
+    retriever, _, col = _make_retriever()
+    # Warm caches
+    retriever.retrieve("q", col, top_k=1, alpha=1.0)
+    retriever.retrieve("q", col, top_k=1, alpha=0.0)
+    assert col in retriever._vector_cache
+    assert col in retriever._bm25_cache
+
+    retriever.invalidate(col)
+    assert col not in retriever._vector_cache
+    assert col not in retriever._bm25_cache
+
+
+def test_invalidate_all():
+    retriever, _, col = _make_retriever()
+    retriever.retrieve("q", col, top_k=1, alpha=1.0)
+    retriever._bm25_cache["other"] = MagicMock()
+
+    retriever.invalidate()
+    assert len(retriever._vector_cache) == 0
+    assert len(retriever._bm25_cache) == 0
 
 
 # ──────────────────────────────────────────────
@@ -249,7 +254,7 @@ def test_normalize_empty():
     assert _normalize([]) == []
 
 
-def test_normalize_single_nonzero_result_scores_to_one():
+def test_normalize_single_result():
     from podcodex.rag.retriever import _normalize
 
     result = _normalize([{"score": 0.3, "text": "a"}])
@@ -257,120 +262,9 @@ def test_normalize_single_nonzero_result_scores_to_one():
 
 
 def test_normalize_rank_based_scores():
-    """Rank-based normalization: first gets 1.0, last gets 1/n."""
     from podcodex.rag.retriever import _normalize
 
     results = [{"score": 0.0, "text": "a"}, {"score": 0.0, "text": "b"}]
     normed = _normalize(results)
-    # Rank-based: 1.0 - (0/2) = 1.0, 1.0 - (1/2) = 0.5
     assert normed[0]["score"] == pytest.approx(1.0)
     assert normed[1]["score"] == pytest.approx(0.5)
-
-
-def test_normalize_preserves_order_and_fields():
-    from podcodex.rag.retriever import _normalize
-
-    results = [{"score": 0.2, "x": 1}, {"score": 0.8, "x": 2}]
-    normed = _normalize(results)
-    # Rank-based: position 0 → 1.0, position 1 → 0.5
-    assert normed[0]["score"] == pytest.approx(1.0)
-    assert normed[1]["score"] == pytest.approx(0.5)
-    assert normed[0]["x"] == 1
-    assert normed[1]["x"] == 2
-
-
-# ──────────────────────────────────────────────
-# BM25 caching
-# ──────────────────────────────────────────────
-
-
-def _setup_bm25_mocks(mock_store):
-    """Configure mock_store for BM25 scroll + collection_point_count."""
-    chunk = {"text": "hello podcast world", "episode": "E1", "start": 0.0}
-    mock_store.scroll_payloads.return_value = [chunk]
-    mock_store.collection_point_count.return_value = 1
-
-
-def test_bm25_cache_hit_skips_scroll():
-    """Two full-collection BM25 queries — scroll should be called only once."""
-    retriever, _, mock_store = _make_retriever()
-    _setup_bm25_mocks(mock_store)
-
-    mock_bm25_inst = MagicMock()
-    mock_bm25_inst.retrieve.return_value = ([[0]], [[0.8]])
-
-    mock_bm25s = MagicMock()
-    mock_bm25s.BM25.return_value = mock_bm25_inst
-
-    with patch("podcodex.rag.retriever.bm25s", mock_bm25s):
-        retriever.retrieve("podcast", "col", top_k=5, alpha=0.0)
-        retriever.retrieve("another query", "col", top_k=5, alpha=0.0)
-
-    # scroll_payloads called once to build cache, not again for second query
-    assert mock_store.scroll_payloads.call_count == 1
-
-
-def test_bm25_cache_miss_on_count_change():
-    """When point_count changes, cache is rebuilt."""
-    retriever, _, mock_store = _make_retriever()
-    _setup_bm25_mocks(mock_store)
-
-    mock_bm25_inst = MagicMock()
-    mock_bm25_inst.retrieve.return_value = ([[0]], [[0.8]])
-
-    mock_bm25s = MagicMock()
-    mock_bm25s.BM25.return_value = mock_bm25_inst
-
-    with patch("podcodex.rag.retriever.bm25s", mock_bm25s):
-        retriever.retrieve("q1", "col", top_k=5, alpha=0.0)
-
-        # Change point count → cache stale
-        mock_store.collection_point_count.return_value = 2
-        retriever.retrieve("q2", "col", top_k=5, alpha=0.0)
-
-    # scroll_payloads called twice: initial build + rebuild after count change
-    assert mock_store.scroll_payloads.call_count == 2
-
-
-def test_bm25_episode_scoped_bypasses_cache():
-    """Episode-filtered BM25 queries should not use or populate the cache."""
-    retriever, _, mock_store = _make_retriever()
-    _setup_bm25_mocks(mock_store)
-
-    mock_bm25_inst = MagicMock()
-    mock_bm25_inst.retrieve.return_value = ([[0]], [[0.8]])
-
-    mock_bm25s = MagicMock()
-    mock_bm25s.BM25.return_value = mock_bm25_inst
-
-    with patch("podcodex.rag.retriever.bm25s", mock_bm25s):
-        retriever.retrieve("q", "col", top_k=5, alpha=0.0, episode="E1")
-        retriever.retrieve("q", "col", top_k=5, alpha=0.0, episode="E1")
-
-    # Each episode-scoped query scrolls independently (no cache)
-    assert mock_store.scroll_payloads.call_count == 2
-    assert "col" not in retriever._bm25_cache
-
-
-def test_invalidate_bm25_cache():
-    retriever, _, mock_store = _make_retriever()
-    _setup_bm25_mocks(mock_store)
-
-    mock_bm25_inst = MagicMock()
-    mock_bm25_inst.retrieve.return_value = ([[0]], [[0.8]])
-
-    mock_bm25s = MagicMock()
-    mock_bm25s.BM25.return_value = mock_bm25_inst
-
-    with patch("podcodex.rag.retriever.bm25s", mock_bm25s):
-        retriever.retrieve("q", "col", top_k=5, alpha=0.0)
-        assert "col" in retriever._bm25_cache
-
-        retriever.invalidate_bm25_cache("col")
-        assert "col" not in retriever._bm25_cache
-
-    # invalidate_bm25_cache(None) clears all
-    retriever._bm25_cache["a"] = MagicMock()
-    retriever._bm25_cache["b"] = MagicMock()
-    retriever.invalidate_bm25_cache()
-    assert len(retriever._bm25_cache) == 0

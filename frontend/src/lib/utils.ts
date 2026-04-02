@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import type { Episode, ShowMeta } from "@/api/types";
+import type { Episode, ShowMeta, VersionEntry } from "@/api/types";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(...inputs));
@@ -52,6 +52,12 @@ export function timeAgo(dateStr: string | null | undefined): string {
   return formatDate(dateStr);
 }
 
+/** Strip HTML tags and decode common entities. */
+export function stripHtml(html: string): string {
+  const text = html.replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ");
+  return text.replace(/\s+/g, " ").trim();
+}
+
 /** Build a default LLM context string from show metadata and episode info. */
 export function buildDefaultContext(episode: Episode, showMeta: ShowMeta | null | undefined): string {
   const parts: string[] = [];
@@ -59,7 +65,9 @@ export function buildDefaultContext(episode: Episode, showMeta: ShowMeta | null 
   if (showMeta?.language) parts.push(`${showMeta.language} podcast`);
   if (showMeta?.speakers?.length) parts.push(`hosted by ${showMeta.speakers.join(" and ")}`);
   if (episode.title) parts.push(`episode: ${episode.title}`);
-  return parts.join(", ");
+  let ctx = parts.join(", ");
+  if (episode.description) ctx += `\nDescription: ${stripHtml(episode.description)}`;
+  return ctx;
 }
 
 /** Derive a show name from metadata or audio path. */
@@ -94,4 +102,47 @@ export function languageToISO(lang: string): string {
   };
   const lower = lang.toLowerCase().trim();
   return map[lower] || lower;
+}
+
+// ── Version formatting ────────────────────────────────────
+
+/** Format a version's timestamp as a short date string. */
+export function versionDate(v: VersionEntry): string {
+  const d = new Date(v.timestamp);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+/** Build a compact label for a version (model, provider, language info). */
+export function versionLabel(v: VersionEntry): string {
+  const p = v.params as Record<string, unknown>;
+  if (v.manual_edit || v.type === "validated") return "Manual edit";
+  if (p.skipped) return "Skipped (copied)";
+  const parts: string[] = [];
+  if (v.model) parts.push(v.model);
+  if (p.provider) parts.push(String(p.provider));
+  else if (p.mode) parts.push(String(p.mode));
+  if (p.language) parts.push(String(p.language));
+  else if (p.source_lang && p.target_lang) parts.push(`${p.source_lang} → ${p.target_lang}`);
+  else if (p.source_lang) parts.push(String(p.source_lang));
+  if (p.diarize === false) parts.push("no diar");
+  return parts.join(", ") || "Pipeline";
+}
+
+/** Params to hide from the version info box (internal / not user-relevant). */
+const HIDDEN_VERSION_PARAMS = new Set(["meta", "batch_size", "batch_minutes", "engine", "skipped"]);
+
+/** Format all params as key: value rows for a version info box. */
+export function versionInfo(v: VersionEntry): { key: string; value: string }[] {
+  const rows: { key: string; value: string }[] = [];
+  if (v.model) rows.push({ key: "Model", value: v.model });
+  rows.push({ key: "Type", value: v.type === "validated" ? "Saved edit" : "Generated" });
+  rows.push({ key: "Segments", value: String(v.segment_count) });
+  rows.push({ key: "Hash", value: v.content_hash.replace("sha256:", "").slice(0, 8) });
+  const p = v.params as Record<string, unknown>;
+  for (const [k, val] of Object.entries(p)) {
+    if (HIDDEN_VERSION_PARAMS.has(k) || val === null || val === undefined) continue;
+    const label = k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    rows.push({ key: label, value: typeof val === "boolean" ? (val ? "yes" : "no") : String(val) });
+  }
+  return rows;
 }

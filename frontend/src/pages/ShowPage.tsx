@@ -463,7 +463,6 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         <ShowSettings
           folder={folder}
           meta={meta}
-          hasIndex={all.some((e) => e.indexed)}
         />
       )}
     </div>

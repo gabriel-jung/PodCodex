@@ -57,7 +57,7 @@ export default function TTSGenerationSection({
           onChange={(e) => setLanguage(e.target.value)}
           className="input py-1 text-sm"
         />
-        <HelpLabel label="Model size" help="Larger model produces more natural-sounding speech but needs more GPU memory." />
+        <HelpLabel label="Model size" help="Larger models produce more natural speech but need more GPU memory." />
         <select
           value={modelSize}
           onChange={(e) => setModelSize(e.target.value)}
@@ -72,7 +72,7 @@ export default function TTSGenerationSection({
         </select>
         {translations.length > 0 && (
           <>
-            <HelpLabel label="Text source" help="Which text to synthesize. 'Best available' picks the translation if one exists, otherwise the polished or raw transcript." />
+            <HelpLabel label="Text source" help="Which text to synthesize. 'Best available' uses the translation if one exists, otherwise the polished or raw transcript." />
             <select
               value={sourceLang}
               onChange={(e) => setSourceLang(e.target.value)}
@@ -90,7 +90,7 @@ export default function TTSGenerationSection({
       {/* Advanced TTS settings */}
       <AdvancedToggle className="space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
-          <HelpLabel label="Max chunk (s)" help="Maximum duration in seconds for each TTS chunk. Shorter chunks are more stable, longer ones sound more natural." />
+          <HelpLabel label="Max chunk (s)" help="Maximum duration per TTS chunk in seconds. Shorter chunks are more stable, longer ones sound more natural." />
           <input
             type="number"
             value={maxChunkDuration}

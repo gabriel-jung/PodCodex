@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment, VersionEntry } from "@/api/types";
 import { useSegments } from "@/hooks/useSegments";
 import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
+import { versionDate, versionLabel } from "@/lib/utils";
 import { useAudioStore } from "@/stores";
 import EditorToolbar from "./EditorToolbar";
 import SegmentRow from "./SegmentRow";
@@ -140,6 +141,48 @@ export default function SegmentEditor({
     return map;
   }, [editor.originalIndices]);
 
+  // ── Compare-with selector ────────────────────────────
+  // "default" = parent-supplied referenceSegments, "none" = no diff, version id = load that version
+  const [refChoice, setRefChoice] = useState<"default" | "none" | string>(
+    referenceSegments ? "default" : "none",
+  );
+  // Reset choice when the parent-supplied reference changes
+  useEffect(() => {
+    setRefChoice(referenceSegments ? "default" : "none");
+  }, [referenceSegments]);
+
+  const [versionRefSegments, setVersionRefSegments] = useState<Segment[] | null>(null);
+  const [versionRefLabel, setVersionRefLabel] = useState("");
+
+  const handleRefChoiceChange = async (choice: string) => {
+    setRefChoice(choice);
+    if (choice === "default" || choice === "none") {
+      setVersionRefSegments(null);
+      setVersionRefLabel("");
+      return;
+    }
+    // Load a version as reference
+    if (loadVersion) {
+      try {
+        const data = await loadVersion(choice);
+        setVersionRefSegments(data);
+        const v = versions?.find((ver) => ver.id === choice);
+        setVersionRefLabel(v ? `Version ${new Date(v.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "Version");
+      } catch {
+        setVersionRefSegments(null);
+        setVersionRefLabel("");
+        setRefChoice("none");
+      }
+    }
+  };
+
+  const effectiveReference = refChoice === "default" ? referenceSegments
+    : refChoice === "none" ? undefined
+    : versionRefSegments ?? undefined;
+  const effectiveRefLabel = refChoice === "default" ? referenceLabel
+    : refChoice === "none" ? ""
+    : versionRefLabel;
+
   // Build adjusted reference lookup.
   // Both edited and reference segments started as parallel arrays. When an
   // edited segment is deleted, the corresponding reference position should
@@ -210,8 +253,20 @@ export default function SegmentEditor({
     editor.editedSegments,
     editor.originalIndices,
     filters,
-    { showFlags, dismissedFlags, isChanged },
+    { dismissedFlags, isChanged },
   );
+
+  // Keep anchor in sync with what's currently visible
+  useEffect(() => {
+    if (pageSegments.length > 0) {
+      filters.setAnchorOrigIdx(pageSegments[0].originalIndex);
+    }
+  }, [pageSegments]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Scroll to top of list when page changes
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, [filters.page]);
 
   // Track which segment is currently playing
   const storeAudioPath = useAudioStore((s) => s.audioPath);
@@ -260,48 +315,6 @@ export default function SegmentEditor({
         editor.reset(data);
       }
     : undefined;
-
-  // ── Compare-with selector ────────────────────────────
-  // "default" = parent-supplied referenceSegments, "none" = no diff, version id = load that version
-  const [refChoice, setRefChoice] = useState<"default" | "none" | string>(
-    referenceSegments ? "default" : "none",
-  );
-  // Reset choice when the parent-supplied reference changes
-  useEffect(() => {
-    setRefChoice(referenceSegments ? "default" : "none");
-  }, [referenceSegments]);
-
-  const [versionRefSegments, setVersionRefSegments] = useState<Segment[] | null>(null);
-  const [versionRefLabel, setVersionRefLabel] = useState("");
-
-  const handleRefChoiceChange = async (choice: string) => {
-    setRefChoice(choice);
-    if (choice === "default" || choice === "none") {
-      setVersionRefSegments(null);
-      setVersionRefLabel("");
-      return;
-    }
-    // Load a version as reference
-    if (loadVersion) {
-      try {
-        const data = await loadVersion(choice);
-        setVersionRefSegments(data);
-        const v = versions?.find((ver) => ver.id === choice);
-        setVersionRefLabel(v ? `Version ${new Date(v.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "Version");
-      } catch {
-        setVersionRefSegments(null);
-        setVersionRefLabel("");
-        setRefChoice("none");
-      }
-    }
-  };
-
-  const effectiveReference = refChoice === "default" ? referenceSegments
-    : refChoice === "none" ? undefined
-    : versionRefSegments ?? undefined;
-  const effectiveRefLabel = refChoice === "default" ? referenceLabel
-    : refChoice === "none" ? ""
-    : versionRefLabel;
 
   // Ref for search input focus
   const searchRef = useRef<HTMLInputElement>(null);
@@ -411,16 +424,11 @@ export default function SegmentEditor({
             {referenceSegments && (
               <option value="default">{referenceLabel}</option>
             )}
-            {versions && versions.map((v) => {
-              const d = new Date(v.timestamp);
-              const dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-              const model = v.manual_edit ? "edit" : v.model || v.type;
-              return (
-                <option key={v.id} value={v.id}>
-                  {dateStr} — {model} ({v.segment_count} seg)
-                </option>
-              );
-            })}
+            {versions && versions.map((v) => (
+              <option key={v.id} value={v.id}>
+                {versionDate(v)} — {versionLabel(v)} ({v.segment_count} seg)
+              </option>
+            ))}
           </select>
         </div>
       )}
@@ -435,8 +443,8 @@ export default function SegmentEditor({
             <div key={`${editorKey}-${originalIndex}`} data-orig-idx={originalIndex}>
             <SegmentRow
               segment={segment}
-              index={displayIndex}
-              totalCount={displaySegments.length}
+              index={originalIndex}
+              totalCount={editor.editedSegments.length}
               isEdited={editor.isDirty && (originalIndex >= segments.length || segment !== segments[originalIndex])}
               isFlagged={showFlags ? isFlaggedSeg(segment, originalIndex) : false}
               flagReason={showFlags ? flagReason(segment, filters.densityThreshold, filters.maxDensityThreshold) : null}
@@ -472,8 +480,14 @@ export default function SegmentEditor({
           pageSize={filters.pageSize}
           onPageChange={filters.setPage}
           onPageSizeChange={(s) => {
+            const anchor = filters.anchorOrigIdx;
             filters.setPageSize(s);
-            filters.setPage(0);
+            if (anchor != null) {
+              const pos = displaySegments.findIndex((d) => d.originalIndex === anchor);
+              filters.setPage(pos >= 0 ? Math.floor(pos / s) : 0);
+            } else {
+              filters.setPage(0);
+            }
           }}
         />
       )}

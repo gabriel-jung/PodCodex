@@ -1,4 +1,4 @@
-"""Tests for podcodex.bot — pure functions only (no Discord, no Qdrant)."""
+"""Tests for podcodex.bot — pure functions only (no Discord)."""
 
 import pytest
 
@@ -25,14 +25,14 @@ from podcodex.bot.formatting import (
 def test_botconfig_defaults():
     cfg = BotConfig()
     assert cfg.top_k == 5
-    assert cfg.qdrant_url is None
+    assert cfg.db_path is None
     assert cfg.chunker == "semantic"
 
 
 def test_botconfig_custom():
-    cfg = BotConfig(top_k=3, qdrant_url="http://qdrant:6333", chunker="speaker")
+    cfg = BotConfig(top_k=3, db_path="/tmp/vectors.db", chunker="speaker")
     assert cfg.top_k == 3
-    assert cfg.qdrant_url == "http://qdrant:6333"
+    assert cfg.db_path == "/tmp/vectors.db"
     assert cfg.chunker == "speaker"
 
 
@@ -509,7 +509,7 @@ def test_effective_settings_carries_new_fields(tmp_path):
     )
     from unittest.mock import patch
 
-    with patch("podcodex.bot.bot.QdrantStore"), patch("podcodex.bot.bot.Retriever"):
+    with patch("podcodex.bot.bot.LocalStore"), patch("podcodex.bot.bot.Retriever"):
         from podcodex.bot.bot import BotConfig, PodCodexBot
 
         bot = PodCodexBot(BotConfig(), server_config_path=cfg_path)

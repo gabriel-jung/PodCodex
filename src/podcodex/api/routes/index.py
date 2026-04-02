@@ -44,6 +44,88 @@ async def index_config() -> dict:
     }
 
 
+# ── Sources (available files to index) ───────────────────
+
+
+@router.get("/sources")
+async def index_sources(
+    audio_path: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> list[dict]:
+    """List available source files for indexing (transcript, polished, translations).
+
+    Returns a list of {key, label, detail, exists} dicts, ordered from most to
+    least advanced.  The first entry with exists=True is the recommended default.
+    Includes provenance detail (model, provider) when available.
+    """
+    from podcodex.core.translate import list_translations
+    from podcodex.core.versions import load_latest
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+
+    def _version_detail(step: str, lang: str | None = None) -> str:
+        """Build a short detail string from the latest version's provenance."""
+        try:
+            _, meta = load_latest(audio_path, step, output_dir=output_dir)
+            if not meta:
+                return ""
+            parts: list[str] = []
+            if meta.get("model"):
+                parts.append(meta["model"])
+            params = meta.get("params") or {}
+            if params.get("provider"):
+                parts.append(str(params["provider"]))
+            elif params.get("mode"):
+                parts.append(str(params["mode"]))
+            if lang:
+                parts.append(lang.replace("_", " ").title())
+            if meta.get("manual_edit") or meta.get("type") == "validated":
+                parts.append("edited")
+            return ", ".join(parts)
+        except Exception:
+            return ""
+
+    sources: list[dict] = []
+
+    # Translations (most advanced) — one entry per language
+    for lang in list_translations(audio_path, output_dir=output_dir):
+        detail = _version_detail(lang, lang)
+        sources.append(
+            {
+                "key": lang,
+                "label": lang.replace("_", " ").title(),
+                "detail": detail,
+                "exists": True,
+            }
+        )
+
+    # Polished
+    polished_exists = p.polished.exists() or p.polished_raw.exists()
+    detail = _version_detail("polished") if polished_exists else ""
+    sources.append(
+        {
+            "key": "polished",
+            "label": "Polished",
+            "detail": detail,
+            "exists": polished_exists,
+        }
+    )
+
+    # Transcript
+    transcript_exists = p.transcript.exists() or p.transcript_raw.exists()
+    detail = _version_detail("transcript") if transcript_exists else ""
+    sources.append(
+        {
+            "key": "transcript",
+            "label": "Transcript",
+            "detail": detail,
+            "exists": transcript_exists,
+        }
+    )
+
+    return sources
+
+
 # ── Status ───────────────────────────────────────────────
 
 
@@ -129,6 +211,7 @@ class IndexRequest(BaseModel):
     output_dir: str | None = None
     show: str
     source: str = "auto"
+    version_id: str | None = None
     model_keys: list[str] = ["bge-m3"]
     chunkings: list[str] = ["semantic"]
     chunk_size: int = 256
@@ -156,38 +239,54 @@ async def start_index(req: IndexRequest) -> TaskResponse:
 
     def run_index(progress_cb, req_data):
         from podcodex.cli import _resolve_source, _source_label, vectorize_batch
+        from podcodex.core.versions import load_version
         from podcodex.rag.localstore import LocalStore
 
         p = AudioPaths.from_audio(req_data.audio_path, output_dir=req_data.output_dir)
         episode = p.audio_path.stem
 
-        # Find the transcript file
-        transcript_path = p.transcript_best
-        if not transcript_path.exists():
-            raise ValueError("No transcript found — transcribe first")
-
-        # Resolve source (auto picks polished > transcript)
         progress_cb(0.0, "Resolving source...")
-        source_path = _resolve_source(transcript_path, req_data.source)
-        source_label = _source_label(source_path, transcript_path)
 
-        # Load and prepare transcript dict
-        data = json.loads(source_path.read_text(encoding="utf-8"))
-        if isinstance(data, list):
+        # If a specific version is requested, load directly from version store
+        if req_data.version_id and req_data.source != "auto":
+            step = req_data.source
+            segments = load_version(p.base, step, req_data.version_id)
+            source_label = step
             transcript = {
                 "meta": {
                     "show": req_data.show,
                     "episode": episode,
                     "source": source_label,
                 },
-                "segments": data,
+                "segments": segments,
             }
         else:
-            transcript = data
-            transcript.setdefault("meta", {})
-            transcript["meta"].setdefault("show", req_data.show)
-            transcript["meta"].setdefault("episode", episode)
-            transcript["meta"].setdefault("source", source_label)
+            # Find the transcript file
+            transcript_path = p.transcript_best
+            if not transcript_path.exists():
+                raise ValueError("No transcript found — transcribe first")
+
+            # Resolve source (auto picks polished > transcript)
+            source_path = _resolve_source(transcript_path, req_data.source)
+            source_label = _source_label(source_path, transcript_path)
+
+            # Load and prepare transcript dict
+            data = json.loads(source_path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                transcript = {
+                    "meta": {
+                        "show": req_data.show,
+                        "episode": episode,
+                        "source": source_label,
+                    },
+                    "segments": data,
+                }
+            else:
+                transcript = data
+                transcript.setdefault("meta", {})
+                transcript["meta"].setdefault("show", req_data.show)
+                transcript["meta"].setdefault("episode", episode)
+                transcript["meta"].setdefault("source", source_label)
 
         # Inject RSS metadata (episode title, pub_date) for chunker
         from podcodex.ingest.rss import load_episode_meta
@@ -238,6 +337,7 @@ async def start_index(req: IndexRequest) -> TaskResponse:
             "type": "raw",
             "model": (req_data.model_keys or ["bge-m3"])[0],
             "params": {
+                "source": source_label,
                 "model_keys": req_data.model_keys,
                 "chunkings": req_data.chunkings,
                 "chunk_size": req_data.chunk_size,

@@ -10,7 +10,7 @@
 
 **Batch pipeline** — multi-episode operations with per-step config dialogs, global task bar with per-episode logs, show speakers panel, move/rename folder, pipeline config store, duration-based LLM batching, task cancellation + result summaries
 
-**Search & bot** — RAG module (Qdrant + SQLite, hybrid retrieval), CLI (`vectorize / sync / query / list / delete`), Discord bot (`/search`, `/exact`, `/random`, `/stats`, `/episodes`)
+**Search & bot** — RAG module (SQLite + numpy, hybrid retrieval), CLI (`vectorize / query / list / delete`), Discord bot (`/search`, `/exact`, `/random`, `/stats`, `/episodes`)
 
 **Ingest** — RSS feed parsing, episode download, folder scanning, transcript import
 

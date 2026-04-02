@@ -8,8 +8,6 @@ podcodex.cli — Command-line interface.
                        [--model bge-m3] [--chunking semantic|speaker]
                        [--chunk-size N] [--threshold F]
                        [--episode <name>] [--overwrite]
-    podcodex sync      --show <name> [--episode <name>] [--overwrite]
-                       [--qdrant-url URL] [--db PATH]
     podcodex query     <QUERY> --show <name> [--top-k N] [--alpha F]
     podcodex list      [--show <name>]
     podcodex delete    <collection>
@@ -24,7 +22,6 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-import numpy as np
 from loguru import logger
 
 from podcodex.rag.chunker import semantic_chunks, speaker_chunks
@@ -41,7 +38,7 @@ from podcodex.rag.defaults import (
 )
 from podcodex.rag.localstore import LocalStore
 from podcodex.rag.retriever import Retriever
-from podcodex.rag.store import QdrantStore, collection_name
+from podcodex.rag.store import collection_name
 
 
 # ──────────────────────────────────────────────
@@ -83,13 +80,19 @@ def _resolve_source(transcript_path: Path, source: str) -> Path:
     else:
         # Treat as a language name (e.g. "english", "French")
         lang_norm = source.lower().strip().replace(" ", "_")
-        p = parent / f"{episode_stem}.{lang_norm}.json"
-        if not p.exists():
-            logger.warning(
-                f"Translation '{lang_norm}' not found: {p} — falling back to transcript"
-            )
-            return transcript_path
-        return p
+        for pattern in (
+            f"{episode_stem}.translated.{lang_norm}.json",
+            f"{episode_stem}.translated.{lang_norm}.raw.json",
+            f"{episode_stem}.{lang_norm}.json",
+            f"{episode_stem}.{lang_norm}.raw.json",
+        ):
+            p = parent / pattern
+            if p.exists():
+                return p
+        logger.warning(
+            f"Translation '{lang_norm}' not found in {parent} — falling back to transcript"
+        )
+        return transcript_path
 
 
 def _source_label(source_path: Path, transcript_path: Path) -> str:
@@ -151,8 +154,6 @@ def vectorize_episode(
 ) -> tuple[list[dict], int]:
     """
     Vectorize a single (model, chunker) combination into LocalStore.
-
-    Qdrant is not touched — use ``podcodex sync`` to push later.
 
     Args:
         transcript : parsed transcript dict (with meta.show / meta.episode set)
@@ -229,7 +230,6 @@ def vectorize_batch(
     Vectorize all (model, chunker) combinations into LocalStore.
 
     Chunks once per strategy, then embeds with each model.
-    Qdrant is not touched — use ``podcodex sync`` to push later.
 
     Args:
         on_progress : callback(step, total, label) for UI progress updates.
@@ -342,67 +342,11 @@ def cmd_vectorize(args: argparse.Namespace) -> None:
     marker.touch()
 
 
-def cmd_sync(args: argparse.Namespace) -> None:
-    """Push all episodes from LocalStore into Qdrant (no re-embedding)."""
-    db_path = getattr(args, "db", None)
-    local = LocalStore(db_path=db_path)
-    qdrant_url = getattr(args, "qdrant_url", None)
-    store = QdrantStore(url=qdrant_url)
-
-    show_filter = args.show or ""
-    episode_filter = getattr(args, "episode", None)
-
-    if episode_filter and not show_filter:
-        logger.error("--episode requires --show")
-        sys.exit(1)
-
-    collections = local.list_collections(show=show_filter)
-    if not collections:
-        logger.warning(
-            "No collections found in local store. "
-            "Run `podcodex vectorize` or `podcodex sync --db <path>` first."
-        )
-        return
-
-    total_chunks = 0
-    for col in collections:
-        info = local.get_collection_info(col)
-        if info is None:
-            continue
-
-        store.create_collection(col, model=info["model"], overwrite=args.overwrite)
-
-        episodes = local.list_episodes(col)
-        if episode_filter:
-            episodes = [ep for ep in episodes if ep == episode_filter]
-
-        for ep in episodes:
-            cached = local.load_chunks(col, ep)
-            if not cached:
-                continue
-
-            local_count = len(cached)
-
-            if not args.overwrite:
-                qdrant_count = store.episode_point_count(col, ep)
-                if local_count == qdrant_count:
-                    logger.info(f"[SKIP] '{ep}' → '{col}' ({local_count} chunks)")
-                    continue
-                if qdrant_count > 0:
-                    store.delete_episode_points(col, ep)
-
-            chunks = [{k: v for k, v in c.items() if k != "embedding"} for c in cached]
-            embeddings = np.stack([c["embedding"] for c in cached])
-            store.upsert(col, chunks, embeddings)
-            total_chunks += len(chunks)
-            logger.info(f"Synced '{ep}' → '{col}' ({len(chunks)} chunks)")
-
-    logger.success(f"Sync complete — {total_chunks} chunks pushed to Qdrant")
-
-
 def cmd_query(args: argparse.Namespace) -> None:
     col = collection_name(args.show, args.model, args.chunking)
-    retriever = Retriever(model=args.model)
+    db_path = getattr(args, "db", None)
+    local = LocalStore(db_path=db_path)
+    retriever = Retriever(model=args.model, local=local)
     source_filter = getattr(args, "source_filter", None)
     results = retriever.retrieve(
         args.query, col, top_k=args.top_k, alpha=args.alpha, source=source_filter
@@ -425,8 +369,9 @@ def cmd_query(args: argparse.Namespace) -> None:
 
 
 def cmd_list(args: argparse.Namespace) -> None:
-    store = QdrantStore()
-    collections = store.list_collections(show=args.show or "")
+    db_path = getattr(args, "db", None)
+    local = LocalStore(db_path=db_path)
+    collections = local.list_collections(show=args.show or "")
     if not collections:
         print("No collections found.")
     else:
@@ -563,8 +508,9 @@ def cmd_import(args: argparse.Namespace) -> None:
 
 
 def cmd_delete(args: argparse.Namespace) -> None:
-    store = QdrantStore()
-    store.delete_collection(args.collection)
+    db_path = getattr(args, "db", None)
+    local = LocalStore(db_path=db_path)
+    local.delete_collection(args.collection)
     print(f"Deleted collection '{args.collection}'")
 
 
@@ -693,9 +639,7 @@ def cmd_enrich(args: argparse.Namespace) -> None:
                 updated += n
                 logger.info(f"Updated {n} chunks for '{ep}' in '{col}': {extras}")
 
-    logger.success(
-        f"Backfilled metadata for {updated} chunks. Re-sync to push to Qdrant."
-    )
+    logger.success(f"Backfilled metadata for {updated} chunks.")
 
 
 # ──────────────────────────────────────────────
@@ -823,32 +767,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show what would be vectorized without writing to the database.",
     )
 
-    # sync
-    p_sync = sub.add_parser(
-        "sync", help="Push episodes from local SQLite store into Qdrant."
-    )
-    p_sync.add_argument("--show", default=None, help="Filter by show name.")
-    p_sync.add_argument(
-        "--episode", default=None, help="Sync a single episode (requires --show)."
-    )
-    p_sync.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Recreate Qdrant collections before pushing.",
-    )
-    p_sync.add_argument(
-        "--qdrant-url",
-        default=None,
-        dest="qdrant_url",
-        help="Qdrant server URL (default: QDRANT_URL env var or localhost:6333).",
-    )
-    p_sync.add_argument(
-        "--db",
-        default=None,
-        metavar="PATH",
-        help="Path to local SQLite database (default: PODCODEX_DB env var or global default).",
-    )
-
     # query
     p_query = sub.add_parser("query", help="Search a vectorized show.")
     p_query.add_argument("query", metavar="QUERY", help="Query string.")
@@ -894,14 +812,32 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="SOURCE",
         help="Only search chunks from this source (e.g. 'polished', 'transcript').",
     )
+    p_query.add_argument(
+        "--db",
+        default=None,
+        metavar="PATH",
+        help="Path to local SQLite database.",
+    )
 
     # list
     p_list = sub.add_parser("list", help="List vector collections.")
     p_list.add_argument("--show", default=None, help="Filter by show name.")
+    p_list.add_argument(
+        "--db",
+        default=None,
+        metavar="PATH",
+        help="Path to local SQLite database.",
+    )
 
     # delete
     p_delete = sub.add_parser("delete", help="Delete a vector collection.")
     p_delete.add_argument("collection", help="Collection name to delete.")
+    p_delete.add_argument(
+        "--db",
+        default=None,
+        metavar="PATH",
+        help="Path to local SQLite database.",
+    )
 
     # validate
     p_val = sub.add_parser(
@@ -943,8 +879,6 @@ def main() -> None:
         cmd_import(args)
     elif args.command == "vectorize":
         cmd_vectorize(args)
-    elif args.command == "sync":
-        cmd_sync(args)
     elif args.command == "query":
         cmd_query(args)
     elif args.command == "list":

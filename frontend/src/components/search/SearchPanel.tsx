@@ -221,7 +221,7 @@ export default function SearchPanel(props: SearchPanelProps) {
           {/* Advanced settings */}
           {showAdvanced && (
             <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
-              <HelpLabel label="Embedding model" help="Which model was used to index. Must match what you selected in the Index tab." />
+              <HelpLabel label="Embedding model" help="Embedding model used during indexing. Must match what you selected in the Index tab." />
               {config ? (
                 <select
                   value={model}
@@ -236,7 +236,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                 <span className="text-muted-foreground text-xs">Loading...</span>
               )}
 
-              <HelpLabel label="Chunking" help="Which chunking strategy was used during indexing. Must match what you selected in the Index tab." />
+              <HelpLabel label="Chunking" help="Chunking strategy used during indexing. Must match what you selected in the Index tab." />
               {config ? (
                 <select
                   value={chunking}
@@ -263,7 +263,7 @@ export default function SearchPanel(props: SearchPanelProps) {
 
               {mode === "semantic" && (
                 <>
-                  <HelpLabel label="Keyword vs meaning" help="0 = pure keyword matching, 1 = pure meaning-based. 0.5 is a balanced mix of both." />
+                  <HelpLabel label="Keyword vs meaning" help="Balance between keyword and semantic search. 0 = pure keywords, 1 = pure meaning, 0.5 = balanced mix." />
                   <div className="flex items-center gap-2">
                     <input
                       type="range"

@@ -53,7 +53,7 @@ def _make_vectorize_args(
     args.overwrite = overwrite
     args.source = source
     args.device = device
-    args.qdrant_url = None
+    args.db = None
     args.dry_run = dry_run
     return args
 
@@ -336,98 +336,6 @@ def test_cmd_vectorize_overwrite_deletes_local_episode(tmp_path):
 
 
 # ──────────────────────────────────────────────
-# cmd_sync
-# ──────────────────────────────────────────────
-
-
-def _make_sync_args(show=None, episode=None, overwrite=False, qdrant_url=None, db=None):
-    args = MagicMock()
-    args.show = show
-    args.episode = episode
-    args.overwrite = overwrite
-    args.qdrant_url = qdrant_url
-    args.db = db
-    return args
-
-
-def test_cmd_sync_pushes_all_episodes():
-    from podcodex.cli import cmd_sync
-
-    emb = np.zeros((2, 8), dtype=np.float32)
-    cached = [
-        {"text": "a", "embedding": emb[0]},
-        {"text": "b", "embedding": emb[1]},
-    ]
-
-    mock_local = MagicMock()
-    mock_local.list_collections.return_value = ["my_show__bge-m3__semantic"]
-    mock_local._conn.execute.return_value.fetchone.return_value = (
-        "My Show",
-        "bge-m3",
-        1024,
-    )
-    mock_local.list_episodes.return_value = ["ep1", "ep2"]
-    mock_local.load_chunks.return_value = cached
-
-    mock_store = MagicMock()
-    mock_store.episode_point_count.return_value = 0  # not synced yet
-    args = _make_sync_args()
-
-    with (
-        patch("podcodex.cli.LocalStore", return_value=mock_local),
-        patch("podcodex.cli.QdrantStore", return_value=mock_store),
-    ):
-        cmd_sync(args)
-
-    assert mock_store.upsert.call_count == 2
-
-
-def test_cmd_sync_filters_by_show():
-    from podcodex.cli import cmd_sync
-
-    mock_local = MagicMock()
-    mock_local.list_collections.return_value = []
-    args = _make_sync_args(show="My Show")
-
-    with (
-        patch("podcodex.cli.LocalStore", return_value=mock_local),
-        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
-    ):
-        cmd_sync(args)
-
-    mock_local.list_collections.assert_called_once_with(show="My Show")
-
-
-def test_cmd_sync_episode_without_show_exits():
-    from podcodex.cli import cmd_sync
-
-    args = _make_sync_args(show=None, episode="ep1")
-    with (
-        patch("podcodex.cli.LocalStore", return_value=MagicMock()),
-        patch("podcodex.cli.QdrantStore", return_value=MagicMock()),
-        pytest.raises(SystemExit),
-    ):
-        cmd_sync(args)
-
-
-def test_cmd_sync_no_collections_warns():
-    from podcodex.cli import cmd_sync
-
-    mock_local = MagicMock()
-    mock_local.list_collections.return_value = []
-    mock_store = MagicMock()
-    args = _make_sync_args()
-
-    with (
-        patch("podcodex.cli.LocalStore", return_value=mock_local),
-        patch("podcodex.cli.QdrantStore", return_value=mock_store),
-    ):
-        cmd_sync(args)
-
-    mock_store.upsert.assert_not_called()
-
-
-# ──────────────────────────────────────────────
 # cmd_query
 # ──────────────────────────────────────────────
 
@@ -522,14 +430,15 @@ def test_cmd_list_no_filter(capsys):
 
     args = MagicMock()
     args.show = None
+    args.db = None
 
-    mock_store = MagicMock()
-    mock_store.list_collections.return_value = ["show_a", "show_b"]
+    mock_local = MagicMock()
+    mock_local.list_collections.return_value = ["show_a", "show_b"]
 
-    with patch("podcodex.cli.QdrantStore", return_value=mock_store):
+    with patch("podcodex.cli.LocalStore", return_value=mock_local):
         cmd_list(args)
 
-    mock_store.list_collections.assert_called_once_with(show="")
+    mock_local.list_collections.assert_called_once_with(show="")
     out = capsys.readouterr().out
     assert "show_a" in out
     assert "show_b" in out
@@ -540,14 +449,15 @@ def test_cmd_list_filtered_by_show(capsys):
 
     args = MagicMock()
     args.show = "my_show"
+    args.db = None
 
-    mock_store = MagicMock()
-    mock_store.list_collections.return_value = ["my_show"]
+    mock_local = MagicMock()
+    mock_local.list_collections.return_value = ["my_show"]
 
-    with patch("podcodex.cli.QdrantStore", return_value=mock_store):
+    with patch("podcodex.cli.LocalStore", return_value=mock_local):
         cmd_list(args)
 
-    mock_store.list_collections.assert_called_once_with(show="my_show")
+    mock_local.list_collections.assert_called_once_with(show="my_show")
 
 
 def test_cmd_list_empty(capsys):
@@ -555,11 +465,12 @@ def test_cmd_list_empty(capsys):
 
     args = MagicMock()
     args.show = None
+    args.db = None
 
-    mock_store = MagicMock()
-    mock_store.list_collections.return_value = []
+    mock_local = MagicMock()
+    mock_local.list_collections.return_value = []
 
-    with patch("podcodex.cli.QdrantStore", return_value=mock_store):
+    with patch("podcodex.cli.LocalStore", return_value=mock_local):
         cmd_list(args)
 
     out = capsys.readouterr().out
@@ -576,12 +487,13 @@ def test_cmd_delete_calls_store(capsys):
 
     args = MagicMock()
     args.collection = "my_show"
+    args.db = None
 
-    mock_store = MagicMock()
-    with patch("podcodex.cli.QdrantStore", return_value=mock_store):
+    mock_local = MagicMock()
+    with patch("podcodex.cli.LocalStore", return_value=mock_local):
         cmd_delete(args)
 
-    mock_store.delete_collection.assert_called_once_with("my_show")
+    mock_local.delete_collection.assert_called_once_with("my_show")
     out = capsys.readouterr().out
     assert "my_show" in out
 
@@ -632,28 +544,6 @@ def test_parser_vectorize_optional_args():
     assert args.chunk_size == 128
     assert args.threshold == pytest.approx(0.7)
     assert args.model == "e5-small"
-
-
-def test_parser_sync_defaults():
-    from podcodex.cli import _build_parser
-
-    parser = _build_parser()
-    args = parser.parse_args(["sync"])
-    assert args.command == "sync"
-    assert args.show is None
-    assert args.episode is None
-    assert args.overwrite is False
-    assert args.qdrant_url is None
-    assert args.db is None
-
-
-def test_parser_sync_with_show_and_episode():
-    from podcodex.cli import _build_parser
-
-    parser = _build_parser()
-    args = parser.parse_args(["sync", "--show", "My Show", "--episode", "ep1"])
-    assert args.show == "My Show"
-    assert args.episode == "ep1"
 
 
 def test_parser_query_required_args():
@@ -903,68 +793,3 @@ def test_vectorize_overwrite_always_deletes(tmp_path):
 
     mock_local.delete_episode.assert_called_once()
     mock_local.save_chunks.assert_called_once()
-
-
-# ──────────────────────────────────────────────
-# Incremental sync: cmd_sync
-# ──────────────────────────────────────────────
-
-
-def test_cmd_sync_skips_when_counts_match():
-    from podcodex.cli import cmd_sync
-
-    emb = np.zeros((2, 8), dtype=np.float32)
-    cached = [
-        {"text": "a", "embedding": emb[0]},
-        {"text": "b", "embedding": emb[1]},
-    ]
-
-    mock_local = MagicMock()
-    mock_local.list_collections.return_value = ["s__bge-m3__semantic"]
-    mock_local.list_episodes.return_value = ["ep1"]
-    mock_local.load_chunks.return_value = cached
-
-    mock_store = MagicMock()
-    mock_store.episode_point_count.return_value = 2  # matches local len(cached)
-
-    args = _make_sync_args()
-
-    with (
-        patch("podcodex.cli.LocalStore", return_value=mock_local),
-        patch("podcodex.cli.QdrantStore", return_value=mock_store),
-    ):
-        cmd_sync(args)
-
-    mock_store.upsert.assert_not_called()
-
-
-def test_cmd_sync_deletes_stale_then_upserts():
-    from podcodex.cli import cmd_sync
-
-    emb = np.zeros((3, 8), dtype=np.float32)
-    cached = [
-        {"text": "a", "embedding": emb[0]},
-        {"text": "b", "embedding": emb[1]},
-        {"text": "c", "embedding": emb[2]},
-    ]
-
-    mock_local = MagicMock()
-    mock_local.list_collections.return_value = ["s__bge-m3__semantic"]
-    mock_local.list_episodes.return_value = ["ep1"]
-    mock_local.load_chunks.return_value = cached
-
-    mock_store = MagicMock()
-    mock_store.episode_point_count.return_value = 1  # mismatch
-
-    args = _make_sync_args()
-
-    with (
-        patch("podcodex.cli.LocalStore", return_value=mock_local),
-        patch("podcodex.cli.QdrantStore", return_value=mock_store),
-    ):
-        cmd_sync(args)
-
-    mock_store.delete_episode_points.assert_called_once_with(
-        "s__bge-m3__semantic", "ep1"
-    )
-    mock_store.upsert.assert_called_once()

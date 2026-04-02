@@ -25,7 +25,6 @@ _CAPABILITY_CHECKS: dict[str, str] = {
     "soundfile": "soundfile",
     "ollama": "ollama",
     "openai": "openai",
-    "qdrant": "qdrant_client",
     "tts": "qwen_tts",
     "bot": "discord",
     "torch": "torch",
@@ -36,7 +35,7 @@ _CAPABILITY_CHECKS: dict[str, str] = {
 # Map installable extra names to their description.
 INSTALLABLE_EXTRAS: dict[str, str] = {
     "pipeline": "Transcription, TTS, LLM polish/translate (whisperx, soundfile, ollama, etc.)",
-    "rag": "Indexing & semantic search (torch, sentence-transformers, qdrant, etc.)",
+    "rag": "Indexing & semantic search (torch, sentence-transformers, etc.)",
     "bot": "Discord bot integration",
 }
 
@@ -61,7 +60,7 @@ async def list_extras() -> dict:
     # Map extras to their key capabilities
     extra_caps = {
         "pipeline": ["whisperx", "soundfile", "ollama", "tts"],
-        "rag": ["torch", "embeddings", "bm25", "qdrant"],
+        "rag": ["torch", "embeddings", "bm25"],
         "bot": ["bot"],
     }
     return {
@@ -140,7 +139,7 @@ async def install_extra(req: InstallExtraRequest) -> dict:
         caps = _get_capabilities()
         extra_cap_map = {
             "pipeline": ["whisperx", "soundfile", "ollama", "tts"],
-            "rag": ["torch", "embeddings", "bm25", "qdrant"],
+            "rag": ["torch", "embeddings", "bm25"],
             "bot": ["bot"],
         }
         for ext, ext_caps in extra_cap_map.items():

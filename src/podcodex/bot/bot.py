@@ -3,7 +3,7 @@ podcodex.bot.bot — Discord bot for podcast transcript search.
 
 Entrypoint:
     podcodex-bot [--model bge-m3] [--chunking semantic] [--top-k 5]
-                 [--qdrant-url URL] [--server-config FILE]
+                 [--db PATH] [--server-config FILE]
                  [--shows-config shows.toml] [--dev-guild ID]
     podcodex-bot --hash-password
     podcodex-bot --add-show [--shows-config FILE]
@@ -71,7 +71,8 @@ from podcodex.rag.defaults import (
     TOP_K,
 )
 from podcodex.rag.retriever import Retriever
-from podcodex.rag.store import QdrantStore, collection_name
+from podcodex.rag.localstore import LocalStore
+from podcodex.rag.store import collection_name
 
 # ── Slash-command choices ─────────────────────
 
@@ -124,7 +125,7 @@ class BotConfig:
     model: str = DEFAULT_MODEL
     chunker: str = DEFAULT_CHUNKING
     top_k: int = TOP_K
-    qdrant_url: str | None = None
+    db_path: str | None = None
     merge_strategy: str = "roundrobin"
     cooldown_seconds: float = 5.0
     dev_guild_id: int | None = None
@@ -232,7 +233,7 @@ class PodCodexBot(discord.Client):
         self._cooldown = CooldownManager(seconds=config.cooldown_seconds)
         self._access_control = bool(config.shows)
 
-        self._store: QdrantStore | None = None
+        self._local: LocalStore | None = None
         self._retrievers: dict[str, Retriever] = {}
         self._server_cfg: dict[int, ServerSettings] = self._load_server_config()
         self._ac_cache = _AutocompleteCache(episodes={}, sources={}, speakers={})
@@ -338,21 +339,21 @@ class PodCodexBot(discord.Client):
     # ── Lazy singletons ──────────────────────
 
     @property
-    def store(self) -> QdrantStore:
-        if self._store is None:
-            self._store = QdrantStore(url=self.config.qdrant_url)
-        return self._store
+    def local(self) -> LocalStore:
+        if self._local is None:
+            self._local = LocalStore(db_path=self.config.db_path)
+        return self._local
 
     def retriever(self, model: str) -> Retriever:
         if model not in self._retrievers:
-            self._retrievers[model] = Retriever(model=model, store=self.store)
+            self._retrievers[model] = Retriever(model=model, local=self.local)
         return self._retrievers[model]
 
     # ── Lifecycle ─────────────────────────────
 
     async def setup_hook(self) -> None:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: self.store)
+        await loop.run_in_executor(None, lambda: self.local)
         if self.config.dev_guild_id:
             guild = discord.Object(id=self.config.dev_guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -400,7 +401,7 @@ class PodCodexBot(discord.Client):
             loop = asyncio.get_running_loop()
             collections = await loop.run_in_executor(
                 None,
-                lambda: self.store.list_collections(model=model, chunker=chunker),
+                lambda: self.local.list_collections(model=model, chunker=chunker),
             )
             suffix = f"__{model}__{chunker}"
             shows = sorted({c.removesuffix(suffix) for c in collections})
@@ -421,7 +422,7 @@ class PodCodexBot(discord.Client):
         if collection not in cache.episodes:
             loop = asyncio.get_running_loop()
             eps = await loop.run_in_executor(
-                None, lambda: self.store.list_episode_names(collection)
+                None, lambda: self.local.list_episodes(collection)
             )
             cache.episodes[collection] = eps
         return cache.episodes.get(collection, [])
@@ -437,7 +438,7 @@ class PodCodexBot(discord.Client):
         if collection not in cache.sources:
             loop = asyncio.get_running_loop()
             srcs = await loop.run_in_executor(
-                None, lambda: self.store.list_sources(collection)
+                None, lambda: self.local.list_sources(collection)
             )
             cache.sources[collection] = srcs
         return cache.sources.get(collection, [])
@@ -479,7 +480,7 @@ class PodCodexBot(discord.Client):
 
         loop = asyncio.get_running_loop()
         collections = await loop.run_in_executor(
-            None, lambda: self.store.list_collections(model=model, chunker=chunker)
+            None, lambda: self.local.list_collections(model=model, chunker=chunker)
         )
         collections = self._filter_collections(collections, settings)
 
@@ -504,7 +505,7 @@ class PodCodexBot(discord.Client):
         if collection not in cache.speakers:
             loop = asyncio.get_running_loop()
             spks = await loop.run_in_executor(
-                None, lambda: self.store.list_speakers(collection)
+                None, lambda: self.local.list_speakers(collection)
             )
             cache.speakers[collection] = spks
         return cache.speakers.get(collection, [])
@@ -530,7 +531,7 @@ class PodCodexBot(discord.Client):
             # No access control, no filter — list speakers across all collections
             loop = asyncio.get_running_loop()
             collections = await loop.run_in_executor(
-                None, lambda: self.store.list_collections(model=model, chunker=chunker)
+                None, lambda: self.local.list_collections(model=model, chunker=chunker)
             )
             all_speakers: set[str] = set()
             for col in collections:
@@ -984,7 +985,7 @@ class PodCodexBot(discord.Client):
             collections = [collection_name(s, model, chunker) for s in shows]
         else:
             collections = self._filter_collections(
-                self.store.list_collections(model=model, chunker=chunker), settings
+                self.local.list_collections(model=model, chunker=chunker), settings
             )
         if not collections:
             logger.warning(f"No collections for model={model!r} chunker={chunker!r}")
@@ -1039,7 +1040,7 @@ class PodCodexBot(discord.Client):
                 collections = self._filter_collections(
                     await loop.run_in_executor(
                         None,
-                        lambda: self.store.list_collections(
+                        lambda: self.local.list_collections(
                             model=settings.model,
                             chunker=settings.chunker,
                         ),
@@ -1127,7 +1128,7 @@ class PodCodexBot(discord.Client):
                 collections = self._filter_collections(
                     await loop.run_in_executor(
                         None,
-                        lambda: self.store.list_collections(
+                        lambda: self.local.list_collections(
                             model=settings.model,
                             chunker=settings.chunker,
                         ),
@@ -1371,7 +1372,7 @@ class PodCodexBot(discord.Client):
         try:
             collections = await loop.run_in_executor(
                 None,
-                lambda: self.store.list_collections(
+                lambda: self.local.list_collections(
                     show=show or "",
                     model=settings.model,
                     chunker=settings.chunker,
@@ -1388,7 +1389,7 @@ class PodCodexBot(discord.Client):
             for col in collections:
                 stats = await loop.run_in_executor(
                     None,
-                    lambda c=col: self.store.get_episode_stats(c),
+                    lambda c=col: self.local.get_episode_stats(c),
                 )
                 all_stats.extend(stats)
 
@@ -1448,7 +1449,7 @@ class PodCodexBot(discord.Client):
                 collections = self._filter_collections(
                     await loop.run_in_executor(
                         None,
-                        lambda: self.store.list_collections(
+                        lambda: self.local.list_collections(
                             model=settings.model, chunker=settings.chunker
                         ),
                     ),
@@ -1476,7 +1477,7 @@ class PodCodexBot(discord.Client):
         try:
             ep_stats = await loop.run_in_executor(
                 None,
-                lambda: self.store.get_episode_stats(col),
+                lambda: self.local.get_episode_stats(col),
             )
         except Exception:
             logger.exception(f"Episodes error for {col!r}")
@@ -1594,7 +1595,7 @@ def main() -> None:
         "--chunking", default=DEFAULT_CHUNKING, choices=list(CHUNKING_STRATEGIES.keys())
     )
     parser.add_argument("--top-k", default=TOP_K, type=int)
-    parser.add_argument("--qdrant-url", default=None)
+    parser.add_argument("--db", default=None, help="Path to vectors.db")
     parser.add_argument(
         "--merge-strategy", default="roundrobin", choices=["roundrobin", "score"]
     )
@@ -1644,7 +1645,7 @@ def main() -> None:
         model=args.model,
         chunker=args.chunking,
         top_k=args.top_k,
-        qdrant_url=args.qdrant_url,
+        db_path=args.db,
         merge_strategy=args.merge_strategy,
         cooldown_seconds=args.cooldown,
         dev_guild_id=args.dev_guild,

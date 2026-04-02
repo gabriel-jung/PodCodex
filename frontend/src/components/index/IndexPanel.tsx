@@ -4,9 +4,11 @@ import { useEpisodeStore } from "@/stores";
 import {
   getIndexConfig,
   getIndexStatus,
+  getIndexSources,
+  getStepVersions,
   startIndex,
 } from "@/api/client";
-import { errorMessage, getShowName } from "@/lib/utils";
+import { errorMessage, getShowName, selectClass, versionDate, versionLabel, versionInfo } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { Button } from "@/components/ui/button";
 import { useCapabilities } from "@/hooks/useCapabilities";
@@ -35,18 +37,50 @@ export default function IndexPanel() {
     enabled: !!episode.audio_path,
   });
 
+  const { data: sources } = useQuery({
+    queryKey: ["index", "sources", episode.audio_path],
+    queryFn: () => getIndexSources(episode.audio_path!),
+    enabled: !!episode.audio_path,
+  });
+
+  // Pre-select the most advanced available source (first with exists=true)
+  const availableSources = sources?.filter((s) => s.exists) ?? [];
+  const defaultSource = availableSources[0]?.key ?? "transcript";
+
   // Form state
+  const [selectedSource, setSelectedSource] = useState<string | null>(null);
+  const source = selectedSource ?? defaultSource;
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [selectedModels, setSelectedModels] = useState<string[]>(["bge-m3"]);
   const [selectedChunkings, setSelectedChunkings] = useState<string[]>(["semantic"]);
   const [chunkSize, setChunkSize] = useState(256);
   const [threshold, setThreshold] = useState(0.5);
   const [overwrite, setOverwrite] = useState(episode.indexed);
 
+  // Load versions for the selected step
+  const { data: stepVersions } = useQuery({
+    queryKey: ["index", "step-versions", episode.audio_path, source],
+    queryFn: () => getStepVersions(episode.audio_path!, source),
+    enabled: !!episode.audio_path && availableSources.length > 0,
+  });
+
+  // Resolve the currently-selected version entry (null = "Latest")
+  const selectedVersion = selectedVersionId
+    ? stepVersions?.find((v) => v.id === selectedVersionId) ?? null
+    : stepVersions?.[0] ?? null;
+
+  const handleSourceChange = (key: string) => {
+    setSelectedSource(key);
+    setSelectedVersionId(null); // reset version when step changes
+  };
+
   const startMutation = useMutation({
     mutationFn: () =>
       startIndex({
         audio_path: episode.audio_path!,
         show: showName,
+        source,
+        version_id: selectedVersionId,
         model_keys: selectedModels,
         chunkings: selectedChunkings,
         chunk_size: chunkSize,
@@ -101,6 +135,50 @@ export default function IndexPanel() {
       emptyMessage="Episode not yet indexed."
       controls={
         <div className="px-4 pb-3 space-y-4">
+          {/* Source selection: step + version */}
+          {availableSources.length > 0 && (
+            <div className="space-y-2">
+              <SectionHeader>Source</SectionHeader>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={source}
+                  onChange={(e) => handleSourceChange(e.target.value)}
+                  className={selectClass}
+                >
+                  {availableSources.map((s) => (
+                    <option key={s.key} value={s.key}>{s.label}</option>
+                  ))}
+                </select>
+
+                {stepVersions && stepVersions.length > 0 && (
+                  <select
+                    value={selectedVersionId ?? ""}
+                    onChange={(e) => setSelectedVersionId(e.target.value || null)}
+                    className={`${selectClass} flex-1 min-w-0`}
+                  >
+                    <option value="">Latest</option>
+                    {stepVersions.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {versionDate(v)} · {versionLabel(v)} ({v.segment_count} seg)
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              {/* Version info panel */}
+              {selectedVersion && (
+                <div className="bg-secondary/50 rounded border border-border/50 px-3 py-2 text-xs space-y-0.5">
+                  {versionInfo(selectedVersion).map(({ key, value }) => (
+                    <div key={key} className="flex gap-2">
+                      <span className="text-muted-foreground shrink-0 w-24">{key}</span>
+                      <span className="truncate">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Model selection */}
           <div className="space-y-2">
             <SectionHeader>Embedding Models</SectionHeader>
@@ -157,7 +235,7 @@ export default function IndexPanel() {
                 min={64}
                 max={1024}
               />
-              <HelpLabel label="Similarity threshold" help="For semantic chunking: how similar adjacent sentences must be to stay in the same chunk (0 = always split, 1 = never split)." />
+              <HelpLabel label="Similarity threshold" help="For semantic chunking: how similar adjacent sentences must be to stay in the same chunk. 0 = always split, 1 = never split." />
               <input
                 type="number"
                 value={threshold}

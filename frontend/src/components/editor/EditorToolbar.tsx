@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Search, X, SlidersHorizontal, Clock, Undo2, HelpCircle, Trash2, Download, History } from "lucide-react";
 import type { VersionEntry } from "@/api/types";
 import { exportTextUrl, exportSrtUrl, exportVttUrl, exportZipUrl } from "@/api/client";
+import { versionLabel, versionDate, versionInfo } from "@/lib/utils";
 
 function Tip({ text }: { text: string }) {
   const [show, setShow] = useState(false);
@@ -25,40 +26,6 @@ function Tip({ text }: { text: string }) {
   );
 }
 
-/** Build a compact label for the version list row. */
-function versionLabel(v: VersionEntry): string {
-  const p = v.params as Record<string, unknown>;
-  if (v.manual_edit || v.type === "validated") return "Manual edit";
-  if (p.skipped) return "Skipped (copied)";
-  const parts: string[] = [];
-  if (v.model) parts.push(v.model);
-  if (p.provider) parts.push(String(p.provider));
-  else if (p.mode) parts.push(String(p.mode));
-  if (p.language) parts.push(String(p.language));
-  else if (p.source_lang && p.target_lang) parts.push(`${p.source_lang} → ${p.target_lang}`);
-  else if (p.source_lang) parts.push(String(p.source_lang));
-  if (p.diarize === false) parts.push("no diar");
-  return parts.join(", ") || "Pipeline";
-}
-
-/** Params to hide from the version info box (internal / not user-relevant). */
-const HIDDEN_PARAMS = new Set(["meta", "batch_size", "batch_minutes", "engine", "skipped"]);
-
-/** Format all params as key: value lines for the info box. */
-function versionInfo(v: VersionEntry): { key: string; value: string }[] {
-  const rows: { key: string; value: string }[] = [];
-  if (v.model) rows.push({ key: "Model", value: v.model });
-  rows.push({ key: "Type", value: v.type === "validated" ? "Saved edit" : "Generated" });
-  rows.push({ key: "Segments", value: String(v.segment_count) });
-  rows.push({ key: "Hash", value: v.content_hash.replace("sha256:", "").slice(0, 8) });
-  const p = v.params as Record<string, unknown>;
-  for (const [k, val] of Object.entries(p)) {
-    if (HIDDEN_PARAMS.has(k) || val === null || val === undefined) continue;
-    const label = k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    rows.push({ key: label, value: typeof val === "boolean" ? (val ? "yes" : "no") : String(val) });
-  }
-  return rows;
-}
 
 interface EditorToolbarProps {
   totalSegments: number;

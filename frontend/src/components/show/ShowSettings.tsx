@@ -2,14 +2,13 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
-import { updateShowMeta, syncToQdrant, moveShow } from "@/api/client";
+import { updateShowMeta, moveShow } from "@/api/client";
 import { useConfigStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { errorMessage } from "@/lib/utils";
 import SectionHeader from "@/components/common/SectionHeader";
-import ProgressBar from "@/components/editor/ProgressBar";
 import FolderPicker from "@/components/common/FolderPicker";
 import PipelineSettings from "./PipelineSettings";
 import { FolderOpen } from "lucide-react";
@@ -17,10 +16,9 @@ import { FolderOpen } from "lucide-react";
 interface ShowSettingsProps {
   folder: string;
   meta: ShowMeta;
-  hasIndex: boolean;
 }
 
-export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsProps) {
+export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -35,9 +33,6 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
   const [pipeLlmProvider, setPipeLlmProvider] = useState(meta.pipeline?.llm_provider ?? "");
   const [pipeLlmModel, setPipeLlmModel] = useState(meta.pipeline?.llm_model ?? "");
   const [pipeTargetLang, setPipeTargetLang] = useState(meta.pipeline?.target_lang ?? "");
-
-  const [syncTaskId, setSyncTaskId] = useState<string | null>(null);
-  const [overwrite, setOverwrite] = useState(false);
 
   // ── Move folder ──
   const folderBasename = folder.split("/").filter(Boolean).pop() || folder;
@@ -104,12 +99,6 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [name, language, rssUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeLlmMode, pipeLlmProvider, pipeLlmModel, pipeTargetLang]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const syncMutation = useMutation({
-    mutationFn: () =>
-      syncToQdrant({ folder, show: meta.name || name, overwrite }),
-    onSuccess: (data) => setSyncTaskId(data.task_id),
-  });
 
   const moveMutation = useMutation({
     mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
@@ -330,37 +319,6 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         </SettingRow>
       </SettingSection>
 
-      {/* ── Qdrant Sync ── */}
-      {hasIndex && (
-        <div className="border-t border-border pt-6 space-y-3">
-          <SectionHeader>Qdrant Sync</SectionHeader>
-          <p className="text-xs text-muted-foreground">
-            Push indexed episodes from the local database to Qdrant for faster search across large collections.
-          </p>
-
-          {syncTaskId ? (
-            <ProgressBar taskId={syncTaskId} onComplete={() => setSyncTaskId(null)} />
-          ) : (
-            <div className="flex items-center gap-3">
-              <Button
-                onClick={() => syncMutation.mutate()}
-                disabled={syncMutation.isPending}
-                variant="outline"
-                size="sm"
-              >
-                {syncMutation.isPending ? "Starting..." : "Sync to Qdrant"}
-              </Button>
-              <label className="flex items-center gap-1.5 cursor-pointer text-xs text-muted-foreground">
-                <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} className="accent-primary" />
-                Overwrite existing
-              </label>
-              {syncMutation.isError && (
-                <span className="text-xs text-destructive">{errorMessage(syncMutation.error)}</span>
-              )}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }

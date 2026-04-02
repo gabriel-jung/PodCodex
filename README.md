@@ -102,7 +102,7 @@ Both paths share a segment editor (inline editing, speaker mapping, timestamp sn
 | Transcription | WhisperX, pyannote (speaker diarization) |
 | LLM | Ollama (local), OpenAI, Anthropic, Mistral |
 | Voice Cloning | Qwen3-TTS |
-| Search | Qdrant, SQLite, BGE-M3 / E5 embeddings |
+| Search | SQLite, numpy, BGE-M3 / E5 embeddings |
 | Audio | WaveSurfer.js, ffmpeg, sox |
 
 ---
@@ -144,8 +144,6 @@ All search commands support optional `show`, `episode`, `speaker`, `source`, and
 ```bash
 # Required env vars
 DISCORD_TOKEN=your_bot_token
-QDRANT_URL=http://localhost:6333   # Qdrant must be running for search
-
 # Start
 podcodex-bot --model bge-m3 --chunking semantic --top-k 5
 podcodex-bot --dev-guild 123456789  # instant command sync for development
@@ -153,7 +151,7 @@ podcodex-bot --dev-guild 123456789  # instant command sync for development
 
 ### Deploying to a server
 
-The `deploy/` directory contains everything needed to run the bot + Qdrant on a VPS (tested on Ubuntu 4GB RAM). Only Docker is required on the server — no Python, no GPU.
+The `deploy/` directory contains everything needed to run the bot on a VPS (tested on Ubuntu 4GB RAM). Only Docker is required on the server — no Python, no GPU.
 
 #### 1. Clone and configure
 
@@ -172,7 +170,7 @@ cp deploy/.env.example deploy/.env.production
 scp /path/to/vectors.db user@vps:~/podcodex/deploy/data/
 ```
 
-#### 3. Build and seed
+#### 3. Build and start
 
 ```bash
 cd ~/podcodex
@@ -180,21 +178,11 @@ cd ~/podcodex
 # Build the bot image (includes BGE-M3 model download — takes a few minutes)
 docker compose -f deploy/docker-compose.yml build
 
-# Start Qdrant first
-docker compose -f deploy/docker-compose.yml up -d qdrant
-
-# Seed Qdrant from your local SQLite database
-docker compose -f deploy/docker-compose.yml run --rm --entrypoint podcodex bot \
-    sync --db /app/data/vectors.db --show "My Podcast"
-```
-
-#### 4. Start the bot
-
-```bash
+# Start the bot
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-The bot image installs only core + bot dependencies (no pipeline), keeping it under 3GB. Qdrant is limited to 512MB. Logs rotate automatically (50MB x 3 files). The bot auto-restarts on crash or reboot.
+The bot image installs only core + bot dependencies (no pipeline), keeping it under 3GB. Search uses numpy over SQLite — no external services needed. Logs rotate automatically (50MB x 3 files). The bot auto-restarts on crash or reboot.
 
 #### Updating
 
@@ -259,7 +247,6 @@ Create a `.env` file at the root. Only set what you need:
 DISCORD_TOKEN=your_bot_token      # required for the Discord bot
 
 # Search
-QDRANT_URL=http://localhost:6333  # optional, defaults to localhost:6333
 PODCODEX_DB=/path/to/vectors.db   # optional, overrides default SQLite location
 
 # Pipeline
@@ -385,7 +372,7 @@ episode_path = synthesize.assemble_episode(
 
 ### Indexing & search
 
-Indexing saves everything locally in a SQLite file. To enable search, you also need Qdrant running — start it with `docker compose up -d` or set `QDRANT_URL`.
+Indexing saves everything locally in a SQLite file (`vectors.db`). Search uses numpy brute-force cosine similarity over the SQLite store — no external services needed.
 
 ```bash
 # Embed and store a transcript
@@ -395,10 +382,6 @@ podcodex vectorize ep01/ep01.transcript.json --show "My Podcast" --model bge-m3 
 # Query
 podcodex query "film music composer" --show "My Podcast"
 podcodex query "film music composer" --show "My Podcast" --top-k 3 --alpha 0.7
-
-# Sync SQLite → Qdrant (rebuild without re-embedding)
-podcodex sync --show "My Podcast"
-podcodex sync --db /path/to/vectors.db
 
 # Manage collections
 podcodex list
@@ -427,13 +410,14 @@ Collection names follow the format `{show}__{model}__{chunker}`, e.g. `my_podcas
 #### In Python
 
 ```python
-from podcodex.rag.store import QdrantStore, collection_name
+from podcodex.rag.localstore import LocalStore
+from podcodex.rag.store import collection_name
 from podcodex.rag.retriever import Retriever
 
-store = QdrantStore()                    # connects to QDRANT_URL or localhost:6333
+local = LocalStore(db_path="/path/to/vectors.db")
 
 col = collection_name("My Podcast", model="bge-m3", chunker="semantic")
-retriever = Retriever(model="bge-m3")
+retriever = Retriever(model="bge-m3", local=local)
 results = retriever.retrieve("film music", col, top_k=5, alpha=0.5)
 
 # Filter by episode, speaker, or source
@@ -531,7 +515,7 @@ uv sync --extra bot --extra pipeline --extra rag --extra desktop --extra app
 | *(none)* | feedparser, loguru, python-dotenv | Core (RSS parsing, logging) |
 | `desktop` | fastapi, uvicorn, python-multipart | Desktop app backend |
 | `pipeline` | whisperx, pyannote-audio, ollama, openai, qwen-tts, etc. | Transcription, correction, translation, synthesis |
-| `rag` | torch, sentence-transformers, qdrant-client, chonkie, bm25s | Semantic search & indexing |
+| `rag` | torch, sentence-transformers, chonkie, bm25s | Semantic search & indexing |
 | `bot` | discord.py | Discord bot |
 | `app` | streamlit | Legacy Streamlit UI |
 
@@ -597,7 +581,7 @@ The FastAPI backend exposes these route groups (all under `/api`):
 |--------|-------------|
 | `podcodex.api` | FastAPI backend (REST + WebSocket, background tasks) |
 | `podcodex.bot` | Discord bot (`/search`, `/exact`, `/random`, `/stats`, `/episodes`) |
-| `podcodex.rag` | Chunking, embedding, vector storage (Qdrant + SQLite), hybrid retrieval |
+| `podcodex.rag` | Chunking, embedding, vector storage (SQLite), hybrid retrieval |
 | `podcodex.cli` | CLI: `init / rss / import / vectorize / sync / query / list / delete / validate / enrich` |
 | `podcodex.core.transcribe` | WhisperX transcription + alignment + speaker diarization |
 | `podcodex.core.polish` | LLM-based transcript correction (proper nouns, spelling, punctuation) |
@@ -673,4 +657,4 @@ See [ROADMAP.md](ROADMAP.md) for the detailed plan.
 - Diarization requires a valid `HF_TOKEN` and model access on Hugging Face
 - Synthesis (Qwen3-TTS) is GPU-heavy — recommended on CUDA for production use
 - Ollama translation works best with models >= 14B for reliable JSON output
-- All embeddings are saved locally in `vectors.db` (SQLite) — `podcodex sync` pushes them to Qdrant for search
+- All embeddings are saved locally in `vectors.db` (SQLite) — search uses numpy brute-force over this store

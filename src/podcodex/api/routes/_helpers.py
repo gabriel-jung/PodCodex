@@ -42,7 +42,9 @@ def submit_task(step: str, audio_path: str, fn, *args) -> TaskResponse:
     instead of raising an error — lets the UI reconnect after navigation.
     """
     from podcodex.api.tasks import task_manager
+    from podcodex.rag.embedder import clear_embedder_cache
 
+    clear_embedder_cache()
     try:
         info = task_manager.submit(step, audio_path, fn, *args)
     except ValueError:

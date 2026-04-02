@@ -36,8 +36,8 @@ class PplxEmbedder:
     episode are passed together so each embedding is influenced by its neighbors.
     Query encoding uses the separate pplx-embed-v1-0.6B query model.
 
-    Dense vectors (dim from MODELS registry). Unnormalized — Qdrant handles
-    cosine normalization at query time.
+    Dense vectors (dim from MODELS registry). Unnormalized — the retriever
+    normalizes at cache-build time for cosine similarity.
     """
 
     def __init__(self, device: str = "cpu"):
@@ -195,10 +195,23 @@ class BGEEmbedder:
 # ──────────────────────────────────────────────
 
 
+_embedder_cache: dict[str, BGEEmbedder | E5Embedder | PplxEmbedder] = {}
+
+
+def clear_embedder_cache() -> None:
+    """Evict all cached embedders to free memory (e.g. before heavy pipeline tasks)."""
+    if _embedder_cache:
+        logger.info("Clearing embedder cache ({} model(s))", len(_embedder_cache))
+    _embedder_cache.clear()
+
+
 def get_embedder(
     model_key: str, device: str = "cpu"
 ) -> BGEEmbedder | E5Embedder | PplxEmbedder:
-    """Return the appropriate embedder instance for the given model key.
+    """Return a cached embedder instance for the given model key.
+
+    The embedder is created on first call and reused on subsequent calls
+    with the same model_key (the heavy model load only happens once).
 
     Args:
         model_key: one of the keys in MODELS registry (e.g. "bge-m3", "e5-small").
@@ -210,15 +223,21 @@ def get_embedder(
     Raises:
         ValueError: if model_key is not in the registry.
     """
+    if model_key in _embedder_cache:
+        return _embedder_cache[model_key]
+
     if model_key not in MODELS:
         valid = ", ".join(MODELS.keys())
         raise ValueError(f"Unknown model '{model_key}'. Valid: {valid}")
 
     if model_key == "bge-m3":
-        return BGEEmbedder(device=device)
-    if model_key in ("e5-small", "e5-large"):
-        return E5Embedder(model_key=model_key, device=device)
-    if model_key == "pplx":
-        return PplxEmbedder(device=device)
+        embedder = BGEEmbedder(device=device)
+    elif model_key in ("e5-small", "e5-large"):
+        embedder = E5Embedder(model_key=model_key, device=device)
+    elif model_key == "pplx":
+        embedder = PplxEmbedder(device=device)
+    else:
+        raise ValueError(f"No embedder class registered for '{model_key}'")
 
-    raise ValueError(f"No embedder class registered for '{model_key}'")
+    _embedder_cache[model_key] = embedder
+    return embedder

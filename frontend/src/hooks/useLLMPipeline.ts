@@ -18,18 +18,16 @@ export function useLLMConfig(
   const llm = usePipelineConfigStore((s) => s.llm);
   const setLLM = usePipelineConfigStore((s) => s.setLLM);
 
-  // Seed sourceLang and context from show metadata when they're empty
+  // Seed sourceLang from show metadata when empty; always rebuild context for the current episode
   useEffect(() => {
     const patches: Partial<LLMConfig> = {};
     if (!llm.sourceLang && showMeta?.language) {
       patches.sourceLang = showMeta.language;
     }
-    if (!llm.context) {
-      const ctx = buildDefaultContext(episode, showMeta);
-      if (ctx) patches.context = ctx;
-    }
+    const ctx = buildDefaultContext(episode, showMeta);
+    if (ctx) patches.context = ctx;
     if (Object.keys(patches).length > 0) setLLM(patches);
-  }, [episode, showMeta]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [episode.id, showMeta?.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Provide a setState-like API for compatibility with existing panels
   const setter = (valOrFn: LLMConfig | ((prev: LLMConfig) => LLMConfig)) => {

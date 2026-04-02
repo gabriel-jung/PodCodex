@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Copy, Check, ChevronLeft, ChevronRight } from "lucide-react";
 
 interface ManualModePanelProps {
+  batchMinutes: number;
   generatePrompts: (batchMinutes: number) => Promise<PromptBatch[]>;
   applyCorrections: (corrections: unknown[]) => Promise<unknown>;
   onApplied?: () => void;
@@ -17,11 +18,11 @@ interface PromptBatch {
 }
 
 export default function ManualModePanel({
+  batchMinutes,
   generatePrompts,
   applyCorrections,
   onApplied,
 }: ManualModePanelProps) {
-  const [batchMinutes, setBatchMinutes] = useState(15);
   const [prompts, setPrompts] = useState<PromptBatch[] | null>(null);
   const [currentBatch, setCurrentBatch] = useState(0);
   const [batchResults, setBatchResults] = useState<Record<number, unknown[]>>({});
@@ -92,19 +93,8 @@ export default function ManualModePanel({
         Generate prompts, paste them into your LLM of choice one batch at a time, then paste the JSON response back.
       </p>
 
-      {/* Batch duration + generate */}
+      {/* Generate */}
       <div className="flex items-center gap-3 text-sm">
-        <label className="text-muted-foreground text-xs whitespace-nowrap">Batch duration</label>
-        <input
-          type="range"
-          min={5}
-          max={180}
-          step={5}
-          value={batchMinutes}
-          onChange={(e) => setBatchMinutes(Number(e.target.value))}
-          className="flex-1 max-w-48"
-        />
-        <span className="text-xs text-muted-foreground tabular-nums w-12">{batchMinutes} min</span>
         <Button
           onClick={() => generateMutation.mutate()}
           disabled={generateMutation.isPending}

@@ -88,7 +88,7 @@ export default function PolishPanel() {
             runLabel="Run polish"
             extraFields={
               <>
-                <HelpLabel label="Engine" help="Which transcription engine produced the text. Affects the correction prompt — Whisper and Voxtral make different kinds of errors." />
+                <HelpLabel label="Engine" help="Which transcription engine produced the text. Whisper and Voxtral make different kinds of errors, so the correction prompt adapts accordingly." />
                 <select
                   value={engine}
                   onChange={(e) => setEngine(e.target.value)}

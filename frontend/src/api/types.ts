@@ -270,6 +270,7 @@ export interface IndexRequest {
   output_dir?: string | null;
   show: string;
   source?: string;
+  version_id?: string | null;
   model_keys?: string[];
   chunkings?: string[];
   chunk_size?: number;
@@ -305,13 +306,6 @@ export interface SearchRequest {
   alpha?: number;
   episode?: string | null;
   speaker?: string | null;
-}
-
-export interface SyncRequest {
-  folder: string;
-  show: string;
-  overwrite?: boolean;
-  qdrant_url?: string | null;
 }
 
 // ── Filesystem ────────────────────────────

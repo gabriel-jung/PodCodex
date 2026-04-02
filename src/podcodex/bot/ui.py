@@ -25,7 +25,7 @@ async def _fetch_episode_chunks(store, collection: str, episode: str) -> list[di
 
     loop = asyncio.get_running_loop()
     chunks = await loop.run_in_executor(
-        None, lambda: store.fetch_episode_chunks(collection, episode)
+        None, lambda: store.load_chunks_no_embeddings(collection, episode)
     )
 
     async with _cache_lock:
@@ -115,7 +115,7 @@ class _ExpandButton(discord.ui.Button):
 
         bot: PodCodexBot = interaction.client  # type: ignore[assignment]
         neighbors = await _fetch_episode_chunks(
-            bot.store, self._collection, self._episode
+            bot.local, self._collection, self._episode
         )
         content, has_more = format_context(
             neighbors, self._start, 2, self._show, self._episode

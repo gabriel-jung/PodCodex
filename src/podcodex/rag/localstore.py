@@ -1,9 +1,9 @@
 """
 podcodex.rag.localstore — SQLite persistence layer for podcast RAG.
 
-Stores chunk texts, metadata, and embeddings locally so Qdrant is the
-serving layer but not the source of truth. Enables re-indexing without
-re-embedding.
+Stores chunk texts, metadata, and embeddings locally. Serves as the
+single source of truth for indexed content — search is performed
+directly over this store using numpy brute-force.
 
 Schema (3 tables):
     collections  — one row per (show, model, chunker) triple
@@ -118,7 +118,7 @@ class LocalStore:
         """List collection names, optionally filtered by show, model, and/or chunker.
 
         Note: filters match the raw values stored in the collections table
-        (exact match), unlike QdrantStore which normalizes the show name.
+        (exact match).
         """
         q = "SELECT name FROM collections WHERE 1=1"
         params: list = []
@@ -286,3 +286,140 @@ class LocalStore:
                     (json.dumps(meta), row_id),
                 )
         return len(rows)
+
+    # ── Bulk read (for search) ────────────────────────────────────────
+
+    def collection_chunk_count(self, collection: str) -> int:
+        """Return total number of chunks in a collection."""
+        cur = self._conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE collection=?", (collection,)
+        )
+        return cur.fetchone()[0]
+
+    def load_all_chunks(
+        self, collection: str, episode: str | None = None
+    ) -> list[dict]:
+        """Load all chunks (without embeddings) for a collection.
+
+        Args:
+            collection : collection name
+            episode    : if set, restrict to this episode
+        """
+        if episode:
+            rows = self._conn.execute(
+                """
+                SELECT text, meta_json FROM chunks
+                WHERE collection=? AND episode=?
+                ORDER BY episode, chunk_index
+                """,
+                (collection, episode),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT text, meta_json FROM chunks
+                WHERE collection=?
+                ORDER BY episode, chunk_index
+                """,
+                (collection,),
+            ).fetchall()
+        result = []
+        for text, meta_json in rows:
+            chunk = json.loads(meta_json)
+            chunk["text"] = text
+            result.append(chunk)
+        return result
+
+    def load_all_vectors(self, collection: str) -> tuple[np.ndarray, list[dict]]:
+        """Load all embeddings + metadata for a collection in one query.
+
+        Returns:
+            (matrix, chunks) where matrix is shape (N, dim) float32
+            and chunks is a list of metadata dicts (with 'text' field).
+            Returns (empty 0×0 array, []) if collection has no chunks.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT c.text, c.meta_json, e.vector
+            FROM chunks c
+            JOIN embeddings e ON e.chunk_id = c.id
+            WHERE c.collection=?
+            ORDER BY c.episode, c.chunk_index
+            """,
+            (collection,),
+        ).fetchall()
+        if not rows:
+            return np.empty((0, 0), dtype=np.float32), []
+
+        chunks = []
+        blobs = []
+        for text, meta_json, blob in rows:
+            chunk = json.loads(meta_json)
+            chunk["text"] = text
+            chunks.append(chunk)
+            blobs.append(blob)
+
+        dim = len(blobs[0]) // 4  # float32 = 4 bytes
+        matrix = np.frombuffer(b"".join(blobs), dtype=np.float32).copy()
+        matrix = matrix.reshape(len(rows), dim)
+        return matrix, chunks
+
+    def list_sources(self, collection: str) -> list[str]:
+        """Return sorted list of distinct source values in a collection."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT meta_json FROM chunks WHERE collection=?",
+            (collection,),
+        ).fetchall()
+        sources: set[str] = set()
+        for (meta_json,) in rows:
+            meta = json.loads(meta_json)
+            src = meta.get("source")
+            if src:
+                sources.add(src)
+        return sorted(sources)
+
+    def list_speakers(self, collection: str) -> list[str]:
+        """Return sorted list of distinct speaker/dominant_speaker values."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT meta_json FROM chunks WHERE collection=?",
+            (collection,),
+        ).fetchall()
+        speakers: set[str] = set()
+        for (meta_json,) in rows:
+            meta = json.loads(meta_json)
+            spk = meta.get("dominant_speaker") or meta.get("speaker")
+            if spk:
+                speakers.add(spk)
+        return sorted(speakers)
+
+    def get_episode_stats(self, collection: str) -> list[dict]:
+        """Return per-episode stats: chunk count, duration, speakers."""
+        episodes = self._conn.execute(
+            "SELECT DISTINCT episode FROM chunks WHERE collection=? ORDER BY episode",
+            (collection,),
+        ).fetchall()
+        result = []
+        for (ep,) in episodes:
+            chunk_rows = self._conn.execute(
+                "SELECT meta_json FROM chunks WHERE collection=? AND episode=?",
+                (collection, ep),
+            ).fetchall()
+            speakers: set[str] = set()
+            max_end = 0.0
+            for (meta_json,) in chunk_rows:
+                meta = json.loads(meta_json)
+                spk = meta.get("dominant_speaker") or meta.get("speaker")
+                if spk:
+                    speakers.add(spk)
+                end = meta.get("end", 0.0)
+                if end > max_end:
+                    max_end = end
+            result.append(
+                {
+                    "episode": ep,
+                    "chunk_count": len(chunk_rows),
+                    "duration": max_end,
+                    "speakers": sorted(speakers),
+                }
+            )
+        return result

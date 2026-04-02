@@ -218,7 +218,7 @@ def _run_indexing(
 ) -> None:
     """Run the vectorization pipeline for all (model, chunker) combinations.
 
-    Writes to LocalStore (SQLite) only — use Sync to push to Qdrant later.
+    Writes to LocalStore (SQLite). Search reads directly from this store.
     """
     from podcodex.cli import _resolve_source, vectorize_batch
 

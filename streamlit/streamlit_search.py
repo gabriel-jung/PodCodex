@@ -20,7 +20,7 @@ try:
         MODELS,
         TOP_K,
     )
-    from podcodex.rag.store import collection_name, qdrant_available
+    from podcodex.rag.store import collection_name
 
     _RAG_AVAILABLE = True
 except ImportError:
@@ -38,100 +38,8 @@ def render() -> None:
         )
         return
 
-    if not st.session_state.get("_qdrant_ok"):
-        st.session_state["_qdrant_ok"] = qdrant_available()
-
-    if not st.session_state["_qdrant_ok"]:
-        _render_qdrant_offline()
-        return
-
     show_name = st.session_state.get("show_name", "")
     _render_search_section(show_name)
-
-
-def _render_qdrant_offline() -> None:
-    """Show Qdrant-offline state with sync button."""
-    st.warning(
-        "Qdrant is not reachable. Start it with `docker compose up -d` "
-        "then sync your local database."
-    )
-    col_db, col_show = st.columns(2)
-    with col_db:
-        db_path = st.text_input(
-            "vectors.db path",
-            value=st.session_state.get("_sync_db", ""),
-            key="sync_db_input",
-            help="Path to the SQLite vectors.db file to sync from.",
-        )
-    with col_show:
-        show = st.text_input(
-            "Show name (optional)",
-            key="sync_show_input",
-            help="Sync only this show. Leave blank for all.",
-        )
-
-    col_retry, col_sync = st.columns(2)
-    with col_retry:
-        if st.button("🔄 Retry connection", use_container_width=True):
-            st.session_state["_qdrant_ok"] = qdrant_available()
-            st.rerun()
-    with col_sync:
-        if st.button(
-            "📤 Sync to Qdrant",
-            use_container_width=True,
-            type="primary",
-            disabled=not db_path.strip(),
-        ):
-            _run_sync(db_path.strip(), show.strip() or None)
-
-
-def _run_sync(db_path: str, show: str | None) -> None:
-    """Sync LocalStore → Qdrant."""
-    import numpy as np
-
-    from podcodex.rag.localstore import LocalStore
-    from podcodex.rag.store import QdrantStore
-
-    if not qdrant_available():
-        st.error("Qdrant is still not reachable.")
-        return
-
-    with st.spinner("Syncing to Qdrant…"):
-        try:
-            local = LocalStore(db_path=db_path)
-            store = QdrantStore()
-            collections = local.list_collections()
-            if show:
-                # collection names are "{normalized_show}__{model}__{chunker}"
-                from podcodex.rag.store import _normalize_show as norm
-
-                prefix = norm(show) + "__"
-                collections = [c for c in collections if c.startswith(prefix)]
-            total = 0
-            for col_name in collections:
-                info = local.get_collection_info(col_name)
-                model = info["model"] if info else "bge-m3"
-                store.create_collection(col_name, model=model, overwrite=False)
-                episodes = local.list_episodes(col_name)
-                for ep in episodes:
-                    cached = local.load_chunks(col_name, ep)
-                    if not cached:
-                        continue
-                    payload = [
-                        {k: v for k, v in c.items() if k != "embedding"} for c in cached
-                    ]
-                    embeddings = np.stack([c["embedding"] for c in cached])
-                    store.delete_episode_points(col_name, ep)
-                    store.upsert(col_name, payload, embeddings)
-                    total += len(cached)
-            st.session_state["_qdrant_ok"] = True
-            st.toast(
-                f"Synced {total} chunks across {len(collections)} collection(s).",
-                icon="✅",
-            )
-            st.rerun()
-        except Exception as e:
-            st.error(f"Sync failed: {e}")
 
 
 def _render_search_section(show_name: str) -> None:
@@ -243,12 +151,17 @@ def _run_search(
     episode: str | None = None,
 ) -> None:
     """Execute a hybrid search and store results in session state."""
+    from podcodex.rag.localstore import LocalStore
     from podcodex.rag.retriever import Retriever
 
     with st.spinner("Searching…"):
         try:
+            db_path = st.session_state.get("show_folder", "")
+            if db_path:
+                db_path = str(Path(db_path) / "vectors.db")
+            local = LocalStore(db_path=db_path or None)
             coll = collection_name(show, model=model_key, chunker=chunking)
-            retriever = Retriever(model=model_key)
+            retriever = Retriever(model=model_key, local=local)
             results = retriever.retrieve(
                 query, coll, top_k=top_k, alpha=alpha, episode=episode
             )

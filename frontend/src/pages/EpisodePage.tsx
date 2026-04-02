@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { getEpisodes, getShowMeta, exportZipUrl } from "@/api/client";
+import { audioFileUrl } from "@/api/filesystem";
 import type { Episode, ShowMeta } from "@/api/types";
 import { useAudioStore, useEpisodeStore } from "@/stores";
 import { Button } from "@/components/ui/button";
@@ -13,7 +14,7 @@ import TranslatePanel from "@/components/translate/TranslatePanel";
 import SynthesizePanel from "@/components/synthesize/SynthesizePanel";
 import IndexPanel from "@/components/index/IndexPanel";
 import SearchPanel from "@/components/search/SearchPanel";
-import { formatDuration, formatDate } from "@/lib/utils";
+import { formatDuration, formatDate, stripHtml } from "@/lib/utils";
 import {
   ArrowLeft,
   Play,
@@ -203,9 +204,9 @@ export default function EpisodePage({
           </Button>
         )}
         {episode.audio_path && (
-          <a href={exportZipUrl(episode.audio_path)} download>
-            <Button variant="outline" size="sm" title="Download all files (ZIP)">
-              <Download className="w-3.5 h-3.5" /> ZIP
+          <a href={audioFileUrl(episode.audio_path)} download>
+            <Button variant="outline" size="sm" title="Download audio file">
+              <Download className="w-3.5 h-3.5" />
             </Button>
           </a>
         )}
@@ -214,7 +215,7 @@ export default function EpisodePage({
       {/* Description */}
       {episode.description && (
         <div className="px-6 py-3 border-b border-border">
-          <p className="text-sm text-muted-foreground line-clamp-3">{episode.description}</p>
+          <p className="text-sm text-muted-foreground line-clamp-3">{stripHtml(episode.description)}</p>
         </div>
       )}
 
@@ -329,6 +330,18 @@ function StepContent({ step, episode, folder, meta, episodes }: { step: Pipeline
             </div>
           )}
 
+          {/* Export */}
+          {episode.audio_path && (
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium">Export</h4>
+              <a href={exportZipUrl(episode.audio_path)} download>
+                <Button variant="outline" size="sm">
+                  <Download className="w-3.5 h-3.5" /> Download ZIP
+                </Button>
+              </a>
+            </div>
+          )}
+
           {/* Show settings dialog */}
           {folder && meta && (
             <>
@@ -340,7 +353,7 @@ function StepContent({ step, episode, folder, meta, episodes }: { step: Pipeline
                   <DialogHeader>
                     <DialogTitle>Show Settings — {meta.name}</DialogTitle>
                   </DialogHeader>
-                  <ShowSettings folder={folder} meta={meta} hasIndex={!!episodes?.some((e) => e.indexed)} />
+                  <ShowSettings folder={folder} meta={meta} />
                 </DialogContent>
               </Dialog>
             </>

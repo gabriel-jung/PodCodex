@@ -1,10 +1,8 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { getPipelineConfig } from "@/api/client";
 import { selectClass } from "@/lib/utils";
 import { useCapabilities } from "@/hooks/useCapabilities";
-import AdvancedToggle from "./AdvancedToggle";
 import HelpLabel from "./HelpLabel";
 import MissingDependency from "./MissingDependency";
 import ManualModePanel from "./ManualModePanel";
@@ -78,11 +76,10 @@ export default function LLMControls({
         />
       )}
 
-      {/* Standard parameters — 2-column layout on wide screens */}
-      <div className="flex flex-col lg:flex-row gap-6 text-sm">
-        {/* Left: form fields */}
-        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 max-w-md items-start sm:items-center">
-          <HelpLabel label="Mode" help="Ollama = runs on your own computer (free, needs a GPU). API = uses a cloud service (OpenAI, Mistral, etc. — requires an API key). Manual = shows you the prompts so you can paste them into any chatbot yourself." />
+      {/* ── Section 1: Mode + model ── */}
+      <div className="text-sm">
+        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 max-w-lg items-start sm:items-center">
+          <HelpLabel label="Mode" help="Ollama runs locally on your computer (free, needs a GPU). API calls a cloud service like OpenAI or Mistral (requires an API key). Manual generates prompts you can paste into any chatbot yourself." />
           <div className="flex gap-3">
             {modes.map((m) => (
               <label key={m} className="flex items-center gap-1 cursor-pointer">
@@ -97,58 +94,72 @@ export default function LLMControls({
             ))}
           </div>
 
-          {config.mode !== "manual" && (
+          {config.mode !== "api" && (
             <>
-              {config.mode === "api" && (
-                <>
-                  <HelpLabel label="Provider" help="Which cloud AI service to use. You need an API key for the chosen provider — set it as an environment variable (e.g. OPENAI_API_KEY for OpenAI)." />
-                  <select
-                    value={config.provider}
-                    onChange={(e) => onChange({ provider: e.target.value })}
-                    className={selectClass}
-                  >
-                    {apiProviders.length > 0
-                      ? apiProviders.map(([key, spec]) => (
-                          <option key={key} value={key}>{spec.label}</option>
-                        ))
-                      : <option value={config.provider}>{config.provider}</option>
-                    }
-                  </select>
-                </>
-              )}
-
-              <HelpLabel label="Model" help="The AI model to use (e.g. llama3 for Ollama, gpt-4o for OpenAI). Leave empty to use the provider's recommended default." />
+              <HelpLabel label="Model" help={config.mode === "manual" ? "Optional. Note which model you used, so you can track it later in provenance." : "The Ollama model to use (e.g. llama3, mistral). Leave empty to use the default."} />
               <input
                 value={config.model}
                 onChange={(e) => onChange({ model: e.target.value })}
-                placeholder="auto from provider"
+                placeholder={config.mode === "manual" ? "e.g. ChatGPT-4o, Claude 3.5…" : "default"}
                 className="input py-1 text-sm"
               />
-
-              {config.mode === "api" && (
-                <>
-                  <HelpLabel label="Endpoint" help={providerInfo?.url ? "Custom API endpoint URL. Leave empty to use the provider's default endpoint. Useful for proxies." : "OpenAI-compatible API endpoint URL (required)."} />
-                  <input
-                    value={config.apiBaseUrl}
-                    onChange={(e) => onChange({ apiBaseUrl: e.target.value })}
-                    placeholder={providerInfo?.url || "https://api.example.com/v1"}
-                    className="input py-1 text-sm"
-                  />
-
-                  <HelpLabel label="API key" help={providerInfo?.env_var ? `Authentication key. Leave empty to use the ${providerInfo.env_var} environment variable.` : "API key for your endpoint."} />
-                  <input
-                    type="password"
-                    value={config.apiKey}
-                    onChange={(e) => onChange({ apiKey: e.target.value })}
-                    placeholder={providerInfo?.env_var ? `from ${providerInfo.env_var}` : "required"}
-                    className="input py-1 text-sm"
-                  />
-                </>
-              )}
             </>
           )}
+        </div>
 
-          <HelpLabel label="Source language" help="The language spoken in the podcast. This helps the AI understand context and produce better corrections or translations." />
+        {config.mode === "api" && (
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 max-w-lg items-start sm:items-center mt-2 pl-6 border-l-2 border-border/40">
+            <HelpLabel label="Provider" help="Which cloud AI service to use. Each provider requires its own API key, set as an environment variable (e.g. OPENAI_API_KEY for OpenAI)." />
+            <select
+              value={config.provider}
+              onChange={(e) => onChange({ provider: e.target.value, model: "" })}
+              className={selectClass}
+            >
+              {apiProviders.length > 0
+                ? apiProviders.map(([key, spec]) => (
+                    <option key={key} value={key}>{spec.label}</option>
+                  ))
+                : <option value={config.provider}>{config.provider}</option>
+              }
+            </select>
+
+            <HelpLabel label="Endpoint" help={providerInfo?.url ? "Custom API endpoint URL. Leave empty to use the provider's default endpoint." : "OpenAI-compatible API endpoint URL."} />
+            <input
+              value={config.apiBaseUrl}
+              onChange={(e) => onChange({ apiBaseUrl: e.target.value })}
+              placeholder={providerInfo?.url || "https://api.example.com/v1"}
+              className="input py-1 text-sm"
+            />
+
+            <HelpLabel label="API key" help={providerInfo?.env_var ? `Leave empty to use the ${providerInfo.env_var} environment variable.` : "API key for your endpoint."} />
+            <input
+              type="password"
+              value={config.apiKey}
+              onChange={(e) => onChange({ apiKey: e.target.value })}
+              placeholder={providerInfo?.env_var ? `from ${providerInfo.env_var}` : "required"}
+              className="input py-1 text-sm"
+            />
+
+          </div>
+        )}
+
+        {config.mode === "api" && (
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 max-w-lg items-start sm:items-center mt-2">
+            <HelpLabel label="Model" help="The AI model to use (e.g. gpt-4o for OpenAI, mistral-large for Mistral). Leave empty to use the provider's recommended default." />
+            <input
+              value={config.model}
+              onChange={(e) => onChange({ model: e.target.value })}
+              placeholder={providerInfo?.model || "default"}
+              className="input py-1 text-sm"
+            />
+          </div>
+        )}
+      </div>
+
+      {/* ── Section 2: Common settings ── */}
+      <div className="border-t border-border/50 pt-3 text-sm space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 max-w-lg items-start sm:items-center">
+          <HelpLabel label="Source language" help="The language spoken in the podcast. Helps the AI produce better corrections and translations." />
           <input
             value={config.sourceLang}
             onChange={(e) => onChange({ sourceLang: e.target.value })}
@@ -156,41 +167,35 @@ export default function LLMControls({
           />
 
           {extraFields}
+
+          <HelpLabel label="Batch duration" help="Maximum audio duration per batch, in minutes. Larger batches are faster but risk exceeding the model's context window." />
+          <div className="flex items-center gap-1.5">
+            <input
+              type="number"
+              value={config.batchMinutes}
+              onChange={(e) => onChange({ batchMinutes: Number(e.target.value) })}
+              min={1}
+              step={5}
+              className="input py-1 text-sm w-20"
+            />
+            <span className="text-xs text-muted-foreground">min</span>
+          </div>
         </div>
 
-        {/* Right: context textarea */}
-        <div className="flex flex-col gap-1.5 lg:flex-1 lg:border-l lg:border-border lg:pl-6">
-          <HelpLabel label="Context" help="Tell the AI about your podcast: host names, recurring guests, technical terms, or niche vocabulary. This helps it spell names correctly and understand jargon." />
+        {/* Context — full width */}
+        <div>
+          <HelpLabel label="Context" help="Describe your podcast: host names, recurring guests, technical terms, niche vocabulary. Helps the AI spell names correctly and understand jargon." />
           <textarea
             value={config.context}
             onChange={(e) => onChange({ context: e.target.value })}
             placeholder="Describe the podcast, hosts, topics..."
-            className="input py-1 text-sm resize-y flex-1 min-h-[5rem]"
+            rows={Math.min(10, Math.max(3, (config.context || "").split("\n").length + 1, Math.ceil((config.context || "").length / 80)))}
+            className="input py-1 text-sm resize-y w-full mt-1.5"
           />
         </div>
       </div>
 
-      {/* Advanced settings */}
-      {config.mode !== "manual" && (
-        <AdvancedToggle className="border-t border-border/50 pt-3 space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
-            <HelpLabel label="Batch duration" help="Maximum audio duration (in minutes) per LLM request. Larger values process faster but may exceed the model's context window." />
-            <div className="flex items-center gap-1.5">
-              <input
-                type="number"
-                value={config.batchMinutes}
-                onChange={(e) => onChange({ batchMinutes: Number(e.target.value) })}
-                min={1}
-                step={5}
-                className="input py-1 text-sm w-20"
-              />
-              <span className="text-xs text-muted-foreground">min</span>
-            </div>
-          </div>
-        </AdvancedToggle>
-      )}
-
-      {/* Run button */}
+      {/* ── Run / Manual ────────────────────────────────── */}
       {config.mode !== "manual" && (
         <div className="border-t border-border/50 pt-3">
           <Button onClick={onRun} disabled={isPending || !hasLLM} size="sm" title={!hasLLM ? "Install the pipeline extra to enable automatic processing" : undefined}>
@@ -203,6 +208,7 @@ export default function LLMControls({
       {config.mode === "manual" && manualPrompts && (
         <div className="border-t border-border/50 pt-4">
           <ManualModePanel
+            batchMinutes={config.batchMinutes}
             generatePrompts={manualPrompts.generate}
             applyCorrections={manualPrompts.apply}
             onApplied={manualPrompts.onApplied}
