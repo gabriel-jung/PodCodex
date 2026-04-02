@@ -28,6 +28,8 @@ from pydantic import BaseModel
 from podcodex.api.schemas import (  # noqa: E402
     CreateFromRSSRequest,
     CreateFromRSSResponse,
+    CreateFromYouTubeRequest,
+    CreateFromYouTubeResponse,
     EpisodeOut,
     PipelineDefaultsSchema,
     RegisterShowRequest,
@@ -63,6 +65,10 @@ from podcodex.api.routes.synthesize import (  # noqa: E402
     GenerateRequest,
 )
 from podcodex.api.routes.transcribe import TranscribeRequest  # noqa: E402
+from podcodex.api.routes.youtube import (  # noqa: E402
+    YouTubeDownloadRequest,
+    YouTubeSubsRequest,
+)
 from podcodex.api.routes.translate import (  # noqa: E402
     ApplyManualRequest as TranslateApplyManualRequest,
     ManualPromptsRequest as TranslateManualPromptsRequest,
@@ -81,6 +87,8 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, CreateFromRSSRequest),
     (None, RegisterShowRequest),
     (None, CreateFromRSSResponse),
+    (None, CreateFromYouTubeRequest),
+    (None, CreateFromYouTubeResponse),
     (None, TaskResponse),
     # routes
     (None, AppConfig),
@@ -104,6 +112,8 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, ExtractSelectedRequest),
     (None, GenerateRequest),
     (None, AssembleRequest),
+    (None, YouTubeDownloadRequest),
+    (None, YouTubeSubsRequest),
 ]
 
 # ── JSON Schema → TypeScript converter ──────────────────────────────────────

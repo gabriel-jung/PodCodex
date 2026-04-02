@@ -16,7 +16,7 @@ export interface EpisodeRowProps {
 }
 
 export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying }: EpisodeRowProps) {
-  const canDownload = !ep.downloaded && !!ep.audio_url;
+  const canDownload = !ep.downloaded;
   return (
     <div className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
       {canDownload || ep.downloaded ? (
@@ -28,7 +28,7 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
         <div className="w-4" />
       )}
       {ep.artwork_url && (
-        <img src={ep.artwork_url} alt="" className="w-8 h-8 rounded shrink-0" loading="lazy" />
+        <img src={ep.artwork_url} alt="" className="w-8 h-6 object-cover rounded shrink-0" loading="lazy" />
       )}
       {ep.episode_number != null && (
         <span className="text-xs text-muted-foreground w-8 text-right shrink-0">#{ep.episode_number}</span>

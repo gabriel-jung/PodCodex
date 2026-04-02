@@ -1,9 +1,11 @@
 import { useState, useRef } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEpisodeStore, usePipelineConfigStore } from "@/stores";
+import { useMutation } from "@tanstack/react-query";
+import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
+  deleteTranscribeVersion,
   getSegments,
   getTranscribeVersions,
+  importTranscript,
   loadTranscribeVersion,
   saveSegments,
   startTranscribe,
@@ -11,7 +13,7 @@ import {
 } from "@/api/client";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { Button } from "@/components/ui/button";
-import { Upload } from "lucide-react";
+import { FileText, Upload } from "lucide-react";
 import { errorMessage, languageToISO, selectClass } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useCapabilities } from "@/hooks/useCapabilities";
@@ -20,32 +22,45 @@ import FormGrid from "@/components/common/FormGrid";
 import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
 import SectionHeader from "@/components/common/SectionHeader";
-import SegmentEditor from "@/components/editor/SegmentEditor";
-import ReadOnlyTranscript from "@/components/editor/ReadOnlyTranscript";
+import TranscriptViewer from "@/components/editor/TranscriptViewer";
 import PipelinePanel from "@/components/common/PipelinePanel";
-import SpeakerMapEditor from "./SpeakerMapEditor";
 
 export default function TranscribePanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
+  const folder = useEpisodeStore((s) => s.folder);
+  const audioPath = useAudioPath();
   if (!episode) return null;
-  const queryClient = useQueryClient();
+  const hasRealAudio = !!episode.audio_path;
+
   const { has: hasCap } = useCapabilities();
   const hasWhisperX = hasCap("whisperx");
-  const task = usePipelineTask(episode.audio_path, "transcribe");
+  const task = usePipelineTask(audioPath, "transcribe");
   const expanded = task.expanded || !episode.transcribed;
-  const [editing, setEditing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { whisperModels: whisperModelsMap } = useLLMProviders();
 
-  // Form state — shared with batch modal via store
+  // Form state
   const tc = usePipelineConfigStore((s) => s.transcribe);
   const setTc = usePipelineConfigStore((s) => s.setTranscribe);
   const [language, setLanguage] = useState(languageToISO(showMeta?.language || ""));
 
+  // Existing subtitle files for reimport controls
+  const subtitleFiles = (episode.files ?? []).filter(
+    (f) => f.endsWith(".vtt") || f.endsWith(".srt"),
+  );
+
   const uploadMutation = useMutation({
-    mutationFn: (file: File) => uploadTranscript(episode.audio_path!, file),
+    mutationFn: (file: File) => uploadTranscript(audioPath!, file),
+    onSuccess: () => {
+      task.refreshQueries();
+      task.setExpanded(false);
+    },
+  });
+
+  const importFileMutation = useMutation({
+    mutationFn: (filePath: string) => importTranscript(audioPath!, filePath),
     onSuccess: () => {
       task.refreshQueries();
       task.setExpanded(false);
@@ -61,7 +76,7 @@ export default function TranscribePanel() {
   const startMutation = useMutation({
     mutationFn: () =>
       startTranscribe({
-        audio_path: episode.audio_path!,
+        audio_path: audioPath!,
         model_size: tc.modelSize,
         language: language || undefined,
         batch_size: tc.batchSize,
@@ -78,60 +93,96 @@ export default function TranscribePanel() {
   return (
     <PipelinePanel
       title="Transcribe"
-      description="Turn audio into text and identify who is speaking."
-      prerequisite={!episode.audio_path ? "Download the audio file first before transcribing." : undefined}
+      description="Transcribe audio or import subtitles."
+      prerequisite={!audioPath ? "Download the audio file or import subtitles first." : undefined}
       done={episode.transcribed}
       expanded={expanded}
       onToggle={() => task.setExpanded(!expanded)}
-      rerunLabel="Re-run transcription"
-      settingsLabel="Transcription settings"
+      rerunLabel={hasRealAudio ? "Re-run transcription" : "Reimport transcript"}
+      settingsLabel={hasRealAudio ? "Transcription settings" : "Import transcript"}
       taskId={task.activeTaskId}
-      onTaskComplete={() => { task.handleComplete(); setEditing(false); }}
+      onTaskComplete={() => { task.handleComplete(); }}
       onRetry={task.handleRetry}
       onDismiss={task.handleDismiss}
-      emptyMessage="No transcript yet. Run the transcription pipeline to get started."
+      emptyMessage="No transcript yet."
       controls={
         <>
-          <TranscribeForm
-            modelSize={tc.modelSize} setModelSize={(v) => setTc({ modelSize: v })}
-            language={language} setLanguage={setLanguage}
-            batchSize={tc.batchSize} setBatchSize={(v) => setTc({ batchSize: v })}
-            diarize={tc.diarize} setDiarize={(v) => setTc({ diarize: v })}
-            hfToken={tc.hfToken} setHfToken={(v) => setTc({ hfToken: v })}
-            numSpeakers={tc.numSpeakers} setNumSpeakers={(v) => setTc({ numSpeakers: v })}
-            whisperModels={whisperModelsMap}
-            hasWhisperX={hasWhisperX}
-            onRun={() => startMutation.mutate()}
-            onUpload={() => fileInputRef.current?.click()}
-            isPending={startMutation.isPending}
-            isUploading={uploadMutation.isPending}
-            error={startMutation.isError ? errorMessage(startMutation.error) : uploadMutation.isError ? errorMessage(uploadMutation.error) : null}
-            showOverwriteWarning={episode.transcribed}
-          />
-          <input ref={fileInputRef} type="file" accept=".json" onChange={handleFileUpload} className="hidden" />
+          {hasRealAudio ? (
+            <TranscribeForm
+              modelSize={tc.modelSize} setModelSize={(v) => setTc({ modelSize: v })}
+              language={language} setLanguage={setLanguage}
+              batchSize={tc.batchSize} setBatchSize={(v) => setTc({ batchSize: v })}
+              diarize={tc.diarize} setDiarize={(v) => setTc({ diarize: v })}
+              hfToken={tc.hfToken} setHfToken={(v) => setTc({ hfToken: v })}
+              numSpeakers={tc.numSpeakers} setNumSpeakers={(v) => setTc({ numSpeakers: v })}
+              whisperModels={whisperModelsMap}
+              hasWhisperX={hasWhisperX}
+              hasAudio={hasRealAudio}
+              onRun={() => startMutation.mutate()}
+              onUpload={() => fileInputRef.current?.click()}
+              isPending={startMutation.isPending}
+              isUploading={uploadMutation.isPending}
+              error={startMutation.isError ? errorMessage(startMutation.error) : uploadMutation.isError ? errorMessage(uploadMutation.error) : null}
+              showOverwriteWarning={episode.transcribed}
+            />
+          ) : (
+            <div className="px-4 pb-3 space-y-3">
+              {subtitleFiles.length > 0 ? (
+                <div className="space-y-1.5">
+                  <p className="text-xs text-muted-foreground">Import from existing file:</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {subtitleFiles.map((f) => (
+                      <Button
+                        key={f}
+                        variant="outline"
+                        size="sm"
+                        disabled={importFileMutation.isPending}
+                        onClick={() => importFileMutation.mutate(`${folder}/${f}`)}
+                      >
+                        <FileText className="w-3.5 h-3.5 mr-1" />
+                        {f.split("/").pop()}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No audio file. Upload a transcript or subtitle file (JSON, SRT, VTT).
+                </p>
+              )}
+              <div className="flex items-center gap-3">
+                {subtitleFiles.length > 0 && <span className="text-xs text-muted-foreground">or</span>}
+                <Button onClick={() => fileInputRef.current?.click()} disabled={uploadMutation.isPending} variant="outline" size="sm">
+                  <Upload className="w-3.5 h-3.5 mr-1.5" />
+                  {uploadMutation.isPending ? "Uploading..." : "Upload file"}
+                </Button>
+              </div>
+              {(uploadMutation.isError || importFileMutation.isError) && (
+                <p className="text-destructive text-xs">{errorMessage(uploadMutation.error || importFileMutation.error)}</p>
+              )}
+            </div>
+          )}
+          <input ref={fileInputRef} type="file" accept=".json,.srt,.vtt" onChange={handleFileUpload} className="hidden" />
         </>
       }
     >
       {episode.transcribed && !task.activeTaskId && (
-        editing ? (
-          <>
-            <SpeakerMapEditor
-              audioPath={episode.audio_path}
-              onSaved={() => {
-                queryClient.invalidateQueries({ queryKey: ["transcribe", "segments", episode.audio_path] });
-              }}
-            />
-            <TranscribeEditor audioPath={episode.audio_path!} duration={episode.duration} speakers={showMeta?.speakers} />
-          </>
-        ) : (
-          <ReadOnlyTranscript
-            audioPath={episode.audio_path!}
-            loadSegments={() => getSegments(episode.audio_path!)}
-            queryKey={["segments", episode.audio_path!]}
-            sourceLabel="raw transcript"
-            onEdit={() => setEditing(true)}
-          />
-        )
+        <TranscriptViewer
+          editorKey="transcribe"
+          audioPath={audioPath ?? undefined}
+          episodeDuration={episode.duration}
+          loadSegments={() => getSegments(audioPath!)}
+          saveSegments={(segs) => saveSegments(audioPath!, segs)}
+          showDelete
+          showFlags
+          showSpeaker
+          speakers={showMeta?.speakers}
+          sourceLabel={transcriptSourceLabel(episode.provenance)}
+          exportSource="transcript"
+          loadVersions={() => getTranscribeVersions(audioPath!)}
+          loadVersion={(id) => loadTranscribeVersion(audioPath!, id)}
+          deleteVersion={(id) => deleteTranscribeVersion(audioPath!, id)}
+        />
       )}
     </PipelinePanel>
   );
@@ -146,11 +197,13 @@ function TranscribeForm({
   numSpeakers, setNumSpeakers,
   whisperModels,
   hasWhisperX,
+  hasAudio,
   onRun, onUpload, isPending, isUploading, error, showOverwriteWarning,
 }: {
   modelSize: string; setModelSize: (v: string) => void;
   whisperModels?: Record<string, string>;
   hasWhisperX: boolean;
+  hasAudio: boolean;
   language: string; setLanguage: (v: string) => void;
   batchSize: number; setBatchSize: (v: number) => void;
   diarize: boolean; setDiarize: (v: boolean) => void;
@@ -253,7 +306,7 @@ function TranscribeForm({
       </AdvancedToggle>
 
       <div className="flex items-center gap-3 border-t border-border/50 pt-3">
-        <Button onClick={onRun} disabled={isPending || isUploading || !hasWhisperX} size="sm" title={!hasWhisperX ? "Install the pipeline extra to enable automatic transcription" : undefined}>
+        <Button onClick={onRun} disabled={isPending || isUploading || !hasWhisperX || !hasAudio} size="sm" title={!hasAudio ? "Download the audio file first" : !hasWhisperX ? "Install the pipeline extra to enable automatic transcription" : undefined}>
           {isPending ? "Starting..." : "Run"}
         </Button>
         <span className="text-xs text-muted-foreground">or</span>
@@ -271,20 +324,12 @@ function TranscribeForm({
   );
 }
 
-function TranscribeEditor({ audioPath, duration, speakers }: { audioPath: string; duration: number; speakers?: string[] }) {
-  return (
-    <SegmentEditor
-      editorKey="transcribe"
-      audioPath={audioPath}
-      episodeDuration={duration}
-      loadSegments={() => getSegments(audioPath)}
-      saveSegments={(segs) => saveSegments(audioPath, segs)}
-      showDelete
-      showFlags
-      showSpeaker
-      speakers={speakers}
-      loadVersions={() => getTranscribeVersions(audioPath)}
-      loadVersion={(id) => loadTranscribeVersion(audioPath, id)}
-    />
-  );
+function transcriptSourceLabel(provenance?: Record<string, unknown>): string | undefined {
+  const prov = provenance?.transcript as Record<string, unknown> | undefined;
+  if (!prov) return undefined;
+  const params = prov.params as Record<string, unknown> | undefined;
+  if (params?.filename) return String(params.filename);
+  if (params?.source === "youtube-subtitles") return `YouTube subtitles (${params.lang || "auto"})`;
+  if (prov.model) return `whisper ${prov.model}`;
+  return undefined;
 }

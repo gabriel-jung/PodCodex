@@ -21,6 +21,7 @@ class ShowMeta(BaseModel):
 
     name: str
     rss_url: str = ""
+    youtube_url: str = ""
     language: str = ""
     speakers: list[str] = []
     artwork_url: str = ""
@@ -53,6 +54,7 @@ class RSSEpisodeOut(BaseModel):
     duration: float = 0.0
     episode_number: int | None = None
     season_number: int | None = None
+    artwork_url: str = ""
     # local status (filled when matching against local episodes)
     local_stem: str | None = None
     downloaded: bool = False
@@ -76,6 +78,9 @@ class UnifiedEpisodeOut(BaseModel):
     duration: float = 0.0
     episode_number: int | None = None
     audio_path: str | None = None
+    output_dir: str | None = (
+        None  # episode directory (always set when episode dir exists)
+    )
     downloaded: bool = False
     transcribed: bool = False
     polished: bool = False
@@ -84,6 +89,8 @@ class UnifiedEpisodeOut(BaseModel):
     translations: list[str] = []
     artwork_url: str = ""
     provenance: dict = {}
+    # Key files present in episode directory
+    files: list[str] = []
     # Step status: "none" | "outdated" | "done"
     transcribe_status: str = "none"
     polish_status: str = "none"
@@ -103,6 +110,20 @@ class RegisterShowRequest(BaseModel):
 
 
 class CreateFromRSSResponse(BaseModel):
+    folder: str
+    name: str
+    episode_count: int
+
+
+class CreateFromYouTubeRequest(BaseModel):
+    youtube_url: str  # channel, playlist, or single video URL
+    save_path: str  # absolute path where the show folder will be created
+    folder_name: str = ""  # optional subfolder name (auto-generated if empty)
+    name: str = ""  # display name (falls back to channel/playlist title)
+    artwork_url: str = ""  # optional, passed from preview
+
+
+class CreateFromYouTubeResponse(BaseModel):
     folder: str
     name: str
     episode_count: int

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEpisodeStore } from "@/stores";
+import { useEpisodeStore, useAudioPath } from "@/stores";
 import {
   getIndexConfig,
   getIndexStatus,
@@ -22,9 +22,10 @@ import PipelinePanel from "@/components/common/PipelinePanel";
 export default function IndexPanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
+  const audioPath = useAudioPath();
   if (!episode) return null;
-  const showName = getShowName(showMeta, episode.audio_path);
-  const task = usePipelineTask(episode.audio_path, "index");
+  const showName = getShowName(showMeta, audioPath);
+  const task = usePipelineTask(audioPath, "index");
   const expanded = task.expanded || !episode.indexed;
 
   const { data: config } = useQuery({
@@ -33,15 +34,15 @@ export default function IndexPanel() {
   });
 
   const { data: status } = useQuery({
-    queryKey: ["index", "status", episode.audio_path, showName],
-    queryFn: () => getIndexStatus(episode.audio_path!, showName),
-    enabled: !!episode.audio_path,
+    queryKey: ["index", "status", audioPath, showName],
+    queryFn: () => getIndexStatus(audioPath!, showName),
+    enabled: !!audioPath,
   });
 
   const { data: sources } = useQuery({
-    queryKey: ["index", "sources", episode.audio_path],
-    queryFn: () => getIndexSources(episode.audio_path!),
-    enabled: !!episode.audio_path,
+    queryKey: ["index", "sources", audioPath],
+    queryFn: () => getIndexSources(audioPath!),
+    enabled: !!audioPath,
   });
 
   // Pre-select the most advanced available source (first with exists=true)
@@ -60,9 +61,9 @@ export default function IndexPanel() {
 
   // Load versions for the selected step
   const { data: stepVersions } = useQuery({
-    queryKey: ["index", "step-versions", episode.audio_path, source],
-    queryFn: () => getStepVersions(episode.audio_path!, source),
-    enabled: !!episode.audio_path && availableSources.length > 0,
+    queryKey: ["index", "step-versions", audioPath, source],
+    queryFn: () => getStepVersions(audioPath!, source),
+    enabled: !!audioPath && availableSources.length > 0,
   });
 
   // Resolve the currently-selected version entry (null = "Latest")
@@ -78,7 +79,7 @@ export default function IndexPanel() {
   const startMutation = useMutation({
     mutationFn: () =>
       startIndex({
-        audio_path: episode.audio_path!,
+        audio_path: audioPath!,
         show: showName,
         source,
         version_id: selectedVersionId,
@@ -94,11 +95,9 @@ export default function IndexPanel() {
   const { has: hasCap } = useCapabilities();
   const hasRAG = hasCap("embeddings") && hasCap("torch");
 
-  const prereq = !episode.audio_path
-    ? "Download the audio file first before indexing."
-    : !episode.transcribed
-      ? "You need a transcript first. Go to the Transcribe tab to create one."
-      : undefined;
+  const prereq = !episode.transcribed
+    ? "You need a transcript first. Go to the Transcribe tab to create one."
+    : undefined;
 
   const toggleModel = (key: string) => {
     setSelectedModels((prev) =>
@@ -165,18 +164,10 @@ export default function IndexPanel() {
                     ))}
                   </select>
                 )}
+                {selectedVersion && (
+                  <VersionDetails version={selectedVersion} />
+                )}
               </div>
-              {/* Version info panel */}
-              {selectedVersion && (
-                <div className="bg-secondary/50 rounded border border-border/50 px-3 py-2 text-xs space-y-0.5">
-                  {versionInfo(selectedVersion).map(({ key, value }) => (
-                    <div key={key} className="flex gap-2">
-                      <span className="text-muted-foreground shrink-0 w-24">{key}</span>
-                      <span className="truncate">{value}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           )}
 
@@ -305,5 +296,31 @@ export default function IndexPanel() {
         </div>
       )}
     </PipelinePanel>
+  );
+}
+
+function VersionDetails({ version }: { version: import("@/api/types").VersionEntry }) {
+  const [expanded, setExpanded] = useState(false);
+  const items = versionInfo(version);
+  if (items.length === 0) return null;
+  return (
+    <>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition shrink-0"
+      >
+        File details
+      </button>
+      {expanded && (
+        <div className="w-full bg-secondary/50 rounded border border-border/50 px-3 py-2 text-xs space-y-0.5">
+          {items.map(({ key, value }) => (
+            <div key={key} className="flex gap-2">
+              <span className="text-muted-foreground shrink-0 w-20">{key}</span>
+              <span className="truncate">{value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   );
 }

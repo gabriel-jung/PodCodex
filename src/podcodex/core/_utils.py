@@ -448,6 +448,167 @@ def _vtt_ts(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
 
+# ── Subtitle parsing (inverse of segments_to_srt / segments_to_vtt) ────
+
+
+def _parse_srt_ts(ts: str) -> float:
+    """Parse an SRT timestamp (``HH:MM:SS,mmm``) to seconds."""
+    ts = ts.strip().replace(",", ".")
+    parts = ts.split(":")
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + float(parts[1])
+    return float(parts[0])
+
+
+def _parse_vtt_ts(ts: str) -> float:
+    """Parse a VTT timestamp (``HH:MM:SS.mmm`` or ``MM:SS.mmm``) to seconds."""
+    ts = ts.strip()
+    parts = ts.split(":")
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + float(parts[1])
+    return float(parts[0])
+
+
+_VTT_SPEAKER_RE = re.compile(r"<v\s+([^>]+)>")
+
+
+def _merge_parsed_cues(cues: list[dict]) -> list[dict]:
+    """Deduplicate subtitle cues, preserving original timing.
+
+    YouTube auto-generated subtitles often produce overlapping cues with
+    repeated text.  This pass deduplicates consecutive identical lines and
+    cleans HTML entities, but does NOT merge distinct cues — the original
+    subtitle timing is kept as-is.
+    """
+    if not cues:
+        return []
+
+    # Clean HTML entities from all cues
+    for cue in cues:
+        cue["text"] = (
+            cue["text"]
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", '"')
+        )
+        # Collapse multiple spaces
+        cue["text"] = re.sub(r"  +", " ", cue["text"]).strip()
+
+    # Deduplicate consecutive identical text
+    deduped: list[dict] = [cues[0]]
+    for cue in cues[1:]:
+        prev = deduped[-1]
+        if cue["text"] == prev["text"] and cue["speaker"] == prev["speaker"]:
+            # Extend end time of previous cue
+            prev["end"] = max(prev["end"], cue["end"])
+        else:
+            deduped.append(cue)
+
+    return deduped
+
+
+def srt_to_segments(srt_text: str) -> list[dict]:
+    """Parse SRT subtitle text into segment dicts.
+
+    Returns a list of ``{"speaker": str, "text": str, "start": float,
+    "end": float}`` dicts.  Speaker is extracted from a ``Speaker: ``
+    prefix if present.
+
+    Args:
+        srt_text: Full SRT file content.
+    """
+    cues: list[dict] = []
+    blocks = re.split(r"\n\s*\n", srt_text.strip())
+    for block in blocks:
+        lines = block.strip().splitlines()
+        if len(lines) < 2:
+            continue
+        # Find the timestamp line (skip the index line)
+        ts_line = None
+        text_start = 0
+        for idx, line in enumerate(lines):
+            if "-->" in line:
+                ts_line = line
+                text_start = idx + 1
+                break
+        if ts_line is None:
+            continue
+        parts = ts_line.split("-->")
+        if len(parts) != 2:
+            continue
+        start = _parse_srt_ts(parts[0])
+        end = _parse_srt_ts(parts[1])
+        text = " ".join(lines[text_start:]).strip()
+        # Extract speaker from "Speaker: text" prefix
+        speaker = ""
+        if ": " in text:
+            maybe_speaker, rest = text.split(": ", 1)
+            if maybe_speaker and not any(c in maybe_speaker for c in ".,!?"):
+                speaker = maybe_speaker
+                text = rest
+        if text:
+            cues.append({"speaker": speaker, "text": text, "start": start, "end": end})
+
+    return _merge_parsed_cues(cues)
+
+
+def vtt_to_segments(vtt_text: str) -> list[dict]:
+    """Parse WebVTT subtitle text into segment dicts.
+
+    Handles YouTube's auto-generated format with overlapping/duplicate cues
+    and ``<v SpeakerName>`` voice tags.
+
+    Returns a list of ``{"speaker": str, "text": str, "start": float,
+    "end": float}`` dicts.
+
+    Args:
+        vtt_text: Full WebVTT file content.
+    """
+    cues: list[dict] = []
+    blocks = re.split(r"\n\s*\n", vtt_text.strip())
+    for block in blocks:
+        lines = block.strip().splitlines()
+        # Find timestamp line
+        ts_line = None
+        text_start = 0
+        for idx, line in enumerate(lines):
+            if "-->" in line:
+                ts_line = line
+                text_start = idx + 1
+                break
+        if ts_line is None:
+            continue
+        # Strip position/alignment metadata after timestamp
+        ts_part = ts_line.split("-->")
+        if len(ts_part) != 2:
+            continue
+        start = _parse_vtt_ts(ts_part[0].split()[0] if ts_part[0].strip() else "0")
+        end_raw = ts_part[1].strip().split()
+        end = _parse_vtt_ts(end_raw[0]) if end_raw else start
+
+        text = " ".join(lines[text_start:]).strip()
+        if not text:
+            continue
+        # Extract speaker from <v SpeakerName> tags
+        speaker = ""
+        m = _VTT_SPEAKER_RE.search(text)
+        if m:
+            speaker = m.group(1).strip()
+            text = _VTT_SPEAKER_RE.sub("", text).strip()
+        # Strip remaining HTML-like tags
+        text = re.sub(r"<[^>]+>", "", text).strip()
+        if text:
+            cues.append({"speaker": speaker, "text": text, "start": start, "end": end})
+
+    return _merge_parsed_cues(cues)
+
+
 def merge_consecutive_segments(
     segments: list[dict],
     max_gap: float = DEFAULT_MAX_GAP,

@@ -17,6 +17,7 @@ from podcodex.api.routes import (
     transcribe,
     translate,
     ws,
+    youtube,
 )
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "transcribe",
     "translate",
     "ws",
+    "youtube",
 ]

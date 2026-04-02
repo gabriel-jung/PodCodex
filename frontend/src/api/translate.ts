@@ -17,6 +17,9 @@ export const getTranslateVersions = (audioPath: string, lang: string) =>
 export const loadTranslateVersion = (audioPath: string, lang: string, versionId: string) =>
   json<Segment[]>(`/api/translate/versions/${encodeURIComponent(versionId)}?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`);
 
+export const deleteTranslateVersion = (audioPath: string, lang: string, versionId: string) =>
+  json<{ status: string }>(`/api/translate/versions/${encodeURIComponent(versionId)}?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`, { method: "DELETE" });
+
 export const getTranslateLanguages = (audioPath: string) =>
   json<string[]>(`/api/translate/languages?audio_path=${encodeURIComponent(audioPath)}`);
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { SearchResult } from "@/api/types";
-import { useEpisodeStore, useSearchStore } from "@/stores";
+import { useEpisodeStore, useAudioPath, useSearchStore } from "@/stores";
 import { getSearchConfig, getIndexStats, searchQuery, exactSearch, randomQuote } from "@/api/client";
 import { errorMessage, getShowName, selectClass } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -32,10 +32,11 @@ export default function SearchPanel(props: SearchPanelProps) {
   const isShowScope = props.scope === "show";
   const storeEpisode = useEpisodeStore((s) => s.episode);
   const storeShowMeta = useEpisodeStore((s) => s.showMeta);
+  const storeAudioPath = useAudioPath();
   const showName = isShowScope ? props.showName : getShowName(storeShowMeta, storeEpisode?.audio_path);
   const folder = isShowScope ? props.folder : undefined;
   const episode = isShowScope ? undefined : storeEpisode;
-  const audioPath = episode?.audio_path ?? undefined;
+  const audioPath = isShowScope ? undefined : (storeAudioPath ?? undefined);
 
   const { lastQuery, addToHistory, setLastQuery } = useSearchStore();
   const [query, setQuery] = useState(lastQuery);
@@ -111,9 +112,7 @@ export default function SearchPanel(props: SearchPanelProps) {
     ? (stats?.total_chunks ?? 0) === 0
       ? "No indexed episodes yet. Index episodes first from the episode page."
       : undefined
-    : !episode?.audio_path
-      ? "Download the audio file first before searching."
-      : !episode?.indexed
+    : !episode?.indexed
         ? "You need to build a search index first. Go to the Index tab."
         : undefined;
 

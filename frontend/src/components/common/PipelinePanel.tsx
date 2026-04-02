@@ -27,7 +27,7 @@ interface PipelinePanelProps {
   onDismiss?: () => void;
   /** Controls section — rendered inside the collapsible area. */
   controls?: React.ReactNode;
-  /** Main content — shown below controls (e.g. SegmentEditor, results). */
+  /** Main content — shown below controls (e.g. TranscriptViewer, results). */
   children?: React.ReactNode;
   /** Empty state message when step not done and controls collapsed. */
   emptyMessage?: string;
@@ -58,8 +58,8 @@ export default function PipelinePanel({
   if (blocker || prerequisite) {
     return (
       <div className="flex flex-col h-full">
-        <div className="px-4 pt-3 pb-2 border-b border-border">
-          <h3 className="text-sm font-semibold">{title}</h3>
+        <div className="px-4 py-2 border-b border-border">
+          <span className="text-sm font-semibold">{title}</span>
           <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
         </div>
         <div className="p-6">{blocker || <span className="text-muted-foreground">{prerequisite}</span>}</div>
@@ -70,8 +70,8 @@ export default function PipelinePanel({
   return (
     <div className="flex flex-col h-full">
       {/* Step header */}
-      <div className="px-4 pt-3 pb-2 border-b border-border">
-        <h3 className="text-sm font-semibold">{title}</h3>
+      <div className="px-4 py-2 border-b border-border">
+        <span className="text-sm font-semibold">{title}</span>
         <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
       </div>
 
@@ -81,14 +81,14 @@ export default function PipelinePanel({
           {done ? (
             <button
               onClick={onToggle}
-              className="w-full px-4 py-2 flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition"
+              className="w-full px-4 py-1.5 flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition"
             >
-              {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
               <span className="font-medium">{rerunLabel}</span>
             </button>
           ) : (
-            <div className="px-4 pt-3 pb-1">
-              <h4 className="text-sm font-medium">{settingsLabel || `${title} settings`}</h4>
+            <div className="px-4 pt-2 pb-1">
+              <span className="text-xs font-medium text-muted-foreground">{settingsLabel || `${title} settings`}</span>
             </div>
           )}
 

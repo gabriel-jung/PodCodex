@@ -104,6 +104,23 @@ async def load_translate_version(
         raise HTTPException(404, f"Version {version_id} not found")
 
 
+@router.delete("/versions/{version_id}")
+async def delete_translate_version(
+    version_id: str,
+    audio_path: str = Query(...),
+    lang: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> dict:
+    """Delete a specific translation version."""
+    from podcodex.core.versions import delete_version
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    lang_norm = normalize_lang(lang)
+    if not delete_version(p.base, lang_norm, version_id):
+        raise HTTPException(404, f"Version {version_id} not found")
+    return {"status": "deleted", "version_id": version_id}
+
+
 # ── Pipeline execution ───────────────────────────────────
 
 

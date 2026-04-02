@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEpisodeStore, usePipelineConfigStore } from "@/stores";
+import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
+  deletePolishVersion,
   getPolishSegments,
   getPolishVersions,
   loadPolishVersion,
@@ -17,8 +18,7 @@ import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useLLMConfig } from "@/hooks/useLLMPipeline";
 import { Button } from "@/components/ui/button";
 import { SkipForward } from "lucide-react";
-import SegmentEditor from "@/components/editor/SegmentEditor";
-import ReadOnlyTranscript from "@/components/editor/ReadOnlyTranscript";
+import TranscriptViewer from "@/components/editor/TranscriptViewer";
 import PipelinePanel from "@/components/common/PipelinePanel";
 import HelpLabel from "@/components/common/HelpLabel";
 import LLMControls from "@/components/common/LLMControls";
@@ -26,25 +26,25 @@ import LLMControls from "@/components/common/LLMControls";
 export default function PolishPanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
+  const audioPath = useAudioPath();
   if (!episode) return null;
-  const task = usePipelineTask(episode.audio_path, "polish");
+  const task = usePipelineTask(audioPath, "polish");
   const expanded = task.expanded || !episode.polished;
-  const [editing, setEditing] = useState(false);
 
   const [config, setConfig] = useLLMConfig(episode, showMeta);
   const engine = usePipelineConfigStore((s) => s.engine);
   const setEngine = usePipelineConfigStore((s) => s.setEngine);
 
   const { data: transcriptSegments } = useQuery({
-    queryKey: ["transcribe", "segments", episode.audio_path],
-    queryFn: () => getSegments(episode.audio_path!),
-    enabled: !!episode.audio_path && episode.transcribed,
+    queryKey: ["transcribe", "segments", audioPath],
+    queryFn: () => getSegments(audioPath!),
+    enabled: !!audioPath && episode.transcribed,
   });
 
   const startMutation = useMutation({
     mutationFn: () =>
       startPolish({
-        audio_path: episode.audio_path!,
+        audio_path: audioPath!,
         mode: config.mode === "api" ? "api" : "ollama",
         provider: config.mode === "api" && config.provider !== "custom" ? config.provider : undefined,
         model: config.model,
@@ -59,7 +59,7 @@ export default function PolishPanel() {
   });
 
   const skipMutation = useMutation({
-    mutationFn: () => skipPolish(episode.audio_path!),
+    mutationFn: () => skipPolish(audioPath!),
     onSuccess: () => {
       task.refreshQueries();
       task.setExpanded(false);
@@ -76,7 +76,7 @@ export default function PolishPanel() {
       onToggle={() => task.setExpanded(!expanded)}
       rerunLabel="Re-run polish"
       taskId={task.activeTaskId}
-      onTaskComplete={() => { task.handleComplete(); setEditing(false); }}
+      onTaskComplete={() => { task.handleComplete(); }}
       onRetry={task.handleRetry}
       onDismiss={task.handleDismiss}
       emptyMessage="Polish pipeline not yet run for this episode."
@@ -105,14 +105,14 @@ export default function PolishPanel() {
             manualPrompts={{
               generate: (batchMinutes) =>
                 getPolishManualPrompts({
-                  audio_path: episode.audio_path!,
+                  audio_path: audioPath!,
                   context: config.context,
                   source_lang: config.sourceLang,
                   engine,
                   batch_minutes: batchMinutes,
                 }),
               apply: (corrections) =>
-                applyPolishManual({ audio_path: episode.audio_path!, corrections }),
+                applyPolishManual({ audio_path: audioPath!, corrections }),
               onApplied: () => {
                 task.refreshQueries();
                 task.setExpanded(false);
@@ -142,31 +142,22 @@ export default function PolishPanel() {
       }
     >
       {episode.polished && !task.activeTaskId && (
-        editing ? (
-          <SegmentEditor
-            editorKey="polish"
-            audioPath={episode.audio_path ?? undefined}
-            episodeDuration={episode.duration}
-            loadSegments={() => getPolishSegments(episode.audio_path!)}
-            saveSegments={(segs) => savePolishSegments(episode.audio_path!, segs)}
-            showDelete
-            showFlags={false}
-            showSpeaker
-            referenceSegments={transcriptSegments}
-            referenceLabel="Input transcript"
-            speakers={showMeta?.speakers}
-            loadVersions={() => getPolishVersions(episode.audio_path!)}
-            loadVersion={(id) => loadPolishVersion(episode.audio_path!, id)}
-          />
-        ) : (
-          <ReadOnlyTranscript
-            audioPath={episode.audio_path!}
-            loadSegments={() => getPolishSegments(episode.audio_path!)}
-            queryKey={["polishSegments", episode.audio_path!]}
-            sourceLabel="polished"
-            onEdit={() => setEditing(true)}
-          />
-        )
+        <TranscriptViewer
+          editorKey="polish"
+          audioPath={audioPath ?? undefined}
+          loadSegments={() => getPolishSegments(audioPath!)}
+          saveSegments={(segs) => savePolishSegments(audioPath!, segs)}
+          exportSource="polished"
+          showDelete
+          showFlags={false}
+          showSpeaker
+          referenceSegments={transcriptSegments}
+          referenceLabel="Input transcript"
+          speakers={showMeta?.speakers}
+          loadVersions={() => getPolishVersions(audioPath!)}
+          loadVersion={(id) => loadPolishVersion(audioPath!, id)}
+          deleteVersion={(id) => deletePolishVersion(audioPath!, id)}
+        />
       )}
     </PipelinePanel>
   );

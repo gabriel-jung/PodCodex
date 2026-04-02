@@ -11,11 +11,13 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel
 
-from podcodex.api.routes._helpers import is_downloaded, require_show_folder
+from podcodex.api.routes._helpers import require_show_folder
 from podcodex.api.routes.config import _load, _register_folder, _save
 from podcodex.api.schemas import (
     CreateFromRSSRequest,
     CreateFromRSSResponse,
+    CreateFromYouTubeRequest,
+    CreateFromYouTubeResponse,
     EpisodeOut,
     PipelineDefaultsSchema,
     RegisterShowRequest,
@@ -47,6 +49,7 @@ class ShowSummary(BaseModel):
     path: str
     episode_count: int = 0
     has_rss: bool = False
+    has_youtube: bool = False
     artwork_url: str = ""
     last_rss_update: str | None = None  # ISO timestamp of last feed cache write
 
@@ -74,6 +77,7 @@ async def list_shows() -> list[ShowSummary]:
 
         feed_cache = child / ".feed_cache.json"
         has_rss = feed_cache.exists() or bool(meta and meta.rss_url)
+        has_youtube = bool(meta and meta.youtube_url)
         last_rss: str | None = None
         if feed_cache.exists():
             from datetime import datetime, timezone
@@ -87,6 +91,7 @@ async def list_shows() -> list[ShowSummary]:
                 path=str(child),
                 episode_count=audio_count,
                 has_rss=has_rss,
+                has_youtube=has_youtube,
                 artwork_url=artwork,
                 last_rss_update=last_rss,
             )
@@ -143,6 +148,70 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
     )
 
 
+@router.post("/from-youtube", response_model=CreateFromYouTubeResponse)
+async def create_from_youtube(
+    req: CreateFromYouTubeRequest,
+) -> CreateFromYouTubeResponse:
+    """Fetch YouTube metadata and create a show folder."""
+    from podcodex.ingest.youtube import fetch_youtube, youtube_show_info
+
+    save_base = Path(req.save_path).expanduser()
+    if not save_base.is_dir():
+        raise HTTPException(400, f"Save path does not exist: {req.save_path}")
+
+    # Get channel/playlist info for show name and artwork
+    try:
+        info = youtube_show_info(req.youtube_url)
+    except ImportError as exc:
+        raise HTTPException(501, str(exc)) from None
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to fetch YouTube info: {exc}") from None
+
+    # Fetch episode list
+    try:
+        episodes = fetch_youtube(req.youtube_url)
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to fetch videos: {exc}") from None
+
+    if not episodes:
+        raise HTTPException(502, "No videos found at this URL")
+
+    # Determine folder name
+    folder_name = req.folder_name.strip()
+    if not folder_name:
+        folder_name = re.sub(r"[^a-zA-Z0-9]+", "_", info.get("name", "youtube")).strip(
+            "_"
+        )[:40]
+
+    show_path = save_base / folder_name
+    show_path.mkdir(parents=True, exist_ok=True)
+
+    # Save show metadata
+    show_name = req.name.strip() or info.get("name", "") or folder_name
+    artwork = req.artwork_url or info.get("artwork_url", "")
+    save_show_meta(
+        show_path,
+        _ShowMeta(
+            name=show_name,
+            youtube_url=req.youtube_url,
+            artwork_url=artwork,
+        ),
+    )
+
+    # Cache the episode list (same format as RSS)
+    save_feed_cache(show_path, episodes)
+
+    # Register in config
+    cfg = _load()
+    _register_folder(cfg, str(show_path))
+
+    return CreateFromYouTubeResponse(
+        folder=str(show_path),
+        name=show_name,
+        episode_count=len(episodes),
+    )
+
+
 @router.post("/register")
 async def register_show(req: RegisterShowRequest) -> dict:
     """Register an existing folder as a known show."""
@@ -183,6 +252,7 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
     return ShowMeta(
         name=meta.name,
         rss_url=meta.rss_url,
+        youtube_url=meta.youtube_url,
         language=meta.language,
         speakers=meta.speakers,
         artwork_url=meta.artwork_url,
@@ -208,6 +278,7 @@ async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
         _ShowMeta(
             name=meta.name,
             rss_url=meta.rss_url,
+            youtube_url=meta.youtube_url,
             language=meta.language,
             speakers=meta.speakers,
             artwork_url=meta.artwork_url,
@@ -276,6 +347,7 @@ async def unified_episodes(
 
     # ── Audio file discovery (single scandir at show root) ──
     local_audio = _scan_audio_files(path)
+    episode_files = _scan_episode_files(path)
 
     rss = load_feed_cache(path) or []
 
@@ -300,16 +372,18 @@ async def unified_episodes(
                 "audio_url": r.audio_url or None,
                 "duration": r.duration,
                 "episode_number": r.episode_number,
-                "audio_path": str(audio_path) if audio_path else st.get("audio_path"),
-                "downloaded": audio_path is not None or is_downloaded(path, stem)
-                if stem
-                else False,
+                "audio_path": str(audio_path) if audio_path else None,
+                "output_dir": str(path / stem)
+                if stem and (path / stem).is_dir()
+                else None,
+                "downloaded": audio_path is not None,
                 "transcribed": st.get("transcribed", False),
                 "polished": st.get("polished", False),
                 "indexed": st.get("indexed", False),
                 "synthesized": st.get("synthesized", False),
                 "translations": st.get("translations", []),
                 "artwork_url": r.artwork_url or "",
+                "files": episode_files.get(stem, []) if stem else [],
                 "provenance": prov,
                 **_step_statuses(st, prov, effective),
             }
@@ -333,7 +407,8 @@ async def unified_episodes(
                 "audio_url": (meta.audio_url or None) if meta else None,
                 "duration": meta.duration if meta else 0,
                 "episode_number": meta.episode_number if meta else None,
-                "audio_path": str(audio_path) if audio_path else st.get("audio_path"),
+                "audio_path": str(audio_path) if audio_path else None,
+                "output_dir": str(output_dir) if output_dir.is_dir() else None,
                 "downloaded": audio_path is not None,
                 "transcribed": st.get("transcribed", False),
                 "polished": st.get("polished", False),
@@ -341,6 +416,7 @@ async def unified_episodes(
                 "synthesized": st.get("synthesized", False),
                 "translations": st.get("translations", []),
                 "artwork_url": (meta.artwork_url or "") if meta else "",
+                "files": episode_files.get(stem, []),
                 "provenance": prov,
                 **_step_statuses(st, prov, effective),
             }
@@ -386,8 +462,13 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
         if not st.get("transcribed", False):
             return "none"
         prov = provenance.get("transcript")
-        if not prov or not effective:
-            return "done"  # no provenance or no defaults to compare → assume done
+        if not prov:
+            return "done"  # no provenance → legacy, assume done
+        # Raw transcript (import / never validated) → outdated (yellow)
+        if prov.get("type") != "validated" and not prov.get("manual_edit"):
+            return "outdated"
+        if not effective:
+            return "done"
         params = prov.get("params", {})
         if effective.get("model_size") and prov.get("model") != effective["model_size"]:
             return "outdated"
@@ -480,6 +561,82 @@ def _scan_audio_files(show_folder: Path) -> dict[str, Path]:
     return audio
 
 
+def _scan_episode_files(show_folder: Path) -> dict[str, list[str]]:
+    """Scan episode subdirectories for user-facing files.
+
+    Returns a mapping of stem → list of filenames relative to show folder
+    (e.g. ``["stem/stem.subtitles.fr.vtt", "stem/stem.transcript.raw.json"]``).
+    Includes audio at show root. Skips dotfiles, version dirs, and DB files.
+    """
+    import os
+
+    _INTERESTING_EXTS = {
+        ".mp3",
+        ".m4a",
+        ".wav",
+        ".ogg",
+        ".flac",  # audio
+        ".vtt",
+        ".srt",  # subtitles
+        ".json",  # transcripts / pipeline outputs
+    }
+    _SKIP_PREFIXES = (".", "__")
+    _SKIP_NAMES = {"manifest.json"}
+
+    # Collect audio at show root keyed by stem
+    root_audio: dict[str, str] = {}
+    result: dict[str, list[str]] = {}
+    try:
+        with os.scandir(show_folder) as it:
+            for entry in it:
+                if entry.is_file(follow_symlinks=False):
+                    name = entry.name
+                    dot = name.rfind(".")
+                    if dot > 0 and name[dot:].lower() in (
+                        ".mp3",
+                        ".m4a",
+                        ".wav",
+                        ".ogg",
+                        ".flac",
+                    ):
+                        root_audio[name[:dot]] = name
+                elif entry.is_dir(follow_symlinks=False) and not entry.name.startswith(
+                    "."
+                ):
+                    stem = entry.name
+                    files: list[str] = []
+                    subpath = show_folder / stem
+                    try:
+                        with os.scandir(subpath) as sub_it:
+                            for f in sub_it:
+                                if not f.is_file(follow_symlinks=False):
+                                    continue
+                                fname = f.name
+                                if any(fname.startswith(p) for p in _SKIP_PREFIXES):
+                                    continue
+                                if fname in _SKIP_NAMES:
+                                    continue
+                                fdot = fname.rfind(".")
+                                if (
+                                    fdot > 0
+                                    and fname[fdot:].lower() in _INTERESTING_EXTS
+                                ):
+                                    files.append(f"{stem}/{fname}")
+                    except OSError:
+                        pass
+                    if files:
+                        files.sort()
+                        result[stem] = files
+    except OSError:
+        pass
+
+    # Prepend root audio
+    for stem, audio_name in root_audio.items():
+        result.setdefault(stem, []).insert(0, audio_name)
+
+    return result
+
+
 # ── Move / rename show folder ──────────────
 
 
@@ -541,3 +698,46 @@ async def move_show(show_folder: str, req: MoveShowRequest) -> dict:
     invalidate_scan_cache(new_path)
 
     return {"status": "moved", "new_path": str(new_path)}
+
+
+class DeleteShowRequest(BaseModel):
+    delete_files: bool = False
+
+
+@router.post("/{show_folder:path}/delete")
+async def delete_show(show_folder: str, req: DeleteShowRequest) -> dict:
+    """Remove a show from the app. Optionally delete the local folder."""
+    path = require_show_folder(show_folder)
+
+    # Check no tasks are running on this show
+    from podcodex.api.tasks import task_manager
+
+    active = task_manager.get_active(show_folder)
+    if active:
+        raise HTTPException(
+            409,
+            f"Task {active.task_id} is running on this show — wait for it to finish",
+        )
+
+    # Close DB handles and invalidate caches
+    close_pipeline_db(path)
+    invalidate_scan_cache(path)
+
+    # Remove from config.json
+    cfg = _load()
+    resolved = str(path.resolve())
+    cfg.show_folders = [
+        p for p in cfg.show_folders if str(Path(p).resolve()) != resolved
+    ]
+    _save(cfg)
+
+    # Optionally delete the folder on disk
+    deleted_files = False
+    if req.delete_files and path.exists():
+        shutil.rmtree(path)
+        deleted_files = True
+        logger.info("Deleted show folder: {}", path)
+    else:
+        logger.info("Unregistered show (files kept): {}", path)
+
+    return {"status": "deleted", "files_deleted": deleted_files}

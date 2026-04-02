@@ -1,4 +1,4 @@
-"""Health & system routes — capabilities, install extras."""
+"""Health & system routes — capabilities, install/remove extras."""
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ _CAPABILITY_CHECKS: dict[str, str] = {
     "torch": "torch",
     "embeddings": "sentence_transformers",
     "bm25": "bm25s",
+    "yt_dlp": "yt_dlp",
 }
 
 # Map installable extra names to their description.
@@ -37,11 +38,32 @@ INSTALLABLE_EXTRAS: dict[str, str] = {
     "pipeline": "Transcription, TTS, LLM polish/translate (whisperx, soundfile, ollama, etc.)",
     "rag": "Indexing & semantic search (torch, sentence-transformers, etc.)",
     "bot": "Discord bot integration",
+    "youtube": "YouTube channel/playlist ingest (yt-dlp)",
+}
+
+# Map each extra to the capabilities that indicate it's installed.
+# Single source of truth — used by list_extras, install, and remove.
+_EXTRA_CAPS: dict[str, list[str]] = {
+    "pipeline": ["whisperx", "soundfile", "ollama", "tts"],
+    "rag": ["torch", "embeddings", "bm25"],
+    "bot": ["bot"],
+    "youtube": ["yt_dlp"],
 }
 
 
 def _get_capabilities() -> dict[str, bool]:
     return {name: _has(pkg) for name, pkg in _CAPABILITY_CHECKS.items()}
+
+
+def _installed_extras(caps: dict[str, bool] | None = None) -> set[str]:
+    """Return the set of extras currently installed, based on capabilities."""
+    if caps is None:
+        caps = _get_capabilities()
+    return {
+        ext
+        for ext, ext_caps in _EXTRA_CAPS.items()
+        if all(caps.get(c, False) for c in ext_caps)
+    }
 
 
 @router.get("/health")
@@ -57,18 +79,12 @@ async def health() -> dict:
 async def list_extras() -> dict:
     """List installable extras and their install status."""
     caps = _get_capabilities()
-    # Map extras to their key capabilities
-    extra_caps = {
-        "pipeline": ["whisperx", "soundfile", "ollama", "tts"],
-        "rag": ["torch", "embeddings", "bm25"],
-        "bot": ["bot"],
-    }
     return {
         "extras": {
             name: {
                 "description": desc,
-                "installed": all(caps.get(c, False) for c in extra_caps.get(name, [])),
-                "capabilities": extra_caps.get(name, []),
+                "installed": all(caps.get(c, False) for c in _EXTRA_CAPS.get(name, [])),
+                "capabilities": _EXTRA_CAPS.get(name, []),
             }
             for name, desc in INSTALLABLE_EXTRAS.items()
         },
@@ -111,6 +127,48 @@ async def cancel_task(task_id: str) -> dict:
     raise HTTPException(404, f"No active task with id '{task_id}'")
 
 
+def _uv_sync_cmd() -> list[str]:
+    """Build the base ``uv sync`` command."""
+    import shutil
+
+    uv_bin = shutil.which("uv")
+    return [uv_bin, "sync"] if uv_bin else [sys.executable, "-m", "uv", "sync"]
+
+
+def _run_uv_sync(
+    extras: set[str],
+    progress_cb,
+    label: str,
+) -> dict:
+    """Run ``uv sync --extra ...`` for *extras* and report progress."""
+    progress_cb(0.0, f"{label}...")
+    cmd = list(_uv_sync_cmd())
+    for ext in sorted(extras):
+        cmd.extend(["--extra", ext])
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    lines: list[str] = []
+    for line in proc.stdout:  # type: ignore[union-attr]
+        line = line.rstrip()
+        lines.append(line)
+        if line:
+            progress_cb(0.1, line[:120])
+    proc.wait()
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"uv sync failed (exit {proc.returncode}):\n" + "\n".join(lines[-20:])
+        )
+    progress_cb(0.95, "Verifying...")
+    progress_cb(1.0, "Done! Restart the backend to activate.")
+    return {"output": "\n".join(lines)}
+
+
 class InstallExtraRequest(BaseModel):
     extra: str
 
@@ -124,53 +182,28 @@ async def install_extra(req: InstallExtraRequest) -> dict:
         )
 
     def run_install(progress_cb, extra_name):
-        import shutil
-
-        progress_cb(0.0, f"Installing '{extra_name}' extra...")
-
-        # Find uv binary
-        uv_bin = shutil.which("uv")
-        base_cmd = [uv_bin, "sync"] if uv_bin else [sys.executable, "-m", "uv", "sync"]
-
-        # Detect currently installed extras so we don't lose them.
-        # uv sync replaces the environment to match exactly the requested extras,
-        # so we must pass ALL desired extras, not just the new one.
-        all_extras = {extra_name, "desktop"}  # desktop is always needed (we're the API)
-        caps = _get_capabilities()
-        extra_cap_map = {
-            "pipeline": ["whisperx", "soundfile", "ollama", "tts"],
-            "rag": ["torch", "embeddings", "bm25"],
-            "bot": ["bot"],
-        }
-        for ext, ext_caps in extra_cap_map.items():
-            if all(caps.get(c, False) for c in ext_caps):
-                all_extras.add(ext)
-
-        cmd = list(base_cmd)
-        for ext in sorted(all_extras):
-            cmd.extend(["--extra", ext])
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        lines: list[str] = []
-        for line in proc.stdout:  # type: ignore[union-attr]
-            line = line.rstrip()
-            lines.append(line)
-            # Show the last meaningful line as progress
-            if line:
-                progress_cb(0.1, line[:120])
-        proc.wait()
-
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"Install failed (exit {proc.returncode}):\n" + "\n".join(lines[-20:])
-            )
-        progress_cb(0.95, "Verifying installation...")
-        progress_cb(1.0, "Done! Restart the backend to activate.")
-        return {"output": "\n".join(lines), "extra": extra_name}
+        # Keep all currently installed extras + the new one + desktop (always needed).
+        all_extras = _installed_extras() | {extra_name, "desktop"}
+        return _run_uv_sync(all_extras, progress_cb, f"Installing '{extra_name}'")
 
     return submit_task("install", req.extra, run_install, req.extra).model_dump()
+
+
+@router.post("/system/remove-extra")
+async def remove_extra(req: InstallExtraRequest) -> dict:
+    """Remove a Python extra via uv sync (omitting it) as a background task."""
+    if req.extra not in INSTALLABLE_EXTRAS:
+        raise HTTPException(
+            400, f"Unknown extra: {req.extra}. Available: {list(INSTALLABLE_EXTRAS)}"
+        )
+    if req.extra == "desktop":
+        raise HTTPException(
+            400, "Cannot remove the desktop extra (required by the API)"
+        )
+
+    def run_remove(progress_cb, extra_name):
+        # Keep all currently installed extras minus the one being removed.
+        all_extras = (_installed_extras() | {"desktop"}) - {extra_name}
+        return _run_uv_sync(all_extras, progress_cb, f"Removing '{extra_name}'")
+
+    return submit_task("remove", req.extra, run_remove, req.extra).model_dump()

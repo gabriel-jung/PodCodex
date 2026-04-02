@@ -1,8 +1,7 @@
 import { useState, useRef, useEffect, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
-import { Search, X, SlidersHorizontal, Clock, Undo2, HelpCircle, Trash2, Download, History } from "lucide-react";
+import { Search, X, SlidersHorizontal, Clock, Undo2, HelpCircle, Trash2, History } from "lucide-react";
 import type { VersionEntry } from "@/api/types";
-import { exportTextUrl, exportSrtUrl, exportVttUrl, exportZipUrl } from "@/api/client";
 import { versionLabel, versionDate, versionInfo } from "@/lib/utils";
 
 function Tip({ text }: { text: string }) {
@@ -54,10 +53,9 @@ interface EditorToolbarProps {
   onDeleteFlagged: () => void;
   onEstimateTimestamps?: () => void;
   isSaving: boolean;
-  audioPath?: string;
-  exportSource?: string;
   versions?: VersionEntry[];
   onLoadVersion?: (id: string) => void;
+  onDeleteVersion?: (id: string) => void;
 }
 
 export default function EditorToolbar({
@@ -87,31 +85,25 @@ export default function EditorToolbar({
   onDeleteFlagged,
   onEstimateTimestamps,
   isSaving,
-  audioPath,
-  exportSource,
   versions,
   onLoadVersion,
+  onDeleteVersion,
 }: EditorToolbarProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showExport, setShowExport] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
   const [expandedVersion, setExpandedVersion] = useState<string | null>(null);
-  const exportRef = useRef<HTMLDivElement>(null);
   const versionsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!showExport && !showVersions) return;
+    if (!showVersions) return;
     const handler = (e: MouseEvent) => {
-      if (showExport && exportRef.current && !exportRef.current.contains(e.target as Node)) {
-        setShowExport(false);
-      }
-      if (showVersions && versionsRef.current && !versionsRef.current.contains(e.target as Node)) {
+      if (versionsRef.current && !versionsRef.current.contains(e.target as Node)) {
         setShowVersions(false);
       }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [showExport, showVersions]);
+  }, [showVersions]);
 
   return (
     <div className="border-b border-border text-xs">
@@ -173,6 +165,15 @@ export default function EditorToolbar({
                         >
                           <HelpCircle className="w-3 h-3" />
                         </button>
+                        {onDeleteVersion && (
+                          <button
+                            className="shrink-0 text-muted-foreground/40 hover:text-destructive p-0.5"
+                            onClick={() => onDeleteVersion(v.id)}
+                            title="Delete this version"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        )}
                       </div>
                       {isExpanded && (
                         <div className="px-3 pb-2 ml-3 text-xs">
@@ -189,49 +190,6 @@ export default function EditorToolbar({
                     </div>
                   );
                 })}
-              </div>
-            )}
-          </div>
-        )}
-        {versions && versions.length > 0 && audioPath && (
-          <div className="w-px h-4 bg-border" />
-        )}
-        {audioPath && (
-          <div className="relative" ref={exportRef}>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-6"
-              onClick={() => setShowExport(!showExport)}
-            >
-              <Download className="w-3 h-3 mr-1" /> Export
-            </Button>
-            {showExport && (
-              <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-36">
-                {[
-                  { label: "Plain Text", url: exportTextUrl(audioPath, exportSource) },
-                  { label: "SRT Subtitles", url: exportSrtUrl(audioPath, exportSource) },
-                  { label: "WebVTT Subtitles", url: exportVttUrl(audioPath, exportSource) },
-                ].map(({ label, url }) => (
-                  <a
-                    key={label}
-                    href={url}
-                    download
-                    className="block px-3 py-1.5 text-xs hover:bg-accent transition"
-                    onClick={() => setShowExport(false)}
-                  >
-                    {label}
-                  </a>
-                ))}
-                <div className="border-t border-border my-1" />
-                <a
-                  href={exportZipUrl(audioPath)}
-                  download
-                  className="block px-3 py-1.5 text-xs hover:bg-accent transition"
-                  onClick={() => setShowExport(false)}
-                >
-                  ZIP (all files)
-                </a>
               </div>
             )}
           </div>

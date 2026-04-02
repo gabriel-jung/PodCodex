@@ -19,6 +19,12 @@ interface ConfigState {
   /** Hide episodes whose title contains this text. Empty = no filter. */
   titleExclude: string;
   setTitleExclude: (v: string) => void;
+  /** Show view mode on the home page. */
+  showViewMode: "list" | "card";
+  setShowViewMode: (mode: "list" | "card") => void;
+  /** Card size (columns) for the show grid. 1-5. */
+  showCardSize: number;
+  setShowCardSize: (size: number) => void;
 }
 
 export const useConfigStore = create<ConfigState>()(
@@ -34,6 +40,10 @@ export const useConfigStore = create<ConfigState>()(
       setTitleInclude: (v) => set({ titleInclude: v }),
       titleExclude: "",
       setTitleExclude: (v) => set({ titleExclude: v }),
+      showViewMode: "card",
+      setShowViewMode: (mode) => set({ showViewMode: mode }),
+      showCardSize: 3,
+      setShowCardSize: (size) => set({ showCardSize: size }),
     }),
     { name: "podcodex-config" },
   ),

@@ -37,6 +37,7 @@ class ShowMeta:
 
     name: str
     rss_url: str = ""
+    youtube_url: str = ""
     speakers: list[str] = field(default_factory=list)
     language: str = ""
     artwork_url: str = ""
@@ -65,6 +66,7 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
     return ShowMeta(
         name=raw.get("name", ""),
         rss_url=raw.get("rss_url", ""),
+        youtube_url=raw.get("youtube_url", ""),
         speakers=raw.get("speakers", []),
         language=raw.get("language", ""),
         artwork_url=raw.get("artwork_url", ""),
@@ -86,6 +88,8 @@ def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
     lines: list[str] = [f'name = "{_toml_string(meta.name)}"']
     if meta.rss_url:
         lines.append(f'rss_url = "{_toml_string(meta.rss_url)}"')
+    if meta.youtube_url:
+        lines.append(f'youtube_url = "{_toml_string(meta.youtube_url)}"')
     if meta.language:
         lines.append(f'language = "{_toml_string(meta.language)}"')
     if meta.artwork_url:

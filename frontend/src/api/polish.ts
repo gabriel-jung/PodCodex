@@ -17,6 +17,9 @@ export const getPolishVersions = (audioPath: string) =>
 export const loadPolishVersion = (audioPath: string, versionId: string) =>
   json<Segment[]>(`/api/polish/versions/${encodeURIComponent(versionId)}?audio_path=${encodeURIComponent(audioPath)}`);
 
+export const deletePolishVersion = (audioPath: string, versionId: string) =>
+  json<{ status: string }>(`/api/polish/versions/${encodeURIComponent(versionId)}?audio_path=${encodeURIComponent(audioPath)}`, { method: "DELETE" });
+
 export const startPolish = (req: PolishRequest) =>
   json<TaskResponse>("/api/polish/start", {
     method: "POST",

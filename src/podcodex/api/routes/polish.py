@@ -82,6 +82,21 @@ async def load_polish_version(
         raise HTTPException(404, f"Version {version_id} not found")
 
 
+@router.delete("/versions/{version_id}")
+async def delete_polish_version(
+    version_id: str,
+    audio_path: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> dict:
+    """Delete a specific polished version."""
+    from podcodex.core.versions import delete_version
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    if not delete_version(p.base, "polished", version_id):
+        raise HTTPException(404, f"Version {version_id} not found")
+    return {"status": "deleted", "version_id": version_id}
+
+
 # ── Pipeline execution ───────────────────────────────────
 
 

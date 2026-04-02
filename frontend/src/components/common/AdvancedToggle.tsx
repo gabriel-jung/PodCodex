@@ -23,7 +23,7 @@ export default function AdvancedToggle({ children, label, className }: AdvancedT
         className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition"
       >
         <Settings2 className="w-3 h-3" />
-        <span className="font-semibold uppercase tracking-wide">
+        <span className="font-medium">
           {open ? (label ? `Hide ${label.toLowerCase()}` : "Hide advanced") : (label ?? "Advanced settings")}
         </span>
       </button>

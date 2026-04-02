@@ -297,6 +297,30 @@ def has_matching_version(base: Path, step: str, params: dict) -> bool:
     return False
 
 
+def delete_version(base: Path, step: str, version_id: str) -> bool:
+    """Delete a single version (file + DB row).
+
+    Returns ``True`` if the version was found and deleted.
+    """
+    seg_path = _version_path(base, step, version_id)
+    found = seg_path.exists()
+    if found:
+        seg_path.unlink()
+
+    try:
+        db = _get_db(base)
+        count = db.delete_versions(base.name, step, [version_id])
+        found = found or count > 0
+    except Exception:
+        logger.opt(exception=True).warning(
+            "Failed to delete version {} from DB", version_id
+        )
+
+    if found:
+        logger.info("Deleted version {} for step '{}'", version_id, step)
+    return found
+
+
 def prune_versions(base: Path, step: str, keep: int) -> int:
     """Remove old versions, keeping the newest *keep* entries.
 

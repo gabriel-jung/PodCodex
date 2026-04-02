@@ -14,14 +14,14 @@ export interface EpisodeCardProps {
 }
 
 export function EpisodeCard({ ep, onOpen, onPlay, onDownload, downloading, isPlaying }: EpisodeCardProps) {
-  const canDownload = !ep.downloaded && !!ep.audio_url;
+  const canDownload = !ep.downloaded;
   return (
     <div
       className="group relative bg-card border border-border rounded-xl overflow-hidden hover:border-muted-foreground/30 transition cursor-pointer"
       onClick={onOpen}
     >
       {/* Artwork / placeholder */}
-      <div className="relative aspect-square bg-muted">
+      <div className="relative h-36 bg-muted">
         {ep.artwork_url ? (
           <img src={ep.artwork_url} alt="" className="w-full h-full object-cover" loading="lazy" />
         ) : (

@@ -38,6 +38,7 @@ from podcodex.rag.defaults import (
 )
 from podcodex.rag.localstore import LocalStore
 from podcodex.rag.retriever import Retriever
+from podcodex.core._utils import normalize_lang
 from podcodex.rag.store import collection_name
 
 
@@ -79,7 +80,7 @@ def _resolve_source(transcript_path: Path, source: str) -> Path:
         return p
     else:
         # Treat as a language name (e.g. "english", "French")
-        lang_norm = source.lower().strip().replace(" ", "_")
+        lang_norm = normalize_lang(source)
         for pattern in (
             f"{episode_stem}.translated.{lang_norm}.json",
             f"{episode_stem}.translated.{lang_norm}.raw.json",

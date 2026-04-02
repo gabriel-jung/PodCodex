@@ -10,6 +10,12 @@ export const createDirectory = (path: string, name: string) =>
     { method: "POST" },
   );
 
+export const openFolder = (path: string) =>
+  json<{ error: string | null }>(
+    `/api/fs/open?path=${encodeURIComponent(path)}`,
+    { method: "POST" },
+  );
+
 // ── Audio ───────────────────────────────────
 
 export const audioFileUrl = (path: string) =>

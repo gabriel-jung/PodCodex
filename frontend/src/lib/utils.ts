@@ -104,6 +104,22 @@ export function languageToISO(lang: string): string {
   return map[lower] || lower;
 }
 
+// ── Subtitle languages (shared by download dropdowns) ────
+
+export const SUB_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "fr", label: "Français" },
+  { code: "de", label: "Deutsch" },
+  { code: "es", label: "Español" },
+  { code: "it", label: "Italiano" },
+  { code: "pt", label: "Português" },
+  { code: "ja", label: "日本語" },
+  { code: "ko", label: "한국어" },
+  { code: "zh", label: "中文" },
+  { code: "ar", label: "العربية" },
+  { code: "ru", label: "Русский" },
+] as const;
+
 // ── Version formatting ────────────────────────────────────
 
 /** Format a version's timestamp as a short date string. */
@@ -115,8 +131,8 @@ export function versionDate(v: VersionEntry): string {
 /** Build a compact label for a version (model, provider, language info). */
 export function versionLabel(v: VersionEntry): string {
   const p = v.params as Record<string, unknown>;
-  if (v.manual_edit || v.type === "validated") return "Manual edit";
-  if (p.skipped) return "Skipped (copied)";
+  if (v.manual_edit || v.type === "validated") return "Edited";
+  if (p.skipped) return "Skipped (copy)";
   const parts: string[] = [];
   if (v.model) parts.push(v.model);
   if (p.provider) parts.push(String(p.provider));
@@ -125,7 +141,8 @@ export function versionLabel(v: VersionEntry): string {
   else if (p.source_lang && p.target_lang) parts.push(`${p.source_lang} → ${p.target_lang}`);
   else if (p.source_lang) parts.push(String(p.source_lang));
   if (p.diarize === false) parts.push("no diar");
-  return parts.join(", ") || "Pipeline";
+  if (p.source) parts.push(String(p.source));
+  return parts.join(", ") || "Generated";
 }
 
 /** Params to hide from the version info box (internal / not user-relevant). */

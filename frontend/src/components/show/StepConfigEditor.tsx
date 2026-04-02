@@ -32,11 +32,11 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center gap-2 px-5 py-4 border-b border-border">
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-border">
           <Icon className="w-4 h-4" />
-          <h3 className="text-base font-semibold">{stepInfo.label}</h3>
+          <span className="text-sm font-semibold">{stepInfo.label}</span>
           <div className="flex-1" />
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-lg">×</button>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">×</button>
         </div>
 
         {/* Body */}

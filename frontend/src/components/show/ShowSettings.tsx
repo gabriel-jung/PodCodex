@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
-import { updateShowMeta, moveShow } from "@/api/client";
+import { updateShowMeta, moveShow, deleteShow } from "@/api/client";
 import { useConfigStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
@@ -11,7 +11,7 @@ import { errorMessage } from "@/lib/utils";
 import SectionHeader from "@/components/common/SectionHeader";
 import FolderPicker from "@/components/common/FolderPicker";
 import PipelineSettings from "./PipelineSettings";
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, Trash2 } from "lucide-react";
 
 interface ShowSettingsProps {
   folder: string;
@@ -26,6 +26,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const [name, setName] = useState(meta.name);
   const [language, setLanguage] = useState(meta.language);
   const [rssUrl, setRssUrl] = useState(meta.rss_url);
+  const [youtubeUrl, setYoutubeUrl] = useState(meta.youtube_url ?? "");
   const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
   const [pipeModelSize, setPipeModelSize] = useState(meta.pipeline?.model_size ?? "");
   const [pipeDiarize, setPipeDiarize] = useState(meta.pipeline?.diarize ?? true);
@@ -45,6 +46,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     setName(meta.name);
     setLanguage(meta.language);
     setRssUrl(meta.rss_url);
+    setYoutubeUrl(meta.youtube_url ?? "");
     setArtworkUrl(meta.artwork_url);
     setPipeModelSize(meta.pipeline?.model_size ?? "");
     setPipeDiarize(meta.pipeline?.diarize ?? true);
@@ -58,6 +60,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     name !== meta.name ||
     language !== meta.language ||
     rssUrl !== meta.rss_url ||
+    youtubeUrl !== (meta.youtube_url ?? "") ||
     artworkUrl !== meta.artwork_url ||
     pipeModelSize !== (meta.pipeline?.model_size ?? "") ||
     pipeDiarize !== (meta.pipeline?.diarize ?? true) ||
@@ -72,6 +75,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         name,
         language,
         rss_url: rssUrl,
+        youtube_url: youtubeUrl,
         speakers: meta.speakers,
         artwork_url: artworkUrl,
         pipeline: {
@@ -108,6 +112,37 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(data.new_path) } });
     },
   });
+
+  const deleteFilesRef = useRef(false);
+  const deleteMutation = useMutation({
+    mutationFn: (deleteFiles: boolean) => deleteShow(folder, deleteFiles),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      navigate({ to: "/" });
+    },
+  });
+
+  const handleDelete = () => {
+    deleteFilesRef.current = false;
+    confirmDialog.open({
+      title: "Remove this show?",
+      description: `This will unregister "${meta.name}" from PodCodex.`,
+      content: (
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            defaultChecked={false}
+            onChange={(e) => { deleteFilesRef.current = e.target.checked; }}
+            className="accent-destructive"
+          />
+          Also delete local files on disk
+        </label>
+      ),
+      confirmLabel: "Remove",
+      variant: "destructive",
+      onConfirm: () => deleteMutation.mutate(deleteFilesRef.current),
+    });
+  };
 
   const handlePickedFolder = (parentPath: string) => {
     const dest = `${parentPath.replace(/\/+$/, "")}/${folderName}`;
@@ -154,6 +189,11 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         <SettingRow label="RSS URL" help="The podcast's RSS feed URL.">
           <input value={rssUrl} onChange={(e) => setRssUrl(e.target.value)} placeholder="https://..." className="input py-1 text-sm w-64" />
         </SettingRow>
+        {youtubeUrl && (
+          <SettingRow label="YouTube URL" help="YouTube channel or playlist URL.">
+            <input value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)} placeholder="https://youtube.com/..." className="input py-1 text-sm w-64" />
+          </SettingRow>
+        )}
         <SettingRow label="Artwork" help="URL to the podcast cover image.">
           <div className="flex items-center gap-2">
             <input value={artworkUrl} onChange={(e) => setArtworkUrl(e.target.value)} placeholder="https://..." className="input py-1 text-sm w-48" />
@@ -317,6 +357,25 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             className="input py-1 text-sm w-32"
           />
         </SettingRow>
+      </SettingSection>
+
+      {/* ── Danger Zone ── */}
+      <SettingSection title="Danger Zone" description="Irreversible actions.">
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={handleDelete}
+            disabled={deleteMutation.isPending}
+            variant="destructive"
+            size="sm"
+            className="gap-1.5"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            {deleteMutation.isPending ? "Removing..." : "Remove show"}
+          </Button>
+          {deleteMutation.isError && (
+            <span className="text-xs text-destructive">{errorMessage(deleteMutation.error)}</span>
+          )}
+        </div>
       </SettingSection>
 
     </div>

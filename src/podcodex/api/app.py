@@ -26,6 +26,7 @@ from podcodex.api.routes import (
     transcribe,
     translate,
     ws,
+    youtube,
 )
 
 load_dotenv()
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(filesystem.router, prefix="/api/fs", tags=["filesystem"])
     app.include_router(shows.router, prefix="/api/shows", tags=["shows"])
     app.include_router(rss.router, prefix="/api/shows", tags=["rss"])
+    app.include_router(youtube.router, prefix="/api/shows", tags=["youtube"])
     app.include_router(transcribe.router, prefix="/api/transcribe", tags=["transcribe"])
     app.include_router(polish.router, prefix="/api/polish", tags=["polish"])
     app.include_router(translate.router, prefix="/api/translate", tags=["translate"])

@@ -13,7 +13,7 @@ from podcodex.api.routes._helpers import (
     submit_task,
 )
 from podcodex.api.schemas import Segment, TaskResponse
-from podcodex.core._utils import AudioPaths, merge_consecutive_segments, write_json
+from podcodex.core._utils import AudioPaths, write_json
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import save_version
 
@@ -90,6 +90,21 @@ async def load_transcribe_version(
         raise HTTPException(404, f"Version {version_id} not found")
 
 
+@router.delete("/versions/{version_id}")
+async def delete_transcribe_version(
+    version_id: str,
+    audio_path: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> dict:
+    """Delete a specific transcript version."""
+    from podcodex.core.versions import delete_version
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    if not delete_version(p.base, "transcript", version_id):
+        raise HTTPException(404, f"Version {version_id} not found")
+    return {"status": "deleted", "version_id": version_id}
+
+
 # ── Speaker map ──────────────────────────────────────────
 
 
@@ -130,47 +145,73 @@ async def upload_transcript(
     audio_path: str = Query(..., description="Absolute path to audio file"),
     output_dir: str | None = Query(None),
 ) -> dict:
-    """Upload a transcript JSON file and save as raw transcript."""
+    """Upload a transcript file (JSON, SRT, or VTT) and save as raw transcript."""
+    from podcodex.core._utils import srt_to_segments, vtt_to_segments
+
     content = await file.read()
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        raise HTTPException(400, "Invalid JSON file")
+    filename = (file.filename or "").lower()
 
-    # Accept either a plain list of segments or {segments: [...], ...} wrapper
-    if isinstance(data, dict) and "segments" in data:
-        segments = data["segments"]
-    elif isinstance(data, list):
-        segments = data
+    if filename.endswith(".vtt"):
+        text = content.decode("utf-8")
+        segments = vtt_to_segments(text)
+        if not segments:
+            raise HTTPException(400, "No segments found in VTT file")
+        source = "vtt"
+        original_text = text
+    elif filename.endswith(".srt"):
+        text = content.decode("utf-8")
+        segments = srt_to_segments(text)
+        if not segments:
+            raise HTTPException(400, "No segments found in SRT file")
+        source = "srt"
+        original_text = text
     else:
-        raise HTTPException(
-            400, "Expected a JSON array of segments or {segments: [...]}"
-        )
+        original_text = None
+        # JSON (default)
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "Invalid JSON file")
 
-    if not isinstance(segments, list):
-        raise HTTPException(400, "Segments must be a JSON array")
+        # Accept either a plain list of segments or {segments: [...], ...} wrapper
+        if isinstance(data, dict) and "segments" in data:
+            segments = data["segments"]
+        elif isinstance(data, list):
+            segments = data
+        else:
+            raise HTTPException(
+                400, "Expected a JSON array of segments or {segments: [...]}"
+            )
 
-    # Validate each segment has at least text and speaker
-    for i, seg in enumerate(segments):
-        if not isinstance(seg, dict):
-            raise HTTPException(400, f"Segment {i} is not an object")
-        if "text" not in seg:
-            raise HTTPException(400, f"Segment {i} missing 'text' field")
-        # Ensure required fields have defaults
-        seg.setdefault("speaker", "UNKNOWN")
-        seg.setdefault("start", 0.0)
-        seg.setdefault("end", 0.0)
+        if not isinstance(segments, list):
+            raise HTTPException(400, "Segments must be a JSON array")
 
-    # Merge consecutive same-speaker segments (same as the transcription pipeline)
-    segments = merge_consecutive_segments(segments)
+        # Validate each segment has at least text and speaker
+        for i, seg in enumerate(segments):
+            if not isinstance(seg, dict):
+                raise HTTPException(400, f"Segment {i} is not an object")
+            if "text" not in seg:
+                raise HTTPException(400, f"Segment {i} missing 'text' field")
+            # Ensure required fields have defaults
+            seg.setdefault("speaker", "UNKNOWN")
+            seg.setdefault("start", 0.0)
+            seg.setdefault("end", 0.0)
+        source = "json"
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     p.base.parent.mkdir(parents=True, exist_ok=True)
+
+    # Save original subtitle file for reference
+    if original_text is not None:
+        ext = "vtt" if source == "vtt" else "srt"
+        orig_path = p.base / f"{p.base.name}.subtitles.{ext}"
+        orig_path.write_text(original_text, encoding="utf-8")
+
     write_json(p.transcript_raw, {"segments": segments})
 
     provenance = build_provenance(
         "transcript",
-        params={"source": "upload", "filename": file.filename},
+        params={"source": source, "filename": file.filename},
     )
     save_version(p.base, "transcript", segments, provenance)
     mark_step(
@@ -178,6 +219,73 @@ async def upload_transcript(
     )
 
     return {"status": "uploaded", "count": len(segments)}
+
+
+# ── Import from existing file ────────────────────────────
+
+
+@router.post("/import")
+async def import_transcript(
+    audio_path: str = Query(..., description="Absolute path to audio file"),
+    file_path: str = Query(
+        ..., description="Absolute path to VTT/SRT/JSON file to import"
+    ),
+    output_dir: str | None = Query(None),
+) -> dict:
+    """Import a transcript from an existing file on disk (VTT, SRT, or JSON)."""
+    from pathlib import Path
+
+    from podcodex.core._utils import srt_to_segments, vtt_to_segments
+
+    src = Path(file_path)
+    if not src.exists():
+        raise HTTPException(404, f"File not found: {file_path}")
+
+    content = src.read_text(encoding="utf-8")
+    filename = src.name.lower()
+
+    if filename.endswith(".vtt"):
+        segments = vtt_to_segments(content)
+        if not segments:
+            raise HTTPException(400, "No segments found in VTT file")
+        source = "vtt"
+    elif filename.endswith(".srt"):
+        segments = srt_to_segments(content)
+        if not segments:
+            raise HTTPException(400, "No segments found in SRT file")
+        source = "srt"
+    elif filename.endswith(".json"):
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "Invalid JSON file")
+        if isinstance(data, dict) and "segments" in data:
+            segments = data["segments"]
+        elif isinstance(data, list):
+            segments = data
+        else:
+            raise HTTPException(
+                400, "Expected a JSON array of segments or {segments: [...]}"
+            )
+        source = "json"
+    else:
+        raise HTTPException(400, "Unsupported file type. Use VTT, SRT, or JSON.")
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    p.base.parent.mkdir(parents=True, exist_ok=True)
+
+    write_json(p.transcript_raw, {"segments": segments})
+
+    provenance = build_provenance(
+        "transcript",
+        params={"source": source, "filename": src.name},
+    )
+    save_version(p.base, "transcript", segments, provenance)
+    mark_step(
+        p.show_dir, p.base.name, transcribed=True, provenance={"transcript": provenance}
+    )
+
+    return {"status": "imported", "count": len(segments)}
 
 
 # ── Pipeline execution ───────────────────────────────────

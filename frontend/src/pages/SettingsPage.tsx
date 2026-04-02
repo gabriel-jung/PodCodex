@@ -1,8 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { getModels, deleteModel } from "@/api/client";
+import { getModels, deleteModel, getExtras, installExtra, removeExtra } from "@/api/client";
+import type { ExtraInfo } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Trash2, HardDrive, Cpu, RefreshCw } from "lucide-react";
+import { ArrowLeft, Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2 } from "lucide-react";
 import { useState } from "react";
 
 export default function SettingsPage() {
@@ -16,11 +17,126 @@ export default function SettingsPage() {
           </Button>
           <h1 className="text-2xl font-bold">Settings</h1>
         </div>
+        <PluginsPanel />
         <ModelCachePanel />
       </div>
     </div>
   );
 }
+
+// ── Plugins ──────────────────────────────────
+
+function PluginsPanel() {
+  const qc = useQueryClient();
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ["extras"],
+    queryFn: getExtras,
+  });
+
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+
+  const installMut = useMutation({
+    mutationFn: (extra: string) => installExtra(extra),
+    onMutate: (extra) => setPendingAction(extra),
+    onSettled: () => {
+      setPendingAction(null);
+      qc.invalidateQueries({ queryKey: ["extras"] });
+      qc.invalidateQueries({ queryKey: ["health"] });
+    },
+  });
+
+  const removeMut = useMutation({
+    mutationFn: (extra: string) => removeExtra(extra),
+    onMutate: (extra) => setPendingAction(extra),
+    onSettled: () => {
+      setPendingAction(null);
+      qc.invalidateQueries({ queryKey: ["extras"] });
+      qc.invalidateQueries({ queryKey: ["health"] });
+    },
+  });
+
+  const extras = data?.extras ?? {};
+  const entries = Object.entries(extras) as [string, ExtraInfo][];
+  const installedCount = entries.filter(([, v]) => v.installed).length;
+
+  return (
+    <section className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Puzzle className="w-5 h-5" /> Plugins
+        </h2>
+        <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-7">
+          <RefreshCw className="w-3.5 h-3.5" />
+        </Button>
+      </div>
+
+      <p className="text-sm text-muted-foreground">
+        PodCodex features are split into optional plugins so you only install what you need.
+        Install or remove them here — changes take effect after restarting the backend.
+      </p>
+
+      <div className="text-xs text-muted-foreground">
+        {installedCount} of {entries.length} plugin{entries.length !== 1 ? "s" : ""} installed
+      </div>
+
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading...</p>
+      ) : (
+        <div className="border border-border rounded-lg divide-y divide-border">
+          {entries.map(([name, info]) => {
+            const busy = pendingAction === name;
+            return (
+              <div key={name} className="flex items-center gap-4 px-4 py-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-sm">{name}</span>
+                    {info.installed ? (
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-500">
+                        installed
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+                        not installed
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5 truncate">{info.description}</p>
+                </div>
+                <div className="shrink-0">
+                  {busy ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                  ) : info.installed ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                      onClick={() => removeMut.mutate(name)}
+                      disabled={!!pendingAction}
+                    >
+                      <X className="w-3.5 h-3.5 mr-1" /> Remove
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => installMut.mutate(name)}
+                      disabled={!!pendingAction}
+                    >
+                      <Download className="w-3.5 h-3.5 mr-1" /> Install
+                    </Button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ── Model Cache ──────────────────────────────
 
 function ModelCachePanel() {
   const qc = useQueryClient();

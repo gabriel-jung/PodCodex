@@ -30,24 +30,7 @@ export default function PipelineButtons({
 
   return (
     <>
-      {/* Wide screens: individual buttons */}
-      <div className="hidden md:flex items-center gap-1.5">
-        {STEPS.map(({ key, label, icon: Icon }) => (
-          <Button
-            key={key}
-            onClick={() => handleClick(key)}
-            disabled={disabled}
-            variant="outline"
-            size="sm"
-            className="text-xs h-7 px-2"
-          >
-            <Icon className="w-3 h-3 mr-1" /> {label}
-          </Button>
-        ))}
-      </div>
-
-      {/* Small screens: dropdown */}
-      <div className="relative md:hidden">
+      <div className="relative">
         <Button
           onClick={() => setMenuOpen(!menuOpen)}
           disabled={disabled}
@@ -75,7 +58,6 @@ export default function PipelineButtons({
         )}
       </div>
 
-      {/* Config dialog */}
       {confirmStep && (
         <StepConfigEditor
           step={confirmStep}

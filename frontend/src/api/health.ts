@@ -26,6 +26,13 @@ export const installExtra = (extra: string) =>
     body: JSON.stringify({ extra }),
   });
 
+export const removeExtra = (extra: string) =>
+  json<TaskResponse>("/api/system/remove-extra", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ extra }),
+  });
+
 export const cancelTask = (taskId: string) =>
   json<{ status: string; task_id: string }>(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
     method: "POST",

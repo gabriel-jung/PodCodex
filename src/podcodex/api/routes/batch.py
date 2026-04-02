@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import submit_task
+from podcodex.api.routes._helpers import build_provenance, submit_task
 from podcodex.core._utils import normalize_lang
 from podcodex.api.schemas import TaskResponse
 
@@ -153,18 +153,16 @@ def _batch_transcribe(
     if not cancelled() and not status["exported"]:
         did_work = True
         ep_progress(i, step_offset, sw, 0.9, "Exporting transcript...")
-        provenance = {
-            "step": "transcript",
-            "type": "raw",
-            "model": req.model_size,
-            "params": {
+        provenance = build_provenance(
+            "transcript",
+            model=req.model_size,
+            params={
                 "language": req.language or None,
                 "batch_size": req.batch_size,
                 "diarize": req.diarize,
                 "num_speakers": req.num_speakers,
             },
-            "manual_edit": False,
-        }
+        )
         export_transcript(
             audio_path,
             show=req.show_name,
@@ -218,19 +216,17 @@ def _batch_polish(audio_path, p, req, cancelled, ep_progress, i, step_offset):
         original_segments=segments,
         merge=False,
     )
-    provenance = {
-        "step": "polished",
-        "type": "raw",
-        "model": req.llm_model,
-        "params": {
+    provenance = build_provenance(
+        "polished",
+        model=req.llm_model,
+        params={
             "mode": req.llm_mode,
             "provider": req.llm_provider,
             "source_lang": req.source_lang,
             "batch_minutes": req.llm_batch_minutes,
             "engine": req.engine,
         },
-        "manual_edit": False,
-    }
+    )
     save_polished_raw(audio_path, polished, provenance=provenance)
     return True
 
@@ -281,19 +277,17 @@ def _batch_translate(audio_path, p, req, cancelled, ep_progress, i, step_offset)
         original_segments=segments,
         merge=False,
     )
-    provenance = {
-        "step": lang_norm,
-        "type": "raw",
-        "model": req.llm_model,
-        "params": {
+    provenance = build_provenance(
+        lang_norm,
+        model=req.llm_model,
+        params={
             "mode": req.llm_mode,
             "provider": req.llm_provider,
             "source_lang": req.source_lang,
             "target_lang": req.target_lang,
             "batch_minutes": req.llm_batch_minutes,
         },
-        "manual_edit": False,
-    }
+    )
     save_translation_raw(
         audio_path,
         translated,
@@ -375,16 +369,14 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
 
     from podcodex.core.pipeline_db import mark_step
 
-    provenance = {
-        "step": "indexed",
-        "type": "raw",
-        "model": (req.index_model_keys or ["bge-m3"])[0],
-        "params": {
+    provenance = build_provenance(
+        "indexed",
+        model=(req.index_model_keys or ["bge-m3"])[0],
+        params={
             "model_keys": req.index_model_keys,
             "chunkings": req.index_chunkings,
         },
-        "manual_edit": False,
-    }
+    )
     mark_step(p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance})
     return True
 

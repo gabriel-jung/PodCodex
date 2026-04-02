@@ -17,6 +17,7 @@ export interface PipelineDefaultsSchema {
 export interface ShowMeta {
   name: string;
   rss_url?: string;
+  youtube_url?: string;
   language?: string;
   speakers?: string[];
   artwork_url?: string;
@@ -48,6 +49,7 @@ export interface RSSEpisodeOut {
   duration?: number;
   episode_number?: number | null;
   season_number?: number | null;
+  artwork_url?: string;
   local_stem?: string | null;
   downloaded?: boolean;
 }
@@ -70,6 +72,7 @@ export interface UnifiedEpisodeOut {
   duration?: number;
   episode_number?: number | null;
   audio_path?: string | null;
+  output_dir?: string | null;
   downloaded?: boolean;
   transcribed?: boolean;
   polished?: boolean;
@@ -78,6 +81,7 @@ export interface UnifiedEpisodeOut {
   translations?: string[];
   artwork_url?: string;
   provenance?: Record<string, unknown>;
+  files?: string[];
   transcribe_status?: string;
   polish_status?: string;
   translate_status?: string;
@@ -101,6 +105,20 @@ export interface CreateFromRSSResponse {
   episode_count: number;
 }
 
+export interface CreateFromYouTubeRequest {
+  youtube_url: string;
+  save_path: string;
+  folder_name?: string;
+  name?: string;
+  artwork_url?: string;
+}
+
+export interface CreateFromYouTubeResponse {
+  folder: string;
+  name: string;
+  episode_count: number;
+}
+
 export interface TaskResponse {
   task_id: string;
 }
@@ -115,6 +133,7 @@ export interface ShowSummary {
   path: string;
   episode_count?: number;
   has_rss?: boolean;
+  has_youtube?: boolean;
   artwork_url?: string;
   last_rss_update?: string | null;
 }
@@ -320,4 +339,15 @@ export interface AssembleRequest {
   output_dir?: string | null;
   strategy?: string;
   silence_duration?: number;
+}
+
+export interface YouTubeDownloadRequest {
+  video_ids?: string[] | null;
+  import_subs?: boolean;
+  sub_lang?: string;
+}
+
+export interface YouTubeSubsRequest {
+  video_ids: string[];
+  lang?: string;
 }

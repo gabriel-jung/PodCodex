@@ -3,7 +3,10 @@ import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import {
   downloadEpisodes,
+  downloadYouTubeEpisodes,
+  importYouTubeSubs,
   refreshRSS,
+  refreshYouTube,
   getEpisodes,
   getShowMeta,
   deleteAudioFile,
@@ -16,7 +19,7 @@ import { PIPELINE_PRESETS, usePipelineConfigStore } from "@/stores/pipelineConfi
 import { Button } from "@/components/ui/button";
 import {
   ArrowLeft, RefreshCw, Podcast, Search,
-  Download, List, LayoutGrid,
+  Download, List, LayoutGrid, Subtitles, ChevronDown,
 } from "lucide-react";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -29,7 +32,7 @@ import PipelineButtons from "@/components/show/PipelineButtons";
 import ProcessDialog from "@/components/show/ProcessDialog";
 import FilterDropdown from "@/components/show/FilterDropdown";
 import SortHeader from "@/components/show/SortHeader";
-import { errorMessage, languageToISO } from "@/lib/utils";
+import { errorMessage, languageToISO, SUB_LANGUAGES } from "@/lib/utils";
 
 type ShowTab = "episodes" | "search" | "speakers" | "settings";
 const TABS: ShowTab[] = ["episodes", "search", "speakers", "settings"];
@@ -84,13 +87,26 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     refetchInterval: downloadTaskId || batchTaskId ? 5000 : false,
   });
 
+  const isYouTube = !!meta?.youtube_url;
+
   const refreshMutation = useMutation({
-    mutationFn: () => refreshRSS(folder),
+    mutationFn: () => (isYouTube ? refreshYouTube(folder) : refreshRSS(folder)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["episodes", folder] }),
   });
 
+  const showLangISO = languageToISO(meta?.language || "") || "en";
+
   const downloadMutation = useMutation({
-    mutationFn: (guids: string[]) => downloadEpisodes(folder, guids),
+    mutationFn: (guids: string[]) =>
+      isYouTube
+        ? downloadYouTubeEpisodes(folder, guids, true, showLangISO)
+        : downloadEpisodes(folder, guids),
+    onSuccess: (data) => { setDownloadTask(data.task_id, folder); },
+  });
+
+  const importSubsMutation = useMutation({
+    mutationFn: ({ ids, lang }: { ids: string[]; lang: string }) =>
+      importYouTubeSubs(folder, ids, lang),
     onSuccess: (data) => { setDownloadTask(data.task_id, folder); },
   });
 
@@ -163,10 +179,13 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const showName = meta?.name || folder.replace(/\/+$/, "").split("/").pop() || "Show";
 
-  const downloadableSelected = filtered.filter((e) => selected.has(e.id) && !e.downloaded && e.audio_url);
+  const downloadableSelected = filtered.filter((e) => selected.has(e.id) && !e.downloaded);
+  const subtitleableSelected = filtered.filter((e) => selected.has(e.id));
+  const subsNewCount = subtitleableSelected.filter((e) => !e.transcribed).length;
+  const subsExistingCount = subtitleableSelected.length - subsNewCount;
   const batchableSelected = filtered.filter((e) => selected.has(e.id) && e.downloaded);
 
-  const selectableEpisodes = filtered.filter((e) => e.downloaded || (!e.downloaded && e.audio_url));
+  const selectableEpisodes = filtered;
   const allSelectableSelected = selectableEpisodes.length > 0 && selectableEpisodes.every((e) => selected.has(e.id));
 
   const toggleSelect = (id: string) =>
@@ -295,7 +314,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           size="sm"
         >
           <RefreshCw className={refreshMutation.isPending ? "animate-spin" : ""} />
-          {refreshMutation.isPending ? "Refreshing..." : "Refresh RSS"}
+          {refreshMutation.isPending ? "Refreshing..." : isYouTube ? "Refresh YouTube" : "Refresh RSS"}
         </Button>
       </div>
 
@@ -371,8 +390,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         />
       </div>
 
-      {/* Selection info + pipeline actions */}
-      <div className="relative px-6 py-2 border-b border-border flex items-center gap-3 text-xs">
+      {/* Selection + actions toolbar */}
+      <div className="relative px-6 py-2 border-b border-border flex items-center gap-2 text-xs">
         <input
           type="checkbox"
           checked={allSelectableSelected}
@@ -380,24 +399,37 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           className="accent-primary cursor-pointer"
           title={allSelectableSelected ? "Unselect all" : "Select all"}
         />
-        {selected.size > 0 ? (
+        {selected.size > 0 && (
           <>
             <span className="text-muted-foreground">{selected.size} selected</span>
             <Button onClick={() => setSelected(new Set())} variant="ghost" size="sm" className="text-xs h-6 px-1.5">Clear</Button>
           </>
-        ) : (
-          <span className="text-muted-foreground">Select episodes to run pipeline</span>
         )}
         <div className="flex-1" />
-        <Button
-          onClick={() => downloadMutation.mutate(downloadableSelected.map((e) => e.id))}
-          disabled={downloadableSelected.length === 0 || downloadMutation.isPending || !!downloadTaskId}
-          variant="outline"
-          size="sm"
-          className="text-xs h-7 px-2"
-        >
-          <Download className="w-3 h-3 mr-1" /> Download{downloadableSelected.length > 0 ? ` ${downloadableSelected.length}` : ""}
-        </Button>
+        <DownloadDropdown
+          isYouTube={isYouTube}
+          showLanguage={meta?.language || ""}
+          onDownload={() => downloadMutation.mutate(downloadableSelected.map((e) => e.id))}
+          onImportSubs={(lang) => {
+            const newOnly = subtitleableSelected.filter((e) => !e.transcribed);
+            if (subsNewCount > 0) {
+              // Has new episodes — only import those
+              importSubsMutation.mutate({ ids: newOnly.map((e) => e.id), lang });
+            } else {
+              // All already transcribed — confirm re-import
+              confirmDialog.open({
+                title: "Re-import subtitles?",
+                description: `All ${subtitleableSelected.length} selected episode${subtitleableSelected.length !== 1 ? "s" : ""} already ha${subtitleableSelected.length === 1 ? "s" : "ve"} a transcript. This will create a new version.`,
+                confirmLabel: "Re-import",
+                onConfirm: () => importSubsMutation.mutate({ ids: subtitleableSelected.map((e) => e.id), lang }),
+              });
+            }
+          }}
+          downloadCount={downloadableSelected.length}
+          subsCount={subtitleableSelected.length}
+          subsNewCount={subsNewCount}
+          disabled={!!downloadTaskId || downloadMutation.isPending || importSubsMutation.isPending}
+        />
         <Button
           onClick={() => setProcessDialogOpen(true)}
           disabled={batchableSelected.length === 0 || !!batchTaskId || batchMutation.isPending}
@@ -405,7 +437,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           size="sm"
           className="text-xs h-7 px-3"
         >
-          Quick Process{batchableSelected.length > 0 ? ` ${batchableSelected.length}` : ""}
+          Quick Process
         </Button>
         <ProcessDialog
           open={processDialogOpen}
@@ -487,8 +519,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
             <EmptyState
               icon={Podcast}
               title="No episodes yet"
-              description="Refresh the RSS feed to fetch episodes, or add audio files manually."
-              action={{ label: "Refresh RSS", onClick: () => refreshMutation.mutate() }}
+              description={isYouTube ? "Refresh to fetch videos from YouTube." : "Refresh the RSS feed to fetch episodes, or add audio files manually."}
+              action={{ label: isYouTube ? "Refresh YouTube" : "Refresh RSS", onClick: () => refreshMutation.mutate() }}
             />
           ) : (
             <EmptyState
@@ -520,6 +552,105 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           folder={folder}
           meta={meta}
         />
+      )}
+    </div>
+  );
+}
+
+function DownloadDropdown({
+  isYouTube,
+  showLanguage,
+  onDownload,
+  onImportSubs,
+  downloadCount,
+  subsCount,
+  subsNewCount,
+  disabled,
+}: {
+  isYouTube: boolean;
+  showLanguage: string;
+  onDownload: () => void;
+  onImportSubs: (lang: string) => void;
+  downloadCount: number;
+  subsCount: number;
+  subsNewCount: number;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [subsExpanded, setSubsExpanded] = useState(false);
+
+  if (!isYouTube) {
+    return (
+      <Button
+        onClick={onDownload}
+        disabled={downloadCount === 0 || disabled}
+        variant="outline"
+        size="sm"
+        className="text-xs h-7 px-2"
+      >
+        <Download className="w-3 h-3 mr-1" /> Download
+      </Button>
+    );
+  }
+
+  // Put show language first if it matches a known code
+  const showLangCode = languageToISO(showLanguage) || showLanguage.toLowerCase().slice(0, 2);
+  const sortedLangs = [...SUB_LANGUAGES].sort((a, b) => {
+    if (a.code === showLangCode) return -1;
+    if (b.code === showLangCode) return 1;
+    return 0;
+  });
+
+  const close = () => { setOpen(false); setSubsExpanded(false); };
+
+  return (
+    <div className="relative">
+      <Button
+        onClick={() => { if (open) close(); else setOpen(true); }}
+        disabled={(downloadCount === 0 && subsCount === 0) || disabled}
+        variant="outline"
+        size="sm"
+        className="text-xs h-7 px-2"
+      >
+        <Download className="w-3 h-3 mr-1" /> Download <ChevronDown className="w-3 h-3 ml-1" />
+      </Button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={close} />
+          <div className="absolute left-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[180px]">
+            <button
+              onClick={() => setSubsExpanded(!subsExpanded)}
+              disabled={subsCount === 0 || disabled}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition disabled:opacity-40"
+            >
+              <Subtitles className="w-3 h-3" />
+              {subsNewCount > 0
+                ? `Subtitles (${subsNewCount} new)`
+                : `Re-import subs (${subsCount})`}
+              <ChevronDown className={`w-3 h-3 ml-auto transition ${subsExpanded ? "rotate-180" : ""}`} />
+            </button>
+            {subsExpanded && (
+              <div className="border-t border-border/50 py-0.5">
+                {sortedLangs.map((l) => (
+                  <button
+                    key={l.code}
+                    onClick={() => { close(); onImportSubs(l.code); }}
+                    className="w-full flex items-center gap-2 px-5 py-1 text-xs hover:bg-accent transition"
+                  >
+                    <span className="text-muted-foreground w-5">{l.code}</span> {l.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={() => { close(); onDownload(); }}
+              disabled={downloadCount === 0 || disabled}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition disabled:opacity-40"
+            >
+              <Download className="w-3 h-3" /> Audio{downloadCount > 0 ? ` (${downloadCount})` : ""}
+            </button>
+          </div>
+        </>
       )}
     </div>
   );

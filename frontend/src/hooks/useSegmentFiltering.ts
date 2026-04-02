@@ -56,7 +56,7 @@ export function useSegmentFiltering(): FilterState {
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
   const [showChangedOnly, setShowChangedOnly] = useState(false);
   const [densityThreshold, setDensityThreshold] = useState(2);
-  const [maxDensityThreshold, setMaxDensityThreshold] = useState(50);
+  const [maxDensityThreshold, setMaxDensityThreshold] = useState(75);
   const [searchQuery, setSearchQuery] = useState("");
   const [anchorOrigIdx, setAnchorOrigIdx] = useState<number | null>(null);
 

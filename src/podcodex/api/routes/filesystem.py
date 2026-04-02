@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import platform
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, Query
@@ -103,3 +105,24 @@ async def make_directory(
     except PermissionError:
         return {"path": None, "error": "Permission denied"}
     return {"path": str(target), "error": None}
+
+
+@router.post("/open")
+async def open_folder(
+    path: str = Query(..., description="Folder to open in the OS file manager"),
+) -> dict:
+    """Open a folder in the OS file manager (Finder, Explorer, etc.)."""
+    target = Path(path).expanduser().resolve()
+    if not target.is_dir():
+        return {"error": "Not a directory"}
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.Popen(["open", str(target)])
+        elif system == "Windows":
+            subprocess.Popen(["explorer", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
+    except Exception as exc:
+        return {"error": str(exc)}
+    return {"error": None}

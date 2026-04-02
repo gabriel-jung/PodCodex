@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from fastapi import WebSocket
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # Max debug log lines kept per task (ring buffer)
 _MAX_DEBUG_LINES = 200

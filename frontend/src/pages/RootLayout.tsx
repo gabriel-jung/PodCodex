@@ -9,6 +9,7 @@ import { PlatformProvider } from "@/platform";
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useTheme } from "@/hooks/useTheme";
+import { useLayoutStore } from "@/stores";
 import { Home, Sun, Moon, Monitor, Settings, PanelLeftOpen, PanelLeftClose } from "lucide-react";
 
 export default function RootLayout() {
@@ -27,6 +28,8 @@ export default function RootLayout() {
     gcTime: Infinity,
     enabled: !!health,
   });
+
+  const hideAppSidebar = useLayoutStore((s) => s.hideAppSidebar);
 
   if (error) {
     return (
@@ -55,7 +58,7 @@ export default function RootLayout() {
   return (
     <PlatformProvider>
       <div className="flex h-screen bg-background text-foreground">
-        <AppSidebar />
+        {!hideAppSidebar && <AppSidebar />}
         <div className="flex flex-col flex-1 overflow-hidden">
           <main className="flex-1 overflow-hidden">
             <Outlet />

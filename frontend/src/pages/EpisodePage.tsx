@@ -1,13 +1,14 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
-import { getEpisodes, getShowMeta, exportZipUrl } from "@/api/client";
+import { getEpisodes, getShowMeta, exportZipUrl, downloadEpisodes, downloadYouTubeEpisodes, importYouTubeSubs, openFolder } from "@/api/client";
 import { audioFileUrl } from "@/api/client";
 import { uploadTranscript } from "@/api/transcribe";
+import { languageToISO, SUB_LANGUAGES } from "@/lib/utils";
 import { useDropZone } from "@/hooks/useDropZone";
 import DropOverlay from "@/components/common/DropOverlay";
 import type { Episode, ShowMeta } from "@/api/types";
-import { useAudioStore, useEpisodeStore } from "@/stores";
+import { useAudioStore, useEpisodeStore, useTaskStore, useLayoutStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import ShowSettings from "@/components/show/ShowSettings";
@@ -18,6 +19,7 @@ import SynthesizePanel from "@/components/synthesize/SynthesizePanel";
 import IndexPanel from "@/components/index/IndexPanel";
 import SearchPanel from "@/components/search/SearchPanel";
 import { formatDuration, formatDate, stripHtml } from "@/lib/utils";
+import { useTheme } from "@/hooks/useTheme";
 import {
   ArrowLeft,
   Play,
@@ -32,27 +34,60 @@ import {
   Settings,
   PanelLeftOpen,
   PanelLeftClose,
+  Subtitles,
+  ChevronDown,
+  FolderOpen,
+  Home,
+  Sun,
+  Moon,
+  Monitor,
 } from "lucide-react";
 
 type PipelineStep = "info" | "transcribe" | "polish" | "translate" | "synthesize" | "index" | "search";
 
-const PIPELINE_STEPS: { key: PipelineStep; label: string; icon: typeof Mic }[] = [
-  { key: "info", label: "Info", icon: Info },
-  { key: "transcribe", label: "Transcribe", icon: Mic },
-  { key: "polish", label: "Polish", icon: Sparkles },
-  { key: "translate", label: "Translate", icon: Languages },
-  { key: "synthesize", label: "Synthesize", icon: AudioLines },
-  { key: "index", label: "Index", icon: Database },
-  { key: "search", label: "Search", icon: Search },
+type SidebarSection = {
+  items: { key: PipelineStep | string; label: string; icon: typeof Mic }[];
+};
+
+const SIDEBAR_SECTIONS: SidebarSection[] = [
+  // Episode info
+  { items: [
+    { key: "info", label: "Info", icon: Info },
+    { key: "search", label: "Search", icon: Search },
+  ]},
+  // Pipeline
+  { items: [
+    { key: "transcribe", label: "Transcribe", icon: Mic },
+    { key: "polish", label: "Polish", icon: Sparkles },
+    { key: "index", label: "Index", icon: Database },
+  ]},
+  // Bonus
+  { items: [
+    { key: "translate", label: "Translate", icon: Languages },
+    { key: "synthesize", label: "Synthesize", icon: AudioLines },
+  ]},
 ];
 
-function stepDoneCheck(step: PipelineStep, episode: Episode): boolean {
+/** "done" = green, "partial" = yellow (outdated/raw), false = grey */
+function stepStatus(step: PipelineStep, episode: Episode): "done" | "partial" | false {
   switch (step) {
-    case "transcribe": return episode.transcribed;
-    case "polish": return episode.polished;
-    case "translate": return episode.translations.length > 0;
-    case "synthesize": return episode.synthesized;
-    case "index": return episode.indexed;
+    case "transcribe": {
+      const s = episode.transcribe_status;
+      if (s === "outdated") return "partial";
+      return episode.transcribed ? (s === "done" ? "done" : "done") : false;
+    }
+    case "polish": {
+      const s = episode.polish_status;
+      if (s === "outdated") return "partial";
+      return episode.polished ? "done" : false;
+    }
+    case "translate": {
+      const s = episode.translate_status;
+      if (s === "outdated") return "partial";
+      return episode.translations.length > 0 ? "done" : false;
+    }
+    case "synthesize": return episode.synthesized ? "done" : false;
+    case "index": return episode.indexed ? "done" : false;
     default: return false;
   }
 }
@@ -71,8 +106,16 @@ export default function EpisodePage({
   const { seekTo, setAudioMeta } = useAudioStore();
   const [activeStep, setActiveStep] = useState<PipelineStep>("info");
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
+  const setHideAppSidebar = useLayoutStore((s) => s.setHideAppSidebar);
+  const { theme, setTheme } = useTheme();
+
+  useEffect(() => {
+    setHideAppSidebar(true);
+    return () => setHideAppSidebar(false);
+  }, [setHideAppSidebar]);
 
   const isStandalone = !!audioFilePath;
+  const { downloadTaskId, setDownloadTask } = useTaskStore();
 
   const { data: meta } = useQuery({
     queryKey: ["showMeta", folder],
@@ -84,6 +127,24 @@ export default function EpisodePage({
     queryKey: ["episodes", folder],
     queryFn: () => getEpisodes(folder!),
     enabled: !!folder,
+    refetchInterval: downloadTaskId ? 5000 : false,
+  });
+
+  const isYouTube = !!meta?.youtube_url;
+  const showLangISO = languageToISO(meta?.language || "") || "en";
+
+  const episodeDownloadMutation = useMutation({
+    mutationFn: (guids: string[]) =>
+      isYouTube
+        ? downloadYouTubeEpisodes(folder!, guids, false, showLangISO)
+        : downloadEpisodes(folder!, guids),
+    onSuccess: (data) => { setDownloadTask(data.task_id, folder!); },
+  });
+
+  const importSubsMutation = useMutation({
+    mutationFn: ({ lang }: { lang: string }) =>
+      importYouTubeSubs(folder!, [episode?.id ?? ""], lang),
+    onSuccess: (data) => { setDownloadTask(data.task_id, folder!); },
   });
 
   const episode = isStandalone
@@ -134,8 +195,8 @@ export default function EpisodePage({
   const setEpisode = useEpisodeStore((s) => s.setEpisode);
   const setShowMeta = useEpisodeStore((s) => s.setShowMeta);
   useEffect(() => {
-    setEpisode(episode ?? null);
-  }, [episode, setEpisode]);
+    setEpisode(episode ?? null, folder);
+  }, [episode, folder, setEpisode]);
 
   useEffect(() => {
     setShowMeta(meta ?? null);
@@ -158,7 +219,7 @@ export default function EpisodePage({
   );
 
   const { isDragging } = useDropZone({
-    accept: [".json"],
+    accept: [".json", ".srt", ".vtt"],
     onDrop: handleFileDrop,
     disabled: !episode?.audio_path,
   });
@@ -180,7 +241,7 @@ export default function EpisodePage({
 
   return (
     <div className="flex flex-col h-full">
-      {isDragging && <DropOverlay message="Drop transcript JSON to import" />}
+      {isDragging && <DropOverlay message="Drop transcript file to import (JSON, SRT, VTT)" />}
       {/* Header */}
       <div className="px-6 py-4 border-b border-border flex items-center gap-4 relative overflow-hidden">
         {artwork && (
@@ -197,13 +258,13 @@ export default function EpisodePage({
             onClick={() => seekTo(episode.audio_path!, 0)}
             className="relative group shrink-0"
           >
-            <img src={artwork} alt="" className="w-10 h-10 rounded-lg" />
+            <img src={artwork} alt="" className="w-12 h-8 object-cover rounded-lg" />
             <div className="absolute inset-0 rounded-lg bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
               <Play className="w-4 h-4 text-white fill-white" />
             </div>
           </button>
         ) : artwork ? (
-          <img src={artwork} alt="" className="w-10 h-10 rounded-lg shrink-0" />
+          <img src={artwork} alt="" className="w-12 h-8 object-cover rounded-lg shrink-0" />
         ) : null}
         <div className="flex-1 min-w-0">
           <h2 className="text-lg font-semibold truncate">
@@ -227,13 +288,6 @@ export default function EpisodePage({
             <Play className="w-3.5 h-3.5" /> Play
           </Button>
         )}
-        {episode.audio_path && (
-          <a href={audioFileUrl(episode.audio_path)} download>
-            <Button variant="outline" size="sm" title="Download audio file">
-              <Download className="w-3.5 h-3.5" />
-            </Button>
-          </a>
-        )}
       </div>
 
       {/* Description */}
@@ -245,30 +299,48 @@ export default function EpisodePage({
 
       {/* Body: sidebar + content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Pipeline sidebar */}
+        {/* Unified sidebar */}
         <div
           className={`border-r border-border flex flex-col shrink-0 transition-all duration-200 ${
             sidebarExpanded ? "w-48" : "w-14"
           }`}
         >
-          <nav className="flex-1 py-3 flex flex-col gap-1">
-            {PIPELINE_STEPS.map(({ key, label, icon: Icon }) => (
-              <button
-                key={key}
-                onClick={() => setActiveStep(key)}
-                title={sidebarExpanded ? undefined : label}
-                className={`w-full flex items-center gap-3 px-4 py-3 text-sm transition ${
-                  activeStep === key
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
-                }`}
-              >
-                <Icon className="w-5 h-5 shrink-0" />
-                {sidebarExpanded && <span className="truncate">{label}</span>}
-                {stepDoneCheck(key, episode) && (
-                  <span className={`w-1.5 h-1.5 rounded-full bg-green-500 shrink-0 ${sidebarExpanded ? "ml-auto" : ""}`} />
-                )}
-              </button>
+          <nav className="flex-1 py-2 flex flex-col overflow-y-auto">
+            {/* App items */}
+            <SidebarButton icon={Home} label="Home" expanded={sidebarExpanded} onClick={() => navigate({ to: "/" })} />
+            <SidebarButton icon={Settings} label="Settings" expanded={sidebarExpanded} onClick={() => navigate({ to: "/settings" })} />
+            {(() => {
+              const nextTheme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
+              const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
+              return <SidebarButton icon={ThemeIcon} label={`Theme: ${theme}`} expanded={sidebarExpanded} onClick={() => setTheme(nextTheme)} />;
+            })()}
+
+            {/* Episode sections */}
+            {SIDEBAR_SECTIONS.map((section, si) => (
+              <div key={si}>
+                <div className="mx-3 my-1.5 border-t border-border" />
+                {section.items.map(({ key, label, icon: Icon }) => {
+                  const status = stepStatus(key as PipelineStep, episode);
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => setActiveStep(key as PipelineStep)}
+                      title={sidebarExpanded ? undefined : label}
+                      className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition ${
+                        activeStep === key
+                          ? "bg-accent text-accent-foreground"
+                          : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                      }`}
+                    >
+                      <Icon className="w-5 h-5 shrink-0" />
+                      {sidebarExpanded && <span className="truncate">{label}</span>}
+                      {status && (
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${sidebarExpanded ? "ml-auto" : ""} ${status === "partial" ? "bg-yellow-500" : "bg-green-500"}`} />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             ))}
           </nav>
           <button
@@ -285,7 +357,16 @@ export default function EpisodePage({
 
         {/* Main content */}
         <div className="flex-1 overflow-y-auto">
-          <StepContent step={activeStep} episode={episode} folder={folder} meta={meta} episodes={episodes} />
+          <StepContent
+            step={activeStep}
+            episode={episode}
+            folder={folder}
+            meta={meta}
+            isYouTube={isYouTube}
+            onDownloadAudio={() => episodeDownloadMutation.mutate([episode.id])}
+            onImportSubs={(lang) => importSubsMutation.mutate({ lang })}
+            downloadDisabled={episodeDownloadMutation.isPending || importSubsMutation.isPending || !!downloadTaskId}
+          />
         </div>
       </div>
     </div>
@@ -321,7 +402,7 @@ function EpisodeDetails({ episode }: { episode: Episode }) {
   );
 }
 
-function StepContent({ step, episode, folder, meta }: { step: PipelineStep; episode: Episode; folder?: string; meta?: ShowMeta }) {
+function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled }: { step: PipelineStep; episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   switch (step) {
     case "info":
@@ -329,34 +410,80 @@ function StepContent({ step, episode, folder, meta }: { step: PipelineStep; epis
         <div className="p-6 space-y-6">
           <EpisodeDetails episode={episode} />
 
-          {/* Pipeline status */}
+          {/* Show folder */}
+          {folder && (
+            <div className="space-y-1">
+              <h4 className="text-sm font-medium">Show Folder</h4>
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-muted-foreground font-mono break-all">{folder}</p>
+                <button
+                  onClick={() => openFolder(folder)}
+                  className="shrink-0 text-muted-foreground hover:text-foreground transition"
+                  title="Open in file manager"
+                >
+                  <FolderOpen className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Input files */}
           <div className="space-y-3">
-            <h4 className="text-sm font-medium">Pipeline</h4>
-            <div className="grid gap-2 max-w-sm">
-              {[
-                { label: "Downloaded", done: episode.downloaded },
-                { label: "Transcribed", done: episode.transcribed },
-                { label: "Polished", done: episode.polished },
-                { label: "Translated", done: episode.translations.length > 0, detail: episode.translations.length > 0 ? episode.translations.join(", ") : undefined },
-                { label: "Synthesized", done: episode.synthesized },
-                { label: "Indexed", done: episode.indexed },
-              ].map(({ label, done, detail }) => (
-                <div key={label} className="flex items-center gap-3 text-sm">
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${done ? "bg-green-500" : "bg-muted-foreground/30"}`} />
-                  <span className={done ? "text-foreground" : "text-muted-foreground"}>{label}</span>
-                  {detail && <span className="text-xs text-muted-foreground ml-auto">{detail}</span>}
-                </div>
-              ))}
+            <h4 className="text-sm font-medium">Input Files</h4>
+            <DownloadStatus episode={episode} />
+            <div className="flex flex-wrap items-center gap-2">
+              <EpisodeDownloadDropdown
+                isYouTube={isYouTube}
+                showLanguage={meta?.language || ""}
+                hasAudio={episode.downloaded}
+                hasTranscript={episode.transcribed}
+                onDownloadAudio={onDownloadAudio}
+                onImportSubs={onImportSubs}
+                disabled={downloadDisabled}
+              />
+              {episode.audio_path && (
+                <a href={audioFileUrl(episode.audio_path)} download>
+                  <Button variant="outline" size="sm">
+                    <Download className="w-3.5 h-3.5" /> Save audio
+                  </Button>
+                </a>
+              )}
             </div>
           </div>
 
-          {/* Audio path */}
-          {episode.audio_path && (
-            <div className="space-y-1">
-              <h4 className="text-sm font-medium">File</h4>
-              <p className="text-xs text-muted-foreground font-mono break-all">{episode.audio_path}</p>
+          {/* Pipeline status */}
+          <div className="space-y-3">
+            <h4 className="text-sm font-medium">Pipeline</h4>
+            <div className="grid gap-1 max-w-md">
+              <PipelineRow
+                label="Transcribed"
+                status={stepStatus("transcribe", episode)}
+                provenance={episode.provenance?.transcript as Record<string, unknown> | undefined}
+                files={episode.files?.filter((f) => f.includes("transcript.") || f.includes("segments.") || f.includes("diarization.") || f.includes("speaker_map."))}
+              />
+              <PipelineRow
+                label="Polished"
+                status={stepStatus("polish", episode)}
+                provenance={episode.provenance?.polished as Record<string, unknown> | undefined}
+                files={episode.files?.filter((f) => f.includes(".polished."))}
+              />
+              <PipelineRow
+                label="Translated"
+                status={stepStatus("translate", episode)}
+                detail={episode.translations.length > 0 ? episode.translations.join(", ") : undefined}
+                files={episode.files?.filter((f) => f.includes(".translated.") || episode.translations.some((lang) => f.includes(`.${lang}.`)))}
+              />
+              <PipelineRow
+                label="Synthesized"
+                status={episode.synthesized ? "done" : false}
+                files={episode.files?.filter((f) => f.includes(".synthesized."))}
+              />
+              <PipelineRow
+                label="Indexed"
+                status={episode.indexed ? "done" : false}
+              />
             </div>
-          )}
+          </div>
 
           {/* Export */}
           {episode.audio_path && (
@@ -412,23 +539,204 @@ function StepContent({ step, episode, folder, meta }: { step: PipelineStep; epis
 const STATUS_BADGES: { step: PipelineStep; label: string }[] = [
   { step: "transcribe", label: "Transcribed" },
   { step: "polish", label: "Polished" },
-  { step: "translate", label: "Translated" },
-  { step: "synthesize", label: "Synthesized" },
   { step: "index", label: "Indexed" },
 ];
 
-function PipelineStatus({ episode }: { episode: Episode }) {
+function PipelineRow({ label, status, detail, provenance, files }: {
+  label: string;
+  status: "done" | "partial" | false;
+  detail?: string;
+  provenance?: Record<string, unknown>;
+  files?: string[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hasFiles = (files?.length ?? 0) > 0;
+  const hasInfo = !!provenance || hasFiles;
+
   return (
-    <div className="flex gap-2 mt-1">
-      {STATUS_BADGES.map(({ step, label }) => {
-        const done = stepDoneCheck(step, episode);
+    <div>
+      <div className="flex items-center gap-3 text-sm">
+        <span className={`w-2 h-2 rounded-full shrink-0 ${status === "done" ? "bg-green-500" : status === "partial" ? "bg-yellow-500" : "bg-muted-foreground/30"}`} />
+        <span className={status ? "text-foreground" : "text-muted-foreground"}>{label}</span>
+        {detail && <span className="text-xs text-muted-foreground">{detail}</span>}
+        {hasInfo && status && (
+          <button onClick={() => setExpanded(!expanded)} className="text-xs text-muted-foreground hover:text-foreground transition">
+            {hasFiles ? `${files!.length} file${files!.length !== 1 ? "s" : ""} ` : ""}{expanded ? "▾" : "▸"}
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <div className="mt-1 ml-5 space-y-0.5">
+          {files?.map((f) => (
+            <div key={f} className="text-xs text-muted-foreground font-mono truncate">{f}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DownloadStatus({ episode }: { episode: Episode }) {
+  // Input files: audio (no slash = show root) + subtitles (.vtt/.srt)
+  const inputFiles = (episode.files ?? []).filter((f) =>
+    !f.includes("/") || f.endsWith(".vtt") || f.endsWith(".srt"),
+  );
+  const hasInputFiles = inputFiles.length > 0;
+  const status = episode.downloaded ? "done" : hasInputFiles ? "partial" : false;
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 text-sm">
+        <span className={`w-2 h-2 rounded-full shrink-0 ${status === "done" ? "bg-green-500" : status === "partial" ? "bg-yellow-500" : "bg-muted-foreground/30"}`} />
+        <span className={status ? "text-foreground" : "text-muted-foreground"}>Downloaded</span>
+        {status === "partial" && <span className="text-xs text-muted-foreground">subtitles only</span>}
+        {hasInputFiles && (
+          <button onClick={() => setExpanded(!expanded)} className="text-xs text-muted-foreground hover:text-foreground transition">
+            {inputFiles.length} file{inputFiles.length !== 1 ? "s" : ""} {expanded ? "▾" : "▸"}
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <div className="mt-1.5 ml-5 space-y-0.5">
+          {inputFiles.map((f) => (
+            <div key={f} className="text-xs text-muted-foreground font-mono truncate">{f}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EpisodeDownloadDropdown({
+  isYouTube,
+  showLanguage,
+  hasAudio,
+  hasTranscript,
+  onDownloadAudio,
+  onImportSubs,
+  disabled,
+}: {
+  isYouTube: boolean;
+  showLanguage: string;
+  hasAudio: boolean;
+  hasTranscript: boolean;
+  onDownloadAudio: () => void;
+  onImportSubs: (lang: string) => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [subsExpanded, setSubsExpanded] = useState(false);
+
+  // Non-YouTube: simple download button (only if not yet downloaded)
+  if (!isYouTube) {
+    if (hasAudio) return null;
+    return (
+      <Button onClick={onDownloadAudio} disabled={disabled} variant="default" size="sm">
+        <Download className="w-3.5 h-3.5" /> Download
+      </Button>
+    );
+  }
+
+  // YouTube: dropdown with audio + subtitle options
+  const showLangCode = languageToISO(showLanguage) || showLanguage.toLowerCase().slice(0, 2);
+  const sortedLangs = [...SUB_LANGUAGES].sort((a, b) => {
+    if (a.code === showLangCode) return -1;
+    if (b.code === showLangCode) return 1;
+    return 0;
+  });
+
+  const close = () => { setOpen(false); setSubsExpanded(false); };
+
+  return (
+    <div className="relative">
+      <Button
+        onClick={() => { if (open) close(); else setOpen(true); }}
+        disabled={disabled}
+        variant={hasAudio ? "outline" : "default"}
+        size="sm"
+      >
+        <Download className="w-3.5 h-3.5" /> Download <ChevronDown className="w-3 h-3 ml-0.5" />
+      </Button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={close} />
+          <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[180px]">
+            <button
+              onClick={() => setSubsExpanded(!subsExpanded)}
+              disabled={disabled}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition disabled:opacity-40"
+            >
+              <Subtitles className="w-3 h-3" />
+              {hasTranscript ? "Re-import subtitles" : "Import subtitles"}
+              <ChevronDown className={`w-3 h-3 ml-auto transition ${subsExpanded ? "rotate-180" : ""}`} />
+            </button>
+            {subsExpanded && (
+              <div className="border-t border-border/50 py-0.5">
+                {sortedLangs.map((l) => (
+                  <button
+                    key={l.code}
+                    onClick={() => { close(); onImportSubs(l.code); }}
+                    className="w-full flex items-center gap-2 px-5 py-1 text-xs hover:bg-accent transition"
+                  >
+                    <span className="text-muted-foreground w-5">{l.code}</span> {l.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {!hasAudio && (
+              <button
+                onClick={() => { close(); onDownloadAudio(); }}
+                disabled={disabled}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition disabled:opacity-40"
+              >
+                <Download className="w-3 h-3" /> Download audio
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SidebarButton({ icon: Icon, label, expanded, onClick, active }: {
+  icon: typeof Home;
+  label: string;
+  expanded: boolean;
+  onClick: () => void;
+  active?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={expanded ? undefined : label}
+      className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition ${
+        active
+          ? "bg-accent text-accent-foreground"
+          : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+      }`}
+    >
+      <Icon className="w-5 h-5 shrink-0" />
+      {expanded && <span className="truncate">{label}</span>}
+    </button>
+  );
+}
+
+function PipelineStatus({ episode }: { episode: Episode }) {
+  const visible = STATUS_BADGES.filter(({ step }) => stepStatus(step, episode));
+  if (visible.length === 0) return null;
+  return (
+    <div className="flex gap-1.5">
+      {visible.map(({ step, label }) => {
+        const status = stepStatus(step, episode);
         return (
           <span
             key={step}
-            className={`text-xs px-2 py-0.5 rounded-full ${
-              done
-                ? "bg-green-900/40 text-green-400"
-                : "bg-muted text-muted-foreground"
+            className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+              status === "partial"
+                ? "bg-yellow-900/40 text-yellow-400"
+                : "bg-green-900/40 text-green-400"
             }`}
           >
             {label}
