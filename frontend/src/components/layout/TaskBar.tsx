@@ -26,6 +26,13 @@ function DownloadStrip() {
   const progress = useProgress(downloadTaskId);
   const queryClient = useQueryClient();
 
+  // Auto-dismiss if task ID is set but no progress arrives (stale after server restart)
+  useEffect(() => {
+    if (!downloadTaskId || progress) return;
+    const timer = setTimeout(() => setDownloadTask(null), 5000);
+    return () => clearTimeout(timer);
+  }, [downloadTaskId, progress, setDownloadTask]);
+
   if (!downloadTaskId) return null;
 
   const pct = progress ? Math.round(progress.progress * 100) : 0;
@@ -211,6 +218,13 @@ function BatchStrip() {
   const [showLog, setShowLog] = useState(false);
   const [showResult, setShowResult] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-dismiss if task ID is set but no progress arrives (stale after server restart)
+  useEffect(() => {
+    if (!batchTaskId || progress) return;
+    const timer = setTimeout(() => setBatchTask(null), 5000);
+    return () => clearTimeout(timer);
+  }, [batchTaskId, progress, setBatchTask]);
 
   const log = progress?.log ?? [];
 
