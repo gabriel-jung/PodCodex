@@ -70,6 +70,7 @@ async def rss_cache(show_folder: str) -> list[dict]:
 async def rss_download(
     show_folder: str,
     guids: list[str] | None = None,
+    force: bool = False,
 ) -> TaskResponse:
     """Download episodes as a background task. Progress is streamed via WebSocket."""
     path = Path(show_folder)
@@ -84,30 +85,47 @@ async def rss_download(
         if not targets:
             raise HTTPException(404, "No matching episodes found for the given GUIDs")
 
-    def run_downloads(progress_cb, episodes=targets, show_path=path):
+    def run_downloads(progress_cb, episodes=targets, show_path=path, force_dl=force):
         """Download each episode in sequence, reporting progress via callback."""
         from podcodex.ingest.folder import invalidate_scan_cache
 
         cancel = getattr(progress_cb, "cancel_event", None)
         results = []
         total = len(episodes)
+        downloaded = 0
+        skipped = 0
+        failed = 0
+
+        def _summary() -> str:
+            parts = []
+            if downloaded:
+                parts.append(f"{downloaded} downloaded")
+            if skipped:
+                parts.append(f"{skipped} skipped")
+            if failed:
+                parts.append(f"{failed} failed")
+            return " · ".join(parts) if parts else ""
+
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
-                progress_cb(i / total, "Cancelled")
+                progress_cb(i / total, f"Cancelled — {_summary()}")
                 break
 
             stem = episode_stem(ep)
-            progress_cb(i / total, f"Downloading {i + 1}/{total}")
+            progress_cb(i / total, f"[{i + 1}/{total}] Downloading…")
 
-            if is_downloaded(show_path, stem):
+            if not force_dl and is_downloaded(show_path, stem):
+                skipped += 1
                 results.append({"stem": stem, "status": "exists"})
                 continue
             if not ep.audio_url:
+                skipped += 1
                 results.append({"stem": stem, "status": "no_audio"})
                 continue
 
-            audio_path = download_audio(ep, show_path)
+            audio_path = download_audio(ep, show_path, force=force_dl)
             if audio_path:
+                downloaded += 1
                 results.append(
                     {
                         "stem": stem,
@@ -117,12 +135,16 @@ async def rss_download(
                 )
                 invalidate_scan_cache(show_path)
             else:
+                failed += 1
                 results.append({"stem": stem, "status": "failed"})
 
-            # Small delay between downloads to be respectful to servers
-            if total > 1:
-                time.sleep(1)
+            progress_cb((i + 1) / total, f"[{i + 1}/{total}] {_summary()}")
 
+            # Delay between actual downloads to be respectful to servers
+            if total > 1:
+                time.sleep(5)
+
+        progress_cb(1.0, _summary() or "Done")
         return results
 
     return submit_task("download", str(path), run_downloads)

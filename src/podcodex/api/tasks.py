@@ -307,11 +307,13 @@ class TaskManager:
             was not found or already finished.
         """
         info = self._tasks.get(task_id)
-        if not info or info.status not in ("pending", "running"):
+        if not info:
             return False
+        if info.status not in ("pending", "running"):
+            return True  # already cancelled/finished — idempotent
         info.cancel_event.set()
         info.status = "cancelled"
-        info.message = "Cancelled"
+        info.message = "Cancelling (waiting for current step to finish)…"
         info.finished_at = time.monotonic()
         # Release primary lock + any per-episode locks held by this task
         self._audio_locks.pop(info.audio_path, None)

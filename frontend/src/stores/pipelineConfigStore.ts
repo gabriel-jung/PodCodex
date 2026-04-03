@@ -22,8 +22,8 @@ export interface PipelinePreset {
 }
 
 export const PIPELINE_PRESETS: Record<string, PipelinePreset> = {
-  heavy: { label: "Heavy", desc: "8 GB+ GPU", whisperModel: "large-v3-turbo", embedModel: "bge-m3" },
-  medium: { label: "Medium", desc: "4 GB+ GPU", whisperModel: "large-v3", embedModel: "bge-m3" },
+  heavy: { label: "Heavy", desc: "8 GB+ GPU", whisperModel: "large-v3", embedModel: "bge-m3" },
+  medium: { label: "Medium", desc: "4 GB+ GPU", whisperModel: "large-v3-turbo", embedModel: "bge-m3" },
   light: { label: "Light", desc: "CPU ok", whisperModel: "small", embedModel: "bge-m3" },
 };
 

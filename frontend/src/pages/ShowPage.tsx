@@ -61,6 +61,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<SortKey>("date_desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const lastSelectedIdx = useRef<number | null>(null);
   const { downloadTaskId, setDownloadTask, batchTaskId, setBatchTask } = useTaskStore();
 
   // Pipeline config from store (for batch start)
@@ -97,10 +98,10 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const showLangISO = languageToISO(meta?.language || "") || "en";
 
   const downloadMutation = useMutation({
-    mutationFn: (guids: string[]) =>
+    mutationFn: ({ guids, force = false }: { guids: string[]; force?: boolean }) =>
       isYouTube
         ? downloadYouTubeEpisodes(folder, guids, true, showLangISO)
-        : downloadEpisodes(folder, guids),
+        : downloadEpisodes(folder, guids, force),
     onSuccess: (data) => { setDownloadTask(data.task_id, folder); },
   });
 
@@ -188,12 +189,21 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const selectableEpisodes = filtered;
   const allSelectableSelected = selectableEpisodes.length > 0 && selectableEpisodes.every((e) => selected.has(e.id));
 
-  const toggleSelect = (id: string) =>
+  const toggleSelect = (id: string, idx: number, shiftKey: boolean) => {
+    const lastIdx = lastSelectedIdx.current;
+    lastSelectedIdx.current = idx;
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (shiftKey && lastIdx != null) {
+        const from = Math.min(lastIdx, idx);
+        const to = Math.max(lastIdx, idx);
+        for (let i = from; i <= to; i++) next.add(filtered[i].id);
+      } else {
+        if (next.has(id)) next.delete(id); else next.add(id);
+      }
       return next;
     });
+  };
 
   const toggleSelectAll = () => {
     setSelected(allSelectableSelected ? new Set() : new Set(selectableEpisodes.map((e) => e.id)));
@@ -409,7 +419,22 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         <DownloadDropdown
           isYouTube={isYouTube}
           showLanguage={meta?.language || ""}
-          onDownload={() => downloadMutation.mutate(downloadableSelected.map((e) => e.id))}
+          onDownload={() => {
+            const allSelected = filtered.filter((e) => selected.has(e.id));
+            if (downloadableSelected.length > 0) {
+              // Some new episodes — download only those
+              downloadMutation.mutate({ guids: downloadableSelected.map((e) => e.id) });
+            } else if (allSelected.length > 0) {
+              // All already downloaded — confirm re-download
+              const alreadyCount = allSelected.length;
+              confirmDialog.open({
+                title: "Re-download?",
+                description: `${alreadyCount} selected episode${alreadyCount !== 1 ? "s are" : " is"} already downloaded. This will re-download and overwrite the existing files.`,
+                confirmLabel: "Re-download",
+                onConfirm: () => downloadMutation.mutate({ guids: allSelected.map((e) => e.id), force: true }),
+              });
+            }
+          }}
           onImportSubs={(lang) => {
             const newOnly = subtitleableSelected.filter((e) => !e.transcribed);
             if (subsNewCount > 0) {
@@ -426,6 +451,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
             }
           }}
           downloadCount={downloadableSelected.length}
+          selectedCount={selected.size}
           subsCount={subtitleableSelected.length}
           subsNewCount={subsNewCount}
           disabled={!!downloadTaskId || downloadMutation.isPending || importSubsMutation.isPending}
@@ -471,15 +497,15 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
               <SortHeader col="duration" label="Duration" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-12 text-right shrink-0" />
               <div className="w-20 shrink-0" />
             </div>
-            {filtered.map((ep) => (
+            {filtered.map((ep, i) => (
               <EpisodeRow
                 key={ep.id}
                 ep={ep}
                 selected={selected.has(ep.id)}
-                onToggle={() => toggleSelect(ep.id)}
+                onToggle={(shiftKey) => toggleSelect(ep.id, i, shiftKey)}
                 onOpen={() => goEpisode(ep.stem || ep.id)}
                 onPlay={() => ep.audio_path && (setAudioMeta(ep.audio_path, { title: ep.title, artwork: ep.artwork_url || meta?.artwork_url, showName }), seekTo(ep.audio_path, 0))}
-                onDownload={() => downloadMutation.mutate([ep.id])}
+                onDownload={() => downloadMutation.mutate({ guids: [ep.id] })}
                 onDelete={() => ep.audio_path && confirmDialog.open({
                   title: "Delete episode audio?",
                   description: `This will remove the downloaded audio for "${ep.title}". You can re-download it later from RSS.`,
@@ -503,7 +529,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                 ep={ep}
                 onOpen={() => goEpisode(ep.stem || ep.id)}
                 onPlay={() => ep.audio_path && (setAudioMeta(ep.audio_path, { title: ep.title, artwork: ep.artwork_url || meta?.artwork_url, showName }), seekTo(ep.audio_path, 0))}
-                onDownload={() => downloadMutation.mutate([ep.id])}
+                onDownload={() => downloadMutation.mutate({ guids: [ep.id] })}
                 downloading={downloadMutation.isPending || !!downloadTaskId}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
               />
@@ -563,6 +589,7 @@ function DownloadDropdown({
   onDownload,
   onImportSubs,
   downloadCount,
+  selectedCount,
   subsCount,
   subsNewCount,
   disabled,
@@ -572,6 +599,7 @@ function DownloadDropdown({
   onDownload: () => void;
   onImportSubs: (lang: string) => void;
   downloadCount: number;
+  selectedCount: number;
   subsCount: number;
   subsNewCount: number;
   disabled: boolean;
@@ -583,7 +611,7 @@ function DownloadDropdown({
     return (
       <Button
         onClick={onDownload}
-        disabled={downloadCount === 0 || disabled}
+        disabled={selectedCount === 0 || disabled}
         variant="outline"
         size="sm"
         className="text-xs h-7 px-2"
@@ -607,7 +635,7 @@ function DownloadDropdown({
     <div className="relative">
       <Button
         onClick={() => { if (open) close(); else setOpen(true); }}
-        disabled={(downloadCount === 0 && subsCount === 0) || disabled}
+        disabled={(selectedCount === 0 && subsCount === 0) || disabled}
         variant="outline"
         size="sm"
         className="text-xs h-7 px-2"

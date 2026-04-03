@@ -35,6 +35,15 @@ function DownloadStrip() {
   const isCancelled = progress?.status === "cancelled";
   const isFinished = isDone || isFailed || isCancelled;
 
+  // Derive per-status counts from result (array of {stem, status})
+  const results = (isFinished && Array.isArray(progress?.result) ? progress.result : []) as { stem: string; status: string }[];
+  const total = results.length || 1;
+  const failedCount = results.filter(r => r.status === "failed").length;
+  const successCount = results.filter(r => r.status === "downloaded" || r.status === "exists").length;
+  const successPct = Math.round((successCount / total) * 100);
+  const failedPct = Math.round((failedCount / total) * 100);
+  const hasFailures = failedCount > 0;
+
   const dismiss = () => {
     setDownloadTask(null);
     if (downloadFolder) {
@@ -42,7 +51,7 @@ function DownloadStrip() {
     }
   };
 
-  if (isFinished && isDone) {
+  if (isFinished && isDone && !hasFailures) {
     setTimeout(dismiss, 2000);
   }
 
@@ -50,20 +59,35 @@ function DownloadStrip() {
     <div className="px-4 py-2 flex items-center gap-3 text-xs">
       <Download className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
       <div className="flex-1 min-w-0 flex items-center gap-2">
-        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all duration-300 ${
-              isFailed ? "bg-destructive" : isCancelled ? "bg-yellow-500" : isDone ? "bg-green-500" : "bg-primary"
-            }`}
-            style={{ width: `${pct}%` }}
-          />
+        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden flex">
+          {isFinished && results.length > 0 ? (
+            <>
+              <div
+                className="h-full bg-green-500 transition-all duration-300"
+                style={{ width: `${successPct}%` }}
+              />
+              {failedPct > 0 && (
+                <div
+                  className="h-full bg-destructive transition-all duration-300"
+                  style={{ width: `${failedPct}%` }}
+                />
+              )}
+            </>
+          ) : (
+            <div
+              className={`h-full transition-all duration-300 ${
+                isFailed ? "bg-destructive" : isCancelled ? "bg-yellow-500" : "bg-primary"
+              }`}
+              style={{ width: `${pct}%` }}
+            />
+          )}
         </div>
         <span className="text-muted-foreground shrink-0 w-8 text-right">{pct}%</span>
       </div>
-      <span className="text-muted-foreground truncate max-w-[200px]">{msg}</span>
+      <span className="text-muted-foreground truncate max-w-[300px]">{msg}</span>
       {!isFinished ? (
         <Button
-          onClick={() => cancelTask(downloadTaskId)}
+          onClick={() => cancelTask(downloadTaskId).catch(() => dismiss())}
           variant="ghost"
           size="sm"
           className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
@@ -188,6 +212,13 @@ function BatchStrip() {
   const [showResult, setShowResult] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
 
+  const log = progress?.log ?? [];
+
+  // Auto-scroll log
+  useEffect(() => {
+    if (showLog) logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [log.length, showLog]);
+
   if (!batchTaskId) return null;
 
   const pct = progress ? Math.round(progress.progress * 100) : 0;
@@ -214,12 +245,6 @@ function BatchStrip() {
 
   const episodeStatuses = deriveEpisodeStatuses(batchEpisodeNames, progress);
   const stepLabel = batchStep ? batchStep.charAt(0).toUpperCase() + batchStep.slice(1) : "Batch";
-  const log = progress?.log ?? [];
-
-  // Auto-scroll log
-  useEffect(() => {
-    if (showLog) logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [log.length, showLog]);
 
   return (
     <>
@@ -259,7 +284,7 @@ function BatchStrip() {
           )}
           {!isFinished ? (
             <Button
-              onClick={(e) => { e.stopPropagation(); cancelTask(batchTaskId); }}
+              onClick={(e) => { e.stopPropagation(); cancelTask(batchTaskId).catch(() => dismiss()); }}
               variant="ghost"
               size="sm"
               className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"

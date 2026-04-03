@@ -88,9 +88,9 @@ export const refreshRSS = (folder: string) =>
     method: "POST",
   });
 
-export const downloadEpisodes = (folder: string, guids: string[]) =>
+export const downloadEpisodes = (folder: string, guids: string[], force = false) =>
   json<TaskResponse>(
-    `/api/shows/${enc(folder)}/rss/download`,
+    `/api/shows/${enc(folder)}/rss/download${force ? "?force=true" : ""}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

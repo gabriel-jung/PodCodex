@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { Episode } from "@/api/types";
 import { CheckCircle, Play, Trash2, Download } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
@@ -6,7 +7,7 @@ import { StatusDots } from "./StatusDots";
 export interface EpisodeRowProps {
   ep: Episode;
   selected: boolean;
-  onToggle: () => void;
+  onToggle: (shiftKey: boolean) => void;
   onOpen: () => void;
   onPlay: () => void;
   onDownload: () => void;
@@ -16,12 +17,13 @@ export interface EpisodeRowProps {
 }
 
 export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying }: EpisodeRowProps) {
+  const shiftRef = useRef(false);
   const canDownload = !ep.downloaded;
   return (
     <div className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
       {canDownload || ep.downloaded ? (
         <div className="flex items-center gap-1.5 shrink-0">
-          <input type="checkbox" checked={selected} onChange={onToggle} className="accent-primary" />
+          <input type="checkbox" checked={selected} onMouseDown={(e) => { shiftRef.current = e.shiftKey; }} onChange={() => onToggle(shiftRef.current)} className="accent-primary cursor-pointer" />
           {ep.downloaded && <CheckCircle className="w-3.5 h-3.5 text-green-500" />}
         </div>
       ) : (

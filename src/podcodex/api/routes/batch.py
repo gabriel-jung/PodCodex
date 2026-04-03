@@ -135,6 +135,8 @@ def _batch_transcribe(
             language=req.language or None,
             batch_size=req.batch_size,
         )
+        if cancelled():
+            return did_work
 
     if not cancelled() and req.diarize and not status["diarized"]:
         did_work = True
@@ -144,11 +146,15 @@ def _batch_transcribe(
             hf_token=req.hf_token,
             num_speakers=req.num_speakers,
         )
+        if cancelled():
+            return did_work
 
     if not cancelled() and req.diarize and not status["assigned"]:
         did_work = True
         ep_progress(i, step_offset, sw, 0.7, "Assigning speakers...")
         assign_speakers(audio_path)
+        if cancelled():
+            return did_work
 
     if not cancelled() and not status["exported"]:
         did_work = True
