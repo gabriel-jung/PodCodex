@@ -92,7 +92,7 @@ async def start_batch(req: BatchRequest) -> TaskResponse:
                 f"Task {existing.task_id} already running on {Path(ap).stem}",
             )
 
-    return submit_task("batch", req.show_folder, _run_batch, req)
+    return submit_task("batch", f"batch:{req.show_folder}", _run_batch, req)
 
 
 def _batch_transcribe(

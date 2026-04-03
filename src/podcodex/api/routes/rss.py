@@ -147,4 +147,4 @@ async def rss_download(
         progress_cb(1.0, _summary() or "Done")
         return results
 
-    return submit_task("download", str(path), run_downloads)
+    return submit_task("download", f"download:{path}", run_downloads)
