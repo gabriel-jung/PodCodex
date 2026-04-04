@@ -1,10 +1,13 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
-import { getEpisodes, getShowMeta, exportZipUrl, downloadEpisodes, downloadYouTubeEpisodes, importYouTubeSubs, openFolder } from "@/api/client";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { getEpisodes, getShowMeta, exportZipUrl, openFolder } from "@/api/client";
 import { audioFileUrl } from "@/api/client";
+import { artworkUrl } from "@/api/filesystem";
 import { uploadTranscript } from "@/api/transcribe";
-import { languageToISO, SUB_LANGUAGES } from "@/lib/utils";
+import { useShowActions } from "@/hooks/useShowActions";
+import { usePipelineConfig } from "@/hooks/usePipelineConfig";
+import DownloadDropdown from "@/components/common/DownloadDropdown";
 import { useDropZone } from "@/hooks/useDropZone";
 import DropOverlay from "@/components/common/DropOverlay";
 import type { Episode, ShowMeta } from "@/api/types";
@@ -18,7 +21,7 @@ import TranslatePanel from "@/components/translate/TranslatePanel";
 import SynthesizePanel from "@/components/synthesize/SynthesizePanel";
 import IndexPanel from "@/components/index/IndexPanel";
 import SearchPanel from "@/components/search/SearchPanel";
-import { formatDuration, formatDate, stripHtml } from "@/lib/utils";
+import { formatDuration, formatDate, stripHtml, errorMessage } from "@/lib/utils";
 import { useTheme } from "@/hooks/useTheme";
 import {
   ArrowLeft,
@@ -34,8 +37,6 @@ import {
   Settings,
   PanelLeftOpen,
   PanelLeftClose,
-  Subtitles,
-  ChevronDown,
   FolderOpen,
   Home,
   Sun,
@@ -115,7 +116,17 @@ export default function EpisodePage({
   }, [setHideAppSidebar]);
 
   const isStandalone = !!audioFilePath;
-  const { downloadTaskId, setDownloadTask } = useTaskStore();
+  const { downloadTaskId } = useTaskStore();
+  const { tc, llm, targetLang } = usePipelineConfig();
+
+  const pipelineDefaults = useMemo(() => ({
+    model_size: tc.modelSize,
+    diarize: tc.diarize,
+    llm_mode: llm.mode === "api" ? "api" : "ollama",
+    llm_provider: llm.mode === "api" ? llm.provider : "",
+    llm_model: llm.model,
+    target_lang: targetLang,
+  }), [tc.modelSize, tc.diarize, llm.mode, llm.provider, llm.model, targetLang]);
 
   const { data: meta } = useQuery({
     queryKey: ["showMeta", folder],
@@ -124,28 +135,13 @@ export default function EpisodePage({
   });
 
   const { data: episodes } = useQuery({
-    queryKey: ["episodes", folder],
-    queryFn: () => getEpisodes(folder!),
+    queryKey: ["episodes", folder, pipelineDefaults],
+    queryFn: () => getEpisodes(folder!, pipelineDefaults),
     enabled: !!folder,
     refetchInterval: downloadTaskId ? 5000 : false,
   });
 
-  const isYouTube = !!meta?.youtube_url;
-  const showLangISO = languageToISO(meta?.language || "") || "en";
-
-  const episodeDownloadMutation = useMutation({
-    mutationFn: (guids: string[]) =>
-      isYouTube
-        ? downloadYouTubeEpisodes(folder!, guids, false, showLangISO)
-        : downloadEpisodes(folder!, guids),
-    onSuccess: (data) => { setDownloadTask(data.task_id, folder!); },
-  });
-
-  const importSubsMutation = useMutation({
-    mutationFn: ({ lang }: { lang: string }) =>
-      importYouTubeSubs(folder!, [episode?.id ?? ""], lang),
-    onSuccess: (data) => { setDownloadTask(data.task_id, folder!); },
-  });
+  const { downloadMutation: episodeDownloadMutation, importSubsMutation, isYouTube } = useShowActions(folder ?? "", meta, { withSubs: false });
 
   const episode = isStandalone
     ? {
@@ -179,7 +175,7 @@ export default function EpisodePage({
     }
   };
 
-  const artwork = episode?.artwork_url || meta?.artwork_url || "";
+  const artwork = episode?.artwork_url || (meta?.artwork_url ? artworkUrl(folder) : "");
 
   useEffect(() => {
     if (!episode?.audio_path) return;
@@ -363,9 +359,10 @@ export default function EpisodePage({
             folder={folder}
             meta={meta}
             isYouTube={isYouTube}
-            onDownloadAudio={() => episodeDownloadMutation.mutate([episode.id])}
-            onImportSubs={(lang) => importSubsMutation.mutate({ lang })}
+            onDownloadAudio={() => episodeDownloadMutation.mutate({ guids: [episode.id] })}
+            onImportSubs={(lang) => importSubsMutation.mutate({ ids: [episode?.id ?? ""], lang })}
             downloadDisabled={episodeDownloadMutation.isPending || importSubsMutation.isPending || !!downloadTaskId}
+            downloadError={episodeDownloadMutation.isError ? errorMessage(episodeDownloadMutation.error) : importSubsMutation.isError ? errorMessage(importSubsMutation.error) : undefined}
           />
         </div>
       </div>
@@ -402,7 +399,7 @@ function EpisodeDetails({ episode }: { episode: Episode }) {
   );
 }
 
-function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled }: { step: PipelineStep; episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean }) {
+function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError }: { step: PipelineStep; episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   switch (step) {
     case "info":
@@ -432,14 +429,19 @@ function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, 
             <h4 className="text-sm font-medium">Input Files</h4>
             <DownloadStatus episode={episode} />
             <div className="flex flex-wrap items-center gap-2">
-              <EpisodeDownloadDropdown
+              <DownloadDropdown
                 isYouTube={isYouTube}
                 showLanguage={meta?.language || ""}
-                hasAudio={episode.downloaded}
-                hasTranscript={episode.transcribed}
-                onDownloadAudio={onDownloadAudio}
+                onDownload={onDownloadAudio}
                 onImportSubs={onImportSubs}
+                subsLabel={episode.transcribed ? "Re-import subtitles" : "Import subtitles"}
+                subsEnabled={true}
+                audioLabel="Download audio"
+                showAudio={!episode.downloaded}
+                audioEnabled={!episode.downloaded}
                 disabled={downloadDisabled}
+                variant={episode.downloaded ? "outline" : "default"}
+                align="right"
               />
               {episode.audio_path && (
                 <a href={audioFileUrl(episode.audio_path)} download>
@@ -449,6 +451,9 @@ function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, 
                 </a>
               )}
             </div>
+            {downloadError && (
+              <p className="text-destructive text-xs">{downloadError}</p>
+            )}
           </div>
 
           {/* Pipeline status */}
@@ -608,97 +613,6 @@ function DownloadStatus({ episode }: { episode: Episode }) {
   );
 }
 
-function EpisodeDownloadDropdown({
-  isYouTube,
-  showLanguage,
-  hasAudio,
-  hasTranscript,
-  onDownloadAudio,
-  onImportSubs,
-  disabled,
-}: {
-  isYouTube: boolean;
-  showLanguage: string;
-  hasAudio: boolean;
-  hasTranscript: boolean;
-  onDownloadAudio: () => void;
-  onImportSubs: (lang: string) => void;
-  disabled: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [subsExpanded, setSubsExpanded] = useState(false);
-
-  // Non-YouTube: simple download button (only if not yet downloaded)
-  if (!isYouTube) {
-    if (hasAudio) return null;
-    return (
-      <Button onClick={onDownloadAudio} disabled={disabled} variant="default" size="sm">
-        <Download className="w-3.5 h-3.5" /> Download
-      </Button>
-    );
-  }
-
-  // YouTube: dropdown with audio + subtitle options
-  const showLangCode = languageToISO(showLanguage) || showLanguage.toLowerCase().slice(0, 2);
-  const sortedLangs = [...SUB_LANGUAGES].sort((a, b) => {
-    if (a.code === showLangCode) return -1;
-    if (b.code === showLangCode) return 1;
-    return 0;
-  });
-
-  const close = () => { setOpen(false); setSubsExpanded(false); };
-
-  return (
-    <div className="relative">
-      <Button
-        onClick={() => { if (open) close(); else setOpen(true); }}
-        disabled={disabled}
-        variant={hasAudio ? "outline" : "default"}
-        size="sm"
-      >
-        <Download className="w-3.5 h-3.5" /> Download <ChevronDown className="w-3 h-3 ml-0.5" />
-      </Button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={close} />
-          <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[180px]">
-            <button
-              onClick={() => setSubsExpanded(!subsExpanded)}
-              disabled={disabled}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition disabled:opacity-40"
-            >
-              <Subtitles className="w-3 h-3" />
-              {hasTranscript ? "Re-import subtitles" : "Import subtitles"}
-              <ChevronDown className={`w-3 h-3 ml-auto transition ${subsExpanded ? "rotate-180" : ""}`} />
-            </button>
-            {subsExpanded && (
-              <div className="border-t border-border/50 py-0.5">
-                {sortedLangs.map((l) => (
-                  <button
-                    key={l.code}
-                    onClick={() => { close(); onImportSubs(l.code); }}
-                    className="w-full flex items-center gap-2 px-5 py-1 text-xs hover:bg-accent transition"
-                  >
-                    <span className="text-muted-foreground w-5">{l.code}</span> {l.label}
-                  </button>
-                ))}
-              </div>
-            )}
-            {!hasAudio && (
-              <button
-                onClick={() => { close(); onDownloadAudio(); }}
-                disabled={disabled}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition disabled:opacity-40"
-              >
-                <Download className="w-3 h-3" /> Download audio
-              </button>
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
 
 function SidebarButton({ icon: Icon, label, expanded, onClick, active }: {
   icon: typeof Home;

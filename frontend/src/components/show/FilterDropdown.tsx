@@ -1,20 +1,15 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SlidersHorizontal } from "lucide-react";
+import { useConfigStore } from "@/stores";
 
-export interface FilterDropdownProps {
-  minDurationMinutes: number; setMinDurationMinutes: (v: number) => void;
-  maxDurationMinutes: number; setMaxDurationMinutes: (v: number) => void;
-  titleInclude: string; setTitleInclude: (v: string) => void;
-  titleExclude: string; setTitleExclude: (v: string) => void;
-}
-
-export default function FilterDropdown({
-  minDurationMinutes, setMinDurationMinutes,
-  maxDurationMinutes, setMaxDurationMinutes,
-  titleInclude, setTitleInclude,
-  titleExclude, setTitleExclude,
-}: FilterDropdownProps) {
+export default function FilterDropdown() {
+  const {
+    minDurationMinutes, setMinDurationMinutes,
+    maxDurationMinutes, setMaxDurationMinutes,
+    titleInclude, setTitleInclude,
+    titleExclude, setTitleExclude,
+  } = useConfigStore();
   const [open, setOpen] = useState(false);
   const activeCount = [
     minDurationMinutes > 0,

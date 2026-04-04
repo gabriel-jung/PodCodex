@@ -305,8 +305,6 @@ def _batch_translate(audio_path, p, req, cancelled, ep_progress, i, step_offset)
 
 def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offset):
     """Run index step. Returns True if work was done."""
-    import json
-
     sw = _STEP_WEIGHTS["index"]
     marker = p.base.parent / ".rag_indexed"
 
@@ -322,46 +320,16 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
 
     ep_progress(i, step_offset, sw, 0.0, "Indexing...")
 
-    # Build transcript dict for the vectorize pipeline
-    # Try to use the best source file for the resolver; fall back to segments
-    from podcodex.cli import _resolve_source, _source_label, vectorize_batch
+    from podcodex.api.routes._helpers import build_index_transcript
+    from podcodex.cli import vectorize_batch
     from podcodex.rag.localstore import LocalStore
 
-    transcript_path = p.transcript_best
-    if transcript_path.exists():
-        source_path = _resolve_source(transcript_path, "auto")
-        source_label = _source_label(source_path, transcript_path)
-        data = json.loads(source_path.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            transcript = {
-                "meta": {
-                    "show": req.show_name,
-                    "episode": stem,
-                    "source": source_label,
-                },
-                "segments": data,
-            }
-        else:
-            transcript = data
-            transcript.setdefault("meta", {})
-            transcript["meta"].setdefault("show", req.show_name)
-            transcript["meta"].setdefault("episode", stem)
-            transcript["meta"].setdefault("source", source_label)
-    else:
-        # No legacy file — use version-loaded segments directly
-        transcript = {
-            "meta": {
-                "show": req.show_name,
-                "episode": stem,
-                "source": "version",
-            },
-            "segments": segments,
-        }
+    transcript = build_index_transcript(audio_path, req.show_name, stem, segments)
 
     db_path = p.vectors_db
     local = LocalStore(db_path)
     try:
-        vectorize_batch(
+        upserted = vectorize_batch(
             transcript,
             req.show_name,
             stem,
@@ -371,6 +339,11 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
         )
     finally:
         local.close()
+
+    if upserted == 0:
+        logger.warning("Index produced 0 chunks for {} — not marking as indexed", stem)
+        return False
+
     marker.touch()
 
     from podcodex.core.pipeline_db import mark_step
@@ -432,12 +405,15 @@ def _run_batch(progress_cb, req: BatchRequest):
         ep_had_work = False
 
         try:
-            status = processing_status(audio_path)
+            has_audio = Path(audio_path).exists()
+            status = processing_status(audio_path) if has_audio else {}
             p = AudioPaths.from_audio(audio_path)
             step_offset = 0.0
 
             if req.transcribe and not _cancelled():
-                if _batch_transcribe(
+                if not has_audio:
+                    logger.debug("Skipping transcribe for {} (no audio file)", stem)
+                elif _batch_transcribe(
                     audio_path,
                     stem,
                     p,

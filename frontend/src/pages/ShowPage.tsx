@@ -2,9 +2,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import {
-  downloadEpisodes,
-  downloadYouTubeEpisodes,
-  importYouTubeSubs,
   refreshRSS,
   refreshYouTube,
   getEpisodes,
@@ -12,14 +9,17 @@ import {
   deleteAudioFile,
   startBatch,
 } from "@/api/client";
+import { artworkUrl } from "@/api/filesystem";
 import type { Episode } from "@/api/types";
+import { languageToISO, isOutdated } from "@/lib/utils";
 import { useAudioStore, useConfigStore, useTaskStore } from "@/stores";
 import { usePipelineConfig } from "@/hooks/usePipelineConfig";
-import { PIPELINE_PRESETS, usePipelineConfigStore } from "@/stores/pipelineConfigStore";
+import { useShowActions } from "@/hooks/useShowActions";
+
 import { Button } from "@/components/ui/button";
 import {
   ArrowLeft, RefreshCw, Podcast, Search,
-  Download, List, LayoutGrid, Subtitles, ChevronDown,
+  Download, List, LayoutGrid,
 } from "lucide-react";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -29,29 +29,24 @@ import { EpisodeRow } from "@/components/show/EpisodeRow";
 import { EpisodeCard } from "@/components/show/EpisodeCard";
 import SearchPanel from "@/components/search/SearchPanel";
 import PipelineButtons from "@/components/show/PipelineButtons";
-import ProcessDialog from "@/components/show/ProcessDialog";
 import FilterDropdown from "@/components/show/FilterDropdown";
 import SortHeader from "@/components/show/SortHeader";
-import { errorMessage, languageToISO, SUB_LANGUAGES } from "@/lib/utils";
+import { errorMessage } from "@/lib/utils";
+import DownloadDropdown from "@/components/common/DownloadDropdown";
 
 type ShowTab = "episodes" | "search" | "speakers" | "settings";
 const TABS: ShowTab[] = ["episodes", "search", "speakers", "settings"];
 type ViewMode = "list" | "card";
-type StatusFilter = "all" | "downloaded" | "not_downloaded" | "transcribed" | "not_transcribed" | "polished" | "not_polished" | "translated" | "synthesized" | "indexed" | "outdated";
+type StatusFilter = "all" | "ready" | "transcribed" | "polished" | "translated" | "indexed" | "outdated";
 type SortKey = "date_desc" | "date_asc" | "title_asc" | "title_desc" | "duration_desc" | "duration_asc" | "number_desc" | "number_asc";
 
 export default function ShowPage({ folder, initialTab }: { folder: string; initialTab?: string }) {
   const navigate = useNavigate();
   const { seekTo, setAudioMeta, audioPath } = useAudioStore();
-  const {
-    minDurationMinutes, setMinDurationMinutes,
-    maxDurationMinutes, setMaxDurationMinutes,
-    titleInclude, setTitleInclude,
-    titleExclude, setTitleExclude,
-  } = useConfigStore();
+  const { minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude } = useConfigStore();
   const queryClient = useQueryClient();
 
-  const [processDialogOpen, setProcessDialogOpen] = useState(false);
+
   const [tab, setTab] = useState<ShowTab>(
     TABS.includes(initialTab as ShowTab) ? (initialTab as ShowTab) : "episodes",
   );
@@ -61,8 +56,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<SortKey>("date_desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const lastSelectedIdx = useRef<number | null>(null);
-  const { downloadTaskId, setDownloadTask, batchTaskId, setBatchTask } = useTaskStore();
+  const lastShiftClickIndex = useRef<number | null>(null);
+  const { downloadTaskId, batchTaskId, setBatchTask } = useTaskStore();
 
   // Pipeline config from store (for batch start)
   const { tc, llm, engine, targetLang } = usePipelineConfig();
@@ -88,27 +83,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     refetchInterval: downloadTaskId || batchTaskId ? 5000 : false,
   });
 
-  const isYouTube = !!meta?.youtube_url;
+  const { downloadMutation, importSubsMutation, isYouTube } = useShowActions(folder, meta);
 
   const refreshMutation = useMutation({
     mutationFn: () => (isYouTube ? refreshYouTube(folder) : refreshRSS(folder)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["episodes", folder] }),
-  });
-
-  const showLangISO = languageToISO(meta?.language || "") || "en";
-
-  const downloadMutation = useMutation({
-    mutationFn: ({ guids, force = false }: { guids: string[]; force?: boolean }) =>
-      isYouTube
-        ? downloadYouTubeEpisodes(folder, guids, true, showLangISO)
-        : downloadEpisodes(folder, guids, force),
-    onSuccess: (data) => { setDownloadTask(data.task_id, folder); },
-  });
-
-  const importSubsMutation = useMutation({
-    mutationFn: ({ ids, lang }: { ids: string[]; lang: string }) =>
-      importYouTubeSubs(folder, ids, lang),
-    onSuccess: (data) => { setDownloadTask(data.task_id, folder); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["episodes", folder] });
+      queryClient.invalidateQueries({ queryKey: ["showMeta", folder] });
+    },
   });
 
   const deleteMutation = useMutation({
@@ -128,6 +110,16 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   });
 
   const all = episodes ?? [];
+
+  const filterCounts = useMemo(() => ({
+    all: all.length,
+    ready: all.filter((e) => e.downloaded || (e.transcribed && e.output_dir)).length,
+    transcribed: all.filter((e) => e.transcribed).length,
+    polished: all.filter((e) => e.polished).length,
+    translated: all.filter((e) => e.translations.length > 0).length,
+    indexed: all.filter((e) => e.indexed).length,
+    outdated: all.filter((e) => isOutdated(e)).length,
+  }), [all]);
 
   const filtered = useMemo(() => {
     let list = all;
@@ -151,16 +143,12 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       const q = search.toLowerCase();
       list = list.filter((e) => e.title.toLowerCase().includes(q));
     }
-    if (filter === "downloaded") list = list.filter((e) => e.downloaded);
-    if (filter === "not_downloaded") list = list.filter((e) => !e.downloaded);
+    if (filter === "ready") list = list.filter((e) => e.downloaded || (e.transcribed && e.output_dir));
     if (filter === "transcribed") list = list.filter((e) => e.transcribed);
-    if (filter === "not_transcribed") list = list.filter((e) => e.downloaded && !e.transcribed);
     if (filter === "polished") list = list.filter((e) => e.polished);
-    if (filter === "not_polished") list = list.filter((e) => e.transcribed && !e.polished);
     if (filter === "translated") list = list.filter((e) => e.translations.length > 0);
-    if (filter === "synthesized") list = list.filter((e) => e.synthesized);
     if (filter === "indexed") list = list.filter((e) => e.indexed);
-    if (filter === "outdated") list = list.filter((e) => e.transcribe_status === "outdated" || e.polish_status === "outdated" || e.translate_status === "outdated");
+    if (filter === "outdated") list = list.filter((e) => isOutdated(e));
     // Sort
     list = [...list].sort((a, b) => {
       switch (sort) {
@@ -184,14 +172,20 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const subtitleableSelected = filtered.filter((e) => selected.has(e.id));
   const subsNewCount = subtitleableSelected.filter((e) => !e.transcribed).length;
   const subsExistingCount = subtitleableSelected.length - subsNewCount;
-  const batchableSelected = filtered.filter((e) => selected.has(e.id) && e.downloaded);
+  const batchableSelected = filtered.filter((e) =>
+    selected.has(e.id) && (e.downloaded || (e.transcribed && e.output_dir)),
+  );
+
+  /** Get a batch-usable path: real audio_path, or synthetic path from output_dir. */
+  const batchPath = (e: Episode): string | null =>
+    e.audio_path ?? (e.output_dir ? e.output_dir.replace(/\/+$/, "") + ".virtual" : null);
 
   const selectableEpisodes = filtered;
   const allSelectableSelected = selectableEpisodes.length > 0 && selectableEpisodes.every((e) => selected.has(e.id));
 
   const toggleSelect = (id: string, idx: number, shiftKey: boolean) => {
-    const lastIdx = lastSelectedIdx.current;
-    lastSelectedIdx.current = idx;
+    const lastIdx = lastShiftClickIndex.current;
+    lastShiftClickIndex.current = idx;
     setSelected((prev) => {
       const next = new Set(prev);
       if (shiftKey && lastIdx != null) {
@@ -227,7 +221,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     navigate({ to: "/show/$folder/episode/$stem", params: { folder: encodeURIComponent(folder), stem: encodeURIComponent(stem) } });
 
   const runStep = (step: "transcribe" | "polish" | "translate" | "index") => {
-    const audioPaths = batchableSelected.map((e) => e.audio_path).filter(Boolean) as string[];
+    const audioPaths = batchableSelected.map(batchPath).filter(Boolean) as string[];
     if (audioPaths.length === 0) return;
     batchMutationEpisodesRef.current.step = step;
     batchMutation.mutate({
@@ -257,45 +251,6 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     });
   };
 
-  const runQuickProcess = (opts: {
-    preset: string;
-    transcribe: boolean;
-    polish: boolean;
-    translate: boolean;
-    index: boolean;
-  }) => {
-    const audioPaths = batchableSelected.map((e) => e.audio_path).filter(Boolean) as string[];
-    if (audioPaths.length === 0) return;
-    const p = PIPELINE_PRESETS[opts.preset] || PIPELINE_PRESETS.medium;
-    const steps = [opts.transcribe && "transcribe", opts.polish && "polish", opts.translate && "translate", opts.index && "index"].filter(Boolean).join("+");
-    batchMutationEpisodesRef.current.step = steps;
-    batchMutation.mutate({
-      show_folder: folder,
-      audio_paths: audioPaths,
-      transcribe: opts.transcribe,
-      polish: opts.polish,
-      translate: opts.translate,
-      index: opts.index,
-      model_size: p.whisperModel,
-      language: languageToISO(meta?.language || ""),
-      batch_size: tc.batchSize,
-      diarize: tc.diarize,
-      hf_token: tc.hfToken || undefined,
-      num_speakers: tc.numSpeakers ? Number(tc.numSpeakers) : undefined,
-      llm_mode: llm.mode === "api" ? "api" : "ollama",
-      llm_provider: llm.mode === "api" ? llm.provider : undefined,
-      llm_model: llm.model || undefined,
-      llm_api_base_url: llm.apiBaseUrl || undefined,
-      llm_api_key: llm.apiKey || undefined,
-      context: llm.context,
-      source_lang: llm.sourceLang,
-      target_lang: targetLang,
-      llm_batch_minutes: llm.batchMinutes,
-      engine,
-      show_name: meta?.name || "",
-      index_model_keys: [p.embedModel],
-    });
-  };
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -305,7 +260,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           <ArrowLeft /> Shows
         </Button>
         {meta?.artwork_url && (
-          <img src={meta.artwork_url} alt="" className="w-10 h-10 rounded-lg shrink-0" />
+          <img src={artworkUrl(folder)} alt="" className="w-10 h-10 rounded-lg shrink-0" />
         )}
         <div className="flex-1 min-w-0">
           <h2 className="text-lg font-semibold truncate">{showName}</h2>
@@ -373,24 +328,15 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           onChange={(e) => setFilter(e.target.value as StatusFilter)}
           className="bg-secondary text-secondary-foreground text-xs rounded px-2 py-1.5 border border-border"
         >
-          <option value="all">All ({all.length})</option>
-          <option value="downloaded">Downloaded ({all.filter((e) => e.downloaded).length})</option>
-          <option value="not_downloaded">Not downloaded ({all.filter((e) => !e.downloaded).length})</option>
-          <option value="transcribed">Transcribed ({all.filter((e) => e.transcribed).length})</option>
-          <option value="not_transcribed">Not transcribed ({all.filter((e) => e.downloaded && !e.transcribed).length})</option>
-          <option value="polished">Polished ({all.filter((e) => e.polished).length})</option>
-          <option value="not_polished">Not polished ({all.filter((e) => e.transcribed && !e.polished).length})</option>
-          <option value="translated">Translated ({all.filter((e) => e.translations.length > 0).length})</option>
-          <option value="synthesized">Synthesized ({all.filter((e) => e.synthesized).length})</option>
-          <option value="indexed">Indexed ({all.filter((e) => e.indexed).length})</option>
-          <option value="outdated">Outdated ({all.filter((e) => e.transcribe_status === "outdated" || e.polish_status === "outdated" || e.translate_status === "outdated").length})</option>
+          <option value="all">All ({filterCounts.all})</option>
+          <option value="ready">Ready ({filterCounts.ready})</option>
+          <option value="transcribed">Transcribed ({filterCounts.transcribed})</option>
+          <option value="polished">Polished ({filterCounts.polished})</option>
+          <option value="translated">Translated ({filterCounts.translated})</option>
+          <option value="indexed">Indexed ({filterCounts.indexed})</option>
+          <option value="outdated">Outdated ({filterCounts.outdated})</option>
         </select>
-        <FilterDropdown
-          minDurationMinutes={minDurationMinutes} setMinDurationMinutes={setMinDurationMinutes}
-          maxDurationMinutes={maxDurationMinutes} setMaxDurationMinutes={setMaxDurationMinutes}
-          titleInclude={titleInclude} setTitleInclude={setTitleInclude}
-          titleExclude={titleExclude} setTitleExclude={setTitleExclude}
-        />
+        <FilterDropdown />
         <div className="flex-1" />
         <input
           value={search}
@@ -411,7 +357,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         />
         {selected.size > 0 && (
           <>
-            <span className="text-muted-foreground">{selected.size} selected</span>
+            <span className="text-muted-foreground">
+              {selected.size} selected
+              {batchableSelected.length < selected.size && (
+                <span title="Some selected episodes have no audio or subtitles and cannot be processed">
+                  {" "}({batchableSelected.length} ready)
+                </span>
+              )}
+            </span>
             <Button onClick={() => setSelected(new Set())} variant="ghost" size="sm" className="text-xs h-6 px-1.5">Clear</Button>
           </>
         )}
@@ -422,10 +375,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           onDownload={() => {
             const allSelected = filtered.filter((e) => selected.has(e.id));
             if (downloadableSelected.length > 0) {
-              // Some new episodes — download only those
               downloadMutation.mutate({ guids: downloadableSelected.map((e) => e.id) });
             } else if (allSelected.length > 0) {
-              // All already downloaded — confirm re-download
               const alreadyCount = allSelected.length;
               confirmDialog.open({
                 title: "Re-download?",
@@ -438,10 +389,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           onImportSubs={(lang) => {
             const newOnly = subtitleableSelected.filter((e) => !e.transcribed);
             if (subsNewCount > 0) {
-              // Has new episodes — only import those
               importSubsMutation.mutate({ ids: newOnly.map((e) => e.id), lang });
             } else {
-              // All already transcribed — confirm re-import
               confirmDialog.open({
                 title: "Re-import subtitles?",
                 description: `All ${subtitleableSelected.length} selected episode${subtitleableSelected.length !== 1 ? "s" : ""} already ha${subtitleableSelected.length === 1 ? "s" : "ve"} a transcript. This will create a new version.`,
@@ -450,36 +399,29 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
               });
             }
           }}
-          downloadCount={downloadableSelected.length}
-          selectedCount={selected.size}
-          subsCount={subtitleableSelected.length}
-          subsNewCount={subsNewCount}
+          subsLabel={subsNewCount > 0 ? `Subtitles (${subsNewCount} new)` : `Re-import subs (${subtitleableSelected.length})`}
+          subsEnabled={subtitleableSelected.length > 0}
+          audioLabel={`Audio${downloadableSelected.length > 0 ? ` (${downloadableSelected.length})` : ""}`}
+          showAudio={true}
+          audioEnabled={downloadableSelected.length > 0 || selected.size > 0}
           disabled={!!downloadTaskId || downloadMutation.isPending || importSubsMutation.isPending}
-        />
-        <Button
-          onClick={() => setProcessDialogOpen(true)}
-          disabled={batchableSelected.length === 0 || !!batchTaskId || batchMutation.isPending}
-          variant="default"
-          size="sm"
-          className="text-xs h-7 px-3"
-        >
-          Quick Process
-        </Button>
-        <ProcessDialog
-          open={processDialogOpen}
-          onOpenChange={setProcessDialogOpen}
-          onRun={runQuickProcess}
-          disabled={!!batchTaskId || batchMutation.isPending}
-          episodeCount={batchableSelected.length}
+          className="text-xs h-7 px-2"
         />
         <PipelineButtons
           disabled={batchableSelected.length === 0 || !!batchTaskId || batchMutation.isPending}
           episodes={batchableSelected}
           showLanguage={meta?.language || ""}
           onRun={runStep}
+
         />
         {batchMutation.isError && (
-          <span className="text-destructive">{errorMessage(batchMutation.error)}</span>
+          <span className="text-destructive text-xs">{errorMessage(batchMutation.error)}</span>
+        )}
+        {downloadMutation.isError && (
+          <span className="text-destructive text-xs">{errorMessage(downloadMutation.error)}</span>
+        )}
+        {importSubsMutation.isError && (
+          <span className="text-destructive text-xs">{errorMessage(importSubsMutation.error)}</span>
         )}
       </div>
 
@@ -578,107 +520,6 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           folder={folder}
           meta={meta}
         />
-      )}
-    </div>
-  );
-}
-
-function DownloadDropdown({
-  isYouTube,
-  showLanguage,
-  onDownload,
-  onImportSubs,
-  downloadCount,
-  selectedCount,
-  subsCount,
-  subsNewCount,
-  disabled,
-}: {
-  isYouTube: boolean;
-  showLanguage: string;
-  onDownload: () => void;
-  onImportSubs: (lang: string) => void;
-  downloadCount: number;
-  selectedCount: number;
-  subsCount: number;
-  subsNewCount: number;
-  disabled: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [subsExpanded, setSubsExpanded] = useState(false);
-
-  if (!isYouTube) {
-    return (
-      <Button
-        onClick={onDownload}
-        disabled={selectedCount === 0 || disabled}
-        variant="outline"
-        size="sm"
-        className="text-xs h-7 px-2"
-      >
-        <Download className="w-3 h-3 mr-1" /> Download
-      </Button>
-    );
-  }
-
-  // Put show language first if it matches a known code
-  const showLangCode = languageToISO(showLanguage) || showLanguage.toLowerCase().slice(0, 2);
-  const sortedLangs = [...SUB_LANGUAGES].sort((a, b) => {
-    if (a.code === showLangCode) return -1;
-    if (b.code === showLangCode) return 1;
-    return 0;
-  });
-
-  const close = () => { setOpen(false); setSubsExpanded(false); };
-
-  return (
-    <div className="relative">
-      <Button
-        onClick={() => { if (open) close(); else setOpen(true); }}
-        disabled={(selectedCount === 0 && subsCount === 0) || disabled}
-        variant="outline"
-        size="sm"
-        className="text-xs h-7 px-2"
-      >
-        <Download className="w-3 h-3 mr-1" /> Download <ChevronDown className="w-3 h-3 ml-1" />
-      </Button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={close} />
-          <div className="absolute left-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[180px]">
-            <button
-              onClick={() => setSubsExpanded(!subsExpanded)}
-              disabled={subsCount === 0 || disabled}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition disabled:opacity-40"
-            >
-              <Subtitles className="w-3 h-3" />
-              {subsNewCount > 0
-                ? `Subtitles (${subsNewCount} new)`
-                : `Re-import subs (${subsCount})`}
-              <ChevronDown className={`w-3 h-3 ml-auto transition ${subsExpanded ? "rotate-180" : ""}`} />
-            </button>
-            {subsExpanded && (
-              <div className="border-t border-border/50 py-0.5">
-                {sortedLangs.map((l) => (
-                  <button
-                    key={l.code}
-                    onClick={() => { close(); onImportSubs(l.code); }}
-                    className="w-full flex items-center gap-2 px-5 py-1 text-xs hover:bg-accent transition"
-                  >
-                    <span className="text-muted-foreground w-5">{l.code}</span> {l.label}
-                  </button>
-                ))}
-              </div>
-            )}
-            <button
-              onClick={() => { close(); onDownload(); }}
-              disabled={downloadCount === 0 || disabled}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition disabled:opacity-40"
-            >
-              <Download className="w-3 h-3" /> Audio{downloadCount > 0 ? ` (${downloadCount})` : ""}
-            </button>
-          </div>
-        </>
       )}
     </div>
   );

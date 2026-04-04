@@ -1,30 +1,36 @@
 # podcodex
 
-Audio production toolkit — transcription, translation, voice cloning, and semantic search. Built for podcasts, works on any audio.
+Turn audio into a searchable knowledge base. Ingest podcasts, YouTube channels, lectures, interviews - anything with speech - and build a structured, multilingual library you can search by meaning.
 
-The **desktop app** is the main interface: transcribe, correct with an LLM, translate, clone voices, and search — all from one window. For podcasts, it adds show management, RSS feeds, and episode browsing. The **Discord bot** lets anyone search your transcripts. The **pipeline** can also be driven from the CLI or Python.
+The **desktop app** is the main interface: add shows from RSS, YouTube, or local folders, then transcribe, correct, translate, and index - all from one window. The **Discord bot** lets anyone search your library. The **pipeline** can also be driven from the CLI or Python.
 
 ## What is PodCodex?
 
-PodCodex is a local-first app for processing audio files, with built-in support for LLM APIs (OpenAI, Mistral, Anthropic), local models via Ollama, and WhisperX + pyannote for transcription and speaker diarization.
+PodCodex is a local-first app that turns audio sources into a searchable knowledge database. Point it at a podcast RSS feed, a YouTube channel, or a folder of recordings - it transcribes, identifies speakers, corrects errors with an LLM, translates to other languages, and indexes everything for semantic search.
 
-The core is **audio transcription** (WhisperX + pyannote for speaker diarization), which feeds two paths:
+The end result is a **structured, queryable archive** of everything that was said: who said it, when, in what episode, in any language. You can search across hundreds of hours by meaning, not just keywords.
 
-**Translation & dubbing** — correct transcripts with an LLM, translate to any language, then clone each speaker's voice (Qwen3-TTS) to produce a dubbed version of the episode.
+The pipeline has three layers:
 
-**Semantic search** — vectorize transcripts, search across your entire library by meaning or keywords, and optionally deploy a Discord bot so listeners can search too.
+**Ingest** - pull episodes from RSS feeds, YouTube channels/playlists, or local audio files. Manage multiple shows with per-show configuration.
 
-Both paths share a segment editor (inline editing, speaker mapping, timestamp snapping) and a global audio player (WaveSurfer waveform, per-episode speed, segment-level playback).
+**Process** - transcribe with WhisperX + pyannote speaker diarization, correct with an LLM (Ollama, OpenAI, Anthropic, Mistral), translate to any language, and optionally clone voices with Qwen3-TTS for dubbed versions.
+
+**Search** - vectorize transcripts into a local SQLite store, then search by meaning (semantic), keywords (exact), or random sampling. Deploy a Discord bot so others can search too.
+
+All steps share a segment editor (inline editing, speaker mapping, timestamp snapping) and a global audio player (WaveSurfer waveform, per-episode speed, segment-level playback).
 
 ## Features
 
 **Show management:**
 - Search and add podcasts by name (Apple Podcasts directory) or RSS URL
+- Add YouTube channels or playlists - download audio, import subtitles as transcripts
 - Import existing show folders
 - Browse episodes with status indicators (downloaded, transcribed, polished, translated, synthesized, indexed)
+- Per-step status chips (none/outdated/done) comparing provenance against pipeline defaults
 - Filter episodes by duration (min/max) and title (include/exclude)
 - Sortable episode list (date, title, duration, number) with list and card views
-- Download episodes from RSS feeds (single or batch)
+- Download episodes from RSS feeds or YouTube (single, batch, or shift-select)
 - Move show folder with optional file relocation
 - Show-level speaker registry (define known speakers for better diarization and LLM context)
 - Per-show pipeline configuration (Whisper model, LLM provider, translation target, etc.)
@@ -32,10 +38,11 @@ Both paths share a segment editor (inline editing, speaker mapping, timestamp sn
 - Export all episode files as ZIP
 
 **Transcription (WhisperX):**
-- WhisperX for speech-to-text with word-level timestamps (tiny, base, small, medium, large-v2, large-v3)
+- WhisperX for speech-to-text with word-level timestamps (tiny, base, small, medium, large-v2, large-v3, large-v3-turbo)
 - pyannote for speaker diarization
 - Background processing with real-time progress bar
-- Upload existing transcript files (JSON)
+- Upload existing transcript files (JSON, SRT, VTT)
+- Import transcripts from local files or YouTube subtitles
 - Speaker name mapping after diarization
 
 **LLM correction:**
@@ -55,12 +62,13 @@ Both paths share a segment editor (inline editing, speaker mapping, timestamp sn
 
 **Batch pipeline:**
 - Select multiple episodes and run pipeline steps (transcribe → diarize → assign → export → polish → translate → index) in one go
-- Per-step configuration dialogs — customize model, language, and provider before running
+- Per-step configuration dialogs - customize model, language, and provider before running
 - Global task bar with real-time progress, per-episode status (pending/running/done/failed), and expandable logs
-- Idempotent — skips steps already completed for each episode
+- Idempotent - skips steps already completed for each episode (provenance-based comparison)
 - Cancel at any time, with result summary (completed/skipped/failed)
 - GPU-safe sequential execution with per-episode locking
 - Duration-based LLM batching for efficient polish/translate
+- YouTube rate-limit detection with automatic backoff
 
 **Indexing & search:**
 - Choose embedding model and chunking strategy
@@ -113,26 +121,26 @@ Search your podcast transcripts from Discord with slash commands.
 
 **Commands:**
 
-- `/search <question>` — find relevant passages by meaning (semantic) or keywords
-- `/exact <query>` — literal text search, like Ctrl+F
-- `/random` — random quote with optional show/episode/speaker filters
-- `/stats` — overview of indexed shows, episodes, and duration
-- `/episodes [show]` — list episodes (auto-selects if only one show)
-- `/setup` — configure server defaults (admin)
-- `/sync` — manually sync the command tree (admin)
+- `/search <question>` - find relevant passages by meaning (semantic) or keywords
+- `/exact <query>` - literal text search, like Ctrl+F
+- `/random` - random quote with optional show/episode/speaker filters
+- `/stats` - overview of indexed shows, episodes, and duration
+- `/episodes [show]` - list episodes (auto-selects if only one show)
+- `/setup` - configure server defaults (admin)
+- `/sync` - manually sync the command tree (admin)
 
 All search commands support optional `show`, `episode`, `speaker`, `source`, and `compact` filters.
 
 **Admin commands:**
 
-- `/unlock <show> <password>` — unlock a show for this server
-- `/lock <show>` — remove a show from this server
-- `/help` — list available commands and usage
+- `/unlock <show> <password>` - unlock a show for this server
+- `/lock <show>` - remove a show from this server
+- `/help` - list available commands and usage
 
 ### Setting up the Discord application
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**
-2. Under **Bot**, click **Reset Token** and copy it — this is your `DISCORD_TOKEN`
+2. Under **Bot**, click **Reset Token** and copy it - this is your `DISCORD_TOKEN`
 3. Under **Bot → Privileged Gateway Intents**, enable **Message Content Intent** (needed for the bot to read messages if you add message-based features later)
 4. Under **OAuth2 → URL Generator**:
    - **Scopes**: select `bot` and `applications.commands`
@@ -151,7 +159,7 @@ podcodex-bot --dev-guild 123456789  # instant command sync for development
 
 ### Deploying to a server
 
-The `deploy/` directory contains everything needed to run the bot on a VPS (tested on Ubuntu 4GB RAM). Only Docker is required on the server — no Python, no GPU.
+The `deploy/` directory contains everything needed to run the bot on a VPS (tested on Ubuntu 4GB RAM). Only Docker is required on the server - no Python, no GPU.
 
 #### 1. Clone and configure
 
@@ -175,14 +183,14 @@ scp /path/to/vectors.db user@vps:~/podcodex/deploy/data/
 ```bash
 cd ~/podcodex
 
-# Build the bot image (includes BGE-M3 model download — takes a few minutes)
+# Build the bot image (includes BGE-M3 model download - takes a few minutes)
 docker compose -f deploy/docker-compose.yml build
 
 # Start the bot
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-The bot image installs only core + bot dependencies (no pipeline), keeping it under 3GB. Search uses numpy over SQLite — no external services needed. Logs rotate automatically (50MB x 3 files). The bot auto-restarts on crash or reboot.
+The bot image installs only core + bot dependencies (no pipeline), keeping it under 3GB. Search uses numpy over SQLite - no external services needed. Logs rotate automatically (50MB x 3 files). The bot auto-restarts on crash or reboot.
 
 #### Updating
 
@@ -206,7 +214,7 @@ docker compose -f deploy/docker-compose.yml run --rm --entrypoint podcodex bot \
     sync --db /app/data/vectors.db --show "My Podcast"
 ```
 
-No manual stop needed — `up -d` replaces the running container automatically.
+No manual stop needed - `up -d` replaces the running container automatically.
 
 **Checking logs:**
 
@@ -341,7 +349,7 @@ translate.save_translation_raw("episode.mp3", translated, "english", output_dir=
 
 | Mode | Description | Best for |
 |------|-------------|----------|
-| `ollama` | Local LLM via Ollama | Privacy, offline — use 14B+ models |
+| `ollama` | Local LLM via Ollama | Privacy, offline - use 14B+ models |
 | `api` | OpenAI-compatible API | Best quality (Mistral, OpenAI, etc.) |
 | `manual` | Copy/paste via LLM UI | Full control, best quality |
 
@@ -372,7 +380,7 @@ episode_path = synthesize.assemble_episode(
 
 ### Indexing & search
 
-Indexing saves everything locally in a SQLite file (`vectors.db`). Search uses numpy brute-force cosine similarity over the SQLite store — no external services needed.
+Indexing saves everything locally in a SQLite file (`vectors.db`). Search uses numpy brute-force cosine similarity over the SQLite store - no external services needed.
 
 ```bash
 # Embed and store a transcript
@@ -402,8 +410,8 @@ podcodex delete my_podcast__bge-m3__semantic
 
 | Strategy | Description |
 |----------|-------------|
-| `semantic` | Semantic similarity splitting (Chonkie) — recommended default |
-| `speaker` | One chunk per speaker turn — fast, no extra deps |
+| `semantic` | Semantic similarity splitting (Chonkie) - recommended default |
+| `speaker` | One chunk per speaker turn - fast, no extra deps |
 
 Collection names follow the format `{show}__{model}__{chunker}`, e.g. `my_podcast__bge-m3__semantic`.
 
@@ -426,7 +434,7 @@ results = retriever.retrieve(
 )
 ```
 
-### CLI — RSS and import
+### CLI - RSS and import
 
 ```bash
 # Fetch RSS feed and list episodes (uses show.toml for the URL, or --rss to override)
@@ -458,7 +466,7 @@ streamlit run streamlit/app.py
 git clone https://github.com/gabriel-jung/podcodex
 cd podcodex
 
-# Prerequisites — Node.js (pick one)
+# Prerequisites - Node.js (pick one)
 # Linux/WSL (via nvm, recommended)
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
 nvm install --lts
@@ -483,7 +491,7 @@ Optionally, for a native window (requires Rust + system GTK/WebKit on Linux):
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install tauri-cli --version "^2"
 
-# Linux only — GTK/WebKit system deps
+# Linux only - GTK/WebKit system deps
 sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
   libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config
 
@@ -494,7 +502,7 @@ make dev
 ### Installation extras
 
 ```bash
-# Desktop app (lightweight — browse, upload, edit transcripts)
+# Desktop app (lightweight - browse, upload, edit transcripts)
 uv sync --extra desktop
 
 # Add automatic transcription, TTS, LLM correction/translation
@@ -549,7 +557,7 @@ uv sync --extra bot --extra pipeline --extra rag --extra desktop --extra app
 
 - **Frontend** (`frontend/`): React 19, Vite, Tailwind CSS, shadcn/ui. REST API + WebSocket for real-time progress.
 - **Backend** (`src/podcodex/api/`): FastAPI server exposing the pipeline as HTTP endpoints. Background tasks with progress over WebSocket.
-- **Tauri** (`src-tauri/`): Thin Rust shell — auto-spawns backend, health-checks, native file dialogs. Standalone distribution (`.app`/`.deb`/`.exe`) is in development.
+- **Tauri** (`src-tauri/`): Thin Rust shell - auto-spawns backend, health-checks, native file dialogs. Standalone distribution (`.app`/`.deb`/`.exe`) is in development.
 
 ### API endpoints
 
@@ -559,8 +567,9 @@ The FastAPI backend exposes these route groups (all under `/api`):
 |--------|-------------|
 | `/health` | Status and capability check |
 | `/config` | App configuration (show folders, save path, pipeline constants) |
-| `/shows` | List shows, register folders, show metadata, episode lists, move folder |
+| `/shows` | List shows, register folders, show metadata, unified episode lists, move/delete folder |
 | `/rss` | RSS feed parsing, episode download |
+| `/youtube` | YouTube video list, audio download, subtitle import |
 | `/batch` | Multi-episode pipeline execution with progress tracking |
 | `/transcribe` | Load/save segments, start transcription, speaker map, upload |
 | `/polish` | Load/save segments, start correction, manual prompts |
@@ -587,13 +596,13 @@ The FastAPI backend exposes these route groups (all under `/api`):
 | `podcodex.core.polish` | LLM-based transcript correction (proper nouns, spelling, punctuation) |
 | `podcodex.core.translate` | LLM-based translation (Ollama, OpenAI-compatible API, or manual) |
 | `podcodex.core.synthesize` | Qwen3-TTS voice cloning + episode assembly |
-| `podcodex.core.versions` | Generation versioning — save, load, list, prune pipeline output versions |
+| `podcodex.core.versions` | Generation versioning - save, load, list, prune pipeline output versions |
 | `podcodex.core.pipeline_db` | Per-show SQLite DB for episode status and version metadata |
 | `podcodex.ingest` | Folder scanning, RSS feed parsing, transcript import, show metadata |
 
 ### Output files
 
-Outputs are organised per episode under the show folder. Every pipeline save (transcribe, polish, translate, manual edit) creates a **version** — a timestamped JSON snapshot stored in `.versions/`. Metadata (provenance, content hash, model, params) lives in `pipeline.db`. The most recent version is shown by default; users can browse and restore any version from the History dropdown.
+Outputs are organised per episode under the show folder. Every pipeline save (transcribe, polish, translate, manual edit) creates a **version** - a timestamped JSON snapshot stored in `.versions/`. Metadata (provenance, content hash, model, params) lives in `pipeline.db`. The most recent version is shown by default; users can browse and restore any version from the History dropdown.
 
 Legacy flat files (`{stem}.transcript.json`, etc.) are still written alongside versions for backward compatibility.
 
@@ -646,15 +655,18 @@ See [ROADMAP.md](ROADMAP.md) for the detailed plan.
 | Episode duration filter, per-episode playback speed | Done |
 | Tauri backend sidecar (dev mode) | Done |
 | Batch pipeline, global task bar, per-step config, speakers panel, move folder | Done |
-| **Semi-automatic speaker mapping** — voice embeddings for auto speaker ID | Next |
-| **Standalone distribution** — PyInstaller sidecar for `.app`/`.deb`/`.exe` | Planned |
-| **Generation versioning** — N versions per pipeline step with provenance | Done |
-| **Timeline editor** — multi-track assembly with jingle/music insertion | Planned |
+| Generation versioning - N versions per pipeline step with provenance | Done |
+| YouTube support - channel/playlist import, audio download, subtitle transcript | Done |
+| Pipeline DB - per-show SQLite, step status comparison, provenance tracking | Done |
+| **Semi-automatic speaker mapping** - voice embeddings for auto speaker ID | Next |
+| **Simple mode** - zero-config end-to-end pipeline for non-technical users | Planned |
+| **Standalone distribution** - PyInstaller sidecar for `.app`/`.deb`/`.exe` | Planned |
+| **Timeline editor** - multi-track assembly with jingle/music insertion | Future |
 
 ## Notes
 
 - Transcription runs on CPU on Apple Silicon (WhisperX does not support MPS yet)
 - Diarization requires a valid `HF_TOKEN` and model access on Hugging Face
-- Synthesis (Qwen3-TTS) is GPU-heavy — recommended on CUDA for production use
+- Synthesis (Qwen3-TTS) is GPU-heavy - recommended on CUDA for production use
 - Ollama translation works best with models >= 14B for reliable JSON output
-- All embeddings are saved locally in `vectors.db` (SQLite) — search uses numpy brute-force over this store
+- All embeddings are saved locally in `vectors.db` (SQLite) - search uses numpy brute-force over this store

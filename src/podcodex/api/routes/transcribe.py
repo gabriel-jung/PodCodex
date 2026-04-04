@@ -13,11 +13,13 @@ from podcodex.api.routes._helpers import (
     submit_task,
 )
 from podcodex.api.schemas import Segment, TaskResponse
+from podcodex.api.routes._versions import register_version_routes
 from podcodex.core._utils import AudioPaths, write_json
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import save_version
 
 router = APIRouter()
+register_version_routes(router, "transcript")
 
 
 # ── Load / save ──────────────────────────────────────────
@@ -57,52 +59,6 @@ async def save_segments(
         provenance=provenance,
     )
     return {"status": "saved", "count": len(seg_dicts)}
-
-
-# ── Version history ──────────────────────────────────────
-
-
-@router.get("/versions")
-async def list_transcribe_versions(
-    audio_path: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> list[dict]:
-    """List all archived transcript versions (newest first)."""
-    from podcodex.core.versions import list_versions
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    return list_versions(p.base, "transcript")
-
-
-@router.get("/versions/{version_id}")
-async def load_transcribe_version(
-    version_id: str,
-    audio_path: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> list[dict]:
-    """Load segments from a specific archived transcript version."""
-    from podcodex.core.versions import load_version
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    try:
-        return load_version(p.base, "transcript", version_id)
-    except FileNotFoundError:
-        raise HTTPException(404, f"Version {version_id} not found")
-
-
-@router.delete("/versions/{version_id}")
-async def delete_transcribe_version(
-    version_id: str,
-    audio_path: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> dict:
-    """Delete a specific transcript version."""
-    from podcodex.core.versions import delete_version
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    if not delete_version(p.base, "transcript", version_id):
-        raise HTTPException(404, f"Version {version_id} not found")
-    return {"status": "deleted", "version_id": version_id}
 
 
 # ── Speaker map ──────────────────────────────────────────
@@ -359,18 +315,16 @@ async def start_transcribe(req: TranscribeRequest) -> TaskResponse:
             )
 
         progress_cb(0.75, "Exporting transcript...")
-        provenance = {
-            "step": "transcript",
-            "type": "raw",
-            "model": req_data.model_size,
-            "params": {
+        provenance = build_provenance(
+            "transcript",
+            model=req_data.model_size,
+            params={
                 "language": req_data.language or None,
                 "batch_size": req_data.batch_size,
                 "diarize": req_data.diarize,
                 "num_speakers": req_data.num_speakers,
             },
-            "manual_edit": False,
-        }
+        )
         segments = export_transcript(
             req_data.audio_path,
             output_dir=req_data.output_dir,

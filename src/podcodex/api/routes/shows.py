@@ -7,7 +7,11 @@ import shutil
 from dataclasses import fields
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+import hashlib
+import urllib.request
+
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 from loguru import logger
 from pydantic import BaseModel
 
@@ -97,6 +101,106 @@ async def list_shows() -> list[ShowSummary]:
             )
         )
     return shows
+
+
+# ── Artwork caching ────────────────────────────
+
+
+_ARTWORK_STEM = "artwork"
+_IMG_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+_MIME = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+
+def _url_hash(url: str) -> str:
+    """Short hash of a URL — used to detect when the source URL changes."""
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
+def _find_cached_artwork(show_path: Path) -> Path | None:
+    """Return the cached artwork file if it exists."""
+    for ext in _IMG_EXTENSIONS:
+        p = show_path / f"{_ARTWORK_STEM}{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def _download_artwork(url: str, show_path: Path) -> Path | None:
+    """Download artwork from *url* into *show_path*, return the local path."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "PodCodex/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            data = resp.read(5 * 1024 * 1024)  # cap at 5 MB
+    except Exception as exc:
+        logger.warning("Artwork download failed for {}: {}", url, exc)
+        return None
+
+    # Determine extension from Content-Type or URL
+    ext = ".jpg"  # default
+    for e, mime in _MIME.items():
+        if mime in content_type:
+            ext = e
+            break
+    else:
+        # Try URL extension
+        url_lower = url.lower().split("?")[0]
+        for e in _IMG_EXTENSIONS:
+            if url_lower.endswith(e):
+                ext = e
+                break
+
+    # Remove any old cached artwork
+    for old_ext in _IMG_EXTENSIONS:
+        (show_path / f"{_ARTWORK_STEM}{old_ext}").unlink(missing_ok=True)
+
+    dest = show_path / f"{_ARTWORK_STEM}{ext}"
+    dest.write_bytes(data)
+
+    # Write URL hash so we know when to re-download
+    (show_path / ".artwork_url_hash").write_text(_url_hash(url), encoding="utf-8")
+
+    return dest
+
+
+@router.get("/artwork")
+async def get_artwork(show_folder: str = Query(...)):
+    """Serve cached artwork for a show, downloading it if needed."""
+    path = require_show_folder(show_folder)
+    meta = load_show_meta(path)
+    artwork_url = (meta.artwork_url if meta else "") or ""
+
+    if not artwork_url:
+        raise HTTPException(404, "No artwork URL configured")
+
+    cached = _find_cached_artwork(path)
+    url_hash_file = path / ".artwork_url_hash"
+
+    # Re-download if URL changed or no cache
+    need_download = cached is None
+    if cached and url_hash_file.exists():
+        stored_hash = url_hash_file.read_text(encoding="utf-8").strip()
+        if stored_hash != _url_hash(artwork_url):
+            need_download = True
+
+    if need_download:
+        cached = _download_artwork(artwork_url, path)
+
+    if not cached:
+        raise HTTPException(502, "Failed to download artwork")
+
+    media_type = _MIME.get(cached.suffix.lower(), "image/jpeg")
+    return FileResponse(
+        cached,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @router.post("/from-rss", response_model=CreateFromRSSResponse)
@@ -353,40 +457,76 @@ async def unified_episodes(
 
     result: list[dict] = []
     seen_stems: set[str] = set()
+    seen_ids: set[str] = set()
+
+    def _build_episode_out(
+        *,
+        ep_id: str,
+        title: str,
+        stem: str | None,
+        pub_date: str | None,
+        description: str,
+        audio_url: str | None,
+        duration: float,
+        episode_number: int | None,
+        audio_path: Path | None,
+        output_dir: Path | None,
+        artwork_url: str,
+        st: dict,
+        ep_files: list[str],
+    ) -> dict:
+        prov = st.get("provenance", {})
+        return {
+            "id": ep_id,
+            "title": title,
+            "stem": stem,
+            "pub_date": pub_date,
+            "description": description,
+            "audio_url": audio_url,
+            "duration": duration,
+            "episode_number": episode_number,
+            "audio_path": str(audio_path) if audio_path else None,
+            "output_dir": str(output_dir)
+            if output_dir and output_dir.is_dir()
+            else None,
+            "downloaded": audio_path is not None,
+            "transcribed": st.get("transcribed", False),
+            "polished": st.get("polished", False),
+            "indexed": st.get("indexed", False),
+            "synthesized": st.get("synthesized", False),
+            "translations": st.get("translations", []),
+            "artwork_url": artwork_url,
+            "files": ep_files,
+            "provenance": prov,
+            **_step_statuses(st, prov, effective),
+        }
 
     # RSS episodes first (preserves feed order)
     for r in rss:
         stem = episode_stem(r)
+        if r.guid in seen_ids:
+            continue
+        seen_ids.add(r.guid)
         st = status_map.get(stem, {}) if stem else {}
         audio_path = local_audio.get(stem)
         if stem:
             seen_stems.add(stem)
-        prov = st.get("provenance", {})
         result.append(
-            {
-                "id": r.guid,
-                "title": r.title,
-                "stem": stem,
-                "pub_date": r.pub_date,
-                "description": r.description or "",
-                "audio_url": r.audio_url or None,
-                "duration": r.duration,
-                "episode_number": r.episode_number,
-                "audio_path": str(audio_path) if audio_path else None,
-                "output_dir": str(path / stem)
-                if stem and (path / stem).is_dir()
-                else None,
-                "downloaded": audio_path is not None,
-                "transcribed": st.get("transcribed", False),
-                "polished": st.get("polished", False),
-                "indexed": st.get("indexed", False),
-                "synthesized": st.get("synthesized", False),
-                "translations": st.get("translations", []),
-                "artwork_url": r.artwork_url or "",
-                "files": episode_files.get(stem, []) if stem else [],
-                "provenance": prov,
-                **_step_statuses(st, prov, effective),
-            }
+            _build_episode_out(
+                ep_id=r.guid,
+                title=r.title,
+                stem=stem,
+                pub_date=r.pub_date,
+                description=r.description or "",
+                audio_url=r.audio_url or None,
+                duration=r.duration,
+                episode_number=r.episode_number,
+                audio_path=audio_path,
+                output_dir=path / stem if stem else None,
+                artwork_url=r.artwork_url or "",
+                st=st,
+                ep_files=episode_files.get(stem, []) if stem else [],
+            )
         )
 
     # Local-only episodes (no RSS match)
@@ -395,31 +535,27 @@ async def unified_episodes(
             continue
         output_dir = path / stem
         meta = load_episode_meta(output_dir) if output_dir.is_dir() else None
+        ep_id = meta.guid if meta else stem
+        if ep_id in seen_ids:
+            continue
+        seen_ids.add(ep_id)
         audio_path = local_audio.get(stem)
-        prov = st.get("provenance", {})
         result.append(
-            {
-                "id": meta.guid if meta else stem,
-                "title": (meta.title if meta else None) or stem,
-                "stem": stem,
-                "pub_date": meta.pub_date if meta else None,
-                "description": (meta.description or "") if meta else "",
-                "audio_url": (meta.audio_url or None) if meta else None,
-                "duration": meta.duration if meta else 0,
-                "episode_number": meta.episode_number if meta else None,
-                "audio_path": str(audio_path) if audio_path else None,
-                "output_dir": str(output_dir) if output_dir.is_dir() else None,
-                "downloaded": audio_path is not None,
-                "transcribed": st.get("transcribed", False),
-                "polished": st.get("polished", False),
-                "indexed": st.get("indexed", False),
-                "synthesized": st.get("synthesized", False),
-                "translations": st.get("translations", []),
-                "artwork_url": (meta.artwork_url or "") if meta else "",
-                "files": episode_files.get(stem, []),
-                "provenance": prov,
-                **_step_statuses(st, prov, effective),
-            }
+            _build_episode_out(
+                ep_id=ep_id,
+                title=(meta.title if meta else None) or stem,
+                stem=stem,
+                pub_date=meta.pub_date if meta else None,
+                description=(meta.description or "") if meta else "",
+                audio_url=(meta.audio_url or None) if meta else None,
+                duration=meta.duration if meta else 0,
+                episode_number=meta.episode_number if meta else None,
+                audio_path=audio_path,
+                output_dir=output_dir,
+                artwork_url=(meta.artwork_url or "") if meta else "",
+                st=st,
+                ep_files=episode_files.get(stem, []),
+            )
         )
 
     return result

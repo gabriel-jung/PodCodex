@@ -2,19 +2,27 @@
 
 ## Completed
 
-**Core architecture** — Zustand stores, platform abstraction (web + Tauri), FastAPI backend with WebSocket progress
+**Core architecture** - Zustand stores, platform abstraction (web + Tauri), FastAPI backend with WebSocket progress
 
-**UI/UX** — WaveSurfer waveform, segment editor, audio player with per-episode speed, episode filtering (duration/title), list + card views, model cache management, VRAM monitoring, export (text/SRT/VTT/ZIP)
+**UI/UX** - WaveSurfer waveform, segment editor, audio player with per-episode speed, episode filtering (duration/title), list + card views, model cache management, VRAM monitoring, export (text/SRT/VTT/ZIP)
 
-**Tauri integration (dev mode)** — backend sidecar, health-check, window state persistence, CORS
+**Tauri integration (dev mode)** - backend sidecar, health-check, window state persistence, CORS
 
-**Batch pipeline** — multi-episode operations with per-step config dialogs, global task bar with per-episode logs, show speakers panel, move/rename folder, pipeline config store, duration-based LLM batching, task cancellation + result summaries
+**Batch pipeline** - multi-episode operations with per-step config dialogs, global task bar with per-episode logs, show speakers panel, move/rename folder, pipeline config store, duration-based LLM batching, task cancellation + result summaries
 
-**Search & bot** — RAG module (SQLite + numpy, hybrid retrieval), CLI (`vectorize / query / list / delete`), Discord bot (`/search`, `/exact`, `/random`, `/stats`, `/episodes`)
+**Search & bot** - RAG module (SQLite + numpy, hybrid retrieval), CLI (`vectorize / query / list / delete`), Discord bot (`/search`, `/exact`, `/random`, `/stats`, `/episodes`)
 
-**Ingest** — RSS feed parsing, episode download, folder scanning, transcript import
+**Ingest** - RSS feed parsing, episode download, folder scanning, transcript import
 
-**Generation versioning** — `.versions/{step}/` per episode archives every pipeline output with provenance (model, params, manual edit flag, content hash), History dropdown in editor toolbar, API endpoints per step
+**Generation versioning** - `.versions/{step}/` per episode archives every pipeline output with provenance (model, params, manual edit flag, content hash), History dropdown in editor toolbar, API endpoints per step
+
+**YouTube support** - channel/playlist import via yt-dlp, audio download with rate-limit backoff, subtitle import as transcripts (rolling VTT dedup), artwork auto-refresh from channel avatar, batch processing subtitle-only episodes
+
+**Pipeline DB & provenance** - per-show SQLite (`pipeline.db`) for episode status tracking, provenance-based step comparison (none/outdated/done), app-level + show-level pipeline defaults with merge logic, `unified_episodes` endpoint merging RSS + local episodes with computed status
+
+**Frontend cleanup** - shared `SourceIcon`, `useShowActions` hook, `isOutdated` utility, `FilterDropdown` reading store directly, `filterCounts` memoization, removed redundant prefetches
+
+**Backend cleanup** - deduplicated episode serializers (`rss_episode_to_out`), version CRUD route factory (`_versions.py`), shared `build_index_transcript` helper, unified `ManualPromptsRequest`/`ApplyManualRequest` models, consistent `build_provenance()` usage, removed dead code branches
 
 ---
 
@@ -25,27 +33,27 @@
 **Goal**: auto-generate `speaker_map.json` for new episodes without manual intervention.
 
 - Show-level speaker registry: name, language, avatar, voice samples, synthesis config
-- Cross-episode identity — same speaker recognized across all episodes of a show
+- Cross-episode identity - same speaker recognized across all episodes of a show
 - Voice embedding computation (Resemblyzer or pyannote SpeakerEmbedding)
 - Reference database built from manually-labeled episodes
 - Cosine similarity matching with confidence threshold
-- Bootstrapping: a few labeled episodes build the reference DB — one-time cost for fixed-cast podcasts
+- Bootstrapping: a few labeled episodes build the reference DB - one-time cost for fixed-cast podcasts
 
 ### Phase N: Simple Mode
 
-**Goal**: "I have audio, give me searchable knowledge" — zero-config end-to-end pipeline for non-technical users.
+**Goal**: "I have audio, give me searchable knowledge" - zero-config end-to-end pipeline for non-technical users.
 
 - Hardware auto-detection (GPU/CPU, VRAM) to pick optimal Whisper model and settings
 - One-click flow: drop audio → transcribe → export → index
 - Searchable transcripts ready to query with no manual configuration
 - Optional opt-in to advanced steps (diarization, polish, translate, synthesis)
 
-### Phase O: Frontend Polish
+### Phase O: Developer Experience
 
-- **Service registry for LLM providers** — typed provider objects instead of growing conditionals in LLMControls
-- **Auto-generate TS types from Pydantic** — prevent API type drift
-- **Command palette (cmdk)** — quick navigation to episodes, pipeline steps, shows
-- **Drag-and-drop file import** — Tauri file drop events to add episodes
+- **Auto-generate TS types from Pydantic** - prevent API type drift
+- **Service registry for LLM providers** - typed provider objects instead of growing conditionals in LLMControls
+- **Command palette (cmdk)** - quick navigation to episodes, pipeline steps, shows
+- **Drag-and-drop file import** - Tauri file drop events to add episodes
 
 ### Phase P: Standalone Distribution
 

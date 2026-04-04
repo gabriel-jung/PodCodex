@@ -78,6 +78,11 @@ export function getShowName(showMeta: ShowMeta | null | undefined, audioPath: st
   return parts[parts.length - 2] || parts[parts.length - 1] || "";
 }
 
+/** True if any pipeline step is outdated (transcribe, polish, or translate). */
+export function isOutdated(ep: { transcribe_status?: string; polish_status?: string; translate_status?: string }): boolean {
+  return ep.transcribe_status === "outdated" || ep.polish_status === "outdated" || ep.translate_status === "outdated";
+}
+
 /** Shared CSS class for <select> elements across forms. */
 export const selectClass = "bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm";
 

@@ -6,15 +6,19 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
+    ApplyManualRequest,
+    ManualPromptsRequest,
     batch_progress,
     build_provenance,
     load_segments_or_404,
     submit_task,
 )
+from podcodex.api.routes._versions import register_version_routes
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths
 
 router = APIRouter()
+register_version_routes(router, "polished")
 
 
 # ── Load / save ──────────────────────────────────────────
@@ -49,52 +53,6 @@ async def save_polished_segments(
     provenance = build_provenance("polished", ptype="validated", manual_edit=True)
     save_polished(audio_path, seg_dicts, output_dir=output_dir, provenance=provenance)
     return {"status": "saved", "count": len(seg_dicts)}
-
-
-# ── Version history ──────────────────────────────────────
-
-
-@router.get("/versions")
-async def list_polish_versions(
-    audio_path: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> list[dict]:
-    """List all archived polished versions (newest first)."""
-    from podcodex.core.versions import list_versions
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    return list_versions(p.base, "polished")
-
-
-@router.get("/versions/{version_id}")
-async def load_polish_version(
-    version_id: str,
-    audio_path: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> list[dict]:
-    """Load segments from a specific archived polished version."""
-    from podcodex.core.versions import load_version
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    try:
-        return load_version(p.base, "polished", version_id)
-    except FileNotFoundError:
-        raise HTTPException(404, f"Version {version_id} not found")
-
-
-@router.delete("/versions/{version_id}")
-async def delete_polish_version(
-    version_id: str,
-    audio_path: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> dict:
-    """Delete a specific polished version."""
-    from podcodex.core.versions import delete_version
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    if not delete_version(p.base, "polished", version_id):
-        raise HTTPException(404, f"Version {version_id} not found")
-    return {"status": "deleted", "version_id": version_id}
 
 
 # ── Pipeline execution ───────────────────────────────────
@@ -206,15 +164,6 @@ async def skip_polish(req: SkipRequest) -> dict:
 # ── Manual mode ──────────────────────────────────────────
 
 
-class ManualPromptsRequest(BaseModel):
-    audio_path: str
-    output_dir: str | None = None
-    context: str = ""
-    source_lang: str = "French"
-    batch_minutes: float = 15.0
-    engine: str = "Whisper"
-
-
 @router.post("/manual-prompts")
 async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     """Generate batched prompts for manual LLM correction."""
@@ -236,12 +185,6 @@ async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
         {"batch_index": i, "prompt": prompt, "segment_count": len(batch_segs)}
         for i, (batch_segs, prompt) in enumerate(batches)
     ]
-
-
-class ApplyManualRequest(BaseModel):
-    audio_path: str
-    output_dir: str | None = None
-    corrections: list[dict]
 
 
 @router.post("/apply-manual")

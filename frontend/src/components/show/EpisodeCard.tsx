@@ -1,7 +1,7 @@
 import type { Episode } from "@/api/types";
 import { Play, Download } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
-import { StatusDots } from "./StatusDots";
+import { StatusChips } from "./StatusChips";
 import { PipelineBar } from "./PipelineBar";
 
 export interface EpisodeCardProps {
@@ -14,7 +14,7 @@ export interface EpisodeCardProps {
 }
 
 export function EpisodeCard({ ep, onOpen, onPlay, onDownload, downloading, isPlaying }: EpisodeCardProps) {
-  const canDownload = !ep.downloaded;
+  const needsDownload = !ep.downloaded;
   return (
     <div
       className="group relative bg-card border border-border rounded-xl overflow-hidden hover:border-muted-foreground/30 transition cursor-pointer"
@@ -41,7 +41,7 @@ export function EpisodeCard({ ep, onOpen, onPlay, onDownload, downloading, isPla
               <Play className="w-5 h-5 text-black fill-black ml-0.5" />
             </button>
           )}
-          {canDownload && (
+          {needsDownload && (
             <button
               onClick={(e) => { e.stopPropagation(); onDownload(); }}
               disabled={downloading}
@@ -55,7 +55,7 @@ export function EpisodeCard({ ep, onOpen, onPlay, onDownload, downloading, isPla
 
         {/* Top-right: status badges */}
         <div className="absolute top-2 right-2 flex gap-1">
-          <StatusDots ep={ep} />
+          <StatusChips ep={ep} compact />
         </div>
 
         {/* Top-left: episode number */}

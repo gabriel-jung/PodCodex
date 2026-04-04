@@ -66,7 +66,7 @@ def _build_episode_text(segments: list[dict]) -> tuple[str, list[dict]]:
             {
                 "start_char": cursor,
                 "end_char": cursor + len(text),
-                "speaker": seg.get("speaker", "UNKNOWN"),
+                "speaker": seg.get("speaker") or "UNKNOWN",
                 "start": seg.get("start", 0.0),
                 "end": seg.get("end", 0.0),
                 "text": text,
@@ -104,12 +104,8 @@ def _map_offsets_to_metadata(
         chars = max(
             0, min(t["end_char"], chunk_end) - max(t["start_char"], chunk_start)
         )
-        spk = t.get("speaker")
-        if spk:
-            speaker_chars[spk] = speaker_chars.get(spk, 0) + chars
-
-    if not speaker_chars:
-        return None
+        spk = t.get("speaker") or "UNKNOWN"
+        speaker_chars[spk] = speaker_chars.get(spk, 0) + chars
 
     return {
         "start": overlapping[0]["start"],

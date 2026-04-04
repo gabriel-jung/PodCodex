@@ -18,10 +18,10 @@ export function useLLMConfig(
   const llm = usePipelineConfigStore((s) => s.llm);
   const setLLM = usePipelineConfigStore((s) => s.setLLM);
 
-  // Seed sourceLang from show metadata when empty; always rebuild context for the current episode
+  // Sync sourceLang from show metadata when switching shows; always rebuild context for current episode
   useEffect(() => {
     const patches: Partial<LLMConfig> = {};
-    if (!llm.sourceLang && showMeta?.language) {
+    if (showMeta?.language) {
       patches.sourceLang = showMeta.language;
     }
     const ctx = buildDefaultContext(episode, showMeta);

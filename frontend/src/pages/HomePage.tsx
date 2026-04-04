@@ -13,7 +13,8 @@ import { useConfigStore } from "@/stores/configStore";
 import ShowCard from "@/components/show/ShowCard";
 import ShowListRow from "@/components/show/ShowListRow";
 import AddShowModal from "@/components/show/AddShowModal";
-import { Plus, RefreshCw, List, LayoutGrid } from "lucide-react";
+import { Plus, RefreshCw, List, LayoutGrid, Podcast } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -30,8 +31,9 @@ export default function HomePage() {
   const cardSize = useConfigStore((s) => s.showCardSize);
   const setCardSize = useConfigStore((s) => s.setShowCardSize);
 
-  const rssShows = shows?.filter((s) => s.has_rss) ?? [];
+  const rssShows = shows?.filter((s) => s.has_rss && !s.has_youtube) ?? [];
   const ytShows = shows?.filter((s) => s.has_youtube) ?? [];
+  const dualShows = shows?.filter((s) => s.has_rss && s.has_youtube) ?? [];
 
   // Oldest RSS update across all shows (to display in the button)
   const oldestRssUpdate = rssShows.reduce<string | null>((oldest, s) => {
@@ -44,6 +46,7 @@ export default function HomePage() {
     mutationFn: async () => {
       await Promise.allSettled([
         ...rssShows.map((s) => refreshRSS(s.path)),
+        ...dualShows.map((s) => refreshRSS(s.path)),
         ...ytShows.map((s) => refreshYouTube(s.path)),
       ]);
     },
@@ -60,10 +63,7 @@ export default function HomePage() {
     <div className="h-full overflow-y-auto">
       <div className="max-w-4xl mx-auto px-6 py-8">
         <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold">PodCodex</h1>
-            <p className="text-sm text-muted-foreground mt-1">Podcast processing pipeline</p>
-          </div>
+          <h1 className="text-2xl font-bold">PodCodex</h1>
           <div className="flex gap-2">
             {(rssShows.length > 0 || ytShows.length > 0) && (
               <Button
@@ -137,10 +137,12 @@ export default function HomePage() {
         )}
 
         {shows && shows.length === 0 && (
-          <div className="text-center py-20 text-muted-foreground">
-            <p className="text-lg mb-2">No shows yet</p>
-            <p className="text-sm">Search for a podcast or import an existing folder</p>
-          </div>
+          <EmptyState
+            icon={Podcast}
+            title="No shows yet"
+            description="Search for a podcast or import an existing folder."
+            action={{ label: "Add show", onClick: () => setAddOpen(true) }}
+          />
         )}
 
         {addOpen && (

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, field_validator
@@ -259,7 +258,8 @@ async def start_index(req: IndexRequest) -> TaskResponse:
         Returns:
             Dict with ``chunks_upserted`` (int) and ``source`` (str) keys.
         """
-        from podcodex.cli import _resolve_source, _source_label, vectorize_batch
+        from podcodex.api.routes._helpers import build_index_transcript
+        from podcodex.cli import vectorize_batch
         from podcodex.core.versions import load_version
         from podcodex.rag.localstore import LocalStore
 
@@ -272,54 +272,23 @@ async def start_index(req: IndexRequest) -> TaskResponse:
         if req_data.version_id and req_data.source != "auto":
             step = req_data.source
             segments = load_version(p.base, step, req_data.version_id)
-            source_label = step
-            transcript = {
-                "meta": {
-                    "show": req_data.show,
-                    "episode": episode,
-                    "source": source_label,
-                },
-                "segments": segments,
-            }
+            transcript = build_index_transcript(
+                req_data.audio_path,
+                req_data.show,
+                episode,
+                segments=segments,
+                output_dir=req_data.output_dir,
+            )
         else:
-            # Find the transcript file
-            transcript_path = p.transcript_best
-            if not transcript_path.exists():
-                raise ValueError("No transcript found — transcribe first")
+            transcript = build_index_transcript(
+                req_data.audio_path,
+                req_data.show,
+                episode,
+                source=req_data.source,
+                output_dir=req_data.output_dir,
+            )
 
-            # Resolve source (auto picks polished > transcript)
-            source_path = _resolve_source(transcript_path, req_data.source)
-            source_label = _source_label(source_path, transcript_path)
-
-            # Load and prepare transcript dict
-            data = json.loads(source_path.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                transcript = {
-                    "meta": {
-                        "show": req_data.show,
-                        "episode": episode,
-                        "source": source_label,
-                    },
-                    "segments": data,
-                }
-            else:
-                transcript = data
-                transcript.setdefault("meta", {})
-                transcript["meta"].setdefault("show", req_data.show)
-                transcript["meta"].setdefault("episode", episode)
-                transcript["meta"].setdefault("source", source_label)
-
-        # Inject RSS metadata (episode title, pub_date) for chunker
-        from podcodex.ingest.rss import load_episode_meta
-
-        ep_meta = load_episode_meta(p.base.parent)
-        if ep_meta:
-            if ep_meta.title:
-                transcript["meta"].setdefault("rss_title", ep_meta.title)
-            if ep_meta.pub_date:
-                transcript["meta"].setdefault("rss_pub_date", ep_meta.pub_date)
-            if ep_meta.episode_number is not None:
-                transcript["meta"].setdefault("episode_number", ep_meta.episode_number)
+        source_label = transcript["meta"].get("source", "auto")
 
         # Open LocalStore at show level
         db_path = p.vectors_db
@@ -348,17 +317,23 @@ async def start_index(req: IndexRequest) -> TaskResponse:
         finally:
             local.close()
 
+        if total_upserted == 0:
+            raise ValueError(
+                f"Indexing produced 0 chunks for '{episode}'. "
+                "The transcript may be too short or have unsupported format."
+            )
+
         # Touch marker file for status detection
         marker = p.base.parent / ".rag_indexed"
         marker.touch()
 
+        from podcodex.api.routes._helpers import build_provenance
         from podcodex.core.pipeline_db import mark_step
 
-        provenance = {
-            "step": "indexed",
-            "type": "raw",
-            "model": (req_data.model_keys or ["bge-m3"])[0],
-            "params": {
+        provenance = build_provenance(
+            "indexed",
+            model=(req_data.model_keys or ["bge-m3"])[0],
+            params={
                 "source": source_label,
                 "model_keys": req_data.model_keys,
                 "chunkings": req_data.chunkings,
@@ -366,8 +341,7 @@ async def start_index(req: IndexRequest) -> TaskResponse:
                 "threshold": req_data.threshold,
                 "overwrite": req_data.overwrite,
             },
-            "manual_edit": False,
-        }
+        )
         mark_step(
             p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance}
         )

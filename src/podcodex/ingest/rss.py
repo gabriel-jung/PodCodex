@@ -188,7 +188,9 @@ def search_itunes(query: str, limit: int = 8) -> list[PodcastSearchResult]:
                 name=r.get("collectionName", ""),
                 artist=r.get("artistName", ""),
                 feed_url=feed,
-                artwork_url=r.get("artworkUrl60", ""),
+                artwork_url=r.get("artworkUrl600", "")
+                or r.get("artworkUrl100", "")
+                or r.get("artworkUrl60", ""),
             )
         )
     return results

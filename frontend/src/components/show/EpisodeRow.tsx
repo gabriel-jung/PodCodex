@@ -2,7 +2,7 @@ import { useRef } from "react";
 import type { Episode } from "@/api/types";
 import { CheckCircle, Play, Trash2, Download } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
-import { StatusDots } from "./StatusDots";
+import { StatusChips } from "./StatusChips";
 
 export interface EpisodeRowProps {
   ep: Episode;
@@ -18,10 +18,10 @@ export interface EpisodeRowProps {
 
 export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying }: EpisodeRowProps) {
   const shiftRef = useRef(false);
-  const canDownload = !ep.downloaded;
+  const needsDownload = !ep.downloaded;
   return (
     <div className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
-      {canDownload || ep.downloaded ? (
+      {needsDownload || ep.downloaded ? (
         <div className="flex items-center gap-1.5 shrink-0">
           <input type="checkbox" checked={selected} onMouseDown={(e) => { shiftRef.current = e.shiftKey; }} onChange={() => onToggle(shiftRef.current)} className="accent-primary cursor-pointer" />
           {ep.downloaded && <CheckCircle className="w-3.5 h-3.5 text-green-500" />}
@@ -41,7 +41,7 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
       >
         {ep.title}
       </button>
-      <StatusDots ep={ep} />
+      <StatusChips ep={ep} />
       <span className="text-xs text-muted-foreground w-20 text-right shrink-0">{formatDate(ep.pub_date)}</span>
       <span className="text-xs text-muted-foreground w-12 text-right shrink-0">{formatDuration(ep.duration)}</span>
       <div className="w-20 flex justify-end gap-2.5 shrink-0">
@@ -55,7 +55,7 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         )}
-        {canDownload && !selected && (
+        {needsDownload && !selected && (
           <button onClick={onDownload} disabled={downloading} title="Download" className="text-green-400 hover:text-green-300 transition">
             <Download className="w-3.5 h-3.5" />
           </button>

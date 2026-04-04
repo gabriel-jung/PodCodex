@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Outlet } from "@tanstack/react-router";
-import { getHealth, getExtras } from "@/api/client";
+import { getHealth } from "@/api/client";
 import AudioBar from "@/components/layout/AudioBar";
 import TaskBar from "@/components/layout/TaskBar";
 import CommandPalette from "@/components/CommandPalette";
@@ -18,15 +18,6 @@ export default function RootLayout() {
     queryFn: getHealth,
     retry: 3,
     retryDelay: 1000,
-  });
-
-  // Prefetch capabilities at startup so panels never flash "not installed"
-  useQuery({
-    queryKey: ["system", "extras"],
-    queryFn: getExtras,
-    staleTime: Infinity,
-    gcTime: Infinity,
-    enabled: !!health,
   });
 
   const hideAppSidebar = useLayoutStore((s) => s.hideAppSidebar);
@@ -80,11 +71,25 @@ function AppSidebar() {
   const nextTheme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
 
-  const appItems = [
+  const navItems = [
     { icon: Home, label: "Home", onClick: () => navigate({ to: "/" }) },
+  ];
+  const bottomItems = [
     { icon: Settings, label: "Settings", onClick: () => navigate({ to: "/settings" }) },
     { icon: ThemeIcon, label: `Theme: ${theme}`, onClick: () => setTheme(nextTheme) },
   ];
+
+  const renderItem = ({ icon: Icon, label, onClick }: typeof navItems[number]) => (
+    <button
+      key={label}
+      onClick={onClick}
+      title={expanded ? undefined : label}
+      className="w-full flex items-center gap-3 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/50 transition"
+    >
+      <Icon className="w-4 h-4 shrink-0" />
+      {expanded && <span className="truncate text-xs">{label}</span>}
+    </button>
+  );
 
   return (
     <div
@@ -93,20 +98,14 @@ function AppSidebar() {
       }`}
     >
       <nav className="py-3 flex flex-col gap-1">
-        {appItems.map(({ icon: Icon, label, onClick }) => (
-          <button
-            key={label}
-            onClick={onClick}
-            title={expanded ? undefined : label}
-            className="w-full flex items-center gap-3 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/50 transition"
-          >
-            <Icon className="w-4 h-4 shrink-0" />
-            {expanded && <span className="truncate text-xs">{label}</span>}
-          </button>
-        ))}
+        {navItems.map(renderItem)}
       </nav>
 
       <div className="flex-1" />
+
+      <div className="flex flex-col gap-1 py-2 border-t border-border">
+        {bottomItems.map(renderItem)}
+      </div>
 
       <button
         onClick={() => setExpanded(!expanded)}

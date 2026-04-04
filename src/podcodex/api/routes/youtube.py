@@ -2,24 +2,25 @@
 
 from __future__ import annotations
 
-import time
-from dataclasses import asdict
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel
 
-from podcodex.api.routes._helpers import is_downloaded, require_show_folder, submit_task
+from podcodex.api.routes._helpers import (
+    is_downloaded,
+    require_show_folder,
+    rss_episode_to_out,
+    submit_task,
+)
 from podcodex.api.schemas import RSSEpisodeOut, TaskResponse
 from podcodex.ingest.rss import (
-    RSSEpisode,
     episode_stem,
     load_feed_cache,
     save_episode_meta,
     save_feed_cache,
 )
-from podcodex.ingest.show import load_show_meta
+from podcodex.ingest.show import load_show_meta, save_show_meta
 
 router = APIRouter()
 
@@ -36,19 +37,6 @@ class YouTubeDownloadRequest(BaseModel):
 class YouTubeSubsRequest(BaseModel):
     video_ids: list[str]
     lang: str = "en"
-
-
-# ── Helpers ────────────────────────────────────
-
-
-def _yt_to_out(ep: RSSEpisode, show_folder: Path) -> dict:
-    """Convert an RSSEpisode to an RSSEpisodeOut dict."""
-    stem = episode_stem(ep)
-    return {
-        **asdict(ep),
-        "local_stem": stem,
-        "downloaded": is_downloaded(show_folder, stem),
-    }
 
 
 # ── Routes ─────────────────────────────────────
@@ -75,7 +63,25 @@ async def youtube_fetch(show_folder: str) -> list[dict]:
         raise HTTPException(502, "No videos found")
 
     save_feed_cache(path, episodes)
-    return [_yt_to_out(ep, path) for ep in episodes]
+
+    # One-time artwork upgrade: fetch channel avatar if artwork is missing
+    # or doesn't look like a square avatar (yt3.googleusercontent.com)
+    if meta:
+        current = meta.artwork_url or ""
+        needs_upgrade = not current or "yt3.googleusercontent.com" not in current
+        if needs_upgrade:
+            try:
+                from podcodex.ingest.youtube import youtube_show_info
+
+                info = youtube_show_info(meta.youtube_url)
+                fresh = info.get("artwork_url", "")
+                if fresh and fresh != current:
+                    meta.artwork_url = fresh
+                    save_show_meta(path, meta)
+            except Exception:
+                pass  # non-critical
+
+    return [rss_episode_to_out(ep, path) for ep in episodes]
 
 
 @router.post(
@@ -110,10 +116,17 @@ async def youtube_download(
     def run_downloads(progress_cb, episodes=targets, show_path=path):
         """Download each episode, optionally importing subtitles."""
         from podcodex.ingest.folder import invalidate_scan_cache
+        from podcodex.ingest.youtube import (
+            _CONSECUTIVE_FAIL_LIMIT,
+            _pace_request,
+            reset_pace,
+        )
 
         cancel = getattr(progress_cb, "cancel_event", None)
         results = []
+        consecutive_fails = 0
         total = len(episodes)
+        reset_pace()
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
                 progress_cb(i / total, "Cancelled")
@@ -124,6 +137,7 @@ async def youtube_download(
 
             if is_downloaded(show_path, stem):
                 results.append({"stem": stem, "status": "exists"})
+                consecutive_fails = 0
             else:
                 try:
                     audio_path = download_youtube_audio(
@@ -143,12 +157,23 @@ async def youtube_download(
                             "audio_path": str(audio_path),
                         }
                     )
+                    consecutive_fails = 0
                     invalidate_scan_cache(show_path)
                 except Exception as exc:
                     logger.exception("Failed to download {}", ep.guid)
                     results.append(
                         {"stem": stem, "status": "failed", "error": str(exc)}
                     )
+                    consecutive_fails += 1
+                    if consecutive_fails >= _CONSECUTIVE_FAIL_LIMIT:
+                        remaining = total - i - 1
+                        progress_cb(
+                            (i + 1) / total,
+                            f"Stopped — YouTube is rate-limiting requests. "
+                            f"{len(results)}/{total} processed, {remaining} skipped. "
+                            f"Try again later with fewer episodes.",
+                        )
+                        break
                     continue
 
             # Import subtitles if requested
@@ -167,9 +192,7 @@ async def youtube_download(
                 except Exception as exc:
                     logger.warning("Subtitle import failed for {}: {}", stem, exc)
 
-            # Small delay between downloads
-            if total > 1:
-                time.sleep(1)
+            _pace_request()
 
         return results
 
@@ -203,11 +226,18 @@ async def youtube_import_subs(
     def run_import(progress_cb, episodes=targets, show_path=path):
         """Import subtitles for each episode, reporting progress."""
         from podcodex.ingest.folder import invalidate_scan_cache
+        from podcodex.ingest.youtube import (
+            _CONSECUTIVE_FAIL_LIMIT,
+            _pace_request,
+            reset_pace,
+        )
 
         cancel = getattr(progress_cb, "cancel_event", None)
         imported = 0
         failed = 0
+        consecutive_fails = 0
         total = len(episodes)
+        reset_pace()
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
                 progress_cb(i / total, "Cancelled")
@@ -219,17 +249,36 @@ async def youtube_import_subs(
             episode_dir.mkdir(parents=True, exist_ok=True)
             save_episode_meta(episode_dir, ep)
             try:
+                _pace_request()
                 if import_youtube_transcript(
                     ep.guid, episode_dir, show_name, stem, lang=req.lang
                 ):
                     imported += 1
+                    consecutive_fails = 0
                 else:
                     failed += 1
+                    consecutive_fails += 1
             except Exception as exc:
                 logger.warning("Subtitle import failed for {}: {}", stem, exc)
                 failed += 1
+                consecutive_fails += 1
+
+            if consecutive_fails >= _CONSECUTIVE_FAIL_LIMIT:
+                remaining = total - i - 1
+                progress_cb(
+                    (i + 1) / total,
+                    f"Stopped — YouTube is rate-limiting requests. "
+                    f"Imported {imported}/{total}, {remaining} skipped. "
+                    f"Try again later with fewer episodes.",
+                )
+                break
 
         invalidate_scan_cache(show_path)
-        return {"imported": imported, "failed": failed, "total": total}
+        return {
+            "imported": imported,
+            "failed": failed,
+            "total": total,
+            "throttled": consecutive_fails >= _CONSECUTIVE_FAIL_LIMIT,
+        }
 
     return submit_task("yt-subs", str(path), run_import)

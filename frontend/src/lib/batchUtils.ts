@@ -19,8 +19,12 @@ export function deriveEpisodeStatuses(
   const isFinished = ["completed", "failed", "cancelled"].includes(progress.status);
 
   // Check result for detailed per-episode info
-  const result = progress.result as { errors?: { episode: string }[] } | undefined;
-  const failedEpisodes = new Set((result?.errors ?? []).map((e) => e.episode));
+  const result = progress.result;
+  const errors: { episode: string }[] =
+    result && typeof result === "object" && Array.isArray((result as Record<string, unknown>).errors)
+      ? (result as { errors: { episode: string }[] }).errors
+      : [];
+  const failedEpisodes = new Set(errors.map((err) => err.episode));
 
   return names.map((name, i) => {
     if (isFinished) {

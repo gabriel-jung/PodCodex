@@ -1,4 +1,5 @@
 import type { Episode } from "@/api/types";
+import { isOutdated } from "@/lib/utils";
 
 export function PipelineBar({ ep }: { ep: Episode }) {
   const steps = [
@@ -12,10 +13,7 @@ export function PipelineBar({ ep }: { ep: Episode }) {
   const done = steps.filter(Boolean).length;
   if (done === 0) return null;
 
-  const hasOutdated =
-    ep.transcribe_status === "outdated" ||
-    ep.polish_status === "outdated" ||
-    ep.translate_status === "outdated";
+  const hasOutdated = isOutdated(ep);
 
   const pct = (done / steps.length) * 100;
   const color = done === steps.length

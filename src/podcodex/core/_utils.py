@@ -510,6 +510,58 @@ def _merge_parsed_cues(cues: list[dict]) -> list[dict]:
         else:
             deduped.append(cue)
 
+    # Detect and collapse rolling/progressive subtitles.
+    # YouTube auto-generated VTTs display text progressively: each cue shows
+    # the previously completed line plus new words.  Between the rolling cues
+    # there are brief "flash" cues (< 0.05s) that just repeat completed text.
+    # We strip the flash cues, detect rolling overlap, and extract only the
+    # new text from each cue.
+    if len(deduped) >= 4:
+        # Remove near-zero-duration "flash" cues
+        no_flash: list[dict] = []
+        for cue in deduped:
+            if cue["end"] - cue["start"] >= 0.05:
+                no_flash.append(cue)
+
+        # Detect rolling pattern: suffix of cue[i] == prefix of cue[i+1]
+        if len(no_flash) >= 4:
+            overlap_count = 0
+            for i in range(len(no_flash) - 1):
+                t1, t2 = no_flash[i]["text"], no_flash[i + 1]["text"]
+                # Check if any suffix of t1 (>10 chars) is a prefix of t2
+                min_overlap = min(10, len(t1) // 2)
+                for length in range(len(t1), min_overlap - 1, -1):
+                    if t2.startswith(t1[-length:]):
+                        overlap_count += 1
+                        break
+
+            if overlap_count > len(no_flash) * 0.3:
+                collapsed: list[dict] = []
+                for i, cue in enumerate(no_flash):
+                    if i == 0:
+                        collapsed.append(cue)
+                        continue
+                    prev_text = no_flash[i - 1]["text"]
+                    cur_text = cue["text"]
+                    # Find longest suffix of prev that is a prefix of cur
+                    best_overlap = 0
+                    for length in range(len(prev_text), 0, -1):
+                        if cur_text.startswith(prev_text[-length:]):
+                            best_overlap = length
+                            break
+                    if best_overlap > 0:
+                        new_text = cur_text[best_overlap:].strip()
+                        if new_text:
+                            collapsed.append(
+                                {
+                                    **cue,
+                                    "text": new_text,
+                                }
+                            )
+                    else:
+                        collapsed.append(cue)
+                deduped = collapsed
+
     return deduped
 
 

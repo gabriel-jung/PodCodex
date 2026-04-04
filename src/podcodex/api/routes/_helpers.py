@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import HTTPException
 from loguru import logger
 
+from pydantic import BaseModel
+
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import UNKNOWN_SPEAKERS
+from podcodex.ingest.rss import RSSEpisode, episode_stem
 
 # ── Shared constants ────────────────────────────
 
@@ -58,6 +62,16 @@ def require_show_folder(show_folder: str) -> Path:
 def is_downloaded(show_folder: Path, stem: str) -> bool:
     """Check if an audio file with the given stem exists in the show folder."""
     return any((show_folder / f"{stem}{ext}").exists() for ext in AUDIO_EXTS)
+
+
+def rss_episode_to_out(ep: RSSEpisode, show_folder: Path) -> dict:
+    """Convert an RSSEpisode to an RSSEpisodeOut dict."""
+    stem = episode_stem(ep)
+    return {
+        **asdict(ep),
+        "local_stem": stem,
+        "downloaded": is_downloaded(show_folder, stem),
+    }
 
 
 # ── Task submission ─────────────────────────────
@@ -158,3 +172,89 @@ def load_best_source(audio_path: str, output_dir: str | None = None) -> list[dic
     if not segments:
         raise ValueError("No source segments found (need transcript or polished)")
     return segments
+
+
+# ── Index transcript builder ───────────────────
+
+
+def build_index_transcript(
+    audio_path: str,
+    show_name: str,
+    stem: str,
+    segments: list[dict] | None = None,
+    source: str = "auto",
+    output_dir: str | None = None,
+) -> dict:
+    """Build the transcript dict expected by vectorize_batch.
+
+    If *segments* are provided directly (e.g. from version DB), wraps them.
+    Otherwise resolves from filesystem (polished > transcript fallback).
+    Injects RSS metadata (title, pub_date, episode_number) when available.
+    """
+    from podcodex.core._utils import AudioPaths
+    from podcodex.ingest.rss import load_episode_meta
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+
+    if segments is not None:
+        transcript: dict = {
+            "meta": {"show": show_name, "episode": stem, "source": "version"},
+            "segments": segments,
+        }
+    else:
+        from podcodex.cli import _resolve_source, _source_label
+
+        transcript_path = p.transcript_best
+        if not transcript_path.exists():
+            raise ValueError("No transcript found — transcribe first")
+
+        source_path = _resolve_source(transcript_path, source)
+        source_label = _source_label(source_path, transcript_path)
+        data = json.loads(source_path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            transcript = {
+                "meta": {"show": show_name, "episode": stem, "source": source_label},
+                "segments": data,
+            }
+        else:
+            transcript = data
+            transcript.setdefault("meta", {})
+            transcript["meta"].setdefault("show", show_name)
+            transcript["meta"].setdefault("episode", stem)
+            transcript["meta"].setdefault("source", source_label)
+
+    # Inject RSS metadata
+    ep_meta = load_episode_meta(p.base.parent)
+    if ep_meta:
+        if ep_meta.title:
+            transcript["meta"].setdefault("rss_title", ep_meta.title)
+        if ep_meta.pub_date:
+            transcript["meta"].setdefault("rss_pub_date", ep_meta.pub_date)
+        if ep_meta.episode_number is not None:
+            transcript["meta"].setdefault("episode_number", ep_meta.episode_number)
+
+    return transcript
+
+
+# ── Shared request models ──────────────────────
+
+
+class ManualPromptsRequest(BaseModel):
+    """Request for generating manual LLM prompts (shared by polish & translate)."""
+
+    audio_path: str
+    output_dir: str | None = None
+    context: str = ""
+    source_lang: str = "French"
+    target_lang: str = "English"
+    batch_minutes: float = 15.0
+    engine: str = "Whisper"
+
+
+class ApplyManualRequest(BaseModel):
+    """Request for applying manual LLM corrections (shared by polish & translate)."""
+
+    audio_path: str
+    output_dir: str | None = None
+    corrections: list[dict]
+    lang: str = ""

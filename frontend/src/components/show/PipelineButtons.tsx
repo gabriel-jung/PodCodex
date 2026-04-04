@@ -34,16 +34,16 @@ export default function PipelineButtons({
         <Button
           onClick={() => setMenuOpen(!menuOpen)}
           disabled={disabled}
-          variant="outline"
+          variant="default"
           size="sm"
-          className="text-xs h-7 px-2"
+          className="text-xs h-7 px-3"
         >
-          Pipeline <ChevronDown className="w-3 h-3 ml-1" />
+          Process <ChevronDown className="w-3 h-3 ml-1" />
         </Button>
         {menuOpen && (
           <>
             <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-            <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[140px]">
+            <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[160px]">
               {STEPS.map(({ key, label, icon: Icon }) => (
                 <button
                   key={key}

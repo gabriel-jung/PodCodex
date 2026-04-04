@@ -26,6 +26,66 @@ from podcodex.ingest.rss import (
 
 _YT_VIDEO_URL = "https://www.youtube.com/watch?v={video_id}"
 
+# ── Rate limiting ────────────────────────────────────────────
+# YouTube throttles unauthenticated requests after ~30-50 calls.
+# We pace requests with increasing delays to stay under the limit.
+_BASE_DELAY = 2.0  # seconds between requests (first batch)
+_BACKOFF_AFTER = 20  # start increasing delay after this many requests
+_MAX_DELAY = 8.0  # maximum delay between requests
+_CONSECUTIVE_FAIL_LIMIT = 3  # abort batch after this many consecutive failures
+_request_count = 0
+
+# yt-dlp error strings that indicate rate limiting / bot detection
+_THROTTLE_PATTERNS = (
+    "HTTP Error 429",
+    "Sign in to confirm",
+    "too many requests",
+    "This helps protect our community",
+)
+
+
+class YouTubeThrottledError(RuntimeError):
+    """Raised when YouTube appears to be rate-limiting requests."""
+
+
+def _is_throttle_error(exc: Exception) -> bool:
+    """Check if an exception looks like YouTube rate limiting."""
+    msg = str(exc).lower()
+    return any(p.lower() in msg for p in _THROTTLE_PATTERNS)
+
+
+def _pace_request() -> None:
+    """Sleep between YouTube API calls to avoid rate limiting."""
+    import time
+
+    global _request_count
+    _request_count += 1
+
+    if _request_count <= 1:
+        return
+
+    if _request_count <= _BACKOFF_AFTER:
+        delay = _BASE_DELAY
+    else:
+        extra = min((_request_count - _BACKOFF_AFTER) / 30.0, 1.0)
+        delay = _BASE_DELAY + extra * (_MAX_DELAY - _BASE_DELAY)
+
+    time.sleep(delay)
+
+
+def reset_pace() -> None:
+    """Reset the request counter (call at the start of a new batch)."""
+    global _request_count
+    _request_count = 0
+
+
+def _base_ydl_opts(**extra: Any) -> dict[str, Any]:
+    """Build common yt-dlp options."""
+    opts: dict[str, Any] = {"quiet": True, "no_warnings": True}
+    opts.update(extra)
+    return opts
+
+
 # Patterns that indicate a channel URL (not a playlist or single video).
 _CHANNEL_PATTERNS = (
     "youtube.com/@",
@@ -83,15 +143,23 @@ def _entry_to_episode(entry: dict[str, Any], idx: int) -> RSSEpisode:
     video_id = entry.get("id", "")
     title = entry.get("title") or entry.get("fulltitle") or "Untitled"
 
-    # Parse upload date (YYYYMMDD format from yt-dlp)
-    upload_date = entry.get("upload_date", "")
+    # Parse upload date — try multiple yt-dlp fields
     pub_date = ""
+    upload_date = entry.get("upload_date", "")
     if upload_date and len(upload_date) == 8:
         try:
             dt = datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=timezone.utc)
             pub_date = dt.isoformat()
         except ValueError:
             pub_date = upload_date
+    if not pub_date:
+        # Flat extraction often provides epoch timestamps instead
+        ts = entry.get("timestamp") or entry.get("release_timestamp")
+        if ts:
+            try:
+                pub_date = datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+            except (ValueError, OSError):
+                pass
 
     description = entry.get("description", "") or ""
     duration = float(entry.get("duration") or 0)
@@ -112,16 +180,32 @@ def _entry_to_episode(entry: dict[str, Any], idx: int) -> RSSEpisode:
     )
 
 
-def _best_thumbnail(info: dict[str, Any]) -> str:
-    """Pick the best thumbnail URL from a yt-dlp info dict."""
-    # Direct thumbnail field
+def _best_thumbnail(info: dict[str, Any], prefer_square: bool = False) -> str:
+    """Pick the best thumbnail URL from a yt-dlp info dict.
+
+    Args:
+        prefer_square: When True, prefer square-ish images (channel avatar)
+                       over wide banners. Used for show-level artwork.
+    """
+    thumbs = info.get("thumbnails") or []
+    if thumbs and prefer_square:
+        # Separate square-ish (aspect ratio ≤ 1.5) from wide banners
+        def _score(t: dict) -> tuple[int, int]:
+            w, h = t.get("width", 0), t.get("height", 0)
+            is_square = 0.6 <= (w / h if h else 0) <= 1.5
+            return (1 if is_square else 0, w * h)
+
+        best = max(thumbs, key=_score)
+        url = best.get("url", "")
+        if url:
+            return url
+
+    # Direct thumbnail field (fallback)
     thumb = info.get("thumbnail") or ""
     if thumb:
         return thumb
-    # thumbnails list — pick the largest
-    thumbs = info.get("thumbnails") or []
+    # Pick the largest from the list
     if thumbs:
-        # Prefer by resolution, fallback to last entry
         best = max(thumbs, key=lambda t: t.get("width", 0) * t.get("height", 0))
         return best.get("url", "")
     return ""
@@ -139,12 +223,7 @@ def youtube_show_info(url: str) -> dict[str, Any]:
     yt_dlp = _require_yt_dlp()
     url = _normalize_channel_url(url)
 
-    ydl_opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": True,
-        "skip_download": True,
-    }
+    ydl_opts = _base_ydl_opts(extract_flat=True, skip_download=True)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -152,7 +231,7 @@ def youtube_show_info(url: str) -> dict[str, Any]:
         return {"name": "", "artwork_url": "", "video_count": 0}
 
     name = info.get("channel") or info.get("uploader") or info.get("title") or ""
-    thumbnail = _best_thumbnail(info)
+    thumbnail = _best_thumbnail(info, prefer_square=True)
     entries = info.get("entries")
     if entries is not None:
         video_count = info.get("playlist_count") or 0
@@ -188,12 +267,7 @@ def fetch_youtube(url: str) -> list[RSSEpisode]:
     yt_dlp = _require_yt_dlp()
     url = _normalize_channel_url(url)
 
-    ydl_opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": "in_playlist",
-        "skip_download": True,
-    }
+    ydl_opts = _base_ydl_opts(extract_flat="in_playlist", skip_download=True)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -261,20 +335,18 @@ def download_youtube_audio(
                 frac = downloaded / total
                 progress_cb(frac, f"Downloading {frac:.0%}")
 
-    ydl_opts: dict[str, Any] = {
-        "format": "bestaudio/best",
-        "outtmpl": str(show_folder / f"{stem}.%(ext)s"),
-        "postprocessors": [
+    ydl_opts = _base_ydl_opts(
+        format="bestaudio/best",
+        outtmpl=str(show_folder / f"{stem}.%(ext)s"),
+        postprocessors=[
             {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
             }
         ],
-        "quiet": True,
-        "no_warnings": True,
-        "progress_hooks": [_progress_hook],
-    }
+        progress_hooks=[_progress_hook],
+    )
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         rc = ydl.download([url])
@@ -303,42 +375,38 @@ def download_youtube_audio(
 def download_youtube_subtitles(
     video_id: str,
     lang: str = "en",
-) -> tuple[str | None, str]:
+) -> tuple[str | None, dict[str, Any]]:
     """Download subtitles for a YouTube video.
 
     Prefers manually uploaded subtitles, falls back to auto-generated.
-    Also returns the full video description (available from the same request).
+    Also returns the full yt-dlp info dict (description, upload_date, duration, etc.).
 
     Args:
         video_id: YouTube video ID.
         lang: Desired subtitle language code (default ``"en"``).
 
     Returns:
-        Tuple of (VTT subtitle text or None, full video description).
+        Tuple of (VTT subtitle text or None, full yt-dlp info dict).
     """
     yt_dlp = _require_yt_dlp()
 
     url = _YT_VIDEO_URL.format(video_id=video_id)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ydl_opts: dict[str, Any] = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "writesubtitles": True,
-            "writeautomaticsub": True,
-            "subtitleslangs": [lang],
-            "subtitlesformat": "vtt",
-            "outtmpl": str(Path(tmpdir) / "subs.%(ext)s"),
-        }
+        ydl_opts = _base_ydl_opts(
+            skip_download=True,
+            writesubtitles=True,
+            writeautomaticsub=True,
+            subtitleslangs=[lang],
+            subtitlesformat="vtt",
+            outtmpl=str(Path(tmpdir) / "subs.%(ext)s"),
+        )
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
         if not info:
-            return None, ""
-
-        full_description = info.get("description", "") or ""
+            return None, {}
 
         # Check for available subtitles
         manual_subs = info.get("subtitles", {})
@@ -350,19 +418,17 @@ def download_youtube_subtitles(
 
         if not has_manual and not has_auto:
             logger.debug("No subtitles available for {} in {}", video_id, lang)
-            return None, full_description
+            return None, info
 
         # Download the subtitles
-        dl_opts: dict[str, Any] = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "writesubtitles": has_manual,
-            "writeautomaticsub": not has_manual and has_auto,
-            "subtitleslangs": [lang],
-            "subtitlesformat": "vtt",
-            "outtmpl": str(Path(tmpdir) / "subs"),
-        }
+        dl_opts = _base_ydl_opts(
+            skip_download=True,
+            writesubtitles=has_manual,
+            writeautomaticsub=not has_manual and has_auto,
+            subtitleslangs=[lang],
+            subtitlesformat="vtt",
+            outtmpl=str(Path(tmpdir) / "subs"),
+        )
 
         with yt_dlp.YoutubeDL(dl_opts) as ydl:
             ydl.download([url])
@@ -371,12 +437,12 @@ def download_youtube_subtitles(
         vtt_files = list(Path(tmpdir).glob("*.vtt"))
         if not vtt_files:
             logger.debug("No VTT file produced for {}", video_id)
-            return None, full_description
+            return None, info
 
         vtt_text = vtt_files[0].read_text(encoding="utf-8")
         source = "manual" if has_manual else "auto-generated"
         logger.info("Downloaded {} subtitles for {} ({})", lang, video_id, source)
-        return vtt_text, full_description
+        return vtt_text, info
 
 
 def import_youtube_transcript(
@@ -406,18 +472,32 @@ def import_youtube_transcript(
     from podcodex.core.pipeline_db import mark_step
     from podcodex.core.versions import save_version
 
-    vtt_text, full_description = download_youtube_subtitles(video_id, lang=lang)
+    vtt_text, video_info = download_youtube_subtitles(video_id, lang=lang)
 
-    # Update feed cache with the full description (flat extraction truncates it)
-    if full_description:
+    # Backfill feed cache with full metadata from the per-video extraction
+    # (flat playlist extraction often misses upload_date, duration, description)
+    if video_info:
         show_folder = episode_dir.parent
         cached = load_feed_cache(show_folder)
         if cached:
+            full_description = video_info.get("description", "") or ""
+            full_ep = _entry_to_episode(video_info, 0)
+            dirty = False
             for ep in cached:
-                if ep.guid == video_id and len(full_description) > len(ep.description):
+                if ep.guid != video_id:
+                    continue
+                if full_description and len(full_description) > len(ep.description):
                     ep.description = full_description
-                    break
-            save_feed_cache(show_folder, cached)
+                    dirty = True
+                if full_ep.pub_date and not ep.pub_date:
+                    ep.pub_date = full_ep.pub_date
+                    dirty = True
+                if full_ep.duration and not ep.duration:
+                    ep.duration = full_ep.duration
+                    dirty = True
+                break
+            if dirty:
+                save_feed_cache(show_folder, cached)
 
     if not vtt_text:
         return False

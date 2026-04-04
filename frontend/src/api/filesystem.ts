@@ -16,6 +16,11 @@ export const openFolder = (path: string) =>
     { method: "POST" },
   );
 
+// ── Artwork ────────────────────────────────
+
+export const artworkUrl = (showFolder: string) =>
+  `${BASE}/api/shows/artwork?show_folder=${encodeURIComponent(showFolder)}`;
+
 // ── Audio ───────────────────────────────────
 
 export const audioFileUrl = (path: string) =>

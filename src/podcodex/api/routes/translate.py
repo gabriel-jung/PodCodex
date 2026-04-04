@@ -6,16 +6,20 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
+    ApplyManualRequest,
+    ManualPromptsRequest,
     batch_progress,
     build_provenance,
     load_best_source,
     load_segments_or_404,
     submit_task,
 )
+from podcodex.api.routes._versions import register_version_routes
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths, normalize_lang
 
 router = APIRouter()
+register_version_routes(router, lang_param=True)
 
 
 # ── Load / save ──────────────────────────────────────────
@@ -67,58 +71,6 @@ async def list_languages(
     from podcodex.core.translate import list_translations
 
     return list_translations(audio_path, output_dir=output_dir)
-
-
-# ── Version history ──────────────────────────────────────
-
-
-@router.get("/versions")
-async def list_translate_versions(
-    audio_path: str = Query(...),
-    lang: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> list[dict]:
-    """List all archived translation versions for a language (newest first)."""
-    from podcodex.core.versions import list_versions
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    lang_norm = normalize_lang(lang)
-    return list_versions(p.base, lang_norm)
-
-
-@router.get("/versions/{version_id}")
-async def load_translate_version(
-    version_id: str,
-    audio_path: str = Query(...),
-    lang: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> list[dict]:
-    """Load segments from a specific archived translation version."""
-    from podcodex.core.versions import load_version
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    lang_norm = normalize_lang(lang)
-    try:
-        return load_version(p.base, lang_norm, version_id)
-    except FileNotFoundError:
-        raise HTTPException(404, f"Version {version_id} not found")
-
-
-@router.delete("/versions/{version_id}")
-async def delete_translate_version(
-    version_id: str,
-    audio_path: str = Query(...),
-    lang: str = Query(...),
-    output_dir: str | None = Query(None),
-) -> dict:
-    """Delete a specific translation version."""
-    from podcodex.core.versions import delete_version
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    lang_norm = normalize_lang(lang)
-    if not delete_version(p.base, lang_norm, version_id):
-        raise HTTPException(404, f"Version {version_id} not found")
-    return {"status": "deleted", "version_id": version_id}
 
 
 # ── Pipeline execution ───────────────────────────────────
@@ -203,15 +155,6 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
 # ── Manual mode ──────────────────────────────────────────
 
 
-class ManualPromptsRequest(BaseModel):
-    audio_path: str
-    output_dir: str | None = None
-    context: str = ""
-    source_lang: str = "French"
-    target_lang: str = "English"
-    batch_minutes: float = 15.0
-
-
 @router.post("/manual-prompts")
 async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     """Generate batched prompts for manual translation."""
@@ -233,13 +176,6 @@ async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
         {"batch_index": i, "prompt": prompt, "segment_count": len(batch_segs)}
         for i, (batch_segs, prompt) in enumerate(batches)
     ]
-
-
-class ApplyManualRequest(BaseModel):
-    audio_path: str
-    output_dir: str | None = None
-    lang: str = "English"
-    corrections: list[dict]
 
 
 @router.post("/apply-manual")
