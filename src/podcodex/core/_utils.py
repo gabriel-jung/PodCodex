@@ -30,8 +30,6 @@ class AudioPaths:
 
         p = AudioPaths.from_audio("episode.mp3")
         p.transcript        # → …/episode/episode.transcript.json
-        p.polished_raw      # → …/episode/episode.polished.raw.json
-        p.translation("en") # → …/episode/episode.translated.en.json
         p.synthesized       # → …/episode/episode.synthesized.wav
     """
 
@@ -127,53 +125,6 @@ class AudioPaths:
         """Validated transcript if it exists, else raw."""
         return self.transcript if self.transcript.exists() else self.transcript_raw
 
-    # — Polish —
-
-    @property
-    def polished(self) -> Path:
-        return self.base.with_suffix(".polished.json")
-
-    @property
-    def polished_raw(self) -> Path:
-        return self.base.with_suffix(".polished.raw.json")
-
-    @property
-    def polished_best(self) -> Path:
-        """Validated polished if it exists, else raw."""
-        return self.polished if self.polished.exists() else self.polished_raw
-
-    # — Translation —
-
-    def translation(self, lang: str) -> Path:
-        lang = normalize_lang(lang)
-        return self.base.parent / f"{self.base.name}.translated.{lang}.json"
-
-    def translation_raw(self, lang: str) -> Path:
-        lang = normalize_lang(lang)
-        return self.base.parent / f"{self.base.name}.translated.{lang}.raw.json"
-
-    def _translation_legacy(self, lang: str) -> Path:
-        """Old naming: {stem}.{lang}.json (before 'translated' prefix)."""
-        lang = normalize_lang(lang)
-        return self.base.parent / f"{self.base.name}.{lang}.json"
-
-    def _translation_raw_legacy(self, lang: str) -> Path:
-        """Old naming: {stem}.{lang}.raw.json."""
-        lang = normalize_lang(lang)
-        return self.base.parent / f"{self.base.name}.{lang}.raw.json"
-
-    def translation_best(self, lang: str) -> Path:
-        """Best translation file: new naming first, then legacy."""
-        for p in [
-            self.translation(lang),
-            self.translation_raw(lang),
-            self._translation_legacy(lang),
-            self._translation_raw_legacy(lang),
-        ]:
-            if p.exists():
-                return p
-        return self.translation(lang)  # default to new path
-
     # — Synthesis —
 
     @property
@@ -226,21 +177,6 @@ DEFAULT_BATCH_MINUTES = 15.0
 
 # LLM temperature for deterministic output in polish / translate.
 DEFAULT_TEMPERATURE = 0
-
-
-# Internal file suffixes that are never translation language names.
-# Used by translate.py (to detect languages) and ingest/folder.py (to scan episodes).
-INTERNAL_SUFFIXES = frozenset(
-    {
-        "transcript",
-        "polished",
-        "words",
-        "diar",
-        "assigned",
-        "speaker_map",
-        "imported",
-    }
-)
 
 
 # ──────────────────────────────────────────────
@@ -1117,3 +1053,61 @@ def validate_manual(
 
     logger.info(f"Manual corrections validated — {len(results)} segments")
     return results
+
+
+def run_llm_pipeline(
+    segments: list[dict],
+    system_prompt: str,
+    *,
+    mode: str = "ollama",
+    model: str = "",
+    api_base_url: str = "",
+    api_key: str | None = None,
+    batch_minutes: float = DEFAULT_BATCH_MINUTES,
+    provider: str | None = None,
+    instruction: str = "Process",
+    label: str = "",
+    original_segments: list[dict] | None = None,
+    merge: bool = True,
+    max_gap: float = DEFAULT_MAX_GAP,
+    on_batch: Callable[[int, int], None] | None = None,
+) -> list[dict]:
+    """Run an LLM pipeline (polish or translate) on segments.
+
+    Handles manual/ollama/api modes, optional merge, and progress callbacks.
+    """
+    if mode == "manual":
+        orig = original_segments if original_segments is not None else segments
+        return validate_manual(segments, orig)
+
+    if merge:
+        segments = merge_consecutive_segments(segments, max_gap=max_gap)
+        logger.info(f"After merge: {len(segments)} segments")
+
+    if mode == "ollama":
+        return run_ollama(
+            segments,
+            system_prompt,
+            model=model or "qwen3:4b",
+            batch_minutes=batch_minutes,
+            instruction=instruction,
+            label=label,
+            on_batch=on_batch,
+        )
+    elif mode == "api":
+        return run_api(
+            segments,
+            system_prompt,
+            model=model,
+            api_base_url=api_base_url,
+            api_key=api_key,
+            batch_minutes=batch_minutes,
+            provider=provider,
+            instruction=instruction,
+            label=label,
+            on_batch=on_batch,
+        )
+    else:
+        raise ValueError(
+            f"Unknown mode: {mode!r}. Choose from 'manual', 'ollama', 'api'."
+        )

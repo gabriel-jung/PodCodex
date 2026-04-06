@@ -1,5 +1,5 @@
 import type { ExtrasResponse, HealthResponse, ModelsResponse, TaskResponse } from "./types";
-import { json } from "./base";
+import { json } from "./client";
 
 export const getHealth = () => json<HealthResponse>("/api/health");
 

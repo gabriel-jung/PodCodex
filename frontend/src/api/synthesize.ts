@@ -7,7 +7,7 @@ import type {
   TaskResponse,
   VoiceSample,
 } from "./types";
-import { BASE, json } from "./base";
+import { BASE, json } from "./client";
 
 export const getSynthesisStatus = (audioPath: string) =>
   json<SynthesisStatus>(`/api/synthesize/status?audio_path=${encodeURIComponent(audioPath)}`);

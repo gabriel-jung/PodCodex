@@ -3,7 +3,7 @@ podcodex.ingest.importer — Import external transcripts into PodCodex format.
 
 Accepts a transcript JSON file (standard ``{meta, segments}`` format or a
 bare segments list) and writes it into the show folder structure so it can
-be vectorized with ``podcodex vectorize``.
+be indexed from the desktop app.
 
 For transcripts without timestamps, positional pseudo-timestamps are
 computed as character-offset percentages (0–100) of the full transcript.

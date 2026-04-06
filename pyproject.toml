@@ -27,9 +27,6 @@ dependencies = [
 bot = [
     "discord.py>=2.5.0",
 ]
-app = [
-    "streamlit>=1.55.0",
-]
 desktop = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
@@ -60,7 +57,6 @@ pipeline = [
 ]
 
 [project.scripts]
-podcodex     = "podcodex.cli:main"
 podcodex-bot = "podcodex.bot.bot:main"
 podcodex-api = "podcodex.api.app:main"
 

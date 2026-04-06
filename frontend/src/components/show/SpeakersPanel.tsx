@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ShowMeta } from "@/api/types";
 import { updateShowMeta } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
 import { errorMessage } from "@/lib/utils";
@@ -26,7 +27,7 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
     mutationFn: () =>
       updateShowMeta(folder, { ...meta, speakers }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["showMeta", folder] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
     },
   });
 

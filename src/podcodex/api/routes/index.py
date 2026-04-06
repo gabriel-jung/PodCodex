@@ -108,7 +108,9 @@ async def index_sources(
         )
 
     # Polished
-    polished_exists = p.polished.exists() or p.polished_raw.exists()
+    from podcodex.core.versions import has_version as _has_version
+
+    polished_exists = _has_version(p.base, "polished")
     detail = _version_detail("polished") if polished_exists else ""
     sources.append(
         {
@@ -259,8 +261,8 @@ async def start_index(req: IndexRequest) -> TaskResponse:
             Dict with ``chunks_upserted`` (int) and ``source`` (str) keys.
         """
         from podcodex.api.routes._helpers import build_index_transcript
-        from podcodex.cli import vectorize_batch
         from podcodex.core.versions import load_version
+        from podcodex.rag.indexing import vectorize_batch
         from podcodex.rag.localstore import LocalStore
 
         p = AudioPaths.from_audio(req_data.audio_path, output_dir=req_data.output_dir)

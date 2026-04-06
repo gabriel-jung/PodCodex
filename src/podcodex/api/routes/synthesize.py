@@ -273,15 +273,14 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
 
         progress_cb(0.0, "Loading source segments...")
         # Try to load translation matching the target language
+        from podcodex.core.versions import load_latest as _load_latest
+
         p = AudioPaths.from_audio(req_data.audio_path, output_dir=req_data.output_dir)
         segments = None
         if req_data.source_lang:
-            lang_file = p.translation_best(req_data.source_lang)
-            if lang_file.exists():
-                import json
+            from podcodex.core._utils import normalize_lang
 
-                data = json.loads(lang_file.read_text(encoding="utf-8"))
-                segments = data if isinstance(data, list) else data.get("segments")
+            segments = _load_latest(p.base, normalize_lang(req_data.source_lang))
 
         if not segments:
             try:

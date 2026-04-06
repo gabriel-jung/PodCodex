@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from podcodex.api.routes._helpers import (
     ApplyManualRequest,
+    LLMRequest,
     ManualPromptsRequest,
     batch_progress,
     build_provenance,
-    load_segments_or_404,
     submit_task,
 )
 from podcodex.api.routes._versions import register_version_routes
@@ -29,15 +29,15 @@ async def get_polished_segments(
     audio_path: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
-    """Load polished segments (latest version, falls back to legacy files)."""
+    """Load polished segments from the version DB."""
     from podcodex.api.routes._helpers import annotate_flags
     from podcodex.core.versions import load_latest
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     segments = load_latest(p.base, "polished")
-    if segments is not None:
-        return annotate_flags(segments)
-    return load_segments_or_404(p.polished_best, "polished segments")
+    if segments is None:
+        raise HTTPException(404, "No polished segments found")
+    return annotate_flags(segments)
 
 
 @router.put("/segments")
@@ -58,25 +58,8 @@ async def save_polished_segments(
 # ── Pipeline execution ───────────────────────────────────
 
 
-class PolishRequest(BaseModel):
-    audio_path: str
-    output_dir: str | None = None
-    mode: str = "ollama"
-    provider: str | None = None
-    model: str = ""
-    context: str = ""
-    source_lang: str = "French"
-    batch_minutes: float = 15.0
+class PolishRequest(LLMRequest):
     engine: str = "Whisper"
-    api_base_url: str = ""
-    api_key: str | None = None
-
-    @field_validator("batch_minutes")
-    @classmethod
-    def batch_minutes_positive(cls, v: float) -> float:
-        if v <= 0:
-            raise ValueError("batch_minutes must be positive")
-        return v
 
 
 @router.post("/start", response_model=TaskResponse)

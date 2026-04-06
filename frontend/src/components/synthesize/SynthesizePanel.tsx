@@ -14,6 +14,7 @@ import {
   getSegments,
   getPolishSegments,
 } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import MissingDependency from "@/components/common/MissingDependency";
@@ -46,20 +47,20 @@ export default function SynthesizePanel() {
   const [speakerOverrides, setSpeakerOverrides] = useState<Record<string, string>>({});
 
   const { data: pipelineConfig } = useQuery({
-    queryKey: ["pipeline-config"],
+    queryKey: queryKeys.pipelineConfig(),
     queryFn: getPipelineConfig,
     staleTime: Infinity,
   });
 
   const { data: status, refetch: refetchStatus } = useQuery({
-    queryKey: ["synthesize", "status", episode.audio_path],
+    queryKey: queryKeys.synthesizeStatus(episode.audio_path),
     queryFn: () => getSynthesisStatus(episode.audio_path!),
     enabled: !!episode.audio_path,
   });
 
   // Load transcript segments for speaker browsing
   const { data: transcriptSegments } = useQuery({
-    queryKey: ["synth-source-segments", episode.audio_path],
+    queryKey: queryKeys.synthSourceSegments(episode.audio_path),
     queryFn: async () => {
       if (!episode.audio_path) return [];
       try {
@@ -112,21 +113,21 @@ export default function SynthesizePanel() {
   }, [transcriptSegments, fromSec, toSec, speakerOverrides]);
 
   const { data: voiceSamples, refetch: refetchVoiceSamples } = useQuery({
-    queryKey: ["synthesize", "voices", episode.audio_path],
+    queryKey: queryKeys.synthesizeVoices(episode.audio_path),
     queryFn: () => getVoiceSamples(episode.audio_path!),
     enabled: !!episode.audio_path && !!status?.voice_samples_extracted,
   });
 
   const { data: generatedSegments } = useQuery({
-    queryKey: ["synthesize", "generated", episode.audio_path],
+    queryKey: queryKeys.synthesizeGenerated(episode.audio_path),
     queryFn: () => getGeneratedSegments(episode.audio_path!),
     enabled: !!episode.audio_path && !!status?.tts_segments_generated,
   });
 
   const refreshQueries = useCallback(() => {
     refetchStatus();
-    queryClient.invalidateQueries({ queryKey: ["synthesize"] });
-    queryClient.invalidateQueries({ queryKey: ["episodes"] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.synthesizeAll() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
   }, [queryClient, refetchStatus]);
 
   const extractMutation = useMutation({

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Outlet } from "@tanstack/react-router";
 import { getHealth } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import AudioBar from "@/components/layout/AudioBar";
 import TaskBar from "@/components/layout/TaskBar";
 import CommandPalette from "@/components/CommandPalette";
@@ -14,7 +15,7 @@ import { Home, Sun, Moon, Monitor, Settings, PanelLeftOpen, PanelLeftClose } fro
 
 export default function RootLayout() {
   const { data: health, error } = useQuery({
-    queryKey: ["health"],
+    queryKey: queryKeys.health(),
     queryFn: getHealth,
     retry: 3,
     retryDelay: 1000,

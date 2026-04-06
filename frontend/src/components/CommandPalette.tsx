@@ -23,6 +23,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { listShows } from "@/api/shows";
+import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore } from "@/stores";
 import { useTheme } from "@/hooks/useTheme";
 
@@ -33,7 +34,7 @@ export default function CommandPalette() {
   const isPlaying = useAudioStore((s) => s.isPlaying);
 
   const { data: shows } = useQuery({
-    queryKey: ["shows"],
+    queryKey: queryKeys.shows(),
     queryFn: listShows,
     enabled: open,
   });

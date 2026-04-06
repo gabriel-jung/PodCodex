@@ -3,7 +3,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
 import { updateShowMeta, moveShow, deleteShow } from "@/api/client";
-import { useConfigStore } from "@/stores";
+import { queryKeys } from "@/api/queryKeys";
+import { useEpisodeStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
@@ -88,8 +89,8 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         },
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["showMeta", folder] });
-      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
     },
   });
 
@@ -108,7 +109,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
       moveShow(folder, newPath, mf),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
       navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(data.new_path) } });
     },
   });
@@ -117,7 +118,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const deleteMutation = useMutation({
     mutationFn: (deleteFiles: boolean) => deleteShow(folder, deleteFiles),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
       navigate({ to: "/" });
     },
   });
@@ -174,7 +175,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     maxDurationMinutes, setMaxDurationMinutes,
     titleInclude, setTitleInclude,
     titleExclude, setTitleExclude,
-  } = useConfigStore();
+  } = useEpisodeStore();
 
   return (
     <div className="flex-1 overflow-y-auto p-6 space-y-8 max-w-2xl">

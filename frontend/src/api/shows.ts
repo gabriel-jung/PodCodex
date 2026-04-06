@@ -11,7 +11,7 @@ import type {
   ShowSummary,
   TaskResponse,
 } from "./types";
-import { json } from "./base";
+import { json } from "./client";
 
 const enc = encodeURIComponent;
 

@@ -8,6 +8,7 @@ import {
   getStepVersions,
   startIndex,
 } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { errorMessage, getShowName, selectClass, versionDate, versionLabel, versionInfo } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { Button } from "@/components/ui/button";
@@ -29,18 +30,18 @@ export default function IndexPanel() {
   const expanded = task.expanded || !episode.indexed;
 
   const { data: config } = useQuery({
-    queryKey: ["index", "config"],
+    queryKey: queryKeys.indexConfig(),
     queryFn: getIndexConfig,
   });
 
   const { data: status } = useQuery({
-    queryKey: ["index", "status", audioPath, showName],
+    queryKey: queryKeys.indexStatus(audioPath, showName),
     queryFn: () => getIndexStatus(audioPath!, showName),
     enabled: !!audioPath,
   });
 
   const { data: sources } = useQuery({
-    queryKey: ["index", "sources", audioPath],
+    queryKey: queryKeys.indexSources(audioPath),
     queryFn: () => getIndexSources(audioPath!),
     enabled: !!audioPath,
   });
@@ -61,7 +62,7 @@ export default function IndexPanel() {
 
   // Load versions for the selected step
   const { data: stepVersions } = useQuery({
-    queryKey: ["index", "step-versions", audioPath, source],
+    queryKey: queryKeys.indexStepVersions(audioPath, source),
     queryFn: () => getStepVersions(audioPath!, source),
     enabled: !!audioPath && availableSources.length > 0,
   });

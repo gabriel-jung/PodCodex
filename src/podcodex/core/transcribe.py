@@ -16,9 +16,7 @@ Files produced alongside the MP3:
     {stem}.transcript.json           — legacy copy of validated transcript
 """
 
-import json
 import os
-import subprocess
 import warnings
 from pathlib import Path
 
@@ -715,100 +713,3 @@ def save_transcript(
     prov_update = {"transcript": provenance} if provenance else {}
     mark_step(p.show_dir, p.base.name, transcribed=True, provenance=prov_update)
     return p.transcript
-
-
-def audio_duration(path: Path | str) -> float | None:
-    """Return audio duration in seconds, trying soundfile then ffprobe.
-
-    Args:
-        path: Path to the audio file.
-
-    Returns:
-        Duration in seconds, or ``None`` if neither soundfile nor ffprobe
-        can read the file.
-    """
-    path = Path(path)
-    try:
-        import soundfile as sf
-
-        return sf.info(str(path)).duration
-    except Exception:
-        pass
-    try:
-        out = subprocess.check_output(
-            [
-                "ffprobe",
-                "-v",
-                "quiet",
-                "-print_format",
-                "json",
-                "-show_format",
-                str(path),
-            ],
-            stderr=subprocess.DEVNULL,
-        )
-        return float(json.loads(out)["format"]["duration"])
-    except Exception:
-        return None
-
-
-def trim_audio(
-    audio_path: Path | str,
-    start: float,
-    end: float,
-    output_dir: str | Path | None = None,
-) -> Path:
-    """Cut audio_path to [start, end] and save as a new file.
-
-    The trimmed file is placed in a sibling directory named
-    ``{stem}_trim_{start}_{end}/`` next to output_dir, keeping the original
-    filename so downstream pipeline outputs have clean names.
-
-    Args:
-        audio_path: Source audio file.
-        start: Start time in seconds.
-        end: End time in seconds.
-        output_dir: Output directory override (see ``AudioPaths.output_dir``
-            for resolution rules).
-
-    Returns:
-        Path to the trimmed audio file (skips ffmpeg if it already exists).
-
-    Raises:
-        subprocess.CalledProcessError: If ffmpeg fails.
-    """
-    audio_path = Path(audio_path)
-    out = AudioPaths.output_dir(audio_path, output_dir)
-
-    def _mmss(s: float) -> str:
-        """Format seconds as a compact ``XmYYs`` string for directory naming."""
-        return f"{int(s) // 60}m{int(s) % 60:02d}s"
-
-    # Place trim dir next to output_dir, not inside it
-    parent = out.parent
-    trim_dir = parent / f"{audio_path.stem}_trim_{_mmss(start)}_{_mmss(end)}"
-    trim_dir.mkdir(parents=True, exist_ok=True)
-    dest = trim_dir / audio_path.name
-    if dest.exists():
-        return dest
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(audio_path),
-            "-ss",
-            str(start),
-            "-to",
-            str(end),
-            "-ar",
-            str(SAMPLE_RATE),
-            "-ac",
-            "1",
-            str(dest),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    logger.info(f"Trimmed audio → {dest.name} ({_mmss(start)} → {_mmss(end)})")
-    return dest

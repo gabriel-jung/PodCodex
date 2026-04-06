@@ -1,30 +1,19 @@
-import type { Segment, TaskResponse, TranscribeRequest, VersionEntry } from "./types";
-import { BASE, json } from "./base";
+import type { Segment, TaskResponse, TranscribeRequest } from "./types";
+import { BASE, json } from "./client";
+import { createVersionApi } from "./versions";
 
-function qs(audioPath: string, outputDir?: string) {
-  const p = new URLSearchParams({ audio_path: audioPath });
-  if (outputDir) p.set("output_dir", outputDir);
-  return p.toString();
-}
+const api = createVersionApi("transcribe");
 
 export const getSegments = (audioPath: string, outputDir?: string) =>
-  json<Segment[]>(`/api/transcribe/segments?${qs(audioPath, outputDir)}`);
-
+  api.getSegments(audioPath, { output_dir: outputDir });
 export const saveSegments = (audioPath: string, segments: Segment[], outputDir?: string) =>
-  json<{ status: string; count: number }>(`/api/transcribe/segments?${qs(audioPath, outputDir)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(segments),
-  });
-
+  api.saveSegments(audioPath, segments, { output_dir: outputDir });
 export const getTranscribeVersions = (audioPath: string, outputDir?: string) =>
-  json<VersionEntry[]>(`/api/transcribe/versions?${qs(audioPath, outputDir)}`);
-
+  api.getVersions(audioPath, { output_dir: outputDir });
 export const loadTranscribeVersion = (audioPath: string, versionId: string, outputDir?: string) =>
-  json<Segment[]>(`/api/transcribe/versions/${encodeURIComponent(versionId)}?${qs(audioPath, outputDir)}`);
-
+  api.loadVersion(audioPath, versionId, { output_dir: outputDir });
 export const deleteTranscribeVersion = (audioPath: string, versionId: string, outputDir?: string) =>
-  json<{ status: string }>(`/api/transcribe/versions/${encodeURIComponent(versionId)}?${qs(audioPath, outputDir)}`, { method: "DELETE" });
+  api.deleteVersion(audioPath, versionId, { output_dir: outputDir });
 
 export const getSpeakerMap = (audioPath: string) =>
   json<Record<string, string>>(`/api/transcribe/speaker-map?audio_path=${encodeURIComponent(audioPath)}`);
@@ -35,6 +24,12 @@ export const saveSpeakerMap = (audioPath: string, mapping: Record<string, string
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(mapping),
   });
+
+function qs(audioPath: string, outputDir?: string) {
+  const p = new URLSearchParams({ audio_path: audioPath });
+  if (outputDir) p.set("output_dir", outputDir);
+  return p.toString();
+}
 
 export const importTranscript = (audioPath: string, filePath: string, outputDir?: string) =>
   json<{ status: string; count: number }>(`/api/transcribe/import?${qs(audioPath, outputDir)}&file_path=${encodeURIComponent(filePath)}`, {

@@ -336,3 +336,46 @@ class TestHasMatchingVersion:
         assert (
             has_matching_version(episode_dir, "polished", {"model": "other"}) is False
         )
+
+
+# ──────────────────────────────────────────────
+# Dual-write & DB→file fallback
+# ──────────────────────────────────────────────
+
+
+class TestSaveAndLoad:
+    """Verify save_version writes both file and DB, and load_latest uses the DB."""
+
+    def test_save_writes_both_file_and_db(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+
+        version_id = save_version(
+            episode_dir, "polished", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE
+        )
+
+        # File half
+        version_file = (
+            episode_dir.parent / ".versions" / "polished" / f"{version_id}.json"
+        )
+        assert version_file.exists()
+        assert json.loads(version_file.read_text()) == SAMPLE_SEGMENTS
+
+        # DB half — pipeline.db lives at show level (base.parent.parent)
+        show_dir = episode_dir.parent.parent
+        assert (show_dir / "pipeline.db").exists()
+        db = get_pipeline_db(show_dir)
+        meta = db.get_latest_version(episode_dir.name, "polished")
+        assert meta is not None
+        assert meta["id"] == version_id
+        assert meta["content_hash"] == compute_hash(SAMPLE_SEGMENTS)
+        close_pipeline_db(show_dir)
+
+    def test_load_latest_returns_none_when_db_empty(self, episode_dir):
+        """No versions saved → load_latest returns None (no filesystem fallback)."""
+        assert load_latest(episode_dir, "polished") is None
+
+    def test_load_latest_round_trip(self, episode_dir):
+        """Save then load returns the same segments."""
+        save_version(episode_dir, "polished", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        loaded = load_latest(episode_dir, "polished")
+        assert loaded == SAMPLE_SEGMENTS

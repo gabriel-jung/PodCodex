@@ -12,9 +12,10 @@ import {
   getTranslateManualPrompts,
   applyTranslateManual,
 } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { errorMessage, selectClass } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
-import { useLLMConfig, useBestSourceSegments } from "@/hooks/useLLMPipeline";
+import { useLLMConfig, buildLLMRequest, useBestSourceSegments } from "@/hooks/useLLMPipeline";
 import HelpLabel from "@/components/common/HelpLabel";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
 import PipelinePanel from "@/components/common/PipelinePanel";
@@ -37,7 +38,7 @@ export default function TranslatePanel() {
   const [config, setConfig] = useLLMConfig(episode, showMeta);
 
   const { data: languages } = useQuery({
-    queryKey: ["translate", "languages", audioPath],
+    queryKey: queryKeys.translateLanguages(audioPath),
     queryFn: () => getTranslateLanguages(audioPath!),
     enabled: !!audioPath,
   });
@@ -49,18 +50,7 @@ export default function TranslatePanel() {
 
   const startMutation = useMutation({
     mutationFn: () =>
-      startTranslate({
-        audio_path: audioPath!,
-        mode: config.mode === "api" ? "api" : "ollama",
-        provider: config.mode === "api" && config.provider !== "custom" ? config.provider : undefined,
-        model: config.model,
-        context: config.context,
-        source_lang: config.sourceLang,
-        target_lang: targetLang,
-        batch_minutes: config.batchMinutes,
-        api_base_url: config.apiBaseUrl || undefined,
-        api_key: config.apiKey || undefined,
-      }),
+      startTranslate({ ...buildLLMRequest(audioPath!, config), target_lang: targetLang }),
     onSuccess: (data) => task.startTask(data.task_id),
   });
 

@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import type { SearchResult } from "@/api/types";
 import { useEpisodeStore, useAudioPath, useSearchStore } from "@/stores";
 import { getSearchConfig, getIndexStats, searchQuery, exactSearch, randomQuote } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { errorMessage, getShowName, selectClass } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Settings2, Shuffle } from "lucide-react";
@@ -50,12 +51,12 @@ export default function SearchPanel(props: SearchPanelProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const { data: config } = useQuery({
-    queryKey: ["search", "config"],
+    queryKey: queryKeys.searchConfig(),
     queryFn: getSearchConfig,
   });
 
   const { data: stats } = useQuery({
-    queryKey: ["search", "stats", folder, showName],
+    queryKey: queryKeys.searchStats(folder ?? "", showName),
     queryFn: () => getIndexStats(folder!, showName),
     enabled: isShowScope,
   });

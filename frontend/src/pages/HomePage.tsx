@@ -7,9 +7,10 @@ import {
   refreshRSS,
   refreshYouTube,
 } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
 import { timeAgo } from "@/lib/utils";
-import { useConfigStore } from "@/stores/configStore";
+import { useLayoutStore } from "@/stores";
 import ShowCard from "@/components/show/ShowCard";
 import ShowListRow from "@/components/show/ShowListRow";
 import AddShowModal from "@/components/show/AddShowModal";
@@ -19,17 +20,17 @@ import { EmptyState } from "@/components/ui/empty-state";
 export default function HomePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig });
+  const { data: config } = useQuery({ queryKey: queryKeys.config(), queryFn: getConfig });
   const { data: shows } = useQuery({
-    queryKey: ["shows"],
+    queryKey: queryKeys.shows(),
     queryFn: listShows,
   });
 
   const [addOpen, setAddOpen] = useState(false);
-  const viewMode = useConfigStore((s) => s.showViewMode);
-  const setViewMode = useConfigStore((s) => s.setShowViewMode);
-  const cardSize = useConfigStore((s) => s.showCardSize);
-  const setCardSize = useConfigStore((s) => s.setShowCardSize);
+  const viewMode = useLayoutStore((s) => s.showViewMode);
+  const setViewMode = useLayoutStore((s) => s.setShowViewMode);
+  const cardSize = useLayoutStore((s) => s.showCardSize);
+  const setCardSize = useLayoutStore((s) => s.setShowCardSize);
 
   const rssShows = shows?.filter((s) => s.has_rss && !s.has_youtube) ?? [];
   const ytShows = shows?.filter((s) => s.has_youtube) ?? [];
@@ -51,8 +52,8 @@ export default function HomePage() {
       ]);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["shows"] });
-      queryClient.invalidateQueries({ queryKey: ["episodes"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
     },
   });
 
@@ -150,7 +151,7 @@ export default function HomePage() {
             defaultSavePath={config?.default_save_path || "~"}
             onClose={() => setAddOpen(false)}
             onCreated={(folder) => {
-              queryClient.invalidateQueries({ queryKey: ["shows"] });
+              queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
               setAddOpen(false);
               goToShow(folder);
             }}

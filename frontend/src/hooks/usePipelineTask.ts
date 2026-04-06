@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useActiveTask } from "@/hooks/useActiveTask";
+import { queryKeys } from "@/api/queryKeys";
 
 /**
  * Shared hook for pipeline panel task management.
@@ -18,8 +19,8 @@ export function usePipelineTask(
   const activeTaskId = taskId || resumedTaskId;
 
   const refreshQueries = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: [stepKey] });
-    queryClient.invalidateQueries({ queryKey: ["episodes"] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.stepAll(stepKey) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
   }, [queryClient, stepKey]);
 
   const handleComplete = useCallback(() => {

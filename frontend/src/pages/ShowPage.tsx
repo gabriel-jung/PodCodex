@@ -9,11 +9,12 @@ import {
   deleteAudioFile,
   startBatch,
 } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { artworkUrl } from "@/api/filesystem";
 import type { Episode } from "@/api/types";
 import { languageToISO, isOutdated } from "@/lib/utils";
-import { useAudioStore, useConfigStore, useTaskStore } from "@/stores";
-import { usePipelineConfig } from "@/hooks/usePipelineConfig";
+import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
+import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useShowActions } from "@/hooks/useShowActions";
 
 import { Button } from "@/components/ui/button";
@@ -43,7 +44,7 @@ type SortKey = "date_desc" | "date_asc" | "title_asc" | "title_desc" | "duration
 export default function ShowPage({ folder, initialTab }: { folder: string; initialTab?: string }) {
   const navigate = useNavigate();
   const { seekTo, setAudioMeta, audioPath } = useAudioStore();
-  const { minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude } = useConfigStore();
+  const { minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude } = useEpisodeStore();
   const queryClient = useQueryClient();
 
 
@@ -62,23 +63,15 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   // Pipeline config from store (for batch start)
   const { tc, llm, engine, targetLang } = usePipelineConfig();
 
-  // Build app-level defaults for step status comparison
-  const pipelineDefaults = useMemo(() => ({
-    model_size: tc.modelSize,
-    diarize: tc.diarize,
-    llm_mode: llm.mode === "api" ? "api" : "ollama",
-    llm_provider: llm.mode === "api" ? llm.provider : "",
-    llm_model: llm.model,
-    target_lang: targetLang,
-  }), [tc.modelSize, tc.diarize, llm.mode, llm.provider, llm.model, targetLang]);
+  const pipelineDefaults = usePipelineDefaults();
 
   const { data: meta } = useQuery({
-    queryKey: ["showMeta", folder],
+    queryKey: queryKeys.showMeta(folder),
     queryFn: () => getShowMeta(folder),
   });
 
   const { data: episodes, isLoading: episodesLoading } = useQuery({
-    queryKey: ["episodes", folder, pipelineDefaults],
+    queryKey: queryKeys.episodes(folder, pipelineDefaults),
     queryFn: () => getEpisodes(folder, pipelineDefaults),
     refetchInterval: downloadTaskId || batchTaskId ? 5000 : false,
   });
@@ -88,14 +81,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const refreshMutation = useMutation({
     mutationFn: () => (isYouTube ? refreshYouTube(folder) : refreshRSS(folder)),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["episodes", folder] });
-      queryClient.invalidateQueries({ queryKey: ["showMeta", folder] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(folder) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (audioPath: string) => deleteAudioFile(audioPath),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["episodes", folder] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(folder) }),
   });
 
   const batchMutationEpisodesRef = useRef({ names: [] as string[], step: "" });
@@ -337,11 +330,10 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           <option value="outdated">Outdated ({filterCounts.outdated})</option>
         </select>
         <FilterDropdown />
-        <div className="flex-1" />
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search..."
+          placeholder="Search episodes..."
           className="input w-40 py-1.5 text-xs"
         />
       </div>

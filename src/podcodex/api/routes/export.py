@@ -11,36 +11,35 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from podcodex.core._utils import (
     AudioPaths,
-    read_json,
+    normalize_lang,
     segments_to_srt,
     segments_to_text,
     segments_to_vtt,
 )
+from podcodex.core.versions import load_latest
 
 router = APIRouter()
+
+
+# Map export source names to version DB step names.
+_STEP_MAP = {"transcript": "transcript", "polished": "polished"}
 
 
 def _load_segments(audio_path: str, output_dir: str | None, source: str) -> list[dict]:
     """Load segments for the given source (transcript, polished, or a language code)."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    if source == "transcript":
-        candidates = [f"{p.base}.transcript.json", f"{p.base}.transcript.raw.json"]
-    elif source == "polished":
-        candidates = [f"{p.base}.polished.json", f"{p.base}.polished.raw.json"]
-    else:
-        # Treat as language code
-        candidates = [f"{p.base}.{source}.json", f"{p.base}.{source}.raw.json"]
+    step = _STEP_MAP.get(source) or normalize_lang(source)
+    segments = load_latest(p.base, step)
+    if segments is not None:
+        return segments
 
-    for candidate in candidates:
-        path = Path(candidate)
-        if path.exists():
-            data = read_json(path)
-            # JSON files store segments under a "segments" key
-            if isinstance(data, dict) and "segments" in data:
-                return data["segments"]
-            if isinstance(data, list):
-                return data
-            return []
+    # Transcript has a legacy wrapped-JSON file (with metadata) — try that.
+    if source == "transcript":
+        from podcodex.api.routes._helpers import read_segments
+
+        data = read_segments(p.transcript_best)
+        if data is not None:
+            return data
 
     raise HTTPException(404, f"No segments found for source={source}")
 

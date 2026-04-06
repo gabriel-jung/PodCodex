@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
     ApplyManualRequest,
+    LLMRequest,
     ManualPromptsRequest,
     batch_progress,
     build_provenance,
     load_best_source,
-    load_segments_or_404,
     submit_task,
 )
 from podcodex.api.routes._versions import register_version_routes
@@ -31,16 +30,16 @@ async def get_translated_segments(
     lang: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
-    """Load translated segments (latest version, falls back to legacy files)."""
+    """Load translated segments from the version DB."""
     from podcodex.api.routes._helpers import annotate_flags
     from podcodex.core.versions import load_latest
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     lang_norm = normalize_lang(lang)
     segments = load_latest(p.base, lang_norm)
-    if segments is not None:
-        return annotate_flags(segments)
-    return load_segments_or_404(p.translation_best(lang), f"translation for '{lang}'")
+    if segments is None:
+        raise HTTPException(404, f"No translation found for '{lang}'")
+    return annotate_flags(segments)
 
 
 @router.put("/segments")
@@ -76,26 +75,8 @@ async def list_languages(
 # ── Pipeline execution ───────────────────────────────────
 
 
-class TranslateRequest(BaseModel):
-    audio_path: str
-    output_dir: str | None = None
-    mode: str = "ollama"
-    provider: str | None = None
-    model: str = ""
-    context: str = ""
-    source_lang: str = "French"
+class TranslateRequest(LLMRequest):
     target_lang: str = "English"
-    batch_minutes: float = 15.0
-    api_base_url: str = ""
-    api_key: str | None = None
-
-    @field_validator("batch_minutes")
-    @classmethod
-    def batch_minutes_positive(cls, v: float) -> float:
-        """Validate that batch_minutes is a positive number."""
-        if v <= 0:
-            raise ValueError("batch_minutes must be positive")
-        return v
 
 
 @router.post("/start", response_model=TaskResponse)

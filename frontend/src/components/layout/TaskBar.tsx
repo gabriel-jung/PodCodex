@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTaskStore } from "@/stores";
 import { cancelTask } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { useProgress, type TaskProgress } from "@/hooks/useProgress";
 import { Button } from "@/components/ui/button";
 import {
@@ -54,7 +55,7 @@ function DownloadStrip() {
   const dismiss = () => {
     setDownloadTask(null);
     if (downloadFolder) {
-      queryClient.refetchQueries({ queryKey: ["episodes", downloadFolder] });
+      queryClient.refetchQueries({ queryKey: queryKeys.episodesForFolder(downloadFolder) });
     }
   };
 
@@ -245,7 +246,7 @@ function BatchStrip() {
   const dismiss = () => {
     setBatchTask(null);
     if (batchFolder) {
-      queryClient.refetchQueries({ queryKey: ["episodes", batchFolder] });
+      queryClient.refetchQueries({ queryKey: queryKeys.episodesForFolder(batchFolder) });
     }
   };
 

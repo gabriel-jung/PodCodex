@@ -5,9 +5,6 @@ from __future__ import annotations
 import importlib as _importlib
 import types as _types
 
-from . import polish, transcribe, translate
-from ._utils import BREAK_SPEAKER, DEFAULT_MAX_GAP, SAMPLE_RATE, AudioPaths
-
 
 # synthesize has heavy deps (soundfile, numpy) from the pipeline extra —
 # import lazily so the API can start without [pipeline] installed.
@@ -15,19 +12,6 @@ def __getattr__(name: str) -> _types.ModuleType:
     if name == "synthesize":
         return _importlib.import_module(".synthesize", __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-__all__ = [
-    "transcribe",
-    "polish",
-    "translate",
-    "synthesize",
-    "validate_segments_json",
-    "AudioPaths",
-    "BREAK_SPEAKER",
-    "DEFAULT_MAX_GAP",
-    "SAMPLE_RATE",
-]
 
 
 def validate_segments_json(data, required: tuple[str, ...] = ("text",)) -> str | None:

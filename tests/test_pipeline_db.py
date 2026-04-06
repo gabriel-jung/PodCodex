@@ -262,9 +262,14 @@ class TestStepStatuses:
 
     def test_done_when_matching(self):
         prov = {
-            "transcript": {"model": "large-v3", "params": {"diarize": True}},
+            "transcript": {
+                "model": "large-v3",
+                "type": "validated",
+                "params": {"diarize": True},
+            },
             "polished": {
                 "model": "qwen3:4b",
+                "type": "validated",
                 "params": {"mode": "ollama", "provider": ""},
             },
         }
@@ -309,7 +314,7 @@ class TestStepStatuses:
 
     def test_done_no_defaults(self):
         """No defaults configured → everything is 'done'."""
-        prov = {"transcript": {"model": "small", "params": {}}}
+        prov = {"transcript": {"model": "small", "type": "validated", "params": {}}}
         st = _make_status_row(transcribed=True, provenance=prov)
         result = self._step_statuses(st, prov, {})
         assert result["transcribe_status"] == "done"

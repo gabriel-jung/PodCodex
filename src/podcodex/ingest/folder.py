@@ -19,7 +19,6 @@ from pathlib import Path
 
 from loguru import logger
 
-from podcodex.core._utils import INTERNAL_SUFFIXES as _INTERNAL_SUFFIXES
 from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.ingest.rss import EPISODE_META_FILE
 
@@ -61,7 +60,12 @@ class EpisodeInfo:
 
 
 def _episode_status(stem: str, existing: set[str]) -> dict:
-    """Derive pipeline status flags from the set of filenames in an output dir."""
+    """Derive pipeline status flags from the set of filenames in an output dir.
+
+    Only detects artifacts that are still written to disk (transcription
+    intermediates, transcript files, synthesis outputs, RAG marker).
+    Polish/translation status comes from the version DB via ``mark_step``.
+    """
     segments_ready = (
         f"{stem}.segments.parquet" in existing
         and f"{stem}.segments.meta.json" in existing
@@ -77,30 +81,8 @@ def _episode_status(stem: str, existing: set[str]) -> dict:
     transcript_val = f"{stem}.transcript.json" in existing
     transcribed = transcript_raw or transcript_val
 
-    polished_raw = f"{stem}.polished.raw.json" in existing
-    polished_val = f"{stem}.polished.json" in existing
-    polished = polished_raw or polished_val
-
     indexed = ".rag_indexed" in existing
     synthesized = f"{stem}.synthesized.wav" in existing
-
-    # Translations: derive from filenames
-    # New convention: {stem}.translated.{lang}.(raw.)json
-    # Legacy convention: {stem}.{lang}.(raw.)json (simple name, no dots)
-    langs: set[str] = set()
-    for fname in existing:
-        if not fname.startswith(f"{stem}.") or not fname.endswith(".json"):
-            continue
-        suffix = fname[len(stem) + 1 : -5]  # strip "{stem}." and ".json"
-        if suffix.endswith(".raw"):
-            suffix = suffix[:-4]
-        # New convention: translated.{lang}
-        if suffix.startswith("translated."):
-            langs.add(suffix[len("translated.") :])
-            continue
-        # Legacy: simple name with no dots, not an internal suffix
-        if "." not in suffix and suffix not in _INTERNAL_SUFFIXES:
-            langs.add(suffix)
 
     return {
         "segments_ready": segments_ready,
@@ -108,10 +90,10 @@ def _episode_status(stem: str, existing: set[str]) -> dict:
         "assigned": assigned,
         "mapped": mapped,
         "transcribed": transcribed,
-        "polished": polished,
+        "polished": False,
         "indexed": indexed,
         "synthesized": synthesized,
-        "translations": sorted(langs),
+        "translations": [],
     }
 
 
@@ -224,20 +206,3 @@ def _scan_folder_uncached(show_folder: Path) -> list[EpisodeInfo]:
             episodes[name] = _make_episode(name, show_folder / name, existing)
 
     return sorted(episodes.values(), key=lambda ep: ep.stem)
-
-
-def find_audio(show_folder: str | Path, episode: str) -> Path | None:
-    """Locate the audio file for a given episode stem in a show folder.
-
-    Tries each known audio extension in order. Returns None if not found.
-    """
-    if not show_folder or not episode:
-        return None
-    folder = Path(show_folder)
-    if not folder.is_dir():
-        return None
-    for ext in AUDIO_EXTENSIONS:
-        candidate = folder / f"{episode}{ext}"
-        if candidate.exists():
-            return candidate
-    return None

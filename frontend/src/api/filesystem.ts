@@ -1,5 +1,5 @@
 import type { DirListing } from "./types";
-import { BASE, json } from "./base";
+import { BASE, json } from "./client";
 
 export const listDirectory = (path: string, showFiles = false) =>
   json<DirListing>(`/api/fs/list?path=${encodeURIComponent(path)}&show_files=${showFiles}`);

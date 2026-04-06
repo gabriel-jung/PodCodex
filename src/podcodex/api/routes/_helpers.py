@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import HTTPException
 from loguru import logger
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import UNKNOWN_SPEAKERS
@@ -147,12 +147,50 @@ def annotate_flags(segments: list[dict]) -> list[dict]:
     return segments
 
 
-def load_segments_or_404(path: Path, label: str = "segments") -> list[dict]:
-    """Load and annotate segments from a path, raising 404 if not found."""
-    data = read_segments(path)
-    if data is None:
-        raise HTTPException(404, f"No {label} found")
-    return annotate_flags(data)
+def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
+    """Resolve source segments from the version DB.
+
+    Returns (segments, source_label).  Priority for 'auto':
+    polished → transcript.  Raises ValueError if nothing found.
+    """
+    from podcodex.core._utils import normalize_lang
+    from podcodex.core.transcribe import load_transcript
+    from podcodex.core.versions import load_latest
+
+    if source == "auto":
+        segs = load_latest(p.base, "polished")
+        if segs:
+            return segs, "polished"
+        segs = load_latest(p.base, "transcript")
+        if segs:
+            return segs, "transcript"
+        # Legacy transcript file fallback
+        segs = load_transcript(str(p.audio_path))
+        if segs:
+            return segs, "transcript"
+        raise ValueError("No transcript found — transcribe first")
+
+    if source == "transcript":
+        segs = load_latest(p.base, "transcript")
+        if segs:
+            return segs, "transcript"
+        segs = load_transcript(str(p.audio_path))
+        if segs:
+            return segs, "transcript"
+        raise ValueError("No transcript found — transcribe first")
+
+    if source == "polished":
+        segs = load_latest(p.base, "polished")
+        if segs:
+            return segs, "polished"
+        raise ValueError("No polished segments found")
+
+    # Language code
+    lang_norm = normalize_lang(source)
+    segs = load_latest(p.base, lang_norm)
+    if segs:
+        return segs, lang_norm
+    raise ValueError(f"No translation found for '{source}'")
 
 
 def load_best_source(audio_path: str, output_dir: str | None = None) -> list[dict]:
@@ -160,21 +198,11 @@ def load_best_source(audio_path: str, output_dir: str | None = None) -> list[dic
 
     Raises ValueError if no source segments are found.
     """
-    from podcodex.core.polish import load_polished
-    from podcodex.core.transcribe import load_transcript
+    from podcodex.core._utils import AudioPaths
 
-    try:
-        segments = load_polished(audio_path, output_dir=output_dir)
-    except (FileNotFoundError, ValueError):
-        segments = None
-    if not segments:
-        segments = load_transcript(audio_path, output_dir=output_dir)
-    if not segments:
-        raise ValueError("No source segments found (need transcript or polished)")
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    segments, _ = _resolve_source_segments(p, "auto")
     return segments
-
-
-# ── Index transcript builder ───────────────────
 
 
 def build_index_transcript(
@@ -188,7 +216,7 @@ def build_index_transcript(
     """Build the transcript dict expected by vectorize_batch.
 
     If *segments* are provided directly (e.g. from version DB), wraps them.
-    Otherwise resolves from filesystem (polished > transcript fallback).
+    Otherwise resolves from the version DB (polished > transcript fallback).
     Injects RSS metadata (title, pub_date, episode_number) when available.
     """
     from podcodex.core._utils import AudioPaths
@@ -196,32 +224,13 @@ def build_index_transcript(
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    if segments is not None:
-        transcript: dict = {
-            "meta": {"show": show_name, "episode": stem, "source": "version"},
-            "segments": segments,
-        }
-    else:
-        from podcodex.cli import _resolve_source, _source_label
+    if segments is None:
+        segments, source = _resolve_source_segments(p, source)
 
-        transcript_path = p.transcript_best
-        if not transcript_path.exists():
-            raise ValueError("No transcript found — transcribe first")
-
-        source_path = _resolve_source(transcript_path, source)
-        source_label = _source_label(source_path, transcript_path)
-        data = json.loads(source_path.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            transcript = {
-                "meta": {"show": show_name, "episode": stem, "source": source_label},
-                "segments": data,
-            }
-        else:
-            transcript = data
-            transcript.setdefault("meta", {})
-            transcript["meta"].setdefault("show", show_name)
-            transcript["meta"].setdefault("episode", stem)
-            transcript["meta"].setdefault("source", source_label)
+    transcript: dict = {
+        "meta": {"show": show_name, "episode": stem, "source": source},
+        "segments": segments,
+    }
 
     # Inject RSS metadata
     ep_meta = load_episode_meta(p.base.parent)
@@ -237,6 +246,28 @@ def build_index_transcript(
 
 
 # ── Shared request models ──────────────────────
+
+
+class LLMRequest(BaseModel):
+    """Base request for LLM pipeline steps (polish & translate)."""
+
+    audio_path: str
+    output_dir: str | None = None
+    mode: str = "ollama"
+    provider: str | None = None
+    model: str = ""
+    context: str = ""
+    source_lang: str = "French"
+    batch_minutes: float = 15.0
+    api_base_url: str = ""
+    api_key: str | None = None
+
+    @field_validator("batch_minutes")
+    @classmethod
+    def batch_minutes_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("batch_minutes must be positive")
+        return v
 
 
 class ManualPromptsRequest(BaseModel):

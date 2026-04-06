@@ -663,11 +663,10 @@ def generate_segments(
     if their text and voice sample haven't changed (tracked via manifest.json).
 
     Convenience wrapper around load_tts_model + build_clone_prompts + generate_segment.
-    For segment-by-segment control (e.g. in Streamlit), use those functions directly.
 
     Args:
         audio_path         : source audio file (used to resolve output_dir)
-        segments           : output of load_translation()
+        segments           : translated segment dicts
         voice_samples      : output of extract_voice_samples()
         output_dir         : directory relative to audio_path for outputs
         model_size         : "0.6B" or "1.7B"

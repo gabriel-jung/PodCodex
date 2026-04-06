@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getExtras } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import type { ExtrasResponse } from "@/api/types";
 
 /**
@@ -11,14 +12,14 @@ export function useCapabilities() {
   const queryClient = useQueryClient();
 
   const { data, refetch } = useQuery({
-    queryKey: ["system", "extras"],
+    queryKey: queryKeys.capabilities(),
     queryFn: getExtras,
     staleTime: Infinity,       // never auto-refetch; install flow invalidates manually
     gcTime: Infinity,          // keep in cache forever
     refetchOnWindowFocus: false,
     // Use any previously-fetched data as placeholder so we never flash "not installed"
     placeholderData: () =>
-      queryClient.getQueryData<ExtrasResponse>(["system", "extras"]),
+      queryClient.getQueryData<ExtrasResponse>(queryKeys.capabilities()),
   });
 
   return {

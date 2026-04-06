@@ -3,7 +3,9 @@ podcodex.core.versions -- Generation versioning for pipeline outputs.
 
 Every pipeline save (transcribe, polish, translate, manual edit) creates
 a new version.  Segment data is stored as JSON files under ``.versions/``;
-metadata lives in the ``versions`` table of the show-level ``pipeline.db``.
+metadata (index) lives in the ``versions`` table of the show-level
+``pipeline.db``.  The DB is the source of truth for lookups — there is
+no filesystem fallback.
 
 Storage layout per episode::
 
@@ -149,13 +151,8 @@ def save_version(
     )
 
     # Insert metadata into DB
-    try:
-        db = _get_db(base)
-        db.insert_version(base.name, step, asdict(meta))
-    except Exception:
-        logger.opt(exception=True).warning(
-            "Failed to insert version {} into DB", version_id
-        )
+    db = _get_db(base)
+    db.insert_version(base.name, step, asdict(meta))
 
     logger.debug(
         "Saved version {} for step '{}' ({} segments)",
@@ -181,76 +178,32 @@ def load_version(base: Path, step: str, version_id: str) -> list[dict]:
 def load_latest(base: Path, step: str) -> list[dict] | None:
     """Load segments from the most recent version of a step.
 
-    Returns None if no version exists.
+    Returns None if no version exists in the DB.
     """
-    try:
-        db = _get_db(base)
-        meta = db.get_latest_version(base.name, step)
-    except Exception:
-        meta = None
-
-    if meta:
-        try:
-            return load_version(base, step, meta["id"])
-        except FileNotFoundError:
-            logger.warning("Version file missing for {}/{}", step, meta["id"])
-
-    # Fallback: scan filesystem if DB has no record
-    sdir = _step_dir(base, step)
-    if not sdir.exists():
+    db = _get_db(base)
+    meta = db.get_latest_version(base.name, step)
+    if not meta:
         return None
-    files = sorted(sdir.glob("*.json"), reverse=True)
-    if files:
-        return json.loads(files[0].read_text(encoding="utf-8"))
-    return None
+    try:
+        return load_version(base, step, meta["id"])
+    except FileNotFoundError:
+        logger.warning("Version file missing for {}/{}", step, meta["id"])
+        return None
 
 
 def list_versions(base: Path, step: str) -> list[dict]:
     """List all versions for a step (newest first).
 
     Returns list of metadata dicts from the DB.
-    Falls back to scanning filesystem if DB is empty.
     """
-    try:
-        db = _get_db(base)
-        versions = db.list_versions(base.name, step)
-        if versions:
-            return versions
-    except Exception:
-        logger.opt(exception=True).debug("list_versions DB query failed")
-
-    # Fallback: scan .versions/{step}/ directory
-    sdir = _step_dir(base, step)
-    if not sdir.exists():
-        return []
-    result = []
-    for f in sorted(sdir.glob("*.json"), reverse=True):
-        vid = f.stem
-        segments = json.loads(f.read_text(encoding="utf-8"))
-        result.append(
-            {
-                "id": vid,
-                "step": step,
-                "timestamp": "",
-                "type": "raw" if "_raw" in vid else "validated",
-                "model": None,
-                "params": {},
-                "manual_edit": False,
-                "content_hash": compute_hash(segments),
-                "segment_count": len(segments),
-                "input_hash": None,
-            }
-        )
-    return result
+    db = _get_db(base)
+    return db.list_versions(base.name, step)
 
 
 def version_count(base: Path, step: str) -> int:
     """Return the number of versions for a step."""
-    try:
-        db = _get_db(base)
-        return db.version_count(base.name, step)
-    except Exception:
-        return len(list_versions(base, step))
+    db = _get_db(base)
+    return db.version_count(base.name, step)
 
 
 def has_version(base: Path, step: str) -> bool:

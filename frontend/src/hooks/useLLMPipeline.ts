@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getPolishSegments, getSegments } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { buildDefaultContext } from "@/lib/utils";
 import type { LLMConfig } from "@/components/common/LLMControls";
 import type { Episode, ShowMeta, Segment } from "@/api/types";
@@ -43,6 +44,25 @@ export function useLLMConfig(
 }
 
 /**
+ * Build the common request fields from an LLMConfig + audioPath.
+ * Panels spread this into their step-specific request, adding only
+ * the extra fields they need (engine for polish, target_lang for translate).
+ */
+export function buildLLMRequest(audioPath: string, config: LLMConfig) {
+  return {
+    audio_path: audioPath,
+    mode: config.mode === "api" ? "api" : "ollama",
+    provider: config.mode === "api" && config.provider !== "custom" ? config.provider : undefined,
+    model: config.model,
+    context: config.context,
+    source_lang: config.sourceLang,
+    batch_minutes: config.batchMinutes,
+    api_base_url: config.apiBaseUrl || undefined,
+    api_key: config.apiKey || undefined,
+  } as const;
+}
+
+/**
  * Load the best available source segments for an episode:
  * tries polished first, falls back to raw transcribe segments.
  *
@@ -54,7 +74,7 @@ export function useBestSourceSegments(
   opts: { enabled?: boolean; polished?: boolean },
 ) {
   return useQuery<Segment[]>({
-    queryKey: ["best-source-segments", audioPath],
+    queryKey: queryKeys.bestSourceSegments(audioPath),
     queryFn: async () => {
       if (!audioPath) return [];
       try {

@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { getModels, deleteModel, getExtras, installExtra, removeExtra } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import type { ExtraInfo } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2 } from "lucide-react";
@@ -29,7 +30,7 @@ export default function SettingsPage() {
 function PluginsPanel() {
   const qc = useQueryClient();
   const { data, isLoading, refetch } = useQuery({
-    queryKey: ["extras"],
+    queryKey: queryKeys.capabilities(),
     queryFn: getExtras,
   });
 
@@ -40,8 +41,8 @@ function PluginsPanel() {
     onMutate: (extra) => setPendingAction(extra),
     onSettled: () => {
       setPendingAction(null);
-      qc.invalidateQueries({ queryKey: ["extras"] });
-      qc.invalidateQueries({ queryKey: ["health"] });
+      qc.invalidateQueries({ queryKey: queryKeys.capabilities() });
+      qc.invalidateQueries({ queryKey: queryKeys.health() });
     },
   });
 
@@ -50,8 +51,8 @@ function PluginsPanel() {
     onMutate: (extra) => setPendingAction(extra),
     onSettled: () => {
       setPendingAction(null);
-      qc.invalidateQueries({ queryKey: ["extras"] });
-      qc.invalidateQueries({ queryKey: ["health"] });
+      qc.invalidateQueries({ queryKey: queryKeys.capabilities() });
+      qc.invalidateQueries({ queryKey: queryKeys.health() });
     },
   });
 
@@ -141,7 +142,7 @@ function PluginsPanel() {
 function ModelCachePanel() {
   const qc = useQueryClient();
   const { data, isLoading, refetch } = useQuery({
-    queryKey: ["models"],
+    queryKey: queryKeys.models(),
     queryFn: getModels,
   });
 
@@ -149,7 +150,7 @@ function ModelCachePanel() {
   const deleteMut = useMutation({
     mutationFn: (id: string) => deleteModel(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["models"] });
+      qc.invalidateQueries({ queryKey: queryKeys.models() });
       setDeleting(null);
     },
   });

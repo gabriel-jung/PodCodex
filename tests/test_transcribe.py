@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from podcodex.core._utils import merge_consecutive_segments, segments_to_text
+from podcodex.core._utils import merge_consecutive_segments
 from podcodex.core.transcribe import (
     load_transcript,
     load_transcript_full,
@@ -101,38 +101,6 @@ def test_simplify_strips_whitespace_from_text():
     segments = [{"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "  Hello  "}]
     result = merge_consecutive_segments(segments)
     assert result[0]["text"] == "Hello"
-
-
-# ──────────────────────────────────────────────
-# segments_to_text
-# ──────────────────────────────────────────────
-
-
-def test_segments_to_text_contains_speaker_and_text():
-    segments = [{"speaker": "Alice", "start": 1.0, "end": 3.0, "text": "Hello"}]
-    out = segments_to_text(segments)
-    assert "Alice" in out
-    assert "Hello" in out
-
-
-def test_segments_to_text_contains_timestamps():
-    segments = [{"speaker": "Alice", "start": 1.0, "end": 3.5, "text": "Hi"}]
-    out = segments_to_text(segments)
-    assert "1.000s" in out
-    assert "3.500s" in out
-
-
-def test_segments_to_text_multiple_segments_separated():
-    segments = [
-        {"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "Hello"},
-        {"speaker": "Bob", "start": 2.0, "end": 4.0, "text": "Hi"},
-    ]
-    out = segments_to_text(segments)
-    assert out.index("Alice") < out.index("Bob")
-
-
-def test_segments_to_text_empty():
-    assert segments_to_text([]) == ""
 
 
 # ──────────────────────────────────────────────
@@ -348,10 +316,6 @@ def test_audio_paths_naming():
     p = AudioPaths(audio_path=Path("/tmp/ep.mp3"), base=Path("/tmp/ep/ep"))
     assert p.transcript_raw.name == "ep.transcript.raw.json"
     assert p.transcript.name == "ep.transcript.json"
-    assert p.polished_raw.name == "ep.polished.raw.json"
-    assert p.polished.name == "ep.polished.json"
-    assert p.translation("en").name == "ep.translated.en.json"
-    assert p.translation_raw("en").name == "ep.translated.en.raw.json"
     assert p.segments.name == "ep.segments.parquet"
     assert p.diarized_segments.name == "ep.diarized_segments.parquet"
     assert p.speaker_map.name == "ep.speaker_map.json"

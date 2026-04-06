@@ -13,9 +13,10 @@ import {
   getPolishManualPrompts,
   applyPolishManual,
 } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { errorMessage, selectClass } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
-import { useLLMConfig } from "@/hooks/useLLMPipeline";
+import { useLLMConfig, buildLLMRequest } from "@/hooks/useLLMPipeline";
 import { Button } from "@/components/ui/button";
 import { SkipForward } from "lucide-react";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
@@ -36,25 +37,14 @@ export default function PolishPanel() {
   const setEngine = usePipelineConfigStore((s) => s.setEngine);
 
   const { data: transcriptSegments } = useQuery({
-    queryKey: ["transcribe", "segments", audioPath],
+    queryKey: queryKeys.transcribeSegments(audioPath),
     queryFn: () => getSegments(audioPath!),
     enabled: !!audioPath && episode.transcribed,
   });
 
   const startMutation = useMutation({
     mutationFn: () =>
-      startPolish({
-        audio_path: audioPath!,
-        mode: config.mode === "api" ? "api" : "ollama",
-        provider: config.mode === "api" && config.provider !== "custom" ? config.provider : undefined,
-        model: config.model,
-        context: config.context,
-        source_lang: config.sourceLang,
-        batch_minutes: config.batchMinutes,
-        engine,
-        api_base_url: config.apiBaseUrl || undefined,
-        api_key: config.apiKey || undefined,
-      }),
+      startPolish({ ...buildLLMRequest(audioPath!, config), engine }),
     onSuccess: (data) => task.startTask(data.task_id),
   });
 

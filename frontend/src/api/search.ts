@@ -1,5 +1,5 @@
 import type { BatchRequest, IndexRequest, IndexStatus, SearchRequest, SearchResult, TaskResponse, VersionEntry } from "./types";
-import { json } from "./base";
+import { json } from "./client";
 
 // ── Batch ──────────────────────────────────
 

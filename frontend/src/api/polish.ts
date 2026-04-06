@@ -1,31 +1,20 @@
-import type { PolishRequest, Segment, TaskResponse, VersionEntry } from "./types";
-import { json } from "./base";
+import type { PolishRequest, Segment, TaskResponse } from "./types";
+import { json } from "./client";
+import { createLLMPipelineApi } from "./versions";
 
-export const getPolishSegments = (audioPath: string) =>
-  json<Segment[]>(`/api/polish/segments?audio_path=${encodeURIComponent(audioPath)}`);
+const api = createLLMPipelineApi("polish");
 
+export const getPolishSegments = (audioPath: string) => api.getSegments(audioPath);
 export const savePolishSegments = (audioPath: string, segments: Segment[]) =>
-  json<{ status: string; count: number }>(`/api/polish/segments?audio_path=${encodeURIComponent(audioPath)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(segments),
-  });
-
-export const getPolishVersions = (audioPath: string) =>
-  json<VersionEntry[]>(`/api/polish/versions?audio_path=${encodeURIComponent(audioPath)}`);
-
+  api.saveSegments(audioPath, segments);
+export const getPolishVersions = (audioPath: string) => api.getVersions(audioPath);
 export const loadPolishVersion = (audioPath: string, versionId: string) =>
-  json<Segment[]>(`/api/polish/versions/${encodeURIComponent(versionId)}?audio_path=${encodeURIComponent(audioPath)}`);
-
+  api.loadVersion(audioPath, versionId);
 export const deletePolishVersion = (audioPath: string, versionId: string) =>
-  json<{ status: string }>(`/api/polish/versions/${encodeURIComponent(versionId)}?audio_path=${encodeURIComponent(audioPath)}`, { method: "DELETE" });
+  api.deleteVersion(audioPath, versionId);
 
 export const startPolish = (req: PolishRequest) =>
-  json<TaskResponse>("/api/polish/start", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
-  });
+  api.start(req as unknown as Record<string, unknown>) as Promise<TaskResponse>;
 
 export const skipPolish = (audioPath: string) =>
   json<{ status: string; count: number }>("/api/polish/skip", {
@@ -40,15 +29,7 @@ export const getPolishManualPrompts = (params: {
   source_lang?: string;
   batch_minutes?: number;
   engine?: string;
-}) =>
-  json<{ batch_index: number; prompt: string; segment_count: number }[]>(
-    "/api/polish/manual-prompts",
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params) },
-  );
+}) => api.getManualPrompts(params);
 
 export const applyPolishManual = (params: { audio_path: string; corrections: unknown[] }) =>
-  json<{ status: string; count: number }>("/api/polish/apply-manual", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  });
+  api.applyManual(params);

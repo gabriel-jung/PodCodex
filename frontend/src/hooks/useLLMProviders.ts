@@ -3,11 +3,12 @@
 import { useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getPipelineConfig } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import type { LLMProviderSpec } from "@/api/types";
 
 export function useLLMProviders() {
   const { data: pipelineConfig } = useQuery({
-    queryKey: ["pipeline-config"],
+    queryKey: queryKeys.pipelineConfig(),
     queryFn: getPipelineConfig,
     staleTime: Infinity,
   });

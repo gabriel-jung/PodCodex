@@ -9,7 +9,6 @@ from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
     build_provenance,
-    load_segments_or_404,
     submit_task,
 )
 from podcodex.api.schemas import Segment, TaskResponse
@@ -36,9 +35,13 @@ async def get_segments(
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     segments = load_latest(p.base, "transcript")
-    if segments is not None:
-        return annotate_flags(segments)
-    return load_segments_or_404(p.transcript_best, "transcript")
+    if segments is None:
+        from podcodex.api.routes._helpers import read_segments
+
+        segments = read_segments(p.transcript_best)
+    if segments is None:
+        raise HTTPException(404, "No transcript found")
+    return annotate_flags(segments)
 
 
 @router.put("/segments")

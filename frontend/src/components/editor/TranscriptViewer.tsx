@@ -10,6 +10,7 @@ import { useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment, VersionEntry } from "@/api/types";
 import { exportTextUrl, exportSrtUrl, exportVttUrl } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
 import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
@@ -541,12 +542,12 @@ export default function TranscriptViewer({
   // ── Data loading ──────────────────────────────────────────────────────────
 
   const { data: latestSegments } = useQuery({
-    queryKey: [editorKey, "segments", audioPath],
+    queryKey: queryKeys.stepSegments(editorKey, audioPath),
     queryFn: loadSegments,
   });
 
   const { data: versions } = useQuery({
-    queryKey: [editorKey, "versions", audioPath],
+    queryKey: queryKeys.stepVersions(editorKey, audioPath),
     queryFn: loadVersions!,
     enabled: !!loadVersions,
   });
@@ -558,7 +559,7 @@ export default function TranscriptViewer({
   const [showDensity, setShowDensity] = useState(false);
 
   const { data: versionSegments } = useQuery({
-    queryKey: [editorKey, "versions", audioPath, selectedVersionId],
+    queryKey: queryKeys.stepVersionSegments(editorKey, audioPath, selectedVersionId),
     queryFn: () => loadVersion!(selectedVersionId!),
     enabled: !!loadVersion && !!selectedVersionId,
   });
@@ -598,16 +599,16 @@ export default function TranscriptViewer({
   const saveMutation = useMutation({
     mutationFn: () => saveSegments(editor.editedSegments),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [editorKey, "segments", audioPath] });
-      queryClient.invalidateQueries({ queryKey: [editorKey, "versions", audioPath] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments(editorKey, audioPath) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stepVersions(editorKey, audioPath) });
     },
   });
 
   const deleteVersionMutation = useMutation({
     mutationFn: (id: string) => deleteVersion!(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [editorKey, "versions", audioPath] });
-      queryClient.invalidateQueries({ queryKey: [editorKey, "segments", audioPath] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stepVersions(editorKey, audioPath) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments(editorKey, audioPath) });
     },
   });
 

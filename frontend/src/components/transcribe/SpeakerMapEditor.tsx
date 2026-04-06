@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect, useRef } from "react";
 import { getSpeakerMap, saveSpeakerMap, getSegments, saveSegments } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore } from "@/stores";
 import { formatTime } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -91,13 +92,13 @@ export default function SpeakerMapEditor({ audioPath, onSaved }: SpeakerMapEdito
 
   // Load speaker map (raw diarization IDs → names)
   const { data: serverMap } = useQuery({
-    queryKey: ["speaker-map", audioPath],
+    queryKey: queryKeys.speakerMap(audioPath),
     queryFn: () => getSpeakerMap(audioPath),
   });
 
   // Load segments to get current speaker names
   const { data: segments } = useQuery({
-    queryKey: ["transcribe", "segments", audioPath],
+    queryKey: queryKeys.transcribeSegments(audioPath),
     queryFn: () => getSegments(audioPath),
   });
 
@@ -189,8 +190,8 @@ export default function SpeakerMapEditor({ audioPath, onSaved }: SpeakerMapEdito
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["speaker-map", audioPath] });
-      queryClient.invalidateQueries({ queryKey: ["transcribe", "segments", audioPath] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.speakerMap(audioPath) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.transcribeSegments(audioPath) });
       onSaved?.();
     },
   });
