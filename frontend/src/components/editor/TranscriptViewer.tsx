@@ -239,7 +239,7 @@ function SegmentViewRow({
     return (
       <div className="py-2 flex items-center gap-2 text-muted-foreground/40 px-4">
         <div className="flex-1 border-t border-border" />
-        <span className="text-[10px] uppercase select-none">
+        <span className="text-2xs uppercase select-none">
           {gap > 0 ? `${gap.toFixed(0)}s pause` : "break"}
         </span>
         <div className="flex-1 border-t border-border" />
@@ -271,7 +271,7 @@ function SegmentViewRow({
         <div className="shrink-0 pt-0.5">
           <button
             onClick={() => setTsExpanded(!tsExpanded)}
-            className="text-[11px] text-muted-foreground hover:text-foreground font-mono text-right leading-tight transition"
+            className="text-xs text-muted-foreground hover:text-foreground font-mono text-right leading-tight transition"
             title="Edit timestamps"
           >
             <div className="tabular-nums">{validTime ? formatTime(segment.start) : "--:--"}</div>
@@ -360,7 +360,7 @@ function SegmentViewRow({
               )}
               <button
                 onClick={() => setRefExpanded(!refExpanded)}
-                className="flex items-center gap-0.5 text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition mt-0.5"
+                className="flex items-center gap-0.5 text-2xs text-muted-foreground/60 hover:text-muted-foreground transition mt-0.5"
                 title={refExpanded ? "Hide reference" : "Show reference"}
               >
                 <Diff className="w-3 h-3" />
@@ -374,7 +374,7 @@ function SegmentViewRow({
 
       {/* Flag reason — always visible on flagged segments */}
       {isFlagged && flagReasonText && (
-        <div className="flex items-center gap-1 mt-0.5 text-yellow-500 text-[10px]">
+        <div className="flex items-center gap-1 mt-0.5 text-yellow-500 text-2xs">
           <AlertTriangle className="w-3 h-3" />
           <span>{flagReasonText}</span>
           {onDismissFlag && (
@@ -464,7 +464,7 @@ function SegmentViewRow({
             />
             <button
               onClick={() => onTimestampChange("start", Math.round(getAudioTime() * 10) / 10)}
-              className="text-[10px] text-muted-foreground hover:text-foreground bg-secondary rounded px-1 py-0.5 border border-border"
+              className="text-2xs text-muted-foreground hover:text-foreground bg-secondary rounded px-1 py-0.5 border border-border"
               title="Set to current playback position"
             >
               &larr; current time
@@ -481,7 +481,7 @@ function SegmentViewRow({
             />
             <button
               onClick={() => onTimestampChange("end", Math.round(getAudioTime() * 10) / 10)}
-              className="text-[10px] text-muted-foreground hover:text-foreground bg-secondary rounded px-1 py-0.5 border border-border"
+              className="text-2xs text-muted-foreground hover:text-foreground bg-secondary rounded px-1 py-0.5 border border-border"
               title="Set to current playback position"
             >
               &larr; current time
@@ -1071,7 +1071,7 @@ export default function TranscriptViewer({
             </button>
             {showDensity && (
               <div className="absolute left-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg p-3 space-y-2 min-w-52">
-                <p className="text-[10px] text-muted-foreground font-medium uppercase">Speech density thresholds</p>
+                <p className="text-2xs text-muted-foreground font-medium uppercase">Speech density thresholds</p>
                 <label className="flex items-center gap-2 text-xs">
                   <span className="shrink-0">{">"} </span>
                   <input
@@ -1164,7 +1164,7 @@ export default function TranscriptViewer({
               <Trash2 className="w-3 h-3 mr-1" />
               Delete
             </Button>
-            <button onClick={clearSelection} className="text-xs text-muted-foreground hover:text-foreground transition ml-1">
+            <button onClick={clearSelection} className="text-xs text-muted-foreground hover:text-foreground transition ml-1" aria-label="Clear selection">
               <X className="w-3 h-3" />
             </button>
           </div>

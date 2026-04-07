@@ -71,7 +71,7 @@ function DownloadStrip() {
           {isFinished && results.length > 0 ? (
             <>
               <div
-                className="h-full bg-green-500 transition-all duration-300"
+                className="h-full bg-success transition-all duration-300"
                 style={{ width: `${successPct}%` }}
               />
               {failedPct > 0 && (
@@ -84,7 +84,7 @@ function DownloadStrip() {
           ) : (
             <div
               className={`h-full transition-all duration-300 ${
-                isFailed ? "bg-destructive" : isCancelled ? "bg-yellow-500" : "bg-primary"
+                isFailed ? "bg-destructive" : isCancelled ? "bg-warning" : "bg-primary"
               }`}
               style={{ width: `${pct}%` }}
             />
@@ -128,7 +128,7 @@ const STATUS_ICON: Record<EpStatus, typeof Circle> = {
 const STATUS_COLOR: Record<EpStatus, string> = {
   pending: "text-muted-foreground",
   running: "text-primary animate-spin",
-  done: "text-green-500",
+  done: "text-success",
   failed: "text-destructive",
 };
 
@@ -153,11 +153,11 @@ function BatchResultSummary({ result, onDismiss }: { result: BatchResult; onDism
           {hasErrors ? (
             <AlertTriangle className="w-4 h-4 text-destructive" />
           ) : (
-            <CheckCircle2 className="w-4 h-4 text-green-500" />
+            <CheckCircle2 className="w-4 h-4 text-success" />
           )}
           <h3 className="text-base font-semibold">Batch Complete</h3>
           <div className="flex-1" />
-          <button onClick={onDismiss} className="text-muted-foreground hover:text-foreground text-lg">
+          <button onClick={onDismiss} className="text-muted-foreground hover:text-foreground text-lg" aria-label="Close">
             ×
           </button>
         </div>
@@ -165,7 +165,7 @@ function BatchResultSummary({ result, onDismiss }: { result: BatchResult; onDism
         <div className="px-5 py-4 space-y-2">
           <div className="grid grid-cols-3 gap-3 text-center">
             <div>
-              <p className="text-2xl font-bold text-green-500">{result.completed}</p>
+              <p className="text-2xl font-bold text-success">{result.completed}</p>
               <p className="text-xs text-muted-foreground">Completed</p>
             </div>
             <div>
@@ -279,9 +279,9 @@ function BatchStrip() {
                   isFailed
                     ? "bg-destructive"
                     : isCancelled
-                      ? "bg-yellow-500"
+                      ? "bg-warning"
                       : isDone
-                        ? "bg-green-500"
+                        ? "bg-success"
                         : "bg-primary"
                 }`}
                 style={{ width: `${pct}%` }}
@@ -349,7 +349,7 @@ function BatchStrip() {
               Logs ({log.length})
             </button>
             {showLog && (
-              <pre className="mt-1.5 p-2 bg-black/40 rounded text-[10px] leading-relaxed text-muted-foreground max-h-40 overflow-auto font-mono">
+              <pre className="mt-1.5 p-2 bg-black/40 rounded text-2xs leading-relaxed text-muted-foreground max-h-40 overflow-auto font-mono">
                 {log.map((line, i) => (
                   <div key={i}>{line}</div>
                 ))}

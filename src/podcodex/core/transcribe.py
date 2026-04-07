@@ -437,6 +437,7 @@ def export_transcript(
     episode: str = "",
     max_gap: float = DEFAULT_MAX_GAP,
     diarized: bool = True,
+    clean: bool = False,
     provenance: dict | None = None,
 ) -> list[dict]:
     """
@@ -492,6 +493,9 @@ def export_transcript(
     ]
     export = merge_consecutive_segments(resolved, max_gap=max_gap)
 
+    if clean:
+        export = clean_transcript(export, remove_unknown_speakers=diarized)
+
     meta = {
         "show": show,
         "episode": episode,
@@ -504,8 +508,9 @@ def export_transcript(
     out_data = {"meta": meta, "segments": export}
 
     write_json(p.transcript_raw, out_data)
+    label = "merged+cleaned" if clean else "merged"
     logger.success(
-        f"Export done — {len(resolved)} → {len(export)} segments (merged) → {p.transcript_raw.name}"
+        f"Export done — {len(resolved)} → {len(export)} segments ({label}) → {p.transcript_raw.name}"
     )
 
     # Store transcript meta in provenance params for version DB

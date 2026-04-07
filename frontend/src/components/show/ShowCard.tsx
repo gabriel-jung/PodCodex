@@ -18,7 +18,7 @@ export default function ShowCard({ show, onClick, vertical }: ShowCardProps) {
       >
         <div className="p-3 pb-0">
         {show.artwork_url ? (
-          <img src={artworkUrl(show.path)} alt="" className="w-full h-32 object-cover rounded-lg" />
+          <img src={artworkUrl(show.path)} alt={show.name} className="w-full h-32 object-cover rounded-lg" />
         ) : (
           <div className="w-full h-32 bg-muted rounded-lg" />
         )}
@@ -45,7 +45,7 @@ export default function ShowCard({ show, onClick, vertical }: ShowCardProps) {
       className="text-left p-3 rounded-xl bg-card border border-border hover:border-muted-foreground/30 transition group flex items-center gap-3"
     >
       {show.artwork_url ? (
-        <img src={artworkUrl(show.path)} alt="" className="h-12 w-auto max-w-24 rounded-lg shrink-0 object-contain" />
+        <img src={artworkUrl(show.path)} alt={show.name} className="h-12 w-auto max-w-24 rounded-lg shrink-0 object-contain" />
       ) : (
         <div className="w-12 h-12 rounded-lg bg-muted shrink-0" />
       )}

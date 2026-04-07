@@ -12,9 +12,9 @@ export default function SearchResultCard({ result, audioPath }: SearchResultCard
 
   const scoreColor =
     result.score >= 0.8
-      ? "bg-green-900/40 text-green-400"
+      ? "bg-success/15 text-success"
       : result.score >= 0.5
-        ? "bg-yellow-900/40 text-yellow-400"
+        ? "bg-warning/15 text-warning"
         : "bg-muted text-muted-foreground";
 
   return (

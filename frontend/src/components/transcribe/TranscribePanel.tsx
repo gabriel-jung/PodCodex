@@ -82,6 +82,7 @@ export default function TranscribePanel() {
         batch_size: tc.batchSize,
         force: episode.transcribed,
         diarize: tc.diarize,
+        clean: tc.clean,
         hf_token: tc.hfToken || undefined,
         num_speakers: tc.numSpeakers ? Number(tc.numSpeakers) : undefined,
         show: showMeta?.name || "",
@@ -113,6 +114,7 @@ export default function TranscribePanel() {
               language={language} setLanguage={setLanguage}
               batchSize={tc.batchSize} setBatchSize={(v) => setTc({ batchSize: v })}
               diarize={tc.diarize} setDiarize={(v) => setTc({ diarize: v })}
+              clean={tc.clean} setClean={(v) => setTc({ clean: v })}
               hfToken={tc.hfToken} setHfToken={(v) => setTc({ hfToken: v })}
               numSpeakers={tc.numSpeakers} setNumSpeakers={(v) => setTc({ numSpeakers: v })}
               whisperModels={whisperModelsMap}
@@ -193,6 +195,7 @@ function TranscribeForm({
   language, setLanguage,
   batchSize, setBatchSize,
   diarize, setDiarize,
+  clean, setClean,
   hfToken, setHfToken,
   numSpeakers, setNumSpeakers,
   whisperModels,
@@ -207,6 +210,7 @@ function TranscribeForm({
   language: string; setLanguage: (v: string) => void;
   batchSize: number; setBatchSize: (v: number) => void;
   diarize: boolean; setDiarize: (v: boolean) => void;
+  clean: boolean; setClean: (v: boolean) => void;
   hfToken: string; setHfToken: (v: string) => void;
   numSpeakers: string; setNumSpeakers: (v: string) => void;
   onRun: () => void; onUpload: () => void;
@@ -281,6 +285,14 @@ function TranscribeForm({
 
       <AdvancedToggle className="border-t border-border/50 pt-3 space-y-3">
         <FormGrid className="pl-3 border-l-2 border-border">
+          <HelpLabel label="Clean transcript" help="Automatically remove hallucinated segments (low speech density) and unknown speakers from the transcript." />
+          <input
+            type="checkbox"
+            checked={clean}
+            onChange={(e) => setClean(e.target.checked)}
+            className="accent-primary"
+          />
+
           <HelpLabel label="Batch size" help="How many audio chunks to process in parallel. Higher is faster but uses more GPU memory. Lower this if you run out of memory." />
           <input
             type="number"

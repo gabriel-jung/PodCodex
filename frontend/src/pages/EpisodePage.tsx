@@ -201,13 +201,13 @@ export default function EpisodePage({
             onClick={() => seekTo(episode.audio_path!, 0)}
             className="relative group shrink-0"
           >
-            <img src={artwork} alt="" className="w-12 h-8 object-cover rounded-lg" />
+            <img src={artwork} alt={episode.title} className="w-12 h-8 object-cover rounded-lg" />
             <div className="absolute inset-0 rounded-lg bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
               <Play className="w-4 h-4 text-white fill-white" />
             </div>
           </button>
         ) : artwork ? (
-          <img src={artwork} alt="" className="w-12 h-8 object-cover rounded-lg shrink-0" />
+          <img src={artwork} alt={episode.title} className="w-12 h-8 object-cover rounded-lg shrink-0" />
         ) : null}
         <div className="flex-1 min-w-0">
           <h2 className="text-lg font-semibold truncate">
@@ -287,7 +287,7 @@ export default function EpisodePage({
                     <Icon className="w-5 h-5 shrink-0" />
                     {sidebarExpanded && <span className="truncate">{label}</span>}
                     {status && (
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${sidebarExpanded ? "ml-auto" : ""} ${status === "partial" ? "bg-yellow-500" : "bg-green-500"}`} />
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${sidebarExpanded ? "ml-auto" : ""} ${status === "partial" ? "bg-warning" : "bg-success"}`} />
                     )}
                   </button>
                 ))}

@@ -262,6 +262,7 @@ class TranscribeRequest(BaseModel):
     num_speakers: int | None = None
     show: str = ""
     episode: str = ""
+    clean: bool = False
 
     @field_validator("batch_size")
     @classmethod
@@ -326,6 +327,7 @@ async def start_transcribe(req: TranscribeRequest) -> TaskResponse:
                 "batch_size": req_data.batch_size,
                 "diarize": req_data.diarize,
                 "num_speakers": req_data.num_speakers,
+                "clean": req_data.clean,
             },
         )
         segments = export_transcript(
@@ -334,6 +336,7 @@ async def start_transcribe(req: TranscribeRequest) -> TaskResponse:
             show=req_data.show,
             episode=req_data.episode,
             diarized=req_data.diarize,
+            clean=req_data.clean,
             provenance=provenance,
         )
         return {"count": len(segments)}

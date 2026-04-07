@@ -177,7 +177,7 @@ export default function VoiceExtractionSection({
                                       else next[key] = e.target.value;
                                       setSpeakerOverrides(next);
                                     }}
-                                    className="shrink-0 bg-transparent border border-border rounded px-1 py-0 text-[10px] w-20 text-muted-foreground"
+                                    className="shrink-0 bg-transparent border border-border rounded px-1 py-0 text-2xs w-20 text-muted-foreground"
                                     title="Reassign speaker"
                                   >
                                     {allSpeakers.map((sp) => (
@@ -228,7 +228,7 @@ export default function VoiceExtractionSection({
             : `Extract ${selected.size} sample${selected.size !== 1 ? "s" : ""}`}
         </Button>
         {status?.voice_samples_extracted && (
-          <span className="text-xs text-green-400">Samples on disk</span>
+          <span className="text-xs text-success">Samples on disk</span>
         )}
         {extractMutation.isError && (
           <span className="text-xs text-destructive">

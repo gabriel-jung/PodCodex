@@ -199,7 +199,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
           <div className="flex items-center gap-2">
             <input value={artworkUrl} onChange={(e) => setArtworkUrl(e.target.value)} placeholder="https://..." className="input py-1 text-sm w-48" />
             {artworkUrl && (
-              <img src={artworkUrl} alt="" className="w-7 h-7 rounded object-cover shrink-0" onError={(e) => (e.currentTarget.style.display = "none")} />
+              <img src={artworkUrl} alt="Artwork preview" className="w-7 h-7 rounded object-cover shrink-0" onError={(e) => (e.currentTarget.style.display = "none")} />
             )}
           </div>
         </SettingRow>
@@ -209,7 +209,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       {(isDirty || saveMutation.isSuccess || saveMutation.isError) && (
         <div className="flex items-center gap-3 text-xs -mt-4">
           {isDirty && <span className="text-yellow-400">Saving...</span>}
-          {saveMutation.isSuccess && !isDirty && <span className="text-green-400">Saved</span>}
+          {saveMutation.isSuccess && !isDirty && <span className="text-success">Saved</span>}
           {saveMutation.isError && <span className="text-destructive">{errorMessage(saveMutation.error)}</span>}
         </div>
       )}

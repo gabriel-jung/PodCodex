@@ -92,11 +92,11 @@ function PluginsPanel() {
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-sm">{name}</span>
                     {info.installed ? (
-                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-500">
+                      <span className="text-2xs font-medium px-1.5 py-0.5 rounded-full bg-success/10 text-success">
                         installed
                       </span>
                     ) : (
-                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+                      <span className="text-2xs font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
                         not installed
                       </span>
                     )}

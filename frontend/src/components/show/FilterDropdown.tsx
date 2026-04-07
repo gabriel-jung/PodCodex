@@ -35,7 +35,7 @@ export default function FilterDropdown() {
       >
         <SlidersHorizontal className="w-3 h-3" />
         Filters
-        {activeCount > 0 && <span className="bg-primary text-primary-foreground rounded-full px-1 text-[10px]">{activeCount}</span>}
+        {activeCount > 0 && <span className="bg-primary text-primary-foreground rounded-full px-1 text-2xs">{activeCount}</span>}
       </Button>
       {open && (
         <>

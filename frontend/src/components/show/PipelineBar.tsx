@@ -17,8 +17,8 @@ export function PipelineBar({ ep }: { ep: Episode }) {
 
   const pct = (done / steps.length) * 100;
   const color = done === steps.length
-    ? (hasOutdated ? "bg-yellow-500" : "bg-green-500")
-    : (hasOutdated ? "bg-yellow-500" : "bg-primary");
+    ? (hasOutdated ? "bg-warning" : "bg-success")
+    : (hasOutdated ? "bg-warning" : "bg-primary");
 
   return (
     <div className="h-1 bg-muted/50 rounded-full overflow-hidden">

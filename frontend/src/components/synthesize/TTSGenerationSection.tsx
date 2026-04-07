@@ -115,7 +115,7 @@ export default function TTSGenerationSection({
           <span className="text-xs text-muted-foreground">Extract voices first</span>
         )}
         {status?.tts_segments_generated && (
-          <span className="text-xs text-green-400">
+          <span className="text-xs text-success">
             {generatedSegments?.length ?? "?"} segments generated
           </span>
         )}

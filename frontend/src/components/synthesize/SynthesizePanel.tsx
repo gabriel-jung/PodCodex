@@ -296,7 +296,7 @@ export default function SynthesizePanel() {
       {status?.synthesized && !expanded && !isRunning && (
         <div className="p-4 space-y-3">
           {assembleMutation.data && (
-            <p className="text-xs text-green-400">
+            <p className="text-xs text-success">
               Assembled ({(assembleMutation.data.duration / 60).toFixed(1)} min)
             </p>
           )}

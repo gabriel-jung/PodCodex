@@ -131,7 +131,7 @@ export function PipelineRow({ label, status, detail, provenance, files }: {
   return (
     <div>
       <div className="flex items-center gap-3 text-sm">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${status === "done" ? "bg-green-500" : status === "partial" ? "bg-yellow-500" : "bg-muted-foreground/30"}`} />
+        <span className={`w-2 h-2 rounded-full shrink-0 ${status === "done" ? "bg-success" : status === "partial" ? "bg-warning" : "bg-muted-foreground/30"}`} />
         <span className={status ? "text-foreground" : "text-muted-foreground"}>{label}</span>
         {detail && <span className="text-xs text-muted-foreground">{detail}</span>}
         {hasInfo && status && (
@@ -184,10 +184,10 @@ export function PipelineStatus({ episode }: { episode: Episode }) {
         return (
           <span
             key={s.key}
-            className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+            className={`text-2xs px-1.5 py-0.5 rounded-full ${
               status === "partial"
-                ? "bg-yellow-900/40 text-yellow-400"
-                : "bg-green-900/40 text-green-400"
+                ? "bg-warning/15 text-warning"
+                : "bg-success/15 text-success"
             }`}
           >
             {s.rowLabel}

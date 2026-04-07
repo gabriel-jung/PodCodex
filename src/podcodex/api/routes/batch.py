@@ -28,6 +28,7 @@ class BatchRequest(BaseModel):
     language: str = ""
     batch_size: int = 16
     diarize: bool = True
+    clean: bool = False
     hf_token: str | None = None
     num_speakers: int | None = None
     # Polish/Translate config (LLM)
@@ -167,6 +168,7 @@ def _batch_transcribe(
                 "batch_size": req.batch_size,
                 "diarize": req.diarize,
                 "num_speakers": req.num_speakers,
+                "clean": req.clean,
             },
         )
         export_transcript(
@@ -174,6 +176,7 @@ def _batch_transcribe(
             show=req.show_name,
             episode=stem,
             diarized=req.diarize,
+            clean=req.clean,
             provenance=provenance,
         )
 

@@ -59,8 +59,8 @@ export default function MissingDependency({ extra, label, description }: Missing
 
   if (done) {
     return (
-      <div className="flex items-center gap-3 p-4 rounded-md bg-green-500/10 border border-green-500/20">
-        <CheckCircle2 className="w-5 h-5 text-green-500 shrink-0" />
+      <div className="flex items-center gap-3 p-4 rounded-md bg-success/10 border border-success/20">
+        <CheckCircle2 className="w-5 h-5 text-success shrink-0" />
         <div>
           <p className="text-sm font-medium">Installed successfully</p>
           <p className="text-xs text-muted-foreground mt-0.5">

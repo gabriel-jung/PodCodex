@@ -136,7 +136,7 @@ export default function EditorToolbar({
               <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-72 max-h-80 overflow-y-auto">
                 <div className="px-3 py-1 text-muted-foreground/60 flex items-center gap-3 border-b border-border/50 mb-1">
                   <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" /> generated</span>
-                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-green-500" /> saved edit</span>
+                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-success" /> saved edit</span>
                 </div>
                 {versions.map((v) => {
                   const d = new Date(v.timestamp);
@@ -148,7 +148,7 @@ export default function EditorToolbar({
                   return (
                     <div key={v.id} className="border-b border-border/30 last:border-0">
                       <div className="flex items-center gap-1.5 px-3 py-1.5 text-xs hover:bg-accent transition">
-                        <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${v.type === "validated" ? "bg-green-500" : "bg-blue-500"}`} />
+                        <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${v.type === "validated" ? "bg-success" : "bg-blue-500"}`} />
                         <button
                           className="flex-1 text-left truncate"
                           onClick={() => { onLoadVersion(v.id); setShowVersions(false); }}
@@ -197,7 +197,7 @@ export default function EditorToolbar({
         <Button onClick={onSave} disabled={isSaving} size="sm" className="h-6">
           {isSaving ? "Saving..." : isDirty ? "Save*" : "Save"}
         </Button>
-        {!isDirty && !isSaving && <span className="text-green-500">up to date</span>}
+        {!isDirty && !isSaving && <span className="text-success">up to date</span>}
       </div>
 
       {/* Row 2: Filters, undo, search */}
@@ -268,7 +268,7 @@ export default function EditorToolbar({
             className="bg-secondary text-secondary-foreground rounded pl-6 pr-6 py-1 border border-border w-36 text-xs"
           />
           {searchQuery && (
-            <button onClick={() => onSearchChange("")} className="absolute right-1.5 text-muted-foreground hover:text-foreground">
+            <button onClick={() => onSearchChange("")} className="absolute right-1.5 text-muted-foreground hover:text-foreground" aria-label="Clear search">
               <X className="w-3 h-3" />
             </button>
           )}

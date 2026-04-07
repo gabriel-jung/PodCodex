@@ -158,7 +158,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                           className="w-full text-left px-3 py-2.5 rounded-lg hover:bg-accent/50 transition flex items-center gap-3"
                         >
                           {r.artwork_url && (
-                            <img src={r.artwork_url} alt="" className="w-10 h-10 rounded shrink-0" />
+                            <img src={r.artwork_url} alt={r.name} className="w-10 h-10 rounded shrink-0" />
                           )}
                           <div className="min-w-0 flex-1">
                             <p className="text-sm font-medium truncate">{r.name}</p>

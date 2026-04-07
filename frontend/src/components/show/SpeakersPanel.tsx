@@ -99,7 +99,7 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
       {/* Save status */}
       <div className="flex items-center gap-3 text-xs">
         {isDirty && <span className="text-yellow-400">Saving...</span>}
-        {saveMutation.isSuccess && !isDirty && <span className="text-green-400">Saved</span>}
+        {saveMutation.isSuccess && !isDirty && <span className="text-success">Saved</span>}
         {saveMutation.isError && <span className="text-destructive">{errorMessage(saveMutation.error)}</span>}
       </div>
     </div>

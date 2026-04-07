@@ -228,6 +228,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       language: languageToISO(meta?.language || ""),
       batch_size: tc.batchSize,
       diarize: tc.diarize,
+      clean: tc.clean,
       hf_token: tc.hfToken || undefined,
       num_speakers: tc.numSpeakers ? Number(tc.numSpeakers) : undefined,
       llm_mode: llm.mode === "api" ? "api" : "ollama",
@@ -253,7 +254,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           <ArrowLeft /> Shows
         </Button>
         {meta?.artwork_url && (
-          <img src={artworkUrl(folder)} alt="" className="w-10 h-10 rounded-lg shrink-0" />
+          <img src={artworkUrl(folder)} alt={showName} className="w-10 h-10 rounded-lg shrink-0" />
         )}
         <div className="flex-1 min-w-0">
           <h2 className="text-lg font-semibold truncate">{showName}</h2>
@@ -422,7 +423,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         {view === "list" ? (
           <div className="divide-y divide-border/50">
             {/* Column headers */}
-            <div className="flex items-center gap-3 px-6 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground select-none border-b border-border">
+            <div className="flex items-center gap-3 px-6 py-1.5 text-2xs uppercase tracking-wider text-muted-foreground select-none border-b border-border">
               <div className="w-10 shrink-0" />
               <SortHeader col="number" label="#" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-8 text-right shrink-0" />
               <SortHeader col="title" label="Title" current={sortCol} dir={sortDir} onSort={toggleSort} className="flex-1 min-w-0" />

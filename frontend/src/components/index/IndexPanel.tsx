@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEpisodeStore, useAudioPath } from "@/stores";
+import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
   getIndexConfig,
   getIndexStatus,
@@ -54,7 +54,9 @@ export default function IndexPanel() {
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const source = selectedSource ?? defaultSource;
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
-  const [selectedModels, setSelectedModels] = useState<string[]>(["bge-m3"]);
+  const storeIndexModel = usePipelineConfigStore((s) => s.indexModel);
+  const [selectedModels, setSelectedModels] = useState<string[]>([storeIndexModel]);
+  useEffect(() => setSelectedModels([storeIndexModel]), [storeIndexModel]);
   const [selectedChunkings, setSelectedChunkings] = useState<string[]>(["semantic"]);
   const [chunkSize, setChunkSize] = useState(256);
   const [threshold, setThreshold] = useState(0.5);
@@ -285,7 +287,7 @@ export default function IndexPanel() {
                   key={`${c.model}-${c.chunking}`}
                   className="flex items-center gap-3 text-sm px-3 py-2 rounded bg-secondary border border-border"
                 >
-                  <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
+                  <span className="w-2 h-2 rounded-full bg-success shrink-0" />
                   <span className="font-medium">{c.model}</span>
                   <span className="text-muted-foreground">/ {c.chunking}</span>
                   <span className="ml-auto text-muted-foreground">

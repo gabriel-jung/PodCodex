@@ -8,24 +8,30 @@ export interface TranscribeConfig {
   modelSize: string;
   batchSize: number;
   diarize: boolean;
+  clean: boolean;
   hfToken: string;
   numSpeakers: string;
 }
 
-// ── Pipeline presets ─────────────────────────────────────
+// ── Per-step presets ────────────────────────────────────
 
-export interface PipelinePreset {
-  label: string;
-  desc: string;
-  whisperModel: string;
-  embedModel: string;
-}
+export const TRANSCRIBE_PRESETS = {
+  cpu: { label: "CPU", desc: "No GPU needed", modelSize: "base", diarize: false },
+  gpu: { label: "GPU", desc: "Fast & accurate", modelSize: "large-v3-turbo", diarize: false },
+  "gpu-speakers": { label: "GPU + Speakers", desc: "Detect who's talking", modelSize: "large-v3-turbo", diarize: true },
+} as const;
 
-export const PIPELINE_PRESETS: Record<string, PipelinePreset> = {
-  heavy: { label: "Heavy", desc: "8 GB+ GPU", whisperModel: "large-v3", embedModel: "bge-m3" },
-  medium: { label: "Medium", desc: "4 GB+ GPU", whisperModel: "large-v3-turbo", embedModel: "bge-m3" },
-  light: { label: "Light", desc: "CPU ok", whisperModel: "small", embedModel: "bge-m3" },
-};
+export const LLM_PRESETS = {
+  local: { label: "Local", desc: "Ollama (free, needs GPU)", mode: "ollama" as const },
+  cloud: { label: "Cloud", desc: "API (fast, needs key)", mode: "api" as const },
+  manual: { label: "Manual", desc: "Copy prompts yourself", mode: "manual" as const },
+} as const;
+
+export const INDEX_PRESETS = {
+  fast: { label: "Fast", desc: "Lightweight, CPU ok", model: "e5-small" },
+  balanced: { label: "Balanced", desc: "Best all-round", model: "bge-m3" },
+  gpu: { label: "GPU", desc: "Best quality, slow on CPU", model: "pplx" },
+} as const;
 
 // ── Pipeline config state ────────────────────────────────
 
@@ -46,9 +52,17 @@ export interface PipelineConfigState {
   targetLang: string;
   setTargetLang: (lang: string) => void;
 
-  // Preset (simple mode)
-  preset: string;
-  setPreset: (preset: string) => void;
+  // Index
+  indexModel: string;
+  setIndexModel: (model: string) => void;
+
+  // Per-step presets
+  transcribePreset: string;
+  setTranscribePreset: (preset: string) => void;
+  llmPreset: string;
+  setLLMPreset: (preset: string) => void;
+  indexPreset: string;
+  setIndexPreset: (preset: string) => void;
 }
 
 export const usePipelineConfigStore = create<PipelineConfigState>()(
@@ -58,6 +72,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         modelSize: "large-v3-turbo",
         batchSize: 16,
         diarize: true,
+        clean: false,
         hfToken: "",
         numSpeakers: "",
       },
@@ -82,8 +97,15 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
       targetLang: "English",
       setTargetLang: (targetLang) => set({ targetLang }),
 
-      preset: "medium",
-      setPreset: (preset) => set({ preset }),
+      indexModel: "bge-m3",
+      setIndexModel: (indexModel) => set({ indexModel }),
+
+      transcribePreset: "gpu",
+      setTranscribePreset: (transcribePreset) => set({ transcribePreset }),
+      llmPreset: "local",
+      setLLMPreset: (llmPreset) => set({ llmPreset }),
+      indexPreset: "balanced",
+      setIndexPreset: (indexPreset) => set({ indexPreset }),
     }),
     {
       name: "podcodex-pipeline-config",
@@ -93,7 +115,10 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         llm: { ...s.llm, apiKey: "" },
         engine: s.engine,
         targetLang: s.targetLang,
-        preset: s.preset,
+        indexModel: s.indexModel,
+        transcribePreset: s.transcribePreset,
+        llmPreset: s.llmPreset,
+        indexPreset: s.indexPreset,
       }),
     },
   ),

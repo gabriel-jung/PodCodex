@@ -24,13 +24,13 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
       {needsDownload || ep.downloaded ? (
         <div className="flex items-center gap-1.5 shrink-0">
           <input type="checkbox" checked={selected} onMouseDown={(e) => { shiftRef.current = e.shiftKey; }} onChange={() => onToggle(shiftRef.current)} className="accent-primary cursor-pointer" />
-          {ep.downloaded && <CheckCircle className="w-3.5 h-3.5 text-green-500" />}
+          {ep.downloaded && <CheckCircle className="w-3.5 h-3.5 text-success" />}
         </div>
       ) : (
         <div className="w-4" />
       )}
       {ep.artwork_url && (
-        <img src={ep.artwork_url} alt="" className="w-8 h-6 object-cover rounded shrink-0" loading="lazy" />
+        <img src={ep.artwork_url} alt={ep.title} className="w-8 h-6 object-cover rounded shrink-0" loading="lazy" />
       )}
       {ep.episode_number != null && (
         <span className="text-xs text-muted-foreground w-8 text-right shrink-0">#{ep.episode_number}</span>
@@ -46,7 +46,7 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
       <span className="text-xs text-muted-foreground w-12 text-right shrink-0">{formatDuration(ep.duration)}</span>
       <div className="w-20 flex justify-end gap-2.5 shrink-0">
         {ep.audio_path && (
-          <button onClick={onPlay} title="Play" className={`transition ${isPlaying ? "text-green-400" : "text-muted-foreground hover:text-foreground"}`}>
+          <button onClick={onPlay} title="Play" className={`transition ${isPlaying ? "text-success" : "text-muted-foreground hover:text-foreground"}`}>
             <Play className="w-3.5 h-3.5" />
           </button>
         )}
@@ -56,7 +56,7 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
           </button>
         )}
         {needsDownload && !selected && (
-          <button onClick={onDownload} disabled={downloading} title="Download" className="text-green-400 hover:text-green-300 transition">
+          <button onClick={onDownload} disabled={downloading} title="Download" className="text-success hover:text-success/80 transition">
             <Download className="w-3.5 h-3.5" />
           </button>
         )}

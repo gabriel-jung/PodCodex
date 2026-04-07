@@ -171,7 +171,7 @@ export default function AudioBar() {
           title="Go to episode"
         >
           {audioArtwork ? (
-            <img src={audioArtwork} alt="" className="w-full h-full object-cover" />
+            <img src={audioArtwork} alt={audioTitle || "Now playing"} className="w-full h-full object-cover" />
           ) : (
             <Play className="w-4 h-4 text-muted-foreground" />
           )}
@@ -208,7 +208,7 @@ export default function AudioBar() {
           </button>
           <button
             onClick={() => setSpeed(1)}
-            className="text-[11px] tabular-nums w-11 text-center text-muted-foreground hover:text-foreground rounded hover:bg-accent transition"
+            className="text-xs tabular-nums w-11 text-center text-muted-foreground hover:text-foreground rounded hover:bg-accent transition"
             title="Reset speed"
           >
             {speed.toFixed(2)}x
@@ -270,7 +270,7 @@ export default function AudioBar() {
 
       {/* Row 2: Seek bar + time */}
       <div className="flex items-center gap-2">
-        <span className="text-[10px] text-muted-foreground w-10 text-right shrink-0 tabular-nums">
+        <span className="text-2xs text-muted-foreground w-10 text-right shrink-0 tabular-nums">
           {formatTime(currentTime, false)}
         </span>
         <div
@@ -302,7 +302,7 @@ export default function AudioBar() {
           </div>
           {hoverTime && (
             <div
-              className="absolute bottom-full mb-1.5 -translate-x-1/2 bg-popover text-popover-foreground text-[10px] tabular-nums px-1.5 py-0.5 rounded border border-border shadow-sm pointer-events-none"
+              className="absolute bottom-full mb-1.5 -translate-x-1/2 bg-popover text-popover-foreground text-2xs tabular-nums px-1.5 py-0.5 rounded border border-border shadow-sm pointer-events-none"
               style={{ left: `${hoverTime.pct}%` }}
             >
               {formatTime(hoverTime.time, false)}
@@ -311,7 +311,7 @@ export default function AudioBar() {
         </div>
         <button
           onClick={() => setTimeMode((m) => m === "remaining" ? "elapsed" : m === "elapsed" ? "total" : "remaining")}
-          className="text-[10px] text-muted-foreground w-12 shrink-0 tabular-nums text-left hover:text-foreground transition"
+          className="text-2xs text-muted-foreground w-12 shrink-0 tabular-nums text-left hover:text-foreground transition"
           title="Click to toggle time display"
         >
           {timeMode === "remaining" && duration > 0

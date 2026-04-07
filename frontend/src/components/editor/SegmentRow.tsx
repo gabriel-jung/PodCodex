@@ -140,7 +140,7 @@ export default function SegmentRow({
     return (
       <div className="flex items-center gap-3 px-4 py-1.5 text-muted-foreground/40">
         <div className="flex-1 border-t border-dashed border-border" />
-        <span className="text-[10px] select-none">
+        <span className="text-2xs select-none">
           {gap > 0 ? `${gap.toFixed(0)}s pause` : "break"}
         </span>
         <div className="flex-1 border-t border-dashed border-border" />
@@ -207,7 +207,7 @@ export default function SegmentRow({
 
         {/* Flag reason + dismiss */}
         {isFlagged && flagReason && (
-          <span className="flex items-center gap-1 text-yellow-500 text-[10px]">
+          <span className="flex items-center gap-1 text-yellow-500 text-2xs">
             <AlertTriangle className="w-3 h-3" />
             {flagReason}
             {onDismissFlag && (
@@ -224,7 +224,7 @@ export default function SegmentRow({
 
         <div className="flex-1" />
 
-        {isEdited && <span className="text-primary text-[10px]">edited</span>}
+        {isEdited && <span className="text-primary text-2xs">edited</span>}
 
         {onInsertBefore && (
           <Button
@@ -289,7 +289,7 @@ export default function SegmentRow({
             />
             <button
               onClick={() => onTimestampChange("start", Math.round(getAudioTime() * 10) / 10)}
-              className="text-[10px] text-muted-foreground hover:text-foreground bg-secondary rounded px-1 py-0.5 border border-border"
+              className="text-2xs text-muted-foreground hover:text-foreground bg-secondary rounded px-1 py-0.5 border border-border"
               title="Set to current playback position"
             >
               ← current time
@@ -306,7 +306,7 @@ export default function SegmentRow({
             />
             <button
               onClick={() => onTimestampChange("end", Math.round(getAudioTime() * 10) / 10)}
-              className="text-[10px] text-muted-foreground hover:text-foreground bg-secondary rounded px-1 py-0.5 border border-border"
+              className="text-2xs text-muted-foreground hover:text-foreground bg-secondary rounded px-1 py-0.5 border border-border"
               title="Set to current playback position"
             >
               ← current time
@@ -338,7 +338,7 @@ export default function SegmentRow({
           <div className="flex items-center gap-1">
             <button
               onClick={() => setRefExpanded(!refExpanded)}
-              className="flex items-center gap-1 text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition"
+              className="flex items-center gap-1 text-2xs text-muted-foreground/60 hover:text-muted-foreground transition"
             >
               <Diff className="w-3 h-3" />
               <span>{referenceLabel}{!hasDiff && " ✓"}</span>

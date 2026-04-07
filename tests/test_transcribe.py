@@ -309,6 +309,115 @@ def test_is_segment_flagged_undiarized():
     assert is_segment_flagged(normal, diarized=False) is False
 
 
+# ──────────────────────────────────────────────
+# clean_transcript integration with export
+# ──────────────────────────────────────────────
+
+
+def test_export_transcript_clean_removes_flagged(tmp_path):
+    """export_transcript(clean=True) removes unknown speakers and low-density segments."""
+    import pandas as pd
+    from podcodex.core.transcribe import export_transcript, save_speaker_map
+
+    audio = tmp_path / "ep.mp3"
+    diarized = [
+        {
+            "start": 0.0,
+            "end": 5.0,
+            "speaker": "SPEAKER_00",
+            "text": "Hello world this is a good segment",
+        },
+        {
+            "start": 5.5,
+            "end": 12.0,
+            "speaker": "SPEAKER_01",
+            "text": "Hi",
+        },  # low density (3 chars / 6.5s < 2)
+        {
+            "start": 13.0,
+            "end": 18.0,
+            "speaker": "UNKNOWN",
+            "text": "Unknown speaker segment here",
+        },
+    ]
+    ep_dir = tmp_path / "ep"
+    ep_dir.mkdir()
+    pd.DataFrame(diarized).to_parquet(
+        ep_dir / "ep.diarized_segments.parquet", index=False
+    )
+    save_speaker_map(audio, {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"})
+
+    segments = export_transcript(audio, clean=True)
+    # Only Alice's good segment should survive
+    assert len(segments) == 1
+    assert segments[0]["speaker"] == "Alice"
+
+
+def test_export_transcript_no_clean_preserves_all(tmp_path):
+    """export_transcript(clean=False) preserves all segments including flagged ones."""
+    import pandas as pd
+    from podcodex.core.transcribe import export_transcript, save_speaker_map
+
+    audio = tmp_path / "ep.mp3"
+    diarized = [
+        {
+            "start": 0.0,
+            "end": 5.0,
+            "speaker": "SPEAKER_00",
+            "text": "Hello world this is a good segment",
+        },
+        {
+            "start": 5.5,
+            "end": 12.0,
+            "speaker": "SPEAKER_01",
+            "text": "Hi",
+        },  # low density
+        {
+            "start": 13.0,
+            "end": 18.0,
+            "speaker": "UNKNOWN",
+            "text": "Unknown speaker segment here",
+        },
+    ]
+    ep_dir = tmp_path / "ep"
+    ep_dir.mkdir()
+    pd.DataFrame(diarized).to_parquet(
+        ep_dir / "ep.diarized_segments.parquet", index=False
+    )
+    save_speaker_map(audio, {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"})
+
+    segments = export_transcript(audio, clean=False)
+    assert len(segments) == 3
+
+
+def test_export_transcript_clean_nodiarize_only_density(tmp_path):
+    """clean=True + diarized=False only filters by density, not speaker.
+
+    With diarize=False all segments share the Narrator speaker and get merged,
+    so we need a >10s gap to prevent merging and test density filtering.
+    """
+    import pandas as pd
+    from podcodex.core.transcribe import export_transcript
+
+    audio = tmp_path / "ep.mp3"
+    raw_segs = [
+        {"start": 0.0, "end": 5.0, "text": "Hello world this is a good segment"},
+        # >10s gap prevents merge; low density (2 chars / 5s = 0.4 < 2)
+        {"start": 50.0, "end": 55.0, "text": "Hi"},
+    ]
+    ep_dir = tmp_path / "ep"
+    ep_dir.mkdir()
+    pd.DataFrame(raw_segs).to_parquet(ep_dir / "ep.segments.parquet", index=False)
+    (ep_dir / "ep.segments.meta.json").write_text(
+        json.dumps({"language": "en", "duration": 55.0, "num_segments": 2})
+    )
+
+    segments = export_transcript(audio, diarized=False, clean=True)
+    # Low-density segment removed; good segment + BREAK remain
+    texts = [s["text"] for s in segments if s["speaker"] != "[BREAK]"]
+    assert texts == ["Hello world this is a good segment"]
+
+
 def test_audio_paths_naming():
     """AudioPaths produces consistent file names for all pipeline steps."""
     from podcodex.core._utils import AudioPaths

@@ -15,7 +15,7 @@ export default function ShowListRow({ show, onClick }: ShowListRowProps) {
       className="w-full text-left px-4 py-3 flex items-center gap-4 hover:bg-accent/50 transition border-b border-border last:border-0"
     >
       {show.artwork_url ? (
-        <img src={artworkUrl(show.path)} alt="" className="w-8 h-8 rounded shrink-0" />
+        <img src={artworkUrl(show.path)} alt={show.name} className="w-8 h-8 rounded shrink-0" />
       ) : (
         <div className="w-8 h-8 rounded bg-muted shrink-0" />
       )}
