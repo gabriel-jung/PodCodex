@@ -8,7 +8,7 @@ interface PipelineSettingsProps {
 }
 
 export default function PipelineSettings({ language }: PipelineSettingsProps) {
-  const { tc, setTc, llm, setLLM, engine, setEngine, targetLang, setTargetLang } = usePipelineConfig();
+  const { tc, setTc, llm, setLLM, targetLang, setTargetLang } = usePipelineConfig();
 
   const { whisperModels, detectedKeys: detected, apiProviders } = useLLMProviders();
 
@@ -47,16 +47,10 @@ export default function PipelineSettings({ language }: PipelineSettingsProps) {
         <SettingRow label="Batch size" help="GPU batch size for transcription.">
           <input type="number" value={tc.batchSize} onChange={(e) => setTc({ batchSize: Number(e.target.value) })} min={1} className="input py-1 text-sm w-16" />
         </SettingRow>
-        <SettingRow label="Transcript engine" help="Which engine produced the transcript (used in polish/translate prompts to guide error correction).">
-          <select value={engine} onChange={(e) => setEngine(e.target.value)} className={selectClass}>
-            <option value="Whisper">Whisper</option>
-            <option value="Voxtral">Voxtral</option>
-          </select>
-        </SettingRow>
       </SettingSection>
 
       {/* ── LLM Settings ── */}
-      <SettingSection title="LLM" description="AI model configuration for Polish and Translate steps.">
+      <SettingSection title="LLM" description="AI model configuration for Correct and Translate steps.">
         <SettingRow label="Mode" help="Ollama = local GPU. API = cloud service.">
           <div className="flex gap-3">
             {(["ollama", "api"] as const).map((m) => (

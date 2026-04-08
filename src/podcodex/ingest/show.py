@@ -23,7 +23,7 @@ class PipelineDefaults:
     # Transcribe
     model_size: str = ""
     diarize: bool = True
-    # Polish / Translate (LLM)
+    # Correct / Translate (LLM)
     llm_mode: str = ""  # "ollama" | "api"
     llm_provider: str = ""  # "openai", "anthropic", etc.
     llm_model: str = ""

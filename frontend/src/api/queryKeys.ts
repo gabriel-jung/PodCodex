@@ -62,7 +62,7 @@ export const queryKeys = {
   indexStepVersions: (audioPath: AudioPath, source: string) =>
     ["index", "step-versions", audioPath, source] as const,
 
-  // ── Step-scoped (TranscriptViewer editor key: "transcribe" | "polish" | "translate-xxx") ──
+  // ── Step-scoped (TranscriptViewer editor key: "transcribe" | "correct" | "translate-xxx") ──
   /** All queries for a given editor step. */
   stepAll: (editorKey: string) => [editorKey] as const,
   /** Segments for a step. */

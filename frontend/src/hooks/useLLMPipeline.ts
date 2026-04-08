@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getPolishSegments, getSegments } from "@/api/client";
+import { getCorrectSegments, getSegments } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { buildDefaultContext } from "@/lib/utils";
 import type { LLMConfig } from "@/components/common/LLMControls";
@@ -8,7 +8,7 @@ import type { Episode, ShowMeta, Segment } from "@/api/types";
 import { usePipelineConfigStore } from "@/stores";
 
 /**
- * Shared LLM configuration state for pipeline panels (polish, translate).
+ * Shared LLM configuration state for pipeline panels (correct, translate).
  * Reads from and writes to the persisted pipeline config store.
  * Initialises sourceLang and context from show/episode metadata on first use.
  */
@@ -46,7 +46,7 @@ export function useLLMConfig(
 /**
  * Build the common request fields from an LLMConfig + audioPath.
  * Panels spread this into their step-specific request, adding only
- * the extra fields they need (engine for polish, target_lang for translate).
+ * the extra fields they need (engine for correct, target_lang for translate).
  */
 export function buildLLMRequest(audioPath: string, config: LLMConfig) {
   return {
@@ -64,21 +64,21 @@ export function buildLLMRequest(audioPath: string, config: LLMConfig) {
 
 /**
  * Load the best available source segments for an episode:
- * tries polished first, falls back to raw transcribe segments.
+ * tries corrected first, falls back to raw transcribe segments.
  *
  * Used by TranslatePanel (and any future panel) that wants the
  * highest-quality text as a reference.
  */
 export function useBestSourceSegments(
   audioPath: string | null | undefined,
-  opts: { enabled?: boolean; polished?: boolean },
+  opts: { enabled?: boolean; corrected?: boolean },
 ) {
   return useQuery<Segment[]>({
     queryKey: queryKeys.bestSourceSegments(audioPath),
     queryFn: async () => {
       if (!audioPath) return [];
       try {
-        if (opts.polished) return await getPolishSegments(audioPath);
+        if (opts.corrected) return await getCorrectSegments(audioPath);
       } catch { /* fall through */ }
       return getSegments(audioPath);
     },

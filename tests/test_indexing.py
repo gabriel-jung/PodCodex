@@ -36,7 +36,7 @@ def test_vectorize_episode_upgrades_on_source_change(tmp_path):
     from podcodex.rag.indexing import vectorize_episode
 
     transcript = {
-        "meta": {"show": "S", "episode": "E1", "source": "polished"},
+        "meta": {"show": "S", "episode": "E1", "source": "corrected"},
         "segments": [{"start": 0.0, "end": 5.0, "speaker": "A", "text": "hello world"}],
     }
     mock_local = MagicMock()

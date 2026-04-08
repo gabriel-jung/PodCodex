@@ -1,7 +1,7 @@
 """Tests for podcodex.core._utils — shared pipeline utilities.
 
 Consolidates tests for functions previously duplicated between
-test_polish.py and test_translate.py (call_and_parse,
+test_correct.py and test_translate.py (call_and_parse,
 batch_segments_by_duration, segments_to_text).
 """
 

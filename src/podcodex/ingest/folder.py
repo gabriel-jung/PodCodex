@@ -48,9 +48,10 @@ class EpisodeInfo:
     assigned: bool = False
     mapped: bool = False  # speaker_map.json exists
     transcribed: bool = False  # transcript exported (raw or validated)
-    polished: bool = False
+    corrected: bool = False
     indexed: bool = False
     synthesized: bool = False
+    has_subtitles: bool = False
     translations: list[str] = field(default_factory=list)
 
     @property
@@ -64,7 +65,7 @@ def _episode_status(stem: str, existing: set[str]) -> dict:
 
     Only detects artifacts that are still written to disk (transcription
     intermediates, transcript files, synthesis outputs, RAG marker).
-    Polish/translation status comes from the version DB via ``mark_step``.
+    Correct/translation status comes from the version DB via ``mark_step``.
     """
     segments_ready = (
         f"{stem}.segments.parquet" in existing
@@ -79,10 +80,12 @@ def _episode_status(stem: str, existing: set[str]) -> dict:
 
     transcript_raw = f"{stem}.transcript.raw.json" in existing
     transcript_val = f"{stem}.transcript.json" in existing
-    transcribed = transcript_raw or transcript_val
+    has_version_transcript = "transcript" in existing
+    transcribed = transcript_raw or transcript_val or has_version_transcript
 
     indexed = ".rag_indexed" in existing
     synthesized = f"{stem}.synthesized.wav" in existing
+    has_subtitles = any(f.endswith(".vtt") for f in existing)
 
     return {
         "segments_ready": segments_ready,
@@ -90,9 +93,10 @@ def _episode_status(stem: str, existing: set[str]) -> dict:
         "assigned": assigned,
         "mapped": mapped,
         "transcribed": transcribed,
-        "polished": False,
+        "corrected": False,
         "indexed": indexed,
         "synthesized": synthesized,
+        "has_subtitles": has_subtitles,
         "translations": [],
     }
 
@@ -200,7 +204,10 @@ def _scan_folder_uncached(show_folder: Path) -> list[EpisodeInfo]:
         if name in episodes:
             continue
         existing = subdir_files[name]
-        has_transcript = any(f"{name}.{m}" in existing for m in _TRANSCRIPT_MARKERS)
+        has_transcript = (
+            any(f"{name}.{m}" in existing for m in _TRANSCRIPT_MARKERS)
+            or "transcript" in existing
+        )
         has_meta = EPISODE_META_FILE in existing
         if has_transcript or has_meta:
             episodes[name] = _make_episode(name, show_folder / name, existing)

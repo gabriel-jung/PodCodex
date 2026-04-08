@@ -3,6 +3,10 @@ import type { Segment } from "@/api/types";
 
 const UNKNOWN_SPEAKERS = new Set(["UNKNOWN", "UNK", "None", "none", ""]);
 
+/** Speech density thresholds (chars/s) — must match backend MIN_DENSITY / MAX_DENSITY. */
+export const MIN_DENSITY = 2;
+export const MAX_DENSITY = 75;
+
 export interface FilterState {
   page: number;
   setPage: (p: number) => void;
@@ -55,8 +59,8 @@ export function useSegmentFiltering(): FilterState {
   const [speakerFilter, setSpeakerFilter] = useState("");
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
   const [showChangedOnly, setShowChangedOnly] = useState(false);
-  const [densityThreshold, setDensityThreshold] = useState(2);
-  const [maxDensityThreshold, setMaxDensityThreshold] = useState(75);
+  const [densityThreshold, setDensityThreshold] = useState(MIN_DENSITY);
+  const [maxDensityThreshold, setMaxDensityThreshold] = useState(MAX_DENSITY);
   const [searchQuery, setSearchQuery] = useState("");
   const [anchorOrigIdx, setAnchorOrigIdx] = useState<number | null>(null);
 

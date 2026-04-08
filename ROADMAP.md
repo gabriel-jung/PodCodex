@@ -46,7 +46,7 @@
 - Hardware auto-detection (GPU/CPU, VRAM) to pick optimal Whisper model and settings
 - One-click flow: drop audio → transcribe → export → index
 - Searchable transcripts ready to query with no manual configuration
-- Optional opt-in to advanced steps (diarization, polish, translate, synthesis)
+- Optional opt-in to advanced steps (diarization, correct, translate, synthesis)
 
 ### Phase O: Developer Experience
 

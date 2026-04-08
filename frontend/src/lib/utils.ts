@@ -78,9 +78,9 @@ export function getShowName(showMeta: ShowMeta | null | undefined, audioPath: st
   return parts[parts.length - 2] || parts[parts.length - 1] || "";
 }
 
-/** True if any pipeline step is outdated (transcribe, polish, or translate). */
-export function isOutdated(ep: { transcribe_status?: string; polish_status?: string; translate_status?: string }): boolean {
-  return ep.transcribe_status === "outdated" || ep.polish_status === "outdated" || ep.translate_status === "outdated";
+/** True if any pipeline step is outdated (transcribe, correct, or translate). */
+export function isOutdated(ep: { transcribe_status?: string; correct_status?: string; translate_status?: string }): boolean {
+  return ep.transcribe_status === "outdated" || ep.correct_status === "outdated" || ep.translate_status === "outdated";
 }
 
 /** Shared CSS class for <select> elements across forms. */
@@ -99,7 +99,7 @@ export function languageToISO(lang: string): string {
     english: "en", french: "fr", german: "de", spanish: "es",
     italian: "it", portuguese: "pt", dutch: "nl", russian: "ru",
     japanese: "ja", chinese: "zh", korean: "ko", arabic: "ar",
-    hindi: "hi", turkish: "tr", polish: "pl", swedish: "sv",
+    hindi: "hi", turkish: "tr", correct: "co", swedish: "sv",
     danish: "da", norwegian: "no", finnish: "fi", greek: "el",
     czech: "cs", romanian: "ro", hungarian: "hu", ukrainian: "uk",
     catalan: "ca", hebrew: "he", thai: "th", vietnamese: "vi",
@@ -133,31 +133,56 @@ export function versionDate(v: VersionEntry): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+export const SOURCE_LABELS: Record<string, string> = {
+  whisper: "Whisper",
+  "youtube-subtitles": "YouTube subtitles",
+  upload: "Upload",
+  import: "Import",
+};
+
+const KNOWN_STEPS = new Set(["transcript", "corrected"]);
+
+/** Format a version's step as a display tag, e.g. "transcript", "translated · fr". */
+export function stepTag(step: string, type?: string): string {
+  const edited = type === "validated" ? " · edited" : "";
+  if (KNOWN_STEPS.has(step)) return `${step}${edited}`;
+  return `translated · ${step}${edited}`;
+};
+
 /** Build a compact label for a version (model, provider, language info). */
 export function versionLabel(v: VersionEntry): string {
   const p = v.params as Record<string, unknown>;
-  if (v.manual_edit || v.type === "validated") return "Edited";
+  if (v.manual_edit) return "Edited";
   if (p.skipped) return "Skipped (copy)";
+
+  // Source chain: "YouTube subtitles → ollama → openai"
+  const chain = p.source_chain as string[] | undefined;
+  if (chain && chain.length > 0) {
+    const formatted = chain.map((s) => SOURCE_LABELS[s] || s);
+    return formatted.join(" → ");
+  }
+
+  // Legacy / transcript: flat label
   const parts: string[] = [];
+  if (p.source) parts.push(SOURCE_LABELS[String(p.source)] || String(p.source));
   if (v.model) parts.push(v.model);
-  if (p.provider) parts.push(String(p.provider));
-  else if (p.mode) parts.push(String(p.mode));
+  if (p.llm_provider) parts.push(String(p.llm_provider));
+  else if (p.llm_mode) parts.push(String(p.llm_mode));
   if (p.language) parts.push(String(p.language));
   else if (p.source_lang && p.target_lang) parts.push(`${p.source_lang} → ${p.target_lang}`);
   else if (p.source_lang) parts.push(String(p.source_lang));
-  if (p.diarize === false) parts.push("no diar");
-  if (p.source) parts.push(String(p.source));
+  if (p.diarize === true) parts.push("diarized");
   return parts.join(", ") || "Generated";
 }
 
 /** Params to hide from the version info box (internal / not user-relevant). */
-const HIDDEN_VERSION_PARAMS = new Set(["meta", "batch_size", "batch_minutes", "engine", "skipped"]);
+const HIDDEN_VERSION_PARAMS = new Set(["meta", "batch_size", "batch_minutes", "engine", "input_source", "skipped", "source", "source_chain"]);
 
 /** Format all params as key: value rows for a version info box. */
 export function versionInfo(v: VersionEntry): { key: string; value: string }[] {
   const rows: { key: string; value: string }[] = [];
   if (v.model) rows.push({ key: "Model", value: v.model });
-  rows.push({ key: "Type", value: v.type === "validated" ? "Saved edit" : "Generated" });
+  rows.push({ key: "Type", value: v.type === "validated" ? "Edited" : "Generated" });
   rows.push({ key: "Segments", value: String(v.segment_count) });
   rows.push({ key: "Hash", value: v.content_hash.replace("sha256:", "").slice(0, 8) });
   const p = v.params as Record<string, unknown>;

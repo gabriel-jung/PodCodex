@@ -588,7 +588,7 @@ class PodCodexBot(discord.Client):
             alpha="0 = keywords only → 1 = meaning only (default 0.5)",
             model="Search model (leave empty for server default)",
             top_k="How many results to show (leave empty for server default)",
-            source="Where to search: polished, transcript, etc.",
+            source="Where to search: corrected, transcript, etc.",
             compact="Show results in a single compact embed",
         )
         @app_commands.choices(model=_MODEL_CHOICES, compact=_BOOL_CHOICES)
@@ -642,7 +642,7 @@ class PodCodexBot(discord.Client):
             episode="Pick an episode",
             speaker="Filter by speaker name",
             top_k="How many results to show (default 25)",
-            source="Where to search: polished, transcript, etc.",
+            source="Where to search: corrected, transcript, etc.",
             compact="Show results in a single compact embed",
         )
         @app_commands.choices(compact=_BOOL_CHOICES)
@@ -689,7 +689,7 @@ class PodCodexBot(discord.Client):
             show="Pick a show (random from all if empty)",
             episode="Pick an episode",
             speaker="Filter by speaker name",
-            source="Where to search: polished, transcript, etc.",
+            source="Where to search: corrected, transcript, etc.",
         )
         async def random_cmd(
             interaction: discord.Interaction,
@@ -769,7 +769,7 @@ class PodCodexBot(discord.Client):
             show_add="Always search this show by default",
             show_remove="Stop searching this show by default",
             show_clear="Remove all default shows (search everything)",
-            default_source="Default source to search: polished, transcript, etc.",
+            default_source="Default source to search: corrected, transcript, etc.",
             compact="Use compact results by default",
         )
         @app_commands.choices(

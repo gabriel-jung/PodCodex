@@ -475,7 +475,7 @@ async def unified_episodes(
         st: dict,
         ep_files: list[str],
     ) -> dict:
-        prov = st.get("provenance", {})
+        prov = _normalize_provenance(st.get("provenance", {}))
         return {
             "id": ep_id,
             "title": title,
@@ -491,9 +491,10 @@ async def unified_episodes(
             else None,
             "downloaded": audio_path is not None,
             "transcribed": st.get("transcribed", False),
-            "polished": st.get("polished", False),
+            "corrected": st.get("corrected", False),
             "indexed": st.get("indexed", False),
             "synthesized": st.get("synthesized", False),
+            "has_subtitles": any(f.endswith(".vtt") for f in ep_files),
             "translations": st.get("translations", []),
             "artwork_url": artwork_url,
             "files": ep_files,
@@ -561,6 +562,24 @@ async def unified_episodes(
     return result
 
 
+_PARAM_RENAMES = {"mode": "llm_mode", "provider": "llm_provider"}
+
+
+def _normalize_provenance(prov: dict) -> dict:
+    """Rename legacy param keys (mode→llm_mode, provider→llm_provider)."""
+    out = {}
+    for step_key, meta in prov.items():
+        if not isinstance(meta, dict):
+            out[step_key] = meta
+            continue
+        params = meta.get("params")
+        if isinstance(params, dict):
+            params = {_PARAM_RENAMES.get(k, k): v for k, v in params.items()}
+            meta = {**meta, "params": params}
+        out[step_key] = meta
+    return out
+
+
 def _resolve_defaults(app_defaults: dict, show_meta: _ShowMeta | None) -> dict:
     """Merge app-level defaults with show-level overrides.
 
@@ -587,6 +606,39 @@ def _resolve_defaults(app_defaults: dict, show_meta: _ShowMeta | None) -> dict:
     return effective
 
 
+def _transcribe_outdated(prov: dict, effective: dict) -> bool:
+    """Check if a transcribe step's provenance is outdated relative to effective defaults."""
+    params = prov.get("params", {})
+    source = params.get("source", "whisper")
+    # Imported/uploaded transcripts are not outdated — they weren't auto-generated
+    if source not in ("whisper",):
+        return False
+    if prov.get("type") != "validated" and not prov.get("manual_edit"):
+        return True
+    if not effective:
+        return False
+    if effective.get("model_size") and prov.get("model") != effective["model_size"]:
+        return True
+    if "diarize" in effective and params.get("diarize") != effective["diarize"]:
+        return True
+    return False
+
+
+def _llm_outdated(prov: dict, effective: dict) -> bool:
+    """Check if an LLM step's provenance is outdated relative to effective defaults."""
+    params = prov.get("params", {})
+    if effective.get("llm_mode") and params.get("llm_mode") != effective["llm_mode"]:
+        return True
+    if (
+        effective.get("llm_provider")
+        and params.get("llm_provider") != effective["llm_provider"]
+    ):
+        return True
+    if effective.get("llm_model") and prov.get("model") != effective["llm_model"]:
+        return True
+    return False
+
+
 def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
     """Compute per-step status: 'none' | 'outdated' | 'done'.
 
@@ -594,71 +646,37 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
     """
 
     def _check_transcribe() -> str:
-        """Return transcribe status by comparing stored provenance with effective defaults."""
         if not st.get("transcribed", False):
             return "none"
         prov = provenance.get("transcript")
         if not prov:
             return "done"  # no provenance → legacy, assume done
-        # Raw transcript (import / never validated) → outdated (yellow)
-        if prov.get("type") != "validated" and not prov.get("manual_edit"):
-            return "outdated"
-        if not effective:
-            return "done"
-        params = prov.get("params", {})
-        if effective.get("model_size") and prov.get("model") != effective["model_size"]:
-            return "outdated"
-        if "diarize" in effective and params.get("diarize") != effective["diarize"]:
-            return "outdated"
-        return "done"
+        return "outdated" if _transcribe_outdated(prov, effective) else "done"
 
-    def _check_polish() -> str:
-        """Return polish status by comparing stored provenance with effective defaults."""
-        if not st.get("polished", False):
+    def _check_correct() -> str:
+        if not st.get("corrected", False):
             return "none"
-        prov = provenance.get("polished")
+        prov = provenance.get("corrected")
         if not prov or not effective:
             return "done"
-        params = prov.get("params", {})
-        if effective.get("llm_mode") and params.get("mode") != effective["llm_mode"]:
-            return "outdated"
-        if (
-            effective.get("llm_provider")
-            and params.get("provider") != effective["llm_provider"]
-        ):
-            return "outdated"
-        if effective.get("llm_model") and prov.get("model") != effective["llm_model"]:
-            return "outdated"
-        return "done"
+        return "outdated" if _llm_outdated(prov, effective) else "done"
 
     def _check_translate() -> str:
-        """Return translate status by comparing stored provenance with effective defaults."""
         translations = st.get("translations", [])
         if not translations:
             return "none"
         target = effective.get("target_lang", "").strip().lower()
         if target and target not in translations:
-            return "none"  # target lang not translated at all
-        # Check provenance for the target language
+            return "none"
         lang_key = target or (translations[0] if translations else "")
         prov = provenance.get(lang_key)
         if not prov or not effective:
             return "done"
-        params = prov.get("params", {})
-        if effective.get("llm_mode") and params.get("mode") != effective["llm_mode"]:
-            return "outdated"
-        if (
-            effective.get("llm_provider")
-            and params.get("provider") != effective["llm_provider"]
-        ):
-            return "outdated"
-        if effective.get("llm_model") and prov.get("model") != effective["llm_model"]:
-            return "outdated"
-        return "done"
+        return "outdated" if _llm_outdated(prov, effective) else "done"
 
     return {
         "transcribe_status": _check_transcribe(),
-        "polish_status": _check_polish(),
+        "correct_status": _check_correct(),
         "translate_status": _check_translate(),
     }
 
@@ -668,7 +686,9 @@ async def resync_pipeline_db(show_folder: str) -> dict:
     """Force-rebuild pipeline.db from filesystem scan."""
     path = require_show_folder(show_folder)
     close_pipeline_db(path)
-    db_file = path / "pipeline.db"
+    from podcodex.core.pipeline_db import DB_FILENAME
+
+    db_file = path / DB_FILENAME
     if db_file.exists():
         db_file.unlink()
     db = get_pipeline_db(path)
@@ -676,6 +696,19 @@ async def resync_pipeline_db(show_folder: str) -> dict:
     if episodes:
         db.populate_from_scan(episodes)
     return {"status": "resynced", "episode_count": len(episodes)}
+
+
+@router.get("/versions")
+async def list_all_versions(
+    audio_path: str | None = Query(None),
+    output_dir: str | None = Query(None),
+) -> list[dict]:
+    """List versions across all pipeline steps for an episode, newest first."""
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.versions import list_all_versions
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    return list_all_versions(p.base)
 
 
 def _scan_audio_files(show_folder: Path) -> dict[str, Path]:

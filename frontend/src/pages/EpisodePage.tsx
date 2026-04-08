@@ -99,7 +99,7 @@ export default function EpisodePage({
         audio_path: audioFilePath,
         downloaded: true,
         transcribed: false,
-        polished: false,
+        corrected: false,
         indexed: false,
         synthesized: false,
         translations: [] as string[],
@@ -150,7 +150,7 @@ export default function EpisodePage({
         // Invalidate step-scoped segment queries for every editor step (the
         // previous `["segments"]` prefix never matched `[editorKey, "segments", ...]`).
         queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("transcribe", episode?.audio_path) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("polish", episode?.audio_path) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", episode?.audio_path) });
         queryClient.invalidateQueries({ queryKey: queryKeys.transcribeSegments(episode?.audio_path) });
         queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
         setActiveStep("transcribe");

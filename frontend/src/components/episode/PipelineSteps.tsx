@@ -8,11 +8,11 @@ import { useState } from "react";
 import type { Episode } from "@/api/types";
 import { formatDuration, formatDate } from "@/lib/utils";
 import {
-  Mic, Sparkles, Languages, AudioLines, Database,
+  Mic, Sparkles, Languages, AudioLines, Database, ExternalLink,
 } from "lucide-react";
 
 import TranscribePanel from "@/components/transcribe/TranscribePanel";
-import PolishPanel from "@/components/polish/PolishPanel";
+import CorrectPanel from "@/components/correct/CorrectPanel";
 import TranslatePanel from "@/components/translate/TranslatePanel";
 import SynthesizePanel from "@/components/synthesize/SynthesizePanel";
 import IndexPanel from "@/components/index/IndexPanel";
@@ -22,7 +22,7 @@ import IndexPanel from "@/components/index/IndexPanel";
 export type StepStatus = "done" | "partial" | false;
 
 export interface PipelineStepDef {
-  key: "transcribe" | "polish" | "translate" | "synthesize" | "index";
+  key: "transcribe" | "correct" | "translate" | "synthesize" | "index";
   label: string;
   rowLabel: string;
   icon: typeof Mic;
@@ -32,7 +32,7 @@ export interface PipelineStepDef {
   status: (e: Episode) => StepStatus;
   matchFiles?: (e: Episode, f: string) => boolean;
   detail?: (e: Episode) => string | undefined;
-  provenanceKey?: "transcript" | "polished";
+  provenanceKey?: "transcript" | "corrected";
 }
 
 export type PipelineStepKey = PipelineStepDef["key"];
@@ -58,19 +58,19 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     provenanceKey: "transcript",
   },
   {
-    key: "polish",
-    label: "Polish",
-    rowLabel: "Polished",
+    key: "correct",
+    label: "Correct",
+    rowLabel: "Corrected",
     icon: Sparkles,
     section: "core",
     headerBadge: true,
-    component: () => <PolishPanel />,
+    component: () => <CorrectPanel />,
     status: (e) => {
-      if (e.polish_status === "outdated") return "partial";
-      return e.polished ? "done" : false;
+      if (e.correct_status === "outdated") return "partial";
+      return e.corrected ? "done" : false;
     },
-    matchFiles: (_e, f) => f.includes(".polished."),
-    provenanceKey: "polished",
+    matchFiles: (_e, f) => f.includes(".corrected."),
+    provenanceKey: "corrected",
   },
   {
     key: "index",
@@ -199,7 +199,8 @@ export function PipelineStatus({ episode }: { episode: Episode }) {
 }
 
 export function EpisodeDetails({ episode }: { episode: Episode }) {
-  if (episode.episode_number == null && !episode.pub_date && episode.duration <= 0) return null;
+  const youtubeUrl = /^[\w-]{11}$/.test(episode.id) ? `https://www.youtube.com/watch?v=${episode.id}` : null;
+  if (episode.episode_number == null && !episode.pub_date && episode.duration <= 0 && !youtubeUrl) return null;
   return (
     <div className="space-y-3">
       <h4 className="text-sm font-medium">Details</h4>
@@ -220,6 +221,14 @@ export function EpisodeDetails({ episode }: { episode: Episode }) {
           <>
             <span className="text-muted-foreground">Duration</span>
             <span>{formatDuration(episode.duration)}</span>
+          </>
+        )}
+        {youtubeUrl && (
+          <>
+            <span className="text-muted-foreground">Source</span>
+            <a href={youtubeUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline flex items-center gap-1">
+              YouTube <ExternalLink className="w-3 h-3" />
+            </a>
           </>
         )}
       </div>

@@ -22,9 +22,9 @@ export function usePipelineDefaults() {
   return useMemo(() => ({
     model_size: tc.modelSize,
     diarize: tc.diarize,
-    llm_mode: llm.mode === "api" ? "api" : "ollama",
-    llm_provider: llm.mode === "api" ? llm.provider : "",
-    llm_model: llm.model,
+    llm_mode: "",
+    llm_provider: "",
+    llm_model: "",
     target_lang: targetLang,
-  }), [tc.modelSize, tc.diarize, llm.mode, llm.provider, llm.model, targetLang]);
+  }), [tc.modelSize, tc.diarize, targetLang]);
 }

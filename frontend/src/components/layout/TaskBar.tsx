@@ -43,76 +43,109 @@ function DownloadStrip() {
   const isCancelled = progress?.status === "cancelled";
   const isFinished = isDone || isFailed || isCancelled;
 
-  // Derive per-status counts from result (array of {stem, status})
-  const results = (isFinished && Array.isArray(progress?.result) ? progress.result : []) as { stem: string; status: string }[];
+  // Derive per-status counts from result (array of {stem, status} or {results: [...]})
+  const rawResult = isFinished ? progress?.result : null;
+  const results = (Array.isArray(rawResult) ? rawResult : Array.isArray(rawResult?.results) ? rawResult.results : []) as { stem: string; title?: string; status: string }[];
   const total = results.length || 1;
-  const failedCount = results.filter(r => r.status === "failed").length;
-  const successCount = results.filter(r => r.status === "downloaded" || r.status === "exists").length;
+  const failedCount = results.filter(r => r.status === "failed" || r.status === "no_subtitles" || r.status === "error").length;
+  const successCount = results.filter(r => r.status === "downloaded" || r.status === "exists" || r.status === "imported").length;
   const successPct = Math.round((successCount / total) * 100);
   const failedPct = Math.round((failedCount / total) * 100);
   const hasFailures = failedCount > 0;
 
   const dismiss = () => {
     setDownloadTask(null);
-    if (downloadFolder) {
-      queryClient.refetchQueries({ queryKey: queryKeys.episodesForFolder(downloadFolder) });
-    }
   };
 
-  if (isFinished && isDone && !hasFailures) {
-    setTimeout(dismiss, 2000);
-  }
+  // Invalidate episode list when download completes
+  const didInvalidateRef = useRef(false);
+  useEffect(() => {
+    if (isFinished && downloadFolder && !didInvalidateRef.current) {
+      didInvalidateRef.current = true;
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(downloadFolder) });
+    }
+    if (!isFinished) didInvalidateRef.current = false;
+  }, [isFinished, downloadFolder, queryClient]);
+
+  // Auto-dismiss clean completions
+  useEffect(() => {
+    if (isFinished && isDone && !hasFailures) {
+      const t = setTimeout(dismiss, 2000);
+      return () => clearTimeout(t);
+    }
+  }, [isFinished, isDone, hasFailures]);
+
+  const failedResults = results.filter(r => r.status === "failed" || r.status === "no_subtitles" || r.status === "error");
+  const [showFailed, setShowFailed] = useState(false);
 
   return (
-    <div className="px-4 py-2 flex items-center gap-3 text-xs">
-      <Download className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-      <div className="flex-1 min-w-0 flex items-center gap-2">
-        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden flex">
-          {isFinished && results.length > 0 ? (
-            <>
-              <div
-                className="h-full bg-success transition-all duration-300"
-                style={{ width: `${successPct}%` }}
-              />
-              {failedPct > 0 && (
+    <div>
+      <div className="px-4 py-2 flex items-center gap-3 text-xs">
+        <Download className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+        <div className="flex-1 min-w-0 flex items-center gap-2">
+          <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden flex">
+            {isFinished && results.length > 0 ? (
+              <>
                 <div
-                  className="h-full bg-destructive transition-all duration-300"
-                  style={{ width: `${failedPct}%` }}
+                  className="h-full bg-success transition-all duration-300"
+                  style={{ width: `${successPct}%` }}
                 />
-              )}
-            </>
-          ) : (
-            <div
-              className={`h-full transition-all duration-300 ${
-                isFailed ? "bg-destructive" : isCancelled ? "bg-warning" : "bg-primary"
-              }`}
-              style={{ width: `${pct}%` }}
-            />
-          )}
+                {failedPct > 0 && (
+                  <div
+                    className="h-full bg-destructive transition-all duration-300"
+                    style={{ width: `${failedPct}%` }}
+                  />
+                )}
+              </>
+            ) : (
+              <div
+                className={`h-full transition-all duration-300 ${
+                  isFailed ? "bg-destructive" : isCancelled ? "bg-warning" : "bg-primary"
+                }`}
+                style={{ width: `${pct}%` }}
+              />
+            )}
+          </div>
+          <span className="text-muted-foreground shrink-0 w-8 text-right">{pct}%</span>
         </div>
-        <span className="text-muted-foreground shrink-0 w-8 text-right">{pct}%</span>
+        <span className="text-muted-foreground truncate max-w-[300px]">{msg}</span>
+        {isFinished && failedResults.length > 0 && (
+          <button onClick={() => setShowFailed(!showFailed)} className="text-destructive hover:text-destructive/80 transition text-2xs shrink-0">
+            {failedResults.length} failed
+          </button>
+        )}
+        {!isFinished ? (
+          <Button
+            onClick={() => cancelTask(downloadTaskId).catch(() => dismiss())}
+            variant="ghost"
+            size="sm"
+            className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
+            title="Cancel download"
+          >
+            <X className="w-3 h-3" />
+          </Button>
+        ) : (
+          <Button
+            onClick={dismiss}
+            variant="ghost"
+            size="sm"
+            className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
+            title="Dismiss"
+          >
+            <X className="w-3 h-3" />
+          </Button>
+        )}
       </div>
-      <span className="text-muted-foreground truncate max-w-[300px]">{msg}</span>
-      {!isFinished ? (
-        <Button
-          onClick={() => cancelTask(downloadTaskId).catch(() => dismiss())}
-          variant="ghost"
-          size="sm"
-          className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
-          title="Cancel download"
-        >
-          <X className="w-3 h-3" />
-        </Button>
-      ) : (
-        <Button
-          onClick={dismiss}
-          variant="ghost"
-          size="sm"
-          className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
-          title="Dismiss"
-        >
-          <X className="w-3 h-3" />
-        </Button>
+      {showFailed && failedResults.length > 0 && (
+        <div className="px-4 pb-2 max-h-32 overflow-y-auto">
+          {failedResults.map((r, i) => (
+            <div key={i} className="flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
+              <AlertTriangle className="w-3 h-3 text-destructive shrink-0" />
+              <span className="truncate">{r.title || r.stem}</span>
+              <span className="text-2xs text-muted-foreground/60 shrink-0">{r.status === "no_subtitles" ? "no subs" : r.status}</span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

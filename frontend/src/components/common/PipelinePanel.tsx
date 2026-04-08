@@ -13,7 +13,7 @@ interface PipelinePanelProps {
   expanded: boolean;
   /** Toggle expanded state. */
   onToggle: () => void;
-  /** Label for the chevron toggle when done (e.g. "Re-run polish"). */
+  /** Label for the chevron toggle when done (e.g. "Re-run correction"). */
   rerunLabel: string;
   /** Label shown above controls when step hasn't been run yet. */
   settingsLabel?: string;

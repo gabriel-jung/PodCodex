@@ -8,7 +8,12 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import build_provenance, submit_task
+from podcodex.api.routes._helpers import (
+    build_provenance,
+    llm_prov_params,
+    submit_task,
+    transcribe_prov_params,
+)
 from podcodex.core._utils import normalize_lang
 from podcodex.api.schemas import TaskResponse
 
@@ -20,7 +25,7 @@ class BatchRequest(BaseModel):
     audio_paths: list[str]
     # Step toggles
     transcribe: bool = True
-    polish: bool = True
+    correct: bool = True
     translate: bool = True
     index: bool = True
     # Transcribe config
@@ -31,7 +36,10 @@ class BatchRequest(BaseModel):
     clean: bool = False
     hf_token: str | None = None
     num_speakers: int | None = None
-    # Polish/Translate config (LLM)
+    # Transcribe source: "audio" (WhisperX) or "subtitles" (cached VTT)
+    transcribe_source: str = "audio"
+    sub_lang: str = "en"
+    # Correct/Translate config (LLM)
     llm_mode: str = "ollama"
     llm_provider: str | None = None
     llm_model: str = ""
@@ -65,7 +73,7 @@ class BatchRequest(BaseModel):
 # Step weights for progress calculation (must sum to 1.0 when all enabled)
 _STEP_WEIGHTS = {
     "transcribe": 0.5,
-    "polish": 0.2,
+    "correct": 0.2,
     "translate": 0.2,
     "index": 0.1,
 }
@@ -163,13 +171,14 @@ def _batch_transcribe(
         provenance = build_provenance(
             "transcript",
             model=req.model_size,
-            params={
-                "language": req.language or None,
-                "batch_size": req.batch_size,
-                "diarize": req.diarize,
-                "num_speakers": req.num_speakers,
-                "clean": req.clean,
-            },
+            params=transcribe_prov_params(
+                req.diarize,
+                model=req.model_size,
+                language=req.language or None,
+                batch_size=req.batch_size,
+                num_speakers=req.num_speakers,
+                clean=req.clean,
+            ),
         )
         export_transcript(
             audio_path,
@@ -183,23 +192,92 @@ def _batch_transcribe(
     return did_work
 
 
+def _batch_transcribe_from_subs(
+    audio_path, stem, p, req, cancelled, ep_progress, i, step_offset
+):
+    """Import cached VTT subtitles as a transcript version. Returns True if work was done."""
+    from podcodex.core._utils import vtt_to_segments
+    from podcodex.core.pipeline_db import mark_step
+    from podcodex.core.versions import save_version
+
+    sw = _STEP_WEIGHTS["transcribe"]
+    ep_progress(i, step_offset, sw, 0.0, "Importing subtitles...")
+
+    # Find cached VTT file
+    vtt_path = p.base.parent / f"{stem}.subtitles.{req.sub_lang}.vtt"
+    if not vtt_path.exists():
+        # Try downloading if not cached yet
+        from podcodex.ingest.youtube import cache_youtube_subtitles
+
+        ep_progress(i, step_offset, sw, 0.2, "Downloading subtitles...")
+        # Extract video_id from feed cache
+        video_id = _resolve_video_id(p.base.parent)
+        if not video_id:
+            logger.warning("No video ID found for {}, skipping subtitle import", stem)
+            return False
+        if not cache_youtube_subtitles(
+            video_id, p.base.parent, stem, lang=req.sub_lang
+        ):
+            logger.warning("No subtitles available for {}", stem)
+            return False
+
+    if cancelled():
+        return False
+
+    ep_progress(i, step_offset, sw, 0.5, "Parsing subtitles...")
+    vtt_text = vtt_path.read_text(encoding="utf-8")
+    segments = vtt_to_segments(vtt_text)
+    if not segments:
+        logger.warning("VTT parsed to zero segments for {}", stem)
+        return False
+
+    ep_progress(i, step_offset, sw, 0.8, "Saving transcript...")
+    provenance = build_provenance(
+        "transcript",
+        params=transcribe_prov_params(
+            diarize=False,
+            source="youtube-subtitles",
+            language=req.sub_lang,
+        ),
+    )
+    save_version(p.base, "transcript", segments, provenance)
+    mark_step(
+        p.show_dir, p.base.name, transcribed=True, provenance={"transcript": provenance}
+    )
+    return True
+
+
+def _resolve_video_id(episode_dir: Path) -> str | None:
+    """Extract YouTube video ID from episode metadata."""
+    import json
+
+    meta_path = episode_dir / ".episode_meta.json"
+    if not meta_path.exists():
+        return None
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        return data.get("guid") or data.get("video_id")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def _batch_llm_step(
     audio_path, p, req, cancelled, ep_progress, i, step_offset, *, step
 ):
-    """Run a polish or translate step. Returns True if work was done.
+    """Run a correct or translate step. Returns True if work was done.
 
     Skips if a version already exists with matching LLM params.
     """
     from podcodex.core.versions import has_matching_version
 
     is_translate = step == "translate"
-    step_name = normalize_lang(req.target_lang) if is_translate else "polished"
+    step_name = normalize_lang(req.target_lang) if is_translate else "corrected"
     sw = _STEP_WEIGHTS[step]
 
     match_params = {
         "model": req.llm_model,
-        "mode": req.llm_mode,
-        "provider": req.llm_provider,
+        "llm_mode": req.llm_mode,
+        "llm_provider": req.llm_provider,
         "source_lang": req.source_lang,
     }
     if is_translate:
@@ -222,7 +300,7 @@ def _batch_llm_step(
         if not segments:
             return False
 
-    label = "Translating" if is_translate else "Polishing"
+    label = "Translating" if is_translate else "Correcting"
     ep_progress(i, step_offset, sw, 0.0, f"{label}...")
 
     llm_kwargs = dict(
@@ -238,12 +316,12 @@ def _batch_llm_step(
         merge=False,
     )
 
-    prov_params = {
-        "mode": req.llm_mode,
-        "provider": req.llm_provider,
-        "source_lang": req.source_lang,
-        "batch_minutes": req.llm_batch_minutes,
-    }
+    prov_params = llm_prov_params(
+        req.llm_mode,
+        req.llm_provider,
+        source_lang=req.source_lang,
+        batch_minutes=req.llm_batch_minutes,
+    )
 
     if is_translate:
         from podcodex.core.translate import save_translation_raw, translate_segments
@@ -256,15 +334,15 @@ def _batch_llm_step(
         )
         save_translation_raw(audio_path, result, req.target_lang, provenance=provenance)
     else:
-        from podcodex.core.polish import polish_segments, save_polished_raw
+        from podcodex.core.correct import correct_segments, save_corrected_raw
 
         llm_kwargs["engine"] = req.engine
         prov_params["engine"] = req.engine
-        result = polish_segments(segments, **llm_kwargs)
+        result = correct_segments(segments, **llm_kwargs)
         provenance = build_provenance(
             step_name, model=req.llm_model, params=prov_params
         )
-        save_polished_raw(audio_path, result, provenance=provenance)
+        save_corrected_raw(audio_path, result, provenance=provenance)
 
     return True
 
@@ -377,7 +455,19 @@ def _run_batch(progress_cb, req: BatchRequest):
             step_offset = 0.0
 
             if req.transcribe and not _cancelled():
-                if not has_audio:
+                if req.transcribe_source == "subtitles":
+                    if _batch_transcribe_from_subs(
+                        audio_path,
+                        stem,
+                        p,
+                        req,
+                        _cancelled,
+                        ep_progress,
+                        i,
+                        step_offset,
+                    ):
+                        ep_had_work = True
+                elif not has_audio:
                     logger.debug("Skipping transcribe for {} (no audio file)", stem)
                 elif _batch_transcribe(
                     audio_path,
@@ -393,7 +483,7 @@ def _run_batch(progress_cb, req: BatchRequest):
                     ep_had_work = True
                 step_offset += _STEP_WEIGHTS["transcribe"]
 
-            if req.polish and not _cancelled():
+            if req.correct and not _cancelled():
                 if _batch_llm_step(
                     audio_path,
                     p,
@@ -402,10 +492,10 @@ def _run_batch(progress_cb, req: BatchRequest):
                     ep_progress,
                     i,
                     step_offset,
-                    step="polish",
+                    step="correct",
                 ):
                     ep_had_work = True
-                step_offset += _STEP_WEIGHTS["polish"]
+                step_offset += _STEP_WEIGHTS["correct"]
 
             if req.translate and req.target_lang and not _cancelled():
                 if _batch_llm_step(

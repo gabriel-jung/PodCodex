@@ -12,7 +12,7 @@ import {
   assembleEpisode,
   getPipelineConfig,
   getSegments,
-  getPolishSegments,
+  getCorrectSegments,
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -64,7 +64,7 @@ export default function SynthesizePanel() {
     queryFn: async () => {
       if (!episode.audio_path) return [];
       try {
-        if (episode.polished) return await getPolishSegments(episode.audio_path);
+        if (episode.corrected) return await getCorrectSegments(episode.audio_path);
       } catch { /* fall through */ }
       return getSegments(episode.audio_path);
     },
@@ -205,7 +205,7 @@ export default function SynthesizePanel() {
   return (
     <PipelinePanel
       title="Synthesize"
-      description="Re-create the episode with cloned voices — extract voice samples, generate speech for each segment, then assemble the final audio."
+      description="Re-create the episode with cloned voices: extract voice samples, generate speech for each segment, then assemble the final audio."
       prerequisite={prereq}
       blocker={!prereq && !hasTTS ? (
         <MissingDependency

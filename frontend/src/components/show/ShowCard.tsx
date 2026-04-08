@@ -17,12 +17,12 @@ export default function ShowCard({ show, onClick, vertical }: ShowCardProps) {
         className="text-left rounded-xl bg-card border border-border hover:border-muted-foreground/30 transition group overflow-hidden"
       >
         <div className="p-3 pb-0">
-        {show.artwork_url ? (
-          <img src={artworkUrl(show.path)} alt={show.name} className="w-full h-32 object-cover rounded-lg" />
-        ) : (
-          <div className="w-full h-32 bg-muted rounded-lg" />
-        )}
-      </div>
+          {show.artwork_url ? (
+            <img src={artworkUrl(show.path)} alt={show.name} className="w-full aspect-square object-cover rounded-lg" />
+          ) : (
+            <div className="w-full aspect-square bg-muted rounded-lg" />
+          )}
+        </div>
         <div className="p-3 space-y-0.5">
           <h3 className="font-medium text-sm truncate group-hover:text-primary transition flex items-center gap-1.5">
             <SourceIcon show={show} />

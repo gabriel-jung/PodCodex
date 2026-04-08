@@ -38,7 +38,7 @@ import DownloadDropdown from "@/components/common/DownloadDropdown";
 type ShowTab = "episodes" | "search" | "speakers" | "settings";
 const TABS: ShowTab[] = ["episodes", "search", "speakers", "settings"];
 type ViewMode = "list" | "card";
-type StatusFilter = "all" | "ready" | "transcribed" | "polished" | "translated" | "indexed" | "outdated";
+type StatusFilter = "all" | "ready" | "transcribed" | "corrected" | "translated" | "indexed" | "outdated";
 type SortKey = "date_desc" | "date_asc" | "title_asc" | "title_desc" | "duration_desc" | "duration_asc" | "number_desc" | "number_asc";
 
 export default function ShowPage({ folder, initialTab }: { folder: string; initialTab?: string }) {
@@ -108,7 +108,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     all: all.length,
     ready: all.filter((e) => e.downloaded || (e.transcribed && e.output_dir)).length,
     transcribed: all.filter((e) => e.transcribed).length,
-    polished: all.filter((e) => e.polished).length,
+    corrected: all.filter((e) => e.corrected).length,
     translated: all.filter((e) => e.translations.length > 0).length,
     indexed: all.filter((e) => e.indexed).length,
     outdated: all.filter((e) => isOutdated(e)).length,
@@ -138,7 +138,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     }
     if (filter === "ready") list = list.filter((e) => e.downloaded || (e.transcribed && e.output_dir));
     if (filter === "transcribed") list = list.filter((e) => e.transcribed);
-    if (filter === "polished") list = list.filter((e) => e.polished);
+    if (filter === "corrected") list = list.filter((e) => e.corrected);
     if (filter === "translated") list = list.filter((e) => e.translations.length > 0);
     if (filter === "indexed") list = list.filter((e) => e.indexed);
     if (filter === "outdated") list = list.filter((e) => isOutdated(e));
@@ -163,10 +163,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const downloadableSelected = filtered.filter((e) => selected.has(e.id) && !e.downloaded);
   const subtitleableSelected = filtered.filter((e) => selected.has(e.id));
-  const subsNewCount = subtitleableSelected.filter((e) => !e.transcribed).length;
-  const subsExistingCount = subtitleableSelected.length - subsNewCount;
   const batchableSelected = filtered.filter((e) =>
-    selected.has(e.id) && (e.downloaded || (e.transcribed && e.output_dir)),
+    selected.has(e.id) && (e.downloaded || e.has_subtitles || (e.transcribed && e.output_dir)),
   );
 
   /** Get a batch-usable path: real audio_path, or synthetic path from output_dir. */
@@ -213,24 +211,27 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const goEpisode = (stem: string) =>
     navigate({ to: "/show/$folder/episode/$stem", params: { folder: encodeURIComponent(folder), stem: encodeURIComponent(stem) } });
 
-  const runStep = (step: "transcribe" | "polish" | "translate" | "index") => {
-    const audioPaths = batchableSelected.map(batchPath).filter(Boolean) as string[];
+  const runStep = (step: "transcribe" | "correct" | "translate" | "index", filteredEpisodes?: Episode[], _sourceVersionIds?: Record<string, string>, transcribeSource?: string) => {
+    const source = filteredEpisodes || batchableSelected;
+    const audioPaths = source.map(batchPath).filter(Boolean) as string[];
     if (audioPaths.length === 0) return;
     batchMutationEpisodesRef.current.step = step;
     batchMutation.mutate({
       show_folder: folder,
       audio_paths: audioPaths,
       transcribe: step === "transcribe",
-      polish: step === "polish",
+      correct: step === "correct",
       translate: step === "translate",
       index: step === "index",
       model_size: tc.modelSize,
-      language: languageToISO(meta?.language || ""),
+      language: tc.language || languageToISO(meta?.language || ""),
       batch_size: tc.batchSize,
       diarize: tc.diarize,
       clean: tc.clean,
       hf_token: tc.hfToken || undefined,
       num_speakers: tc.numSpeakers ? Number(tc.numSpeakers) : undefined,
+      transcribe_source: transcribeSource || "audio",
+      sub_lang: languageToISO(meta?.language || "") || "en",
       llm_mode: llm.mode === "api" ? "api" : "ollama",
       llm_provider: llm.mode === "api" ? llm.provider : undefined,
       llm_model: llm.model || undefined,
@@ -325,7 +326,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           <option value="all">All ({filterCounts.all})</option>
           <option value="ready">Ready ({filterCounts.ready})</option>
           <option value="transcribed">Transcribed ({filterCounts.transcribed})</option>
-          <option value="polished">Polished ({filterCounts.polished})</option>
+          <option value="corrected">Corrected ({filterCounts.corrected})</option>
           <option value="translated">Translated ({filterCounts.translated})</option>
           <option value="indexed">Indexed ({filterCounts.indexed})</option>
           <option value="outdated">Outdated ({filterCounts.outdated})</option>
@@ -380,19 +381,9 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
             }
           }}
           onImportSubs={(lang) => {
-            const newOnly = subtitleableSelected.filter((e) => !e.transcribed);
-            if (subsNewCount > 0) {
-              importSubsMutation.mutate({ ids: newOnly.map((e) => e.id), lang });
-            } else {
-              confirmDialog.open({
-                title: "Re-import subtitles?",
-                description: `All ${subtitleableSelected.length} selected episode${subtitleableSelected.length !== 1 ? "s" : ""} already ha${subtitleableSelected.length === 1 ? "s" : "ve"} a transcript. This will create a new version.`,
-                confirmLabel: "Re-import",
-                onConfirm: () => importSubsMutation.mutate({ ids: subtitleableSelected.map((e) => e.id), lang }),
-              });
-            }
+            importSubsMutation.mutate({ ids: subtitleableSelected.map((e) => e.id), lang });
           }}
-          subsLabel={subsNewCount > 0 ? `Subtitles (${subsNewCount} new)` : `Re-import subs (${subtitleableSelected.length})`}
+          subsLabel={`Subtitles (${subtitleableSelected.length})`}
           subsEnabled={subtitleableSelected.length > 0}
           audioLabel={`Audio${downloadableSelected.length > 0 ? ` (${downloadableSelected.length})` : ""}`}
           showAudio={true}

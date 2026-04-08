@@ -22,24 +22,16 @@ router = APIRouter()
 
 
 # Map export source names to version DB step names.
-_STEP_MAP = {"transcript": "transcript", "polished": "polished"}
+_STEP_MAP = {"transcript": "transcript", "corrected": "corrected"}
 
 
 def _load_segments(audio_path: str, output_dir: str | None, source: str) -> list[dict]:
-    """Load segments for the given source (transcript, polished, or a language code)."""
+    """Load segments for the given source (transcript, corrected, or a language code)."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     step = _STEP_MAP.get(source) or normalize_lang(source)
     segments = load_latest(p.base, step)
     if segments is not None:
         return segments
-
-    # Transcript has a legacy wrapped-JSON file (with metadata) — try that.
-    if source == "transcript":
-        from podcodex.api.routes._helpers import read_segments
-
-        data = read_segments(p.transcript_best)
-        if data is not None:
-            return data
 
     raise HTTPException(404, f"No segments found for source={source}")
 

@@ -73,7 +73,7 @@ function PluginsPanel() {
 
       <p className="text-sm text-muted-foreground">
         PodCodex features are split into optional plugins so you only install what you need.
-        Install or remove them here — changes take effect after restarting the backend.
+        Install or remove them here. Changes take effect after restarting the backend.
       </p>
 
       <div className="text-xs text-muted-foreground">
@@ -215,7 +215,7 @@ function ModelCachePanel() {
       ) : models.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No cached models yet. Models are downloaded automatically the first
-          time you run a pipeline step (transcribe, polish, index, etc.).
+          time you run a pipeline step (transcribe, correct, index, etc.).
         </p>
       ) : (
         <>

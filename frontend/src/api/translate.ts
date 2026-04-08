@@ -22,12 +22,14 @@ export const startTranslate = (req: TranslateRequest) =>
   api.start(req as unknown as Record<string, unknown>) as Promise<TaskResponse>;
 
 export const getTranslateManualPrompts = (params: {
-  audio_path: string;
+  audio_path?: string;
+  output_dir?: string;
   context?: string;
   source_lang?: string;
   target_lang?: string;
   batch_minutes?: number;
+  source_version_id?: string;
 }) => api.getManualPrompts(params);
 
-export const applyTranslateManual = (params: { audio_path: string; lang: string; corrections: unknown[] }) =>
+export const applyTranslateManual = (params: { audio_path?: string; output_dir?: string; lang: string; corrections: unknown[] }) =>
   api.applyManual(params);

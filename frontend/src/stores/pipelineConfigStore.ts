@@ -11,26 +11,29 @@ export interface TranscribeConfig {
   clean: boolean;
   hfToken: string;
   numSpeakers: string;
+  language: string;
 }
 
 // ── Per-step presets ────────────────────────────────────
 
+export const CPU_MODELS = new Set(["base", "small"]);
+
 export const TRANSCRIBE_PRESETS = {
-  cpu: { label: "CPU", desc: "No GPU needed", modelSize: "base", diarize: false },
+  cpu: { label: "CPU", desc: "Lightweight, no GPU", modelSize: "base", diarize: false },
   gpu: { label: "GPU", desc: "Fast & accurate", modelSize: "large-v3-turbo", diarize: false },
   "gpu-speakers": { label: "GPU + Speakers", desc: "Detect who's talking", modelSize: "large-v3-turbo", diarize: true },
 } as const;
 
 export const LLM_PRESETS = {
-  local: { label: "Local", desc: "Ollama (free, needs GPU)", mode: "ollama" as const },
-  cloud: { label: "Cloud", desc: "API (fast, needs key)", mode: "api" as const },
-  manual: { label: "Manual", desc: "Copy prompts yourself", mode: "manual" as const },
+  manual: { label: "Manual", desc: "Paste into any LLM chatbot", mode: "manual" as const },
+  local: { label: "Local", desc: "Run via Ollama, GPU required", mode: "ollama" as const },
+  cloud: { label: "Cloud", desc: "Use any LLM with API key", mode: "api" as const },
 } as const;
 
 export const INDEX_PRESETS = {
-  fast: { label: "Fast", desc: "Lightweight, CPU ok", model: "e5-small" },
-  balanced: { label: "Balanced", desc: "Best all-round", model: "bge-m3" },
-  gpu: { label: "GPU", desc: "Best quality, slow on CPU", model: "pplx" },
+  fast: { label: "Fast", desc: "Very fast to run", model: "e5-small" },
+  balanced: { label: "Balanced", desc: "Default, good search quality", model: "bge-m3" },
+  gpu: { label: "GPU", desc: "Context-aware, slow on CPU", model: "pplx" },
 } as const;
 
 // ── Pipeline config state ────────────────────────────────
@@ -40,11 +43,11 @@ export interface PipelineConfigState {
   transcribe: TranscribeConfig;
   setTranscribe: (patch: Partial<TranscribeConfig>) => void;
 
-  // LLM (polish + translate shared)
+  // LLM (correct + translate shared)
   llm: LLMConfig;
   setLLM: (patch: Partial<LLMConfig>) => void;
 
-  // Polish-specific
+  // Correct-specific: transcript source override ("" = auto-detect from provenance)
   engine: string;
   setEngine: (engine: string) => void;
 
@@ -75,12 +78,17 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         clean: false,
         hfToken: "",
         numSpeakers: "",
+        language: "",
       },
       setTranscribe: (patch) =>
-        set((s) => ({ transcribe: { ...s.transcribe, ...patch } })),
+        set((s) => ({
+          transcribe: { ...s.transcribe, ...patch },
+          // Only reset preset when model/diarize change (what presets control)
+          transcribePreset: ("modelSize" in patch || "diarize" in patch) ? "" : s.transcribePreset,
+        })),
 
       llm: {
-        mode: "ollama",
+        mode: "manual",
         provider: "openai",
         model: "",
         context: "",
@@ -89,26 +97,40 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         apiBaseUrl: "",
         apiKey: "",
       },
-      setLLM: (patch) => set((s) => ({ llm: { ...s.llm, ...patch } })),
+      setLLM: (patch) => set((s) => ({ llm: { ...s.llm, ...patch }, llmPreset: "" })),
 
-      engine: "Whisper",
+      engine: "",
       setEngine: (engine) => set({ engine }),
 
       targetLang: "English",
       setTargetLang: (targetLang) => set({ targetLang }),
 
       indexModel: "bge-m3",
-      setIndexModel: (indexModel) => set({ indexModel }),
+      setIndexModel: (indexModel) => set({ indexModel, indexPreset: "" }),
 
       transcribePreset: "gpu",
       setTranscribePreset: (transcribePreset) => set({ transcribePreset }),
-      llmPreset: "local",
+      llmPreset: "manual",
       setLLMPreset: (llmPreset) => set({ llmPreset }),
       indexPreset: "balanced",
       setIndexPreset: (indexPreset) => set({ indexPreset }),
     }),
     {
       name: "podcodex-pipeline-config",
+      version: 1,
+      migrate(persisted: unknown, fromVersion: number) {
+        const s = persisted as Record<string, unknown>;
+        if (fromVersion < 1) {
+          const tc = s.transcribe as Record<string, unknown> | undefined;
+          if (tc && tc.clean === undefined) tc.clean = false;
+          // Ensure new preset fields exist
+          if (!s.transcribePreset) s.transcribePreset = "";
+          if (!s.llmPreset) s.llmPreset = "";
+          if (!s.indexPreset) s.indexPreset = "";
+          if (!s.indexModel) s.indexModel = "bge-m3";
+        }
+        return s as PipelineConfigState;
+      },
       // Don't persist secrets
       partialize: (s) => ({
         transcribe: { ...s.transcribe, hfToken: "" },

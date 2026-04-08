@@ -19,6 +19,83 @@ from podcodex.ingest.rss import RSSEpisode, episode_stem
 
 AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".opus", ".wma"}
 
+# Transcript source identifiers — used in provenance params["source"]
+TRANSCRIPT_SOURCE_WHISPER = "whisper"
+TRANSCRIPT_SOURCE_YOUTUBE = "youtube-subtitles"
+TRANSCRIPT_SOURCE_UPLOAD = "upload"
+TRANSCRIPT_SOURCE_IMPORT = "import"
+
+
+def _build_source_chain(
+    audio_path: str | None,
+    output_dir: str | None,
+    step: str,
+    model: str | None,
+    mode: str | None,
+) -> list[str] | None:
+    """Build a source chain by looking up the input version's chain and appending this step.
+
+    Returns e.g. ["youtube-subtitles", "ollama/qwen3:4b", "openai/gpt-4"].
+    """
+    try:
+        from podcodex.core._utils import AudioPaths
+        from podcodex.core.versions import get_latest_provenance
+
+        p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+
+        # Find the input version — walk backwards through the pipeline
+        input_prov = None
+        if step == "corrected":
+            input_prov = get_latest_provenance(p.base, "transcript")
+        else:
+            # Translate and others: try corrected first, then transcript
+            input_prov = get_latest_provenance(
+                p.base, "corrected"
+            ) or get_latest_provenance(p.base, "transcript")
+
+        # Get existing chain or start from the input's source
+        prev_chain: list[str] = []
+        if input_prov:
+            input_params = input_prov.get("params") or {}
+            prev_chain = list(input_params.get("source_chain", []))
+            if not prev_chain:
+                # Legacy: build chain from source field
+                source = input_params.get("source")
+                if source:
+                    prev_chain = [source]
+
+        # Append this step's identifier
+        step_id = model or mode or step
+        return prev_chain + [step_id] if prev_chain else None
+    except Exception:
+        return None
+
+
+def transcribe_prov_params(
+    diarize: bool, source: str = "whisper", model: str | None = None, **extra: object
+) -> dict:
+    """Build provenance params for a transcribe step.
+
+    Also builds a source_chain entry like ``"whisper/large-v3-turbo, diarized"``.
+    """
+    d: dict = {"diarize": diarize, "source": source}
+    # Build a descriptive source chain entry for downstream steps
+    label = model or source
+    if diarize:
+        label += ", diarized"
+    d["source_chain"] = [label]
+    d.update(extra)
+    return d
+
+
+def llm_prov_params(mode: str, provider: str | None = None, **extra: object) -> dict:
+    """Build the LLM portion of provenance params."""
+    d: dict = {"llm_mode": mode}
+    if provider:
+        d["llm_provider"] = provider
+    d.update(extra)
+    return d
+
 
 def build_provenance(
     step: str,
@@ -26,13 +103,31 @@ def build_provenance(
     model: str | None = None,
     params: dict | None = None,
     manual_edit: bool = False,
+    audio_path: str | None = None,
+    output_dir: str | None = None,
 ) -> dict:
-    """Build a standard provenance dict for version tracking."""
+    """Build a standard provenance dict for version tracking.
+
+    When *audio_path* or *output_dir* is provided and the step is not
+    ``transcript``, a ``source_chain`` is built by looking up the input
+    version's chain and appending this step's model/mode identifier.
+    """
+    params = dict(params) if params else {}
+    if (
+        step != "transcript"
+        and "source_chain" not in params
+        and (audio_path or output_dir)
+    ):
+        chain = _build_source_chain(
+            audio_path, output_dir, step, model, params.get("llm_mode")
+        )
+        if chain:
+            params["source_chain"] = chain
     return {
         "step": step,
         "type": ptype,
         "model": model,
-        "params": params or {},
+        "params": params,
         "manual_edit": manual_edit,
     }
 
@@ -151,16 +246,16 @@ def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
     """Resolve source segments from the version DB.
 
     Returns (segments, source_label).  Priority for 'auto':
-    polished → transcript.  Raises ValueError if nothing found.
+    corrected → transcript.  Raises ValueError if nothing found.
     """
     from podcodex.core._utils import normalize_lang
     from podcodex.core.transcribe import load_transcript
     from podcodex.core.versions import load_latest
 
     if source == "auto":
-        segs = load_latest(p.base, "polished")
+        segs = load_latest(p.base, "corrected")
         if segs:
-            return segs, "polished"
+            return segs, "corrected"
         segs = load_latest(p.base, "transcript")
         if segs:
             return segs, "transcript"
@@ -179,11 +274,11 @@ def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
             return segs, "transcript"
         raise ValueError("No transcript found — transcribe first")
 
-    if source == "polished":
-        segs = load_latest(p.base, "polished")
+    if source == "corrected":
+        segs = load_latest(p.base, "corrected")
         if segs:
-            return segs, "polished"
-        raise ValueError("No polished segments found")
+            return segs, "corrected"
+        raise ValueError("No corrected segments found")
 
     # Language code
     lang_norm = normalize_lang(source)
@@ -193,8 +288,10 @@ def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
     raise ValueError(f"No translation found for '{source}'")
 
 
-def load_best_source(audio_path: str, output_dir: str | None = None) -> list[dict]:
-    """Load the best available source segments (polished → transcript fallback).
+def load_best_source(
+    audio_path: str | None = None, output_dir: str | None = None
+) -> list[dict]:
+    """Load the best available source segments (corrected → transcript fallback).
 
     Raises ValueError if no source segments are found.
     """
@@ -216,7 +313,7 @@ def build_index_transcript(
     """Build the transcript dict expected by vectorize_batch.
 
     If *segments* are provided directly (e.g. from version DB), wraps them.
-    Otherwise resolves from the version DB (polished > transcript fallback).
+    Otherwise resolves from the version DB (corrected > transcript fallback).
     Injects RSS metadata (title, pub_date, episode_number) when available.
     """
     from podcodex.core._utils import AudioPaths
@@ -249,7 +346,7 @@ def build_index_transcript(
 
 
 class LLMRequest(BaseModel):
-    """Base request for LLM pipeline steps (polish & translate)."""
+    """Base request for LLM pipeline steps (correct & translate)."""
 
     audio_path: str
     output_dir: str | None = None
@@ -271,21 +368,29 @@ class LLMRequest(BaseModel):
 
 
 class ManualPromptsRequest(BaseModel):
-    """Request for generating manual LLM prompts (shared by polish & translate)."""
+    """Request for generating manual LLM prompts (shared by correct & translate)."""
 
-    audio_path: str
+    audio_path: str | None = None
     output_dir: str | None = None
     context: str = ""
     source_lang: str = "French"
     target_lang: str = "English"
     batch_minutes: float = 15.0
-    engine: str = "Whisper"
+    source_version_id: str | None = None
 
 
 class ApplyManualRequest(BaseModel):
-    """Request for applying manual LLM corrections (shared by polish & translate)."""
+    """Request for applying manual LLM corrections (shared by correct & translate)."""
 
-    audio_path: str
+    audio_path: str | None = None
     output_dir: str | None = None
     corrections: list[dict]
     lang: str = ""
+
+
+def format_prompt_batches(batches: list) -> list[dict]:
+    """Format build_manual_prompts_batched output into API response dicts."""
+    return [
+        {"batch_index": i, "prompt": prompt, "segment_count": len(batch_segs)}
+        for i, (batch_segs, prompt) in enumerate(batches)
+    ]

@@ -853,7 +853,9 @@ def load_voice_samples(
     Returns:
         {speaker: [{"file": Path, "duration": float, "text": ""}, ...]}
     """
-    samples_dir = Path(output_dir) / "voice_samples"
+    from podcodex.core._utils import VOICE_SAMPLES_DIR
+
+    samples_dir = Path(output_dir) / VOICE_SAMPLES_DIR
     if not samples_dir.exists():
         logger.debug(f"No voice_samples/ directory in {output_dir}")
         return {}
@@ -899,7 +901,9 @@ def load_generated_segments(
         for segments that have been generated.  Missing segments are omitted
         (previously this returned [] if any were missing).
     """
-    segments_dir = Path(output_dir) / "tts_segments"
+    from podcodex.core._utils import TTS_SEGMENTS_DIR
+
+    segments_dir = Path(output_dir) / TTS_SEGMENTS_DIR
     if not segments_dir.exists():
         logger.debug(f"No tts_segments/ directory in {output_dir}")
         return []

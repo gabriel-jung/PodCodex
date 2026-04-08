@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     stem                  TEXT PRIMARY KEY,
     audio_path            TEXT,
     transcribed           INTEGER DEFAULT 0,
-    polished              INTEGER DEFAULT 0,
+    corrected             INTEGER DEFAULT 0,
     indexed               INTEGER DEFAULT 0,
     synthesized           INTEGER DEFAULT 0,
     translations          TEXT DEFAULT '[]',
@@ -60,6 +60,11 @@ _MIGRATIONS = [
         "SELECT 1 FROM pragma_table_info('episodes') WHERE name='provenance'",
         "ALTER TABLE episodes ADD COLUMN provenance TEXT DEFAULT '{}'",
     ),
+    # Rename polished → corrected
+    (
+        "SELECT 1 FROM pragma_table_info('episodes') WHERE name='corrected'",
+        "ALTER TABLE episodes RENAME COLUMN polished TO corrected",
+    ),
     (
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='versions'",
         """
@@ -88,7 +93,7 @@ _VALID_COLUMNS = frozenset(
     {
         "audio_path",
         "transcribed",
-        "polished",
+        "corrected",
         "indexed",
         "synthesized",
         "translations",
@@ -256,6 +261,16 @@ class PipelineDB:
         ).fetchone()
         return self._version_to_dict(row) if row else None
 
+    def list_all_versions(self, stem: str) -> list[dict]:
+        """List all versions across all steps for an episode (newest first)."""
+        rows = self._conn.execute(
+            """SELECT * FROM versions
+               WHERE stem = ?
+               ORDER BY timestamp DESC""",
+            (stem,),
+        ).fetchall()
+        return [self._version_to_dict(r) for r in rows]
+
     def list_steps(self, stem: str) -> list[str]:
         """Return distinct step names for an episode (sorted)."""
         rows = self._conn.execute(
@@ -315,7 +330,7 @@ class PipelineDB:
                     ep.stem,
                     str(ep.audio_path) if ep.audio_path else None,
                     int(ep.transcribed),
-                    int(ep.polished),
+                    int(ep.corrected),
                     int(ep.indexed),
                     int(ep.synthesized),
                     json.dumps(translations),
@@ -326,13 +341,13 @@ class PipelineDB:
         self._conn.executemany(
             """
             INSERT INTO episodes (
-                stem, audio_path, transcribed, polished, indexed, synthesized,
+                stem, audio_path, transcribed, corrected, indexed, synthesized,
                 translations, provenance, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(stem) DO UPDATE SET
                 audio_path = excluded.audio_path,
                 transcribed = excluded.transcribed,
-                polished = excluded.polished,
+                corrected = excluded.corrected,
                 indexed = excluded.indexed,
                 synthesized = excluded.synthesized,
                 translations = excluded.translations,
@@ -368,7 +383,7 @@ class PipelineDB:
         p = d.get("provenance", "{}")
         d["provenance"] = json.loads(p) if isinstance(p, str) else (p or {})
         # Booleans.
-        for key in ("transcribed", "polished", "indexed", "synthesized"):
+        for key in ("transcribed", "corrected", "indexed", "synthesized"):
             d[key] = bool(d.get(key, 0))
         return d
 

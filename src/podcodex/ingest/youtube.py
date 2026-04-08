@@ -174,7 +174,7 @@ def _entry_to_episode(entry: dict[str, Any], idx: int) -> RSSEpisode:
         description=description,
         audio_url="",  # yt-dlp handles download separately
         duration=duration,
-        episode_number=idx + 1,
+        episode_number=None,
         season_number=None,
         artwork_url=thumbnail,
     )
@@ -445,33 +445,26 @@ def download_youtube_subtitles(
         return vtt_text, info
 
 
-def import_youtube_transcript(
+def cache_youtube_subtitles(
     video_id: str,
     episode_dir: Path,
-    show_name: str,
     stem: str,
     lang: str = "en",
 ) -> bool:
-    """Download YouTube subtitles and save as a versioned transcript.
+    """Download YouTube subtitles and cache the VTT file on disk.
 
-    Creates a version entry with provenance ``source="youtube-subtitles"``
-    so the user can distinguish YouTube-sourced transcripts from Whisper runs.
-    Also writes the legacy transcript file and marks the step in pipeline DB.
+    Does NOT create a transcript version — that happens in the transcribe step
+    when the user explicitly chooses "From subtitles".
 
     Args:
         video_id: YouTube video ID.
         episode_dir: Episode output directory.
-        show_name: Show name for metadata.
         stem: Episode stem.
         lang: Subtitle language code.
 
     Returns:
-        ``True`` if subtitles were found and imported, ``False`` otherwise.
+        ``True`` if subtitles were found and cached, ``False`` otherwise.
     """
-    from podcodex.core._utils import save_segments_json, vtt_to_segments
-    from podcodex.core.pipeline_db import mark_step
-    from podcodex.core.versions import save_version
-
     vtt_text, video_info = download_youtube_subtitles(video_id, lang=lang)
 
     # Backfill feed cache with full metadata from the per-video extraction
@@ -500,51 +493,22 @@ def import_youtube_transcript(
                 save_feed_cache(show_folder, cached)
 
     if not vtt_text:
+        # Mark episode as having no available subtitles
+        no_subs_marker = episode_dir / ".no_subtitles"
+        no_subs_marker.write_text(lang, encoding="utf-8")
         return False
 
-    # Save original VTT for reference / debugging
+    # Clear any previous no-subtitles marker
+    no_subs_marker = episode_dir / ".no_subtitles"
+    if no_subs_marker.exists():
+        no_subs_marker.unlink()
+
+    # Save VTT file
     vtt_path = episode_dir / f"{stem}.subtitles.{lang}.vtt"
     vtt_path.write_text(vtt_text, encoding="utf-8")
-    logger.debug("Saved original VTT to {}", vtt_path)
-
-    segments = vtt_to_segments(vtt_text)
-    if not segments:
-        logger.warning("VTT parsed to zero segments for {}", video_id)
-        return False
-
-    provenance = {
-        "step": "transcript",
-        "type": "raw",
-        "model": None,
-        "params": {
-            "source": "youtube-subtitles",
-            "video_id": video_id,
-            "lang": lang,
-        },
-    }
-
-    # Legacy file so folder scan detects transcribed=True
-    legacy_path = episode_dir / f"{stem}.transcript.raw.json"
-    save_segments_json(legacy_path, segments, "YouTube subtitles")
-
-    # Version + pipeline DB
-    save_version(
-        base=episode_dir,
-        step="transcript",
-        segments=segments,
-        provenance=provenance,
-    )
-    show_folder = episode_dir.parent
-    mark_step(
-        show_folder,
-        episode_dir.name,
-        transcribed=True,
-        provenance={"transcript": provenance},
-    )
-
-    logger.info(
-        "Imported {} YouTube subtitle segments for {}",
-        len(segments),
-        stem,
-    )
+    logger.info("Cached subtitles ({}) for {} → {}", lang, stem, vtt_path.name)
     return True
+
+
+# Back-compat alias
+import_youtube_transcript = cache_youtube_subtitles

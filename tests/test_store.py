@@ -35,7 +35,7 @@ def _seed_collection(
                 "end": float(i + 1),
                 "speaker": "Alice" if i % 2 == 0 else "Bob",
                 "dominant_speaker": "Alice" if i % 2 == 0 else "Bob",
-                "source": "polished" if i == 0 else "transcript",
+                "source": "corrected" if i == 0 else "transcript",
                 "text": f"chunk {i} of {ep}",
             }
             for i in range(n)
@@ -158,7 +158,7 @@ def test_list_sources():
     col = "test__bge-m3__semantic"
     _seed_collection(local, col)
     sources = local.list_sources(col)
-    assert "polished" in sources
+    assert "corrected" in sources
     assert "transcript" in sources
 
 

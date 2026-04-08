@@ -34,7 +34,7 @@ export interface EpisodeOut {
   assigned: boolean;
   mapped: boolean;
   transcribed: boolean;
-  polished: boolean;
+  corrected: boolean;
   indexed: boolean;
   synthesized: boolean;
   translations: string[];
@@ -75,15 +75,16 @@ export interface UnifiedEpisodeOut {
   output_dir?: string | null;
   downloaded?: boolean;
   transcribed?: boolean;
-  polished?: boolean;
+  corrected?: boolean;
   indexed?: boolean;
   synthesized?: boolean;
+  has_subtitles?: boolean;
   translations?: string[];
   artwork_url?: string;
   provenance?: Record<string, unknown>;
   files?: string[];
   transcribe_status?: string;
-  polish_status?: string;
+  correct_status?: string;
   translate_status?: string;
 }
 
@@ -157,7 +158,7 @@ export interface TranscribeRequest {
   episode?: string;
 }
 
-export interface PolishRequest {
+export interface CorrectRequest {
   audio_path: string;
   output_dir?: string | null;
   mode?: string;
@@ -171,12 +172,12 @@ export interface PolishRequest {
   api_key?: string | null;
 }
 
-export interface PolishSkipRequest {
+export interface CorrectSkipRequest {
   audio_path: string;
   output_dir?: string | null;
 }
 
-export interface PolishManualPromptsRequest {
+export interface CorrectManualPromptsRequest {
   audio_path: string;
   output_dir?: string | null;
   context?: string;
@@ -185,7 +186,7 @@ export interface PolishManualPromptsRequest {
   engine?: string;
 }
 
-export interface PolishApplyManualRequest {
+export interface CorrectApplyManualRequest {
   audio_path: string;
   output_dir?: string | null;
   corrections: Record<string, unknown>[];
@@ -225,13 +226,16 @@ export interface BatchRequest {
   show_folder: string;
   audio_paths: string[];
   transcribe?: boolean;
-  polish?: boolean;
+  correct?: boolean;
   translate?: boolean;
   index?: boolean;
   model_size?: string;
   language?: string;
   batch_size?: number;
   diarize?: boolean;
+  clean?: boolean;
+  transcribe_source?: string;
+  sub_lang?: string;
   hf_token?: string | null;
   num_speakers?: number | null;
   llm_mode?: string;

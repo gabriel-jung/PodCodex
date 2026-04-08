@@ -1,6 +1,6 @@
-"""Tests for podcodex.core.polish — module-specific prompt helpers."""
+"""Tests for podcodex.core.correct — module-specific prompt helpers."""
 
-from podcodex.core.polish import build_manual_prompt
+from podcodex.core.correct import build_manual_prompt
 
 
 def test_build_manual_prompt_contains_segments_and_context():

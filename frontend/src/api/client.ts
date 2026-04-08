@@ -25,7 +25,7 @@ export async function json<T>(url: string, init?: RequestInit): Promise<T> {
 export * from "./health";
 export * from "./shows";
 export * from "./transcribe";
-export * from "./polish";
+export * from "./correct";
 export * from "./translate";
 export * from "./synthesize";
 export * from "./search";

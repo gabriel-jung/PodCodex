@@ -11,9 +11,8 @@ Files produced alongside the MP3:
     {stem}.diarization.meta.json     — num speakers, etc.
     {stem}.diarized_segments.parquet — segments with SPEAKER_XX assigned
     {stem}.speaker_map.json          — {SPEAKER_00: "Claude", ...}  (filled by UI)
-    .versions/transcript/{id}.json   — versioned transcript segments (primary store)
-    {stem}.transcript.raw.json       — legacy copy of pipeline export
-    {stem}.transcript.json           — legacy copy of validated transcript
+    transcript/{id}.json              — versioned transcript segments
+    {stem}.transcript.json           — legacy validated transcript (read-only fallback)
 """
 
 import os
@@ -24,20 +23,18 @@ from loguru import logger
 
 from podcodex.core._utils import (
     BREAK_SPEAKER,
-    DEFAULT_MAX_GAP,
     NARRATOR_SPEAKER,
     SAMPLE_RATE,
     UNKNOWN_SPEAKERS,
     AudioPaths,
     free_vram,
-    merge_consecutive_segments,
     read_json,
     read_parquet,
     write_json,
     write_parquet,
 )
 from podcodex.core.pipeline_db import mark_step
-from podcodex.core.versions import _get_db, load_latest, save_version
+from podcodex.core.versions import _get_db, has_version, load_latest, save_version
 
 # Suppress known harmless warnings from third-party libraries
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
@@ -70,7 +67,7 @@ def processing_status(
         "diarized": p.diarization.exists() and p.diarization_meta.exists(),
         "assigned": p.diarized_segments.exists(),
         "mapped": p.speaker_map.exists(),
-        "exported": p.transcript.exists() or p.transcript_raw.exists(),
+        "exported": has_version(p.base, "transcript"),
     }
 
 
@@ -435,7 +432,6 @@ def export_transcript(
     output_dir: str | Path | None = None,
     show: str = "",
     episode: str = "",
-    max_gap: float = DEFAULT_MAX_GAP,
     diarized: bool = True,
     clean: bool = False,
     provenance: dict | None = None,
@@ -447,8 +443,7 @@ def export_transcript(
     speaker_map.json.  When False, uses raw WhisperX segments and assigns
     :data:`NARRATOR_SPEAKER` to every segment.
 
-    Saves a new version to ``.versions/transcript/`` and a legacy copy
-    to transcript.raw.json.
+    Saves a new version via the version DB.
 
     The file format is:
         {"meta": {show, episode, diarized, speakers, duration, word_count},
@@ -459,8 +454,6 @@ def export_transcript(
         output_dir : directory relative to audio_path for outputs
         show       : podcast show name (stored in meta, defaults to "")
         episode    : episode name (stored in meta, defaults to "")
-        max_gap    : maximum silence gap (seconds) to merge across (default 10s);
-                     0 disables merging
         diarized   : whether diarization was performed (default True)
         provenance : optional version metadata dict for archiving
 
@@ -491,10 +484,10 @@ def export_transcript(
         }
         for seg in segments
     ]
-    export = merge_consecutive_segments(resolved, max_gap=max_gap)
-
     if clean:
-        export = clean_transcript(export, remove_unknown_speakers=diarized)
+        resolved = clean_transcript(resolved, remove_unknown_speakers=diarized)
+
+    export = resolved
 
     meta = {
         "show": show,
@@ -505,23 +498,20 @@ def export_transcript(
         "word_count": sum(len(seg["text"].split()) for seg in export),
     }
 
-    out_data = {"meta": meta, "segments": export}
+    label = "cleaned" if clean else "raw"
+    logger.success(f"Export done — {len(export)} segments ({label})")
 
-    write_json(p.transcript_raw, out_data)
-    label = "merged+cleaned" if clean else "merged"
-    logger.success(
-        f"Export done — {len(resolved)} → {len(export)} segments ({label}) → {p.transcript_raw.name}"
-    )
-
-    # Store transcript meta in provenance params for version DB
-    if provenance:
-        provenance = {
-            **provenance,
-            "params": {**provenance.get("params", {}), "meta": meta},
-        }
+    # Ensure provenance exists so version is always saved
+    if not provenance:
+        provenance = {"step": "transcript", "type": "raw"}
+    provenance = {
+        **provenance,
+        "params": {**provenance.get("params", {}), "meta": meta},
+    }
     save_version(p.base, "transcript", export, provenance)
-    prov_update = {"transcript": provenance} if provenance else {}
-    mark_step(p.show_dir, p.base.name, transcribed=True, provenance=prov_update)
+    mark_step(
+        p.show_dir, p.base.name, transcribed=True, provenance={"transcript": provenance}
+    )
     return export
 
 
@@ -534,7 +524,7 @@ def _load_transcript_file(path: Path) -> dict:
 
 
 def load_transcript_full(
-    audio_path: Path | str,
+    audio_path: Path | str | None = None,
     output_dir: str | Path | None = None,
 ) -> dict:
     """Load the final transcript with metadata.
@@ -568,7 +558,7 @@ def load_transcript_full(
 
 
 def load_transcript(
-    audio_path: Path | str,
+    audio_path: Path | str | None = None,
     output_dir: str | Path | None = None,
 ) -> list[dict]:
     """Load the final transcript segments as a plain list.
@@ -596,6 +586,10 @@ def load_transcript(
 # Segments assigned to this name are excluded by clean_transcript().
 REMOVE_SPEAKERS = {"[remove]"}
 
+# Speech density thresholds (chars/s) for flagging hallucinations.
+MIN_DENSITY = 2.0
+MAX_DENSITY = 75.0
+
 
 def segment_speech_density(seg: dict) -> float | None:
     """Return chars/second for a segment, or None if duration is too short.
@@ -621,7 +615,7 @@ def is_segment_flagged(seg: dict, diarized: bool = True) -> bool:
 
     - speaker is missing or an unresolved placeholder (UNKNOWN, UNK, ...)
     - speaker is a reserved remove marker ([remove])
-    - speech density is abnormally low (< 2 chars/s), indicating music, noise,
+    - speech density is abnormal (< 2 or > 75 chars/s), indicating music, noise,
       or a Whisper hallucination artifact
 
     When *diarized* is False, speaker-based checks are skipped (only density
@@ -644,21 +638,21 @@ def is_segment_flagged(seg: dict, diarized: bool = True) -> bool:
         if speaker in REMOVE_SPEAKERS:
             return True
     density = segment_speech_density(seg)
-    return density is not None and density < 2.0
+    return density is not None and (density < MIN_DENSITY or density > MAX_DENSITY)
 
 
 def clean_transcript(
     segments: list[dict],
     *,
     remove_unknown_speakers: bool = True,
-    remove_low_density: bool = True,
+    remove_abnormal_density: bool = True,
 ) -> list[dict]:
     """Remove flagged segments from a transcript.
 
     Args:
-        segments               : list of segment dicts (from load_transcript)
-        remove_unknown_speakers: drop segments with missing/unresolved speaker
-        remove_low_density     : drop segments with < 2 chars/s (hallucinations)
+        segments                : list of segment dicts (from load_transcript)
+        remove_unknown_speakers : drop segments with missing/unresolved speaker
+        remove_abnormal_density : drop segments outside MIN_DENSITY..MAX_DENSITY chars/s
 
     Returns:
         Filtered list of segments.
@@ -673,9 +667,9 @@ def clean_transcript(
             continue
         if remove_unknown_speakers and (not speaker or speaker in UNKNOWN_SPEAKERS):
             continue
-        if remove_low_density:
+        if remove_abnormal_density:
             density = segment_speech_density(seg)
-            if density is not None and density < 2.0:
+            if density is not None and (density < MIN_DENSITY or density > MAX_DENSITY):
                 continue
         result.append(seg)
     logger.debug(f"clean_transcript: {len(segments)} → {len(result)} segments")
@@ -686,20 +680,14 @@ def save_transcript(
     audio_path: Path | str,
     segments: list[dict],
     output_dir: str | Path | None = None,
-    max_gap: float = DEFAULT_MAX_GAP,
     provenance: dict | None = None,
 ) -> Path:
     """Save an edited segment list back to transcript.json, preserving metadata.
-
-    Consecutive segments from the same speaker are merged when the gap between
-    them is ≤ max_gap seconds.  Pass max_gap=0 to disable merging entirely.
 
     Args:
         audio_path : source audio file (used to locate transcript.json)
         segments   : updated segment list
         output_dir : same output_dir used when the transcript was created
-        max_gap    : maximum silence gap (seconds) to merge across (default 10s);
-                     0 disables merging
         provenance : optional version metadata for archiving
 
     Returns:
@@ -707,14 +695,11 @@ def save_transcript(
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     full = load_transcript_full(audio_path, output_dir=output_dir)
-    merged = merge_consecutive_segments(segments, max_gap=max_gap)
-    full["segments"] = merged
+    full["segments"] = segments
     write_json(p.transcript, full)
-    logger.info(
-        f"Transcript saved → {p.transcript.name} ({len(segments)} → {len(merged)} segments)"
-    )
+    logger.info(f"Transcript saved → {p.transcript.name} ({len(segments)} segments)")
 
-    save_version(p.base, "transcript", merged, provenance)
+    save_version(p.base, "transcript", segments, provenance)
     prov_update = {"transcript": provenance} if provenance else {}
     mark_step(p.show_dir, p.base.name, transcribed=True, provenance=prov_update)
     return p.transcript

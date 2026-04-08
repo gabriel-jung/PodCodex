@@ -21,11 +21,16 @@ from loguru import logger
 # ──────────────────────────────────────────────
 
 
+VECTORS_DB_FILENAME = "vectors.db"
+VOICE_SAMPLES_DIR = "voice_samples"
+TTS_SEGMENTS_DIR = "tts_segments"
+
+
 @dataclass
 class AudioPaths:
     """All derived file paths for a given audio file.
 
-    Centralises path logic for the entire pipeline (transcribe, polish,
+    Centralises path logic for the entire pipeline (transcribe, correct,
     translate, synthesize).  Create via the ``from_audio`` classmethod::
 
         p = AudioPaths.from_audio("episode.mp3")
@@ -65,14 +70,20 @@ class AudioPaths:
     @classmethod
     def from_audio(
         cls,
-        audio_path: str | Path,
+        audio_path: str | Path | None = None,
         output_dir: str | Path | None = None,
     ) -> Self:
-        audio_path = Path(audio_path)
-        root = cls.output_dir(audio_path, output_dir)
-        base = root / audio_path.stem
+        if audio_path:
+            audio_path = Path(audio_path)
+            root = cls.output_dir(audio_path, output_dir)
+            base = root / audio_path.stem
+        elif output_dir:
+            root = Path(output_dir)
+            base = root / root.name
+        else:
+            raise ValueError("Either audio_path or output_dir must be provided")
         base.parent.mkdir(parents=True, exist_ok=True)
-        return cls(audio_path=audio_path, base=base)
+        return cls(audio_path=audio_path or base, base=base)
 
     # — RAG —
 
@@ -84,7 +95,7 @@ class AudioPaths:
     @property
     def vectors_db(self) -> Path:
         """Show-level SQLite vector store."""
-        return self.show_dir / "vectors.db"
+        return self.show_dir / VECTORS_DB_FILENAME
 
     # — Transcription —
 
@@ -129,13 +140,13 @@ class AudioPaths:
 
     @property
     def voice_samples_dir(self) -> Path:
-        d = self.base.parent / "voice_samples"
+        d = self.base.parent / VOICE_SAMPLES_DIR
         d.mkdir(parents=True, exist_ok=True)
         return d
 
     @property
     def tts_segments_dir(self) -> Path:
-        d = self.base.parent / "tts_segments"
+        d = self.base.parent / TTS_SEGMENTS_DIR
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -171,11 +182,50 @@ def normalize_lang(lang: str) -> str:
     return lang.strip().lower().replace(" ", "_")
 
 
+_ISO_TO_NAME: dict[str, str] = {
+    "en": "English",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "ru": "Russian",
+    "ja": "Japanese",
+    "zh": "Chinese",
+    "ko": "Korean",
+    "ar": "Arabic",
+    "hi": "Hindi",
+    "tr": "Turkish",
+    "sv": "Swedish",
+    "da": "Danish",
+    "no": "Norwegian",
+    "fi": "Finnish",
+    "el": "Greek",
+    "cs": "Czech",
+    "ro": "Romanian",
+    "hu": "Hungarian",
+    "uk": "Ukrainian",
+    "ca": "Catalan",
+    "he": "Hebrew",
+    "th": "Thai",
+    "vi": "Vietnamese",
+    "id": "Indonesian",
+    "ms": "Malay",
+    "pl": "Polish",
+}
+
+
+def iso_to_language(code: str) -> str:
+    """Convert an ISO 639-1 code to a language name. Returns the code as-is if unknown."""
+    return _ISO_TO_NAME.get(code.lower().strip(), code)
+
+
 # Default time-based thresholds shared across pipeline modules.
 DEFAULT_MAX_GAP = 10.0
 DEFAULT_BATCH_MINUTES = 15.0
 
-# LLM temperature for deterministic output in polish / translate.
+# LLM temperature for deterministic output in correct / translate.
 DEFAULT_TEMPERATURE = 0
 
 
@@ -259,7 +309,7 @@ def save_segments_json(
     Args:
         path       : output file path
         segments   : list of segment dicts (already cleaned)
-        label      : human-readable label for the log message (e.g. "Polished transcript")
+        label      : human-readable label for the log message (e.g. "Corrected transcript")
 
     Returns:
         The path written to.
@@ -957,7 +1007,7 @@ def run_api(
         api_base_url: base URL (auto-detected from provider if empty).
         api_key: API key (None reads from provider's env variable).
         batch_minutes: max audio duration per batch in minutes.
-        provider: provider shorthand ("openai", "anthropic", "mistral", "groq").
+        provider: provider shorthand ("openai", "anthropic", "mistral").
         instruction: verb for user-message formatting.
         min_length_ratio: minimum output/input length ratio before flagging.
         label: human-readable label for log messages.
@@ -1072,7 +1122,7 @@ def run_llm_pipeline(
     max_gap: float = DEFAULT_MAX_GAP,
     on_batch: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
-    """Run an LLM pipeline (polish or translate) on segments.
+    """Run an LLM pipeline (correct or translate) on segments.
 
     Handles manual/ollama/api modes, optional merge, and progress callbacks.
     """

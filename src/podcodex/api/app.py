@@ -18,7 +18,7 @@ from podcodex.api.routes import (
     health,
     index,
     models,
-    polish,
+    correct,
     rss,
     search,
     shows,
@@ -64,7 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(rss.router, prefix="/api/shows", tags=["rss"])
     app.include_router(youtube.router, prefix="/api/shows", tags=["youtube"])
     app.include_router(transcribe.router, prefix="/api/transcribe", tags=["transcribe"])
-    app.include_router(polish.router, prefix="/api/polish", tags=["polish"])
+    app.include_router(correct.router, prefix="/api/correct", tags=["correct"])
     app.include_router(translate.router, prefix="/api/translate", tags=["translate"])
     app.include_router(synthesize.router, prefix="/api/synthesize", tags=["synthesize"])
     app.include_router(index.router, prefix="/api/index", tags=["index"])

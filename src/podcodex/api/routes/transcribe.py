@@ -10,10 +10,11 @@ from pydantic import BaseModel, field_validator
 from podcodex.api.routes._helpers import (
     build_provenance,
     submit_task,
+    transcribe_prov_params,
 )
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.api.routes._versions import register_version_routes
-from podcodex.core._utils import AudioPaths, write_json
+from podcodex.core._utils import AudioPaths
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import save_version
 
@@ -166,11 +167,11 @@ async def upload_transcript(
         orig_path = p.base / f"{p.base.name}.subtitles.{ext}"
         orig_path.write_text(original_text, encoding="utf-8")
 
-    write_json(p.transcript_raw, {"segments": segments})
-
     provenance = build_provenance(
         "transcript",
-        params={"source": source, "filename": file.filename},
+        params=transcribe_prov_params(
+            diarize=False, source=source, filename=file.filename
+        ),
     )
     save_version(p.base, "transcript", segments, provenance)
     mark_step(
@@ -233,11 +234,9 @@ async def import_transcript(
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     p.base.parent.mkdir(parents=True, exist_ok=True)
 
-    write_json(p.transcript_raw, {"segments": segments})
-
     provenance = build_provenance(
         "transcript",
-        params={"source": source, "filename": src.name},
+        params=transcribe_prov_params(diarize=False, source=source, filename=src.name),
     )
     save_version(p.base, "transcript", segments, provenance)
     mark_step(
@@ -322,13 +321,15 @@ async def start_transcribe(req: TranscribeRequest) -> TaskResponse:
         provenance = build_provenance(
             "transcript",
             model=req_data.model_size,
-            params={
-                "language": req_data.language or None,
-                "batch_size": req_data.batch_size,
-                "diarize": req_data.diarize,
-                "num_speakers": req_data.num_speakers,
-                "clean": req_data.clean,
-            },
+            params=transcribe_prov_params(
+                req_data.diarize,
+                source="whisper",
+                model=req_data.model_size,
+                language=req_data.language or None,
+                batch_size=req_data.batch_size,
+                num_speakers=req_data.num_speakers,
+                clean=req_data.clean,
+            ),
         )
         segments = export_transcript(
             req_data.audio_path,

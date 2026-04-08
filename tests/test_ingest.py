@@ -177,7 +177,7 @@ def test_scan_folder_no_output_dir_yet(tmp_path):
     ep = result[0]
 
     assert ep.transcribed is False
-    assert ep.polished is False
+    assert ep.corrected is False
     assert ep.indexed is False
     assert ep.translations == []
 

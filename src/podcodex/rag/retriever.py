@@ -99,7 +99,7 @@ class Retriever:
             top_k      : number of results to return
             alpha      : blend between BM25 (0.0) and dense vector (1.0)
             episode    : if set, restrict search to this episode
-            source     : if set, restrict to chunks from this source (e.g. "polished")
+            source     : if set, restrict to chunks from this source (e.g. "corrected")
             speaker    : if set, restrict to chunks from this speaker
 
         Returns:

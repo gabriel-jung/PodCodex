@@ -51,7 +51,7 @@ async def index_sources(
     audio_path: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
-    """List available source files for indexing (transcript, polished, translations).
+    """List available source files for indexing (transcript, corrected, translations).
 
     Returns a list of {key, label, detail, exists} dicts, ordered from most to
     least advanced.  The first entry with exists=True is the recommended default.
@@ -66,7 +66,7 @@ async def index_sources(
         """Build a short human-readable detail string from the latest version's provenance.
 
         Args:
-            step: Pipeline step name (e.g. "transcript", "polished", or a language key).
+            step: Pipeline step name (e.g. "transcript", "corrected", or a language key).
             lang: Optional language code; when provided, appended as a title-cased label.
 
         Returns:
@@ -81,10 +81,10 @@ async def index_sources(
             if meta.get("model"):
                 parts.append(meta["model"])
             params = meta.get("params") or {}
-            if params.get("provider"):
-                parts.append(str(params["provider"]))
-            elif params.get("mode"):
-                parts.append(str(params["mode"]))
+            if params.get("llm_provider"):
+                parts.append(str(params["llm_provider"]))
+            elif params.get("llm_mode"):
+                parts.append(str(params["llm_mode"]))
             if lang:
                 parts.append(lang.replace("_", " ").title())
             if meta.get("manual_edit") or meta.get("type") == "validated":
@@ -107,22 +107,22 @@ async def index_sources(
             }
         )
 
-    # Polished
+    # Corrected
     from podcodex.core.versions import has_version as _has_version
 
-    polished_exists = _has_version(p.base, "polished")
-    detail = _version_detail("polished") if polished_exists else ""
+    corrected_exists = _has_version(p.base, "corrected")
+    detail = _version_detail("corrected") if corrected_exists else ""
     sources.append(
         {
-            "key": "polished",
-            "label": "Polished",
+            "key": "corrected",
+            "label": "Corrected",
             "detail": detail,
-            "exists": polished_exists,
+            "exists": corrected_exists,
         }
     )
 
     # Transcript
-    transcript_exists = p.transcript.exists() or p.transcript_raw.exists()
+    transcript_exists = _has_version(p.base, "transcript")
     detail = _version_detail("transcript") if transcript_exists else ""
     sources.append(
         {

@@ -16,12 +16,12 @@ def register_version_routes(
     """Add GET /versions, GET /versions/{id}, DELETE /versions/{id} to *router*.
 
     Args:
-        step: Fixed step name (e.g. "transcript", "polished").
+        step: Fixed step name (e.g. "transcript", "corrected").
               If None, step is derived from the ``lang`` query param.
         lang_param: When True, all endpoints accept a ``lang`` query parameter.
     """
 
-    def _resolve(audio_path: str, output_dir: str | None, lang: str | None):
+    def _resolve(audio_path: str | None, output_dir: str | None, lang: str | None):
         p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
         s = normalize_lang(lang) if lang_param and lang else step
         if not s:
@@ -30,7 +30,7 @@ def register_version_routes(
 
     @router.get("/versions")
     async def list_step_versions(
-        audio_path: str = Query(...),
+        audio_path: str | None = Query(None),
         output_dir: str | None = Query(None),
         lang: str | None = Query(None),
     ) -> list[dict]:
@@ -42,7 +42,7 @@ def register_version_routes(
     @router.get("/versions/{version_id}")
     async def load_step_version(
         version_id: str,
-        audio_path: str = Query(...),
+        audio_path: str | None = Query(None),
         output_dir: str | None = Query(None),
         lang: str | None = Query(None),
     ) -> list[dict]:
@@ -57,7 +57,7 @@ def register_version_routes(
     @router.delete("/versions/{version_id}")
     async def delete_step_version(
         version_id: str,
-        audio_path: str = Query(...),
+        audio_path: str | None = Query(None),
         output_dir: str | None = Query(None),
         lang: str | None = Query(None),
     ) -> dict:

@@ -39,7 +39,7 @@ class EpisodeOut(BaseModel):
     assigned: bool
     mapped: bool
     transcribed: bool
-    polished: bool
+    corrected: bool
     indexed: bool
     synthesized: bool
     translations: list[str]
@@ -83,9 +83,10 @@ class UnifiedEpisodeOut(BaseModel):
     )
     downloaded: bool = False
     transcribed: bool = False
-    polished: bool = False
+    corrected: bool = False
     indexed: bool = False
     synthesized: bool = False
+    has_subtitles: bool = False
     translations: list[str] = []
     artwork_url: str = ""
     provenance: dict = {}
@@ -93,7 +94,7 @@ class UnifiedEpisodeOut(BaseModel):
     files: list[str] = []
     # Step status: "none" | "outdated" | "done"
     transcribe_status: str = "none"
-    polish_status: str = "none"
+    correct_status: str = "none"
     translate_status: str = "none"
 
 

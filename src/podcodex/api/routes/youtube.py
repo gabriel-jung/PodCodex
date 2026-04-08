@@ -15,6 +15,7 @@ from podcodex.api.routes._helpers import (
 )
 from podcodex.api.schemas import RSSEpisodeOut, TaskResponse
 from podcodex.ingest.rss import (
+    RSSEpisode,
     episode_stem,
     load_feed_cache,
     save_episode_meta,
@@ -62,6 +63,25 @@ async def youtube_fetch(show_folder: str) -> list[dict]:
     if not episodes:
         raise HTTPException(502, "No videos found")
 
+    # Merge with existing cache to preserve stable episode numbers
+    existing = load_feed_cache(path)
+    if existing:
+        old_by_guid = {ep.guid: ep for ep in existing}
+        merged: list[RSSEpisode] = []
+        for ep in episodes:
+            old = old_by_guid.pop(ep.guid, None)
+            if old is not None:
+                # Keep the stable episode_number from the existing cache
+                ep = RSSEpisode(**{**ep.__dict__, "episode_number": old.episode_number})
+            merged.append(ep)
+        # Assign numbers only to genuinely new episodes
+        max_num = max((e.episode_number or 0 for e in merged), default=0)
+        for ep in merged:
+            if ep.episode_number is None:
+                max_num += 1
+                ep.episode_number = max_num
+        episodes = merged
+
     save_feed_cache(path, episodes)
 
     # One-time artwork upgrade: fetch channel avatar if artwork is missing
@@ -94,8 +114,8 @@ async def youtube_download(
 ) -> TaskResponse:
     """Download YouTube episodes as a background task."""
     from podcodex.ingest.youtube import (
+        cache_youtube_subtitles,
         download_youtube_audio,
-        import_youtube_transcript,
     )
 
     path = require_show_folder(show_folder)
@@ -109,9 +129,6 @@ async def youtube_download(
         targets = [ep for ep in cached if ep.guid in id_set]
         if not targets:
             raise HTTPException(404, "No matching videos found for the given IDs")
-
-    meta = load_show_meta(path)
-    show_name = (meta.name if meta else "") or path.name
 
     def run_downloads(progress_cb, episodes=targets, show_path=path):
         """Download each episode, optionally importing subtitles."""
@@ -176,21 +193,20 @@ async def youtube_download(
                         break
                     continue
 
-            # Import subtitles if requested
+            # Cache subtitles if requested
             if req.import_subs:
                 try:
                     episode_dir = show_path / stem
-                    imported = import_youtube_transcript(
+                    cached_subs = cache_youtube_subtitles(
                         ep.guid,
                         episode_dir,
-                        show_name,
                         stem,
                         lang=req.sub_lang,
                     )
-                    if imported:
-                        results[-1]["subs_imported"] = True
+                    if cached_subs:
+                        results[-1]["subs_cached"] = True
                 except Exception as exc:
-                    logger.warning("Subtitle import failed for {}: {}", stem, exc)
+                    logger.warning("Subtitle download failed for {}: {}", stem, exc)
 
             _pace_request()
 
@@ -207,16 +223,13 @@ async def youtube_import_subs(
     show_folder: str,
     req: YouTubeSubsRequest,
 ) -> TaskResponse:
-    """Import YouTube subtitles as transcript versions. Background task."""
-    from podcodex.ingest.youtube import import_youtube_transcript
+    """Download and cache YouTube subtitles (VTT files). Background task."""
+    from podcodex.ingest.youtube import cache_youtube_subtitles
 
     path = require_show_folder(show_folder)
     cached = load_feed_cache(path)
     if cached is None:
         raise HTTPException(400, "No cached video list")
-
-    meta = load_show_meta(path)
-    show_name = (meta.name if meta else "") or path.name
 
     id_set = set(req.video_ids)
     targets = [ep for ep in cached if ep.guid in id_set]
@@ -224,7 +237,7 @@ async def youtube_import_subs(
         raise HTTPException(404, "No matching videos found")
 
     def run_import(progress_cb, episodes=targets, show_path=path):
-        """Import subtitles for each episode, reporting progress."""
+        """Download subtitles for each episode, reporting progress."""
         from podcodex.ingest.folder import invalidate_scan_cache
         from podcodex.ingest.youtube import (
             _CONSECUTIVE_FAIL_LIMIT,
@@ -237,6 +250,7 @@ async def youtube_import_subs(
         failed = 0
         consecutive_fails = 0
         total = len(episodes)
+        results: list[dict] = []
         reset_pace()
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
@@ -244,24 +258,29 @@ async def youtube_import_subs(
                 break
 
             stem = episode_stem(ep)
-            progress_cb(i / total, f"Importing subs {i + 1}/{total}: {ep.title[:40]}")
+            progress_cb(i / total, f"Downloading subs {i + 1}/{total}: {ep.title[:40]}")
             episode_dir = show_path / stem
             episode_dir.mkdir(parents=True, exist_ok=True)
             save_episode_meta(episode_dir, ep)
             try:
                 _pace_request()
-                if import_youtube_transcript(
-                    ep.guid, episode_dir, show_name, stem, lang=req.lang
-                ):
+                if cache_youtube_subtitles(ep.guid, episode_dir, stem, lang=req.lang):
                     imported += 1
                     consecutive_fails = 0
+                    results.append(
+                        {"stem": stem, "title": ep.title, "status": "cached"}
+                    )
                 else:
                     failed += 1
                     consecutive_fails += 1
+                    results.append(
+                        {"stem": stem, "title": ep.title, "status": "no_subtitles"}
+                    )
             except Exception as exc:
-                logger.warning("Subtitle import failed for {}: {}", stem, exc)
+                logger.warning("Subtitle download failed for {}: {}", stem, exc)
                 failed += 1
                 consecutive_fails += 1
+                results.append({"stem": stem, "title": ep.title, "status": "error"})
 
             if consecutive_fails >= _CONSECUTIVE_FAIL_LIMIT:
                 remaining = total - i - 1
@@ -279,6 +298,7 @@ async def youtube_import_subs(
             "failed": failed,
             "total": total,
             "throttled": consecutive_fails >= _CONSECUTIVE_FAIL_LIMIT,
+            "results": results,
         }
 
     return submit_task("yt-subs", str(path), run_import)

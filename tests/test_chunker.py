@@ -301,7 +301,7 @@ def test_semantic_chunks_empty_after_filter_returns_empty():
 
 def test_speaker_chunks_include_source_field():
     t = {
-        "meta": {"show": "S", "episode": "E", "source": "polished"},
+        "meta": {"show": "S", "episode": "E", "source": "corrected"},
         "segments": [
             {
                 "start": 0.0,
@@ -313,7 +313,7 @@ def test_speaker_chunks_include_source_field():
     }
     chunks = speaker_chunks(t, min_chars=5)
     assert len(chunks) == 1
-    assert chunks[0]["source"] == "polished"
+    assert chunks[0]["source"] == "corrected"
 
 
 def test_speaker_chunks_source_defaults_empty():

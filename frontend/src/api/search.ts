@@ -31,14 +31,22 @@ export interface IndexSource {
   exists: boolean;
 }
 
-/** Fetch versions for a pipeline step (transcript, polished, or translation lang). */
+/** Fetch versions for a pipeline step (transcript, corrected, or translation lang). */
 export const getStepVersions = (audioPath: string, stepKey: string) => {
   const ap = encodeURIComponent(audioPath);
   let url: string;
   if (stepKey === "transcript") url = `/api/transcribe/versions?audio_path=${ap}`;
-  else if (stepKey === "polished") url = `/api/polish/versions?audio_path=${ap}`;
+  else if (stepKey === "corrected") url = `/api/correct/versions?audio_path=${ap}`;
   else url = `/api/translate/versions?audio_path=${ap}&lang=${encodeURIComponent(stepKey)}`;
   return json<VersionEntry[]>(url);
+};
+
+/** Fetch all versions across all steps for an episode (newest first). */
+export const getAllVersions = (audioPath?: string | null, outputDir?: string | null) => {
+  const params = new URLSearchParams();
+  if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
+  return json<VersionEntry[]>(`/api/shows/versions?${params}`);
 };
 
 export const getIndexSources = (audioPath: string) =>

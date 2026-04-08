@@ -136,7 +136,7 @@ export default function EditorToolbar({
               <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-72 max-h-80 overflow-y-auto">
                 <div className="px-3 py-1 text-muted-foreground/60 flex items-center gap-3 border-b border-border/50 mb-1">
                   <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" /> generated</span>
-                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-success" /> saved edit</span>
+                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-success" /> edited</span>
                 </div>
                 {versions.map((v) => {
                   const d = new Date(v.timestamp);

@@ -254,8 +254,10 @@ def test_export_transcript_no_diarization(tmp_path):
     speakers = {s["speaker"] for s in segments if s["speaker"] != "[BREAK]"}
     assert speakers == {NARRATOR_SPEAKER}
 
-    # File written with standard name (no nodiar prefix)
-    assert (ep_dir / "ep.transcript.raw.json").exists()
+    # Version saved to DB
+    from podcodex.core.versions import has_version
+
+    assert has_version(ep_dir / "ep", "transcript")
 
     # Meta includes diarized=False
     full = load_transcript_full(audio)

@@ -10,6 +10,8 @@ from podcodex.api.routes._helpers import (
     ManualPromptsRequest,
     batch_progress,
     build_provenance,
+    format_prompt_batches,
+    llm_prov_params,
     load_best_source,
     submit_task,
 )
@@ -113,13 +115,15 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
         provenance = build_provenance(
             lang_norm,
             model=req_data.model,
-            params={
-                "mode": req_data.mode,
-                "provider": req_data.provider,
-                "source_lang": req_data.source_lang,
-                "target_lang": req_data.target_lang,
-                "batch_minutes": req_data.batch_minutes,
-            },
+            audio_path=req_data.audio_path,
+            output_dir=req_data.output_dir,
+            params=llm_prov_params(
+                req_data.mode,
+                req_data.provider,
+                source_lang=req_data.source_lang,
+                target_lang=req_data.target_lang,
+                batch_minutes=req_data.batch_minutes,
+            ),
         )
         save_translation_raw(
             req_data.audio_path,
@@ -140,11 +144,20 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
 async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     """Generate batched prompts for manual translation."""
     from podcodex.core.translate import build_manual_prompts_batched
+    from podcodex.core.versions import load_version
 
-    try:
-        segments = load_best_source(req.audio_path, req.output_dir)
-    except ValueError:
-        raise HTTPException(404, "No source segments found")
+    if req.source_version_id:
+        p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
+        # Determine which step the version belongs to (corrected or transcript)
+        try:
+            segments = load_version(p.base, "corrected", req.source_version_id)
+        except FileNotFoundError:
+            segments = load_version(p.base, "transcript", req.source_version_id)
+    else:
+        try:
+            segments = load_best_source(req.audio_path, req.output_dir)
+        except ValueError:
+            raise HTTPException(404, "No source segments found")
 
     batches = build_manual_prompts_batched(
         segments,
@@ -153,10 +166,7 @@ async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
         source_lang=req.source_lang,
         target_lang=req.target_lang,
     )
-    return [
-        {"batch_index": i, "prompt": prompt, "segment_count": len(batch_segs)}
-        for i, (batch_segs, prompt) in enumerate(batches)
-    ]
+    return format_prompt_batches(batches)
 
 
 @router.post("/apply-manual")
@@ -174,7 +184,7 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
     lang_norm = normalize_lang(req.lang)
     provenance = build_provenance(
         lang_norm,
-        params={"mode": "manual"},
+        params=llm_prov_params("manual"),
         manual_edit=True,
     )
     save_translation_raw(

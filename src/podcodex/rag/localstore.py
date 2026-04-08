@@ -23,10 +23,12 @@ from pathlib import Path
 import numpy as np
 from loguru import logger
 
+from podcodex.core._utils import VECTORS_DB_FILENAME
+
 DEFAULT_DB_PATH: Path = Path(
     os.environ.get(
         "PODCODEX_DB",
-        str(Path.home() / ".local" / "share" / "podcodex" / "vectors.db"),
+        str(Path.home() / ".local" / "share" / "podcodex" / VECTORS_DB_FILENAME),
     )
 )
 

@@ -31,7 +31,7 @@ All steps share a segment editor (inline editing, speaker mapping, timestamp sna
 ### Pipeline
 
 - WhisperX (tiny → large-v3-turbo) + pyannote diarization
-- LLM polish and translate via Ollama, OpenAI-compatible APIs, or manual copy/paste
+- LLM correct and translate via Ollama, OpenAI-compatible APIs, or manual copy/paste
 - Voice cloning with Qwen3-TTS (voice sample extraction, segment generation, episode assembly)
 - Batch pipeline: select N episodes, run any steps in order, skip what's already done (provenance-based)
 - Global task bar with per-episode logs, progress, cancellation
@@ -159,12 +159,12 @@ Deploy to a VPS: the [`deploy/`](deploy/) directory ships a Docker Compose setup
   - API client factory: `createVersionApi` (segments + versions CRUD) and `createLLMPipelineApi` (adds start/manual-prompts/apply-manual).
 - **Backend** (`src/podcodex/api/`) — FastAPI, exposes the pipeline as HTTP endpoints with background tasks.
   - Shared `LLMRequest` base model, `_batch_llm_step()` unified handler, `_resolve_source_segments()` for version DB lookups.
-- **Core** (`src/podcodex/core/`) — transcribe, polish, translate, synthesize, versioning, per-show pipeline DB.
-  - `run_llm_pipeline()` — single LLM dispatch function shared by polish and translate.
+- **Core** (`src/podcodex/core/`) — transcribe, correct, translate, synthesize, versioning, per-show pipeline DB.
+  - `run_llm_pipeline()` — single LLM dispatch function shared by correct and translate.
 - **RAG** (`src/podcodex/rag/`) — chunking, embedding, SQLite store, hybrid retrieval.
 - **Tauri** (`src-tauri/`) — thin Rust shell, auto-spawns backend, native file dialogs.
 
-Every pipeline save (transcribe, polish, translate, manual edit) is archived as a **version** under `.versions/{step}/` with full provenance (model, params, content hash). Episode status is tracked in a per-show `pipeline.db` SQLite. All embeddings live in a single `vectors.db` — no external vector store, search is numpy cosine similarity. Collection names follow `{show}__{model}__{chunker}`.
+Every pipeline save (transcribe, correct, translate, manual edit) is archived as a **version** under `.versions/{step}/` with full provenance (model, params, content hash). Episode status is tracked in a per-show `pipeline.db` SQLite. All embeddings live in a single `vectors.db` — no external vector store, search is numpy cosine similarity. Collection names follow `{show}__{model}__{chunker}`.
 
 ## Roadmap
 

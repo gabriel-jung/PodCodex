@@ -49,7 +49,9 @@ async def list_directory(
             if item.name.startswith("."):
                 continue
             if item.is_dir():
-                is_show = (item / "show.toml").exists()
+                from podcodex.ingest.show import SHOW_META_FILENAME
+
+                is_show = (item / SHOW_META_FILENAME).exists()
                 try:
                     has_audio = any(
                         f.suffix.lower() in AUDIO_EXTS

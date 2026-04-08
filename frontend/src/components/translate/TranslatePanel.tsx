@@ -45,7 +45,7 @@ export default function TranslatePanel() {
 
   const { data: referenceSegments } = useBestSourceSegments(
     audioPath,
-    { enabled: episode.transcribed, polished: episode.polished },
+    { enabled: episode.transcribed, corrected: episode.corrected },
   );
 
   const startMutation = useMutation({
@@ -59,7 +59,7 @@ export default function TranslatePanel() {
   return (
     <PipelinePanel
       title="Translate"
-      description="Translate the transcript into another language using AI. If you polished the text first, the translation will use that improved version."
+      description="Translate the transcript into another language using AI. If you corrected the text first, the translation will use that improved version."
       prerequisite={!episode.transcribed ? "You need a transcript first. Go to the Transcribe tab to create one." : undefined}
       done={hasTranslations}
       expanded={expanded}

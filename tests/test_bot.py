@@ -389,10 +389,10 @@ def test_server_settings_new_fields_default():
 
 def test_server_settings_with_new_fields():
     s = ServerSettings(
-        allowed_shows=["Show A"], default_source="polished", compact=True
+        allowed_shows=["Show A"], default_source="corrected", compact=True
     )
     assert s.allowed_shows == ["Show A"]
-    assert s.default_source == "polished"
+    assert s.default_source == "corrected"
     assert s.compact is True
 
 
@@ -501,7 +501,7 @@ def test_effective_settings_carries_new_fields(tmp_path):
                     "chunker": "semantic",
                     "top_k": 5,
                     "allowed_shows": ["ShowA", "ShowB"],
-                    "default_source": "polished",
+                    "default_source": "corrected",
                     "compact": True,
                 }
             }
@@ -515,7 +515,7 @@ def test_effective_settings_carries_new_fields(tmp_path):
         bot = PodCodexBot(BotConfig(), server_config_path=cfg_path)
     eff = bot._effective_settings(guild_id=1, model="", top_k=0)
     assert eff.allowed_shows == ["ShowA", "ShowB"]
-    assert eff.default_source == "polished"
+    assert eff.default_source == "corrected"
     assert eff.compact is True
     # Per-query model override should still work
     eff2 = bot._effective_settings(guild_id=1, model="e5-small", top_k=10)

@@ -5,7 +5,7 @@ export function PipelineBar({ ep }: { ep: Episode }) {
   const steps = [
     ep.downloaded,
     ep.transcribed,
-    ep.polished,
+    ep.corrected,
     ep.translations.length > 0,
     ep.synthesized,
     ep.indexed,

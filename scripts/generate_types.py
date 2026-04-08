@@ -42,12 +42,12 @@ from podcodex.api.schemas import (  # noqa: E402
 from podcodex.api.routes.batch import BatchRequest  # noqa: E402
 from podcodex.api.routes.config import AppConfig  # noqa: E402
 from podcodex.api.routes.index import IndexRequest  # noqa: E402
-from podcodex.api.routes.polish import (  # noqa: E402
-    ApplyManualRequest as PolishApplyManualRequest,
-    ManualPromptsRequest as PolishManualPromptsRequest,
-    PolishRequest,
-    SkipRequest as PolishSkipRequest,
+from podcodex.api.routes._helpers import (  # noqa: E402
+    ApplyManualRequest as CorrectApplyManualRequest,
+    LLMRequest as CorrectRequest,
+    ManualPromptsRequest as CorrectManualPromptsRequest,
 )
+from podcodex.api.routes.correct import SkipRequest as CorrectSkipRequest  # noqa: E402
 from podcodex.api.routes.search import (  # noqa: E402
     ExactRequest,
     RandomRequest,
@@ -95,10 +95,10 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, ShowSummary),
     (None, MoveShowRequest),
     (None, TranscribeRequest),
-    (None, PolishRequest),
-    ("PolishSkipRequest", PolishSkipRequest),
-    ("PolishManualPromptsRequest", PolishManualPromptsRequest),
-    ("PolishApplyManualRequest", PolishApplyManualRequest),
+    (None, CorrectRequest),
+    ("CorrectSkipRequest", CorrectSkipRequest),
+    ("CorrectManualPromptsRequest", CorrectManualPromptsRequest),
+    ("CorrectApplyManualRequest", CorrectApplyManualRequest),
     (None, TranslateRequest),
     ("TranslateManualPromptsRequest", TranslateManualPromptsRequest),
     ("TranslateApplyManualRequest", TranslateApplyManualRequest),

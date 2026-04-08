@@ -513,7 +513,7 @@ export interface TranscriptViewerProps {
   showFlags?: boolean;
   showSpeaker?: boolean;
   speakers?: string[];
-  // Reference segments (for polish diff)
+  // Reference segments (for correction diff)
   referenceSegments?: Segment[];
   referenceLabel?: string;
   // Source label fallback when no versions

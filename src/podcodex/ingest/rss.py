@@ -264,7 +264,7 @@ def build_episode_context(
     """Build an LLM context string from show name + RSS episode metadata.
 
     Returns a multi-line string suitable for the ``context`` parameter of
-    :func:`~podcodex.core.polish.polish_segments` and
+    :func:`~podcodex.core.correct.correct_segments` and
     :func:`~podcodex.core.translate.translate_segments`.
 
     Args:

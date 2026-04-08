@@ -323,7 +323,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             className="accent-primary"
           />
         </SettingRow>
-        <SettingRow label="LLM mode" help="Expected LLM mode for polish/translate. Leave empty for global default.">
+        <SettingRow label="LLM mode" help="Expected LLM mode for correct/translate. Leave empty for global default.">
           <select
             value={pipeLlmMode}
             onChange={(e) => setPipeLlmMode(e.target.value)}

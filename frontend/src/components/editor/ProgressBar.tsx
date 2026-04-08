@@ -79,7 +79,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
           <span className="text-muted-foreground truncate mr-2">{currentMsg}</span>
           <div className="flex items-center gap-2 shrink-0">
             {stale && isRunning && (
-              <span className="text-xs text-yellow-500">No updates</span>
+              <span className="text-xs text-warning">No updates</span>
             )}
             <span className="text-muted-foreground">{pct}%</span>
             {onCancel && isRunning && (
@@ -117,7 +117,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
                 ) : isFailed && isLast ? (
                   <AlertCircle className="w-3 h-3 text-destructive shrink-0" />
                 ) : (
-                  <Check className="w-3 h-3 text-green-500 shrink-0" />
+                  <Check className="w-3 h-3 text-success shrink-0" />
                 )}
                 <span className={isActive ? "text-foreground" : "text-muted-foreground"}>
                   {step}

@@ -35,7 +35,7 @@ _CAPABILITY_CHECKS: dict[str, str] = {
 
 # Map installable extra names to their description.
 INSTALLABLE_EXTRAS: dict[str, str] = {
-    "pipeline": "Transcription, TTS, LLM polish/translate (whisperx, soundfile, ollama, etc.)",
+    "pipeline": "Transcription, TTS, LLM correct/translate (whisperx, soundfile, ollama, etc.)",
     "rag": "Indexing & semantic search (torch, sentence-transformers, etc.)",
     "bot": "Discord bot integration",
     "youtube": "YouTube channel/playlist ingest (yt-dlp)",

@@ -19,9 +19,9 @@ export type {
   GenerateRequest,
   IndexRequest,
   PipelineDefaultsSchema as PipelineDefaults,
-  PolishApplyManualRequest,
-  PolishManualPromptsRequest,
-  PolishRequest,
+  CorrectApplyManualRequest,
+  CorrectManualPromptsRequest,
+  CorrectRequest,
   RSSEpisodeOut,
   SearchRequest,
   Segment,
@@ -71,6 +71,7 @@ export interface PodcastSearchResult {
 
 export interface VersionEntry {
   id: string;
+  step?: string;
   timestamp: string;
   type: "raw" | "validated";
   model: string | null;

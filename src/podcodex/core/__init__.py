@@ -1,4 +1,4 @@
-"""Core transcription, polishing, translation, and synthesis pipeline."""
+"""Core transcription, correcting, translation, and synthesis pipeline."""
 
 from __future__ import annotations
 

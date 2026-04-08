@@ -1,29 +1,97 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Episode } from "@/api/types";
+import { getIndexConfig, getAllVersions } from "@/api/search";
+import type { VersionEntry } from "@/api/types";
+import { queryKeys } from "@/api/queryKeys";
 import { usePipelineConfig } from "@/hooks/usePipelineConfig";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
 import {
   TRANSCRIBE_PRESETS,
+  CPU_MODELS,
   LLM_PRESETS,
   INDEX_PRESETS,
   usePipelineConfigStore,
 } from "@/stores/pipelineConfigStore";
 import { Button } from "@/components/ui/button";
-import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Settings2 } from "lucide-react";
-import { languageToISO } from "@/lib/utils";
-import type { LLMConfig } from "@/components/common/LLMControls";
+import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Copy, Check } from "lucide-react";
+import { languageToISO, errorMessage, selectClass, cn, versionLabel, versionDate, stepTag, SOURCE_LABELS } from "@/lib/utils";
+import { getCorrectManualPrompts, applyCorrectManual } from "@/api/correct";
+import { getTranslateManualPrompts, applyTranslateManual } from "@/api/translate";
 
-export type StepKey = "transcribe" | "polish" | "translate" | "index";
+export type StepKey = "transcribe" | "correct" | "translate" | "index";
 
-function llmModeLabel(llm: LLMConfig): string {
-  if (llm.mode === "manual") return "manual";
-  const prefix = llm.mode === "api" ? llm.provider : "ollama";
-  return `${prefix}/${llm.model || "default"}`;
+/** Group key for the input source selector. */
+interface SourceGroup {
+  key: string;
+  label: string;
+  count: number;
+  episodes: Episode[];
+}
+
+interface PromptBatch {
+  batch_index: number;
+  prompt: string;
+  segment_count: number;
+}
+
+/** Stable key for an episode across the manual workflow. */
+function epKey(ep: Episode): string {
+  return ep.audio_path || ep.id;
+}
+
+/** Check if all batches for an episode have been validated. */
+function isEpDone(
+  ep: Episode,
+  prompts: Record<string, PromptBatch[]>,
+  results: Record<string, Record<number, unknown[]>>,
+): boolean {
+  const k = epKey(ep);
+  const pr = prompts[k] || [];
+  const re = results[k] || {};
+  return pr.length > 0 && pr.every((_, i) => re[i] != null);
+}
+
+/** Build source groups from episodes based on the step's input provenance. */
+function buildSourceGroups(episodes: Episode[], step: StepKey): SourceGroup[] {
+  if (step === "transcribe") return [];
+
+  const groups = new Map<string, { label: string; episodes: Episode[] }>();
+
+  for (const ep of episodes) {
+    // Translate uses corrected -> transcript fallback (matching load_best_source)
+    const provMap = ep.provenance as Record<string, Record<string, unknown>> | undefined;
+    const prov = step === "translate"
+      ? provMap?.["corrected"] ?? provMap?.["transcript"]
+      : provMap?.["transcript"];
+    let key: string;
+    let label: string;
+
+    if (!prov) {
+      key = "unknown";
+      label = "Unknown source";
+    } else {
+      const source = (prov.params as Record<string, unknown>)?.source as string | undefined;
+      const model = prov.model as string | undefined;
+      const baseLabel = SOURCE_LABELS[source || ""] || source || "Unknown";
+      const edited = prov.manual_edit || prov.type === "validated";
+      key = `${edited ? "edited:" : ""}${source || "unknown"}:${model || ""}`;
+      label = [baseLabel, model, edited && "(edited)"].filter(Boolean).join(" ");
+    }
+
+    const g = groups.get(key);
+    if (g) g.episodes.push(ep);
+    else groups.set(key, { label, episodes: [ep] });
+  }
+
+  return Array.from(groups.entries())
+    .map(([key, { label, episodes }]) => ({ key, label, count: episodes.length, episodes }))
+    .sort((a, b) => b.count - a.count);
 }
 
 const STEPS = [
   { key: "transcribe", label: "Transcribe", icon: Mic },
-  { key: "polish", label: "Polish", icon: Sparkles },
+  { key: "correct", label: "Correct with AI", icon: Sparkles },
   { key: "translate", label: "Translate", icon: Languages },
   { key: "index", label: "Index", icon: Database },
 ] as const;
@@ -41,12 +109,12 @@ function PresetCards<K extends string>({
   onSelect: (key: K) => void;
 }) {
   return (
-    <div className="grid grid-cols-3 gap-2">
+    <div className="grid grid-cols-3 gap-2 items-stretch">
       {(Object.entries(presets) as [K, { label: string; desc: string }][]).map(([key, p]) => (
         <button
           key={key}
           onClick={() => onSelect(key)}
-          className={`rounded-lg border p-3 text-left transition ${
+          className={`rounded-lg border p-3 text-left transition flex flex-col ${
             active === key
               ? "border-primary bg-accent"
               : "border-border hover:border-primary/50"
@@ -60,15 +128,23 @@ function PresetCards<K extends string>({
   );
 }
 
+export type TranscribeSource = "audio" | "subtitles";
+
 export default function StepConfigEditor({ step, episodes, showLanguage, onRun, onClose }: {
   step: StepKey;
   episodes: Episode[];
   showLanguage: string;
-  onRun: () => void;
+  onRun: (filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: TranscribeSource) => void;
   onClose: () => void;
 }) {
-  const { tc, setTc, llm, setLLM, engine, setEngine, targetLang, setTargetLang } = usePipelineConfig();
-  const { whisperModels, detectedKeys: detected, apiProviders } = useLLMProviders();
+  const queryClient = useQueryClient();
+  const { tc, setTc, llm, setLLM, targetLang, setTargetLang } = usePipelineConfig();
+  const { whisperModels, detectedKeys: detected, apiProviders, getProviderInfo } = useLLMProviders();
+  const { data: indexConfig } = useQuery({
+    queryKey: queryKeys.indexConfig(),
+    queryFn: getIndexConfig,
+    enabled: step === "index",
+  });
   const indexModel = usePipelineConfigStore((s) => s.indexModel);
   const setIndexModel = usePipelineConfigStore((s) => s.setIndexModel);
   const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
@@ -77,33 +153,178 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
   const setLLMPreset = usePipelineConfigStore((s) => s.setLLMPreset);
   const indexPreset = usePipelineConfigStore((s) => s.indexPreset);
   const setIndexPreset = usePipelineConfigStore((s) => s.setIndexPreset);
-  const [advanced, setAdvanced] = useState(false);
+  const isLLMStep = step === "correct" || step === "translate";
+  const hasAnySubs = step === "transcribe" && episodes.some((e) => e.has_subtitles);
+  const [transcribeSource, setTranscribeSource] = useState<TranscribeSource>(hasAnySubs ? "subtitles" : "audio");
+  const [sourceOpen, setSourceOpen] = useState<boolean | null>(null); // null = auto from group count
+  const [customVersions, setCustomVersions] = useState<Record<string, string>>({}); // epKey → versionId
 
-  const selectClass = "bg-secondary text-secondary-foreground rounded px-2 py-1.5 border border-border text-sm w-full";
+  // Manual batch workflow state
+  const [manualActive, setManualActive] = useState(false); // true = episode-by-episode page
+  const [manualBatchCounts, setManualBatchCounts] = useState<Record<string, number>>({});
+  const [manualPrompts, setManualPrompts] = useState<Record<string, PromptBatch[]>>({});
+  const [manualCurrentEp, setManualCurrentEp] = useState(0);
+  const [manualCurrentBatch, setManualCurrentBatch] = useState(0);
+  const [manualResults, setManualResults] = useState<Record<string, Record<number, unknown[]>>>({});
+  const [manualPasted, setManualPasted] = useState("");
+  const [manualParseError, setManualParseError] = useState<string | null>(null);
+  const [manualCopied, setManualCopied] = useState(false);
+  const [manualGenerating, setManualGenerating] = useState(false);
+  const [manualApplying, setManualApplying] = useState(false);
+  const [manualApplyingEp, setManualApplyingEp] = useState<string | null>(null);
+  const [manualApplied, setManualApplied] = useState<Set<string>>(new Set());
+  const [manualError, setManualError] = useState<string | null>(null);
+
+  // Sync languages from show metadata
+  useEffect(() => {
+    if (showLanguage && isLLMStep && llm.sourceLang !== showLanguage) setLLM({ sourceLang: showLanguage });
+    const iso = languageToISO(showLanguage);
+    if (iso && !tc.language) setTc({ language: iso });
+  }, [showLanguage]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selectFull = cn(selectClass, "py-1.5 w-full");
   const inputFieldClass = "input py-1.5 text-sm w-full";
 
   const stepInfo = STEPS.find((s) => s.key === step)!;
   const Icon = stepInfo.icon;
 
+  // Filter to episodes that need this step (prerequisites met + not already done)
+  const canRun = useMemo(() => episodes.filter((e) => {
+    switch (step) {
+      case "transcribe":
+        if (transcribeSource === "subtitles") return !!e.has_subtitles;
+        // When source categories are shown, user is explicitly choosing — don't filter by status
+        if (hasAnySubs) return !!e.audio_path;
+        return !!e.audio_path && e.transcribe_status !== "done";
+      case "correct":    return !!e.transcribed && e.correct_status !== "done";
+      case "translate":  return !!e.transcribed && e.translate_status !== "done";
+      case "index":      return !!e.transcribed && !e.indexed;
+      default:           return true;
+    }
+  }), [episodes, step, transcribeSource, hasAnySubs]);
+  const skippedDone = episodes.filter((e) => {
+    switch (step) {
+      case "transcribe":
+        // When source categories are shown, canRun already handles filtering — no "done" count
+        if (hasAnySubs) return false;
+        return e.transcribe_status === "done";
+      case "correct":    return e.correct_status === "done";
+      case "translate":  return e.translate_status === "done";
+      case "index":      return e.indexed;
+      default:           return false;
+    }
+  }).length;
+  const cantRun = episodes.length - canRun.length - skippedDone;
+  const cantRunReason = step === "transcribe" ? "without audio" : "not transcribed";
+
+  // Source groups for the input selector (correct, translate, index)
+  const sourceGroups = useMemo(() => buildSourceGroups(canRun, step), [canRun, step]);
+  const [selectedSource, setSelectedSource] = useState<string | null>(null); // null = all
+  // Auto-expand when multiple source groups, collapse when only one
+  const sourceOpenResolved = sourceOpen ?? sourceGroups.length > 1;
+  const filteredEpisodes = useMemo(() => {
+    if (selectedSource === "custom") return canRun; // custom uses all episodes
+    if (selectedSource) return sourceGroups.find((g) => g.key === selectedSource)?.episodes ?? canRun;
+    return canRun;
+  }, [selectedSource, sourceGroups, canRun]);
+
+  // Fetch all versions per episode when "Custom" is selected
+  const { data: epVersionsMap } = useQuery({
+    queryKey: ["customVersions", step, canRun.map(epKey).join(",")],
+    queryFn: async () => {
+      const map: Record<string, VersionEntry[]> = {};
+      await Promise.all(canRun.map(async (ep) => {
+        if (!ep.audio_path && !ep.output_dir) return;
+        try {
+          map[epKey(ep)] = await getAllVersions(ep.audio_path, ep.output_dir);
+        } catch { map[epKey(ep)] = []; }
+      }));
+      return map;
+    },
+    enabled: selectedSource === "custom",
+    staleTime: 30_000,
+  });
+
+  /** Apply manual corrections for a single completed episode, then invalidate queries. */
+  const applyEpisode = async (ep: Episode, results: Record<string, Record<number, unknown[]>>, prompts: Record<string, PromptBatch[]>) => {
+    const k = epKey(ep);
+    const pr = prompts[k] || [];
+    const re = results[k] || {};
+    const corrections: unknown[] = [];
+    for (let i = 0; i < pr.length; i++) {
+      const batch = re[i];
+      if (Array.isArray(batch)) corrections.push(...batch);
+    }
+    const params = { audio_path: ep.audio_path || undefined, output_dir: ep.output_dir || undefined, corrections } as Record<string, unknown>;
+    if (step === "translate") {
+      await applyTranslateManual({ ...params, lang: targetLang } as Parameters<typeof applyTranslateManual>[0]);
+    } else {
+      await applyCorrectManual(params as Parameters<typeof applyCorrectManual>[0]);
+    }
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+  };
+
+  // Derived values for auto-generate effect
+  const currentEpKey = filteredEpisodes[manualCurrentEp] ? epKey(filteredEpisodes[manualCurrentEp]) : "";
+  const currentBatchCount = manualBatchCounts[currentEpKey] ?? 1;
+
+  // Auto-generate prompts when entering manual view, navigating episodes, or changing batch count
+  useEffect(() => {
+    if (!manualActive || !currentEpKey) return;
+    const ep = filteredEpisodes[manualCurrentEp];
+    if (!ep || (!ep.audio_path && !ep.output_dir)) return;
+    let cancelled = false;
+    const timeout = setTimeout(async () => {
+      setManualGenerating(true);
+      setManualError(null);
+      try {
+        const epDuration = ep.duration || 3600;
+        const batchMins = Math.ceil(epDuration / 60 / currentBatchCount);
+        const params: Record<string, unknown> = {
+          source_lang: llm.sourceLang,
+          batch_minutes: batchMins,
+          context: llm.context || undefined,
+        };
+        if (ep.audio_path) params.audio_path = ep.audio_path;
+        if (ep.output_dir) params.output_dir = ep.output_dir;
+        const cvId = customVersions[currentEpKey];
+        if (cvId) params.source_version_id = cvId;
+        let result: PromptBatch[];
+        if (step === "translate") {
+          params.target_lang = targetLang;
+          result = await getTranslateManualPrompts(params as Parameters<typeof getTranslateManualPrompts>[0]);
+        } else {
+          result = await getCorrectManualPrompts(params as Parameters<typeof getCorrectManualPrompts>[0]);
+        }
+        if (!cancelled) {
+          setManualPrompts((prev) => ({ ...prev, [currentEpKey]: result }));
+          setManualCurrentBatch(0);
+        }
+      } catch (e) {
+        if (!cancelled) setManualError(errorMessage(e));
+      } finally {
+        if (!cancelled) setManualGenerating(false);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timeout); };
+  }, [manualActive, currentEpKey, currentBatchCount, customVersions[currentEpKey]]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const selectTranscribePreset = (key: string) => {
-    setTranscribePreset(key);
     const p = TRANSCRIBE_PRESETS[key as keyof typeof TRANSCRIBE_PRESETS];
     if (p) setTc({ modelSize: p.modelSize, diarize: p.diarize });
-    setAdvanced(false);
+    setTranscribePreset(key); // must be after setTc since setTc resets transcribePreset
   };
 
   const selectLLMPreset = (key: string) => {
-    setLLMPreset(key);
     const p = LLM_PRESETS[key as keyof typeof LLM_PRESETS];
     if (p) setLLM({ mode: p.mode });
-    setAdvanced(false);
+    setLLMPreset(key); // must be after setLLM since setLLM resets llmPreset
   };
 
   const selectIndexPreset = (key: string) => {
-    setIndexPreset(key);
     const p = INDEX_PRESETS[key as keyof typeof INDEX_PRESETS];
     if (p) setIndexModel(p.model);
-    setAdvanced(false);
+    setIndexPreset(key); // must be after setIndexModel since it resets indexPreset
   };
 
   return (
@@ -114,21 +335,62 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
           <Icon className="w-4 h-4" />
           <span className="text-sm font-semibold">{stepInfo.label}</span>
           <span className="text-xs text-muted-foreground">
-            {episodes.length} episode{episodes.length !== 1 ? "s" : ""}
+            {filteredEpisodes.length === episodes.length
+              ? `${episodes.length} episode${episodes.length !== 1 ? "s" : ""}`
+              : `${filteredEpisodes.length} of ${episodes.length} episode${episodes.length !== 1 ? "s" : ""}`}
           </span>
           <div className="flex-1" />
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-lg leading-none" aria-label="Close">&times;</button>
         </div>
 
         <div className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
-          {/* ── Preset cards ── */}
-          {!advanced && (
+          {/* ── Transcribe source selector (audio vs subtitles) ── */}
+          {step === "transcribe" && hasAnySubs && (
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-muted-foreground">Source</span>
+              <div className="space-y-1 pl-1">
+                {episodes.some((e) => !!e.audio_path) && (
+                  <button
+                    onClick={() => setTranscribeSource("audio")}
+                    className={`w-full flex items-center gap-2 text-xs px-2 py-1 rounded transition ${
+                      transcribeSource === "audio" ? "bg-accent font-medium" : "hover:bg-accent/50"
+                    }`}
+                  >
+                    <span className="flex-1 text-left">Audio</span>
+                    <span className="tabular-nums text-muted-foreground">{episodes.filter((e) => !!e.audio_path).length}</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => setTranscribeSource("subtitles")}
+                  className={`w-full flex items-center gap-2 text-xs px-2 py-1 rounded transition ${
+                    transcribeSource === "subtitles" ? "bg-accent font-medium" : "hover:bg-accent/50"
+                  }`}
+                >
+                  <span className="flex-1 text-left">Subtitles</span>
+                  <span className="tabular-nums text-muted-foreground">{episodes.filter((e) => e.has_subtitles).length}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Nothing to do ── */}
+          {canRun.length === 0 && (
+            <div className="py-4 text-center">
+              <p className="text-sm text-muted-foreground">
+                {manualApplied.size > 0
+                  ? `Done — ${manualApplied.size} episode${manualApplied.size !== 1 ? "s" : ""} processed.`
+                  : cantRun > 0
+                    ? `All ${episodes.length} selected episode${episodes.length !== 1 ? "s are" : " is"} ${cantRunReason}.`
+                    : "Nothing to process."}
+              </p>
+            </div>
+          )}
+
+          {/* ── Preset cards (transcribe / index) ── */}
+          {canRun.length > 0 && !isLLMStep && (
             <>
-              {step === "transcribe" && (
+              {step === "transcribe" && transcribeSource === "audio" && (
                 <PresetCards presets={TRANSCRIBE_PRESETS} active={transcribePreset} onSelect={selectTranscribePreset} />
-              )}
-              {(step === "polish" || step === "translate") && (
-                <PresetCards presets={LLM_PRESETS} active={llmPreset} onSelect={selectLLMPreset} />
               )}
               {step === "index" && (
                 <PresetCards presets={INDEX_PRESETS} active={indexPreset} onSelect={selectIndexPreset} />
@@ -136,214 +398,558 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
             </>
           )}
 
-          {/* ── Quick summary (non-advanced) ── */}
-          {!advanced && (
-            <div className="flex flex-wrap gap-1.5">
-              {step === "transcribe" && (
-                <>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-mono">{tc.modelSize}</span>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-mono">{tc.diarize ? "diarize" : "no diarize"}</span>
-                </>
-              )}
-              {step === "polish" && (
-                <>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-mono">{engine}</span>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-mono">
-                    {llmModeLabel(llm)}
-                  </span>
-                </>
-              )}
-              {step === "translate" && (
-                <>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-mono">
-                    {llm.sourceLang || "auto"} &rarr; {targetLang || "?"}
-                  </span>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-mono">
-                    {llmModeLabel(llm)}
-                  </span>
-                </>
-              )}
-              {step === "index" && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-mono">{indexModel}</span>
+          {/* ── Input source selector ── */}
+          {canRun.length > 0 && sourceGroups.length > 0 && step !== "transcribe" && !manualActive && selectedSource !== "custom" && (
+            <div className="space-y-1.5">
+              <button
+                onClick={() => setSourceOpen(!sourceOpenResolved)}
+                className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition w-full"
+              >
+                <ChevronDown className={`w-3 h-3 transition-transform ${sourceOpenResolved ? "" : "-rotate-90"}`} />
+                <span>
+                  {filteredEpisodes.length === 1 ? "Input transcript" : "Input transcripts"}
+                  {!sourceOpenResolved && (
+                    <span className="font-normal ml-1">
+                      - {Object.keys(customVersions).length > 0 ? "Custom" : selectedSource ? sourceGroups.find((g) => g.key === selectedSource)?.label : "Latest"} ({filteredEpisodes.length})
+                    </span>
+                  )}
+                </span>
+              </button>
+              {sourceOpenResolved && (
+                <div className="space-y-1 pl-4">
+                  <button
+                    onClick={() => setSelectedSource(null)}
+                    title={sourceGroups.map((g) => `${g.label}: ${g.count}`).join("\n")}
+                    className={`w-full flex items-center gap-2 text-xs px-2 py-1 rounded transition ${
+                      selectedSource === null ? "bg-accent font-medium" : "hover:bg-accent/50"
+                    }`}
+                  >
+                    <span className="flex-1 text-left">Latest</span>
+                    <span className="tabular-nums text-muted-foreground">{canRun.length}</span>
+                  </button>
+                  {sourceGroups.map((g) => (
+                    <button
+                      key={g.key}
+                      onClick={() => setSelectedSource(g.key)}
+                      title={g.episodes.map((e) => e.title).join("\n")}
+                      className={`w-full flex items-center gap-2 text-xs px-2 py-1 rounded transition ${
+                        selectedSource === g.key ? "bg-accent font-medium" : "hover:bg-accent/50"
+                      }`}
+                    >
+                      <span className="flex-1 text-left">{g.label}</span>
+                      <span className="tabular-nums text-muted-foreground">{g.count}</span>
+                    </button>
+                  ))}
+                  {isLLMStep && (
+                    <button
+                      onClick={() => { setSelectedSource("custom"); setCustomVersions({}); }}
+                      className={`w-full flex items-center gap-2 text-xs px-2 py-1 rounded transition ${
+                        selectedSource === "custom" ? "bg-accent font-medium" : "hover:bg-accent/50"
+                      }`}
+                    >
+                      <span className="flex-1 text-left">Custom (pick per episode)</span>
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )}
 
-          {/* Advanced toggle */}
-          <button
-            onClick={() => setAdvanced(!advanced)}
-            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition"
-          >
-            {advanced ? (
-              <><ChevronDown className="w-3 h-3 rotate-180 transition-transform" /> Hide advanced</>
-            ) : (
-              <><Settings2 className="w-3 h-3" /> Advanced settings</>
-            )}
-          </button>
+          {/* ── Custom version picker ── */}
+          {canRun.length > 0 && selectedSource === "custom" && !manualActive && epVersionsMap && (
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">Pick which version to use as input for each episode.</p>
+              <div className="space-y-1">
+                {canRun.map((ep) => {
+                  const ek = epKey(ep);
+                  const versions = epVersionsMap[ek] || [];
+                  const sel = customVersions[ek] || "";
+                  const displayVersion = sel ? versions.find((v) => v.id === sel) : versions[0] ?? null;
+                  return (
+                    <div key={ek} className="border border-border/50 rounded px-3 py-2 space-y-1.5">
+                      <div className="text-sm font-medium truncate" title={ep.title}>{ep.title}</div>
+                      {versions.length > 0 ? (
+                        <select
+                          value={sel}
+                          onChange={(e) => setCustomVersions((prev) => ({ ...prev, [ek]: e.target.value }))}
+                          className={cn(selectClass, "text-xs w-full")}
+                        >
+                          {versions.map((v, i) => (
+                            <option key={v.id} value={i === 0 ? "" : v.id}>
+                              {v.step ? `[${stepTag(v.step, v.type)}] ` : ""}{versionDate(v)} — {versionLabel(v)} ({v.segment_count} seg)
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <p className="text-2xs text-muted-foreground italic">No versions available</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
-          {/* ── Advanced settings ── */}
-          {advanced && (
-            <div className="space-y-4 border-t border-border pt-4">
+          {/* ── Manual episode-by-episode workflow ── */}
+          {canRun.length > 0 && isLLMStep && manualActive && (() => {
+            const eps = filteredEpisodes;
+            const ep = eps[manualCurrentEp];
+            if (!ep) return null;
+            const ek = epKey(ep);
+            const batchCount = manualBatchCounts[ek] ?? 1;
+            const dur = ep.duration ? `${Math.round(ep.duration / 60)} min` : "";
+            const epPrompts = manualPrompts[ek] || [];
+            const hasPrompts = epPrompts.length > 0;
+            const batch = epPrompts[manualCurrentBatch];
+            const epResults = manualResults[ek] || {};
+            const batchDone = epResults[manualCurrentBatch] != null;
+            const epDoneCount = epPrompts.filter((_, i) => epResults[i] != null).length;
+            const epAllDone = hasPrompts && epDoneCount === epPrompts.length;
+            const totalEpsDone = eps.filter((e) => manualApplied.has(epKey(e))).length;
+
+            return (
+              <div className="space-y-3">
+                {/* Episode navigation */}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => { setManualCurrentEp(Math.max(0, manualCurrentEp - 1)); setManualCurrentBatch(0); setManualPasted(""); setManualParseError(null); setManualCopied(false); }}
+                    disabled={manualCurrentEp === 0}
+                    className="text-muted-foreground hover:text-foreground disabled:opacity-30 transition"
+                    aria-label="Previous episode"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5 rotate-90" />
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate" title={ep.title}>{ep.title}</div>
+                    <div className="text-xs text-muted-foreground">
+                      Episode {manualCurrentEp + 1} of {eps.length}
+                      {dur && ` - ${dur}`}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => { setManualCurrentEp(Math.min(eps.length - 1, manualCurrentEp + 1)); setManualCurrentBatch(0); setManualPasted(""); setManualParseError(null); setManualCopied(false); }}
+                    disabled={manualCurrentEp >= eps.length - 1}
+                    className="text-muted-foreground hover:text-foreground disabled:opacity-30 transition"
+                    aria-label="Next episode"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5 -rotate-90" />
+                  </button>
+                </div>
+
+                {/* Overall progress (when multiple episodes) */}
+                {eps.length > 1 && (
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all"
+                        style={{ width: `${(totalEpsDone / eps.length) * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-muted-foreground shrink-0">{totalEpsDone}/{eps.length} done</span>
+                  </div>
+                )}
+
+                {/* Batch count slider - only show once prompts are loaded */}
+                {hasPrompts && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3">
+                      <label className="text-sm font-medium" title="Number of chunks to split the transcript into. Each chunk becomes one prompt.">Batches</label>
+                      <input
+                        type="range"
+                        min={1}
+                        max={10}
+                        value={batchCount}
+                        onChange={(e) => { const v = Number(e.target.value); setManualBatchCounts((prev) => ({ ...prev, [ek]: v })); }}
+                        className="flex-1 accent-primary"
+                      />
+                      <span className="text-sm tabular-nums w-4 text-center">{batchCount}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Number of prompts to split the episode into. Large models like Claude Opus 4.6 or GPT-4o can handle hours-long episodes in one batch.
+                    </p>
+                  </div>
+                )}
+
+                {/* No transcript available */}
+                {!ep.audio_path && !ep.output_dir && (
+                  <p className="text-xs text-muted-foreground">No transcript available for this episode.</p>
+                )}
+
+                {/* Loading state */}
+                {manualGenerating && (
+                  <p className="text-xs text-muted-foreground">Generating prompt...</p>
+                )}
+
+                {/* Batch navigation (if multiple) */}
+                {hasPrompts && epPrompts.length > 1 && (
+                  <div className="flex items-center gap-1.5">
+                    {epPrompts.map((_, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { setManualCurrentBatch(i); setManualPasted(""); setManualParseError(null); setManualCopied(false); }}
+                        className={`w-6 h-6 rounded text-2xs font-medium transition ${
+                          i === manualCurrentBatch
+                            ? "bg-primary text-primary-foreground"
+                            : epResults[i] != null
+                              ? "bg-success/20 text-success border border-success/30"
+                              : "bg-secondary text-muted-foreground border border-border"
+                        }`}
+                      >
+                        {i + 1}
+                      </button>
+                    ))}
+                    <span className="text-xs text-muted-foreground ml-1">{epDoneCount}/{epPrompts.length} batches</span>
+                  </div>
+                )}
+
+                {/* Prompt display + copy */}
+                {batch && (
+                  <div className="border border-border rounded">
+                    <div className="flex items-center justify-between px-3 py-1.5 bg-secondary/50 border-b border-border">
+                      <span className="text-xs text-muted-foreground">
+                        {epPrompts.length > 1 ? `Batch ${manualCurrentBatch + 1} - ` : ""}{batch.segment_count} segments
+                        {batchDone && <span className="text-success ml-2">validated</span>}
+                      </span>
+                      <Button
+                        onClick={async () => {
+                          await navigator.clipboard.writeText(batch.prompt);
+                          setManualCopied(true);
+                          setTimeout(() => setManualCopied(false), 2000);
+                        }}
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2"
+                      >
+                        {manualCopied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+                      </Button>
+                    </div>
+                    <pre className="p-3 text-xs max-h-40 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+                      {batch.prompt}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Paste + validate */}
+                {batch && !batchDone && (
+                  <div className="space-y-2">
+                    <textarea
+                      value={manualPasted}
+                      onChange={(e) => { setManualPasted(e.target.value); setManualParseError(null); }}
+                      placeholder="Paste LLM JSON response here..."
+                      className="input text-xs w-full resize-y"
+                      rows={4}
+                    />
+                    {manualParseError && <p className="text-destructive text-xs">{manualParseError}</p>}
+                    <Button
+                      onClick={async () => {
+                        setManualParseError(null);
+                        try {
+                          const parsed = JSON.parse(manualPasted);
+                          const arr = Array.isArray(parsed) ? parsed : [parsed];
+                          const newResults = { ...manualResults, [ek]: { ...epResults, [manualCurrentBatch]: arr } };
+                          setManualResults(newResults);
+                          setManualPasted("");
+                          // Check if all batches for this episode are now done
+                          const updatedEpResults = newResults[ek] || {};
+                          const allBatchesDone = epPrompts.length > 0 && epPrompts.every((_, i) => updatedEpResults[i] != null);
+                          if (allBatchesDone) {
+                            // Auto-apply corrections for this episode
+                            setManualApplyingEp(ek);
+                            setManualError(null);
+                            try {
+                              await applyEpisode(ep, newResults, manualPrompts);
+                              setManualApplied((prev) => new Set(prev).add(ek));
+                              // Auto-advance to next incomplete episode
+                              const nextEp = eps.findIndex((e, i) => i > manualCurrentEp && !isEpDone(e, manualPrompts, newResults) && !manualApplied.has(epKey(e)));
+                              if (nextEp >= 0) {
+                                setManualCurrentEp(nextEp);
+                                setManualCurrentBatch(0);
+                                setManualCopied(false);
+                              }
+                            } catch (e) {
+                              setManualError(errorMessage(e));
+                            } finally {
+                              setManualApplyingEp(null);
+                            }
+                          } else {
+                            // Auto-advance to next incomplete batch within this episode
+                            const nextBatch = epPrompts.findIndex((_, i) => i > manualCurrentBatch && updatedEpResults[i] == null);
+                            if (nextBatch >= 0) {
+                              setManualCurrentBatch(nextBatch);
+                            }
+                          }
+                        } catch (e) {
+                          setManualParseError(`Invalid JSON: ${errorMessage(e)}`);
+                        }
+                      }}
+                      disabled={!manualPasted.trim() || manualApplyingEp === ek}
+                      size="sm"
+                    >
+                      Validate
+                    </Button>
+                  </div>
+                )}
+
+                {batch && batchDone && !epAllDone && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <Check className="w-3.5 h-3.5 text-success" />
+                    <span className="text-success">Validated ({(epResults[manualCurrentBatch] as unknown[]).length} segments)</span>
+                    <Button
+                      onClick={() => {
+                        const next = { ...epResults };
+                        delete next[manualCurrentBatch];
+                        setManualResults({ ...manualResults, [ek]: next });
+                      }}
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs text-muted-foreground"
+                    >
+                      Redo
+                    </Button>
+                  </div>
+                )}
+
+                {manualApplyingEp === ek && (
+                  <p className="text-xs text-muted-foreground">Applying corrections...</p>
+                )}
+                {manualApplied.has(ek) && (
+                  <div className="flex items-center gap-2 text-xs text-success">
+                    <Check className="w-3.5 h-3.5" />
+                    Applied
+                  </div>
+                )}
+
+                {manualError && <p className="text-destructive text-xs">{manualError}</p>}
+              </div>
+            );
+          })()}
+
+          {/* ── LLM mode + config (correct / translate) ── */}
+          {canRun.length > 0 && isLLMStep && !manualActive && selectedSource !== "custom" && (
+            <>
+              <PresetCards presets={LLM_PRESETS} active={llmPreset} onSelect={selectLLMPreset} />
+
+              {/* Language fields (always visible) */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium" title="Language of the original transcript">Source language</label>
+                  <input value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className={inputFieldClass} />
+                </div>
+                {step === "translate" && (
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium" title="Language to translate into">Target language</label>
+                    <input value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className={inputFieldClass} />
+                  </div>
+                )}
+              </div>
+
+              {/* Inline config for local / cloud */}
+              {llm.mode !== "manual" && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-medium" title="LLM model name to use for processing">Model</label>
+                      <input value={llm.model} onChange={(e) => setLLM({ model: e.target.value })} placeholder={getProviderInfo(llm.provider)?.model || "default"} className={inputFieldClass} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-medium" title="Minutes of transcript per LLM request - larger batches are faster but need more context. Large models (e.g. Opus, GPT-4o) can handle a full episode at once.">Batch (min)</label>
+                      <input type="number" value={llm.batchMinutes} onChange={(e) => setLLM({ batchMinutes: Number(e.target.value) })} min={1} step={5} className={inputFieldClass} />
+                    </div>
+                  </div>
+                  {llm.mode === "api" && (
+                    <>
+                      <div className="space-y-1.5">
+                        <label className="text-sm font-medium" title="Cloud LLM provider - determines the default endpoint and model">Provider</label>
+                        <select value={llm.provider} onChange={(e) => setLLM({ provider: e.target.value })} className={selectFull}>
+                          {apiProviders.length > 0
+                            ? apiProviders.map(([key, spec]) => (
+                                <option key={key} value={key}>{spec.label}</option>
+                              ))
+                            : <option value={llm.provider}>{llm.provider}</option>
+                          }
+                        </select>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1.5">
+                          <label className="text-sm font-medium" title="OpenAI-compatible API base URL - leave empty to use the provider's default">Endpoint</label>
+                          <input value={llm.apiBaseUrl} onChange={(e) => setLLM({ apiBaseUrl: e.target.value })} placeholder={getProviderInfo(llm.provider)?.url || "default"} className={inputFieldClass} />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-sm font-medium" title="API key for authentication - reads from .env if not set here">API key</label>
+                          <input type="password" value={llm.apiKey} onChange={(e) => setLLM({ apiKey: e.target.value })} placeholder={detected[llm.provider] ? `••• (${detected[llm.provider]})` : "not set"} className={inputFieldClass} />
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+            </>
+          )}
+
+
+          {/* ── Settings (transcribe / index) ── */}
+          {canRun.length > 0 && !isLLMStep && !(step === "transcribe" && transcribeSource === "subtitles") && (
+            <div className="space-y-4">
               {step === "transcribe" && (
                 <>
                   <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Model</label>
-                    <select value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectClass}>
-                      {Object.keys(whisperModels).length > 0
-                        ? Object.entries(whisperModels).map(([key, label]) => (
-                            <option key={key} value={key}>{key} &mdash; {label}</option>
-                          ))
-                        : <option value={tc.modelSize}>{tc.modelSize}</option>
-                      }
+                    <label className="text-sm font-medium" title="Whisper model size - larger models are more accurate but slower">Model</label>
+                    <select value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectFull}>
+                      {(() => {
+                        const isCpu = transcribePreset === "cpu" || (transcribePreset === "" && CPU_MODELS.has(tc.modelSize));
+                        const entries = Object.keys(whisperModels).length > 0
+                          ? Object.entries(whisperModels)
+                          : [[tc.modelSize, tc.modelSize] as [string, string]];
+                        const CPU_LABELS: Record<string, string> = { base: "Fastest", small: "Slightly more accurate" };
+                        const filtered = isCpu
+                          ? entries.filter(([key]) => CPU_MODELS.has(key))
+                          : entries;
+                        return filtered.map(([key, label]) => (
+                          <option key={key} value={key}>{key} - {isCpu ? CPU_LABELS[key] || label : label}</option>
+                        ));
+                      })()}
                     </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Language</label>
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="font-mono">{languageToISO(showLanguage) || "auto-detect"}</span>
-                      {showLanguage && <span className="text-muted-foreground text-xs">({showLanguage})</span>}
-                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Batch size</label>
-                      <input type="number" value={tc.batchSize} onChange={(e) => setTc({ batchSize: Number(e.target.value) })} min={1} className={inputFieldClass} />
+                      <label className="text-sm font-medium" title="ISO 639-1 language code, e.g. en, fr, de, es, ja. Helps Whisper accuracy.">Language (ISO)</label>
+                      <input value={tc.language || languageToISO(showLanguage) || ""} onChange={(e) => setTc({ language: e.target.value })} className={inputFieldClass} />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Speakers</label>
-                      <input type="number" value={tc.numSpeakers} onChange={(e) => setTc({ numSpeakers: e.target.value })} placeholder="auto" min={1} className={inputFieldClass} />
+                      <label className="text-sm font-medium">&nbsp;</label>
+                      <button
+                        onClick={() => setTc({ clean: !tc.clean })}
+                        title="Removes hallucinated segments using character density filters (< 2 or > 75 chars/s) and unknown speakers"
+                        className={`w-full flex items-center gap-2 text-sm px-3 py-1.5 rounded-md border transition ${
+                          tc.clean
+                            ? "border-primary bg-accent font-medium"
+                            : "border-border hover:border-primary/50"
+                        }`}
+                      >
+                        <div className={`w-3.5 h-3.5 rounded-full border-2 transition ${tc.clean ? "border-primary bg-primary" : "border-muted-foreground"}`} />
+                        Clean transcript
+                      </button>
                     </div>
                   </div>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={tc.diarize} onChange={(e) => setTc({ diarize: e.target.checked })} className="accent-primary" />
-                    <span className="text-sm">Diarize (detect speakers)</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={tc.clean} onChange={(e) => setTc({ clean: e.target.checked })} className="accent-primary" />
-                    <span className="text-sm">Clean transcript (remove hallucinations)</span>
-                  </label>
                   {tc.diarize && (
                     <div className="space-y-1.5">
-                      <label className="text-sm font-medium">HuggingFace token</label>
+                      <label className="text-sm font-medium" title="Expected number of speakers - leave empty for automatic detection">Speakers</label>
+                      <input type="number" value={tc.numSpeakers} onChange={(e) => setTc({ numSpeakers: e.target.value })} placeholder="auto" min={1} className={inputFieldClass} />
+                    </div>
+                  )}
+                  {tc.diarize && (
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-medium" title="Required by pyannote for speaker diarization - get one at huggingface.co/settings/tokens">HuggingFace token</label>
                       <input type="password" value={tc.hfToken} onChange={(e) => setTc({ hfToken: e.target.value })} placeholder={detected.hf_token || "from env"} className={inputFieldClass} />
                     </div>
                   )}
                 </>
               )}
-
-              {step === "polish" && (
-                <>
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Engine</label>
-                    <select value={engine} onChange={(e) => setEngine(e.target.value)} className={selectClass}>
-                      <option value="Whisper">Whisper</option>
-                      <option value="Voxtral">Voxtral</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Source language</label>
-                    <input value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className={inputFieldClass} />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Context</label>
-                    <textarea value={llm.context} onChange={(e) => setLLM({ context: e.target.value })} placeholder="Describe the podcast, hosts, topics..." className="input py-1.5 text-sm w-full resize-y min-h-[3rem]" />
-                  </div>
-                </>
-              )}
-
-              {step === "translate" && (
-                <>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Source language</label>
-                      <input value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className={inputFieldClass} />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Target language</label>
-                      <input value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className={inputFieldClass} />
-                    </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Context</label>
-                    <textarea value={llm.context} onChange={(e) => setLLM({ context: e.target.value })} placeholder="Describe the podcast, hosts, topics..." className="input py-1.5 text-sm w-full resize-y min-h-[3rem]" />
-                  </div>
-                </>
-              )}
-
               {step === "index" && (
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Embedding model</label>
-                  <input value={indexModel} onChange={(e) => setIndexModel(e.target.value)} className={inputFieldClass} />
+                  <label className="text-sm font-medium" title="Embedding model used for semantic search - larger models give better results but are slower">Embedding model</label>
+                  <select value={indexModel} onChange={(e) => setIndexModel(e.target.value)} className={selectFull}>
+                    {indexConfig?.models
+                      ? Object.entries(indexConfig.models as Record<string, { label: string; description: string }>).map(([key, spec]) => (
+                          <option key={key} value={key}>{key} - {spec.label}</option>
+                        ))
+                      : <option value={indexModel}>{indexModel}</option>
+                    }
+                  </select>
                 </div>
-              )}
-
-              {/* LLM settings — shared by polish & translate */}
-              {(step === "polish" || step === "translate") && (
-                <>
-                  <div className="border-t border-border pt-4">
-                    <h4 className="text-sm font-semibold mb-3">LLM Settings</h4>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Mode</label>
-                    <div className="flex gap-4">
-                      {(["ollama", "api", "manual"] as const).map((m) => (
-                        <label key={m} className="flex items-center gap-1.5 cursor-pointer text-sm">
-                          <input type="radio" checked={llm.mode === m} onChange={() => setLLM({ mode: m })} className="accent-primary" />
-                          {m}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  {llm.mode === "api" && (
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Provider</label>
-                      <select value={llm.provider} onChange={(e) => setLLM({ provider: e.target.value })} className={selectClass}>
-                        {apiProviders.length > 0
-                          ? apiProviders.map(([key, spec]) => (
-                              <option key={key} value={key}>{spec.label}</option>
-                            ))
-                          : <option value={llm.provider}>{llm.provider}</option>
-                        }
-                      </select>
-                    </div>
-                  )}
-                  {llm.mode !== "manual" && (
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-1.5">
-                        <label className="text-sm font-medium">Model</label>
-                        <input value={llm.model} onChange={(e) => setLLM({ model: e.target.value })} placeholder="default" className={inputFieldClass} />
-                      </div>
-                      <div className="space-y-1.5">
-                        <label className="text-sm font-medium">Batch (min)</label>
-                        <input type="number" value={llm.batchMinutes} onChange={(e) => setLLM({ batchMinutes: Number(e.target.value) })} min={1} step={5} className={inputFieldClass} />
-                      </div>
-                    </div>
-                  )}
-                  {llm.mode === "api" && (
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-1.5">
-                        <label className="text-sm font-medium">Endpoint</label>
-                        <input value={llm.apiBaseUrl} onChange={(e) => setLLM({ apiBaseUrl: e.target.value })} placeholder="default" className={inputFieldClass} />
-                      </div>
-                      <div className="space-y-1.5">
-                        <label className="text-sm font-medium">API key</label>
-                        <input type="password" value={llm.apiKey} onChange={(e) => setLLM({ apiKey: e.target.value })} placeholder={detected[llm.provider] || "from env"} className={inputFieldClass} />
-                      </div>
-                    </div>
-                  )}
-                </>
               )}
             </div>
           )}
         </div>
 
+        {/* Skip info (when some episodes can't run) */}
+        {(cantRun > 0 || skippedDone > 0) && canRun.length > 0 && (
+          <div className="px-5 pb-1 text-xs text-muted-foreground">
+            {[
+              skippedDone > 0 && `${skippedDone} already done`,
+              cantRun > 0 && `${cantRun} ${cantRunReason}`,
+            ].filter(Boolean).join(", ")}
+          </div>
+        )}
+
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 px-5 py-3 border-t border-border">
-          <Button onClick={onClose} variant="ghost" size="sm">Cancel</Button>
-          <Button onClick={onRun} size="sm">
-            <Play className="w-3.5 h-3.5 mr-1" />
-            {stepInfo.label} {episodes.length} episode{episodes.length !== 1 ? "s" : ""}
-          </Button>
+          {/* Back button when in sub-page (manual or custom) */}
+          {manualActive && (
+            <Button onClick={() => { setManualActive(false); setManualPrompts({}); setManualResults({}); setManualCurrentEp(0); setManualCurrentBatch(0); }} variant="ghost" size="sm">
+              Back
+            </Button>
+          )}
+          {selectedSource === "custom" && !manualActive && (
+            <Button onClick={() => setSelectedSource(null)} variant="ghost" size="sm">
+              Back
+            </Button>
+          )}
+          {selectedSource !== "custom" && !manualActive && (
+            <Button onClick={onClose} variant="ghost" size="sm">
+              {canRun.length === 0 ? "Close" : "Cancel"}
+            </Button>
+          )}
+
+          {/* Manual mode: "Next" on step 1, "Generate"/"Apply" on step 2 */}
+          {filteredEpisodes.length > 0 && isLLMStep && llm.mode === "manual" && !manualActive && selectedSource !== "custom" && (
+            <Button onClick={() => { setManualActive(true); setManualCurrentEp(0); setManualCurrentBatch(0); }} size="sm">
+              {stepInfo.label} {filteredEpisodes.length} episode{filteredEpisodes.length !== 1 ? "s" : ""}
+            </Button>
+          )}
+          {filteredEpisodes.length > 0 && isLLMStep && manualActive && (() => {
+            const allApplied = filteredEpisodes.every((e) => manualApplied.has(epKey(e)));
+            if (allApplied) return <Button onClick={onClose} size="sm">Done</Button>;
+            // Fallback: retry any completed-but-not-applied episodes
+            const retryEps = filteredEpisodes.filter((e) => isEpDone(e, manualPrompts, manualResults) && !manualApplied.has(epKey(e)));
+            if (retryEps.length === 0) return null;
+            return (
+              <Button
+                onClick={async () => {
+                  setManualApplying(true);
+                  setManualError(null);
+                  try {
+                    for (const e of retryEps) {
+                      await applyEpisode(e, manualResults, manualPrompts);
+                      setManualApplied((prev) => new Set(prev).add(epKey(e)));
+                    }
+                  } catch (e) {
+                    setManualError(errorMessage(e));
+                  } finally {
+                    setManualApplying(false);
+                  }
+                }}
+                disabled={manualApplying}
+                size="sm"
+              >
+                {manualApplying ? "Applying..." : `Retry ${retryEps.length} failed`}
+              </Button>
+            );
+          })()}
+
+          {/* Custom mode: confirm selection and go back to config */}
+          {selectedSource === "custom" && !manualActive && (
+            <Button onClick={() => setSelectedSource(null)} size="sm">
+              <Check className="w-3.5 h-3.5 mr-1" />
+              Confirm versions
+            </Button>
+          )}
+
+          {/* Non-manual run button */}
+          {filteredEpisodes.length > 0 && !(isLLMStep && llm.mode === "manual") && !manualActive && selectedSource !== "custom" && (
+            <Button onClick={() => {
+              const vids = Object.keys(customVersions).length > 0 ? customVersions : undefined;
+              onRun(
+                selectedSource || transcribeSource === "subtitles" ? filteredEpisodes : undefined,
+                vids,
+                step === "transcribe" ? transcribeSource : undefined,
+              );
+            }} size="sm">
+              <Play className="w-3.5 h-3.5 mr-1" />
+              {stepInfo.label} {filteredEpisodes.length} episode{filteredEpisodes.length !== 1 ? "s" : ""}
+            </Button>
+          )}
         </div>
       </div>
     </div>

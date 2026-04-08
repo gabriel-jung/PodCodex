@@ -13,7 +13,7 @@ export function deriveEpisodeStatuses(
   if (!progress) return names.map((name) => ({ name, status: "pending" as const }));
 
   const msg = progress.message || "";
-  // Parse "[3/17] Polishing..." → current episode index is 3 (1-based)
+  // Parse "[3/17] Correcting..." → current episode index is 3 (1-based)
   const match = msg.match(/^\[(\d+)\/(\d+)\]/);
   const currentIdx = match ? parseInt(match[1], 10) - 1 : 0;
   const isFinished = ["completed", "failed", "cancelled"].includes(progress.status);

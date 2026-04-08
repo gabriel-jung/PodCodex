@@ -26,8 +26,8 @@ async def synthesis_status(
 ) -> dict:
     """Check which synthesis artifacts exist on disk."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    voice_dir = p.base.parent / "voice_samples"
-    tts_dir = p.base.parent / "tts_segments"
+    voice_dir = p.voice_samples_dir
+    tts_dir = p.tts_segments_dir
     return {
         "voice_samples_extracted": voice_dir.is_dir() and any(voice_dir.glob("*.wav")),
         "tts_segments_generated": tts_dir.is_dir() and any(tts_dir.glob("*.wav")),

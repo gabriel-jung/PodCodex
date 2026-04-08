@@ -2,7 +2,7 @@
 podcodex.core.translate — Translation pipeline for podcast transcripts.
 
 Translates source text to a target language without correcting the source.
-(For source correction only, use podcodex.core.polish.)
+(For source correction only, use podcodex.core.correct.)
 
 Modes:
     - manual  : user provides the translated JSON directly (e.g. via a LLM UI)
@@ -10,7 +10,7 @@ Modes:
     - api     : external API (OpenAI, Anthropic, etc.)
 
 Output:
-    .versions/{lang}/{id}.json  — versioned translated segments (via version DB)
+    {lang}/{id}.json  — versioned translated segments (via version DB)
 """
 
 from collections.abc import Callable
@@ -152,7 +152,7 @@ def translate_segments(
 
 
 def save_translation(
-    audio_path: Path | str,
+    audio_path: Path | str | None,
     segments: list[dict],
     lang: str,
     output_dir: str | Path | None = None,
@@ -184,5 +184,5 @@ def list_translations(
         steps = db.list_steps(p.base.name)
     except Exception:
         return []
-    non_translation = {"transcript", "polished", "indexed"}
+    non_translation = {"transcript", "corrected", "indexed"}
     return sorted(s for s in steps if s not in non_translation)

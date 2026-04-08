@@ -1,4 +1,4 @@
-"""Polish pipeline routes — load/save polished segments, run polish."""
+"""Correct pipeline routes — load/save corrected segments, run correction."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from podcodex.api.routes._helpers import (
     ManualPromptsRequest,
     batch_progress,
     build_provenance,
+    format_prompt_batches,
+    llm_prov_params,
     submit_task,
 )
 from podcodex.api.routes._versions import register_version_routes
@@ -18,74 +20,82 @@ from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths
 
 router = APIRouter()
-register_version_routes(router, "polished")
+register_version_routes(router, "corrected")
 
 
 # ── Load / save ──────────────────────────────────────────
 
 
 @router.get("/segments")
-async def get_polished_segments(
+async def get_corrected_segments(
     audio_path: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
-    """Load polished segments from the version DB."""
+    """Load corrected segments from the version DB."""
     from podcodex.api.routes._helpers import annotate_flags
     from podcodex.core.versions import load_latest
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    segments = load_latest(p.base, "polished")
+    segments = load_latest(p.base, "corrected")
     if segments is None:
-        raise HTTPException(404, "No polished segments found")
+        raise HTTPException(404, "No corrected segments found")
     return annotate_flags(segments)
 
 
 @router.put("/segments")
-async def save_polished_segments(
+async def save_corrected_segments(
     segments: list[Segment],
     audio_path: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> dict:
-    """Save validated polished segments."""
-    from podcodex.core.polish import save_polished
+    """Save validated corrected segments."""
+    from podcodex.core.correct import save_corrected
 
     seg_dicts = [s.model_dump() for s in segments]
-    provenance = build_provenance("polished", ptype="validated", manual_edit=True)
-    save_polished(audio_path, seg_dicts, output_dir=output_dir, provenance=provenance)
+    provenance = build_provenance("corrected", ptype="validated", manual_edit=True)
+    save_corrected(audio_path, seg_dicts, output_dir=output_dir, provenance=provenance)
     return {"status": "saved", "count": len(seg_dicts)}
 
 
 # ── Pipeline execution ───────────────────────────────────
 
 
-class PolishRequest(LLMRequest):
-    engine: str = "Whisper"
-
-
 @router.post("/start", response_model=TaskResponse)
-async def start_polish(req: PolishRequest) -> TaskResponse:
-    """Start the polish pipeline as a background task."""
+async def start_correct(req: LLMRequest) -> TaskResponse:
+    """Start the correct pipeline as a background task."""
 
-    def run_polish(progress_cb, req_data):
-        from podcodex.core.polish import polish_segments, save_polished_raw
+    def run_correct(progress_cb, req_data):
+        from podcodex.core.correct import (
+            correct_segments,
+            save_corrected_raw,
+            transcript_provenance_info,
+        )
         from podcodex.core.transcribe import load_transcript
+        from podcodex.core.versions import get_latest_provenance
 
         progress_cb(0.0, "Loading transcript...")
         segments = load_transcript(req_data.audio_path, output_dir=req_data.output_dir)
         if not segments:
-            raise ValueError("No transcript found to polish")
+            raise ValueError("No transcript found to correct")
 
-        progress_cb(0.1, "Starting polish...")
+        # Auto-detect transcript source and language from provenance
+        p = AudioPaths.from_audio(req_data.audio_path, output_dir=req_data.output_dir)
+        tc_prov = get_latest_provenance(p.base, "transcript")
+        tc_info = transcript_provenance_info(tc_prov)
+        source_lang = tc_info["language"] or req_data.source_lang
 
-        polished = polish_segments(
+        progress_cb(0.1, "Starting correction...")
+
+        corrected = correct_segments(
             segments,
             mode=req_data.mode,
             context=req_data.context,
-            source_lang=req_data.source_lang,
+            source_lang=source_lang,
             model=req_data.model,
             batch_minutes=req_data.batch_minutes,
             provider=req_data.provider,
-            engine=req_data.engine,
+            engine=tc_info["source"],
+            engine_model=tc_info["model"],
             api_base_url=req_data.api_base_url,
             api_key=req_data.api_key,
             original_segments=segments,
@@ -95,28 +105,29 @@ async def start_polish(req: PolishRequest) -> TaskResponse:
 
         progress_cb(0.95, "Saving...")
         provenance = build_provenance(
-            "polished",
+            "corrected",
             model=req_data.model or "qwen3:4b",
-            params={
-                "mode": req_data.mode,
-                "provider": req_data.provider,
-                "source_lang": req_data.source_lang,
-                "batch_minutes": req_data.batch_minutes,
-                "engine": req_data.engine,
-            },
+            audio_path=req_data.audio_path,
+            output_dir=req_data.output_dir,
+            params=llm_prov_params(
+                req_data.mode,
+                req_data.provider,
+                source_lang=source_lang,
+                batch_minutes=req_data.batch_minutes,
+            ),
         )
-        save_polished_raw(
+        save_corrected_raw(
             req_data.audio_path,
-            polished,
+            corrected,
             output_dir=req_data.output_dir,
             provenance=provenance,
         )
-        return {"count": len(polished)}
+        return {"count": len(corrected)}
 
-    return submit_task("polish", req.audio_path, run_polish, req)
+    return submit_task("correct", req.audio_path, run_correct, req)
 
 
-# ── Skip polish ──────────────────────────────────────────
+# ── Skip correct ─────────────────────────────────────────
 
 
 class SkipRequest(BaseModel):
@@ -125,17 +136,17 @@ class SkipRequest(BaseModel):
 
 
 @router.post("/skip")
-async def skip_polish(req: SkipRequest) -> dict:
-    """Copy transcript segments directly to polished output (skip LLM)."""
-    from podcodex.core.polish import save_polished_raw
+async def skip_correct(req: SkipRequest) -> dict:
+    """Copy transcript segments directly to corrected output (skip LLM)."""
+    from podcodex.core.correct import save_corrected_raw
     from podcodex.core.transcribe import load_transcript
 
     segments = load_transcript(req.audio_path, output_dir=req.output_dir)
     if not segments:
         raise HTTPException(404, "No transcript found to copy")
 
-    provenance = build_provenance("polished", params={"skipped": True})
-    save_polished_raw(
+    provenance = build_provenance("corrected", params={"skipped": True})
+    save_corrected_raw(
         req.audio_path,
         segments,
         output_dir=req.output_dir,
@@ -150,47 +161,57 @@ async def skip_polish(req: SkipRequest) -> dict:
 @router.post("/manual-prompts")
 async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     """Generate batched prompts for manual LLM correction."""
-    from podcodex.core.polish import build_manual_prompts_batched
+    from podcodex.core.correct import (
+        build_manual_prompts_batched,
+        transcript_provenance_info,
+    )
     from podcodex.core.transcribe import load_transcript
+    from podcodex.core.versions import get_latest_provenance, load_version
 
-    segments = load_transcript(req.audio_path, output_dir=req.output_dir)
+    p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
+
+    if req.source_version_id:
+        segments = load_version(p.base, "transcript", req.source_version_id)
+    else:
+        segments = load_transcript(req.audio_path, output_dir=req.output_dir)
     if not segments:
         raise HTTPException(404, "No transcript found")
+
+    tc_info = transcript_provenance_info(get_latest_provenance(p.base, "transcript"))
+    source_lang = tc_info["language"] or req.source_lang
 
     batches = build_manual_prompts_batched(
         segments,
         batch_minutes=req.batch_minutes,
         context=req.context,
-        source_lang=req.source_lang,
-        engine=req.engine,
+        source_lang=source_lang,
+        engine=tc_info["source"],
+        engine_model=tc_info["model"],
     )
-    return [
-        {"batch_index": i, "prompt": prompt, "segment_count": len(batch_segs)}
-        for i, (batch_segs, prompt) in enumerate(batches)
-    ]
+    return format_prompt_batches(batches)
 
 
 @router.post("/apply-manual")
 async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
     """Apply manually-obtained LLM corrections and save as raw."""
     from podcodex.core._utils import validate_manual
-    from podcodex.core.polish import save_polished_raw
+    from podcodex.core.correct import save_corrected_raw
     from podcodex.core.transcribe import load_transcript
 
     original = load_transcript(req.audio_path, output_dir=req.output_dir)
     if not original:
         raise HTTPException(404, "No transcript found")
 
-    polished = validate_manual(req.corrections, original)
+    corrected = validate_manual(req.corrections, original)
     provenance = build_provenance(
-        "polished",
-        params={"mode": "manual"},
+        "corrected",
+        params=llm_prov_params("manual"),
         manual_edit=True,
     )
-    save_polished_raw(
+    save_corrected_raw(
         req.audio_path,
-        polished,
+        corrected,
         output_dir=req.output_dir,
         provenance=provenance,
     )
-    return {"status": "saved", "count": len(polished)}
+    return {"status": "saved", "count": len(corrected)}

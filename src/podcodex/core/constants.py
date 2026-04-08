@@ -58,7 +58,7 @@ VOICE_TOP_K = 3  # how many samples to keep per speaker
 DEFAULT_MAX_CHUNK_DURATION = 20.0  # max seconds per TTS chunk
 DEFAULT_SILENCE_DURATION = 0.5  # gap duration for the "silence" strategy
 
-# ── LLM providers (for Polish & Translate) ───────────────────────────────────
+# ── LLM providers (for Correct & Translate) ───────────────────────────────────
 #
 # Each provider entry contains the API base URL, a sensible default model,
 # and a human-friendly label for the UI.  "ollama" (local) is handled
@@ -82,12 +82,6 @@ LLM_PROVIDERS: dict[str, dict[str, str]] = {
         "model": "claude-sonnet-4-20250514",
         "label": "Anthropic",
         "env_var": "ANTHROPIC_API_KEY",
-    },
-    "groq": {
-        "url": "https://api.groq.com/openai/v1",
-        "model": "llama-3.3-70b-versatile",
-        "label": "Groq",
-        "env_var": "GROQ_API_KEY",
     },
     "custom": {
         "url": "",

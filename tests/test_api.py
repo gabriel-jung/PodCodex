@@ -11,11 +11,13 @@ All tests isolate state by redirecting CONFIG_PATH and operating in tmp_path.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from podcodex.api.app import create_app
+from podcodex.core.versions import save_version
 
 
 @pytest.fixture
@@ -179,7 +181,9 @@ def test_export_text_from_transcript(client, tmp_path):
         {"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "hello"},
         {"speaker": "Bob", "start": 2.0, "end": 4.0, "text": "world"},
     ]
-    (tmp_path / "s" / "ep" / "ep.transcript.json").write_text(json.dumps(segs))
+    save_version(
+        Path(ep_dir) / "ep", "transcript", segs, {"step": "transcript", "type": "raw"}
+    )
 
     r = client.get(
         "/api/export/text",
@@ -192,9 +196,11 @@ def test_export_text_from_transcript(client, tmp_path):
 
 
 def test_export_srt_has_timestamps(client, tmp_path):
-    audio, _ = _make_audio_dir(tmp_path)
+    audio, ep_dir = _make_audio_dir(tmp_path)
     segs = [{"speaker": "A", "start": 0.0, "end": 1.5, "text": "go"}]
-    (tmp_path / "s" / "ep" / "ep.transcript.json").write_text(json.dumps(segs))
+    save_version(
+        Path(ep_dir) / "ep", "transcript", segs, {"step": "transcript", "type": "raw"}
+    )
 
     r = client.get(
         "/api/export/srt",
@@ -206,9 +212,11 @@ def test_export_srt_has_timestamps(client, tmp_path):
 
 
 def test_export_vtt_has_header(client, tmp_path):
-    audio, _ = _make_audio_dir(tmp_path)
+    audio, ep_dir = _make_audio_dir(tmp_path)
     segs = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hey"}]
-    (tmp_path / "s" / "ep" / "ep.transcript.json").write_text(json.dumps(segs))
+    save_version(
+        Path(ep_dir) / "ep", "transcript", segs, {"step": "transcript", "type": "raw"}
+    )
 
     r = client.get(
         "/api/export/vtt",

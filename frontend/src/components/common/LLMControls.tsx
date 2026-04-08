@@ -60,7 +60,7 @@ export default function LLMControls({
         <MissingDependency
           extra="pipeline"
           label="LLM libraries"
-          description="Required for automatic AI processing. You can use manual mode instead — it gives you prompts to paste into any chatbot."
+          description="Required for automatic AI processing. You can also use manual mode, which gives you prompts to paste into any chatbot."
         />
       )}
 

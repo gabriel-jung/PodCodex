@@ -1,23 +1,22 @@
 """
 podcodex.core.versions -- Generation versioning for pipeline outputs.
 
-Every pipeline save (transcribe, polish, translate, manual edit) creates
-a new version.  Segment data is stored as JSON files under ``.versions/``;
-metadata (index) lives in the ``versions`` table of the show-level
-``pipeline.db``.  The DB is the source of truth for lookups — there is
-no filesystem fallback.
+Every pipeline save (transcribe, correct, translate, manual edit) creates
+a new version.  Segment data is stored as JSON files in per-step
+subdirectories; metadata (index) lives in the ``versions`` table of
+the show-level ``pipeline.db``.  The DB is the source of truth for
+lookups — there is no filesystem fallback.
 
 Storage layout per episode::
 
     episode/
-      .versions/
-        transcript/
-          20260401T103000Z_raw.json
-          20260401T120000Z_validated.json
-        polished/
-          ...
-        english/
-          ...
+      transcript/
+        20260401T103000Z_raw.json
+        20260401T120000Z_validated.json
+      corrected/
+        ...
+      english/
+        ...
 
 There are no "active" files -- the most recent version by timestamp is
 the default.  Users can pick any version from the History dropdown.
@@ -43,7 +42,7 @@ from loguru import logger
 class VersionMeta:
     """Provenance metadata for one version."""
 
-    step: str  # e.g. "transcript", "polished", "english"
+    step: str  # e.g. "transcript", "corrected", "english"
     type: str  # "raw" or "validated"
     model: str | None = None
     params: dict = field(default_factory=dict)
@@ -68,14 +67,14 @@ def compute_hash(segments: list[dict]) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
-def _versions_dir(base: Path) -> Path:
-    """Return the .versions directory for an episode (next to episode files)."""
-    return base.parent / ".versions"
+def versions_dir(base: Path) -> Path:
+    """Return the versions directory for an episode (the episode output dir)."""
+    return base.parent
 
 
 def _step_dir(base: Path, step: str) -> Path:
     """Return the directory holding segment files for a step."""
-    return _versions_dir(base) / step
+    return versions_dir(base) / step
 
 
 def _version_path(base: Path, step: str, version_id: str) -> Path:
@@ -89,6 +88,76 @@ def _get_db(base: Path):
 
     show_dir = base.parent.parent
     return get_pipeline_db(show_dir)
+
+
+def backfill_versions(show_dir: Path) -> int:
+    """Create version entries for legacy transcript files missing from the DB.
+
+    Scans episode directories for ``*.transcript.json`` or
+    ``*.transcript.raw.json`` files that have no corresponding version in
+    the DB.  Reuses the existing provenance from the episodes table so
+    labels (e.g. "YouTube subtitles") are preserved.
+
+    Returns the number of versions created.
+    """
+    from podcodex.core.pipeline_db import get_pipeline_db
+
+    db = get_pipeline_db(show_dir)
+    count = 0
+
+    # Build provenance lookup from episodes table
+    ep_provenance: dict[str, dict] = {}
+    for row in db.all_episodes():
+        prov = row.get("provenance") or {}
+        if isinstance(prov, str):
+            try:
+                prov = json.loads(prov)
+            except Exception:
+                prov = {}
+        ep_provenance[row["stem"]] = prov
+
+    for ep_dir in sorted(show_dir.iterdir()):
+        if not ep_dir.is_dir() or ep_dir.name.startswith("."):
+            continue
+        stem = ep_dir.name
+        # Skip if transcript version already exists
+        if db.list_versions(stem, "transcript"):
+            continue
+
+        # Look for legacy transcript files
+        candidates = [
+            ep_dir / f"{stem}.transcript.json",
+            ep_dir / f"{stem}.transcript.raw.json",
+        ]
+        seg_file = next((f for f in candidates if f.exists()), None)
+        if not seg_file:
+            continue
+
+        try:
+            segments = json.loads(seg_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        # Reuse existing provenance from the episodes table
+        existing_prov = ep_provenance.get(stem, {}).get("transcript", {})
+        vtype = existing_prov.get(
+            "type", "validated" if seg_file.name.endswith(".transcript.json") else "raw"
+        )
+        base = ep_dir / stem
+        save_version(
+            base=base,
+            step="transcript",
+            segments=segments,
+            provenance=existing_prov
+            or {
+                "step": "transcript",
+                "type": vtype,
+            },
+        )
+        count += 1
+        logger.debug("Backfilled transcript version for {}", stem)
+
+    return count
 
 
 # ------------------------------------------------------------------
@@ -106,13 +175,13 @@ def save_version(
 
     1. Generate version ID from timestamp + type
     2. Compute content_hash
-    3. Write segments JSON to .versions/{step}/{id}.json
+    3. Write segments JSON to {step}/{id}.json
     4. INSERT into versions table in pipeline.db
     5. Return version_id
 
     Args:
         base:       The AudioPaths.base path (episode stem path).
-        step:       Pipeline step name ("transcript", "polished", "english", ...).
+        step:       Pipeline step name ("transcript", "corrected", "english", ...).
         segments:   The segment data to save.
         provenance: Dict with keys ``step``, ``type``, ``model``, ``params``,
                     ``manual_edit``, optionally ``input_hash``.
@@ -191,6 +260,20 @@ def load_latest(base: Path, step: str) -> list[dict] | None:
         return None
 
 
+def get_latest_provenance(base: Path, step: str) -> dict | None:
+    """Return the provenance dict of the most recent version, or None."""
+    db = _get_db(base)
+    meta = db.get_latest_version(base.name, step)
+    if not meta:
+        return None
+    return {
+        "model": meta.get("model"),
+        "type": meta.get("type"),
+        "params": meta.get("params", {}),
+        "manual_edit": meta.get("manual_edit", False),
+    }
+
+
 def list_versions(base: Path, step: str) -> list[dict]:
     """List all versions for a step (newest first).
 
@@ -198,6 +281,12 @@ def list_versions(base: Path, step: str) -> list[dict]:
     """
     db = _get_db(base)
     return db.list_versions(base.name, step)
+
+
+def list_all_versions(base: Path) -> list[dict]:
+    """List all versions across all steps for an episode (newest first)."""
+    db = _get_db(base)
+    return db.list_all_versions(base.name)
 
 
 def version_count(base: Path, step: str) -> int:

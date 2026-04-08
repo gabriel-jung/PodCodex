@@ -35,7 +35,7 @@ def _seed_local(episodes: dict[str, int] | None = None) -> tuple[LocalStore, str
                 "end": float(i + 1),
                 "speaker": "Alice" if i % 2 == 0 else "Bob",
                 "dominant_speaker": "Alice" if i % 2 == 0 else "Bob",
-                "source": "polished",
+                "source": "corrected",
                 "text": f"chunk {i} of {ep} about neural networks and podcasting",
             }
             for i in range(n)

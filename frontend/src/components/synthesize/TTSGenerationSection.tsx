@@ -73,7 +73,7 @@ export default function TTSGenerationSection({
         </select>
         {translations.length > 0 && (
           <>
-            <HelpLabel label="Text source" help="Which text to synthesize. 'Best available' uses the translation if one exists, otherwise the polished or raw transcript." />
+            <HelpLabel label="Text source" help="Which text to synthesize. 'Best available' uses the translation if one exists, otherwise the corrected or raw transcript." />
             <select
               value={sourceLang}
               onChange={(e) => setSourceLang(e.target.value)}

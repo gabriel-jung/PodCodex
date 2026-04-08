@@ -135,7 +135,9 @@ async def search_query(req: SearchRequest) -> list[dict]:
 def _resolve_vectors_db(req) -> Path:
     """Resolve vectors.db path from either audio_path or folder."""
     if getattr(req, "folder", None):
-        return Path(req.folder) / "vectors.db"
+        from podcodex.core._utils import VECTORS_DB_FILENAME
+
+        return Path(req.folder) / VECTORS_DB_FILENAME
     if getattr(req, "audio_path", None):
         output_dir = getattr(req, "output_dir", None)
         p = AudioPaths.from_audio(req.audio_path, output_dir=output_dir)
@@ -310,7 +312,9 @@ async def index_stats(folder: str, show: str = "") -> dict:
     """Return index statistics for a show folder."""
     from podcodex.rag.localstore import LocalStore
 
-    db_path = Path(folder) / "vectors.db"
+    from podcodex.core._utils import VECTORS_DB_FILENAME
+
+    db_path = Path(folder) / VECTORS_DB_FILENAME
     if not db_path.exists():
         return {"collections": [], "total_episodes": 0, "total_chunks": 0}
 

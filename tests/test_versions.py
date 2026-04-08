@@ -13,6 +13,7 @@ from podcodex.core.versions import (
     prune_versions,
     save_version,
     version_count,
+    versions_dir,
 )
 
 
@@ -36,15 +37,15 @@ SAMPLE_SEGMENTS = [
 ]
 
 SAMPLE_PROVENANCE = {
-    "step": "polished",
+    "step": "corrected",
     "type": "raw",
     "model": "gpt-4o",
-    "params": {"mode": "api"},
+    "params": {"llm_mode": "api"},
     "manual_edit": False,
 }
 
 
-def _prov(step="polished", type_="raw", model=None, params=None, manual_edit=False):
+def _prov(step="corrected", type_="raw", model=None, params=None, manual_edit=False):
     """Build a provenance dict for tests."""
     return {
         "step": step,
@@ -79,7 +80,7 @@ class TestSaveVersion:
     def test_creates_version(self, episode_dir):
         vid = save_version(
             episode_dir,
-            "polished",
+            "corrected",
             SAMPLE_SEGMENTS,
             _prov(model="gpt-4o"),
         )
@@ -87,21 +88,21 @@ class TestSaveVersion:
         assert vid.endswith("_raw")
 
         # Segment file exists
-        seg_path = episode_dir.parent / ".versions" / "polished" / f"{vid}.json"
+        seg_path = versions_dir(episode_dir) / "corrected" / f"{vid}.json"
         assert seg_path.exists()
         segments = json.loads(seg_path.read_text())
         assert len(segments) == 2
 
     def test_multiple_versions(self, episode_dir):
-        save_version(episode_dir, "polished", SAMPLE_SEGMENTS, _prov(model="v1"))
+        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov(model="v1"))
         save_version(
             episode_dir,
-            "polished",
+            "corrected",
             SAMPLE_SEGMENTS,
             _prov(type_="validated", manual_edit=True),
         )
 
-        entries = list_versions(episode_dir, "polished")
+        entries = list_versions(episode_dir, "corrected")
         assert len(entries) == 2
         # Newest first
         assert entries[0]["type"] == "validated"
@@ -118,77 +119,77 @@ class TestSaveVersion:
         assert entries[0]["params"]["language"] == "fr"
 
     def test_none_provenance_is_noop(self, episode_dir):
-        vid = save_version(episode_dir, "polished", SAMPLE_SEGMENTS, None)
+        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, None)
         assert vid == ""
-        assert version_count(episode_dir, "polished") == 0
+        assert version_count(episode_dir, "corrected") == 0
 
     def test_input_hash_stored(self, episode_dir):
         save_version(
             episode_dir,
-            "polished",
+            "corrected",
             SAMPLE_SEGMENTS,
             {**_prov(), "input_hash": "sha256:abcdef1234567890"},
         )
-        entries = list_versions(episode_dir, "polished")
+        entries = list_versions(episode_dir, "corrected")
         assert entries[0]["input_hash"] == "sha256:abcdef1234567890"
 
 
 class TestListVersions:
     def test_empty_when_no_versions(self, episode_dir):
-        assert list_versions(episode_dir, "polished") == []
+        assert list_versions(episode_dir, "corrected") == []
 
     def test_returns_entries(self, episode_dir):
-        save_version(episode_dir, "polished", SAMPLE_SEGMENTS, _prov())
-        entries = list_versions(episode_dir, "polished")
+        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov())
+        entries = list_versions(episode_dir, "corrected")
         assert len(entries) == 1
 
 
 class TestLoadVersion:
     def test_load_existing(self, episode_dir):
-        vid = save_version(episode_dir, "polished", SAMPLE_SEGMENTS, _prov())
-        segments = load_version(episode_dir, "polished", vid)
+        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov())
+        segments = load_version(episode_dir, "corrected", vid)
         assert len(segments) == 2
         assert segments[0]["text"] == "Hello"
 
     def test_load_missing_raises(self, episode_dir):
         with pytest.raises(FileNotFoundError):
-            load_version(episode_dir, "polished", "nonexistent")
+            load_version(episode_dir, "corrected", "nonexistent")
 
 
 class TestLoadLatest:
     def test_returns_none_when_empty(self, episode_dir):
-        assert load_latest(episode_dir, "polished") is None
+        assert load_latest(episode_dir, "corrected") is None
 
     def test_returns_latest(self, episode_dir):
         save_version(
             episode_dir,
-            "polished",
+            "corrected",
             [{"text": "old"}],
             _prov(model="v1"),
         )
         save_version(
             episode_dir,
-            "polished",
+            "corrected",
             [{"text": "new"}],
             _prov(model="v2"),
         )
-        segments = load_latest(episode_dir, "polished")
+        segments = load_latest(episode_dir, "corrected")
         assert segments == [{"text": "new"}]
 
 
 class TestVersionCount:
     def test_zero_when_empty(self, episode_dir):
-        assert version_count(episode_dir, "polished") == 0
+        assert version_count(episode_dir, "corrected") == 0
 
     def test_counts_correctly(self, episode_dir):
         for i in range(3):
             save_version(
                 episode_dir,
-                "polished",
+                "corrected",
                 SAMPLE_SEGMENTS,
                 _prov(model=f"m{i}"),
             )
-        assert version_count(episode_dir, "polished") == 3
+        assert version_count(episode_dir, "corrected") == 3
 
 
 class TestPruneVersions:
@@ -197,36 +198,36 @@ class TestPruneVersions:
         for i in range(5):
             vid = save_version(
                 episode_dir,
-                "polished",
+                "corrected",
                 SAMPLE_SEGMENTS,
                 _prov(model=f"m{i}"),
             )
             ids.append(vid)
 
-        removed = prune_versions(episode_dir, "polished", keep=2)
+        removed = prune_versions(episode_dir, "corrected", keep=2)
         assert removed == 3
 
-        remaining = list_versions(episode_dir, "polished")
+        remaining = list_versions(episode_dir, "corrected")
         assert len(remaining) == 2
         # Newest are kept
         assert remaining[0]["id"] == ids[-1]
         assert remaining[1]["id"] == ids[-2]
 
         # Old files deleted
-        sdir = episode_dir.parent / ".versions" / "polished"
+        sdir = versions_dir(episode_dir) / "corrected"
         for old_id in ids[:3]:
             assert not (sdir / f"{old_id}.json").exists()
 
     def test_prune_noop_when_under_limit(self, episode_dir):
-        save_version(episode_dir, "polished", SAMPLE_SEGMENTS, _prov())
-        removed = prune_versions(episode_dir, "polished", keep=5)
+        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov())
+        removed = prune_versions(episode_dir, "corrected", keep=5)
         assert removed == 0
-        assert version_count(episode_dir, "polished") == 1
+        assert version_count(episode_dir, "corrected") == 1
 
 
 class TestDifferentSteps:
     def test_steps_isolated(self, episode_dir):
-        save_version(episode_dir, "polished", SAMPLE_SEGMENTS, _prov())
+        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov())
         save_version(
             episode_dir,
             "english",
@@ -234,59 +235,59 @@ class TestDifferentSteps:
             _prov(step="english"),
         )
 
-        assert version_count(episode_dir, "polished") == 1
+        assert version_count(episode_dir, "corrected") == 1
         assert version_count(episode_dir, "english") == 1
 
 
 class TestHasVersion:
     def test_false_when_empty(self, episode_dir):
-        assert has_version(episode_dir, "polished") is False
+        assert has_version(episode_dir, "corrected") is False
 
     def test_true_when_exists(self, episode_dir):
-        save_version(episode_dir, "polished", SAMPLE_SEGMENTS, _prov())
-        assert has_version(episode_dir, "polished") is True
+        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov())
+        assert has_version(episode_dir, "corrected") is True
 
 
 class TestHasMatchingVersion:
     def test_no_versions(self, episode_dir):
         assert (
-            has_matching_version(episode_dir, "polished", {"model": "gpt-4o"}) is False
+            has_matching_version(episode_dir, "corrected", {"model": "gpt-4o"}) is False
         )
 
     def test_matching_model(self, episode_dir):
         save_version(
             episode_dir,
-            "polished",
+            "corrected",
             SAMPLE_SEGMENTS,
-            _prov(model="gpt-4o", params={"mode": "api"}),
+            _prov(model="gpt-4o", params={"llm_mode": "api"}),
         )
         assert (
-            has_matching_version(episode_dir, "polished", {"model": "gpt-4o"}) is True
+            has_matching_version(episode_dir, "corrected", {"model": "gpt-4o"}) is True
         )
 
     def test_different_model(self, episode_dir):
         save_version(
             episode_dir,
-            "polished",
+            "corrected",
             SAMPLE_SEGMENTS,
-            _prov(model="gpt-4o", params={"mode": "api"}),
+            _prov(model="gpt-4o", params={"llm_mode": "api"}),
         )
         assert (
-            has_matching_version(episode_dir, "polished", {"model": "claude"}) is False
+            has_matching_version(episode_dir, "corrected", {"model": "claude"}) is False
         )
 
     def test_matching_params(self, episode_dir):
         save_version(
             episode_dir,
-            "polished",
+            "corrected",
             SAMPLE_SEGMENTS,
-            _prov(model="gpt-4o", params={"mode": "api", "provider": "openai"}),
+            _prov(model="gpt-4o", params={"llm_mode": "api", "llm_provider": "openai"}),
         )
         assert (
             has_matching_version(
                 episode_dir,
-                "polished",
-                {"model": "gpt-4o", "mode": "api", "provider": "openai"},
+                "corrected",
+                {"model": "gpt-4o", "llm_mode": "api", "llm_provider": "openai"},
             )
             is True
         )
@@ -294,47 +295,47 @@ class TestHasMatchingVersion:
     def test_partial_param_mismatch(self, episode_dir):
         save_version(
             episode_dir,
-            "polished",
+            "corrected",
             SAMPLE_SEGMENTS,
-            _prov(model="gpt-4o", params={"mode": "api", "provider": "openai"}),
+            _prov(model="gpt-4o", params={"llm_mode": "api", "llm_provider": "openai"}),
         )
         # Different provider
         assert (
             has_matching_version(
                 episode_dir,
-                "polished",
-                {"model": "gpt-4o", "mode": "api", "provider": "anthropic"},
+                "corrected",
+                {"model": "gpt-4o", "llm_mode": "api", "llm_provider": "anthropic"},
             )
             is False
         )
 
     def test_empty_params_matches_any(self, episode_dir):
-        save_version(episode_dir, "polished", SAMPLE_SEGMENTS, _prov())
-        assert has_matching_version(episode_dir, "polished", {}) is True
+        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov())
+        assert has_matching_version(episode_dir, "corrected", {}) is True
 
     def test_multiple_versions_one_matches(self, episode_dir):
         save_version(
             episode_dir,
-            "polished",
+            "corrected",
             SAMPLE_SEGMENTS,
             _prov(model="old-model"),
         )
         save_version(
             episode_dir,
-            "polished",
+            "corrected",
             SAMPLE_SEGMENTS,
             _prov(model="new-model"),
         )
         assert (
-            has_matching_version(episode_dir, "polished", {"model": "old-model"})
+            has_matching_version(episode_dir, "corrected", {"model": "old-model"})
             is True
         )
         assert (
-            has_matching_version(episode_dir, "polished", {"model": "new-model"})
+            has_matching_version(episode_dir, "corrected", {"model": "new-model"})
             is True
         )
         assert (
-            has_matching_version(episode_dir, "polished", {"model": "other"}) is False
+            has_matching_version(episode_dir, "corrected", {"model": "other"}) is False
         )
 
 
@@ -350,13 +351,11 @@ class TestSaveAndLoad:
         from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
 
         version_id = save_version(
-            episode_dir, "polished", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE
+            episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE
         )
 
         # File half
-        version_file = (
-            episode_dir.parent / ".versions" / "polished" / f"{version_id}.json"
-        )
+        version_file = versions_dir(episode_dir) / "corrected" / f"{version_id}.json"
         assert version_file.exists()
         assert json.loads(version_file.read_text()) == SAMPLE_SEGMENTS
 
@@ -364,7 +363,7 @@ class TestSaveAndLoad:
         show_dir = episode_dir.parent.parent
         assert (show_dir / "pipeline.db").exists()
         db = get_pipeline_db(show_dir)
-        meta = db.get_latest_version(episode_dir.name, "polished")
+        meta = db.get_latest_version(episode_dir.name, "corrected")
         assert meta is not None
         assert meta["id"] == version_id
         assert meta["content_hash"] == compute_hash(SAMPLE_SEGMENTS)
@@ -372,10 +371,10 @@ class TestSaveAndLoad:
 
     def test_load_latest_returns_none_when_db_empty(self, episode_dir):
         """No versions saved → load_latest returns None (no filesystem fallback)."""
-        assert load_latest(episode_dir, "polished") is None
+        assert load_latest(episode_dir, "corrected") is None
 
     def test_load_latest_round_trip(self, episode_dir):
         """Save then load returns the same segments."""
-        save_version(episode_dir, "polished", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
-        loaded = load_latest(episode_dir, "polished")
+        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        loaded = load_latest(episode_dir, "corrected")
         assert loaded == SAMPLE_SEGMENTS
