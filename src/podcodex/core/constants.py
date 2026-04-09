@@ -26,6 +26,20 @@ WHISPER_MODELS: dict[str, str] = {
     "tiny": "Fastest, lowest accuracy — ~1 GB VRAM",
 }
 
+# Minimum free VRAM (MB) needed to load each model.
+# Used by check_vram() to fail fast instead of hanging on OOM.
+WHISPER_VRAM_MB: dict[str, int] = {
+    "large-v3": 5000,
+    "large-v3-turbo": 4000,
+    "medium": 3000,
+    "small": 2000,
+    "base": 1000,
+    "tiny": 500,
+}
+
+# Pyannote diarization pipeline VRAM requirement (MB).
+DIARIZATION_VRAM_MB = 1500
+
 DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 
 # ── Text-to-Speech (TTS) model sizes ────────────────────────────────────────
@@ -36,6 +50,11 @@ DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 TTS_MODEL_SIZES: dict[str, str] = {
     "1.7B": "Higher quality voice cloning — needs ~8 GB GPU memory",
     "0.6B": "Faster generation — needs ~4 GB GPU memory",
+}
+
+TTS_VRAM_MB: dict[str, int] = {
+    "1.7B": 8000,
+    "0.6B": 4000,
 }
 
 DEFAULT_TTS_MODEL_SIZE = "1.7B"

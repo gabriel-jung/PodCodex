@@ -254,7 +254,7 @@ class TranscribeRequest(BaseModel):
     output_dir: str | None = None
     model_size: str = "large-v3-turbo"
     language: str = ""
-    batch_size: int = 16
+    batch_size: int | None = None
     force: bool = False
     diarize: bool = True
     hf_token: str | None = None
@@ -290,12 +290,15 @@ async def start_transcribe(req: TranscribeRequest) -> TaskResponse:
             transcribe_file,
         )
 
-        progress_cb(0.0, "Transcribing audio...")
+        from podcodex.core._utils import default_batch_size
+
+        batch_size = req_data.batch_size or default_batch_size()
+        progress_cb(0.0, f"Transcribing audio (batch_size={batch_size})...")
         transcribe_file(
             req_data.audio_path,
             model_size=req_data.model_size,
             language=req_data.language or None,
-            batch_size=req_data.batch_size,
+            batch_size=batch_size,
             force=req_data.force,
             output_dir=req_data.output_dir,
         )

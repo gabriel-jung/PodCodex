@@ -26,6 +26,7 @@ from podcodex.core._utils import (
     SAMPLE_RATE,
     UNKNOWN_SPEAKERS,
     AudioPaths,
+    check_vram,
     free_vram,
     read_json,
     write_json,
@@ -142,6 +143,11 @@ def transcribe_file(
 
     logger.info(f"Transcribing {p.audio_path.name} ({device}, {compute_type})")
 
+    if device == "cuda":
+        from podcodex.core.constants import WHISPER_VRAM_MB
+
+        check_vram(f"whisper ({model_size})", WHISPER_VRAM_MB.get(model_size, 512))
+
     audio = whisperx.load_audio(str(p.audio_path))
 
     from podcodex.core.cache import get_hf_cache_dir
@@ -154,7 +160,8 @@ def transcribe_file(
         download_root=str(get_hf_cache_dir()),
     )
     result = model.transcribe(audio, batch_size=batch_size, language=language)
-    free_vram(model)
+    del model
+    free_vram()
 
     # Use detected language when none was specified
     detected_lang = result.get("language") or language
@@ -162,7 +169,8 @@ def transcribe_file(
         language_code=detected_lang, device=device
     )
     result = whisperx.align(result["segments"], model_a, metadata, audio, device)
-    free_vram(model_a)
+    del model_a, metadata
+    free_vram()
 
     segments = result["segments"]
     duration = float(audio.shape[0]) / SAMPLE_RATE
@@ -277,6 +285,11 @@ def diarize_file(
 
     logger.info(f"Diarizing {p.audio_path.name}")
 
+    if device == "cuda":
+        from podcodex.core.constants import DIARIZATION_VRAM_MB
+
+        check_vram("diarization", DIARIZATION_VRAM_MB)
+
     from podcodex.core.cache import get_hf_cache_dir
     from whisperx.diarize import DiarizationPipeline
 
@@ -289,6 +302,9 @@ def diarize_file(
         min_speakers=min_speakers,
         max_speakers=max_speakers,
     )
+
+    del pipeline
+    free_vram()
 
     df = diarize_segments.reset_index(drop=True)
     if "segment" in df.columns:

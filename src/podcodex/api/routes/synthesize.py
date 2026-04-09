@@ -383,6 +383,13 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
         progress_cb(
             0.1, f"Loading TTS model ({len(to_generate)} segments to generate)..."
         )
+        from podcodex.core._utils import check_vram
+        from podcodex.core.constants import TTS_VRAM_MB
+
+        check_vram(
+            f"TTS ({req_data.model_size})",
+            TTS_VRAM_MB.get(req_data.model_size, 4000),
+        )
         model = load_tts_model(model_size=req_data.model_size)
         clone_prompts = build_clone_prompts(model, voice_samples)
 
@@ -418,7 +425,8 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
         save_manifest(segments_dir, manifest)
 
         progress_cb(0.98, "Releasing GPU memory...")
-        free_vram(model)
+        del model
+        free_vram()
 
         new_count = len(to_generate)
         return {"count": new_count, "reused": reused, "skipped": total - len(generated)}

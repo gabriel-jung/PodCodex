@@ -92,6 +92,28 @@ async def list_extras() -> dict:
     }
 
 
+@router.post("/system/free-vram")
+async def free_vram_endpoint() -> dict:
+    """Flush GPU VRAM — call before heavy pipeline steps if memory is tight."""
+    from podcodex.core._utils import free_vram
+
+    free_vram()
+    # Report current state
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            mem = torch.cuda.mem_get_info()
+            return {
+                "freed": True,
+                "free_mb": mem[0] // (1024 * 1024),
+                "total_mb": mem[1] // (1024 * 1024),
+            }
+    except ImportError:
+        pass
+    return {"freed": True}
+
+
 @router.get("/tasks/active")
 async def get_active_task(
     audio_path: str | None = None,

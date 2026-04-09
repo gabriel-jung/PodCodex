@@ -32,7 +32,7 @@ class BatchRequest(BaseModel):
     # Transcribe config
     model_size: str = "large-v3-turbo"
     language: str = ""
-    batch_size: int = 16
+    batch_size: int | None = None
     diarize: bool = True
     clean: bool = False
     hf_token: str | None = None
@@ -121,8 +121,11 @@ def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_
     )
     from podcodex.core.versions import has_matching_version, has_version
 
+    from podcodex.core._utils import default_batch_size
+
     sw = _STEP_WEIGHTS["transcribe"]
     did_work = False
+    batch_size = req.batch_size or default_batch_size()
 
     # Check if a matching final transcript already exists (skip everything)
     transcript_params = {
@@ -146,7 +149,7 @@ def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_
             audio_path,
             model_size=req.model_size,
             language=req.language or None,
-            batch_size=req.batch_size,
+            batch_size=batch_size,
         )
         if cancelled():
             return did_work
@@ -196,7 +199,7 @@ def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_
                     diarized_flag,
                     model=req.model_size,
                     language=req.language or None,
-                    batch_size=req.batch_size,
+                    batch_size=batch_size,
                     num_speakers=req.num_speakers,
                     clean=req.clean,
                 ),

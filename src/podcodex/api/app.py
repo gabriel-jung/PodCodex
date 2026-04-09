@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
+# Prevent multiprocessing/OpenMP deadlocks when PyTorch DataLoaders run
+# inside ThreadPoolExecutor threads (used by the task runner).
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from dotenv import load_dotenv
 
 

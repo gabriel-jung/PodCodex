@@ -248,14 +248,52 @@ def wav_duration(path: Path) -> float:
         return 0.0
 
 
-def free_vram(model) -> None:
-    """Release VRAM after model use."""
+def default_batch_size() -> int:
+    """Return 16 if total VRAM > 10 GB, else 8."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            _, total = torch.cuda.mem_get_info()
+            if total > 10 * 1024 * 1024 * 1024:
+                return 16
+    except Exception:
+        pass
+    return 8
+
+
+def free_vram() -> None:
+    """Flush VRAM — call after ``del model`` in the caller's scope."""
     import torch
 
-    del model
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def check_vram(label: str = "model", min_mb: int = 512) -> None:
+    """Flush caches then raise if free VRAM is below *min_mb*.
+
+    Call this on CUDA devices before loading a heavy model.  On CPU or
+    when CUDA is unavailable, this is a no-op.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return
+    # flush first so the reading is accurate
+    gc.collect()
+    torch.cuda.empty_cache()
+    free_bytes, total_bytes = torch.cuda.mem_get_info()
+    free_mb = free_bytes // (1024 * 1024)
+    total_mb = total_bytes // (1024 * 1024)
+    logger.info(f"VRAM before {label}: {free_mb} MB free / {total_mb} MB total")
+    if free_mb < min_mb:
+        raise RuntimeError(
+            f"Not enough VRAM to load {label}: {free_mb} MB free, "
+            f"need at least {min_mb} MB. "
+            f"Try closing other GPU processes or restarting the backend."
+        )
 
 
 # ──────────────────────────────────────────────
