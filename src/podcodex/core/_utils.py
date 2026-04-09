@@ -100,26 +100,6 @@ class AudioPaths:
     # — Transcription —
 
     @property
-    def segments(self) -> Path:
-        return self.base.with_suffix(".segments.parquet")
-
-    @property
-    def segments_meta(self) -> Path:
-        return self.base.with_suffix(".segments.meta.json")
-
-    @property
-    def diarization(self) -> Path:
-        return self.base.with_suffix(".diarization.parquet")
-
-    @property
-    def diarization_meta(self) -> Path:
-        return self.base.with_suffix(".diarization.meta.json")
-
-    @property
-    def diarized_segments(self) -> Path:
-        return self.base.with_suffix(".diarized_segments.parquet")
-
-    @property
     def speaker_map(self) -> Path:
         return self.base.with_suffix(".speaker_map.json")
 

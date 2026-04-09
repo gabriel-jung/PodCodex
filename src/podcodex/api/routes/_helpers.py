@@ -74,7 +74,7 @@ def transcribe_prov_params(
     """
     d: dict = {"diarize": diarize, "source": source}
     # Build a descriptive source chain entry for downstream steps
-    label = model or source
+    label = f"{source}/{model}" if model else source
     if diarize:
         label += ", diarized"
     d["source_chain"] = [label]

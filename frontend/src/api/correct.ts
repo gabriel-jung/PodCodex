@@ -16,13 +16,6 @@ export const deleteCorrectVersion = (audioPath: string, versionId: string) =>
 export const startCorrect = (req: CorrectRequest) =>
   api.start(req as unknown as Record<string, unknown>) as Promise<TaskResponse>;
 
-export const skipCorrect = (audioPath: string) =>
-  json<{ status: string; count: number }>("/api/correct/skip", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ audio_path: audioPath }),
-  });
-
 export const getCorrectManualPrompts = (params: {
   audio_path?: string;
   output_dir?: string;

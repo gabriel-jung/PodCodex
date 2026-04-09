@@ -24,18 +24,64 @@ import { getTranslateManualPrompts, applyTranslateManual } from "@/api/translate
 
 export type StepKey = "transcribe" | "correct" | "translate" | "index";
 
+/** True if the episode still needs work for the given step. */
+export function episodeNeedsStep(ep: Episode, step: StepKey): boolean {
+  switch (step) {
+    case "transcribe": return ep.transcribe_status !== "done";
+    case "correct":    return ep.correct_status !== "done";
+    case "translate":  return ep.translate_status !== "done";
+    case "index":      return !ep.indexed;
+    default:           return true;
+  }
+}
+
 /** Group key for the input source selector. */
-interface SourceGroup {
+interface SourceVariant {
   key: string;
   label: string;
   count: number;
   episodes: Episode[];
 }
 
+interface SourceGroup {
+  key: string;
+  label: string;
+  count: number;
+  episodes: Episode[];
+  variants: SourceVariant[];
+}
+
 interface PromptBatch {
   batch_index: number;
   prompt: string;
   segment_count: number;
+}
+
+/** Which steps are valid inputs for each pipeline step, in priority order. */
+const INPUT_STEPS: Record<StepKey, string[]> = {
+  transcribe: [],
+  correct: ["transcript"],
+  translate: ["corrected", "transcript"],
+  index: ["corrected", "transcript"],
+};
+
+const INPUT_STEP_SETS: Record<StepKey, Set<string>> = Object.fromEntries(
+  Object.entries(INPUT_STEPS).map(([k, v]) => [k, new Set(v)]),
+) as Record<StepKey, Set<string>>;
+
+/** Filter versions to only those valid as input for a given pipeline step. */
+function filterVersionsForStep(versions: VersionEntry[], step: StepKey): VersionEntry[] {
+  const valid = INPUT_STEP_SETS[step];
+  return valid.size > 0 ? versions.filter((v) => valid.has(v.step)) : versions;
+}
+
+/** Find the label for a source key (group or variant). */
+function findSourceLabel(groups: SourceGroup[], key: string): string | undefined {
+  for (const g of groups) {
+    if (g.key === key) return g.label;
+    const v = g.variants.find((v) => v.key === key);
+    if (v) return v.label;
+  }
 }
 
 /** Stable key for an episode across the manual workflow. */
@@ -55,41 +101,68 @@ function isEpDone(
   return pr.length > 0 && pr.every((_, i) => re[i] != null);
 }
 
-/** Build source groups from episodes based on the step's input provenance. */
-function buildSourceGroups(episodes: Episode[], step: StepKey): SourceGroup[] {
+/** Build source groups with variants.
+ *  Top level groups by step (corrected, transcript). Each group has variants
+ *  (e.g. "Manual", "ollama") that users can drill into. */
+function buildSourceGroups(
+  episodes: Episode[],
+  versionsMap: Record<string, VersionEntry[]>,
+  step: StepKey,
+): SourceGroup[] {
   if (step === "transcribe") return [];
+  const stepPriority = INPUT_STEPS[step];
+  if (!stepPriority.length) return [];
 
-  const groups = new Map<string, { label: string; episodes: Episode[] }>();
+  // Two-level: step → variant label → episodes
+  const stepGroups = new Map<string, Map<string, Episode[]>>();
+  const stepEpisodes = new Map<string, Set<string>>(); // dedup per step
 
   for (const ep of episodes) {
-    // Translate uses corrected -> transcript fallback (matching load_best_source)
-    const provMap = ep.provenance as Record<string, Record<string, unknown>> | undefined;
-    const prov = step === "translate"
-      ? provMap?.["corrected"] ?? provMap?.["transcript"]
-      : provMap?.["transcript"];
-    let key: string;
-    let label: string;
+    const versions = filterVersionsForStep(versionsMap[epKey(ep)] || [], step);
+    const seenSteps = new Set<string>();
+    const seenVariants = new Set<string>();
 
-    if (!prov) {
-      key = "unknown";
-      label = "Unknown source";
-    } else {
-      const source = (prov.params as Record<string, unknown>)?.source as string | undefined;
-      const model = prov.model as string | undefined;
-      const baseLabel = SOURCE_LABELS[source || ""] || source || "Unknown";
-      const edited = prov.manual_edit || prov.type === "validated";
-      key = `${edited ? "edited:" : ""}${source || "unknown"}:${model || ""}`;
-      label = [baseLabel, model, edited && "(edited)"].filter(Boolean).join(" ");
+    for (const v of versions) {
+      const s = v.step ?? "unknown";
+      const vLabel = versionLabel(v);
+      const variantKey = `${s}:${vLabel}`;
+
+      // Add to step-level group (dedup per episode)
+      if (!seenSteps.has(s)) {
+        seenSteps.add(s);
+        if (!stepEpisodes.has(s)) stepEpisodes.set(s, new Set());
+        stepEpisodes.get(s)!.add(epKey(ep));
+      }
+
+      // Add to variant (dedup per episode per variant)
+      if (!seenVariants.has(variantKey)) {
+        seenVariants.add(variantKey);
+        if (!stepGroups.has(s)) stepGroups.set(s, new Map());
+        const variants = stepGroups.get(s)!;
+        if (!variants.has(vLabel)) variants.set(vLabel, []);
+        variants.get(vLabel)!.push(ep);
+      }
     }
-
-    const g = groups.get(key);
-    if (g) g.episodes.push(ep);
-    else groups.set(key, { label, episodes: [ep] });
   }
 
-  return Array.from(groups.entries())
-    .map(([key, { label, episodes }]) => ({ key, label, count: episodes.length, episodes }))
-    .sort((a, b) => b.count - a.count);
+  // Build output sorted by step priority
+  const epLookup = new Map(episodes.map((e) => [epKey(e), e]));
+  return stepPriority
+    .filter((s) => stepEpisodes.has(s))
+    .map((s) => {
+      const variantMap = stepGroups.get(s) || new Map();
+      const allEps = Array.from(stepEpisodes.get(s) || []);
+      const variants: SourceVariant[] = Array.from(variantMap.entries())
+        .map(([label, eps]) => ({ key: `${s}:${label}`, label, count: eps.length, episodes: eps }))
+        .sort((a, b) => b.count - a.count);
+      return {
+        key: s,
+        label: stepTag(s),
+        count: allEps.length,
+        episodes: allEps.map((k) => epLookup.get(k)!).filter(Boolean),
+        variants,
+      };
+    });
 }
 
 const STEPS = [
@@ -174,7 +247,6 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
   const setLLMPreset = usePipelineConfigStore((s) => s.setLLMPreset);
   const indexPreset = usePipelineConfigStore((s) => s.indexPreset);
   const setIndexPreset = usePipelineConfigStore((s) => s.setIndexPreset);
-  const isLLMStep = step === "correct" || step === "translate";
   const hasAnySubs = step === "transcribe" && episodes.some((e) => e.has_subtitles);
   const [transcribeSource, setTranscribeSource] = useState<TranscribeSource>(hasAnySubs ? "subtitles" : "audio");
   const [sourceOpen, setSourceOpen] = useState<boolean | null>(null); // null = auto from group count
@@ -221,23 +293,15 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
       default:           return true;
     }
   }), [episodes, step, transcribeSource]);
+  const needsWork = useMemo(() => canRun.filter((e) => episodeNeedsStep(e, step)), [canRun, step]);
+  const needsWorkIds = useMemo(() => new Set(needsWork.map(epKey)), [needsWork]);
   const cantRun = episodes.length - canRun.length;
   const cantRunReason = step === "transcribe" ? "without audio" : "not transcribed";
 
-  // Source groups for the input selector (correct, translate, index)
-  const sourceGroups = useMemo(() => buildSourceGroups(canRun, step), [canRun, step]);
-  const [selectedSource, setSelectedSource] = useState<string | null>(null); // null = all
-  // Auto-expand when multiple source groups, collapse when only one
-  const sourceOpenResolved = sourceOpen ?? sourceGroups.length > 1;
-  const filteredEpisodes = useMemo(() => {
-    if (selectedSource === "custom") return canRun; // custom uses all episodes
-    if (selectedSource) return sourceGroups.find((g) => g.key === selectedSource)?.episodes ?? canRun;
-    return canRun;
-  }, [selectedSource, sourceGroups, canRun]);
-
-  // Fetch all versions per episode when "Custom" is selected
+  // Fetch all versions per episode (for source groups + custom picker)
+  const isLLMStep = step === "correct" || step === "translate";
   const { data: epVersionsMap } = useQuery({
-    queryKey: ["customVersions", step, canRun.map(epKey).join(",")],
+    queryKey: ["epVersions", step, canRun.map(epKey).join(",")],
     queryFn: async () => {
       const map: Record<string, VersionEntry[]> = {};
       await Promise.all(canRun.map(async (ep) => {
@@ -248,9 +312,32 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
       }));
       return map;
     },
-    enabled: selectedSource === "custom",
+    enabled: step !== "transcribe",
     staleTime: 30_000,
   });
+
+  // Source groups for the input selector (correct, translate, index)
+  const sourceGroups = useMemo(
+    () => buildSourceGroups(canRun, epVersionsMap || {}, step),
+    [canRun, epVersionsMap, step],
+  );
+  const [selectedSource, setSelectedSource] = useState<string | null>(null); // null = all
+  const [expandedStep, setExpandedStep] = useState<string | null>(null);
+  // Derive which step is actually expanded (clear stale state if sourceGroups changed)
+  const resolvedExpanded = expandedStep && sourceGroups.some((g) => g.key === expandedStep) ? expandedStep : null;
+  // Auto-expand when multiple source groups, collapse when only one
+  const sourceOpenResolved = sourceOpen ?? sourceGroups.length > 1;
+  const filteredEpisodes = useMemo(() => {
+    if (selectedSource === "custom") return canRun;
+    if (!selectedSource) return canRun;
+    // Check if it's a variant key ("step:label") or step key ("step")
+    for (const g of sourceGroups) {
+      if (g.key === selectedSource) return g.episodes;
+      const v = g.variants.find((v) => v.key === selectedSource);
+      if (v) return v.episodes;
+    }
+    return canRun;
+  }, [selectedSource, sourceGroups, canRun]);
 
   /** Apply manual corrections for a single completed episode, then invalidate queries. */
   const applyEpisode = async (ep: Episode, results: Record<string, Record<number, unknown[]>>, prompts: Record<string, PromptBatch[]>) => {
@@ -417,15 +504,17 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                   {filteredEpisodes.length === 1 ? "Input transcript" : "Input transcripts"}
                   {!sourceOpenResolved && (
                     <span className="font-normal ml-1">
-                      - {Object.keys(customVersions).length > 0 ? "Custom" : selectedSource ? sourceGroups.find((g) => g.key === selectedSource)?.label : "Latest"} ({filteredEpisodes.length})
+                      - {Object.keys(customVersions).length > 0 ? "Custom" : selectedSource
+                        ? (findSourceLabel(sourceGroups, selectedSource) || selectedSource)
+                        : "Latest"} ({filteredEpisodes.length})
                     </span>
                   )}
                 </span>
               </button>
               {sourceOpenResolved && (
-                <div className="space-y-1 pl-4">
+                <div className="space-y-0.5 pl-4">
                   <button
-                    onClick={() => setSelectedSource(null)}
+                    onClick={() => { setSelectedSource(null); setExpandedStep(null); }}
                     title={sourceGroups.map((g) => `${g.label}: ${g.count}`).join("\n")}
                     className={`w-full flex items-center gap-2 text-xs px-2 py-1 rounded transition ${
                       selectedSource === null ? "bg-accent font-medium" : "hover:bg-accent/50"
@@ -434,22 +523,47 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                     <span className="flex-1 text-left">Latest</span>
                     <span className="tabular-nums text-muted-foreground">{canRun.length}</span>
                   </button>
-                  {sourceGroups.map((g) => (
-                    <button
-                      key={g.key}
-                      onClick={() => setSelectedSource(g.key)}
-                      title={g.episodes.map((e) => e.title).join("\n")}
-                      className={`w-full flex items-center gap-2 text-xs px-2 py-1 rounded transition ${
-                        selectedSource === g.key ? "bg-accent font-medium" : "hover:bg-accent/50"
-                      }`}
-                    >
-                      <span className="flex-1 text-left">{g.label}</span>
-                      <span className="tabular-nums text-muted-foreground">{g.count}</span>
-                    </button>
-                  ))}
+                  {sourceGroups.map((g) => {
+                    const isSelected = selectedSource === g.key || g.variants.some((v) => v.key === selectedSource);
+                    const isExpanded = resolvedExpanded === g.key;
+                    const hasVariants = g.variants.length > 1;
+                    return (
+                      <div key={g.key}>
+                        <button
+                          onClick={() => {
+                            setSelectedSource(g.key);
+                            setExpandedStep(hasVariants && !isExpanded ? g.key : null);
+                          }}
+                          title={g.episodes.map((e) => e.title).join("\n")}
+                          className={`w-full flex items-center gap-2 text-xs px-2 py-1 rounded transition ${
+                            isSelected ? "bg-accent font-medium" : "hover:bg-accent/50"
+                          }`}
+                        >
+                          {hasVariants && (
+                            <ChevronDown className={`w-2.5 h-2.5 transition-transform ${isExpanded ? "" : "-rotate-90"}`} />
+                          )}
+                          <span className="flex-1 text-left capitalize">{g.label}</span>
+                          <span className="tabular-nums text-muted-foreground">{g.count}</span>
+                        </button>
+                        {isExpanded && g.variants.map((v) => (
+                          <button
+                            key={v.key}
+                            onClick={() => setSelectedSource(v.key)}
+                            title={v.episodes.map((e) => e.title).join("\n")}
+                            className={`w-full flex items-center gap-2 text-xs px-2 py-1 pl-7 rounded transition ${
+                              selectedSource === v.key ? "bg-accent font-medium" : "hover:bg-accent/50"
+                            }`}
+                          >
+                            <span className="flex-1 text-left">{v.label}</span>
+                            <span className="tabular-nums text-muted-foreground">{v.count}</span>
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })}
                   {isLLMStep && (
                     <button
-                      onClick={() => { setSelectedSource("custom"); setCustomVersions({}); }}
+                      onClick={() => { setSelectedSource("custom"); setCustomVersions({}); setExpandedStep(null); }}
                       className={`w-full flex items-center gap-2 text-xs px-2 py-1 rounded transition ${
                         selectedSource === "custom" ? "bg-accent font-medium" : "hover:bg-accent/50"
                       }`}
@@ -469,9 +583,8 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
               <div className="space-y-1">
                 {canRun.map((ep) => {
                   const ek = epKey(ep);
-                  const versions = epVersionsMap[ek] || [];
+                  const versions = filterVersionsForStep(epVersionsMap[ek] || [], step);
                   const sel = customVersions[ek] || "";
-                  const displayVersion = sel ? versions.find((v) => v.id === sel) : versions[0] ?? null;
                   return (
                     <div key={ek} className="border border-border/50 rounded px-3 py-2 space-y-1.5">
                       <div className="text-sm font-medium truncate" title={ep.title}>{ep.title}</div>
@@ -939,8 +1052,21 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
 
           {/* Non-manual run button */}
           {filteredEpisodes.length > 0 && !(isLLMStep && llm.mode === "manual") && !manualActive && selectedSource !== "custom" && (() => {
+            const pending = filteredEpisodes.filter((e) => needsWorkIds.has(epKey(e)));
             const runWith = (force?: boolean) => {
-              const vids = Object.keys(customVersions).length > 0 ? customVersions : undefined;
+              let vids = Object.keys(customVersions).length > 0 ? customVersions : undefined;
+              if (!vids && selectedSource && epVersionsMap) {
+                const sourceVids: Record<string, string> = {};
+                const isVariant = !sourceGroups.some((g) => g.key === selectedSource);
+                for (const ep of filteredEpisodes) {
+                  const versions = filterVersionsForStep(epVersionsMap[epKey(ep)] || [], step);
+                  const match = isVariant
+                    ? versions.find((v) => `${v.step}:${versionLabel(v)}` === selectedSource)
+                    : versions.find((v) => v.step === selectedSource);
+                  if (match) sourceVids[epKey(ep)] = match.id;
+                }
+                if (Object.keys(sourceVids).length > 0) vids = sourceVids;
+              }
               onRun(
                 selectedSource || transcribeSource === "subtitles" ? filteredEpisodes : undefined,
                 vids,
@@ -953,10 +1079,16 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                 <Button onClick={() => runWith(true)} variant="ghost" size="sm" title="Reprocess all episodes, replacing existing results">
                   Reprocess all
                 </Button>
-                <Button onClick={() => runWith()} size="sm">
-                  <Play className="w-3.5 h-3.5 mr-1" />
-                  {stepInfo.label} {filteredEpisodes.length} episode{filteredEpisodes.length !== 1 ? "s" : ""}
-                </Button>
+                {pending.length > 0 ? (
+                  <Button onClick={() => runWith()} size="sm">
+                    <Play className="w-3.5 h-3.5 mr-1" />
+                    {stepInfo.label} {pending.length} episode{pending.length !== 1 ? "s" : ""}
+                  </Button>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-xs text-success">
+                    <Check className="w-3.5 h-3.5" /> All up to date
+                  </span>
+                )}
               </>
             );
           })()}

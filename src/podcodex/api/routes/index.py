@@ -335,6 +335,8 @@ async def start_index(req: IndexRequest) -> TaskResponse:
         provenance = build_provenance(
             "indexed",
             model=(req_data.model_keys or ["bge-m3"])[0],
+            audio_path=req_data.audio_path,
+            output_dir=req_data.output_dir,
             params={
                 "source": source_label,
                 "model_keys": req_data.model_keys,

@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import type { Episode } from "@/api/types";
-import { CheckCircle, Play, Trash2 } from "lucide-react";
+import { Play, Trash2 } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
 import { StatusChips } from "./StatusChips";
 
@@ -18,10 +18,7 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDelete, i
   const shiftRef = useRef(false);
   return (
     <div className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
-      <div className="flex items-center gap-1.5 shrink-0">
-        <input type="checkbox" checked={selected} onMouseDown={(e) => { shiftRef.current = e.shiftKey; }} onChange={() => onToggle(shiftRef.current)} className="accent-primary cursor-pointer" />
-        {ep.downloaded && <CheckCircle className="w-3.5 h-3.5 text-success" />}
-      </div>
+      <input type="checkbox" checked={selected} onMouseDown={(e) => { shiftRef.current = e.shiftKey; }} onChange={() => onToggle(shiftRef.current)} className="accent-primary cursor-pointer shrink-0" />
       {ep.artwork_url && (
         <img src={ep.artwork_url} alt={ep.title} className="w-8 h-6 object-cover rounded shrink-0" loading="lazy" />
       )}

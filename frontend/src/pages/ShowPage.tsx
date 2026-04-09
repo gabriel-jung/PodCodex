@@ -415,14 +415,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         {view === "list" ? (
           <div className="divide-y divide-border/50">
             {/* Column headers */}
-            <div className="flex items-center gap-3 px-6 py-1.5 text-2xs uppercase tracking-wider text-muted-foreground select-none border-b border-border">
-              <div className="w-10 shrink-0" />
+            <div className="flex items-center gap-3 px-6 py-1.5 text-2xs tracking-wider text-muted-foreground select-none border-b border-border">
+              <div className="w-4 shrink-0" />
               <SortHeader col="number" label="#" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-8 text-right shrink-0" />
               <SortHeader col="title" label="Title" current={sortCol} dir={sortDir} onSort={toggleSort} className="flex-1 min-w-0" />
               <div className="w-16 shrink-0" />
               <SortHeader col="date" label="Date" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-20 text-right shrink-0" />
               <SortHeader col="duration" label="Duration" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-12 text-right shrink-0" />
-              <div className="w-20 shrink-0" />
+              <span className="w-20 text-right shrink-0">Audio</span>
             </div>
             {filtered.map((ep, i) => (
               <EpisodeRow

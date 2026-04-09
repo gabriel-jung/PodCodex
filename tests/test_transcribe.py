@@ -37,6 +37,16 @@ def _write_transcript(path: Path, data) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
+def _save_parquet_version(
+    base: Path, step: str, records: list[dict], **extra_params
+) -> None:
+    """Save a list of dicts as a versioned parquet file (test helper)."""
+    from podcodex.core.versions import save_version
+
+    provenance = {"step": step, "type": "raw", "params": extra_params}
+    save_version(base, step, records, provenance)
+
+
 # ──────────────────────────────────────────────
 # merge_consecutive_segments
 # ──────────────────────────────────────────────
@@ -168,7 +178,6 @@ def test_load_transcript_full_old_format_wraps_with_empty_meta():
 
 def test_export_transcript_meta(tmp_path):
     """export_transcript writes correct meta derived from segments."""
-    import pandas as pd
     from podcodex.core.transcribe import export_transcript, save_speaker_map
 
     audio = tmp_path / "ep.mp3"
@@ -185,9 +194,8 @@ def test_export_transcript_meta(tmp_path):
     ]
     ep_dir = tmp_path / "ep"
     ep_dir.mkdir()
-    pd.DataFrame(diarized).to_parquet(
-        ep_dir / "ep.diarized_segments.parquet", index=False
-    )
+    base = ep_dir / "ep"
+    _save_parquet_version(base, "diarized_segments", diarized)
     save_speaker_map(audio, {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"})
 
     segments = export_transcript(audio, show="My Show", episode="Episode 1")
@@ -206,16 +214,14 @@ def test_export_transcript_meta(tmp_path):
 
 
 def test_export_transcript_defaults_empty_show_episode(tmp_path):
-    import pandas as pd
     from podcodex.core.transcribe import export_transcript, save_speaker_map
 
     audio = tmp_path / "ep.mp3"
     diarized = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_00", "text": "Hello"}]
     ep_dir = tmp_path / "ep"
     ep_dir.mkdir()
-    pd.DataFrame(diarized).to_parquet(
-        ep_dir / "ep.diarized_segments.parquet", index=False
-    )
+    base = ep_dir / "ep"
+    _save_parquet_version(base, "diarized_segments", diarized)
     save_speaker_map(audio, {"SPEAKER_00": "Alice"})
 
     export_transcript(audio)
@@ -232,7 +238,6 @@ def test_export_transcript_defaults_empty_show_episode(tmp_path):
 
 def test_export_transcript_no_diarization(tmp_path):
     """export_transcript(diarized=False) reads raw segments, assigns Narrator."""
-    import pandas as pd
     from podcodex.core._utils import NARRATOR_SPEAKER
     from podcodex.core.transcribe import export_transcript
 
@@ -243,10 +248,8 @@ def test_export_transcript_no_diarization(tmp_path):
     ]
     ep_dir = tmp_path / "ep"
     ep_dir.mkdir()
-    pd.DataFrame(raw_segs).to_parquet(ep_dir / "ep.segments.parquet", index=False)
-    (ep_dir / "ep.segments.meta.json").write_text(
-        json.dumps({"language": "en", "duration": 12.0, "num_segments": 2})
-    )
+    base = ep_dir / "ep"
+    _save_parquet_version(base, "segments", raw_segs, language="en", duration=12.0)
 
     segments = export_transcript(audio, diarized=False, show="S", episode="E")
 
@@ -267,7 +270,6 @@ def test_export_transcript_no_diarization(tmp_path):
 
 def test_export_transcript_diarized_has_diarized_true(tmp_path):
     """export_transcript(diarized=True) includes diarized=True in meta."""
-    import pandas as pd
     from podcodex.core.transcribe import export_transcript, save_speaker_map
 
     audio = tmp_path / "ep.mp3"
@@ -276,9 +278,8 @@ def test_export_transcript_diarized_has_diarized_true(tmp_path):
     ]
     ep_dir = tmp_path / "ep"
     ep_dir.mkdir()
-    pd.DataFrame(diarized).to_parquet(
-        ep_dir / "ep.diarized_segments.parquet", index=False
-    )
+    base = ep_dir / "ep"
+    _save_parquet_version(base, "diarized_segments", diarized)
     save_speaker_map(audio, {"SPEAKER_00": "Alice"})
 
     export_transcript(audio)
@@ -318,7 +319,6 @@ def test_is_segment_flagged_undiarized():
 
 def test_export_transcript_clean_removes_flagged(tmp_path):
     """export_transcript(clean=True) removes unknown speakers and low-density segments."""
-    import pandas as pd
     from podcodex.core.transcribe import export_transcript, save_speaker_map
 
     audio = tmp_path / "ep.mp3"
@@ -344,9 +344,8 @@ def test_export_transcript_clean_removes_flagged(tmp_path):
     ]
     ep_dir = tmp_path / "ep"
     ep_dir.mkdir()
-    pd.DataFrame(diarized).to_parquet(
-        ep_dir / "ep.diarized_segments.parquet", index=False
-    )
+    base = ep_dir / "ep"
+    _save_parquet_version(base, "diarized_segments", diarized)
     save_speaker_map(audio, {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"})
 
     segments = export_transcript(audio, clean=True)
@@ -357,7 +356,6 @@ def test_export_transcript_clean_removes_flagged(tmp_path):
 
 def test_export_transcript_no_clean_preserves_all(tmp_path):
     """export_transcript(clean=False) preserves all segments including flagged ones."""
-    import pandas as pd
     from podcodex.core.transcribe import export_transcript, save_speaker_map
 
     audio = tmp_path / "ep.mp3"
@@ -383,9 +381,8 @@ def test_export_transcript_no_clean_preserves_all(tmp_path):
     ]
     ep_dir = tmp_path / "ep"
     ep_dir.mkdir()
-    pd.DataFrame(diarized).to_parquet(
-        ep_dir / "ep.diarized_segments.parquet", index=False
-    )
+    base = ep_dir / "ep"
+    _save_parquet_version(base, "diarized_segments", diarized)
     save_speaker_map(audio, {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"})
 
     segments = export_transcript(audio, clean=False)
@@ -398,7 +395,6 @@ def test_export_transcript_clean_nodiarize_only_density(tmp_path):
     With diarize=False all segments share the Narrator speaker and get merged,
     so we need a >10s gap to prevent merging and test density filtering.
     """
-    import pandas as pd
     from podcodex.core.transcribe import export_transcript
 
     audio = tmp_path / "ep.mp3"
@@ -409,10 +405,8 @@ def test_export_transcript_clean_nodiarize_only_density(tmp_path):
     ]
     ep_dir = tmp_path / "ep"
     ep_dir.mkdir()
-    pd.DataFrame(raw_segs).to_parquet(ep_dir / "ep.segments.parquet", index=False)
-    (ep_dir / "ep.segments.meta.json").write_text(
-        json.dumps({"language": "en", "duration": 55.0, "num_segments": 2})
-    )
+    base = ep_dir / "ep"
+    _save_parquet_version(base, "segments", raw_segs, language="en", duration=55.0)
 
     segments = export_transcript(audio, diarized=False, clean=True)
     # Low-density segment removed; good segment + BREAK remain
@@ -427,6 +421,4 @@ def test_audio_paths_naming():
     p = AudioPaths(audio_path=Path("/tmp/ep.mp3"), base=Path("/tmp/ep/ep"))
     assert p.transcript_raw.name == "ep.transcript.raw.json"
     assert p.transcript.name == "ep.transcript.json"
-    assert p.segments.name == "ep.segments.parquet"
-    assert p.diarized_segments.name == "ep.diarized_segments.parquet"
     assert p.speaker_map.name == "ep.speaker_map.json"

@@ -1,18 +1,17 @@
 """
 podcodex.core.transcribe — Transcription/diarization pipeline using WhisperX.
 
-All functions are idempotent: if output files already exist, they are reloaded
-without recomputing (unless force=True).
+All functions are idempotent: if matching versions already exist, they are
+reloaded without recomputing (unless force=True).
 
-Files produced alongside the MP3:
-    {stem}.segments.parquet          — raw whisperx segments
-    {stem}.segments.meta.json        — language, duration, etc.
-    {stem}.diarization.parquet       — raw speaker timeline
-    {stem}.diarization.meta.json     — num speakers, etc.
-    {stem}.diarized_segments.parquet — segments with SPEAKER_XX assigned
-    {stem}.speaker_map.json          — {SPEAKER_00: "Claude", ...}  (filled by UI)
-    transcript/{id}.json              — versioned transcript segments
-    {stem}.transcript.json           — legacy validated transcript (read-only fallback)
+Versioned outputs (all tracked in pipeline.db)::
+
+    transcript/
+      {id}.json                        — final transcript segments
+      segments/{id}.parquet            — raw WhisperX segments
+      diarization/{id}.parquet         — pyannote speaker timeline
+      diarized_segments/{id}.parquet   — segments with SPEAKER_XX assigned
+    {stem}.speaker_map.json            — {SPEAKER_00: "Claude", ...} (filled by UI)
 """
 
 import os
@@ -29,12 +28,16 @@ from podcodex.core._utils import (
     AudioPaths,
     free_vram,
     read_json,
-    read_parquet,
     write_json,
-    write_parquet,
 )
 from podcodex.core.pipeline_db import mark_step
-from podcodex.core.versions import _get_db, has_version, load_latest, save_version
+from podcodex.core.versions import (
+    get_latest_provenance,
+    has_matching_version,
+    has_version,
+    load_latest,
+    save_version,
+)
 
 # Suppress known harmless warnings from third-party libraries
 warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
@@ -49,8 +52,7 @@ def processing_status(
 ) -> dict[str, bool]:
     """Return the processing state of an audio file.
 
-    Checks for the existence of each pipeline artifact (parquet, meta JSON,
-    speaker map, transcript) to determine which steps have been completed.
+    Checks the version DB for each pipeline sub-step.
 
     Args:
         audio_path: Source audio file.
@@ -63,9 +65,9 @@ def processing_status(
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     return {
-        "transcribed": p.segments.exists() and p.segments_meta.exists(),
-        "diarized": p.diarization.exists() and p.diarization_meta.exists(),
-        "assigned": p.diarized_segments.exists(),
+        "transcribed": has_version(p.base, "segments"),
+        "diarized": has_version(p.base, "diarization"),
+        "assigned": has_version(p.base, "diarized_segments"),
         "mapped": p.speaker_map.exists(),
         "exported": has_version(p.base, "transcript"),
     }
@@ -127,8 +129,11 @@ def transcribe_file(
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    if not force and p.segments.exists() and p.segments_meta.exists():
-        logger.info(f"[SKIP] Transcription already exists: {p.segments.name}")
+    match_params = {"model": model_size}
+    if language:
+        match_params["language"] = language
+    if not force and has_matching_version(p.base, "segments", match_params):
+        logger.info("[SKIP] Matching segments version already exists")
         return load_segments(audio_path, output_dir=output_dir)
 
     dev, ctype = get_device()
@@ -167,15 +172,41 @@ def transcribe_file(
         "num_segments": len(segments),
     }
 
-    write_parquet(p.segments, segments)
-    write_json(p.segments_meta, meta)
+    provenance = {
+        "step": "segments",
+        "type": "raw",
+        "model": model_size,
+        "params": {
+            "language": detected_lang,
+            "batch_size": batch_size,
+            "duration": duration,
+        },
+    }
+    save_version(p.base, "segments", segments, provenance)
 
-    logger.success(f"Transcription done — {len(segments)} segments → {p.segments.name}")
+    logger.success(f"Transcription done — {len(segments)} segments")
     return {"segments": segments, **meta}
 
 
+def _load_versioned(
+    audio_path: Path | str, step: str, output_dir: str | Path | None = None
+) -> tuple[list, dict]:
+    """Load latest versioned data and its provenance params.
+
+    Returns:
+        (data, params) tuple where data is the loaded segments/speakers list
+        and params is the provenance params dict.
+    """
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    data = load_latest(p.base, step)
+    if data is None:
+        raise FileNotFoundError(f"No {step} version found")
+    prov = get_latest_provenance(p.base, step) or {}
+    return data, prov.get("params", {})
+
+
 def load_segments(audio_path: Path | str, output_dir: str | Path | None = None) -> dict:
-    """Load raw WhisperX segments from parquet + meta.json.
+    """Load raw WhisperX segments from the version DB.
 
     Args:
         audio_path: Source audio file.
@@ -186,10 +217,13 @@ def load_segments(audio_path: Path | str, output_dir: str | Path | None = None) 
         Dict with keys ``segments``, ``language``, ``duration``,
         ``num_segments``.
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    segments = read_parquet(p.segments)
-    meta = read_json(p.segments_meta)
-    return {"segments": segments, **meta}
+    segments, params = _load_versioned(audio_path, "segments", output_dir)
+    return {
+        "segments": segments,
+        "language": params.get("language", ""),
+        "duration": params.get("duration", 0.0),
+        "num_segments": len(segments),
+    }
 
 
 # ──────────────────────────────────────────────
@@ -228,8 +262,8 @@ def diarize_file(
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    if not force and p.diarization.exists() and p.diarization_meta.exists():
-        logger.info(f"[SKIP] Diarization already exists: {p.diarization.name}")
+    if not force and has_version(p.base, "diarization"):
+        logger.info("[SKIP] Diarization version already exists")
         return load_diarization(audio_path, output_dir=output_dir)
 
     token = hf_token or os.environ.get("HF_TOKEN")
@@ -272,17 +306,24 @@ def diarize_file(
     unique = sorted({s["speaker"] for s in speakers})
     meta = {"num_speakers": len(unique), "speakers_found": unique}
 
-    write_parquet(p.diarization, speakers)
-    write_json(p.diarization_meta, meta)
+    provenance = {
+        "step": "diarization",
+        "type": "raw",
+        "params": {
+            "num_speakers": num_speakers,
+            "speakers_found": unique,
+        },
+    }
+    save_version(p.base, "diarization", speakers, provenance)
 
-    logger.success(f"Diarization done — {len(unique)} speakers → {p.diarization.name}")
+    logger.success(f"Diarization done — {len(unique)} speakers")
     return {"speakers": speakers, **meta}
 
 
 def load_diarization(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> dict:
-    """Load diarization from parquet + meta.json.
+    """Load diarization from the version DB.
 
     Args:
         audio_path: Source audio file.
@@ -293,10 +334,16 @@ def load_diarization(
         Dict with keys ``speakers`` (list of {start, end, speaker} dicts)
         and ``num_speakers``.
     """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    speakers = read_parquet(p.diarization)
-    meta = read_json(p.diarization_meta)
-    return {"speakers": speakers, **meta}
+    speakers, params = _load_versioned(audio_path, "diarization", output_dir)
+    return {
+        "speakers": speakers,
+        "num_speakers": params.get(
+            "num_speakers", len({s.get("speaker") for s in speakers})
+        ),
+        "speakers_found": params.get(
+            "speakers_found", sorted({s.get("speaker", "") for s in speakers})
+        ),
+    }
 
 
 # ──────────────────────────────────────────────
@@ -327,8 +374,8 @@ def assign_speakers(
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    if not force and p.diarized_segments.exists():
-        logger.info(f"[SKIP] Assignment already exists: {p.diarized_segments.name}")
+    if not force and has_version(p.base, "diarized_segments"):
+        logger.info("[SKIP] Diarized segments version already exists")
         return load_diarized_segments(audio_path, output_dir=output_dir)
 
     def _has_timestamps(d: dict) -> bool:
@@ -347,17 +394,19 @@ def assign_speakers(
     result = whisperx.assign_word_speakers(df_diarize, {"segments": filtered})
     segments = result["segments"]
 
-    write_parquet(p.diarized_segments, segments)
-    logger.success(
-        f"Assignment done — {len(segments)} segments → {p.diarized_segments.name}"
-    )
+    provenance = {
+        "step": "diarized_segments",
+        "type": "raw",
+    }
+    save_version(p.base, "diarized_segments", segments, provenance)
+    logger.success(f"Assignment done — {len(segments)} segments")
     return segments
 
 
 def load_diarized_segments(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> list[dict]:
-    """Load diarized segments from parquet.
+    """Load diarized segments from the version DB.
 
     Args:
         audio_path: Source audio file.
@@ -368,7 +417,10 @@ def load_diarized_segments(
         List of segment dicts with ``speaker`` key assigned.
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    return read_parquet(p.diarized_segments)
+    segments = load_latest(p.base, "diarized_segments")
+    if segments is None:
+        raise FileNotFoundError("No diarized_segments version found")
+    return segments
 
 
 # ──────────────────────────────────────────────
@@ -485,31 +537,47 @@ def export_transcript(
         }
         for seg in segments
     ]
-    if clean:
-        resolved = clean_transcript(resolved, remove_unknown_speakers=diarized)
 
-    meta = {
-        "show": show,
-        "episode": episode,
-        "diarized": diarized,
-        "speakers": sorted({seg["speaker"] for seg in resolved}),
-        "duration": round(max((seg["end"] for seg in resolved), default=0.0), 3),
-        "word_count": sum(len(seg["text"].split()) for seg in resolved),
-    }
+    def _build_meta(segs):
+        return {
+            "show": show,
+            "episode": episode,
+            "diarized": diarized,
+            "speakers": sorted({s["speaker"] for s in segs}),
+            "duration": round(max((s["end"] for s in segs), default=0.0), 3),
+            "word_count": sum(len(s["text"].split()) for s in segs),
+        }
 
+    def _make_prov(
+        meta: dict, *, ptype: str = "raw", extra_params: dict | None = None
+    ) -> dict:
+        base_params = (provenance or {}).get("params", {})
+        return {
+            **(provenance or {"step": "transcript"}),
+            "type": ptype,
+            "params": {**base_params, **(extra_params or {}), "meta": meta},
+        }
+
+    # Always save raw transcript
+    raw_prov = _make_prov(_build_meta(resolved))
+    save_version(p.base, "transcript", resolved, raw_prov)
     logger.success(f"Export done — {len(resolved)} segments")
 
-    # Ensure provenance exists so version is always saved
-    if not provenance:
-        provenance = {"step": "transcript"}
-    provenance = {
-        **provenance,
-        "type": "edited" if clean else provenance.get("type", "raw"),
-        "params": {**provenance.get("params", {}), "meta": meta},
-    }
-    save_version(p.base, "transcript", resolved, provenance)
+    # If clean, also save a filtered version
+    if clean:
+        resolved = clean_transcript(resolved, remove_unknown_speakers=diarized)
+        save_version(
+            p.base,
+            "transcript",
+            resolved,
+            _make_prov(
+                _build_meta(resolved), ptype="edited", extra_params={"clean": True}
+            ),
+        )
+        logger.success(f"Clean export — {len(resolved)} segments (filtered)")
+
     mark_step(
-        p.show_dir, p.base.name, transcribed=True, provenance={"transcript": provenance}
+        p.show_dir, p.base.name, transcribed=True, provenance={"transcript": raw_prov}
     )
     return resolved
 
@@ -544,13 +612,8 @@ def load_transcript_full(
     # Try version DB
     segments = load_latest(p.base, "transcript")
     if segments is not None:
-        # Reconstruct meta from version params or compute from segments
-        try:
-            db = _get_db(p.base)
-            ver = db.get_latest_version(p.base.name, "transcript")
-            meta = ver["params"].get("meta", {}) if ver else {}
-        except Exception:
-            meta = {}
+        prov = get_latest_provenance(p.base, "transcript") or {}
+        meta = prov.get("params", {}).get("meta", {})
         return {"meta": meta, "segments": segments}
     # Legacy fallback
     return _load_transcript_file(p.transcript_best)

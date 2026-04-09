@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
 
 from podcodex.api.routes._helpers import (
     ApplyManualRequest,
@@ -53,7 +52,13 @@ async def save_corrected_segments(
     from podcodex.core.correct import save_corrected
 
     seg_dicts = [s.model_dump() for s in segments]
-    provenance = build_provenance("corrected", ptype="validated", manual_edit=True)
+    provenance = build_provenance(
+        "corrected",
+        ptype="validated",
+        manual_edit=True,
+        audio_path=audio_path,
+        output_dir=output_dir,
+    )
     save_corrected(audio_path, seg_dicts, output_dir=output_dir, provenance=provenance)
     return {"status": "saved", "count": len(seg_dicts)}
 
@@ -122,34 +127,6 @@ async def start_correct(req: LLMRequest) -> TaskResponse:
     return submit_task("correct", req.audio_path, run_correct, req)
 
 
-# ── Skip correct ─────────────────────────────────────────
-
-
-class SkipRequest(BaseModel):
-    audio_path: str
-    output_dir: str | None = None
-
-
-@router.post("/skip")
-async def skip_correct(req: SkipRequest) -> dict:
-    """Copy transcript segments directly to corrected output (skip LLM)."""
-    from podcodex.core.correct import save_corrected
-    from podcodex.core.transcribe import load_transcript
-
-    segments = load_transcript(req.audio_path, output_dir=req.output_dir)
-    if not segments:
-        raise HTTPException(404, "No transcript found to copy")
-
-    provenance = build_provenance("corrected", params={"skipped": True})
-    save_corrected(
-        req.audio_path,
-        segments,
-        output_dir=req.output_dir,
-        provenance=provenance,
-    )
-    return {"status": "saved", "count": len(segments)}
-
-
 # ── Manual mode ──────────────────────────────────────────
 
 
@@ -202,6 +179,8 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
         "corrected",
         params=llm_prov_params("manual"),
         manual_edit=True,
+        audio_path=req.audio_path,
+        output_dir=req.output_dir,
     )
     save_corrected(
         req.audio_path,

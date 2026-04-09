@@ -1,19 +1,16 @@
 import { useState } from "react";
 import type { Episode } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, Zap } from "lucide-react";
-import StepConfigEditor, { STEPS, type StepKey, type TranscribeSource } from "./StepConfigEditor";
+import { Check, ChevronDown, Zap } from "lucide-react";
+import StepConfigEditor, { STEPS, type StepKey, type TranscribeSource, episodeNeedsStep } from "./StepConfigEditor";
 
 /** Count episodes that need this step (prerequisites met + not already up-to-date). */
 function countCanRun(episodes: Episode[], step: StepKey): number {
   return episodes.filter((e) => {
-    switch (step) {
-      case "transcribe": return (!!e.audio_path && e.transcribe_status !== "done") || !!e.has_subtitles;
-      case "correct":    return !!e.transcribed && e.correct_status !== "done";
-      case "translate":  return !!e.transcribed && e.translate_status !== "done";
-      case "index":      return !!e.transcribed && !e.indexed;
-      default:           return true;
-    }
+    const hasPrereq = step === "transcribe"
+      ? (!!e.audio_path || !!e.has_subtitles)
+      : !!e.transcribed;
+    return hasPrereq && episodeNeedsStep(e, step);
   }).length;
 }
 
@@ -63,13 +60,14 @@ export default function PipelineButtons({
                   <button
                     key={key}
                     onClick={() => handleClick(key)}
-                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs transition ${
-                      count > 0 ? "hover:bg-accent" : "text-muted-foreground"
-                    }`}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition hover:bg-accent"
                   >
                     <Icon className="w-3 h-3" />
                     <span className="flex-1 text-left">{label}</span>
-                    <span className="tabular-nums">{count}</span>
+                    {count > 0
+                      ? <span className="tabular-nums">{count}</span>
+                      : <Check className="w-3 h-3 text-success" />
+                    }
                   </button>
                 );
               })}

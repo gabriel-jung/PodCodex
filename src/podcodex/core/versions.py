@@ -2,7 +2,7 @@
 podcodex.core.versions -- Generation versioning for pipeline outputs.
 
 Every pipeline save (transcribe, correct, translate, manual edit) creates
-a new version.  Segment data is stored as JSON files in per-step
+a new version.  Data is stored as JSON or parquet files in per-step
 subdirectories; metadata (index) lives in the ``versions`` table of
 the show-level ``pipeline.db``.  The DB is the source of truth for
 lookups — there is no filesystem fallback.
@@ -11,8 +11,13 @@ Storage layout per episode::
 
     episode/
       transcript/
-        20260401T103000Z_raw.json
-        20260401T120000Z_validated.json
+        20260401T103000Z_raw.json         # final transcript
+        segments/
+          20260401T102000Z_raw.parquet    # WhisperX raw output
+        diarization/
+          20260401T102500Z_raw.parquet    # pyannote speaker timeline
+        diarized_segments/
+          20260401T102800Z_raw.parquet    # segments with speakers assigned
       corrected/
         ...
       english/
@@ -31,6 +36,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from loguru import logger
+
+# Steps that store data as parquet files (transcription intermediates).
+# These are nested under transcript/ on disk.
+PARQUET_STEPS = frozenset({"segments", "diarization", "diarized_segments"})
 
 
 # ------------------------------------------------------------------
@@ -73,13 +82,21 @@ def versions_dir(base: Path) -> Path:
 
 
 def _step_dir(base: Path, step: str) -> Path:
-    """Return the directory holding segment files for a step."""
-    return versions_dir(base) / step
+    """Return the directory holding version files for a step.
+
+    Parquet steps (segments, diarization, diarized_segments) are nested
+    under ``transcript/`` since they are sub-steps of transcription.
+    """
+    root = versions_dir(base)
+    if step in PARQUET_STEPS:
+        return root / "transcript" / step
+    return root / step
 
 
 def _version_path(base: Path, step: str, version_id: str) -> Path:
-    """Return the path to a version's segment JSON file."""
-    return _step_dir(base, step) / f"{version_id}.json"
+    """Return the path to a version file (.json or .parquet)."""
+    ext = ".parquet" if step in PARQUET_STEPS else ".json"
+    return _step_dir(base, step) / f"{version_id}{ext}"
 
 
 def _get_db(base: Path):
@@ -211,13 +228,18 @@ def save_version(
         segment_count=len(segments),
     )
 
-    # Write segment JSON file
+    # Write version file (parquet for intermediates, JSON for final outputs)
     sdir = _step_dir(base, step)
     sdir.mkdir(parents=True, exist_ok=True)
-    seg_path = sdir / f"{version_id}.json"
-    seg_path.write_text(
-        json.dumps(segments, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    if step in PARQUET_STEPS:
+        from podcodex.core._utils import write_parquet
+
+        write_parquet(sdir / f"{version_id}.parquet", segments)
+    else:
+        seg_path = sdir / f"{version_id}.json"
+        seg_path.write_text(
+            json.dumps(segments, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     # Insert metadata into DB
     db = _get_db(base)
@@ -241,6 +263,10 @@ def load_version(base: Path, step: str, version_id: str) -> list[dict]:
     seg_path = _version_path(base, step, version_id)
     if not seg_path.exists():
         raise FileNotFoundError(f"Version {version_id} not found for step '{step}'")
+    if step in PARQUET_STEPS:
+        from podcodex.core._utils import read_parquet
+
+        return read_parquet(seg_path)
     return json.loads(seg_path.read_text(encoding="utf-8"))
 
 
@@ -381,15 +407,13 @@ def prune_versions(base: Path, step: str, keep: int) -> int:
     ids = [v["id"] for v in to_remove]
 
     # Delete files
-    sdir = _step_dir(base, step)
     for vid in ids:
-        seg_path = sdir / f"{vid}.json"
+        seg_path = _version_path(base, step, vid)
         if seg_path.exists():
             seg_path.unlink()
 
     # Delete from DB
     try:
-        db = _get_db(base)
         db.delete_versions(base.name, step, ids)
     except Exception:
         logger.opt(exception=True).warning("Failed to prune versions from DB")

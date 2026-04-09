@@ -56,7 +56,13 @@ async def save_translated_segments(
 
     lang_norm = normalize_lang(lang)
     seg_dicts = [s.model_dump() for s in segments]
-    provenance = build_provenance(lang_norm, ptype="validated", manual_edit=True)
+    provenance = build_provenance(
+        lang_norm,
+        ptype="validated",
+        manual_edit=True,
+        audio_path=audio_path,
+        output_dir=output_dir,
+    )
     save_translation(
         audio_path, seg_dicts, lang, output_dir=output_dir, provenance=provenance
     )
@@ -186,6 +192,8 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
         lang_norm,
         params=llm_prov_params("manual"),
         manual_edit=True,
+        audio_path=req.audio_path,
+        output_dir=req.output_dir,
     )
     save_translation_raw(
         req.audio_path,
