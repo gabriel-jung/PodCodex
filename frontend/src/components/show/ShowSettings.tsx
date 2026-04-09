@@ -10,7 +10,7 @@ import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { errorMessage } from "@/lib/utils";
 import SectionHeader from "@/components/common/SectionHeader";
-import FolderPicker from "@/components/common/FolderPicker";
+import FolderLocationFields from "@/components/common/FolderLocationFields";
 import PipelineSettings from "./PipelineSettings";
 import { FolderOpen, Trash2 } from "lucide-react";
 
@@ -38,10 +38,12 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
 
   // ── Move folder ──
   const folderBasename = folder.split("/").filter(Boolean).pop() || folder;
-  const folderParent = folder.slice(0, folder.length - folderBasename.length).replace(/\/+$/, "") || "/";
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const folderParentDefault = folder.slice(0, folder.length - folderBasename.length).replace(/\/+$/, "") || "/";
   const moveFilesRef = useRef(true);
   const [folderName, setFolderName] = useState(folderBasename);
+  const [parentPath, setParentPath] = useState(folderParentDefault);
+  const destPath = `${parentPath.replace(/\/+$/, "")}/${folderName}`;
+  const hasChanges = destPath !== folder;
 
   useEffect(() => {
     setName(meta.name);
@@ -103,7 +105,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   useEffect(() => {
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [name, language, rssUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeLlmMode, pipeLlmProvider, pipeLlmModel, pipeTargetLang]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [name, language, rssUrl, youtubeUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeLlmMode, pipeLlmProvider, pipeLlmModel, pipeTargetLang]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const moveMutation = useMutation({
     mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
@@ -145,13 +147,12 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     });
   };
 
-  const handlePickedFolder = (parentPath: string) => {
-    const dest = `${parentPath.replace(/\/+$/, "")}/${folderName}`;
-    if (dest === folder) return;
+  const handleMove = () => {
+    if (!hasChanges) return;
     moveFilesRef.current = true;
     confirmDialog.open({
       title: "Move show folder?",
-      description: `${folder}  →  ${dest}`,
+      description: `${folder}  →  ${destPath}`,
       content: (
         <label className="flex items-center gap-2 text-sm cursor-pointer">
           <input
@@ -165,7 +166,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       ),
       confirmLabel: "Move",
       variant: "destructive",
-      onConfirm: () => moveMutation.mutate({ newPath: dest, moveFiles: moveFilesRef.current }),
+      onConfirm: () => moveMutation.mutate({ newPath: destPath, moveFiles: moveFilesRef.current }),
     });
   };
 
@@ -190,11 +191,9 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         <SettingRow label="RSS URL" help="The podcast's RSS feed URL.">
           <input value={rssUrl} onChange={(e) => setRssUrl(e.target.value)} placeholder="https://..." className="input py-1 text-sm w-64" />
         </SettingRow>
-        {youtubeUrl && (
-          <SettingRow label="YouTube URL" help="YouTube channel or playlist URL.">
-            <input value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)} placeholder="https://youtube.com/..." className="input py-1 text-sm w-64" />
-          </SettingRow>
-        )}
+        <SettingRow label="YouTube URL" help="YouTube channel or playlist URL.">
+          <input value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)} placeholder="https://youtube.com/..." className="input py-1 text-sm w-64" />
+        </SettingRow>
         <SettingRow label="Artwork" help="URL to the podcast cover image.">
           <div className="flex items-center gap-2">
             <input value={artworkUrl} onChange={(e) => setArtworkUrl(e.target.value)} placeholder="https://..." className="input py-1 text-sm w-48" />
@@ -216,20 +215,16 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
 
       {/* ── Folder Location ── */}
       <SettingSection title="Folder" description="Location of show files on disk.">
-        <SettingRow label="Current path">
-          <span className="text-xs text-muted-foreground font-mono truncate max-w-xs" title={folder}>{folder}</span>
-        </SettingRow>
-        <SettingRow label="Folder name" help="Rename the show folder (applied on move).">
-          <input
-            value={folderName}
-            onChange={(e) => setFolderName(e.target.value)}
-            className="input py-1 text-sm w-48 font-mono"
-          />
-        </SettingRow>
+        <FolderLocationFields
+          folderName={folderName}
+          onFolderNameChange={setFolderName}
+          parentPath={parentPath}
+          onParentPathChange={setParentPath}
+        />
         <div className="flex items-center gap-3">
           <Button
-            onClick={() => setPickerOpen(true)}
-            disabled={moveMutation.isPending || !folderName.trim()}
+            onClick={handleMove}
+            disabled={moveMutation.isPending || !folderName.trim() || !hasChanges}
             variant="outline"
             size="sm"
             className="gap-1.5"
@@ -242,15 +237,6 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
           )}
         </div>
       </SettingSection>
-
-      <FolderPicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        onSelect={handlePickedFolder}
-        initialPath={folderParent}
-        title={`Move "${folderName}" to...`}
-        description="Select the parent directory"
-      />
 
       {/* ── Episode Filters ── */}
       <SettingSection title="Episode Filters" description="Filter which episodes are shown in the list.">

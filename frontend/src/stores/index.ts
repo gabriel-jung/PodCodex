@@ -6,4 +6,4 @@ export { useSearchStore } from "./searchStore";
 export { usePipelineConfigStore } from "./pipelineConfigStore";
 export type { TranscribeConfig } from "./pipelineConfigStore";
 export { useTaskStore } from "./taskStore";
-export { useLayoutStore } from "./layoutStore";
+export { useLayoutStore, type ShowGroupBy } from "./layoutStore";

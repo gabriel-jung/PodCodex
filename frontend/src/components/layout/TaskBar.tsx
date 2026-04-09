@@ -45,7 +45,7 @@ function DownloadStrip() {
 
   // Derive per-status counts from result (array of {stem, status} or {results: [...]})
   const rawResult = isFinished ? progress?.result : null;
-  const results = (Array.isArray(rawResult) ? rawResult : Array.isArray(rawResult?.results) ? rawResult.results : []) as { stem: string; title?: string; status: string }[];
+  const results = (Array.isArray(rawResult) ? rawResult : Array.isArray(rawResult?.results) ? rawResult.results : []) as { stem: string; title?: string; status: string; error?: string }[];
   const total = results.length || 1;
   const failedCount = results.filter(r => r.status === "failed" || r.status === "no_subtitles" || r.status === "error").length;
   const successCount = results.filter(r => r.status === "downloaded" || r.status === "exists" || r.status === "imported").length;
@@ -67,13 +67,13 @@ function DownloadStrip() {
     if (!isFinished) didInvalidateRef.current = false;
   }, [isFinished, downloadFolder, queryClient]);
 
-  // Auto-dismiss clean completions
+  // Auto-dismiss clean completions (no failures: 2s, with failures: 30s)
   useEffect(() => {
-    if (isFinished && isDone && !hasFailures) {
-      const t = setTimeout(dismiss, 2000);
-      return () => clearTimeout(t);
-    }
-  }, [isFinished, isDone, hasFailures]);
+    if (!isFinished) return;
+    const delay = hasFailures ? 30_000 : 2_000;
+    const t = setTimeout(dismiss, delay);
+    return () => clearTimeout(t);
+  }, [isFinished, hasFailures]);
 
   const failedResults = results.filter(r => r.status === "failed" || r.status === "no_subtitles" || r.status === "error");
   const [showFailed, setShowFailed] = useState(false);
@@ -142,7 +142,7 @@ function DownloadStrip() {
             <div key={i} className="flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
               <AlertTriangle className="w-3 h-3 text-destructive shrink-0" />
               <span className="truncate">{r.title || r.stem}</span>
-              <span className="text-2xs text-muted-foreground/60 shrink-0">{r.status === "no_subtitles" ? "no subs" : r.status}</span>
+              <span className="text-2xs text-muted-foreground/60 shrink-0">{r.error || (r.status === "no_subtitles" ? "no subs" : r.status)}</span>
             </div>
           ))}
         </div>
@@ -290,6 +290,13 @@ function BatchStrip() {
       dismiss();
     }
   };
+
+  // Auto-dismiss after completion (30s to give time to review)
+  useEffect(() => {
+    if (!isFinished) return;
+    const t = setTimeout(dismiss, 30_000);
+    return () => clearTimeout(t);
+  }, [isFinished, batchFolder]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const episodeStatuses = deriveEpisodeStatuses(batchEpisodeNames, progress);
   const stepLabel = batchStep ? batchStep.charAt(0).toUpperCase() + batchStep.slice(1) : "Batch";

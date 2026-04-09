@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   getConfig,
   listShows,
@@ -10,18 +10,19 @@ import {
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
 import { timeAgo } from "@/lib/utils";
-import { useLayoutStore } from "@/stores";
+import { useLayoutStore, type ShowGroupBy } from "@/stores";
+import type { ShowSummary } from "@/api/generated-types";
 import ShowCard from "@/components/show/ShowCard";
 import ShowListRow from "@/components/show/ShowListRow";
 import AddShowModal from "@/components/show/AddShowModal";
-import { Plus, RefreshCw, List, LayoutGrid, Podcast } from "lucide-react";
+import { Plus, RefreshCw, List, LayoutGrid, Podcast, Group } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 
 export default function HomePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: config } = useQuery({ queryKey: queryKeys.config(), queryFn: getConfig });
-  const { data: shows } = useQuery({
+  const { data: rawShows } = useQuery({
     queryKey: queryKeys.shows(),
     queryFn: listShows,
   });
@@ -31,23 +32,46 @@ export default function HomePage() {
   const setViewMode = useLayoutStore((s) => s.setShowViewMode);
   const cardSize = useLayoutStore((s) => s.showCardSize);
   const setCardSize = useLayoutStore((s) => s.setShowCardSize);
+  const groupBy = useLayoutStore((s) => s.showGroupBy);
+  const setGroupBy = useLayoutStore((s) => s.setShowGroupBy);
 
-  const rssShows = shows?.filter((s) => s.has_rss && !s.has_youtube) ?? [];
-  const ytShows = shows?.filter((s) => s.has_youtube) ?? [];
-  const dualShows = shows?.filter((s) => s.has_rss && s.has_youtube) ?? [];
+  const sorted = useMemo(() => {
+    if (!rawShows) return undefined;
+    return [...rawShows].sort((a, b) => a.name.localeCompare(b.name));
+  }, [rawShows]);
+
+  // Partition shows once, reused for sections and refresh
+  const { sections, rssShows, ytShows } = useMemo(() => {
+    if (!sorted) return { sections: undefined, rssShows: [] as ShowSummary[], ytShows: [] as ShowSummary[] };
+    const rss: ShowSummary[] = [], yt: ShowSummary[] = [], local: ShowSummary[] = [];
+    for (const s of sorted) {
+      if (s.has_youtube) yt.push(s);
+      else if (s.has_rss) rss.push(s);
+      else local.push(s);
+    }
+    const sects = groupBy === "none"
+      ? [{ label: "", shows: sorted }]
+      : [
+          { label: "Podcasts", shows: rss },
+          { label: "YouTube", shows: yt },
+          { label: "Local", shows: local },
+        ].filter((g) => g.shows.length > 0);
+    return { sections: sects, rssShows: rss, ytShows: yt };
+  }, [sorted, groupBy]);
 
   // Oldest RSS update across all shows (to display in the button)
-  const oldestRssUpdate = rssShows.reduce<string | null>((oldest, s) => {
-    if (!s.last_rss_update) return oldest;
-    if (!oldest) return s.last_rss_update;
-    return s.last_rss_update < oldest ? s.last_rss_update : oldest;
-  }, null);
+  const oldestRssUpdate = useMemo(() =>
+    rssShows.reduce<string | null>((oldest, s) => {
+      if (!s.last_rss_update) return oldest;
+      if (!oldest) return s.last_rss_update;
+      return s.last_rss_update < oldest ? s.last_rss_update : oldest;
+    }, null),
+  [rssShows]);
 
   const refreshAllMutation = useMutation({
     mutationFn: async () => {
       await Promise.allSettled([
         ...rssShows.map((s) => refreshRSS(s.path)),
-        ...dualShows.map((s) => refreshRSS(s.path)),
         ...ytShows.map((s) => refreshYouTube(s.path)),
       ]);
     },
@@ -86,10 +110,17 @@ export default function HomePage() {
           </div>
         </div>
 
-        {shows && shows.length > 0 && (
+        {sections && sections.length > 0 && (
           <>
-            {/* Toolbar: view toggle + card size */}
+            {/* Toolbar: group toggle + view toggle + card size */}
             <div className="flex items-center justify-end gap-2 mb-4">
+              <button
+                onClick={() => setGroupBy(groupBy === "none" ? "source" : "none")}
+                className={`px-1.5 py-1 rounded transition ${groupBy !== "none" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                title="Group by source"
+              >
+                <Group className="w-3.5 h-3.5" />
+              </button>
               {viewMode === "card" && (
                 <input
                   type="range"
@@ -118,26 +149,33 @@ export default function HomePage() {
               </div>
             </div>
 
-            {viewMode === "card" ? (
-              <div
-                className="grid gap-4"
-                style={{ gridTemplateColumns: `repeat(${cardSize}, minmax(0, 1fr))` }}
-              >
-                {shows.map((show) => (
-                  <ShowCard key={show.path} show={show} onClick={() => goToShow(show.path)} vertical={cardSize >= 5} />
-                ))}
+            {sections.map((section) => (
+              <div key={section.label || "all"} className={sections.length > 1 ? "mb-6" : ""}>
+                {section.label && (
+                  <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">{section.label}</h3>
+                )}
+                {viewMode === "card" ? (
+                  <div
+                    className="grid gap-4"
+                    style={{ gridTemplateColumns: `repeat(${cardSize}, minmax(0, 1fr))` }}
+                  >
+                    {section.shows.map((show) => (
+                      <ShowCard key={show.path} show={show} onClick={() => goToShow(show.path)} vertical={cardSize >= 5} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="border border-border rounded-lg overflow-hidden">
+                    {section.shows.map((show) => (
+                      <ShowListRow key={show.path} show={show} onClick={() => goToShow(show.path)} />
+                    ))}
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="border border-border rounded-lg overflow-hidden">
-                {shows.map((show) => (
-                  <ShowListRow key={show.path} show={show} onClick={() => goToShow(show.path)} />
-                ))}
-              </div>
-            )}
+            ))}
           </>
         )}
 
-        {shows && shows.length === 0 && (
+        {sorted && sorted.length === 0 && (
           <EmptyState
             icon={Podcast}
             title="No shows yet"

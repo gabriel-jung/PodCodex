@@ -4,7 +4,8 @@ import { createFromRSS, createFromYouTube, getHealth, registerShow, searchPodcas
 import { queryKeys } from "@/api/queryKeys";
 import type { PodcastSearchResult } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { errorMessage } from "@/lib/utils";
+import { errorMessage, SUB_LANGUAGES } from "@/lib/utils";
+import FolderLocationFields from "@/components/common/FolderLocationFields";
 import FolderPicker from "@/components/common/FolderPicker";
 import MissingDependency from "@/components/common/MissingDependency";
 import { PlaySquare, Search, Rss, FolderOpen, Loader2 } from "lucide-react";
@@ -26,9 +27,13 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [artworkUrl, setArtworkUrl] = useState("");
   const [showName, setShowName] = useState("");
-  const [fullPath, setFullPath] = useState("");
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [savePath, setSavePath] = useState(defaultSavePath || "~");
+  const [folderName, setFolderName] = useState("");
+  const [language, setLanguage] = useState("");
+  const [customLang, setCustomLang] = useState("");
   const [localPickerOpen, setLocalPickerOpen] = useState<"folder" | "file" | null>(null);
+
+  const fullPath = `${savePath.replace(/\/+$/, "")}/${folderName}`;
 
   const { data: health } = useQuery({ queryKey: queryKeys.health(), queryFn: getHealth });
   const hasYtDlp = health?.capabilities?.yt_dlp ?? false;
@@ -39,35 +44,30 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
     setYoutubeUrl("");
     setArtworkUrl("");
     setShowName("");
-    setFullPath("");
+    setFolderName("");
   };
 
   const searchMutation = useMutation({
     mutationFn: (q: string) => searchPodcasts(q),
   });
 
+  const effectiveLang = language === "other" ? customLang : language;
+
   const createMutation = useMutation({
     mutationFn: () => {
-      const lastSlash = fullPath.lastIndexOf("/");
-      const savePath = lastSlash > 0 ? fullPath.slice(0, lastSlash) : fullPath;
-      const folderName = lastSlash > 0 ? fullPath.slice(lastSlash + 1) : "";
-
       if (sourceMode === "youtube") {
-        return createFromYouTube(youtubeUrl, savePath, folderName, artworkUrl, showName);
+        return createFromYouTube(youtubeUrl, savePath, folderName, artworkUrl, showName, effectiveLang);
       }
-      return createFromRSS(rssUrl, savePath, folderName, artworkUrl, showName);
+      return createFromRSS(rssUrl, savePath, folderName, artworkUrl, showName, effectiveLang);
     },
     onSuccess: (data) => onCreated(data.folder),
   });
-
-  const defaultPath = (name: string) =>
-    `${defaultSavePath.replace(/\/+$/, "")}/${name}`;
 
   const selectResult = (result: PodcastSearchResult) => {
     setRssUrl(result.feed_url);
     setArtworkUrl(result.artwork_url);
     setShowName(result.name);
-    setFullPath(defaultPath(result.name));
+    setFolderName(result.name);
     setStep("location");
   };
 
@@ -76,9 +76,9 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
   };
 
   const handleYouTubeNext = () => {
-    if (!fullPath) {
+    if (!folderName) {
       const slug = youtubeUrl.replace(/https?:\/\//, "").replace(/[^a-zA-Z0-9]+/g, "_").slice(0, 40);
-      setFullPath(defaultPath(slug || "youtube"));
+      setFolderName(slug || "youtube");
     }
     setStep("location");
   };
@@ -185,7 +185,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                       />
                       <Button
                         onClick={() => {
-                          if (!fullPath) setFullPath(defaultPath("podcast"));
+                          if (!folderName) setFolderName("podcast");
                           setStep("location");
                         }}
                         disabled={!rssUrl.trim()}
@@ -280,21 +280,44 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                 </div>
               ) : (
                 <>
-                  <p className="text-xs text-muted-foreground">
-                    Choose where to save the show episodes and metadata on your machine.
-                  </p>
+                  <FolderLocationFields
+                    folderName={folderName}
+                    onFolderNameChange={setFolderName}
+                    parentPath={savePath}
+                    onParentPathChange={setSavePath}
+                    placeholder="My Podcast"
+                    autoFocus
+                  />
+
                   <div>
-                    <label className="text-xs text-muted-foreground block mb-1">Save to</label>
-                    <div className="flex gap-2">
-                      <input
-                        value={fullPath}
-                        onChange={(e) => setFullPath(e.target.value)}
-                        className="input flex-1"
-                        autoFocus
-                      />
-                      <Button onClick={() => setPickerOpen(true)} variant="outline" size="sm">Browse</Button>
+                    <label className="text-xs text-muted-foreground block mb-1.5">Language</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {SUB_LANGUAGES.slice(0, 5).map((l) => (
+                        <button
+                          key={l.code}
+                          onClick={() => { setLanguage(l.code); setCustomLang(""); }}
+                          className={`px-2.5 py-1 text-xs rounded-md border transition ${language === l.code ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-accent"}`}
+                        >
+                          {l.label}
+                        </button>
+                      ))}
+                      <button
+                        onClick={() => setLanguage("other")}
+                        className={`px-2.5 py-1 text-xs rounded-md border transition ${language === "other" ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-accent"}`}
+                      >
+                        Other
+                      </button>
                     </div>
+                    {language === "other" && (
+                      <input
+                        value={customLang}
+                        onChange={(e) => setCustomLang(e.target.value.toLowerCase().slice(0, 5))}
+                        placeholder="ISO code (e.g. nl, zh, ar)"
+                        className="input w-32 mt-1.5"
+                      />
+                    )}
                   </div>
+
                   {createMutation.isError && (
                     <p className="text-destructive text-xs">{errorMessage(createMutation.error)}</p>
                   )}
@@ -304,7 +327,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                     </Button>
                     <Button
                       onClick={() => createMutation.mutate()}
-                      disabled={!fullPath.trim()}
+                      disabled={!folderName.trim() || !savePath.trim()}
                       className="flex-1"
                     >
                       Add show
@@ -316,13 +339,6 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
           )}
         </div>
       </div>
-
-      <FolderPicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        onSelect={(p) => { setFullPath(p); setPickerOpen(false); }}
-        initialPath={fullPath || defaultSavePath || "~"}
-      />
 
       {localPickerOpen === "folder" && (
         <FolderPicker

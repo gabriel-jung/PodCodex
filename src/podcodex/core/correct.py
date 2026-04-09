@@ -199,7 +199,7 @@ def correct_segments(
 
 
 def save_corrected(
-    audio_path: Path | str | None,
+    audio_path: Path | str,
     segments: list[dict],
     output_dir: str | Path | None = None,
     provenance: dict | None = None,
@@ -207,9 +207,7 @@ def save_corrected(
     """Save corrected segments (version DB + pipeline DB). Returns the version id."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     version_id = save_version(p.base, "corrected", segments, provenance)
+    logger.info(f"Corrected saved → {p.base.name} ({len(segments)} segments)")
     prov_update = {"corrected": provenance} if provenance else {}
     mark_step(p.show_dir, p.base.name, corrected=True, provenance=prov_update)
     return version_id
-
-
-save_corrected_raw = save_corrected

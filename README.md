@@ -69,7 +69,7 @@ All steps share a segment editor (inline editing, speaker mapping, timestamp sna
 
 ## Install
 
-Prerequisites: Python 3.12, Node.js (LTS), ffmpeg, and [uv](https://docs.astral.sh/uv/).
+Prerequisites: Python 3.12, Node.js (LTS), ffmpeg, and [uv](https://docs.astral.sh/uv/). For YouTube auto-generated subtitles, [deno](https://deno.com/) is also required (`brew install deno` on macOS).
 
 ```bash
 git clone https://github.com/gabriel-jung/podcodex
@@ -95,6 +95,8 @@ For a native window (requires Rust + GTK/WebKit on Linux), run `make dev` instea
 | `pipeline` | whisperx, pyannote-audio, ollama, openai, qwen-tts | Transcription, correction, synthesis |
 | `rag`      | torch, sentence-transformers, chonkie, bm25s       | Embeddings & semantic search         |
 | `youtube`  | yt-dlp                                             | YouTube ingest                       |
+
+> **YouTube subtitles:** Manual subtitles download instantly. Auto-generated subtitles require deno (yt-dlp uses it to solve YouTube's JS challenges) and take ~60 seconds per episode due to rate limiting.
 | `bot`      | discord.py                                         | Discord bot                          |
 
 ### Environment variables
@@ -173,7 +175,8 @@ See [ROADMAP.md](ROADMAP.md). Next up: semi-automatic speaker mapping via voice 
 ## Notes
 
 - WhisperX does not yet support MPS — transcription runs on CPU on Apple Silicon.
-- Ollama translate works best with ≥14B models for reliable JSON output.
+- YouTube auto-generated subtitles need deno installed. yt-dlp delegates JS challenge solving to deno at runtime. Without it, YouTube returns 429 errors for auto-generated captions. Manual subtitles work without deno.
+- Ollama correct/translate may not work reliably with small models. Larger models are recommended but this needs more testing.
 - Qwen3-TTS is GPU-heavy — CUDA recommended for synthesis.
 
 ## License

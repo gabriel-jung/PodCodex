@@ -36,11 +36,11 @@ export const searchPodcasts = (query: string, limit = 8) =>
 
 export const listShows = () => json<ShowSummary[]>("/api/shows");
 
-export const createFromRSS = (rssUrl: string, savePath: string, folderName?: string, artworkUrl?: string, name?: string) =>
+export const createFromRSS = (rssUrl: string, savePath: string, folderName?: string, artworkUrl?: string, name?: string, language?: string) =>
   json<CreateFromRSSResponse>("/api/shows/from-rss", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rss_url: rssUrl, save_path: savePath, folder_name: folderName || "", artwork_url: artworkUrl || "", name: name || "" }),
+    body: JSON.stringify({ rss_url: rssUrl, save_path: savePath, folder_name: folderName || "", artwork_url: artworkUrl || "", name: name || "", language: language || "" }),
   });
 
 export const registerShow = (path: string) =>
@@ -106,6 +106,7 @@ export const createFromYouTube = (
   folderName?: string,
   artworkUrl?: string,
   name?: string,
+  language?: string,
 ) =>
   json<CreateFromYouTubeResponse>("/api/shows/from-youtube", {
     method: "POST",
@@ -116,6 +117,7 @@ export const createFromYouTube = (
       folder_name: folderName || "",
       artwork_url: artworkUrl || "",
       name: name || "",
+      language: language || "",
     }),
   });
 

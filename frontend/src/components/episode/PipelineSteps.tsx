@@ -69,7 +69,6 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
       if (e.correct_status === "outdated") return "partial";
       return e.corrected ? "done" : false;
     },
-    matchFiles: (_e, f) => f.includes(".corrected."),
     provenanceKey: "corrected",
   },
   {

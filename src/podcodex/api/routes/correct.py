@@ -11,6 +11,7 @@ from podcodex.api.routes._helpers import (
     ManualPromptsRequest,
     batch_progress,
     build_provenance,
+    enrich_correct_kwargs,
     format_prompt_batches,
     llm_prov_params,
     submit_task,
@@ -65,13 +66,8 @@ async def start_correct(req: LLMRequest) -> TaskResponse:
     """Start the correct pipeline as a background task."""
 
     def run_correct(progress_cb, req_data):
-        from podcodex.core.correct import (
-            correct_segments,
-            save_corrected_raw,
-            transcript_provenance_info,
-        )
+        from podcodex.core.correct import correct_segments, save_corrected
         from podcodex.core.transcribe import load_transcript
-        from podcodex.core.versions import get_latest_provenance
 
         progress_cb(0.0, "Loading transcript...")
         segments = load_transcript(req_data.audio_path, output_dir=req_data.output_dir)
@@ -79,10 +75,9 @@ async def start_correct(req: LLMRequest) -> TaskResponse:
             raise ValueError("No transcript found to correct")
 
         # Auto-detect transcript source and language from provenance
-        p = AudioPaths.from_audio(req_data.audio_path, output_dir=req_data.output_dir)
-        tc_prov = get_latest_provenance(p.base, "transcript")
-        tc_info = transcript_provenance_info(tc_prov)
-        source_lang = tc_info["language"] or req_data.source_lang
+        tc_kwargs = enrich_correct_kwargs(
+            req_data.audio_path, req_data.output_dir, req_data.source_lang
+        )
 
         progress_cb(0.1, "Starting correction...")
 
@@ -90,12 +85,12 @@ async def start_correct(req: LLMRequest) -> TaskResponse:
             segments,
             mode=req_data.mode,
             context=req_data.context,
-            source_lang=source_lang,
+            source_lang=tc_kwargs["source_lang"],
             model=req_data.model,
             batch_minutes=req_data.batch_minutes,
             provider=req_data.provider,
-            engine=tc_info["source"],
-            engine_model=tc_info["model"],
+            engine=tc_kwargs["engine"],
+            engine_model=tc_kwargs["engine_model"],
             api_base_url=req_data.api_base_url,
             api_key=req_data.api_key,
             original_segments=segments,
@@ -106,17 +101,17 @@ async def start_correct(req: LLMRequest) -> TaskResponse:
         progress_cb(0.95, "Saving...")
         provenance = build_provenance(
             "corrected",
-            model=req_data.model or "qwen3:4b",
+            model=req_data.model,
             audio_path=req_data.audio_path,
             output_dir=req_data.output_dir,
             params=llm_prov_params(
                 req_data.mode,
                 req_data.provider,
-                source_lang=source_lang,
+                source_lang=tc_kwargs["source_lang"],
                 batch_minutes=req_data.batch_minutes,
             ),
         )
-        save_corrected_raw(
+        save_corrected(
             req_data.audio_path,
             corrected,
             output_dir=req_data.output_dir,
@@ -138,7 +133,7 @@ class SkipRequest(BaseModel):
 @router.post("/skip")
 async def skip_correct(req: SkipRequest) -> dict:
     """Copy transcript segments directly to corrected output (skip LLM)."""
-    from podcodex.core.correct import save_corrected_raw
+    from podcodex.core.correct import save_corrected
     from podcodex.core.transcribe import load_transcript
 
     segments = load_transcript(req.audio_path, output_dir=req.output_dir)
@@ -146,7 +141,7 @@ async def skip_correct(req: SkipRequest) -> dict:
         raise HTTPException(404, "No transcript found to copy")
 
     provenance = build_provenance("corrected", params={"skipped": True})
-    save_corrected_raw(
+    save_corrected(
         req.audio_path,
         segments,
         output_dir=req.output_dir,
@@ -195,7 +190,7 @@ async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
 async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
     """Apply manually-obtained LLM corrections and save as raw."""
     from podcodex.core._utils import validate_manual
-    from podcodex.core.correct import save_corrected_raw
+    from podcodex.core.correct import save_corrected
     from podcodex.core.transcribe import load_transcript
 
     original = load_transcript(req.audio_path, output_dir=req.output_dir)
@@ -208,7 +203,7 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
         params=llm_prov_params("manual"),
         manual_edit=True,
     )
-    save_corrected_raw(
+    save_corrected(
         req.audio_path,
         corrected,
         output_dir=req.output_dir,

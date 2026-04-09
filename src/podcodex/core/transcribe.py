@@ -487,32 +487,30 @@ def export_transcript(
     if clean:
         resolved = clean_transcript(resolved, remove_unknown_speakers=diarized)
 
-    export = resolved
-
     meta = {
         "show": show,
         "episode": episode,
         "diarized": diarized,
-        "speakers": sorted({seg["speaker"] for seg in export}),
-        "duration": round(max((seg["end"] for seg in export), default=0.0), 3),
-        "word_count": sum(len(seg["text"].split()) for seg in export),
+        "speakers": sorted({seg["speaker"] for seg in resolved}),
+        "duration": round(max((seg["end"] for seg in resolved), default=0.0), 3),
+        "word_count": sum(len(seg["text"].split()) for seg in resolved),
     }
 
-    label = "cleaned" if clean else "raw"
-    logger.success(f"Export done — {len(export)} segments ({label})")
+    logger.success(f"Export done — {len(resolved)} segments")
 
     # Ensure provenance exists so version is always saved
     if not provenance:
-        provenance = {"step": "transcript", "type": "raw"}
+        provenance = {"step": "transcript"}
     provenance = {
         **provenance,
+        "type": "edited" if clean else provenance.get("type", "raw"),
         "params": {**provenance.get("params", {}), "meta": meta},
     }
-    save_version(p.base, "transcript", export, provenance)
+    save_version(p.base, "transcript", resolved, provenance)
     mark_step(
         p.show_dir, p.base.name, transcribed=True, provenance={"transcript": provenance}
     )
-    return export
+    return resolved
 
 
 def _load_transcript_file(path: Path) -> dict:
@@ -681,25 +679,11 @@ def save_transcript(
     segments: list[dict],
     output_dir: str | Path | None = None,
     provenance: dict | None = None,
-) -> Path:
-    """Save an edited segment list back to transcript.json, preserving metadata.
-
-    Args:
-        audio_path : source audio file (used to locate transcript.json)
-        segments   : updated segment list
-        output_dir : same output_dir used when the transcript was created
-        provenance : optional version metadata for archiving
-
-    Returns:
-        Path to the saved transcript.json file.
-    """
+) -> str:
+    """Save transcript segments (version DB + pipeline DB). Returns the version id."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    full = load_transcript_full(audio_path, output_dir=output_dir)
-    full["segments"] = segments
-    write_json(p.transcript, full)
-    logger.info(f"Transcript saved → {p.transcript.name} ({len(segments)} segments)")
-
-    save_version(p.base, "transcript", segments, provenance)
+    version_id = save_version(p.base, "transcript", segments, provenance)
+    logger.info(f"Transcript saved → {p.base.name} ({len(segments)} segments)")
     prov_update = {"transcript": provenance} if provenance else {}
     mark_step(p.show_dir, p.base.name, transcribed=True, provenance=prov_update)
-    return p.transcript
+    return version_id

@@ -104,6 +104,7 @@ class CreateFromRSSRequest(BaseModel):
     folder_name: str = ""  # optional subfolder name (auto-generated if empty)
     name: str = ""  # display name from search/RSS (falls back to folder_name)
     artwork_url: str = ""  # optional, passed from search result
+    language: str = ""  # ISO language code (e.g. "en", "fr")
 
 
 class RegisterShowRequest(BaseModel):
@@ -122,6 +123,7 @@ class CreateFromYouTubeRequest(BaseModel):
     folder_name: str = ""  # optional subfolder name (auto-generated if empty)
     name: str = ""  # display name (falls back to channel/playlist title)
     artwork_url: str = ""  # optional, passed from preview
+    language: str = ""  # ISO language code (e.g. "en", "fr")
 
 
 class CreateFromYouTubeResponse(BaseModel):

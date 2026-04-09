@@ -19,12 +19,6 @@ from podcodex.ingest.rss import RSSEpisode, episode_stem
 
 AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".opus", ".wma"}
 
-# Transcript source identifiers — used in provenance params["source"]
-TRANSCRIPT_SOURCE_WHISPER = "whisper"
-TRANSCRIPT_SOURCE_YOUTUBE = "youtube-subtitles"
-TRANSCRIPT_SOURCE_UPLOAD = "upload"
-TRANSCRIPT_SOURCE_IMPORT = "import"
-
 
 def _build_source_chain(
     audio_path: str | None,
@@ -129,6 +123,29 @@ def build_provenance(
         "model": model,
         "params": params,
         "manual_edit": manual_edit,
+    }
+
+
+def enrich_correct_kwargs(
+    audio_path: str | None,
+    output_dir: str | None,
+    fallback_source_lang: str,
+) -> dict:
+    """Look up transcript provenance and return kwargs for correct_segments.
+
+    Returns dict with ``source_lang``, ``engine``, ``engine_model``.
+    """
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.correct import transcript_provenance_info
+    from podcodex.core.versions import get_latest_provenance
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    tc_prov = get_latest_provenance(p.base, "transcript")
+    tc_info = transcript_provenance_info(tc_prov)
+    return {
+        "source_lang": tc_info["language"] or fallback_source_lang,
+        "engine": tc_info["source"],
+        "engine_model": tc_info["model"],
     }
 
 

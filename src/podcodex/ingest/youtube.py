@@ -372,14 +372,18 @@ def download_youtube_audio(
     return output_path
 
 
+_AUTO_SUB_SLEEP = 60  # yt-dlp native sleep between auto-generated subtitle downloads
+
+
 def download_youtube_subtitles(
     video_id: str,
     lang: str = "en",
 ) -> tuple[str | None, dict[str, Any]]:
     """Download subtitles for a YouTube video.
 
-    Prefers manually uploaded subtitles, falls back to auto-generated.
-    Also returns the full yt-dlp info dict (description, upload_date, duration, etc.).
+    Prefers manually uploaded subtitles (fast, lightweight).
+    Falls back to auto-generated subs which require deno + remote components
+    and a native yt-dlp sleep to avoid YouTube 429 rate limiting.
 
     Args:
         video_id: YouTube video ID.
@@ -393,7 +397,8 @@ def download_youtube_subtitles(
     url = _YT_VIDEO_URL.format(video_id=video_id)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ydl_opts = _base_ydl_opts(
+        # Step 1: extract metadata to check which subtitle tracks exist
+        meta_opts = _base_ydl_opts(
             skip_download=True,
             writesubtitles=True,
             writeautomaticsub=True,
@@ -402,38 +407,58 @@ def download_youtube_subtitles(
             outtmpl=str(Path(tmpdir) / "subs.%(ext)s"),
         )
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(meta_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
         if not info:
             return None, {}
 
-        # Check for available subtitles
         manual_subs = info.get("subtitles", {})
         auto_subs = info.get("automatic_captions", {})
-
-        # Prefer manual subs
         has_manual = lang in manual_subs
         has_auto = lang in auto_subs
 
         if not has_manual and not has_auto:
-            logger.debug("No subtitles available for {} in {}", video_id, lang)
+            available = sorted(set(list(manual_subs.keys()) + list(auto_subs.keys())))
+            logger.info(
+                "No {} subtitles for {}. Available: {}",
+                lang,
+                video_id,
+                ", ".join(available) if available else "none",
+            )
             return None, info
 
-        # Download the subtitles
-        dl_opts = _base_ydl_opts(
-            skip_download=True,
-            writesubtitles=has_manual,
-            writeautomaticsub=not has_manual and has_auto,
-            subtitleslangs=[lang],
-            subtitlesformat="vtt",
-            outtmpl=str(Path(tmpdir) / "subs"),
-        )
+        # Step 2: download the subtitle track
+        if has_manual:
+            # Manual subs: fast, no special options needed
+            dl_opts = _base_ydl_opts(
+                skip_download=True,
+                writesubtitles=True,
+                subtitleslangs=[lang],
+                subtitlesformat="vtt",
+                outtmpl=str(Path(tmpdir) / "subs"),
+            )
+        else:
+            # Auto-generated subs: remote components + native sleep
+            dl_opts = _base_ydl_opts(
+                skip_download=True,
+                writeautomaticsub=True,
+                subtitleslangs=[lang],
+                subtitlesformat="vtt",
+                outtmpl=str(Path(tmpdir) / "subs"),
+                remote_components=["ejs:github"],
+                sleep_interval_subtitles=_AUTO_SUB_SLEEP,
+            )
+            logger.info(
+                "Downloading auto-generated {} subs for {} ({}s delay)",
+                lang,
+                video_id,
+                _AUTO_SUB_SLEEP,
+            )
 
         with yt_dlp.YoutubeDL(dl_opts) as ydl:
             ydl.download([url])
 
-        # Find the VTT file
         vtt_files = list(Path(tmpdir).glob("*.vtt"))
         if not vtt_files:
             logger.debug("No VTT file produced for {}", video_id)

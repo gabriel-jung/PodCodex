@@ -91,15 +91,6 @@ export default function DownloadDropdown({
             >
               <Subtitles className="w-3 h-3" /> {subsLabel}
             </button>
-            {primaryLang.code !== "en" && (
-              <button
-                onClick={() => { close(); onImportSubs("en"); }}
-                disabled={!subsEnabled || disabled}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition disabled:opacity-40"
-              >
-                <Subtitles className="w-3 h-3" /> Subtitles (English)
-              </button>
-            )}
             {showAudio && (
               <>
                 <div className="border-t border-border/50 my-0.5" />

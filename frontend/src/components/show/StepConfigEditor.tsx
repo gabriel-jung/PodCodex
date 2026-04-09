@@ -9,6 +9,9 @@ import { useLLMProviders } from "@/hooks/useLLMProviders";
 import {
   TRANSCRIBE_PRESETS,
   CPU_MODELS,
+  GPU_MODELS,
+  CPU_LABELS,
+  GPU_LABELS,
   LLM_PRESETS,
   INDEX_PRESETS,
   usePipelineConfigStore,
@@ -98,6 +101,24 @@ const STEPS = [
 
 export { STEPS };
 
+/** Toggle button with radio-style indicator. */
+function ToggleButton({ checked, onClick, title, children }: {
+  checked: boolean; onClick: () => void; title?: string; children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`w-full flex items-center gap-2 text-sm px-3 py-1.5 rounded-md border transition ${
+        checked ? "border-primary bg-accent font-medium" : "border-border hover:border-primary/50"
+      }`}
+    >
+      <div className={`w-3.5 h-3.5 rounded-full border-2 transition ${checked ? "border-primary bg-primary" : "border-muted-foreground"}`} />
+      {children}
+    </button>
+  );
+}
+
 /** Reusable preset card grid. */
 function PresetCards<K extends string>({
   presets,
@@ -109,7 +130,7 @@ function PresetCards<K extends string>({
   onSelect: (key: K) => void;
 }) {
   return (
-    <div className="grid grid-cols-3 gap-2 items-stretch">
+    <div className={`grid gap-2 items-stretch ${Object.keys(presets).length === 2 ? "grid-cols-2" : "grid-cols-3"}`}>
       {(Object.entries(presets) as [K, { label: string; desc: string }][]).map(([key, p]) => (
         <button
           key={key}
@@ -134,7 +155,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
   step: StepKey;
   episodes: Episode[];
   showLanguage: string;
-  onRun: (filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: TranscribeSource) => void;
+  onRun: (filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: TranscribeSource, force?: boolean) => void;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -193,28 +214,14 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
     switch (step) {
       case "transcribe":
         if (transcribeSource === "subtitles") return !!e.has_subtitles;
-        // When source categories are shown, user is explicitly choosing — don't filter by status
-        if (hasAnySubs) return !!e.audio_path;
-        return !!e.audio_path && e.transcribe_status !== "done";
-      case "correct":    return !!e.transcribed && e.correct_status !== "done";
-      case "translate":  return !!e.transcribed && e.translate_status !== "done";
-      case "index":      return !!e.transcribed && !e.indexed;
+        return !!e.audio_path;
+      case "correct":    return !!e.transcribed;
+      case "translate":  return !!e.transcribed;
+      case "index":      return !!e.transcribed;
       default:           return true;
     }
-  }), [episodes, step, transcribeSource, hasAnySubs]);
-  const skippedDone = episodes.filter((e) => {
-    switch (step) {
-      case "transcribe":
-        // When source categories are shown, canRun already handles filtering — no "done" count
-        if (hasAnySubs) return false;
-        return e.transcribe_status === "done";
-      case "correct":    return e.correct_status === "done";
-      case "translate":  return e.translate_status === "done";
-      case "index":      return e.indexed;
-      default:           return false;
-    }
-  }).length;
-  const cantRun = episodes.length - canRun.length - skippedDone;
+  }), [episodes, step, transcribeSource]);
+  const cantRun = episodes.length - canRun.length;
   const cantRunReason = step === "transcribe" ? "without audio" : "not transcribed";
 
   // Source groups for the input selector (correct, translate, index)
@@ -791,61 +798,58 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
           {/* ── Settings (transcribe / index) ── */}
           {canRun.length > 0 && !isLLMStep && !(step === "transcribe" && transcribeSource === "subtitles") && (
             <div className="space-y-4">
-              {step === "transcribe" && (
-                <>
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium" title="Whisper model size - larger models are more accurate but slower">Model</label>
-                    <select value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectFull}>
-                      {(() => {
-                        const isCpu = transcribePreset === "cpu" || (transcribePreset === "" && CPU_MODELS.has(tc.modelSize));
-                        const entries = Object.keys(whisperModels).length > 0
-                          ? Object.entries(whisperModels)
-                          : [[tc.modelSize, tc.modelSize] as [string, string]];
-                        const CPU_LABELS: Record<string, string> = { base: "Fastest", small: "Slightly more accurate" };
-                        const filtered = isCpu
-                          ? entries.filter(([key]) => CPU_MODELS.has(key))
-                          : entries;
-                        return filtered.map(([key, label]) => (
-                          <option key={key} value={key}>{key} - {isCpu ? CPU_LABELS[key] || label : label}</option>
-                        ));
-                      })()}
-                    </select>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
+              {step === "transcribe" && (() => {
+                const isCpu = transcribePreset === "cpu" || (transcribePreset === "" && CPU_MODELS.has(tc.modelSize));
+                const entries = Object.keys(whisperModels).length > 0
+                  ? Object.entries(whisperModels)
+                  : [[tc.modelSize, tc.modelSize] as [string, string]];
+                const filtered = isCpu
+                  ? entries.filter(([key]) => CPU_MODELS.has(key))
+                  : entries.filter(([key]) => GPU_MODELS.has(key));
+                return (
+                  <>
                     <div className="space-y-1.5">
-                      <label className="text-sm font-medium" title="ISO 639-1 language code, e.g. en, fr, de, es, ja. Helps Whisper accuracy.">Language (ISO)</label>
-                      <input value={tc.language || languageToISO(showLanguage) || ""} onChange={(e) => setTc({ language: e.target.value })} className={inputFieldClass} />
+                      <label className="text-sm font-medium" title="Whisper model size - larger models are more accurate but slower">Model</label>
+                      <select value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectFull}>
+                        {filtered.map(([key, label]) => (
+                          <option key={key} value={key}>{key} - {isCpu ? CPU_LABELS[key] || label : GPU_LABELS[key] || label}</option>
+                        ))}
+                      </select>
                     </div>
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-medium">&nbsp;</label>
-                      <button
-                        onClick={() => setTc({ clean: !tc.clean })}
-                        title="Removes hallucinated segments using character density filters (< 2 or > 75 chars/s) and unknown speakers"
-                        className={`w-full flex items-center gap-2 text-sm px-3 py-1.5 rounded-md border transition ${
-                          tc.clean
-                            ? "border-primary bg-accent font-medium"
-                            : "border-border hover:border-primary/50"
-                        }`}
-                      >
-                        <div className={`w-3.5 h-3.5 rounded-full border-2 transition ${tc.clean ? "border-primary bg-primary" : "border-muted-foreground"}`} />
-                        Clean transcript
-                      </button>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-sm font-medium" title="ISO 639-1 language code, e.g. en, fr, de, es, ja. Helps Whisper accuracy.">Language (ISO)</label>
+                        <input value={tc.language || languageToISO(showLanguage) || ""} onChange={(e) => setTc({ language: e.target.value })} className={inputFieldClass} />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-sm font-medium">&nbsp;</label>
+                        <ToggleButton checked={tc.clean} onClick={() => setTc({ clean: !tc.clean })} title="Removes hallucinated segments using character density filters (< 2 or > 75 chars/s) and unknown speakers">
+                          Clean transcript
+                        </ToggleButton>
+                      </div>
                     </div>
-                  </div>
-                  {tc.diarize && (
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-medium" title="Expected number of speakers - leave empty for automatic detection">Speakers</label>
-                      <input type="number" value={tc.numSpeakers} onChange={(e) => setTc({ numSpeakers: e.target.value })} placeholder="auto" min={1} className={inputFieldClass} />
-                    </div>
-                  )}
-                  {tc.diarize && (
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-medium" title="Required by pyannote for speaker diarization - get one at huggingface.co/settings/tokens">HuggingFace token</label>
-                      <input type="password" value={tc.hfToken} onChange={(e) => setTc({ hfToken: e.target.value })} placeholder={detected.hf_token || "from env"} className={inputFieldClass} />
-                    </div>
-                  )}
-                </>
-              )}
+                    {!isCpu && (
+                      <>
+                        <ToggleButton checked={tc.diarize} onClick={() => setTc({ diarize: !tc.diarize })} title="Use pyannote to identify who speaks when - requires a HuggingFace token">
+                          Diarize (detect speakers)
+                        </ToggleButton>
+                        {tc.diarize && (
+                          <>
+                          <p className="text-xs text-muted-foreground">Naming speakers and cleaning up artefacts requires editing each episode.</p>
+                          {!detected.hf_token && (
+                            <div className="space-y-1.5">
+                              <label className="text-sm font-medium" title="Required by pyannote for speaker diarization - get one at huggingface.co/settings/tokens">HuggingFace token</label>
+                              <p className="text-xs text-muted-foreground">Required by pyannote for diarization. Get one at <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">huggingface.co/settings/tokens</a>.</p>
+                              <input type="password" value={tc.hfToken} onChange={(e) => setTc({ hfToken: e.target.value })} placeholder="hf_..." className={inputFieldClass} />
+                            </div>
+                          )}
+                          </>
+                        )}
+                      </>
+                    )}
+                  </>
+                );
+              })()}
               {step === "index" && (
                 <div className="space-y-1.5">
                   <label className="text-sm font-medium" title="Embedding model used for semantic search - larger models give better results but are slower">Embedding model</label>
@@ -864,12 +868,9 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
         </div>
 
         {/* Skip info (when some episodes can't run) */}
-        {(cantRun > 0 || skippedDone > 0) && canRun.length > 0 && (
+        {cantRun > 0 && canRun.length > 0 && (
           <div className="px-5 pb-1 text-xs text-muted-foreground">
-            {[
-              skippedDone > 0 && `${skippedDone} already done`,
-              cantRun > 0 && `${cantRun} ${cantRunReason}`,
-            ].filter(Boolean).join(", ")}
+            {cantRun} {cantRunReason}
           </div>
         )}
 
@@ -937,19 +938,28 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
           )}
 
           {/* Non-manual run button */}
-          {filteredEpisodes.length > 0 && !(isLLMStep && llm.mode === "manual") && !manualActive && selectedSource !== "custom" && (
-            <Button onClick={() => {
+          {filteredEpisodes.length > 0 && !(isLLMStep && llm.mode === "manual") && !manualActive && selectedSource !== "custom" && (() => {
+            const runWith = (force?: boolean) => {
               const vids = Object.keys(customVersions).length > 0 ? customVersions : undefined;
               onRun(
                 selectedSource || transcribeSource === "subtitles" ? filteredEpisodes : undefined,
                 vids,
                 step === "transcribe" ? transcribeSource : undefined,
+                force,
               );
-            }} size="sm">
-              <Play className="w-3.5 h-3.5 mr-1" />
-              {stepInfo.label} {filteredEpisodes.length} episode{filteredEpisodes.length !== 1 ? "s" : ""}
-            </Button>
-          )}
+            };
+            return (
+              <>
+                <Button onClick={() => runWith(true)} variant="ghost" size="sm" title="Reprocess all episodes, replacing existing results">
+                  Reprocess all
+                </Button>
+                <Button onClick={() => runWith()} size="sm">
+                  <Play className="w-3.5 h-3.5 mr-1" />
+                  {stepInfo.label} {filteredEpisodes.length} episode{filteredEpisodes.length !== 1 ? "s" : ""}
+                </Button>
+              </>
+            );
+          })()}
         </div>
       </div>
     </div>

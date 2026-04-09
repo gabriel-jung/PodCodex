@@ -16,12 +16,14 @@ export interface TranscribeConfig {
 
 // ── Per-step presets ────────────────────────────────────
 
-export const CPU_MODELS = new Set(["base", "small"]);
+export const CPU_LABELS: Record<string, string> = { base: "Fastest", small: "Slightly more accurate" };
+export const GPU_LABELS: Record<string, string> = { "large-v3": "Slightly more accurate, 2-3x slower", "large-v3-turbo": "Fast, near-best quality", medium: "Lighter, still good" };
+export const CPU_MODELS = new Set(Object.keys(CPU_LABELS));
+export const GPU_MODELS = new Set(Object.keys(GPU_LABELS));
 
 export const TRANSCRIBE_PRESETS = {
   cpu: { label: "CPU", desc: "Lightweight, no GPU", modelSize: "base", diarize: false },
-  gpu: { label: "GPU", desc: "Fast & accurate", modelSize: "large-v3-turbo", diarize: false },
-  "gpu-speakers": { label: "GPU + Speakers", desc: "Detect who's talking", modelSize: "large-v3-turbo", diarize: true },
+  gpu: { label: "GPU", desc: "More accurate, requires GPU", modelSize: "large-v3-turbo", diarize: false },
 } as const;
 
 export const LLM_PRESETS = {

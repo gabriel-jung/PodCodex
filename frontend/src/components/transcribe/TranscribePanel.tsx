@@ -172,7 +172,6 @@ export default function TranscribePanel() {
         <TranscriptViewer
           editorKey="transcribe"
           audioPath={audioPath ?? undefined}
-          episodeDuration={episode.duration}
           loadSegments={() => getSegments(audioPath!)}
           saveSegments={(segs) => saveSegments(audioPath!, segs)}
           showDelete

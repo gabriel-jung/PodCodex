@@ -10,6 +10,7 @@ from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
     build_provenance,
+    enrich_correct_kwargs,
     llm_prov_params,
     submit_task,
     transcribe_prov_params,
@@ -49,7 +50,8 @@ class BatchRequest(BaseModel):
     source_lang: str = "French"
     target_lang: str = "English"
     llm_batch_minutes: float = 15.0
-    engine: str = "Whisper"
+    engine: str = "whisper"
+    force: bool = False
     # Index config
     show_name: str = ""
     index_model_keys: list[str] = ["bge-m3"]
@@ -132,7 +134,7 @@ def _batch_transcribe(
     }
     if req.language:
         match_params["language"] = req.language
-    if has_matching_version(p.base, "transcript", match_params):
+    if not req.force and has_matching_version(p.base, "transcript", match_params):
         return False
 
     if not status["transcribed"]:
@@ -207,7 +209,7 @@ def _batch_transcribe_from_subs(
     vtt_path = p.base.parent / f"{stem}.subtitles.{req.sub_lang}.vtt"
     if not vtt_path.exists():
         # Try downloading if not cached yet
-        from podcodex.ingest.youtube import cache_youtube_subtitles
+        from podcodex.ingest.youtube import cache_youtube_subtitles, _pace_request
 
         ep_progress(i, step_offset, sw, 0.2, "Downloading subtitles...")
         # Extract video_id from feed cache
@@ -215,6 +217,7 @@ def _batch_transcribe_from_subs(
         if not video_id:
             logger.warning("No video ID found for {}, skipping subtitle import", stem)
             return False
+        _pace_request()
         if not cache_youtube_subtitles(
             video_id, p.base.parent, stem, lang=req.sub_lang
         ):
@@ -249,16 +252,10 @@ def _batch_transcribe_from_subs(
 
 def _resolve_video_id(episode_dir: Path) -> str | None:
     """Extract YouTube video ID from episode metadata."""
-    import json
+    from podcodex.ingest.rss import load_episode_meta
 
-    meta_path = episode_dir / ".episode_meta.json"
-    if not meta_path.exists():
-        return None
-    try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-        return data.get("guid") or data.get("video_id")
-    except (json.JSONDecodeError, OSError):
-        return None
+    meta = load_episode_meta(episode_dir)
+    return meta.guid if meta else None
 
 
 def _batch_llm_step(
@@ -282,7 +279,7 @@ def _batch_llm_step(
     }
     if is_translate:
         match_params["target_lang"] = req.target_lang
-    if has_matching_version(p.base, step_name, match_params):
+    if not req.force and has_matching_version(p.base, step_name, match_params):
         return False
 
     # Load source segments
@@ -330,19 +327,21 @@ def _batch_llm_step(
         prov_params["target_lang"] = req.target_lang
         result = translate_segments(segments, **llm_kwargs)
         provenance = build_provenance(
-            step_name, model=req.llm_model, params=prov_params
+            step_name, model=req.llm_model, audio_path=audio_path, params=prov_params
         )
         save_translation_raw(audio_path, result, req.target_lang, provenance=provenance)
     else:
-        from podcodex.core.correct import correct_segments, save_corrected_raw
+        from podcodex.core.correct import correct_segments, save_corrected
 
-        llm_kwargs["engine"] = req.engine
-        prov_params["engine"] = req.engine
+        tc_kwargs = enrich_correct_kwargs(audio_path, None, req.source_lang)
+        llm_kwargs.update(tc_kwargs)
+        prov_params["engine"] = tc_kwargs["engine"]
+        prov_params["source_lang"] = tc_kwargs["source_lang"]
         result = correct_segments(segments, **llm_kwargs)
         provenance = build_provenance(
-            step_name, model=req.llm_model, params=prov_params
+            step_name, model=req.llm_model, audio_path=audio_path, params=prov_params
         )
-        save_corrected_raw(audio_path, result, provenance=provenance)
+        save_corrected(audio_path, result, provenance=provenance)
 
     return True
 
@@ -352,7 +351,7 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
     sw = _STEP_WEIGHTS["index"]
     marker = p.base.parent / ".rag_indexed"
 
-    if marker.exists():
+    if not req.force and marker.exists():
         return False
 
     # Need a transcript to index — try version DB first, then legacy files

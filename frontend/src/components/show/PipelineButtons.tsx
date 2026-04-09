@@ -26,7 +26,7 @@ export default function PipelineButtons({
   disabled: boolean;
   episodes: Episode[];
   showLanguage: string;
-  onRun: (step: StepKey, filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: TranscribeSource) => void;
+  onRun: (step: StepKey, filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: TranscribeSource, force?: boolean) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmStep, setConfirmStep] = useState<StepKey | null>(null);
@@ -36,8 +36,8 @@ export default function PipelineButtons({
     setConfirmStep(key);
   };
 
-  const handleConfirm = (filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: TranscribeSource) => {
-    if (confirmStep) onRun(confirmStep, filteredEpisodes, sourceVersionIds, transcribeSource);
+  const handleConfirm = (filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: TranscribeSource, force?: boolean) => {
+    if (confirmStep) onRun(confirmStep, filteredEpisodes, sourceVersionIds, transcribeSource, force);
     setConfirmStep(null);
   };
 
@@ -83,7 +83,7 @@ export default function PipelineButtons({
           step={confirmStep}
           episodes={episodes}
           showLanguage={showLanguage}
-          onRun={(filtered, vids, tSource) => handleConfirm(filtered, vids, tSource)}
+          onRun={handleConfirm}
           onClose={() => setConfirmStep(null)}
         />
       )}

@@ -94,6 +94,7 @@ export interface CreateFromRSSRequest {
   folder_name?: string;
   name?: string;
   artwork_url?: string;
+  language?: string;
 }
 
 export interface RegisterShowRequest {
@@ -112,6 +113,7 @@ export interface CreateFromYouTubeRequest {
   folder_name?: string;
   name?: string;
   artwork_url?: string;
+  language?: string;
 }
 
 export interface CreateFromYouTubeResponse {
@@ -251,6 +253,7 @@ export interface BatchRequest {
   show_name?: string;
   index_model_keys?: string[];
   index_chunkings?: string[];
+  force?: boolean;
 }
 
 export interface SearchRequest {

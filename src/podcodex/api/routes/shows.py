@@ -235,6 +235,7 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
             name=show_name,
             rss_url=req.rss_url,
             artwork_url=artwork,
+            language=req.language,
         ),
     )
 
@@ -299,6 +300,7 @@ async def create_from_youtube(
             name=show_name,
             youtube_url=req.youtube_url,
             artwork_url=artwork,
+            language=req.language,
         ),
     )
 
@@ -322,6 +324,11 @@ async def register_show(req: RegisterShowRequest) -> dict:
     p = Path(req.path).expanduser().resolve()
     if not p.is_dir():
         raise HTTPException(400, f"Not a directory: {req.path}")
+
+    # Create show.toml if it doesn't exist yet
+    if not load_show_meta(p):
+        save_show_meta(p, _ShowMeta(name=p.name))
+
     cfg = _load()
     _register_folder(cfg, str(p))
     return {"status": "ok", "path": str(p)}
@@ -613,8 +620,6 @@ def _transcribe_outdated(prov: dict, effective: dict) -> bool:
     # Imported/uploaded transcripts are not outdated — they weren't auto-generated
     if source not in ("whisper",):
         return False
-    if prov.get("type") != "validated" and not prov.get("manual_edit"):
-        return True
     if not effective:
         return False
     if effective.get("model_size") and prov.get("model") != effective["model_size"]:
@@ -635,6 +640,11 @@ def _llm_outdated(prov: dict, effective: dict) -> bool:
     ):
         return True
     if effective.get("llm_model") and prov.get("model") != effective["llm_model"]:
+        return True
+    if (
+        effective.get("source_lang")
+        and params.get("source_lang") != effective["source_lang"]
+    ):
         return True
     return False
 

@@ -211,7 +211,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const goEpisode = (stem: string) =>
     navigate({ to: "/show/$folder/episode/$stem", params: { folder: encodeURIComponent(folder), stem: encodeURIComponent(stem) } });
 
-  const runStep = (step: "transcribe" | "correct" | "translate" | "index", filteredEpisodes?: Episode[], _sourceVersionIds?: Record<string, string>, transcribeSource?: string) => {
+  const runStep = (step: "transcribe" | "correct" | "translate" | "index", filteredEpisodes?: Episode[], _sourceVersionIds?: Record<string, string>, transcribeSource?: string, force?: boolean) => {
     const source = filteredEpisodes || batchableSelected;
     const audioPaths = source.map(batchPath).filter(Boolean) as string[];
     if (audioPaths.length === 0) return;
@@ -243,6 +243,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       llm_batch_minutes: llm.batchMinutes,
       engine,
       show_name: meta?.name || "",
+      force,
     });
   };
 

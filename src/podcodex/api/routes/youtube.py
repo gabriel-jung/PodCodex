@@ -271,16 +271,23 @@ async def youtube_import_subs(
                         {"stem": stem, "title": ep.title, "status": "cached"}
                     )
                 else:
-                    failed += 1
-                    consecutive_fails += 1
+                    # Not available in this language — not a failure
                     results.append(
                         {"stem": stem, "title": ep.title, "status": "no_subtitles"}
                     )
+                    consecutive_fails = 0
             except Exception as exc:
                 logger.warning("Subtitle download failed for {}: {}", stem, exc)
                 failed += 1
                 consecutive_fails += 1
-                results.append({"stem": stem, "title": ep.title, "status": "error"})
+                results.append(
+                    {
+                        "stem": stem,
+                        "title": ep.title,
+                        "status": "error",
+                        "error": str(exc),
+                    }
+                )
 
             if consecutive_fails >= _CONSECUTIVE_FAIL_LIMIT:
                 remaining = total - i - 1

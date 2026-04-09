@@ -499,7 +499,6 @@ function SegmentViewRow({
 export interface TranscriptViewerProps {
   editorKey: string;
   audioPath?: string;
-  episodeDuration?: number;
   loadSegments: () => Promise<Segment[]>;
   saveSegments: (segments: Segment[]) => Promise<unknown>;
   // Version support
