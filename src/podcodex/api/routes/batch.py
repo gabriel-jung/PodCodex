@@ -170,26 +170,31 @@ def _batch_transcribe(
     if not cancelled() and not status["exported"]:
         did_work = True
         ep_progress(i, step_offset, sw, 0.9, "Exporting transcript...")
-        provenance = build_provenance(
-            "transcript",
-            model=req.model_size,
-            params=transcribe_prov_params(
-                req.diarize,
+
+        # When diarizing, export both a plain (non-diarized) and a diarized
+        # transcript so downstream steps can pick whichever they need.
+        variants = [False, True] if req.diarize else [False]
+        for diarized_flag in variants:
+            provenance = build_provenance(
+                "transcript",
                 model=req.model_size,
-                language=req.language or None,
-                batch_size=req.batch_size,
-                num_speakers=req.num_speakers,
+                params=transcribe_prov_params(
+                    diarized_flag,
+                    model=req.model_size,
+                    language=req.language or None,
+                    batch_size=req.batch_size,
+                    num_speakers=req.num_speakers,
+                    clean=req.clean,
+                ),
+            )
+            export_transcript(
+                audio_path,
+                show=req.show_name,
+                episode=stem,
+                diarized=diarized_flag,
                 clean=req.clean,
-            ),
-        )
-        export_transcript(
-            audio_path,
-            show=req.show_name,
-            episode=stem,
-            diarized=req.diarize,
-            clean=req.clean,
-            provenance=provenance,
-        )
+                provenance=provenance,
+            )
 
     return did_work
 
