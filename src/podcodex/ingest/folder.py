@@ -60,7 +60,9 @@ class EpisodeInfo:
         return self.audio_path
 
 
-def _episode_status(stem: str, existing: set[str]) -> dict:
+def _episode_status(
+    stem: str, existing: set[str], output_dir: Path | None = None
+) -> dict:
     """Derive pipeline status flags from the set of filenames in an output dir.
 
     Only detects artifacts that are still written to disk (transcription
@@ -80,7 +82,15 @@ def _episode_status(stem: str, existing: set[str]) -> dict:
 
     transcript_raw = f"{stem}.transcript.raw.json" in existing
     transcript_val = f"{stem}.transcript.json" in existing
-    has_version_transcript = "transcript" in existing
+    # Check for actual transcript version files (.json) inside transcript/,
+    # not just the directory existing (it gets created early by parquet sub-steps).
+    has_version_transcript = False
+    if output_dir and (output_dir / "transcript").is_dir():
+        has_version_transcript = any(
+            f.suffix == ".json"
+            for f in (output_dir / "transcript").iterdir()
+            if f.is_file()
+        )
     transcribed = transcript_raw or transcript_val or has_version_transcript
 
     indexed = ".rag_indexed" in existing
@@ -133,7 +143,7 @@ def _make_episode(
         stem=stem,
         output_dir=output_dir,
         title=_load_title(output_dir),
-        **_episode_status(stem, existing),
+        **_episode_status(stem, existing, output_dir),
     )
 
 
