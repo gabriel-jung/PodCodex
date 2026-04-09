@@ -44,7 +44,14 @@ export default function TranscribePanel() {
   // Form state
   const tc = usePipelineConfigStore((s) => s.transcribe);
   const setTc = usePipelineConfigStore((s) => s.setTranscribe);
-  const [language, setLanguage] = useState(languageToISO(showMeta?.language || ""));
+  const showLangISO = languageToISO(showMeta?.language || "");
+  const [language, setLanguage] = useState(showLangISO);
+  // Sync when showMeta loads after initial render
+  const [prevShowLang, setPrevShowLang] = useState(showLangISO);
+  if (showLangISO !== prevShowLang) {
+    setPrevShowLang(showLangISO);
+    if (!language) setLanguage(showLangISO);
+  }
 
   // Existing subtitle files for reimport controls
   const subtitleFiles = (episode.files ?? []).filter(

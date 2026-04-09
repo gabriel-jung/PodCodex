@@ -91,6 +91,7 @@ async def start_batch(req: BatchRequest) -> TaskResponse:
     """Start a batch pipeline run across multiple episodes."""
     if not req.audio_paths:
         raise HTTPException(400, "No episodes selected")
+    logger.debug("Batch start — language={!r}, diarize={}", req.language, req.diarize)
 
     # Check no individual tasks are running on any of the requested paths
     from podcodex.api.tasks import task_manager

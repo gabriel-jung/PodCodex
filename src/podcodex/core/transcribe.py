@@ -145,6 +145,7 @@ def transcribe_file(
         model_size,
         device,
         compute_type=compute_type,
+        language=language or None,
         download_root=str(get_hf_cache_dir()),
     )
     result = model.transcribe(audio, batch_size=batch_size, language=language)
