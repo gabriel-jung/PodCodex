@@ -389,6 +389,60 @@ def delete_version(base: Path, step: str, version_id: str) -> bool:
     return found
 
 
+def _latest_content_hash(base: Path, step: str) -> str | None:
+    """Return the content_hash of the newest version for a step, or None."""
+    meta = _get_db(base).get_latest_version(base.name, step)
+    return meta["content_hash"] if meta else None
+
+
+def save_speaker_map_version(base: Path, mapping: dict[str, str]) -> str:
+    """Save a speaker map as a versioned ``speaker_map`` entry.
+
+    The map is encoded as a sorted list of ``{"id", "name"}`` dicts to fit
+    the ``save_version`` segment-list schema. Lineage to the diarization
+    that produced the SPEAKER_XX IDs is tracked via ``input_hash`` (the
+    latest diarization version's ``content_hash``, or ``None`` if no
+    diarization version exists yet).
+
+    Only one speaker_map version is retained per episode — prior versions
+    are pruned after the new one is safely saved.
+    """
+    entries = [{"id": k, "name": v} for k, v in sorted(mapping.items())]
+    vid = save_version(
+        base=base,
+        step="speaker_map",
+        segments=entries,
+        provenance={
+            "step": "speaker_map",
+            "type": "validated",
+            "manual_edit": True,
+            "input_hash": _latest_content_hash(base, "diarization"),
+        },
+    )
+    prune_versions(base, "speaker_map", keep=1)
+    return vid
+
+
+def load_latest_speaker_map(base: Path) -> dict[str, str]:
+    """Load the latest speaker map if it still matches the current diarization.
+
+    Returns an empty dict if no speaker_map version exists, or if the
+    stored ``input_hash`` does not match the latest diarization's
+    ``content_hash`` (indicating the map is stale after re-diarization).
+    """
+    latest = _get_db(base).get_latest_version(base.name, "speaker_map")
+    if not latest:
+        return {}
+    if latest.get("input_hash") != _latest_content_hash(base, "diarization"):
+        return {}
+
+    try:
+        entries = load_version(base, "speaker_map", latest["id"])
+    except FileNotFoundError:
+        return {}
+    return {e["id"]: e["name"] for e in entries}
+
+
 def prune_versions(base: Path, step: str, keep: int) -> int:
     """Remove old versions, keeping the newest *keep* entries.
 

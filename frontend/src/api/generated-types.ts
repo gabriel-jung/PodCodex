@@ -32,7 +32,6 @@ export interface EpisodeOut {
   segments_ready: boolean;
   diarized: boolean;
   assigned: boolean;
-  mapped: boolean;
   transcribed: boolean;
   corrected: boolean;
   indexed: boolean;

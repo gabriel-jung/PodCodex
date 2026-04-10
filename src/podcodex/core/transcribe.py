@@ -11,7 +11,7 @@ Versioned outputs (all tracked in pipeline.db)::
       segments/{id}.parquet            — raw WhisperX segments
       diarization/{id}.parquet         — pyannote speaker timeline
       diarized_segments/{id}.parquet   — segments with SPEAKER_XX assigned
-    {stem}.speaker_map.json            — {SPEAKER_00: "Claude", ...} (filled by UI)
+    speaker_map/{id}.json              — {SPEAKER_00: "Claude", ...} (linked to diarization)
 """
 
 import os
@@ -29,7 +29,6 @@ from podcodex.core._utils import (
     check_vram,
     free_vram,
     read_json,
-    write_json,
 )
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import (
@@ -37,6 +36,8 @@ from podcodex.core.versions import (
     has_matching_version,
     has_version,
     load_latest,
+    load_latest_speaker_map,
+    save_speaker_map_version,
     save_version,
 )
 
@@ -62,14 +63,13 @@ def processing_status(
 
     Returns:
         Dict with boolean flags: ``transcribed``, ``diarized``, ``assigned``,
-        ``mapped``, ``exported``.
+        ``exported``.
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     return {
         "transcribed": has_version(p.base, "segments"),
         "diarized": has_version(p.base, "diarization"),
         "assigned": has_version(p.base, "diarized_segments"),
-        "mapped": p.speaker_map.exists(),
         "exported": has_version(p.base, "transcript"),
     }
 
@@ -447,22 +447,14 @@ def load_diarized_segments(
 def load_speaker_map(
     audio_path: Path | str, output_dir: str | Path | None = None
 ) -> dict[str, str]:
-    """Load SPEAKER_XX → name mapping.
+    """Load SPEAKER_XX → name mapping from the version DB.
 
-    Args:
-        audio_path: Source audio file.
-        output_dir: Output directory override (see ``AudioPaths.output_dir``
-            for resolution rules).
-
-    Returns:
-        Dict mapping diarization labels (e.g. ``"SPEAKER_00"``) to display
-        names (e.g. ``"Alice"``).  Returns an empty dict if the speaker map
-        file does not exist yet.
+    Returns the latest speaker map whose ``input_hash`` matches the current
+    diarization version. Returns ``{}`` if no map has been saved yet or if
+    the stored map is stale relative to the current diarization.
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    if not p.speaker_map.exists():
-        return {}
-    return read_json(p.speaker_map)
+    return load_latest_speaker_map(p.base)
 
 
 def save_speaker_map(
@@ -470,25 +462,19 @@ def save_speaker_map(
     mapping: dict[str, str],
     output_dir: str | Path | None = None,
 ) -> None:
-    """Save SPEAKER_XX → human name mapping.
+    """Save SPEAKER_XX → human name mapping as a versioned entry.
 
-    The mapping keys must match the speaker labels from diarization
-    (e.g. ``"SPEAKER_00"``, ``"SPEAKER_01"``). Values are display names
-    used in the exported transcript.
-
-    Args:
-        audio_path: Source audio file.
-        mapping: Dict mapping diarization labels to human-readable names.
-        output_dir: Output directory override (see ``AudioPaths.output_dir``
-            for resolution rules).
+    The map is linked to the current diarization via ``input_hash``, so it
+    will automatically be considered stale if diarization is re-run with
+    different output. Only one speaker_map version is retained per episode.
 
     Example::
 
         save_speaker_map(audio, {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"})
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    write_json(p.speaker_map, mapping)
-    logger.info(f"Speaker map saved → {p.speaker_map.name}")
+    save_speaker_map_version(p.base, mapping)
+    logger.info(f"Speaker map saved ({len(mapping)} entries) for {p.base.name}")
 
 
 # ──────────────────────────────────────────────

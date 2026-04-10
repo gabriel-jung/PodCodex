@@ -73,14 +73,10 @@ async def get_speaker_map(
     audio_path: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> dict[str, str]:
-    """Read the speaker name mapping."""
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    if not p.speaker_map.exists():
-        return {}
-    try:
-        return json.loads(p.speaker_map.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    """Read the latest speaker name mapping linked to the current diarization."""
+    from podcodex.core.transcribe import load_speaker_map
+
+    return load_speaker_map(audio_path, output_dir=output_dir)
 
 
 @router.put("/speaker-map")

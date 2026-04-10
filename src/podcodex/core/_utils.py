@@ -100,10 +100,6 @@ class AudioPaths:
     # — Transcription —
 
     @property
-    def speaker_map(self) -> Path:
-        return self.base.with_suffix(".speaker_map.json")
-
-    @property
     def transcript_raw(self) -> Path:
         return self.base.with_suffix(".transcript.raw.json")
 

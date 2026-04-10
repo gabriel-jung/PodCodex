@@ -614,10 +614,8 @@ export default function TranscriptViewer({
   // ── Speaker list ──────────────────────────────────────────────────────────
 
   const speakers = useMemo(() => {
-    if (externalSpeakers && externalSpeakers.length > 0) return externalSpeakers;
-    if (!sourceSegments) return [];
-    const set = new Set<string>();
-    for (const seg of sourceSegments) {
+    const set = new Set<string>(externalSpeakers ?? []);
+    for (const seg of sourceSegments ?? []) {
       if (seg.speaker && seg.speaker !== "[BREAK]") set.add(seg.speaker);
     }
     return Array.from(set).sort();

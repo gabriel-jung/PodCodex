@@ -23,6 +23,7 @@ import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
 import SectionHeader from "@/components/common/SectionHeader";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
+import SpeakerMapEditor from "@/components/transcribe/SpeakerMapEditor";
 import PipelinePanel from "@/components/common/PipelinePanel";
 
 export default function TranscribePanel() {
@@ -175,6 +176,9 @@ export default function TranscribePanel() {
         </>
       }
     >
+      {episode.transcribed && !task.activeTaskId && audioPath && (
+        <SpeakerMapEditor key={audioPath} audioPath={audioPath} onSaved={() => task.refreshQueries()} />
+      )}
       {episode.transcribed && !task.activeTaskId && (
         <TranscriptViewer
           editorKey="transcribe"

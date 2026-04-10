@@ -46,7 +46,6 @@ class EpisodeInfo:
     segments_ready: bool = False
     diarized: bool = False
     assigned: bool = False
-    mapped: bool = False  # speaker_map.json exists
     transcribed: bool = False  # transcript exported (raw or validated)
     corrected: bool = False
     indexed: bool = False
@@ -78,7 +77,6 @@ def _episode_status(
         and f"{stem}.diarization.meta.json" in existing
     )
     assigned = f"{stem}.diarized_segments.parquet" in existing
-    mapped = f"{stem}.speaker_map.json" in existing
 
     transcript_raw = f"{stem}.transcript.raw.json" in existing
     transcript_val = f"{stem}.transcript.json" in existing
@@ -101,7 +99,6 @@ def _episode_status(
         "segments_ready": segments_ready,
         "diarized": diarized,
         "assigned": assigned,
-        "mapped": mapped,
         "transcribed": transcribed,
         "corrected": False,
         "indexed": indexed,

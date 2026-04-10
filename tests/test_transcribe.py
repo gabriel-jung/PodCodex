@@ -421,4 +421,3 @@ def test_audio_paths_naming():
     p = AudioPaths(audio_path=Path("/tmp/ep.mp3"), base=Path("/tmp/ep/ep"))
     assert p.transcript_raw.name == "ep.transcript.raw.json"
     assert p.transcript.name == "ep.transcript.json"
-    assert p.speaker_map.name == "ep.speaker_map.json"

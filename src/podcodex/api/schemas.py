@@ -37,7 +37,6 @@ class EpisodeOut(BaseModel):
     segments_ready: bool
     diarized: bool
     assigned: bool
-    mapped: bool
     transcribed: bool
     corrected: bool
     indexed: bool
