@@ -213,7 +213,7 @@ export default function SearchPanel(props: SearchPanelProps) {
               className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition ml-auto"
             >
               <Settings2 className="w-3 h-3" />
-              <span className="font-semibold uppercase tracking-wide">
+              <span className="font-medium">
                 {showAdvanced ? "Hide advanced" : "Advanced settings"}
               </span>
             </button>

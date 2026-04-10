@@ -126,6 +126,31 @@ def build_provenance(
     }
 
 
+def build_edit_provenance(
+    step: str,
+    audio_path: str | None,
+    output_dir: str | None,
+) -> dict:
+    """Build provenance for a manual edit by inheriting from the latest version of the same step.
+
+    Edited versions keep the same model/params/source_chain as their parent
+    so their label reflects the pipeline that produced them, just marked as
+    ``type=validated`` + ``manual_edit=True``.
+    """
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.versions import get_latest_provenance
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    parent = get_latest_provenance(p.base, step) or {}
+    return {
+        "step": step,
+        "type": "validated",
+        "model": parent.get("model"),
+        "params": dict(parent.get("params") or {}),
+        "manual_edit": True,
+    }
+
+
 def enrich_correct_kwargs(
     audio_path: str | None,
     output_dir: str | None,
@@ -375,6 +400,7 @@ class LLMRequest(BaseModel):
     batch_minutes: float = 15.0
     api_base_url: str = ""
     api_key: str | None = None
+    source_version_id: str | None = None
 
     @field_validator("batch_minutes")
     @classmethod

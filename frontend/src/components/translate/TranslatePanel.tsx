@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
@@ -12,8 +12,10 @@ import {
   getTranslateManualPrompts,
   applyTranslateManual,
 } from "@/api/client";
+import { getAllVersions } from "@/api/search";
 import { queryKeys } from "@/api/queryKeys";
 import { errorMessage, selectClass } from "@/lib/utils";
+import { filterVersionsForStep } from "@/lib/pipelineInputs";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useLLMConfig, buildLLMRequest, useBestSourceSegments } from "@/hooks/useLLMPipeline";
 import HelpLabel from "@/components/common/HelpLabel";
@@ -29,6 +31,7 @@ export default function TranslatePanel() {
   const targetLang = usePipelineConfigStore((s) => s.targetLang);
   const setTargetLang = usePipelineConfigStore((s) => s.setTargetLang);
   const [editingLang, setEditingLang] = useState(episode.translations[0] || "");
+  const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
 
   const task = usePipelineTask(audioPath, "translate", {
     onComplete: () => setEditingLang(targetLang.toLowerCase().replace(/\s+/g, "_")),
@@ -36,6 +39,8 @@ export default function TranslatePanel() {
   const expanded = task.expanded || episode.translations.length === 0;
 
   const [config, setConfig] = useLLMConfig(episode, showMeta);
+  const llmPreset = usePipelineConfigStore((s) => s.llmPreset);
+  const applyLLMPreset = usePipelineConfigStore((s) => s.applyLLMPreset);
 
   const { data: languages } = useQuery({
     queryKey: queryKeys.translateLanguages(audioPath),
@@ -48,9 +53,27 @@ export default function TranslatePanel() {
     { enabled: episode.transcribed, corrected: episode.corrected },
   );
 
+  // Upstream versions — user can pick any corrected OR transcript version as
+  // input. Uses the unified versions endpoint so the filter mirrors the batch
+  // pipeline exactly (filterVersionsForStep keeps both "corrected" and
+  // "transcript" steps, sorted newest-first).
+  const { data: allVersions } = useQuery({
+    queryKey: queryKeys.allVersions(audioPath),
+    queryFn: () => getAllVersions(audioPath),
+    enabled: !!audioPath && episode.transcribed,
+  });
+  const inputVersions = useMemo(
+    () => (allVersions ? filterVersionsForStep(allVersions, "translate") : undefined),
+    [allVersions],
+  );
+
   const startMutation = useMutation({
     mutationFn: () =>
-      startTranslate({ ...buildLLMRequest(audioPath!, config), target_lang: targetLang }),
+      startTranslate({
+        ...buildLLMRequest(audioPath!, config),
+        target_lang: targetLang,
+        source_version_id: sourceVersionId ?? undefined,
+      }),
     onSuccess: (data) => task.startTask(data.task_id),
   });
 
@@ -93,6 +116,12 @@ export default function TranslatePanel() {
               isPending={startMutation.isPending}
               error={startMutation.isError ? errorMessage(startMutation.error) : null}
               runLabel="Run translation"
+              preset={llmPreset}
+              onPresetChange={applyLLMPreset}
+              inputVersions={inputVersions}
+              selectedInputVersionId={sourceVersionId}
+              onInputVersionChange={setSourceVersionId}
+              inputLabel="Source text"
               extraFields={
                 <>
                   <HelpLabel label="Target language" help="The language to translate into (e.g. English, Spanish, German)." />
@@ -111,6 +140,7 @@ export default function TranslatePanel() {
                     source_lang: config.sourceLang,
                     target_lang: targetLang,
                     batch_minutes: batchMinutes,
+                    source_version_id: sourceVersionId ?? undefined,
                   }),
                 apply: (corrections) =>
                   applyTranslateManual({
@@ -136,6 +166,7 @@ export default function TranslatePanel() {
           loadSegments={() => getTranslateSegments(audioPath!, editingLang)}
           saveSegments={(segs) => saveTranslateSegments(audioPath!, editingLang, segs)}
           exportSource={`translated_${editingLang}`}
+          exportFilename={episode.stem ? `${episode.stem}_${editingLang}` : undefined}
           showDelete
           showFlags={false}
           showSpeaker

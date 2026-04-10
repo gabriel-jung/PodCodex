@@ -192,7 +192,7 @@ export default function SegmentRow({
             </button>
 
             {audioPath && (
-              isPlaying ? (
+              isActive && isPlaying ? (
                 <button onClick={pauseAudio} className="text-muted-foreground hover:text-foreground" title="Pause">
                   <Pause className="w-3 h-3" />
                 </button>

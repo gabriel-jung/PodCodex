@@ -34,6 +34,8 @@ export const queryKeys = {
   transcribeSegments: (audioPath: AudioPath) =>
     ["transcribe", "segments", audioPath] as const,
   speakerMap: (audioPath: AudioPath) => ["speaker-map", audioPath] as const,
+  /** All versions across all steps for an episode (unified endpoint). */
+  allVersions: (audioPath: AudioPath) => ["versions", "all", audioPath] as const,
 
   translateLanguages: (audioPath: AudioPath) =>
     ["translate", "languages", audioPath] as const,

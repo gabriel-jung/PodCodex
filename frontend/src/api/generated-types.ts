@@ -171,6 +171,7 @@ export interface CorrectRequest {
   engine?: string;
   api_base_url?: string;
   api_key?: string | null;
+  source_version_id?: string | null;
 }
 
 export interface CorrectSkipRequest {
@@ -205,6 +206,7 @@ export interface TranslateRequest {
   batch_minutes?: number;
   api_base_url?: string;
   api_key?: string | null;
+  source_version_id?: string | null;
 }
 
 export interface TranslateManualPromptsRequest {

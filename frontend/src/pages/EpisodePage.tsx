@@ -59,6 +59,7 @@ export default function EpisodePage({
   const { seekTo, setAudioMeta } = useAudioStore();
   const [activeStep, setActiveStep] = useState<ActiveStep>("info");
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
+  const [descExpanded, setDescExpanded] = useState(false);
   const setHideAppSidebar = useLayoutStore((s) => s.setHideAppSidebar);
   const { theme, setTheme } = useTheme();
 
@@ -235,8 +236,22 @@ export default function EpisodePage({
 
       {/* Description */}
       {episode.description && (
-        <div className="px-6 py-3 border-b border-border">
-          <p className="text-sm text-muted-foreground line-clamp-3">{stripHtml(episode.description)}</p>
+        <div className="px-6 py-3 border-b border-border relative">
+          <p
+            className={`text-sm text-muted-foreground whitespace-pre-line select-text ${descExpanded ? "" : "line-clamp-2"}`}
+            style={descExpanded ? undefined : {
+              WebkitMaskImage: "linear-gradient(to bottom, black 55%, transparent 100%)",
+              maskImage: "linear-gradient(to bottom, black 55%, transparent 100%)",
+            }}
+          >
+            {stripHtml(episode.description)}
+          </p>
+          <button
+            onClick={() => setDescExpanded(!descExpanded)}
+            className="mt-1 text-xs text-muted-foreground/70 hover:text-foreground transition"
+          >
+            {descExpanded ? "Show less" : "Show more"}
+          </button>
         </div>
       )}
 
@@ -287,7 +302,7 @@ export default function EpisodePage({
                     <Icon className="w-5 h-5 shrink-0" />
                     {sidebarExpanded && <span className="truncate">{label}</span>}
                     {status && (
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${sidebarExpanded ? "ml-auto" : ""} ${status === "partial" ? "bg-warning" : "bg-success"}`} />
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${sidebarExpanded ? "ml-auto" : ""} ${status === "partial" ? "bg-blue-500" : "bg-success"}`} />
                     )}
                   </button>
                 ))}

@@ -14,15 +14,17 @@ import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
 import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
-import { formatTime, versionDate, versionLabel, versionInfo, selectClass } from "@/lib/utils";
+import { formatTime, versionOption, versionInfo, selectClass } from "@/lib/utils";
 import { computeWordDiff } from "@/lib/diffUtils";
 import { Button } from "@/components/ui/button";
 import Pagination from "./Pagination";
+import SpeakerStrip from "./SpeakerStrip";
 import {
   Download,
   Save,
   Undo2,
   Play,
+  Pause,
   Trash2,
   Merge,
   Scissors,
@@ -31,6 +33,7 @@ import {
   Search,
   X,
   Diff,
+  Filter,
   AlertTriangle,
   Activity,
 } from "lucide-react";
@@ -77,7 +80,15 @@ function InsertAfterIcon({ className }: { className?: string }) {
 
 // ── Export dropdown ───────────────────────────────────────────────────────────
 
-function ExportDropdown({ audioPath, source }: { audioPath: string; source: string }) {
+function ExportDropdown({
+  audioPath,
+  source,
+  filename,
+}: {
+  audioPath: string;
+  source: string;
+  filename?: string;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -104,14 +115,14 @@ function ExportDropdown({ audioPath, source }: { audioPath: string; source: stri
       {open && (
         <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-36">
           {[
-            { label: "Plain Text", url: exportTextUrl(audioPath, source) },
-            { label: "SRT Subtitles", url: exportSrtUrl(audioPath, source) },
-            { label: "WebVTT Subtitles", url: exportVttUrl(audioPath, source) },
-          ].map(({ label, url }) => (
+            { label: "Plain Text", ext: "txt", url: exportTextUrl(audioPath, source) },
+            { label: "SRT Subtitles", ext: "srt", url: exportSrtUrl(audioPath, source) },
+            { label: "WebVTT Subtitles", ext: "vtt", url: exportVttUrl(audioPath, source) },
+          ].map(({ label, ext, url }) => (
             <a
               key={label}
               href={url}
-              download
+              download={filename ? `${filename}.${ext}` : ""}
               className="block px-3 py-1.5 text-xs hover:bg-accent transition"
               onClick={() => setOpen(false)}
             >
@@ -159,6 +170,7 @@ interface SegmentViewRowProps {
   isFlagged: boolean;
   flagReasonText: string | null;
   isChanged: boolean;
+  isPendingRemoval?: boolean;
   selected: boolean;
   onToggleSelect: () => void;
   audioPath?: string;
@@ -186,6 +198,7 @@ function SegmentViewRow({
   onToggleSelect,
   flagReasonText,
   isChanged,
+  isPendingRemoval,
   audioPath,
   speakers,
   showSpeaker,
@@ -203,6 +216,8 @@ function SegmentViewRow({
   referenceLabel,
 }: SegmentViewRowProps) {
   const seekTo = useAudioStore((s) => s.seekTo);
+  const pauseAudio = useAudioStore((s) => s.pauseAudio);
+  const isPlaying = useAudioStore((s) => s.isPlaying);
   const [editingSpeaker, setEditingSpeaker] = useState(false);
   const [tsExpanded, setTsExpanded] = useState(false);
   const [refExpanded, setRefExpanded] = useState(true);
@@ -239,7 +254,7 @@ function SegmentViewRow({
     return (
       <div className="py-2 flex items-center gap-2 text-muted-foreground/40 px-4">
         <div className="flex-1 border-t border-border" />
-        <span className="text-2xs uppercase select-none">
+        <span className="text-2xs select-none">
           {gap > 0 ? `${gap.toFixed(0)}s pause` : "break"}
         </span>
         <div className="flex-1 border-t border-border" />
@@ -250,6 +265,7 @@ function SegmentViewRow({
   return (
     <div
       className={`group py-1.5 px-4 rounded transition-colors ${
+        isPendingRemoval ? "opacity-50 line-through bg-destructive/5 border-l-2 border-l-destructive/50" :
         isActive ? "bg-accent/60" :
         isFlagged ? "border-l-2 border-l-yellow-500" :
         isChanged ? "border-l-2 border-l-blue-500/50" :
@@ -392,13 +408,23 @@ function SegmentViewRow({
       {/* Actions row (under timestamp+speaker, visible on hover) */}
       <div className="flex items-center gap-0.5 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity" style={{ width: "fit-content" }}>
         {audioPath && validTime && (
-          <button
-            onClick={handleSeek}
-            className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-secondary transition"
-            title="Play from here"
-          >
-            <Play className="w-3 h-3" />
-          </button>
+          isActive && isPlaying ? (
+            <button
+              onClick={pauseAudio}
+              className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-secondary transition"
+              title="Pause"
+            >
+              <Pause className="w-3 h-3" />
+            </button>
+          ) : (
+            <button
+              onClick={handleSeek}
+              className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-secondary transition"
+              title="Play from here"
+            >
+              <Play className="w-3 h-3" />
+            </button>
+          )
         )}
         {onInsertBefore && (
           <button
@@ -501,12 +527,14 @@ export interface TranscriptViewerProps {
   audioPath?: string;
   loadSegments: () => Promise<Segment[]>;
   saveSegments: (segments: Segment[]) => Promise<unknown>;
+  saveSpeakerMap?: (mapping: Record<string, string>) => Promise<unknown>;
   // Version support
   loadVersions?: () => Promise<VersionEntry[]>;
   loadVersion?: (id: string) => Promise<Segment[]>;
   deleteVersion?: (id: string) => Promise<unknown>;
   // Export
   exportSource?: string;
+  exportFilename?: string;
   // Features
   showDelete?: boolean;
   showFlags?: boolean;
@@ -524,10 +552,12 @@ export default function TranscriptViewer({
   audioPath,
   loadSegments,
   saveSegments,
+  saveSpeakerMap,
   loadVersions,
   loadVersion,
   deleteVersion,
   exportSource,
+  exportFilename,
   showDelete = true,
   showFlags = true,
   showSpeaker = true,
@@ -574,10 +604,20 @@ export default function TranscriptViewer({
 
   const editor = useSegments(sourceSegments ?? []);
 
+  const [pendingRenames, setPendingRenames] = useState<Record<string, string>>({});
+  const [pendingRemovals, setPendingRemovals] = useState<Set<string>>(new Set());
+  const [addedSpeakers, setAddedSpeakers] = useState<string[]>([]);
+
+  const hasPendingStripChanges =
+    Object.keys(pendingRenames).length > 0 || pendingRemovals.size > 0;
+
   // Reset when source changes (new version selected or fresh load)
   useEffect(() => {
     if (sourceSegments) {
       editor.reset(sourceSegments);
+      setPendingRenames({});
+      setPendingRemovals(new Set());
+      setAddedSpeakers([]);
       if (audioPath) {
         useAudioStore.getState().setAudioSegments(
           audioPath,
@@ -596,7 +636,28 @@ export default function TranscriptViewer({
   // ── Save / delete version ─────────────────────────────────────────────────
 
   const saveMutation = useMutation({
-    mutationFn: () => saveSegments(editor.editedSegments),
+    mutationFn: async () => {
+      const writes: Promise<unknown>[] = [];
+      if (editor.isDirty || hasPendingStripChanges) {
+        const finalSegments = editor.editedSegments
+          .filter((seg) => !pendingRemovals.has(seg.speaker))
+          .map((seg) => {
+            const renamed = pendingRenames[seg.speaker];
+            return renamed && renamed !== seg.speaker ? { ...seg, speaker: renamed } : seg;
+          });
+        writes.push(saveSegments(finalSegments));
+      }
+      if (hasPendingStripChanges && saveSpeakerMap) {
+        const mapping: Record<string, string> = {};
+        for (const [from, to] of Object.entries(pendingRenames)) {
+          if (from !== to) mapping[from] = to;
+        }
+        if (Object.keys(mapping).length > 0) {
+          writes.push(saveSpeakerMap(mapping));
+        }
+      }
+      await Promise.all(writes);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments(editorKey, audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.stepVersions(editorKey, audioPath) });
@@ -618,8 +679,11 @@ export default function TranscriptViewer({
     for (const seg of sourceSegments ?? []) {
       if (seg.speaker && seg.speaker !== "[BREAK]") set.add(seg.speaker);
     }
+    for (const name of addedSpeakers) set.add(name);
+    for (const target of Object.values(pendingRenames)) set.add(target);
+    for (const removed of pendingRemovals) set.delete(removed);
     return Array.from(set).sort();
-  }, [sourceSegments, externalSpeakers]);
+  }, [sourceSegments, externalSpeakers, addedSpeakers, pendingRenames, pendingRemovals]);
 
   // ── Merge dialog (when speakers differ) ──────────────────────────────────
 
@@ -742,6 +806,35 @@ export default function TranscriptViewer({
 
   const hasCompareOptions = !!referenceSegments || (versions && versions.length > 0);
 
+  const handleStripRename = useCallback((from: string, to: string) => {
+    setPendingRenames((prev) => {
+      const next = { ...prev };
+      if (!to || to === from) {
+        delete next[from];
+      } else {
+        next[from] = to;
+      }
+      return next;
+    });
+  }, []);
+
+  const handleStripToggleRemoved = useCallback((name: string) => {
+    setPendingRemovals((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }, []);
+
+  const handleStripAddSpeaker = useCallback((name: string) => {
+    setAddedSpeakers((prev) => (prev.includes(name) ? prev : [...prev, name]));
+  }, []);
+
+  const handleStripRemoveAdded = useCallback((name: string) => {
+    setAddedSpeakers((prev) => prev.filter((n) => n !== name));
+  }, []);
+
   // ── Selection ─────────────────────────────────────────────────────────────
 
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
@@ -852,14 +945,16 @@ export default function TranscriptViewer({
 
   const searchRef = useRef<HTMLInputElement>(null);
 
+  const isDirty = editor.isDirty || hasPendingStripChanges;
+
   useEffect(() => {
-    if (!editor.isDirty) return;
+    if (!isDirty) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
-  }, [editor.isDirty]);
+  }, [isDirty]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -867,7 +962,7 @@ export default function TranscriptViewer({
       if (!mod) return;
       if (e.key === "s") {
         e.preventDefault();
-        if (editor.isDirty && !saveMutation.isPending) saveMutation.mutate();
+        if (isDirty && !saveMutation.isPending) saveMutation.mutate();
       } else if (e.key === "z" && !e.shiftKey) {
         if ((e.target as HTMLElement)?.tagName !== "TEXTAREA" && editor.canUndo) {
           e.preventDefault();
@@ -880,7 +975,7 @@ export default function TranscriptViewer({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [editor.isDirty, editor.canUndo, saveMutation]);
+  }, [isDirty, editor.canUndo, saveMutation]);
 
   // ── Loading state ─────────────────────────────────────────────────────────
 
@@ -905,57 +1000,59 @@ export default function TranscriptViewer({
 
   return (
     <div className="flex flex-col h-full">
-      {/* ── Top toolbar: title + version + compare ── */}
       <div className="px-4 py-2 border-b border-border space-y-1">
-        {/* Row 1: title + version selector + file details */}
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold shrink-0">Transcript</span>
-          {versions && versions.length > 0 ? (
-            <div className="flex items-center gap-1.5">
-              <select
-                value={selectedVersionId ?? ""}
-                onChange={(e) => setSelectedVersionId(e.target.value || null)}
-                className={`${selectClass}`}
-              >
-                <option value="">Latest</option>
-                {versions.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {versionDate(v)} · {versionLabel(v)} ({v.segment_count} seg)
-                  </option>
-                ))}
-              </select>
-              {selectedVersionId && deleteVersion && (
-                <button
-                  onClick={() => {
-                    deleteVersionMutation.mutate(selectedVersionId);
-                    setSelectedVersionId(null);
-                  }}
-                  className="text-xs text-muted-foreground hover:text-destructive transition"
-                  title="Delete this version"
+        {(versions && versions.length > 0) || sourceLabel ? (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground shrink-0 w-20">Version</span>
+            {versions && versions.length > 0 ? (
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={selectedVersionId ?? ""}
+                  onChange={(e) => setSelectedVersionId(e.target.value || null)}
+                  className={`${selectClass}`}
                 >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-              {infoItems.length > 0 && (
-                <button
-                  onClick={() => setExpandedInfo(!expandedInfo)}
-                  className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition shrink-0"
-                >
-                  File details
-                </button>
-              )}
-            </div>
-          ) : sourceLabel ? (
-            <span className="text-xs text-muted-foreground">
-              Source: <span className="font-mono">{sourceLabel}</span>
-            </span>
-          ) : null}
-        </div>
+                  <option value="">Latest</option>
+                  {versions.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {versionOption(v)}
+                    </option>
+                  ))}
+                </select>
+                {deleteVersion && versions.length > 0 && (
+                  <button
+                    onClick={() => {
+                      const targetId = selectedVersionId ?? versions[0].id;
+                      const target = versions.find((v) => v.id === targetId);
+                      if (!target) return;
+                      if (!window.confirm(`Delete this version?\n\n${versionOption(target)}\n\nThis removes both the file and the database entry and cannot be undone.`)) return;
+                      deleteVersionMutation.mutate(targetId);
+                      setSelectedVersionId(null);
+                    }}
+                    className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-destructive hover:border-destructive/50 transition"
+                    title="Delete current version (file + db entry)"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Delete
+                  </button>
+                )}
+                {infoItems.length > 0 && (
+                  <button
+                    onClick={() => setExpandedInfo(!expandedInfo)}
+                    className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition shrink-0"
+                  >
+                    File details
+                  </button>
+                )}
+              </div>
+            ) : (
+              <span className="text-xs text-muted-foreground font-mono">{sourceLabel}</span>
+            )}
+          </div>
+        ) : null}
 
-        {/* Row 2: compare with (aligned with version selector) */}
         {hasCompareOptions && (
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground shrink-0">Compare with</span>
+            <span className="text-xs text-muted-foreground shrink-0 w-20">Compare</span>
             <select
               value={refChoice}
               onChange={(e) => handleRefChoiceChange(e.target.value)}
@@ -967,14 +1064,28 @@ export default function TranscriptViewer({
               )}
               {versions && versions.map((v) => (
                 <option key={v.id} value={v.id}>
-                  {versionDate(v)} · {versionLabel(v)} ({v.segment_count} seg)
+                  {versionOption(v)}
                 </option>
               ))}
             </select>
           </div>
         )}
 
-        {/* Version info (expandable) */}
+        {saveSpeakerMap && (
+          <SpeakerStrip
+            segments={sourceSegments}
+            pendingRenames={pendingRenames}
+            pendingRemovals={pendingRemovals}
+            addedSpeakers={addedSpeakers}
+            showSpeakers={externalSpeakers}
+            audioPath={audioPath}
+            onRename={handleStripRename}
+            onToggleRemoved={handleStripToggleRemoved}
+            onAddSpeaker={handleStripAddSpeaker}
+            onRemoveAdded={handleStripRemoveAdded}
+          />
+        )}
+
         {infoItems.length > 0 && expandedInfo && (
           <div className="bg-secondary/50 rounded border border-border/50 px-3 py-2 text-xs space-y-0.5">
             {infoItems.map(({ key, value }) => (
@@ -1031,16 +1142,23 @@ export default function TranscriptViewer({
               </button>
             )}
           </div>
-          {/* Speaker filter */}
           {speakers.length > 1 && (
-            <select
-              value={filters.speakerFilter}
-              onChange={(e) => { filters.setSpeakerFilter(e.target.value); filters.setPage(0); }}
-              className={`${selectClass} text-xs`}
+            <div
+              className={`flex items-center gap-1 rounded border pl-1.5 transition ${
+                filters.speakerFilter ? "border-primary/50 text-foreground" : "border-border text-muted-foreground"
+              }`}
+              title="Filter view by speaker"
             >
-              <option value="">All speakers</option>
-              {speakers.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+              <Filter className="w-3 h-3 shrink-0" />
+              <select
+                value={filters.speakerFilter}
+                onChange={(e) => { filters.setSpeakerFilter(e.target.value); filters.setPage(0); }}
+                className="bg-transparent outline-none text-xs py-0.5 pr-5"
+              >
+                <option value="">all</option>
+                {speakers.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
           )}
           {/* Flagged badge */}
           {showFlags && flaggedCount > 0 && (
@@ -1068,7 +1186,7 @@ export default function TranscriptViewer({
             </button>
             {showDensity && (
               <div className="absolute left-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg p-3 space-y-2 min-w-52">
-                <p className="text-2xs text-muted-foreground font-medium uppercase">Speech density thresholds</p>
+                <p className="text-2xs text-muted-foreground font-medium">Speech density thresholds</p>
                 <label className="flex items-center gap-2 text-xs">
                   <span className="shrink-0">{">"} </span>
                   <input
@@ -1124,14 +1242,14 @@ export default function TranscriptViewer({
             </Button>
           )}
           {exportSource && audioPath && (
-            <ExportDropdown audioPath={audioPath} source={exportSource} />
+            <ExportDropdown audioPath={audioPath} source={exportSource} filename={exportFilename} />
           )}
           <Button
-            variant={editor.isDirty ? "default" : "outline"}
+            variant={isDirty ? "default" : "outline"}
             size="sm"
             className="text-xs h-7"
             onClick={() => saveMutation.mutate()}
-            disabled={saveMutation.isPending || !editor.isDirty}
+            disabled={saveMutation.isPending || !isDirty}
             title="Save (Cmd+S)"
           >
             <Save className="w-3 h-3 mr-1" />
@@ -1183,6 +1301,7 @@ export default function TranscriptViewer({
                 isFlagged={showFlags ? isFlaggedSeg(segment, originalIndex) : false}
                 flagReasonText={showFlags ? flagReason(segment, filters.densityThreshold, filters.maxDensityThreshold) : null}
                 isChanged={isChanged(segment, originalIndex)}
+                isPendingRemoval={pendingRemovals.has(segment.speaker)}
                 selected={selectedIndices.has(originalIndex)}
                 onToggleSelect={() => toggleSelect(originalIndex)}
                 audioPath={audioPath}

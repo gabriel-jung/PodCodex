@@ -21,7 +21,10 @@ export function usePipelineTask(
   const refreshQueries = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.stepAll(stepKey) });
     queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-  }, [queryClient, stepKey]);
+    // Unified versions endpoint feeds cross-step input-version selectors
+    // (e.g. Translate can read both corrected and transcript versions).
+    queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
+  }, [queryClient, stepKey, audioPath]);
 
   const handleComplete = useCallback(() => {
     refreshQueries();

@@ -61,13 +61,14 @@ export interface PipelineConfigState {
   indexModel: string;
   setIndexModel: (model: string) => void;
 
-  // Per-step presets
+  // Per-step presets — `apply*Preset` atomically updates the underlying
+  // config fields AND the preset key, avoiding the "reset then restore" dance.
   transcribePreset: string;
-  setTranscribePreset: (preset: string) => void;
+  applyTranscribePreset: (key: keyof typeof TRANSCRIBE_PRESETS) => void;
   llmPreset: string;
-  setLLMPreset: (preset: string) => void;
+  applyLLMPreset: (key: keyof typeof LLM_PRESETS) => void;
   indexPreset: string;
-  setIndexPreset: (preset: string) => void;
+  applyIndexPreset: (key: keyof typeof INDEX_PRESETS) => void;
 }
 
 export const usePipelineConfigStore = create<PipelineConfigState>()(
@@ -111,11 +112,25 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
       setIndexModel: (indexModel) => set({ indexModel, indexPreset: "" }),
 
       transcribePreset: "gpu",
-      setTranscribePreset: (transcribePreset) => set({ transcribePreset }),
+      applyTranscribePreset: (key) =>
+        set((s) => {
+          const p = TRANSCRIBE_PRESETS[key];
+          return p
+            ? { transcribe: { ...s.transcribe, modelSize: p.modelSize, diarize: p.diarize }, transcribePreset: key }
+            : s;
+        }),
       llmPreset: "manual",
-      setLLMPreset: (llmPreset) => set({ llmPreset }),
+      applyLLMPreset: (key) =>
+        set((s) => {
+          const p = LLM_PRESETS[key];
+          return p ? { llm: { ...s.llm, mode: p.mode }, llmPreset: key } : s;
+        }),
       indexPreset: "balanced",
-      setIndexPreset: (indexPreset) => set({ indexPreset }),
+      applyIndexPreset: (key) =>
+        set(() => {
+          const p = INDEX_PRESETS[key];
+          return p ? { indexModel: p.model, indexPreset: key } : {};
+        }),
     }),
     {
       name: "podcodex-pipeline-config",

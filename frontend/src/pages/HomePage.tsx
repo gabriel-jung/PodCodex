@@ -152,7 +152,7 @@ export default function HomePage() {
             {sections.map((section) => (
               <div key={section.label || "all"} className={sections.length > 1 ? "mb-6" : ""}>
                 {section.label && (
-                  <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">{section.label}</h3>
+                  <h3 className="text-xs font-medium text-muted-foreground mb-3">{section.label}</h3>
                 )}
                 {viewMode === "card" ? (
                   <div

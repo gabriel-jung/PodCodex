@@ -155,7 +155,9 @@ export function stepTag(step: string, type?: string): string {
   return `translated · ${step}${edited}`;
 };
 
-/** Build a compact label for a version (model, provider, language info). */
+/** Build a compact label for a version (model, provider, language info).
+ *  Does NOT include the edited marker — that lives in stepTag so the two
+ *  can be composed via versionOption without duplication. */
 export function versionLabel(v: VersionEntry): string {
   const p = v.params as Record<string, unknown>;
   if (p.skipped) return "Skipped (copy)";
@@ -163,17 +165,16 @@ export function versionLabel(v: VersionEntry): string {
   // Source chain: "Whisper/base, diarized → ollama → openai"
   const chain = p.source_chain as string[] | undefined;
   if (chain && chain.length > 0) {
-    const formatted = chain.map((s) => {
+    return chain.map((s) => {
       // Split "whisper/base, diarized" → map source part, keep rest
       const [main, ...rest] = s.split(", ");
       const [source, ...model] = main.split("/");
       const label = [SOURCE_LABELS[source] || source, ...model].join(" ");
       return rest.length > 0 ? `${label}, ${rest.join(", ")}` : label;
-    });
-    return formatted.join(" → ");
+    }).join(" → ");
   }
 
-  // Legacy / transcript: flat label
+  // Legacy / transcript: flat label from individual params
   const parts: string[] = [];
   if (p.source) parts.push(SOURCE_LABELS[String(p.source)] || String(p.source));
   if (v.model) parts.push(v.model);
@@ -184,7 +185,14 @@ export function versionLabel(v: VersionEntry): string {
   else if (p.source_lang && p.target_lang) parts.push(`${p.source_lang} → ${p.target_lang}`);
   else if (p.source_lang) parts.push(String(p.source_lang));
   if (p.diarize === true) parts.push("diarized");
-  return parts.join(", ") || "Generated";
+  return parts.join(", ") || "Unknown";
+}
+
+/** Full single-line label for a version: "[Transcript · edited] 9 Apr, 10:37 — base (21 seg)".
+ *  Use this in every dropdown / picker so the format stays identical everywhere. */
+export function versionOption(v: VersionEntry): string {
+  const step = v.step ? `[${stepTag(v.step, v.type)}] ` : "";
+  return `${step}${versionDate(v)} — ${versionLabel(v)} (${v.segment_count} seg)`;
 }
 
 /** Params to hide from the version info box (internal / not user-relevant). */
@@ -194,7 +202,6 @@ const HIDDEN_VERSION_PARAMS = new Set(["meta", "batch_size", "batch_minutes", "e
 export function versionInfo(v: VersionEntry): { key: string; value: string }[] {
   const rows: { key: string; value: string }[] = [];
   if (v.model) rows.push({ key: "Model", value: v.model });
-  rows.push({ key: "Type", value: v.type === "validated" ? "Edited" : "Generated" });
   rows.push({ key: "Segments", value: String(v.segment_count) });
   rows.push({ key: "Hash", value: v.content_hash.replace("sha256:", "").slice(0, 8) });
   const p = v.params as Record<string, unknown>;

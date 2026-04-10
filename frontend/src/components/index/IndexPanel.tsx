@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
+import { INDEX_PRESETS } from "@/stores/pipelineConfigStore";
 import {
   getIndexConfig,
   getIndexStatus,
@@ -9,7 +10,7 @@ import {
   startIndex,
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
-import { errorMessage, getShowName, selectClass, versionDate, versionLabel, versionInfo } from "@/lib/utils";
+import { errorMessage, getShowName, selectClass, versionOption, versionInfo } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { Button } from "@/components/ui/button";
 import { useCapabilities } from "@/hooks/useCapabilities";
@@ -19,6 +20,7 @@ import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
 import SectionHeader from "@/components/common/SectionHeader";
 import PipelinePanel from "@/components/common/PipelinePanel";
+import PresetCards from "@/components/common/PresetCards";
 
 export default function IndexPanel() {
   const episode = useEpisodeStore((s) => s.episode);
@@ -55,6 +57,8 @@ export default function IndexPanel() {
   const source = selectedSource ?? defaultSource;
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const storeIndexModel = usePipelineConfigStore((s) => s.indexModel);
+  const indexPreset = usePipelineConfigStore((s) => s.indexPreset);
+  const applyIndexPreset = usePipelineConfigStore((s) => s.applyIndexPreset);
   const [selectedModels, setSelectedModels] = useState<string[]>([storeIndexModel]);
   useEffect(() => setSelectedModels([storeIndexModel]), [storeIndexModel]);
   const [selectedChunkings, setSelectedChunkings] = useState<string[]>(["semantic"]);
@@ -138,6 +142,8 @@ export default function IndexPanel() {
       emptyMessage="Episode not yet indexed."
       controls={
         <div className="px-4 pb-3 space-y-4">
+          <PresetCards presets={INDEX_PRESETS} active={indexPreset} onSelect={applyIndexPreset} />
+
           {/* Source selection: step + version */}
           {availableSources.length > 0 && (
             <div className="space-y-2">
@@ -162,7 +168,7 @@ export default function IndexPanel() {
                     <option value="">Latest</option>
                     {stepVersions.map((v) => (
                       <option key={v.id} value={v.id}>
-                        {versionDate(v)} · {versionLabel(v)} ({v.segment_count} seg)
+                        {versionOption(v)}
                       </option>
                     ))}
                   </select>

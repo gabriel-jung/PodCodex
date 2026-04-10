@@ -9,6 +9,7 @@ from podcodex.api.routes._helpers import (
     LLMRequest,
     ManualPromptsRequest,
     batch_progress,
+    build_edit_provenance,
     build_provenance,
     enrich_correct_kwargs,
     format_prompt_batches,
@@ -52,13 +53,7 @@ async def save_corrected_segments(
     from podcodex.core.correct import save_corrected
 
     seg_dicts = [s.model_dump() for s in segments]
-    provenance = build_provenance(
-        "corrected",
-        ptype="validated",
-        manual_edit=True,
-        audio_path=audio_path,
-        output_dir=output_dir,
-    )
+    provenance = build_edit_provenance("corrected", audio_path, output_dir)
     save_corrected(audio_path, seg_dicts, output_dir=output_dir, provenance=provenance)
     return {"status": "saved", "count": len(seg_dicts)}
 
@@ -73,9 +68,18 @@ async def start_correct(req: LLMRequest) -> TaskResponse:
     def run_correct(progress_cb, req_data):
         from podcodex.core.correct import correct_segments, save_corrected
         from podcodex.core.transcribe import load_transcript
+        from podcodex.core.versions import load_version
 
         progress_cb(0.0, "Loading transcript...")
-        segments = load_transcript(req_data.audio_path, output_dir=req_data.output_dir)
+        if req_data.source_version_id:
+            p = AudioPaths.from_audio(
+                req_data.audio_path, output_dir=req_data.output_dir
+            )
+            segments = load_version(p.base, "transcript", req_data.source_version_id)
+        else:
+            segments = load_transcript(
+                req_data.audio_path, output_dir=req_data.output_dir
+            )
         if not segments:
             raise ValueError("No transcript found to correct")
 

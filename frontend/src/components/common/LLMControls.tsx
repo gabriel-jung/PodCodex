@@ -1,11 +1,14 @@
 import { Button } from "@/components/ui/button";
-import { selectClass } from "@/lib/utils";
+import { selectClass, versionOption } from "@/lib/utils";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
+import { LLM_PRESETS } from "@/stores/pipelineConfigStore";
+import type { VersionEntry } from "@/api/types";
 import FormGrid from "./FormGrid";
 import HelpLabel from "./HelpLabel";
 import MissingDependency from "./MissingDependency";
 import ManualModePanel from "./ManualModePanel";
+import PresetCards from "./PresetCards";
 
 export type LLMMode = "api" | "ollama" | "manual";
 
@@ -28,6 +31,17 @@ interface LLMControlsProps {
   error?: string | null;
   runLabel?: string;
   extraFields?: React.ReactNode;
+  /** Active preset key and handler for the LLM preset cards. */
+  preset: string;
+  onPresetChange: (key: keyof typeof LLM_PRESETS) => void;
+  /** All available upstream versions the user can pick as input. */
+  inputVersions?: VersionEntry[];
+  /** Currently selected version id, or null to use the latest. */
+  selectedInputVersionId?: string | null;
+  /** Called when the user changes the input version selection. */
+  onInputVersionChange?: (id: string | null) => void;
+  /** Label describing what kind of input it is (e.g. "Transcript", "Source text"). */
+  inputLabel?: string;
   manualPrompts?: {
     generate: (batchMinutes: number) => Promise<{ batch_index: number; prompt: string; segment_count: number }[]>;
     apply: (corrections: unknown[]) => Promise<unknown>;
@@ -43,6 +57,12 @@ export default function LLMControls({
   error,
   runLabel = "Run",
   extraFields,
+  preset,
+  onPresetChange,
+  inputVersions,
+  selectedInputVersionId,
+  onInputVersionChange,
+  inputLabel = "Input",
   manualPrompts,
 }: LLMControlsProps) {
   const { has: hasCap } = useCapabilities();
@@ -62,6 +82,24 @@ export default function LLMControls({
           label="LLM libraries"
           description="Required for automatic AI processing. You can also use manual mode, which gives you prompts to paste into any chatbot."
         />
+      )}
+
+      <PresetCards presets={LLM_PRESETS} active={preset} onSelect={onPresetChange} />
+
+      {inputVersions && inputVersions.length > 0 && (
+        <div className="text-xs text-muted-foreground flex items-center gap-2">
+          <span className="shrink-0">{inputLabel}</span>
+          <select
+            value={selectedInputVersionId ?? ""}
+            onChange={(e) => onInputVersionChange?.(e.target.value || null)}
+            className={`${selectClass} text-xs flex-1 min-w-0`}
+          >
+            <option value="">Latest — {versionOption(inputVersions[0])}</option>
+            {inputVersions.map((v) => (
+              <option key={v.id} value={v.id}>{versionOption(v)}</option>
+            ))}
+          </select>
+        </div>
       )}
 
       {/* ── Section 1: Mode + model ── */}

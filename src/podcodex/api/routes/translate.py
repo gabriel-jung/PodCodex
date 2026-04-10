@@ -9,6 +9,7 @@ from podcodex.api.routes._helpers import (
     LLMRequest,
     ManualPromptsRequest,
     batch_progress,
+    build_edit_provenance,
     build_provenance,
     format_prompt_batches,
     llm_prov_params,
@@ -56,13 +57,7 @@ async def save_translated_segments(
 
     lang_norm = normalize_lang(lang)
     seg_dicts = [s.model_dump() for s in segments]
-    provenance = build_provenance(
-        lang_norm,
-        ptype="validated",
-        manual_edit=True,
-        audio_path=audio_path,
-        output_dir=output_dir,
-    )
+    provenance = build_edit_provenance(lang_norm, audio_path, output_dir)
     save_translation(
         audio_path, seg_dicts, lang, output_dir=output_dir, provenance=provenance
     )
@@ -94,9 +89,21 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
     def run_translate(progress_cb, req_data):
         """Load source segments, run translation in batches, and save the raw output."""
         from podcodex.core.translate import save_translation_raw, translate_segments
+        from podcodex.core.versions import load_version
 
         progress_cb(0.0, "Loading source segments...")
-        segments = load_best_source(req_data.audio_path, req_data.output_dir)
+        if req_data.source_version_id:
+            p = AudioPaths.from_audio(
+                req_data.audio_path, output_dir=req_data.output_dir
+            )
+            try:
+                segments = load_version(p.base, "corrected", req_data.source_version_id)
+            except FileNotFoundError:
+                segments = load_version(
+                    p.base, "transcript", req_data.source_version_id
+                )
+        else:
+            segments = load_best_source(req_data.audio_path, req_data.output_dir)
 
         progress_cb(0.1, "Starting translation...")
 

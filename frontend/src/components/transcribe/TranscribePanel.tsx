@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
+import { TRANSCRIBE_PRESETS } from "@/stores/pipelineConfigStore";
 import {
   deleteTranscribeVersion,
   getSegments,
@@ -8,6 +9,7 @@ import {
   importTranscript,
   loadTranscribeVersion,
   saveSegments,
+  saveSpeakerMap,
   startTranscribe,
   uploadTranscript,
 } from "@/api/client";
@@ -23,8 +25,8 @@ import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
 import SectionHeader from "@/components/common/SectionHeader";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
-import SpeakerMapEditor from "@/components/transcribe/SpeakerMapEditor";
 import PipelinePanel from "@/components/common/PipelinePanel";
+import PresetCards from "@/components/common/PresetCards";
 
 export default function TranscribePanel() {
   const episode = useEpisodeStore((s) => s.episode);
@@ -45,6 +47,8 @@ export default function TranscribePanel() {
   // Form state
   const tc = usePipelineConfigStore((s) => s.transcribe);
   const setTc = usePipelineConfigStore((s) => s.setTranscribe);
+  const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
+  const applyTranscribePreset = usePipelineConfigStore((s) => s.applyTranscribePreset);
   const showLangISO = languageToISO(showMeta?.language || "");
   const [language, setLanguage] = useState(showLangISO);
   // Sync when showMeta loads after initial render
@@ -57,6 +61,13 @@ export default function TranscribePanel() {
   // Existing subtitle files for reimport controls
   const subtitleFiles = (episode.files ?? []).filter(
     (f) => f.endsWith(".vtt") || f.endsWith(".srt"),
+  );
+  const hasSubs = !!episode.has_subtitles || subtitleFiles.length > 0;
+
+  // Source toggle — matches the batch pipeline's Audio/Subtitles switch.
+  // Initialised to whichever exists; the toggle UI only shows when both do.
+  const [transcribeSource, setTranscribeSource] = useState<"audio" | "subtitles">(
+    hasRealAudio ? "audio" : "subtitles",
   );
 
   const uploadMutation = useMutation({
@@ -107,8 +118,8 @@ export default function TranscribePanel() {
       done={episode.transcribed}
       expanded={expanded}
       onToggle={() => task.setExpanded(!expanded)}
-      rerunLabel={hasRealAudio ? "Re-run transcription" : "Reimport transcript"}
-      settingsLabel={hasRealAudio ? "Transcription settings" : "Import transcript"}
+      rerunLabel={transcribeSource === "audio" ? "Re-run transcription" : "Reimport transcript"}
+      settingsLabel={transcribeSource === "audio" ? "Transcription settings" : "Import transcript"}
       taskId={task.activeTaskId}
       onTaskComplete={() => { task.handleComplete(); }}
       onRetry={task.handleRetry}
@@ -116,8 +127,28 @@ export default function TranscribePanel() {
       emptyMessage="No transcript yet."
       controls={
         <>
-          {hasRealAudio ? (
+          {hasRealAudio && hasSubs && (
+            <div className="px-4 pt-3 flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">Source</span>
+              <div className="flex rounded-md border border-border overflow-hidden">
+                <button
+                  onClick={() => setTranscribeSource("audio")}
+                  className={`px-3 py-1 transition ${transcribeSource === "audio" ? "bg-accent font-medium" : "hover:bg-accent/50 text-muted-foreground"}`}
+                >
+                  Audio
+                </button>
+                <button
+                  onClick={() => setTranscribeSource("subtitles")}
+                  className={`px-3 py-1 transition ${transcribeSource === "subtitles" ? "bg-accent font-medium" : "hover:bg-accent/50 text-muted-foreground"}`}
+                >
+                  Subtitles
+                </button>
+              </div>
+            </div>
+          )}
+          {transcribeSource === "audio" ? (
             <TranscribeForm
+              preset={transcribePreset} onSelectPreset={applyTranscribePreset}
               modelSize={tc.modelSize} setModelSize={(v) => setTc({ modelSize: v })}
               language={language} setLanguage={setLanguage}
               batchSize={tc.batchSize} setBatchSize={(v) => setTc({ batchSize: v })}
@@ -176,21 +207,20 @@ export default function TranscribePanel() {
         </>
       }
     >
-      {episode.transcribed && !task.activeTaskId && audioPath && (
-        <SpeakerMapEditor key={audioPath} audioPath={audioPath} onSaved={() => task.refreshQueries()} />
-      )}
       {episode.transcribed && !task.activeTaskId && (
         <TranscriptViewer
           editorKey="transcribe"
           audioPath={audioPath ?? undefined}
           loadSegments={() => getSegments(audioPath!)}
           saveSegments={(segs) => saveSegments(audioPath!, segs)}
+          saveSpeakerMap={(m) => saveSpeakerMap(audioPath!, m)}
           showDelete
           showFlags
           showSpeaker
           speakers={showMeta?.speakers}
           sourceLabel={transcriptSourceLabel(episode.provenance)}
           exportSource="transcript"
+          exportFilename={episode.stem || undefined}
           loadVersions={() => getTranscribeVersions(audioPath!)}
           loadVersion={(id) => loadTranscribeVersion(audioPath!, id)}
           deleteVersion={(id) => deleteTranscribeVersion(audioPath!, id)}
@@ -201,6 +231,7 @@ export default function TranscribePanel() {
 }
 
 function TranscribeForm({
+  preset, onSelectPreset,
   modelSize, setModelSize,
   language, setLanguage,
   batchSize, setBatchSize,
@@ -213,6 +244,8 @@ function TranscribeForm({
   hasAudio,
   onRun, onUpload, isPending, isUploading, error, showOverwriteWarning,
 }: {
+  preset: string;
+  onSelectPreset: (key: keyof typeof TRANSCRIBE_PRESETS) => void;
   modelSize: string; setModelSize: (v: string) => void;
   whisperModels?: Record<string, string>;
   hasWhisperX: boolean;
@@ -236,6 +269,8 @@ function TranscribeForm({
           description="Required for automatic transcription. You can still upload a transcript file manually."
         />
       )}
+
+      <PresetCards presets={TRANSCRIBE_PRESETS} active={preset} onSelect={onSelectPreset} />
 
       <div className="flex flex-col lg:flex-row gap-6">
         <div className="space-y-3 flex-1">

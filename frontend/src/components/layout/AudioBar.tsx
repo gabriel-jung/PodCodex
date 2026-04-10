@@ -4,7 +4,7 @@ import { useAudioStore } from "@/stores";
 import type { AudioSegment } from "@/stores";
 import { audioFileUrl } from "@/api/client";
 import { Button } from "@/components/ui/button";
-import { Play, Pause, X, SkipBack, SkipForward, Volume2, VolumeX, MessageSquareText } from "lucide-react";
+import { Play, Pause, X, Volume2, VolumeX, MessageSquareText } from "lucide-react";
 import { formatTime } from "@/lib/utils";
 
 function findActiveSegment(segments: AudioSegment[] | null, time: number): AudioSegment | null {
@@ -76,8 +76,12 @@ export default function AudioBar() {
       return;
     }
 
+    // Seek slightly before the requested time. HTML5 audio seeking snaps to
+    // the nearest frame (~26ms for MP3) and WhisperX segment.start can run a
+    // bit late relative to the first phoneme — without this preroll, very
+    // short segments miss their opening.
     const doSeek = () => {
-      audio.currentTime = pendingSeek;
+      audio.currentTime = Math.max(0, pendingSeek - 0.15);
       audio.play();
       consumeSeek();
     };
@@ -186,55 +190,54 @@ export default function AudioBar() {
         </div>
 
         {/* Centered transport */}
-        <div className="flex-1 flex items-center justify-center gap-1">
-          <Button onClick={() => skip(-15)} variant="ghost" size="icon" className="h-7 w-7">
-            <SkipBack className="w-3.5 h-3.5" />
-          </Button>
-          <Button onClick={togglePlay} variant="ghost" size="icon" className="h-9 w-9">
+        <div className="flex-1 flex items-center justify-center gap-0.5">
+          <SkipLabelButton label="−15s" onClick={() => skip(-15)} title="Back 15s" />
+          <SkipLabelButton label="−5s" onClick={() => skip(-5)} title="Back 5s" />
+          <Button onClick={togglePlay} variant="ghost" size="icon" className="h-9 w-9 mx-1">
             {playing ? <Pause className="w-4.5 h-4.5" /> : <Play className="w-4.5 h-4.5 ml-0.5" />}
           </Button>
-          <Button onClick={() => skip(15)} variant="ghost" size="icon" className="h-7 w-7">
-            <SkipForward className="w-3.5 h-3.5" />
-          </Button>
+          <SkipLabelButton label="+5s" onClick={() => skip(5)} title="Forward 5s" />
+          <SkipLabelButton label="+15s" onClick={() => skip(15)} title="Forward 15s" />
         </div>
 
-        {/* Speed */}
-        <div className="flex items-center shrink-0 gap-0.5">
+        {/* Speed — grouped in a pill */}
+        <div className="flex items-center shrink-0 bg-muted/40 rounded-full h-7">
           <button
             onClick={() => setSpeed((s) => Math.max(0.5, +(s - 0.25).toFixed(2)))}
-            className="text-muted-foreground hover:text-foreground text-xs w-5 h-7 flex items-center justify-center rounded hover:bg-accent transition"
+            className="text-muted-foreground hover:text-foreground text-sm w-6 h-7 flex items-center justify-center rounded-l-full hover:bg-accent transition"
+            title="Slower"
           >
-            -
+            −
           </button>
           <button
             onClick={() => setSpeed(1)}
-            className="text-xs tabular-nums w-11 text-center text-muted-foreground hover:text-foreground rounded hover:bg-accent transition"
+            className="text-[11px] font-medium tabular-nums w-10 text-center text-foreground/80 hover:text-foreground h-7 transition"
             title="Reset speed"
           >
-            {speed.toFixed(2)}x
+            {speed.toFixed(2)}×
           </button>
           <button
             onClick={() => setSpeed((s) => Math.min(3, +(s + 0.25).toFixed(2)))}
-            className="text-muted-foreground hover:text-foreground text-xs w-5 h-7 flex items-center justify-center rounded hover:bg-accent transition"
+            className="text-muted-foreground hover:text-foreground text-sm w-6 h-7 flex items-center justify-center rounded-r-full hover:bg-accent transition"
+            title="Faster"
           >
             +
           </button>
         </div>
 
-        {/* Volume */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          <Button
+        {/* Volume — icon + slider in a pill */}
+        <div className="flex items-center gap-1.5 shrink-0 bg-muted/40 rounded-full h-7 pl-1 pr-2.5">
+          <button
             onClick={() => setMuted(!muted)}
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
+            className="text-muted-foreground hover:text-foreground h-7 w-6 flex items-center justify-center transition"
+            title={muted ? "Unmute" : "Mute"}
           >
             {muted || volume === 0 ? (
               <VolumeX className="w-3.5 h-3.5" />
             ) : (
               <Volume2 className="w-3.5 h-3.5" />
             )}
-          </Button>
+          </button>
           <input
             type="range"
             min={0}
@@ -245,21 +248,23 @@ export default function AudioBar() {
               setVolume(Number(e.target.value));
               if (muted) setMuted(false);
             }}
-            className="w-20 accent-primary h-1"
+            className="w-16 accent-primary h-1"
           />
         </div>
 
-        {/* Segment text toggle */}
+        {/* Segment text toggle — matches pill styling so it reads as a real control */}
         {audioSegments && (
-          <Button
+          <button
             onClick={() => setShowSegment(!showSegment)}
-            variant="ghost"
-            size="icon"
-            className={`h-7 w-7 shrink-0 ${showSegment ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            className={`shrink-0 h-7 w-7 flex items-center justify-center rounded-full transition ${
+              showSegment
+                ? "bg-primary/15 text-primary hover:bg-primary/20"
+                : "bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/60"
+            }`}
             title={showSegment ? "Hide segment text" : "Show current segment text"}
           >
             <MessageSquareText className="w-3.5 h-3.5" />
-          </Button>
+          </button>
         )}
 
         {/* Close */}
@@ -323,5 +328,26 @@ export default function AudioBar() {
       </div>
     </div>
     </div>
+  );
+}
+
+// Text-only skip button — clean tabular label, reads instantly, no fiddly icon+number overlay.
+function SkipLabelButton({
+  label,
+  onClick,
+  title,
+}: {
+  label: string;
+  onClick: () => void;
+  title: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className="h-7 px-2 flex items-center justify-center rounded-md text-[11px] font-medium tabular-nums text-muted-foreground hover:text-foreground hover:bg-accent transition"
+    >
+      {label}
+    </button>
   );
 }

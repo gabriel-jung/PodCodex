@@ -5,7 +5,7 @@ interface SectionHeaderProps {
 /** Consistent section heading used across pipeline panels. */
 export default function SectionHeader({ children }: SectionHeaderProps) {
   return (
-    <h5 className="text-xs font-medium text-muted-foreground/60 uppercase tracking-wide">
+    <h5 className="text-xs font-medium text-muted-foreground/70">
       {children}
     </h5>
   );

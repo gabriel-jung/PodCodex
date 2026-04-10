@@ -196,7 +196,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
         <div className="flex flex-1 min-h-0">
           {/* Sidebar */}
           <div className="w-40 border-r border-border py-2 flex flex-col shrink-0">
-            <span className="text-2xs text-muted-foreground uppercase tracking-wider px-3 mb-1">Quick access</span>
+            <span className="text-xs text-muted-foreground px-3 mb-1">Quick access</span>
             {QUICK_ACCESS.map((item) => (
               <button
                 key={item.path}

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
 import { Search, X, SlidersHorizontal, Clock, Undo2, HelpCircle, Trash2, History } from "lucide-react";
 import type { VersionEntry } from "@/api/types";
-import { versionLabel, versionDate, versionInfo } from "@/lib/utils";
+import { versionOption, versionInfo } from "@/lib/utils";
 
 function Tip({ text }: { text: string }) {
   const [show, setShow] = useState(false);
@@ -135,14 +135,10 @@ export default function EditorToolbar({
             {showVersions && (
               <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-72 max-h-80 overflow-y-auto">
                 <div className="px-3 py-1 text-muted-foreground/60 flex items-center gap-3 border-b border-border/50 mb-1">
-                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" /> generated</span>
+                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" /> pipeline</span>
                   <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-success" /> edited</span>
                 </div>
                 {versions.map((v) => {
-                  const d = new Date(v.timestamp);
-                  const dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-                  const timeStr = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-                  const label = versionLabel(v);
                   const isExpanded = expandedVersion === v.id;
                   const info = isExpanded ? versionInfo(v) : [];
                   return (
@@ -153,10 +149,7 @@ export default function EditorToolbar({
                           className="flex-1 text-left truncate"
                           onClick={() => { onLoadVersion(v.id); setShowVersions(false); }}
                         >
-                          <span className="text-muted-foreground">{dateStr}, {timeStr}</span>
-                          {" — "}
-                          <span className="font-medium">{label}</span>
-                          <span className="ml-1 text-muted-foreground/60">({v.segment_count} seg)</span>
+                          {versionOption(v)}
                         </button>
                         <button
                           className="shrink-0 text-muted-foreground/40 hover:text-muted-foreground p-0.5"

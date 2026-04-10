@@ -18,11 +18,13 @@ import {
 } from "@/stores/pipelineConfigStore";
 import { Button } from "@/components/ui/button";
 import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Copy, Check } from "lucide-react";
-import { languageToISO, errorMessage, selectClass, cn, versionLabel, versionDate, stepTag, SOURCE_LABELS } from "@/lib/utils";
+import { languageToISO, errorMessage, selectClass, cn, versionLabel, versionOption, stepTag, SOURCE_LABELS } from "@/lib/utils";
+import { filterVersionsForStep, type PipelineInputStep } from "@/lib/pipelineInputs";
+import PresetCards from "@/components/common/PresetCards";
 import { getCorrectManualPrompts, applyCorrectManual } from "@/api/correct";
 import { getTranslateManualPrompts, applyTranslateManual } from "@/api/translate";
 
-export type StepKey = "transcribe" | "correct" | "translate" | "index";
+export type StepKey = PipelineInputStep;
 
 /** True if the episode still needs work for the given step. */
 export function episodeNeedsStep(ep: Episode, step: StepKey): boolean {
@@ -55,24 +57,6 @@ interface PromptBatch {
   batch_index: number;
   prompt: string;
   segment_count: number;
-}
-
-/** Which steps are valid inputs for each pipeline step, in priority order. */
-const INPUT_STEPS: Record<StepKey, string[]> = {
-  transcribe: [],
-  correct: ["transcript"],
-  translate: ["corrected", "transcript"],
-  index: ["corrected", "transcript"],
-};
-
-const INPUT_STEP_SETS: Record<StepKey, Set<string>> = Object.fromEntries(
-  Object.entries(INPUT_STEPS).map(([k, v]) => [k, new Set(v)]),
-) as Record<StepKey, Set<string>>;
-
-/** Filter versions to only those valid as input for a given pipeline step. */
-function filterVersionsForStep(versions: VersionEntry[], step: StepKey): VersionEntry[] {
-  const valid = INPUT_STEP_SETS[step];
-  return valid.size > 0 ? versions.filter((v) => valid.has(v.step)) : versions;
 }
 
 /** Find the label for a source key (group or variant). */
@@ -192,36 +176,6 @@ function ToggleButton({ checked, onClick, title, children }: {
   );
 }
 
-/** Reusable preset card grid. */
-function PresetCards<K extends string>({
-  presets,
-  active,
-  onSelect,
-}: {
-  presets: Record<K, { label: string; desc: string }>;
-  active: string;
-  onSelect: (key: K) => void;
-}) {
-  return (
-    <div className={`grid gap-2 items-stretch ${Object.keys(presets).length === 2 ? "grid-cols-2" : "grid-cols-3"}`}>
-      {(Object.entries(presets) as [K, { label: string; desc: string }][]).map(([key, p]) => (
-        <button
-          key={key}
-          onClick={() => onSelect(key)}
-          className={`rounded-lg border p-3 text-left transition flex flex-col ${
-            active === key
-              ? "border-primary bg-accent"
-              : "border-border hover:border-primary/50"
-          }`}
-        >
-          <div className="text-sm font-medium">{p.label}</div>
-          <div className="text-xs text-muted-foreground mt-0.5">{p.desc}</div>
-        </button>
-      ))}
-    </div>
-  );
-}
-
 export type TranscribeSource = "audio" | "subtitles";
 
 export default function StepConfigEditor({ step, episodes, showLanguage, onRun, onClose }: {
@@ -242,11 +196,11 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
   const indexModel = usePipelineConfigStore((s) => s.indexModel);
   const setIndexModel = usePipelineConfigStore((s) => s.setIndexModel);
   const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
-  const setTranscribePreset = usePipelineConfigStore((s) => s.setTranscribePreset);
+  const applyTranscribePreset = usePipelineConfigStore((s) => s.applyTranscribePreset);
   const llmPreset = usePipelineConfigStore((s) => s.llmPreset);
-  const setLLMPreset = usePipelineConfigStore((s) => s.setLLMPreset);
+  const applyLLMPreset = usePipelineConfigStore((s) => s.applyLLMPreset);
   const indexPreset = usePipelineConfigStore((s) => s.indexPreset);
-  const setIndexPreset = usePipelineConfigStore((s) => s.setIndexPreset);
+  const applyIndexPreset = usePipelineConfigStore((s) => s.applyIndexPreset);
   const hasAnySubs = step === "transcribe" && episodes.some((e) => e.has_subtitles);
   const [transcribeSource, setTranscribeSource] = useState<TranscribeSource>(hasAnySubs ? "subtitles" : "audio");
   const [sourceOpen, setSourceOpen] = useState<boolean | null>(null); // null = auto from group count
@@ -403,24 +357,6 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
     return () => { cancelled = true; clearTimeout(timeout); };
   }, [manualActive, currentEpKey, currentBatchCount, customVersions[currentEpKey]]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const selectTranscribePreset = (key: string) => {
-    const p = TRANSCRIBE_PRESETS[key as keyof typeof TRANSCRIBE_PRESETS];
-    if (p) setTc({ modelSize: p.modelSize, diarize: p.diarize });
-    setTranscribePreset(key); // must be after setTc since setTc resets transcribePreset
-  };
-
-  const selectLLMPreset = (key: string) => {
-    const p = LLM_PRESETS[key as keyof typeof LLM_PRESETS];
-    if (p) setLLM({ mode: p.mode });
-    setLLMPreset(key); // must be after setLLM since setLLM resets llmPreset
-  };
-
-  const selectIndexPreset = (key: string) => {
-    const p = INDEX_PRESETS[key as keyof typeof INDEX_PRESETS];
-    if (p) setIndexModel(p.model);
-    setIndexPreset(key); // must be after setIndexModel since it resets indexPreset
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
@@ -484,10 +420,10 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
           {canRun.length > 0 && !isLLMStep && (
             <>
               {step === "transcribe" && transcribeSource === "audio" && (
-                <PresetCards presets={TRANSCRIBE_PRESETS} active={transcribePreset} onSelect={selectTranscribePreset} />
+                <PresetCards presets={TRANSCRIBE_PRESETS} active={transcribePreset} onSelect={applyTranscribePreset} />
               )}
               {step === "index" && (
-                <PresetCards presets={INDEX_PRESETS} active={indexPreset} onSelect={selectIndexPreset} />
+                <PresetCards presets={INDEX_PRESETS} active={indexPreset} onSelect={applyIndexPreset} />
               )}
             </>
           )}
@@ -596,7 +532,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                         >
                           {versions.map((v, i) => (
                             <option key={v.id} value={i === 0 ? "" : v.id}>
-                              {v.step ? `[${stepTag(v.step, v.type)}] ` : ""}{versionDate(v)} — {versionLabel(v)} ({v.segment_count} seg)
+                              {versionOption(v)}
                             </option>
                           ))}
                         </select>
@@ -847,7 +783,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
           {/* ── LLM mode + config (correct / translate) ── */}
           {canRun.length > 0 && isLLMStep && !manualActive && selectedSource !== "custom" && (
             <>
-              <PresetCards presets={LLM_PRESETS} active={llmPreset} onSelect={selectLLMPreset} />
+              <PresetCards presets={LLM_PRESETS} active={llmPreset} onSelect={applyLLMPreset} />
 
               {/* Language fields (always visible) */}
               <div className="grid grid-cols-2 gap-4">

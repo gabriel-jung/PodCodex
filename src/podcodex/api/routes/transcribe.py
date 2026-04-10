@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
+    build_edit_provenance,
     build_provenance,
     submit_task,
     transcribe_prov_params,
@@ -55,7 +56,7 @@ async def save_segments(
     from podcodex.core.transcribe import save_transcript
 
     seg_dicts = [s.model_dump() for s in segments]
-    provenance = build_provenance("transcript", ptype="validated", manual_edit=True)
+    provenance = build_edit_provenance("transcript", audio_path, output_dir)
     save_transcript(
         audio_path,
         seg_dicts,

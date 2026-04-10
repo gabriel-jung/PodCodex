@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEpisodeStore, useAudioPath } from "@/stores";
+import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
   deleteCorrectVersion,
   getCorrectSegments,
@@ -12,8 +12,10 @@ import {
   getCorrectManualPrompts,
   applyCorrectManual,
 } from "@/api/client";
+import { getAllVersions } from "@/api/search";
 import { queryKeys } from "@/api/queryKeys";
 import { errorMessage } from "@/lib/utils";
+import { filterVersionsForStep } from "@/lib/pipelineInputs";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useLLMConfig, buildLLMRequest } from "@/hooks/useLLMPipeline";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
@@ -27,8 +29,11 @@ export default function CorrectPanel() {
   if (!episode) return null;
   const task = usePipelineTask(audioPath, "correct");
   const expanded = task.expanded || !episode.corrected;
+  const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
 
   const [config, setConfig] = useLLMConfig(episode, showMeta);
+  const llmPreset = usePipelineConfigStore((s) => s.llmPreset);
+  const applyLLMPreset = usePipelineConfigStore((s) => s.applyLLMPreset);
 
   const { data: transcriptSegments } = useQuery({
     queryKey: queryKeys.transcribeSegments(audioPath),
@@ -36,9 +41,25 @@ export default function CorrectPanel() {
     enabled: !!audioPath && episode.transcribed,
   });
 
+  // All valid input versions (transcripts) — surfaced in the controls so the
+  // user can pick which one the correction will read from (defaults to latest).
+  // Uses the unified versions endpoint so the filter mirrors the batch pipeline.
+  const { data: allVersions } = useQuery({
+    queryKey: queryKeys.allVersions(audioPath),
+    queryFn: () => getAllVersions(audioPath),
+    enabled: !!audioPath && episode.transcribed,
+  });
+  const inputVersions = useMemo(
+    () => (allVersions ? filterVersionsForStep(allVersions, "correct") : undefined),
+    [allVersions],
+  );
+
   const startMutation = useMutation({
     mutationFn: () =>
-      startCorrect(buildLLMRequest(audioPath!, config)),
+      startCorrect({
+        ...buildLLMRequest(audioPath!, config),
+        source_version_id: sourceVersionId ?? undefined,
+      }),
     onSuccess: (data) => task.startTask(data.task_id),
   });
 
@@ -57,31 +78,36 @@ export default function CorrectPanel() {
       onDismiss={task.handleDismiss}
       emptyMessage="Correct pipeline not yet run for this episode."
       controls={
-        <>
-          <LLMControls
-            config={config}
-            onChange={(patch) => setConfig({ ...config, ...patch })}
-            onRun={() => startMutation.mutate()}
-            isPending={startMutation.isPending}
-            error={startMutation.isError ? errorMessage(startMutation.error) : null}
-            runLabel="Correct with AI"
-            manualPrompts={{
-              generate: (batchMinutes) =>
-                getCorrectManualPrompts({
-                  audio_path: audioPath!,
-                  context: config.context,
-                  source_lang: config.sourceLang,
-                  batch_minutes: batchMinutes,
-                }),
-              apply: (corrections) =>
-                applyCorrectManual({ audio_path: audioPath!, corrections }),
-              onApplied: () => {
-                task.refreshQueries();
-                task.setExpanded(false);
-              },
-            }}
-          />
-        </>
+        <LLMControls
+          config={config}
+          onChange={(patch) => setConfig({ ...config, ...patch })}
+          onRun={() => startMutation.mutate()}
+          isPending={startMutation.isPending}
+          error={startMutation.isError ? errorMessage(startMutation.error) : null}
+          runLabel="Correct with AI"
+          preset={llmPreset}
+          onPresetChange={applyLLMPreset}
+          inputVersions={inputVersions}
+          selectedInputVersionId={sourceVersionId}
+          onInputVersionChange={setSourceVersionId}
+          inputLabel="Transcript"
+          manualPrompts={{
+            generate: (batchMinutes) =>
+              getCorrectManualPrompts({
+                audio_path: audioPath!,
+                context: config.context,
+                source_lang: config.sourceLang,
+                batch_minutes: batchMinutes,
+                source_version_id: sourceVersionId ?? undefined,
+              }),
+            apply: (corrections) =>
+              applyCorrectManual({ audio_path: audioPath!, corrections }),
+            onApplied: () => {
+              task.refreshQueries();
+              task.setExpanded(false);
+            },
+          }}
+        />
       }
     >
       {episode.corrected && !task.activeTaskId && (
@@ -91,6 +117,7 @@ export default function CorrectPanel() {
           loadSegments={() => getCorrectSegments(audioPath!)}
           saveSegments={(segs) => saveCorrectSegments(audioPath!, segs)}
           exportSource="corrected"
+          exportFilename={episode.stem ? `${episode.stem}_corrected` : undefined}
           showDelete
           showFlags={false}
           showSpeaker
