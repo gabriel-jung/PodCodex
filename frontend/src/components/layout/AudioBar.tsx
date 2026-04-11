@@ -123,6 +123,13 @@ export default function AudioBar() {
 
   if (!audioPath) return null;
 
+  // Time-label width adapts to the longest possible display for the current
+  // duration: `-MM:SS` fits in w-11, `-H:MM:SS` needs w-14, and anything from
+  // 10h upward (including day-long audiobooks) needs w-16.
+  const timeColW = duration >= 36000 ? "w-16"
+    : duration >= 3600 ? "w-14"
+    : "w-11";
+
   return (
     <div className="border-t border-border bg-card">
       {/* Current segment text — collapsible */}
@@ -182,7 +189,7 @@ export default function AudioBar() {
         </button>
 
         {/* Title + show name */}
-        <div className="w-64 shrink-0 min-w-0">
+        <div className="flex-1 min-w-0 max-w-sm">
           <p className="text-sm font-medium truncate" title={audioTitle || "Playing"}>{audioTitle || "Playing"}</p>
           {audioShowName && (
             <p className="text-xs text-muted-foreground truncate">{audioShowName}</p>
@@ -275,7 +282,7 @@ export default function AudioBar() {
 
       {/* Row 2: Seek bar + time */}
       <div className="flex items-center gap-2">
-        <span className="text-2xs text-muted-foreground w-10 text-right shrink-0 tabular-nums">
+        <span className={`text-2xs text-muted-foreground ${timeColW} text-right shrink-0 tabular-nums`}>
           {formatTime(currentTime, false)}
         </span>
         <div
@@ -316,7 +323,7 @@ export default function AudioBar() {
         </div>
         <button
           onClick={() => setTimeMode((m) => m === "remaining" ? "elapsed" : m === "elapsed" ? "total" : "remaining")}
-          className="text-2xs text-muted-foreground w-12 shrink-0 tabular-nums text-left hover:text-foreground transition"
+          className={`text-2xs text-muted-foreground ${timeColW} shrink-0 tabular-nums text-left hover:text-foreground transition`}
           title="Click to toggle time display"
         >
           {timeMode === "remaining" && duration > 0

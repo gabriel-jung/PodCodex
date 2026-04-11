@@ -32,6 +32,15 @@ export const LLM_PRESETS = {
   cloud: { label: "Cloud", desc: "Use any LLM with API key", mode: "api" as const },
 } as const;
 
+export type LLMPresetKey = keyof typeof LLM_PRESETS;
+
+/** Inverse of `LLM_PRESETS[key].mode` — `mode` uniquely determines a preset. */
+export function modeToPreset(mode: LLMConfig["mode"]): LLMPresetKey {
+  if (mode === "api") return "cloud";
+  if (mode === "ollama") return "local";
+  return "manual";
+}
+
 export const INDEX_PRESETS = {
   fast: { label: "Fast", desc: "Very fast to run", model: "e5-small" },
   balanced: { label: "Balanced", desc: "Default, good search quality", model: "bge-m3" },

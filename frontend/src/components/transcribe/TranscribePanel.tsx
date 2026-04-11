@@ -22,45 +22,13 @@ import { useCapabilities } from "@/hooks/useCapabilities";
 import FormGrid from "@/components/common/FormGrid";
 import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
+import Segmented from "@/components/common/Segmented";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
 import PipelinePanel from "@/components/common/PipelinePanel";
 
 // The top row of the Language chip rack — these are always visible; anything
 // else falls under "Other" with an ISO-code input.
 const TOP_LANGUAGES = SUB_LANGUAGES.slice(0, 5);
-
-/** Segmented toggle used by Source, Transcription, and Cleanup rows. */
-function Segmented<T extends string>({
-  value,
-  onChange,
-  options,
-}: {
-  value: T;
-  onChange: (v: T) => void;
-  options: readonly (readonly [T, string, string?, boolean?])[];
-}) {
-  return (
-    <div className="inline-flex rounded-md border border-border overflow-hidden text-xs w-fit">
-      {options.map(([key, label, title, enabled = true]) => (
-        <button
-          key={key}
-          onClick={() => enabled && onChange(key)}
-          disabled={!enabled}
-          title={title}
-          className={`px-3 py-1 transition ${
-            value === key
-              ? "bg-accent font-medium"
-              : enabled
-                ? "hover:bg-accent/50 text-muted-foreground"
-                : "text-muted-foreground/40 cursor-not-allowed"
-          }`}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 export default function TranscribePanel() {
   const episode = useEpisodeStore((s) => s.episode);

@@ -93,17 +93,13 @@ export default function ManualModePanel({
         Generate prompts, paste them into your LLM of choice one batch at a time, then paste the JSON response back.
       </p>
 
-      {/* Generate */}
-      <div className="flex items-center gap-3 text-sm">
-        <Button
-          onClick={() => generateMutation.mutate()}
-          disabled={generateMutation.isPending}
-          variant="outline"
-          size="sm"
-        >
-          {generateMutation.isPending ? "Generating..." : prompts ? "Regenerate" : "Generate prompts"}
-        </Button>
-      </div>
+      <Button
+        onClick={() => generateMutation.mutate()}
+        disabled={generateMutation.isPending}
+        size="sm"
+      >
+        {generateMutation.isPending ? "Generating..." : prompts ? "Regenerate prompts" : "Generate prompts"}
+      </Button>
       {generateMutation.isError && (
         <p className="text-destructive text-xs">{errorMessage(generateMutation.error)}</p>
       )}
@@ -238,7 +234,11 @@ export default function ManualModePanel({
               disabled={!allDone || applyMutation.isPending}
               size="sm"
             >
-              {applyMutation.isPending ? "Applying..." : `Apply all ${prompts.length} batches`}
+              {applyMutation.isPending
+                ? "Applying..."
+                : prompts.length === 1
+                  ? "Apply corrections"
+                  : `Apply all ${prompts.length} batches`}
             </Button>
             <Button
               onClick={() => { setPrompts(null); setBatchResults({}); setPastedText(""); }}
