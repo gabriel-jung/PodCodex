@@ -124,7 +124,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
     return crumbs;
   })();
 
-  const displayTitle = title || (mode === "file" ? "Select audio file" : "Select folder");
+  const displayTitle = title || (mode === "file" ? "Browse for an audio file" : "Browse for a folder");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -286,7 +286,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
           </Button>
           {mode === "folder" && (
             <Button onClick={handleSelect} size="sm">
-              Select this folder
+              Use this folder
             </Button>
           )}
         </div>

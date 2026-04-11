@@ -19,6 +19,7 @@ import { computeWordDiff } from "@/lib/diffUtils";
 import { Button } from "@/components/ui/button";
 import Pagination from "./Pagination";
 import SpeakerStrip from "./SpeakerStrip";
+import SectionHeader from "@/components/common/SectionHeader";
 import {
   Download,
   Save,
@@ -547,6 +548,40 @@ export interface TranscriptViewerProps {
   sourceLabel?: string;
 }
 
+/** Native <select> that sizes to its currently-selected label, not to its
+ *  longest option. An invisible mirror span with the selected label defines
+ *  the container's intrinsic width; the real select is absolutely positioned
+ *  over it so its own longest-option measurement doesn't leak into layout. */
+function AutoWidthSelect({
+  value,
+  onChange,
+  selectedLabel,
+  children,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  selectedLabel: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="relative shrink-0 max-w-[18rem]">
+      <span
+        aria-hidden
+        className={`${selectClass} text-xs invisible block whitespace-nowrap pr-7`}
+      >
+        {selectedLabel}
+      </span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`${selectClass} text-xs absolute inset-0 w-full`}
+      >
+        {children}
+      </select>
+    </div>
+  );
+}
+
 export default function TranscriptViewer({
   editorKey,
   audioPath,
@@ -661,6 +696,7 @@ export default function TranscriptViewer({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments(editorKey, audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.stepVersions(editorKey, audioPath) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
     },
   });
 
@@ -669,6 +705,7 @@ export default function TranscriptViewer({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.stepVersions(editorKey, audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments(editorKey, audioPath) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
     },
   });
 
@@ -996,63 +1033,93 @@ export default function TranscriptViewer({
   const infoVersion = selectedVersion ?? (versions && versions.length > 0 ? versions[0] : null);
   const infoItems = infoVersion ? versionInfo(infoVersion) : [];
 
+  const selectedVersionLabel = selectedVersion ? versionOption(selectedVersion) : "Latest";
+  const refVersion = versions?.find((v) => v.id === refChoice) ?? null;
+  const refSelectedLabel =
+    refChoice === "none"
+      ? "None"
+      : refChoice === "default"
+        ? referenceLabel ?? "Original"
+        : refVersion
+          ? versionOption(refVersion)
+          : "None";
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="flex flex-col h-full">
       <div className="px-4 py-2 border-b border-border space-y-1">
-        {(versions && versions.length > 0) || sourceLabel ? (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground shrink-0 w-20">Version</span>
-            {versions && versions.length > 0 ? (
-              <div className="flex items-center gap-1.5">
-                <select
-                  value={selectedVersionId ?? ""}
-                  onChange={(e) => setSelectedVersionId(e.target.value || null)}
-                  className={`${selectClass}`}
+        {versions && versions.length > 0 ? (
+          <div className="flex items-center gap-2 flex-wrap">
+            <SectionHeader className="shrink-0 w-20">Version</SectionHeader>
+            <AutoWidthSelect
+              value={selectedVersionId ?? ""}
+              onChange={(v) => setSelectedVersionId(v || null)}
+              selectedLabel={selectedVersionLabel}
+            >
+              <option value="">Latest</option>
+              {versions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {versionOption(v)}
+                </option>
+              ))}
+            </AutoWidthSelect>
+            {hasCompareOptions && (
+              <>
+                <span className="text-xs text-muted-foreground/60">vs</span>
+                <AutoWidthSelect
+                  value={refChoice}
+                  onChange={handleRefChoiceChange}
+                  selectedLabel={refSelectedLabel}
                 >
-                  <option value="">Latest</option>
+                  <option value="none">None</option>
+                  {referenceSegments && (
+                    <option value="default">{referenceLabel}</option>
+                  )}
                   {versions.map((v) => (
                     <option key={v.id} value={v.id}>
                       {versionOption(v)}
                     </option>
                   ))}
-                </select>
-                {deleteVersion && versions.length > 0 && (
-                  <button
-                    onClick={() => {
-                      const targetId = selectedVersionId ?? versions[0].id;
-                      const target = versions.find((v) => v.id === targetId);
-                      if (!target) return;
-                      if (!window.confirm(`Delete this version?\n\n${versionOption(target)}\n\nThis removes both the file and the database entry and cannot be undone.`)) return;
-                      deleteVersionMutation.mutate(targetId);
-                      setSelectedVersionId(null);
-                    }}
-                    className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-destructive hover:border-destructive/50 transition"
-                    title="Delete current version (file + db entry)"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    Delete
-                  </button>
-                )}
-                {infoItems.length > 0 && (
-                  <button
-                    onClick={() => setExpandedInfo(!expandedInfo)}
-                    className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition shrink-0"
-                  >
-                    File details
-                  </button>
-                )}
-              </div>
-            ) : (
-              <span className="text-xs text-muted-foreground font-mono">{sourceLabel}</span>
+                </AutoWidthSelect>
+              </>
             )}
+            <div className="flex-1" />
+            {infoItems.length > 0 && (
+              <button
+                onClick={() => setExpandedInfo(!expandedInfo)}
+                className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition shrink-0"
+              >
+                File details
+              </button>
+            )}
+            {deleteVersion && (
+              <button
+                onClick={() => {
+                  const targetId = selectedVersionId ?? versions[0].id;
+                  const target = versions.find((v) => v.id === targetId);
+                  if (!target) return;
+                  if (!window.confirm(`Delete this version?\n\n${versionOption(target)}\n\nThis removes both the file and the database entry and cannot be undone.`)) return;
+                  deleteVersionMutation.mutate(targetId);
+                  setSelectedVersionId(null);
+                }}
+                className="p-1 rounded text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10 transition shrink-0"
+                title="Delete current version (file + db entry)"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        ) : sourceLabel ? (
+          <div className="flex items-center gap-2">
+            <SectionHeader className="shrink-0 w-20">Version</SectionHeader>
+            <span className="text-xs text-muted-foreground font-mono">{sourceLabel}</span>
           </div>
         ) : null}
 
-        {hasCompareOptions && (
+        {hasCompareOptions && (!versions || versions.length === 0) && (
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground shrink-0 w-20">Compare</span>
+            <SectionHeader className="shrink-0 w-20">Compare</SectionHeader>
             <select
               value={refChoice}
               onChange={(e) => handleRefChoiceChange(e.target.value)}
@@ -1062,11 +1129,6 @@ export default function TranscriptViewer({
               {referenceSegments && (
                 <option value="default">{referenceLabel}</option>
               )}
-              {versions && versions.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {versionOption(v)}
-                </option>
-              ))}
             </select>
           </div>
         )}

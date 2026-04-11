@@ -179,10 +179,12 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
         raise HTTPException(404, "No transcript found")
 
     corrected = validate_manual(req.corrections, original)
+    # Applying manual LLM prompts is still an LLM correction, not a hand-edit —
+    # manual_edit stays False so the review workflow can distinguish an
+    # unreviewed LLM pass from a user-validated one.
     provenance = build_provenance(
         "corrected",
         params=llm_prov_params("manual"),
-        manual_edit=True,
         audio_path=req.audio_path,
         output_dir=req.output_dir,
     )

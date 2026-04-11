@@ -7,6 +7,7 @@
 import { useState } from "react";
 import type { Episode } from "@/api/types";
 import { formatDuration, formatDate } from "@/lib/utils";
+import { isManualEdit } from "@/lib/stepStatus";
 import {
   Mic, Sparkles, Languages, AudioLines, Database, ExternalLink,
 } from "lucide-react";
@@ -35,6 +36,14 @@ export interface PipelineStepDef {
   provenanceKey?: "transcript" | "corrected";
 }
 
+/** Dot color tracks review progress, not freshness: a hand-edited version
+ *  is "done" (green, reviewed), an untouched raw transcript/correction is
+ *  "partial" (blue, needs review), absent is `false` (gray). */
+function editedStatus(present: boolean, provenance: unknown): StepStatus {
+  if (!present) return false;
+  return isManualEdit(provenance) ? "done" : "partial";
+}
+
 export type PipelineStepKey = PipelineStepDef["key"];
 export type ActiveStep = PipelineStepKey | "info" | "search";
 
@@ -49,12 +58,17 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     section: "core",
     headerBadge: true,
     component: () => <TranscribePanel />,
-    status: (e) => {
-      if (e.transcribe_status === "outdated") return "partial";
-      return e.transcribed ? "done" : false;
-    },
+    status: (e) => editedStatus(!!e.transcribed, e.provenance?.transcript),
+    // Kept legacy flat-file patterns (`.transcript.`, `.segments.`, …) so
+    // pre-version-DB episodes still surface their artifacts.
     matchFiles: (_e, f) =>
-      f.includes("transcript.") || f.includes("segments.") || f.includes("diarization.") || f.includes("speaker_map."),
+      f.includes("/transcript/") ||
+      f.includes("/speaker_map/") ||
+      f.includes(".transcript.") ||
+      f.includes(".segments.") ||
+      f.includes(".diarization.") ||
+      f.includes(".diarized_segments.") ||
+      f.includes(".speaker_map."),
     provenanceKey: "transcript",
   },
   {
@@ -65,10 +79,8 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     section: "core",
     headerBadge: true,
     component: () => <CorrectPanel />,
-    status: (e) => {
-      if (e.correct_status === "outdated") return "partial";
-      return e.corrected ? "done" : false;
-    },
+    status: (e) => editedStatus(!!e.corrected, e.provenance?.corrected),
+    matchFiles: (_e, f) => f.includes("/corrected/") || f.includes(".corrected."),
     provenanceKey: "corrected",
   },
   {
@@ -94,7 +106,8 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
       return e.translations.length > 0 ? "done" : false;
     },
     matchFiles: (e, f) =>
-      f.includes(".translated.") || e.translations.some((lang) => f.includes(`.${lang}.`)),
+      f.includes(".translated.") ||
+      e.translations.some((lang) => f.includes(`/${lang}/`) || f.includes(`.${lang}.`)),
     detail: (e) => (e.translations.length > 0 ? e.translations.join(", ") : undefined),
   },
   {
@@ -106,7 +119,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     headerBadge: false,
     component: () => <SynthesizePanel />,
     status: (e) => (e.synthesized ? "done" : false),
-    matchFiles: (_e, f) => f.includes(".synthesized."),
+    matchFiles: (_e, f) => f.includes("/synthesized/") || f.includes(".synthesized."),
   },
 ];
 

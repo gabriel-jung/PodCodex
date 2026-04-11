@@ -18,9 +18,11 @@ import {
 } from "@/stores/pipelineConfigStore";
 import { Button } from "@/components/ui/button";
 import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Copy, Check } from "lucide-react";
-import { languageToISO, errorMessage, selectClass, cn, versionLabel, versionOption, stepTag, SOURCE_LABELS } from "@/lib/utils";
+import { languageToISO, errorMessage, selectClass, cn, versionLabel, versionOption, stepTag, SOURCE_LABELS, SUB_LANGUAGES } from "@/lib/utils";
 import { filterVersionsForStep, type PipelineInputStep } from "@/lib/pipelineInputs";
 import PresetCards from "@/components/common/PresetCards";
+import SectionHeader from "@/components/common/SectionHeader";
+import HelpLabel from "@/components/common/HelpLabel";
 import { getCorrectManualPrompts, applyCorrectManual } from "@/api/correct";
 import { getTranslateManualPrompts, applyTranslateManual } from "@/api/translate";
 
@@ -206,6 +208,15 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
   const [sourceOpen, setSourceOpen] = useState<boolean | null>(null); // null = auto from group count
   const [customVersions, setCustomVersions] = useState<Record<string, string>>({}); // epKey → versionId
 
+  // Language chips for transcribe — tc.language is the source of truth;
+  // otherMode only remembers whether the "Other" chip is active so an empty
+  // custom code still keeps the input visible.
+  const topLanguages = SUB_LANGUAGES.slice(0, 5);
+  const currentLang = tc.language || "";
+  const isTopChip = topLanguages.some((l) => l.code === currentLang);
+  const [otherMode, setOtherMode] = useState(!!currentLang && !isTopChip);
+  const chipSelected = otherMode ? "other" : isTopChip ? currentLang : "";
+
   // Manual batch workflow state
   const [manualActive, setManualActive] = useState(false); // true = episode-by-episode page
   const [manualBatchCounts, setManualBatchCounts] = useState<Record<string, number>>({});
@@ -377,7 +388,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
           {/* ── Transcribe source selector (audio vs subtitles) ── */}
           {step === "transcribe" && hasAnySubs && (
             <div className="space-y-1">
-              <span className="text-xs font-medium text-muted-foreground">Source</span>
+              <SectionHeader>Source</SectionHeader>
               <div className="space-y-1 pl-1">
                 {episodes.some((e) => !!e.audio_path) && (
                   <button
@@ -515,7 +526,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
           {/* ── Custom version picker ── */}
           {canRun.length > 0 && selectedSource === "custom" && !manualActive && epVersionsMap && (
             <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">Pick which version to use as input for each episode.</p>
+              <p className="text-xs text-muted-foreground">Choose which version to use as input for each episode.</p>
               <div className="space-y-1">
                 {canRun.map((ep) => {
                   const ek = epKey(ep);
@@ -858,44 +869,81 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                 return (
                   <>
                     <div className="space-y-1.5">
-                      <label className="text-sm font-medium" title="Whisper model size - larger models are more accurate but slower">Model</label>
+                      <HelpLabel label="Model" help="Speech recognition model. Bigger models make fewer mistakes but are slower and need more GPU memory." />
                       <select value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectFull}>
                         {filtered.map(([key, label]) => (
-                          <option key={key} value={key}>{key} - {isCpu ? CPU_LABELS[key] || label : GPU_LABELS[key] || label}</option>
+                          <option key={key} value={key}>{key} — {isCpu ? CPU_LABELS[key] || label : GPU_LABELS[key] || label}</option>
                         ))}
                       </select>
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-1.5">
-                        <label className="text-sm font-medium" title="ISO 639-1 language code, e.g. en, fr, de, es, ja. Helps Whisper accuracy.">Language (ISO)</label>
-                        <input value={tc.language || languageToISO(showLanguage) || ""} onChange={(e) => setTc({ language: e.target.value })} className={inputFieldClass} />
-                      </div>
-                      <div className="space-y-1.5">
-                        <label className="text-sm font-medium">&nbsp;</label>
-                        <ToggleButton checked={tc.clean} onClick={() => setTc({ clean: !tc.clean })} title="Removes hallucinated segments using character density filters (< 2 or > 75 chars/s) and unknown speakers">
-                          Clean transcript
-                        </ToggleButton>
+
+                    <div className="space-y-1.5">
+                      <HelpLabel label="Language" help="The spoken language of the audio. Auto-detect works for most cases; setting it explicitly improves accuracy and word-level alignment." />
+                      <div className="flex flex-wrap gap-1.5">
+                        {([{ code: "", label: "Auto" }, ...topLanguages] as const).map((l) => (
+                          <button
+                            key={l.code || "auto"}
+                            onClick={() => { setTc({ language: l.code }); setOtherMode(false); }}
+                            className={`px-2.5 py-1 text-xs rounded-md border transition ${chipSelected === l.code ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-accent"}`}
+                          >
+                            {l.label}
+                          </button>
+                        ))}
+                        <button
+                          onClick={() => { setOtherMode(true); if (isTopChip) setTc({ language: "" }); }}
+                          className={`px-2.5 py-1 text-xs rounded-md border transition ${chipSelected === "other" ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-accent"}`}
+                        >
+                          Other
+                        </button>
+                        {chipSelected === "other" && (
+                          <input
+                            value={tc.language}
+                            onChange={(e) => setTc({ language: e.target.value.toLowerCase().slice(0, 5) })}
+                            placeholder="ISO code (e.g. ja, zh, ar)"
+                            className="input py-1 text-xs w-36"
+                            autoFocus
+                          />
+                        )}
                       </div>
                     </div>
+
+                    <ToggleButton checked={tc.clean} onClick={() => setTc({ clean: !tc.clean })} title="Removes hallucinated segments using character density filters (< 2 or > 75 chars/s)">
+                      Clean transcript
+                    </ToggleButton>
+
                     {!isCpu && (
-                      <>
-                        <ToggleButton checked={tc.diarize} onClick={() => setTc({ diarize: !tc.diarize })} title="Use pyannote to identify who speaks when - requires a HuggingFace token">
-                          Diarize (detect speakers)
-                        </ToggleButton>
-                        {tc.diarize && (
-                          <>
-                          <p className="text-xs text-muted-foreground">Naming speakers and cleaning up artefacts requires editing each episode.</p>
-                          {!detected.hf_token && (
-                            <div className="space-y-1.5">
-                              <label className="text-sm font-medium" title="Required by pyannote for speaker diarization - get one at huggingface.co/settings/tokens">HuggingFace token</label>
-                              <p className="text-xs text-muted-foreground">Required by pyannote for diarization. Get one at <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">huggingface.co/settings/tokens</a>.</p>
-                              <input type="password" value={tc.hfToken} onChange={(e) => setTc({ hfToken: e.target.value })} placeholder="hf_..." className={inputFieldClass} />
-                            </div>
-                          )}
-                          </>
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3">
+                          <SectionHeader>Speaker identification</SectionHeader>
+                          <label className="flex items-center gap-1.5 cursor-pointer text-xs text-muted-foreground">
+                            <input
+                              type="checkbox"
+                              checked={tc.diarize}
+                              onChange={(e) => setTc({ diarize: e.target.checked })}
+                              className="accent-primary"
+                            />
+                            Enabled
+                          </label>
+                        </div>
+                        {tc.diarize && !detected.hf_token && (
+                          <div className="space-y-1.5">
+                            <HelpLabel label="HF token" help="HuggingFace access token, needed to download the speaker detection model. Get one free at huggingface.co/settings/tokens." />
+                            <input type="password" value={tc.hfToken} onChange={(e) => setTc({ hfToken: e.target.value })} placeholder="hf_..." className={inputFieldClass} />
+                          </div>
                         )}
-                      </>
+                      </div>
                     )}
+
+                    <div className="space-y-1.5">
+                      <HelpLabel label="Batch size" help="Advanced — leave as is unless you run out of GPU memory. Number of audio chunks processed in parallel on the GPU. Lower it if transcription crashes with out-of-memory errors." />
+                      <input
+                        type="number"
+                        value={tc.batchSize}
+                        onChange={(e) => setTc({ batchSize: Number(e.target.value) })}
+                        min={1}
+                        className="input py-1 text-sm w-20"
+                      />
+                    </div>
                   </>
                 );
               })()}

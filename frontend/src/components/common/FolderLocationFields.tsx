@@ -44,7 +44,7 @@ export default function FolderLocationFields({
             onChange={(e) => onParentPathChange(e.target.value)}
             className="input flex-1 text-xs"
           />
-          <Button onClick={() => setPickerOpen(true)} variant="outline" size="sm">Browse</Button>
+          <Button onClick={() => setPickerOpen(true)} variant="outline" size="sm">Browse…</Button>
         </div>
       </div>
       <p className="text-xs text-muted-foreground font-mono truncate" title={fullPath}>

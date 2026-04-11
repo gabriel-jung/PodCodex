@@ -9,7 +9,7 @@ class PipelineDefaultsSchema(BaseModel):
     """Per-show pipeline default settings (mirrors ``show.toml [pipeline]``)."""
 
     model_size: str = ""
-    diarize: bool = True
+    diarize: bool | None = None
     llm_mode: str = ""
     llm_provider: str = ""
     llm_model: str = ""

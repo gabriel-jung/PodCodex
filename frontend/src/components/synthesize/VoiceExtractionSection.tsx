@@ -73,7 +73,7 @@ export default function VoiceExtractionSection({
     <section className="space-y-3">
       <SectionHeader>1. Select Voice Samples</SectionHeader>
       <p className="text-xs text-muted-foreground">
-        Pick the best segments for each speaker to use as voice cloning references.
+        Choose the best segments for each speaker to use as voice cloning references.
         Play segments to audition them, check the ones you want, then extract.
       </p>
 
@@ -290,7 +290,7 @@ export default function VoiceExtractionSection({
           <div className="flex items-center gap-2 text-xs pt-1">
             <label className="flex items-center gap-1.5 cursor-pointer text-muted-foreground hover:text-foreground transition">
               <Upload className="w-3.5 h-3.5" />
-              <span>Upload external sample</span>
+              <span>Upload a sample</span>
               <input
                 type="file"
                 accept="audio/*"
@@ -308,7 +308,7 @@ export default function VoiceExtractionSection({
                 }}
               />
             </label>
-            {uploadMutation.isPending && <span className="text-muted-foreground">Uploading...</span>}
+            {uploadMutation.isPending && <span className="text-muted-foreground">Uploading…</span>}
             {uploadMutation.isError && <span className="text-destructive">{errorMessage(uploadMutation.error)}</span>}
           </div>
         )}

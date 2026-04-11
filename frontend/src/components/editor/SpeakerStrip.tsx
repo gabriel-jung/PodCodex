@@ -22,6 +22,7 @@ import type { Segment } from "@/api/types";
 import { useAudioStore } from "@/stores";
 import { formatTime } from "@/lib/utils";
 import { MIN_DENSITY } from "@/hooks/useSegmentFiltering";
+import SectionHeader from "@/components/common/SectionHeader";
 
 // Matches raw diarizer output like SPEAKER_00, SPEAKER_12.
 const DIARIZER_DEFAULT_RE = /^SPEAKER_\d+$/;
@@ -244,7 +245,7 @@ export default function SpeakerStrip({
         </datalist>
       )}
       <div className="flex items-start gap-2">
-        <span className="text-xs text-muted-foreground shrink-0 w-20 pt-1">Speakers</span>
+        <SectionHeader className="shrink-0 w-20 pt-1">Speakers</SectionHeader>
         <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
         {chips.map((chip) => {
           const pendingTo = pendingRenames[chip.name];
@@ -277,25 +278,13 @@ export default function SpeakerStrip({
           }
           if (isOpen) stateClass += " ring-1 ring-primary/40";
 
-          // Proportional sizing: each chip's flex-basis is its share of speaking
-          // time (%), so chips are approximately proportional within a row.
-          // Added speakers keep their natural width. Min-width keeps tiny-share
-          // chips readable without blowing up the wrap layout.
-          const chipStyle: React.CSSProperties = chip.added
-            ? {}
-            : {
-                flexGrow: 0,
-                flexShrink: 1,
-                flexBasis: `${Math.max(share * 100, 6)}%`,
-                minWidth: "7rem",
-              };
-          const sizeClass = chip.added ? "shrink-0" : "";
-
+          // Chips pack to content width — the duration + percentage label
+          // inside each chip already encodes speaking time, so proportional
+          // widths just caused wrapping at normal panel sizes.
           return (
             <div
               key={chip.name}
-              style={chipStyle}
-              className={`group inline-flex items-center gap-1.5 pl-2 pr-1 py-0.5 rounded-md border text-xs transition ${sizeClass} ${stateClass}`}
+              className={`group inline-flex items-center gap-1.5 pl-2 pr-1 py-0.5 rounded-md border text-xs transition shrink-0 ${stateClass}`}
             >
               {isEditing ? (
                 <>

@@ -94,7 +94,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
         <div className="bg-card border border-border rounded-xl p-6 max-w-lg w-full shadow-2xl max-h-[80vh] flex flex-col">
           <div className="flex items-center justify-between mb-1">
             <h3 className="font-medium">
-              {step === "search" ? "Add a show" : "Choose save location"}
+              {step === "search" ? "Add a show" : "Save location"}
             </h3>
             <Button onClick={onClose} variant="ghost" size="sm">x</Button>
           </div>
@@ -201,7 +201,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
               {sourceMode === "local" && (
                 <>
                   <p className="text-xs text-muted-foreground">
-                    Import a folder with existing episodes or open a single audio file.
+                    Browse to a folder of existing episodes or to a single audio file.
                   </p>
 
                   <div className="flex flex-col gap-3">
@@ -210,7 +210,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                       variant="outline"
                       className="justify-start gap-2"
                     >
-                      <FolderOpen className="w-4 h-4" /> Import folder
+                      <FolderOpen className="w-4 h-4" /> Browse for a folder…
                     </Button>
                     {onOpenFile && (
                       <Button
@@ -218,7 +218,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                         variant="outline"
                         className="justify-start gap-2"
                       >
-                        <Search className="w-4 h-4" /> Open audio file
+                        <Search className="w-4 h-4" /> Browse for an audio file…
                       </Button>
                     )}
                   </div>
@@ -343,7 +343,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
       {localPickerOpen === "folder" && (
         <FolderPicker
           open
-          title="Import a show folder"
+          title="Browse for a show folder"
           description="Select a folder that already contains podcast episodes or transcripts."
           onClose={() => setLocalPickerOpen(null)}
           onSelect={(p) => { setLocalPickerOpen(null); handleLocalImport(p); }}
@@ -355,8 +355,8 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
         <FolderPicker
           open
           mode="file"
-          title="Open an audio file"
-          description="Browse for a single audio file to transcribe and process."
+          title="Browse for an audio file"
+          description="Select a single audio file to transcribe and process."
           onClose={() => setLocalPickerOpen(null)}
           onSelect={(p) => { setLocalPickerOpen(null); onOpenFile(p); }}
           initialPath={defaultSavePath || "~"}

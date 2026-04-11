@@ -185,7 +185,7 @@ export default function EpisodePage({
 
   return (
     <div className="flex flex-col h-full">
-      {isDragging && <DropOverlay message="Drop transcript file to import (JSON, SRT, VTT)" />}
+      {isDragging && <DropOverlay message="Drop a transcript file here (JSON, SRT, VTT)" />}
       {/* Header */}
       <div className="px-6 py-4 border-b border-border flex items-center gap-4 relative overflow-hidden">
         {artwork && (

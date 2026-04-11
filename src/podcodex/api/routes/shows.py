@@ -456,9 +456,8 @@ async def unified_episodes(
 
     status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
 
-    # ── Audio file discovery (single scandir at show root) ──
     local_audio = _scan_audio_files(path)
-    episode_files = _scan_episode_files(path)
+    episode_files = _scan_episode_files(path, local_audio)
 
     rss = load_feed_cache(path) or []
 
@@ -590,26 +589,25 @@ def _normalize_provenance(prov: dict) -> dict:
 def _resolve_defaults(app_defaults: dict, show_meta: _ShowMeta | None) -> dict:
     """Merge app-level defaults with show-level overrides.
 
-    Show-level non-empty values win; otherwise fall back to app defaults.
+    Show-level values override app defaults when explicitly set. Strings
+    use `""` as the unset sentinel; `diarize` uses `None`.
     """
     effective = dict(app_defaults)
-    if show_meta and show_meta.pipeline:
-        p = show_meta.pipeline
-        for key in (
-            "model_size",
-            "diarize",
-            "llm_mode",
-            "llm_provider",
-            "llm_model",
-            "target_lang",
-        ):
-            val = getattr(p, key, None)
-            # Only override if show has a non-default value
-            if val is not None and val != "" and val is not True:
-                effective[key] = val
-            elif key == "diarize" and not p.diarize:
-                # Explicitly set to False overrides
-                effective[key] = False
+    if not (show_meta and show_meta.pipeline):
+        return effective
+    p = show_meta.pipeline
+    if p.model_size:
+        effective["model_size"] = p.model_size
+    if p.llm_mode:
+        effective["llm_mode"] = p.llm_mode
+    if p.llm_provider:
+        effective["llm_provider"] = p.llm_provider
+    if p.llm_model:
+        effective["llm_model"] = p.llm_model
+    if p.target_lang:
+        effective["target_lang"] = p.target_lang
+    if p.diarize is not None:
+        effective["diarize"] = p.diarize
     return effective
 
 
@@ -740,78 +738,84 @@ def _scan_audio_files(show_folder: Path) -> dict[str, Path]:
     return audio
 
 
-def _scan_episode_files(show_folder: Path) -> dict[str, list[str]]:
-    """Scan episode subdirectories for user-facing files.
+_INTERESTING_EXTS = {
+    ".mp3",
+    ".m4a",
+    ".wav",
+    ".ogg",
+    ".flac",  # audio
+    ".vtt",
+    ".srt",  # subtitles
+    ".json",
+    ".parquet",  # transcripts / pipeline outputs
+}
+_SKIP_PREFIXES = (".", "__")
+_SKIP_NAMES = {"manifest.json"}
 
-    Returns a mapping of stem → list of filenames relative to show folder
-    (e.g. ``["stem/stem.subtitles.fr.vtt", "stem/stem.transcript.raw.json"]``).
-    Includes audio at show root. Skips dotfiles, version dirs, and DB files.
+
+def _walk_episode_dir(root: Path, rel_prefix: str) -> list[str]:
+    """Recursively collect interesting files under an episode dir.
+
+    ``rel_prefix`` is the path (relative to the show folder) to prepend to
+    each file name, so we skip allocating a Path per entry just to call
+    ``relative_to``.
     """
     import os
 
-    _INTERESTING_EXTS = {
-        ".mp3",
-        ".m4a",
-        ".wav",
-        ".ogg",
-        ".flac",  # audio
-        ".vtt",
-        ".srt",  # subtitles
-        ".json",  # transcripts / pipeline outputs
-    }
-    _SKIP_PREFIXES = (".", "__")
-    _SKIP_NAMES = {"manifest.json"}
+    collected: list[str] = []
+    try:
+        with os.scandir(root) as it:
+            for f in it:
+                name = f.name
+                if name.startswith(_SKIP_PREFIXES):
+                    continue
+                if f.is_dir(follow_symlinks=False):
+                    collected.extend(
+                        _walk_episode_dir(Path(f.path), f"{rel_prefix}/{name}")
+                    )
+                    continue
+                if not f.is_file(follow_symlinks=False) or name in _SKIP_NAMES:
+                    continue
+                dot = name.rfind(".")
+                if dot <= 0 or name[dot:].lower() not in _INTERESTING_EXTS:
+                    continue
+                collected.append(f"{rel_prefix}/{name}")
+    except OSError:
+        pass
+    return collected
 
-    # Collect audio at show root keyed by stem
-    root_audio: dict[str, str] = {}
+
+def _scan_episode_files(
+    show_folder: Path, local_audio: dict[str, Path]
+) -> dict[str, list[str]]:
+    """Scan episode subdirectories for user-facing files.
+
+    Returns a mapping of stem → list of filenames relative to show folder.
+    Walks version subdirectories (``transcript/``, ``corrected/``,
+    ``speaker_map/``, language folders, etc.) so the Pipeline file list
+    surfaces version artifacts alongside legacy flat files.
+    """
+    import os
+
     result: dict[str, list[str]] = {}
     try:
         with os.scandir(show_folder) as it:
             for entry in it:
-                if entry.is_file(follow_symlinks=False):
-                    name = entry.name
-                    dot = name.rfind(".")
-                    if dot > 0 and name[dot:].lower() in (
-                        ".mp3",
-                        ".m4a",
-                        ".wav",
-                        ".ogg",
-                        ".flac",
-                    ):
-                        root_audio[name[:dot]] = name
-                elif entry.is_dir(follow_symlinks=False) and not entry.name.startswith(
-                    "."
-                ):
-                    stem = entry.name
-                    files: list[str] = []
-                    subpath = show_folder / stem
-                    try:
-                        with os.scandir(subpath) as sub_it:
-                            for f in sub_it:
-                                if not f.is_file(follow_symlinks=False):
-                                    continue
-                                fname = f.name
-                                if any(fname.startswith(p) for p in _SKIP_PREFIXES):
-                                    continue
-                                if fname in _SKIP_NAMES:
-                                    continue
-                                fdot = fname.rfind(".")
-                                if (
-                                    fdot > 0
-                                    and fname[fdot:].lower() in _INTERESTING_EXTS
-                                ):
-                                    files.append(f"{stem}/{fname}")
-                    except OSError:
-                        pass
-                    if files:
-                        files.sort()
-                        result[stem] = files
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                stem = entry.name
+                if stem.startswith("."):
+                    continue
+                files = _walk_episode_dir(Path(entry.path), stem)
+                if files:
+                    files.sort()
+                    result[stem] = files
     except OSError:
         pass
 
-    # Prepend root audio
-    for stem, audio_name in root_audio.items():
-        result.setdefault(stem, []).insert(0, audio_name)
+    # Prepend root audio (already discovered by _scan_audio_files).
+    for stem, audio_path in local_audio.items():
+        result.setdefault(stem, []).insert(0, audio_path.name)
 
     return result
 

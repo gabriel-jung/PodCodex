@@ -58,7 +58,7 @@ export default function PipelinePanel({
   if (blocker || prerequisite) {
     return (
       <div className="flex flex-col h-full">
-        <div className="px-4 py-2 border-b border-border">
+        <div className="sticky top-0 z-10 bg-background px-4 py-2 border-b border-border">
           <span className="text-sm font-semibold">{title}</span>
           <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
         </div>
@@ -69,15 +69,18 @@ export default function PipelinePanel({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Step header */}
-      <div className="px-4 py-2 border-b border-border">
+      {/* Step header — sticks to the top of the scroll container so the
+          panel title stays visible while the transcript/controls scroll. */}
+      <div className="sticky top-0 z-10 bg-background px-4 py-2 border-b border-border">
         <span className="text-sm font-semibold">{title}</span>
         <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
       </div>
 
-      {/* Controls — collapsible when step is done */}
+      {/* Controls — collapsible when step is done.
+          Tinted background reads as a distinct "settings strip" so the eye
+          can separate it from the editor region below. */}
       {!taskId && controls && (
-        <div className="border-b border-border">
+        <div className="border-b border-border bg-secondary/30">
           {done ? (
             <button
               onClick={onToggle}

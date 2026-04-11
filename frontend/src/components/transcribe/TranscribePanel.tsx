@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
-import { TRANSCRIBE_PRESETS } from "@/stores/pipelineConfigStore";
+import { TRANSCRIBE_PRESETS, CPU_MODELS, GPU_MODELS, CPU_LABELS, GPU_LABELS } from "@/stores/pipelineConfigStore";
 import {
   deleteTranscribeVersion,
   getSegments,
@@ -16,17 +16,51 @@ import {
 import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { Button } from "@/components/ui/button";
 import { FileText, Upload } from "lucide-react";
-import { errorMessage, languageToISO, selectClass } from "@/lib/utils";
+import { errorMessage, languageToISO, selectClass, SUB_LANGUAGES } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useCapabilities } from "@/hooks/useCapabilities";
-import AdvancedToggle from "@/components/common/AdvancedToggle";
 import FormGrid from "@/components/common/FormGrid";
 import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
-import SectionHeader from "@/components/common/SectionHeader";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
 import PipelinePanel from "@/components/common/PipelinePanel";
-import PresetCards from "@/components/common/PresetCards";
+
+// The top row of the Language chip rack — these are always visible; anything
+// else falls under "Other" with an ISO-code input.
+const TOP_LANGUAGES = SUB_LANGUAGES.slice(0, 5);
+
+/** Segmented toggle used by Source, Transcription, and Cleanup rows. */
+function Segmented<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: readonly (readonly [T, string, string?, boolean?])[];
+}) {
+  return (
+    <div className="inline-flex rounded-md border border-border overflow-hidden text-xs w-fit">
+      {options.map(([key, label, title, enabled = true]) => (
+        <button
+          key={key}
+          onClick={() => enabled && onChange(key)}
+          disabled={!enabled}
+          title={title}
+          className={`px-3 py-1 transition ${
+            value === key
+              ? "bg-accent font-medium"
+              : enabled
+                ? "hover:bg-accent/50 text-muted-foreground"
+                : "text-muted-foreground/40 cursor-not-allowed"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export default function TranscribePanel() {
   const episode = useEpisodeStore((s) => s.episode);
@@ -42,21 +76,37 @@ export default function TranscribePanel() {
   const expanded = task.expanded || !episode.transcribed;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { whisperModels: whisperModelsMap } = useLLMProviders();
+  const { whisperModels: whisperModelsMap, detectedKeys } = useLLMProviders();
+  const hfTokenDetected = !!detectedKeys.hf_token;
 
   // Form state
   const tc = usePipelineConfigStore((s) => s.transcribe);
   const setTc = usePipelineConfigStore((s) => s.setTranscribe);
   const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
   const applyTranscribePreset = usePipelineConfigStore((s) => s.applyTranscribePreset);
+  // Infer CPU mode from preset OR current model — drives model-list filtering
+  // and hides the speaker identification column (pyannote needs GPU).
+  const isCpu = transcribePreset === "cpu"
+    || (transcribePreset === "" && CPU_MODELS.has(tc.modelSize));
+  // Language state — chips for the top 5 common languages, "Other" chip
+  // reveals an ISO-code input. `language` holds either "" (auto), a known
+  // ISO code from the chip set, or "other" (meaning use customLang instead).
   const showLangISO = languageToISO(showMeta?.language || "");
-  const [language, setLanguage] = useState(showLangISO);
-  // Sync when showMeta loads after initial render
+  const showLangInTop = TOP_LANGUAGES.some((l) => l.code === showLangISO);
+  const [language, setLanguage] = useState<string>(
+    !showLangISO ? "" : showLangInTop ? showLangISO : "other",
+  );
+  const [customLang, setCustomLang] = useState(showLangInTop || !showLangISO ? "" : showLangISO);
+  // Sync when showMeta loads after initial render (only if user hasn't touched it)
   const [prevShowLang, setPrevShowLang] = useState(showLangISO);
   if (showLangISO !== prevShowLang) {
     setPrevShowLang(showLangISO);
-    if (!language) setLanguage(showLangISO);
+    if (!language && !customLang) {
+      if (showLangInTop) setLanguage(showLangISO);
+      else if (showLangISO) { setLanguage("other"); setCustomLang(showLangISO); }
+    }
   }
+  const effectiveLang = language === "other" ? customLang : language;
 
   // Existing subtitle files for reimport controls
   const subtitleFiles = (episode.files ?? []).filter(
@@ -64,11 +114,19 @@ export default function TranscribePanel() {
   );
   const hasSubs = !!episode.has_subtitles || subtitleFiles.length > 0;
 
-  // Source toggle — matches the batch pipeline's Audio/Subtitles switch.
-  // Initialised to whichever exists; the toggle UI only shows when both do.
-  const [transcribeSource, setTranscribeSource] = useState<"audio" | "subtitles">(
-    hasRealAudio ? "audio" : "subtitles",
+  // Source toggle — answers "where does the transcript come from".
+  // Audio = transcribe with WhisperX; Subtitles = reimport a .vtt/.srt already
+  // in the episode folder (typically YouTube auto-subs, only shown if any
+  // exist); Upload = upload any transcript file from disk.
+  const [transcribeSource, setTranscribeSource] = useState<"audio" | "subtitles" | "upload">(
+    hasRealAudio ? "audio" : hasSubs ? "subtitles" : "upload",
   );
+
+  // Per-episode cleanup mode — defaults to Manual because the user is about
+  // to open the editor and can delete junk by hand. Auto runs the density
+  // filter that batch mode uses. Local state: the store's `clean` flag only
+  // drives batch runs.
+  const [cleanMode, setCleanMode] = useState<"manual" | "auto">("manual");
 
   const uploadMutation = useMutation({
     mutationFn: (file: File) => uploadTranscript(audioPath!, file),
@@ -97,11 +155,13 @@ export default function TranscribePanel() {
       startTranscribe({
         audio_path: audioPath!,
         model_size: tc.modelSize,
-        language: language || undefined,
+        language: effectiveLang || undefined,
         batch_size: tc.batchSize,
         force: episode.transcribed,
-        diarize: tc.diarize,
-        clean: tc.clean,
+        // CPU mode forces diarize off regardless of stored preference —
+        // pyannote needs a GPU in practice, and the UI column is hidden.
+        diarize: isCpu ? false : tc.diarize,
+        clean: cleanMode === "auto",
         hf_token: tc.hfToken || undefined,
         num_speakers: tc.numSpeakers ? Number(tc.numSpeakers) : undefined,
         show: showMeta?.name || "",
@@ -118,93 +178,111 @@ export default function TranscribePanel() {
       done={episode.transcribed}
       expanded={expanded}
       onToggle={() => task.setExpanded(!expanded)}
-      rerunLabel={transcribeSource === "audio" ? "Re-run transcription" : "Reimport transcript"}
-      settingsLabel={transcribeSource === "audio" ? "Transcription settings" : "Import transcript"}
+      rerunLabel={transcribeSource === "audio" ? "Re-run transcription" : transcribeSource === "subtitles" ? "Reimport subtitles" : "Upload transcript"}
+      settingsLabel={transcribeSource === "audio" ? "Transcription settings" : transcribeSource === "subtitles" ? "Import subtitles" : "Upload transcript"}
       taskId={task.activeTaskId}
       onTaskComplete={() => { task.handleComplete(); }}
       onRetry={task.handleRetry}
       onDismiss={task.handleDismiss}
       emptyMessage="No transcript yet."
       controls={
-        <>
-          {hasRealAudio && hasSubs && (
-            <div className="px-4 pt-3 flex items-center gap-2 text-xs">
-              <span className="text-muted-foreground">Source</span>
-              <div className="flex rounded-md border border-border overflow-hidden">
-                <button
-                  onClick={() => setTranscribeSource("audio")}
-                  className={`px-3 py-1 transition ${transcribeSource === "audio" ? "bg-accent font-medium" : "hover:bg-accent/50 text-muted-foreground"}`}
-                >
-                  Audio
-                </button>
-                <button
-                  onClick={() => setTranscribeSource("subtitles")}
-                  className={`px-3 py-1 transition ${transcribeSource === "subtitles" ? "bg-accent font-medium" : "hover:bg-accent/50 text-muted-foreground"}`}
-                >
-                  Subtitles
-                </button>
-              </div>
-            </div>
-          )}
-          {transcribeSource === "audio" ? (
-            <TranscribeForm
-              preset={transcribePreset} onSelectPreset={applyTranscribePreset}
-              modelSize={tc.modelSize} setModelSize={(v) => setTc({ modelSize: v })}
-              language={language} setLanguage={setLanguage}
-              batchSize={tc.batchSize} setBatchSize={(v) => setTc({ batchSize: v })}
-              diarize={tc.diarize} setDiarize={(v) => setTc({ diarize: v })}
-              clean={tc.clean} setClean={(v) => setTc({ clean: v })}
-              hfToken={tc.hfToken} setHfToken={(v) => setTc({ hfToken: v })}
-              numSpeakers={tc.numSpeakers} setNumSpeakers={(v) => setTc({ numSpeakers: v })}
-              whisperModels={whisperModelsMap}
-              hasWhisperX={hasWhisperX}
-              hasAudio={hasRealAudio}
-              onRun={() => startMutation.mutate()}
-              onUpload={() => fileInputRef.current?.click()}
-              isPending={startMutation.isPending}
-              isUploading={uploadMutation.isPending}
-              error={startMutation.isError ? errorMessage(startMutation.error) : uploadMutation.isError ? errorMessage(uploadMutation.error) : null}
-              showOverwriteWarning={episode.transcribed}
+        <div className="px-4 pt-3 pb-4 space-y-4">
+          <FormGrid>
+            <HelpLabel label="Source" />
+            <Segmented
+              value={transcribeSource}
+              onChange={setTranscribeSource}
+              options={[
+                ["audio", "Audio", hasRealAudio ? "Transcribe the audio file" : "No audio file available", hasRealAudio],
+                ...(hasSubs ? [["subtitles", "Subtitles", "Reimport a .vtt/.srt already in the episode folder"] as const] : []),
+                ["upload", "Upload", "Upload any transcript file from disk"],
+              ]}
             />
-          ) : (
-            <div className="px-4 pb-3 space-y-3">
-              {subtitleFiles.length > 0 ? (
-                <div className="space-y-1.5">
-                  <p className="text-xs text-muted-foreground">Import from existing file:</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {subtitleFiles.map((f) => (
-                      <Button
-                        key={f}
-                        variant="outline"
-                        size="sm"
-                        disabled={importFileMutation.isPending}
-                        onClick={() => importFileMutation.mutate(`${folder}/${f}`)}
-                      >
-                        <FileText className="w-3.5 h-3.5 mr-1" />
-                        {f.split("/").pop()}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  No audio file. Upload a transcript or subtitle file (JSON, SRT, VTT).
-                </p>
-              )}
-              <div className="flex items-center gap-3">
-                {subtitleFiles.length > 0 && <span className="text-xs text-muted-foreground">or</span>}
-                <Button onClick={() => fileInputRef.current?.click()} disabled={uploadMutation.isPending} variant="outline" size="sm">
-                  <Upload className="w-3.5 h-3.5 mr-1.5" />
-                  {uploadMutation.isPending ? "Uploading..." : "Upload file"}
-                </Button>
+
+            {transcribeSource === "audio" && hasWhisperX && (
+              <TranscribeAudioRows
+                preset={transcribePreset}
+                onSelectPreset={applyTranscribePreset}
+                isCpu={isCpu}
+                modelSize={tc.modelSize} setModelSize={(v) => setTc({ modelSize: v })}
+                language={language} setLanguage={setLanguage}
+                customLang={customLang} setCustomLang={setCustomLang}
+                diarize={tc.diarize} setDiarize={(v) => setTc({ diarize: v })}
+                hfToken={tc.hfToken} setHfToken={(v) => setTc({ hfToken: v })}
+                hfTokenDetected={hfTokenDetected}
+                cleanMode={cleanMode} setCleanMode={setCleanMode}
+                whisperModels={whisperModelsMap}
+              />
+            )}
+          </FormGrid>
+
+          {transcribeSource === "audio" && !hasWhisperX && (
+            <MissingDependency
+              extra="pipeline"
+              label="WhisperX"
+              description="Required for automatic transcription. You can still upload a transcript file manually."
+            />
+          )}
+
+          {transcribeSource === "subtitles" && (
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">Import from existing file:</p>
+              <div className="flex flex-wrap gap-1.5">
+                {subtitleFiles.map((f) => (
+                  <Button
+                    key={f}
+                    variant="outline"
+                    size="sm"
+                    disabled={importFileMutation.isPending}
+                    onClick={() => importFileMutation.mutate(`${folder}/${f}`)}
+                  >
+                    <FileText className="w-3.5 h-3.5 mr-1" />
+                    {f.split("/").pop()}
+                  </Button>
+                ))}
               </div>
-              {(uploadMutation.isError || importFileMutation.isError) && (
-                <p className="text-destructive text-xs">{errorMessage(uploadMutation.error || importFileMutation.error)}</p>
+              {importFileMutation.isError && (
+                <p className="text-destructive text-xs">{errorMessage(importFileMutation.error)}</p>
               )}
             </div>
           )}
+
+          {transcribeSource === "upload" && (
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Upload a transcript or subtitle file (JSON, SRT, VTT).
+              </p>
+              <Button onClick={() => fileInputRef.current?.click()} disabled={uploadMutation.isPending} variant="outline" size="sm">
+                <Upload className="w-3.5 h-3.5 mr-1.5" />
+                {uploadMutation.isPending ? "Uploading…" : "Upload file"}
+              </Button>
+              {uploadMutation.isError && (
+                <p className="text-destructive text-xs">{errorMessage(uploadMutation.error)}</p>
+              )}
+            </div>
+          )}
+
+          {transcribeSource === "audio" && hasWhisperX && (
+            <div className="flex items-baseline gap-3 flex-wrap pt-1">
+              <Button
+                onClick={() => startMutation.mutate()}
+                disabled={startMutation.isPending || !hasRealAudio}
+                size="sm"
+                title={!hasRealAudio ? "Download the audio file first" : undefined}
+              >
+                {startMutation.isPending ? "Starting…" : episode.transcribed ? "Re-transcribe" : "Transcribe"}
+              </Button>
+              {episode.transcribed && (
+                <span className="text-xs text-muted-foreground">Saves a new version — previous ones stay in History.</span>
+              )}
+              {startMutation.isError && (
+                <p className="text-destructive text-xs w-full">{errorMessage(startMutation.error)}</p>
+              )}
+            </div>
+          )}
+
           <input ref={fileInputRef} type="file" accept=".json,.srt,.vtt" onChange={handleFileUpload} className="hidden" />
-        </>
+        </div>
       }
     >
       {episode.transcribed && !task.activeTaskId && (
@@ -230,154 +308,126 @@ export default function TranscribePanel() {
   );
 }
 
-function TranscribeForm({
-  preset, onSelectPreset,
+/** Grid-row fragments for the audio-source transcription form.
+ *  Must be rendered inside a FormGrid so Source/Transcription/Model/Language/
+ *  Cleanup labels share the same auto-sized label column. */
+function TranscribeAudioRows({
+  preset, onSelectPreset, isCpu,
   modelSize, setModelSize,
   language, setLanguage,
-  batchSize, setBatchSize,
+  customLang, setCustomLang,
   diarize, setDiarize,
-  clean, setClean,
-  hfToken, setHfToken,
-  numSpeakers, setNumSpeakers,
+  hfToken, setHfToken, hfTokenDetected,
+  cleanMode, setCleanMode,
   whisperModels,
-  hasWhisperX,
-  hasAudio,
-  onRun, onUpload, isPending, isUploading, error, showOverwriteWarning,
 }: {
   preset: string;
   onSelectPreset: (key: keyof typeof TRANSCRIBE_PRESETS) => void;
+  isCpu: boolean;
   modelSize: string; setModelSize: (v: string) => void;
   whisperModels?: Record<string, string>;
-  hasWhisperX: boolean;
-  hasAudio: boolean;
   language: string; setLanguage: (v: string) => void;
-  batchSize: number; setBatchSize: (v: number) => void;
+  customLang: string; setCustomLang: (v: string) => void;
   diarize: boolean; setDiarize: (v: boolean) => void;
-  clean: boolean; setClean: (v: boolean) => void;
+  cleanMode: "manual" | "auto"; setCleanMode: (v: "manual" | "auto") => void;
   hfToken: string; setHfToken: (v: string) => void;
-  numSpeakers: string; setNumSpeakers: (v: string) => void;
-  onRun: () => void; onUpload: () => void;
-  isPending: boolean; isUploading: boolean; error: string | null;
-  showOverwriteWarning: boolean;
+  hfTokenDetected: boolean;
 }) {
   return (
-    <div className="px-4 pb-3 space-y-4">
-      {!hasWhisperX && (
-        <MissingDependency
-          extra="pipeline"
-          label="WhisperX"
-          description="Required for automatic transcription. You can still upload a transcript file manually."
-        />
-      )}
+    <>
+      <HelpLabel label="Transcription" />
+      <Segmented
+        value={preset as keyof typeof TRANSCRIBE_PRESETS}
+        onChange={onSelectPreset}
+        options={(Object.entries(TRANSCRIBE_PRESETS) as [keyof typeof TRANSCRIBE_PRESETS, (typeof TRANSCRIBE_PRESETS)[keyof typeof TRANSCRIBE_PRESETS]][]).map(
+          ([key, p]) => [key, p.label, p.desc] as const,
+        )}
+      />
 
-      <PresetCards presets={TRANSCRIBE_PRESETS} active={preset} onSelect={onSelectPreset} />
+      <HelpLabel label="Model" help="Speech recognition model. Bigger models make fewer mistakes but are slower and need more GPU memory." />
+      <select
+        value={modelSize}
+        onChange={(e) => setModelSize(e.target.value)}
+        className={selectClass}
+      >
+        {(() => {
+          const entries = whisperModels && Object.keys(whisperModels).length > 0
+            ? Object.entries(whisperModels)
+            : [[modelSize, modelSize] as [string, string]];
+          const filtered = entries.filter(([key]) => (isCpu ? CPU_MODELS : GPU_MODELS).has(key));
+          const labels = isCpu ? CPU_LABELS : GPU_LABELS;
+          return filtered.map(([key, desc]) => (
+            <option key={key} value={key} title={desc}>{key} — {labels[key] || desc}</option>
+          ));
+        })()}
+      </select>
 
-      <div className="flex flex-col lg:flex-row gap-6">
-        <div className="space-y-3 flex-1">
-          <SectionHeader>Transcription</SectionHeader>
-          <FormGrid>
-            <HelpLabel label="Model" help="Speech recognition model. Bigger models make fewer mistakes but are slower and need more GPU memory." />
-            <select
-              value={modelSize}
-              onChange={(e) => setModelSize(e.target.value)}
-              className={selectClass}
-            >
-              {whisperModels
-                ? Object.entries(whisperModels).map(([key, desc]) => (
-                    <option key={key} value={key} title={desc}>{key} — {desc}</option>
-                  ))
-                : <option value={modelSize}>{modelSize}</option>
-              }
-            </select>
+      <HelpLabel label="Language" help="The spoken language of the audio. Auto-detect works for most cases; setting it explicitly improves accuracy and word-level alignment." />
+      <div className="flex flex-wrap gap-1.5">
+        {([{ code: "", label: "Auto" }, ...TOP_LANGUAGES] as const).map((l) => (
+          <button
+            key={l.code || "auto"}
+            onClick={() => { setLanguage(l.code); setCustomLang(""); }}
+            className={`px-2.5 py-1 text-xs rounded-md border transition ${language === l.code ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-accent"}`}
+          >
+            {l.label}
+          </button>
+        ))}
+        <button
+          onClick={() => setLanguage("other")}
+          className={`px-2.5 py-1 text-xs rounded-md border transition ${language === "other" ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-accent"}`}
+        >
+          Other
+        </button>
+        {language === "other" && (
+          <input
+            value={customLang}
+            onChange={(e) => setCustomLang(e.target.value.toLowerCase().slice(0, 5))}
+            placeholder="ISO code (e.g. ja, zh, ar)"
+            className="input py-1 text-xs w-36"
+            autoFocus
+          />
+        )}
+      </div>
 
-            <HelpLabel label="Language" help="ISO code of the spoken language (e.g. fr, en, de). Leave empty to auto-detect. Setting it improves accuracy and word-level alignment." />
+      {!isCpu && (
+        <>
+          <HelpLabel label="Speakers" />
+          <label className="flex items-center gap-1.5 cursor-pointer text-xs text-muted-foreground w-fit">
             <input
-              value={language}
-              onChange={(e) => setLanguage(e.target.value)}
-              placeholder="e.g. fr, en, de"
-              className="input py-1 text-sm"
+              type="checkbox"
+              checked={diarize}
+              onChange={(e) => setDiarize(e.target.checked)}
+              className="accent-primary"
             />
-          </FormGrid>
-        </div>
-
-        <div className="space-y-3 flex-1 lg:border-l lg:border-border lg:pl-6">
-          <div className="flex items-center gap-3">
-            <SectionHeader>Speaker identification</SectionHeader>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={diarize}
-                onChange={(e) => setDiarize(e.target.checked)}
-                className="accent-primary"
-              />
-              <span className="text-xs text-muted-foreground">Enabled</span>
-            </label>
-          </div>
-
-          {diarize && (
-            <FormGrid>
-              <HelpLabel label="Num speakers" help="How many speakers are in the episode (e.g. 2 for an interview). Leave empty to auto-detect. Setting it helps tell speakers apart more reliably." />
-              <input
-                value={numSpeakers}
-                onChange={(e) => setNumSpeakers(e.target.value)}
-                placeholder="auto-detect"
-                className="input py-1 text-sm w-20"
-              />
-            </FormGrid>
-          )}
-        </div>
-      </div>
-
-      <AdvancedToggle className="border-t border-border/50 pt-3 space-y-3">
-        <FormGrid className="pl-3 border-l-2 border-border">
-          <HelpLabel label="Clean transcript" help="Automatically remove hallucinated segments (low speech density) and unknown speakers from the transcript." />
-          <input
-            type="checkbox"
-            checked={clean}
-            onChange={(e) => setClean(e.target.checked)}
-            className="accent-primary"
-          />
-
-          <HelpLabel label="Batch size" help="How many audio chunks to process in parallel. Higher is faster but uses more GPU memory. Lower this if you run out of memory." />
-          <input
-            type="number"
-            value={batchSize}
-            onChange={(e) => setBatchSize(Number(e.target.value))}
-            min={1}
-            className="input py-1 text-sm w-20"
-          />
-
-          {diarize && (
-            <>
-              <HelpLabel label="HF token" help="HuggingFace access token, needed to download the speaker detection model. Get one free at huggingface.co/settings/tokens. Falls back to the HF_TOKEN environment variable." />
-              <input
-                type="password"
-                value={hfToken}
-                onChange={(e) => setHfToken(e.target.value)}
-                placeholder="from env if empty"
-                className="input py-1 text-sm"
-              />
-            </>
-          )}
-        </FormGrid>
-      </AdvancedToggle>
-
-      <div className="flex items-center gap-3 border-t border-border/50 pt-3">
-        <Button onClick={onRun} disabled={isPending || isUploading || !hasWhisperX || !hasAudio} size="sm" title={!hasAudio ? "Download the audio file first" : !hasWhisperX ? "Install the pipeline extra to enable automatic transcription" : undefined}>
-          {isPending ? "Starting..." : "Run"}
-        </Button>
-        <span className="text-xs text-muted-foreground">or</span>
-        <Button onClick={onUpload} disabled={isUploading || isPending} variant="outline" size="sm">
-          <Upload className="w-3.5 h-3.5 mr-1.5" />
-          {isUploading ? "Uploading..." : "Upload file"}
-        </Button>
-      </div>
-
-      {showOverwriteWarning && (
-        <p className="text-xs text-muted-foreground">This will overwrite the existing transcript.</p>
+            Identify speakers
+          </label>
+        </>
       )}
-      {error && <p className="text-destructive text-xs">{error}</p>}
-    </div>
+
+      {!isCpu && diarize && !hfTokenDetected && (
+        <>
+          <HelpLabel label="HF token" help="HuggingFace access token, needed to download the speaker detection model. Get one free at huggingface.co/settings/tokens." />
+          <input
+            type="password"
+            value={hfToken}
+            onChange={(e) => setHfToken(e.target.value)}
+            placeholder="hf_..."
+            className="input py-1 text-sm"
+          />
+        </>
+      )}
+
+      <HelpLabel label="Cleanup" />
+      <Segmented
+        value={cleanMode}
+        onChange={setCleanMode}
+        options={[
+          ["manual", "Manual", "Keep every segment — you'll review and delete junk in the editor"],
+          ["auto", "Auto", "Automatically remove hallucinated segments (low speech density)"],
+        ]}
+      />
+    </>
   );
 }
 

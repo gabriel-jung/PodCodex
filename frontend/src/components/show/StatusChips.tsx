@@ -1,4 +1,5 @@
 import type { Episode } from "@/api/types";
+import { isManualEdit } from "@/lib/stepStatus";
 
 type StepStatus = "none" | "outdated" | "done";
 
@@ -7,6 +8,17 @@ const BORDER_MAP: Record<string, string> = {
   "bg-purple-500/15": "border-purple-500",
   "bg-teal-500/15": "border-teal-500",
 };
+
+/** A hand-edited version is "done" regardless of whether the current
+ *  defaults have drifted — the user's own work wins over freshness. */
+function resolveStatus(
+  raw: StepStatus | undefined,
+  present: boolean,
+  provenance: unknown,
+): StepStatus {
+  if (isManualEdit(provenance)) return "done";
+  return raw || (present ? "done" : "none");
+}
 
 function Chip({ status, label, color, textColor, title }: { status: StepStatus; label: string; color: string; textColor: string; title: string }) {
   if (status === "none") return null;
@@ -36,14 +48,14 @@ export function StatusChips({ ep, compact }: { ep: Episode; compact?: boolean })
   return (
     <div className="flex gap-1 items-center flex-wrap">
       <Chip
-        status={(ep.transcribe_status as StepStatus) || (ep.transcribed ? "done" : "none")}
+        status={resolveStatus(ep.transcribe_status as StepStatus, !!ep.transcribed, ep.provenance?.transcript)}
         label={compact ? "T" : "Transcribed"}
         color="bg-blue-500/15"
         textColor="text-blue-500"
         title="Transcribed"
       />
       <Chip
-        status={(ep.correct_status as StepStatus) || (ep.corrected ? "done" : "none")}
+        status={resolveStatus(ep.correct_status as StepStatus, !!ep.corrected, ep.provenance?.corrected)}
         label={compact ? "AI" : "Corrected"}
         color="bg-purple-500/15"
         textColor="text-purple-500"

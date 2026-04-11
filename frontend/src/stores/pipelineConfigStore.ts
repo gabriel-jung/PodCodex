@@ -22,8 +22,8 @@ export const CPU_MODELS = new Set(Object.keys(CPU_LABELS));
 export const GPU_MODELS = new Set(Object.keys(GPU_LABELS));
 
 export const TRANSCRIBE_PRESETS = {
-  cpu: { label: "CPU", desc: "Lightweight, no GPU", modelSize: "base", diarize: false },
-  gpu: { label: "GPU", desc: "More accurate, requires GPU", modelSize: "large-v3-turbo", diarize: false },
+  cpu: { label: "CPU", desc: "Lightweight, no GPU", modelSize: "base" },
+  gpu: { label: "GPU", desc: "More accurate, requires GPU", modelSize: "large-v3-turbo" },
 } as const;
 
 export const LLM_PRESETS = {
@@ -86,8 +86,8 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
       setTranscribe: (patch) =>
         set((s) => ({
           transcribe: { ...s.transcribe, ...patch },
-          // Only reset preset when model/diarize change (what presets control)
-          transcribePreset: ("modelSize" in patch || "diarize" in patch) ? "" : s.transcribePreset,
+          // Only reset preset when the model changes (what presets control)
+          transcribePreset: "modelSize" in patch ? "" : s.transcribePreset,
         })),
 
       llm: {
@@ -116,7 +116,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         set((s) => {
           const p = TRANSCRIBE_PRESETS[key];
           return p
-            ? { transcribe: { ...s.transcribe, modelSize: p.modelSize, diarize: p.diarize }, transcribePreset: key }
+            ? { transcribe: { ...s.transcribe, modelSize: p.modelSize }, transcribePreset: key }
             : s;
         }),
       llmPreset: "manual",
