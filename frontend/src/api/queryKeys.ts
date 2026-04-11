@@ -37,8 +37,6 @@ export const queryKeys = {
   /** All versions across all steps for an episode (unified endpoint). */
   allVersions: (audioPath: AudioPath) => ["versions", "all", audioPath] as const,
 
-  translateLanguages: (audioPath: AudioPath) =>
-    ["translate", "languages", audioPath] as const,
   bestSourceSegments: (audioPath: AudioPath) =>
     ["best-source-segments", audioPath] as const,
 

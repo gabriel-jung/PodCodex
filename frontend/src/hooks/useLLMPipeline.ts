@@ -3,9 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { getCorrectSegments, getSegments } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { buildDefaultContext } from "@/lib/utils";
-import type { LLMConfig } from "@/components/common/LLMControls";
+import type { LLMConfig, LLMPresetKey } from "@/stores/pipelineConfigStore";
 import type { Episode, ShowMeta, Segment } from "@/api/types";
 import { usePipelineConfigStore } from "@/stores";
+import { useCapabilities } from "@/hooks/useCapabilities";
 
 /**
  * Shared LLM configuration state for pipeline panels (correct, translate).
@@ -69,6 +70,50 @@ export function buildLLMRequest(audioPath: string, config: LLMConfig) {
  * Used by TranslatePanel (and any future panel) that wants the
  * highest-quality text as a reference.
  */
+/**
+ * Derive batch count from episode duration. The underlying store field is
+ * `batchMinutes` (minutes per batch), but users think in "how many batches" —
+ * this hook translates between the two. Falls back to raw minutes when
+ * duration is unknown.
+ */
+export function useBatchCount(
+  episode: Episode,
+  config: LLMConfig,
+  patch: (p: Partial<LLMConfig>) => void,
+) {
+  const episodeMinutes = episode.duration ? episode.duration / 60 : null;
+  const batchCount = episodeMinutes && config.batchMinutes > 0
+    ? Math.max(1, Math.round(episodeMinutes / config.batchMinutes))
+    : 1;
+  const setBatchCount = (count: number) => {
+    const n = Math.max(1, Math.min(20, Math.floor(count) || 1));
+    if (episodeMinutes) patch({ batchMinutes: Math.max(1, Math.ceil(episodeMinutes / n)) });
+  };
+  const minutesPerBatch = episodeMinutes ? Math.ceil(episodeMinutes / batchCount) : null;
+  return { episodeMinutes, batchCount, setBatchCount, minutesPerBatch };
+}
+
+/**
+ * Tell the panel whether the active preset's backend is installed, and the
+ * tooltip to show on the disabled run button. Manual mode never blocks
+ * since it's clipboard-only.
+ */
+export function useLLMBackendStatus(activePreset: LLMPresetKey) {
+  const { has } = useCapabilities();
+  const hasOllama = has("ollama");
+  const hasOpenAI = has("openai");
+  const hasLLM = hasOllama || hasOpenAI;
+  const backendMissing =
+    (activePreset === "local" && !hasOllama) ||
+    (activePreset === "cloud" && !hasOpenAI);
+  const disabledTitle = backendMissing
+    ? activePreset === "local"
+      ? "Install Ollama to run locally — or switch to Cloud/Manual"
+      : "Install the openai package to use cloud providers — or switch to Manual"
+    : undefined;
+  return { hasOllama, hasOpenAI, hasLLM, backendMissing, disabledTitle };
+}
+
 export function useBestSourceSegments(
   audioPath: string | null | undefined,
   opts: { enabled?: boolean; corrected?: boolean },

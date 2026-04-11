@@ -2,7 +2,19 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { LLMConfig } from "@/components/common/LLMControls";
+
+export type LLMMode = "api" | "ollama" | "manual";
+
+export interface LLMConfig {
+  mode: LLMMode;
+  provider: string;
+  model: string;
+  context: string;
+  sourceLang: string;
+  batchMinutes: number;
+  apiBaseUrl: string;
+  apiKey: string;
+}
 
 export interface TranscribeConfig {
   modelSize: string;

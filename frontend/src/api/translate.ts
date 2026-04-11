@@ -1,5 +1,4 @@
 import type { Segment, TaskResponse, TranslateRequest } from "./types";
-import { json } from "./client";
 import { createLLMPipelineApi } from "./versions";
 
 const api = createLLMPipelineApi("translate");
@@ -14,9 +13,6 @@ export const loadTranslateVersion = (audioPath: string, lang: string, versionId:
   api.loadVersion(audioPath, versionId, { lang });
 export const deleteTranslateVersion = (audioPath: string, lang: string, versionId: string) =>
   api.deleteVersion(audioPath, versionId, { lang });
-
-export const getTranslateLanguages = (audioPath: string) =>
-  json<string[]>(`/api/translate/languages?audio_path=${encodeURIComponent(audioPath)}`);
 
 export const startTranslate = (req: TranslateRequest) =>
   api.start(req as unknown as Record<string, unknown>) as Promise<TaskResponse>;

@@ -799,12 +799,12 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
               {/* Language fields (always visible) */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium" title="Language of the original transcript">Source language</label>
+                  <HelpLabel label="Source language" help="Language of the original transcript." />
                   <input value={llm.sourceLang} onChange={(e) => setLLM({ sourceLang: e.target.value })} className={inputFieldClass} />
                 </div>
                 {step === "translate" && (
                   <div className="space-y-1.5">
-                    <label className="text-sm font-medium" title="Language to translate into">Target language</label>
+                    <HelpLabel label="Target language" help="Language to translate into." />
                     <input value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className={inputFieldClass} />
                   </div>
                 )}
@@ -815,18 +815,18 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                 <div className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
-                      <label className="text-sm font-medium" title="LLM model name to use for processing">Model</label>
+                      <HelpLabel label="Model" help="LLM model name to use for processing." />
                       <input value={llm.model} onChange={(e) => setLLM({ model: e.target.value })} placeholder={getProviderInfo(llm.provider)?.model || "default"} className={inputFieldClass} />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-sm font-medium" title="Minutes of transcript per LLM request - larger batches are faster but need more context. Large models (e.g. Opus, GPT-4o) can handle a full episode at once.">Batch (min)</label>
+                      <HelpLabel label="Batch (min)" help="Minutes of transcript per LLM request. Larger batches are faster but need more context. Large models (e.g. Opus, GPT-4o) can handle a full episode at once." />
                       <input type="number" value={llm.batchMinutes} onChange={(e) => setLLM({ batchMinutes: Number(e.target.value) })} min={1} step={5} className={inputFieldClass} />
                     </div>
                   </div>
                   {llm.mode === "api" && (
                     <>
                       <div className="space-y-1.5">
-                        <label className="text-sm font-medium" title="Cloud LLM provider - determines the default endpoint and model">Provider</label>
+                        <HelpLabel label="Provider" help="Cloud LLM provider. Determines the default endpoint and model." />
                         <select value={llm.provider} onChange={(e) => setLLM({ provider: e.target.value })} className={selectFull}>
                           {apiProviders.length > 0
                             ? apiProviders.map(([key, spec]) => (
@@ -838,11 +838,11 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
-                          <label className="text-sm font-medium" title="OpenAI-compatible API base URL - leave empty to use the provider's default">Endpoint</label>
+                          <HelpLabel label="Endpoint" help="OpenAI-compatible API base URL. Leave empty to use the provider's default." />
                           <input value={llm.apiBaseUrl} onChange={(e) => setLLM({ apiBaseUrl: e.target.value })} placeholder={getProviderInfo(llm.provider)?.url || "default"} className={inputFieldClass} />
                         </div>
                         <div className="space-y-1.5">
-                          <label className="text-sm font-medium" title="API key for authentication - reads from .env if not set here">API key</label>
+                          <HelpLabel label="API key" help="API key for authentication. Reads from .env if not set here." />
                           <input type="password" value={llm.apiKey} onChange={(e) => setLLM({ apiKey: e.target.value })} placeholder={detected[llm.provider] ? `••• (${detected[llm.provider]})` : "not set"} className={inputFieldClass} />
                         </div>
                       </div>
