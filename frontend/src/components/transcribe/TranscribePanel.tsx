@@ -35,13 +35,10 @@ export default function TranscribePanel() {
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const folder = useEpisodeStore((s) => s.folder);
   const audioPath = useAudioPath();
-  if (!episode) return null;
-  const hasRealAudio = !!episode.audio_path;
 
   const { has: hasCap } = useCapabilities();
   const hasWhisperX = hasCap("whisperx");
   const task = usePipelineTask(audioPath, "transcribe");
-  const expanded = task.expanded || !episode.transcribed;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { whisperModels: whisperModelsMap, detectedKeys } = useLLMProviders();
@@ -77,10 +74,11 @@ export default function TranscribePanel() {
   const effectiveLang = language === "other" ? customLang : language;
 
   // Existing subtitle files for reimport controls
-  const subtitleFiles = (episode.files ?? []).filter(
+  const subtitleFiles = (episode?.files ?? []).filter(
     (f) => f.endsWith(".vtt") || f.endsWith(".srt"),
   );
-  const hasSubs = !!episode.has_subtitles || subtitleFiles.length > 0;
+  const hasSubs = !!episode?.has_subtitles || subtitleFiles.length > 0;
+  const hasRealAudio = !!episode?.audio_path;
 
   // Source toggle — answers "where does the transcript come from".
   // Audio = transcribe with WhisperX; Subtitles = reimport a .vtt/.srt already
@@ -125,7 +123,7 @@ export default function TranscribePanel() {
         model_size: tc.modelSize,
         language: effectiveLang || undefined,
         batch_size: tc.batchSize,
-        force: episode.transcribed,
+        force: episode!.transcribed,
         // CPU mode forces diarize off regardless of stored preference —
         // pyannote needs a GPU in practice, and the UI column is hidden.
         diarize: isCpu ? false : tc.diarize,
@@ -133,10 +131,13 @@ export default function TranscribePanel() {
         hf_token: tc.hfToken || undefined,
         num_speakers: tc.numSpeakers ? Number(tc.numSpeakers) : undefined,
         show: showMeta?.name || "",
-        episode: episode.title,
+        episode: episode!.title,
       }),
     onSuccess: (data) => task.startTask(data.task_id),
   });
+
+  if (!episode) return null;
+  const expanded = task.expanded || !episode.transcribed;
 
   return (
     <PipelinePanel

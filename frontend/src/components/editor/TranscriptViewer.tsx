@@ -640,7 +640,7 @@ export default function TranscriptViewer({
   const editor = useSegments(sourceSegments ?? []);
 
   const [pendingRenames, setPendingRenames] = useState<Record<string, string>>({});
-  const [pendingRemovals, setPendingRemovals] = useState<Set<string>>(new Set());
+  const [pendingRemovals, setPendingRemovals] = useState<Set<string>>(() => new Set());
   const [addedSpeakers, setAddedSpeakers] = useState<string[]>([]);
 
   const hasPendingStripChanges =
@@ -874,7 +874,7 @@ export default function TranscriptViewer({
 
   // ── Selection ─────────────────────────────────────────────────────────────
 
-  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
+  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(() => new Set());
 
   const toggleSelect = useCallback((origIdx: number) => {
     setSelectedIndices((prev) => {
@@ -915,7 +915,7 @@ export default function TranscriptViewer({
   // ── Filtering / pagination ────────────────────────────────────────────────
 
   const filters = useSegmentFiltering();
-  const [dismissedFlags, setDismissedFlags] = useState<Set<number>>(new Set());
+  const [dismissedFlags, setDismissedFlags] = useState<Set<number>>(() => new Set());
 
   const dismissFlag = (origIdx: number) => {
     setDismissedFlags((prev) => new Set(prev).add(origIdx));

@@ -30,6 +30,7 @@ export default function LanguageChipRack({
         return (
           <button
             key={label}
+            type="button"
             onClick={() => onChange(label)}
             className={`px-2.5 py-1 text-xs rounded-md border transition ${selected ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-accent"}`}
           >
@@ -38,6 +39,7 @@ export default function LanguageChipRack({
         );
       })}
       <button
+        type="button"
         onClick={() => onChange("")}
         className={`px-2.5 py-1 text-xs rounded-md border transition ${isOther ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-accent"}`}
       >

@@ -56,7 +56,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<SortKey>("date_desc");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const lastShiftClickIndex = useRef<number | null>(null);
   const { downloadTaskId, batchTaskId, setBatchTask } = useTaskStore();
 

@@ -26,10 +26,8 @@ export default function IndexPanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const audioPath = useAudioPath();
-  if (!episode) return null;
   const showName = getShowName(showMeta, audioPath);
   const task = usePipelineTask(audioPath, "index");
-  const expanded = task.expanded || !episode.indexed;
 
   const { data: config } = useQuery({
     queryKey: queryKeys.indexConfig(),
@@ -64,7 +62,7 @@ export default function IndexPanel() {
   const [selectedChunkings, setSelectedChunkings] = useState<string[]>(["semantic"]);
   const [chunkSize, setChunkSize] = useState(256);
   const [threshold, setThreshold] = useState(0.5);
-  const [overwrite, setOverwrite] = useState(episode.indexed);
+  const [overwrite, setOverwrite] = useState(!!episode?.indexed);
 
   // Load versions for the selected step
   const { data: stepVersions } = useQuery({
@@ -101,6 +99,9 @@ export default function IndexPanel() {
 
   const { has: hasCap } = useCapabilities();
   const hasRAG = hasCap("embeddings") && hasCap("torch");
+
+  if (!episode) return null;
+  const expanded = task.expanded || !episode.indexed;
 
   const prereq = !episode.transcribed
     ? "You need a transcript first. Go to the Transcribe tab to create one."

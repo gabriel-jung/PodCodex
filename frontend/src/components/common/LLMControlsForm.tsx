@@ -4,6 +4,7 @@ import { LLM_PRESETS } from "@/stores/pipelineConfigStore";
 import { formatDuration, selectClass, versionOption } from "@/lib/utils";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { useBatchCount } from "@/hooks/useLLMPipeline";
+import { useCapabilities } from "@/hooks/useCapabilities";
 import FormGrid from "./FormGrid";
 import HelpLabel from "./HelpLabel";
 import Segmented from "./Segmented";
@@ -13,7 +14,6 @@ interface LLMControlsFormProps {
   config: LLMConfig;
   patch: (p: Partial<LLMConfig>) => void;
   activePreset: LLMPresetKey;
-  hasOllama: boolean;
 
   /** Upstream versions the user can pick as input, or undefined to hide the row. */
   inputVersions?: VersionEntry[];
@@ -29,17 +29,15 @@ interface LLMControlsFormProps {
 }
 
 /**
- * Shared form body for LLM pipeline panels (correct, translate): Mode →
- * source version → cloud provider group → Model → language rows (slot) →
- * Batches → Context. Each panel supplies the language rows plus its own
- * run footer and manual-mode wiring around this form.
+ * Shared form body for LLM pipeline panels (correct, translate). Each panel
+ * supplies its own `languageRows` slot plus the surrounding run footer and
+ * manual-mode wiring.
  */
 export default function LLMControlsForm({
   episode,
   config,
   patch,
   activePreset,
-  hasOllama,
   inputVersions,
   sourceVersionId,
   onSourceVersionChange,
@@ -51,6 +49,7 @@ export default function LLMControlsForm({
   const { apiProviders, getProviderInfo, detectedKeys } = useLLMProviders();
   const providerInfo = getProviderInfo(config.provider);
   const { episodeMinutes, batchCount, setBatchCount, minutesPerBatch } = useBatchCount(episode, config, patch);
+  const hasOllama = useCapabilities().has("ollama");
 
   return (
     <>

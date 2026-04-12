@@ -27,7 +27,6 @@ import AssemblySection from "./AssemblySection";
 export default function SynthesizePanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
-  if (!episode) return null;
   const queryClient = useQueryClient();
   const { seekTo, setAudioMeta } = useAudioStore();
 
@@ -38,8 +37,8 @@ export default function SynthesizePanel() {
   const [sourceLang, setSourceLang] = useState("");
   const [maxChunkDuration, setMaxChunkDuration] = useState(20);
   const [assembleStrategy, setAssembleStrategy] = useState("original_timing");
-  const [expanded, setExpanded] = useState(!episode.synthesized);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState(!episode?.synthesized);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [expandedSeg, setExpandedSeg] = useState<string | null>(null);
   const [showCount, setShowCount] = useState<Record<string, number>>({});
   const [timeFrom, setTimeFrom] = useState("");
@@ -53,22 +52,22 @@ export default function SynthesizePanel() {
   });
 
   const { data: status, refetch: refetchStatus } = useQuery({
-    queryKey: queryKeys.synthesizeStatus(episode.audio_path),
-    queryFn: () => getSynthesisStatus(episode.audio_path!),
-    enabled: !!episode.audio_path,
+    queryKey: queryKeys.synthesizeStatus(episode?.audio_path),
+    queryFn: () => getSynthesisStatus(episode!.audio_path!),
+    enabled: !!episode?.audio_path,
   });
 
   // Load transcript segments for speaker browsing
   const { data: transcriptSegments } = useQuery({
-    queryKey: queryKeys.synthSourceSegments(episode.audio_path),
+    queryKey: queryKeys.synthSourceSegments(episode?.audio_path),
     queryFn: async () => {
-      if (!episode.audio_path) return [];
+      if (!episode?.audio_path) return [];
       try {
         if (episode.corrected) return await getCorrectSegments(episode.audio_path);
       } catch { /* fall through */ }
       return getSegments(episode.audio_path);
     },
-    enabled: !!episode.audio_path && episode.transcribed,
+    enabled: !!episode?.audio_path && !!episode?.transcribed,
   });
 
   /** Parse "mm:ss" or "hh:mm:ss" or plain seconds to seconds. */
@@ -140,7 +139,7 @@ export default function SynthesizePanel() {
           end: seg.end,
           text: seg.text,
         }));
-      return extractSelectedSamples(episode.audio_path!, selections);
+      return extractSelectedSamples(episode!.audio_path!, selections);
     },
     onSuccess: () => {
       refreshQueries();
@@ -150,7 +149,7 @@ export default function SynthesizePanel() {
 
   const uploadMutation = useMutation({
     mutationFn: ({ speaker, file }: { speaker: string; file: File }) =>
-      uploadVoiceSample(episode.audio_path!, speaker, file),
+      uploadVoiceSample(episode!.audio_path!, speaker, file),
     onSuccess: () => {
       refreshQueries();
       refetchVoiceSamples();
@@ -160,7 +159,7 @@ export default function SynthesizePanel() {
   const generateMutation = useMutation({
     mutationFn: () =>
       startGenerateTTS({
-        audio_path: episode.audio_path!,
+        audio_path: episode!.audio_path!,
         model_size: modelSize,
         language,
         source_lang: sourceLang || undefined,
@@ -172,7 +171,7 @@ export default function SynthesizePanel() {
   const assembleMutation = useMutation({
     mutationFn: () =>
       assembleEpisode({
-        audio_path: episode.audio_path!,
+        audio_path: episode!.audio_path!,
         strategy: assembleStrategy,
       }),
     onSuccess: () => {
@@ -193,6 +192,8 @@ export default function SynthesizePanel() {
 
   const { has: hasCap } = useCapabilities();
   const hasTTS = hasCap("tts") && hasCap("soundfile");
+
+  if (!episode) return null;
 
   const prereq = !episode.audio_path
     ? "Download the audio file first before synthesizing."

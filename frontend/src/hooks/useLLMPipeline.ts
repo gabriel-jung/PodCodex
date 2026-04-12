@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getCorrectSegments, getSegments } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
@@ -14,22 +14,27 @@ import { useCapabilities } from "@/hooks/useCapabilities";
  * Initialises sourceLang and context from show/episode metadata on first use.
  */
 export function useLLMConfig(
-  episode: Episode,
+  episode: Episode | null | undefined,
   showMeta: ShowMeta | null,
 ): [LLMConfig, (patch: LLMConfig | ((prev: LLMConfig) => LLMConfig)) => void] {
   const llm = usePipelineConfigStore((s) => s.llm);
   const setLLM = usePipelineConfigStore((s) => s.setLLM);
 
-  // Sync sourceLang from show metadata when switching shows; always rebuild context for current episode
-  useEffect(() => {
-    const patches: Partial<LLMConfig> = {};
-    if (showMeta?.language) {
-      patches.sourceLang = showMeta.language;
+  // Sync sourceLang and context when the episode or show changes, without an
+  // extra render cycle. Track previous identity and apply patches during render.
+  const prevRef = useRef<{ episodeId?: string; showName?: string }>({});
+  const episodeId = episode?.id;
+  const showName = showMeta?.name;
+  if (episodeId !== prevRef.current.episodeId || showName !== prevRef.current.showName) {
+    prevRef.current = { episodeId, showName };
+    if (episode) {
+      const patches: Partial<LLMConfig> = {};
+      if (showMeta?.language) patches.sourceLang = showMeta.language;
+      const ctx = buildDefaultContext(episode, showMeta);
+      if (ctx) patches.context = ctx;
+      if (Object.keys(patches).length > 0) setLLM(patches);
     }
-    const ctx = buildDefaultContext(episode, showMeta);
-    if (ctx) patches.context = ctx;
-    if (Object.keys(patches).length > 0) setLLM(patches);
-  }, [episode.id, showMeta?.name]); // eslint-disable-line react-hooks/exhaustive-deps
+  }
 
   // Provide a setState-like API for compatibility with existing panels
   const setter = (valOrFn: LLMConfig | ((prev: LLMConfig) => LLMConfig)) => {
@@ -64,13 +69,6 @@ export function buildLLMRequest(audioPath: string, config: LLMConfig) {
 }
 
 /**
- * Load the best available source segments for an episode:
- * tries corrected first, falls back to raw transcribe segments.
- *
- * Used by TranslatePanel (and any future panel) that wants the
- * highest-quality text as a reference.
- */
-/**
  * Derive batch count from episode duration. The underlying store field is
  * `batchMinutes` (minutes per batch), but users think in "how many batches" —
  * this hook translates between the two. Falls back to raw minutes when
@@ -86,18 +84,15 @@ export function useBatchCount(
     ? Math.max(1, Math.round(episodeMinutes / config.batchMinutes))
     : 1;
   const setBatchCount = (count: number) => {
+    if (!episodeMinutes) return;
     const n = Math.max(1, Math.min(20, Math.floor(count) || 1));
-    if (episodeMinutes) patch({ batchMinutes: Math.max(1, Math.ceil(episodeMinutes / n)) });
+    const next = Math.max(1, Math.ceil(episodeMinutes / n));
+    if (next !== config.batchMinutes) patch({ batchMinutes: next });
   };
   const minutesPerBatch = episodeMinutes ? Math.ceil(episodeMinutes / batchCount) : null;
   return { episodeMinutes, batchCount, setBatchCount, minutesPerBatch };
 }
 
-/**
- * Tell the panel whether the active preset's backend is installed, and the
- * tooltip to show on the disabled run button. Manual mode never blocks
- * since it's clipboard-only.
- */
 export function useLLMBackendStatus(activePreset: LLMPresetKey) {
   const { has } = useCapabilities();
   const hasOllama = has("ollama");
@@ -114,6 +109,11 @@ export function useLLMBackendStatus(activePreset: LLMPresetKey) {
   return { hasOllama, hasOpenAI, hasLLM, backendMissing, disabledTitle };
 }
 
+/**
+ * Load the best available source segments for an episode: tries corrected
+ * first, falls back to raw transcribe segments. Used as the reference pane
+ * in TranslatePanel.
+ */
 export function useBestSourceSegments(
   audioPath: string | null | undefined,
   opts: { enabled?: boolean; corrected?: boolean },

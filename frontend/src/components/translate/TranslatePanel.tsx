@@ -22,7 +22,6 @@ import {
   useBestSourceSegments,
   useLLMBackendStatus,
 } from "@/hooks/useLLMPipeline";
-import { useCapabilities } from "@/hooks/useCapabilities";
 import { modeToPreset } from "@/stores/pipelineConfigStore";
 import type { LLMConfig } from "@/stores/pipelineConfigStore";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
@@ -41,29 +40,27 @@ export default function TranslatePanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const audioPath = useAudioPath();
-  if (!episode) return null;
 
   const targetLang = usePipelineConfigStore((s) => s.targetLang);
   const setTargetLang = usePipelineConfigStore((s) => s.setTargetLang);
-  const [editingLang, setEditingLang] = useState(episode.translations[0] || "");
+  const [editingLang, setEditingLang] = useState("");
   const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
 
   const task = usePipelineTask(audioPath, "translate", {
     onComplete: () => setEditingLang(langKey(targetLang)),
   });
-  const expanded = task.expanded || episode.translations.length === 0;
 
   const [config, setConfig] = useLLMConfig(episode, showMeta);
   const patch = (p: Partial<LLMConfig>) => setConfig({ ...config, ...p });
   const activePreset = modeToPreset(config.mode);
 
-  const { has: hasCap } = useCapabilities();
-  const hasLLM = hasCap("ollama") || hasCap("openai");
-  const { hasOllama, backendMissing, disabledTitle } = useLLMBackendStatus(activePreset);
+  const { hasLLM, backendMissing, disabledTitle } = useLLMBackendStatus(activePreset);
+
+  const expanded = task.expanded || (episode?.translations.length ?? 0) === 0;
 
   const { data: referenceSegments } = useBestSourceSegments(
     audioPath,
-    { enabled: episode.transcribed, corrected: episode.corrected },
+    { enabled: !!episode?.transcribed, corrected: !!episode?.corrected },
   );
 
   // User can pick any corrected OR transcript version as input —
@@ -71,7 +68,7 @@ export default function TranslatePanel() {
   const { data: allVersions } = useQuery({
     queryKey: queryKeys.allVersions(audioPath),
     queryFn: () => getAllVersions(audioPath),
-    enabled: !!audioPath && episode.transcribed && expanded,
+    enabled: !!audioPath && !!episode?.transcribed && expanded,
   });
   const inputVersions = useMemo(
     () => (allVersions ? filterVersionsForStep(allVersions, "translate") : undefined),
@@ -88,7 +85,14 @@ export default function TranslatePanel() {
     onSuccess: (data) => task.startTask(data.task_id),
   });
 
-  const hasTranslations = episode.translations.length > 0;
+  // Sync editingLang from episode on first load (can't use initializer since episode may be null)
+  const hasTranslations = (episode?.translations.length ?? 0) > 0;
+  if (episode && editingLang === "" && hasTranslations) {
+    setEditingLang(episode.translations[0]);
+  }
+
+  if (!episode) return null;
+
   const missingTarget = !targetLang.trim();
   const runDisabled = backendMissing || missingTarget;
   const runDisabledTitle = disabledTitle || (missingTarget ? "Pick a target language first" : undefined);
@@ -138,7 +142,6 @@ export default function TranslatePanel() {
                 config={config}
                 patch={patch}
                 activePreset={activePreset}
-                hasOllama={hasOllama}
                 inputVersions={inputVersions}
                 sourceVersionId={sourceVersionId}
                 onSourceVersionChange={setSourceVersionId}

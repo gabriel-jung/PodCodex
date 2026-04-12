@@ -45,6 +45,21 @@ import {
   type StepStatus,
 } from "@/components/episode/PipelineSteps";
 
+function buildSidebarSections(episode: Episode) {
+  const meta = [
+    { key: "info" as const, label: "Info", icon: Info, status: false as StepStatus },
+    { key: "search" as const, label: "Search", icon: Search, status: false as StepStatus },
+  ];
+  const core: typeof meta = [];
+  const bonus: typeof meta = [];
+  for (const s of PIPELINE_STEPS) {
+    const item = { key: s.key as ActiveStep, label: s.label, icon: s.icon, status: s.status(episode) };
+    if (s.section === "core") core.push(item);
+    else bonus.push(item);
+  }
+  return [{ items: meta }, { items: core }, { items: bonus }];
+}
+
 export default function EpisodePage({
   folder,
   stem,
@@ -183,6 +198,8 @@ export default function EpisodePage({
     );
   }
 
+  const sidebarSections = buildSidebarSections(episode);
+
   return (
     <div className="flex flex-col h-full">
       {isDragging && <DropOverlay message="Drop a transcript file here (JSON, SRT, VTT)" />}
@@ -267,25 +284,15 @@ export default function EpisodePage({
             {/* App items */}
             <SidebarButton icon={Home} label="Home" expanded={sidebarExpanded} onClick={() => navigate({ to: "/" })} />
             <SidebarButton icon={Settings} label="Settings" expanded={sidebarExpanded} onClick={() => navigate({ to: "/settings" })} />
-            {(() => {
-              const nextTheme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
-              const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
-              return <SidebarButton icon={ThemeIcon} label={`Theme: ${theme}`} expanded={sidebarExpanded} onClick={() => setTheme(nextTheme)} />;
-            })()}
+            <SidebarButton
+              icon={theme === "dark" ? Moon : theme === "light" ? Sun : Monitor}
+              label={`Theme: ${theme}`}
+              expanded={sidebarExpanded}
+              onClick={() => setTheme(theme === "dark" ? "light" : theme === "light" ? "system" : "dark")}
+            />
 
             {/* Episode sections: info/search meta items, then pipeline steps by section */}
-            {[
-              { items: [
-                { key: "info" as const, label: "Info", icon: Info, status: false as StepStatus },
-                { key: "search" as const, label: "Search", icon: Search, status: false as StepStatus },
-              ]},
-              { items: PIPELINE_STEPS.filter((s) => s.section === "core").map((s) => ({
-                key: s.key as ActiveStep, label: s.label, icon: s.icon, status: s.status(episode),
-              }))},
-              { items: PIPELINE_STEPS.filter((s) => s.section === "bonus").map((s) => ({
-                key: s.key as ActiveStep, label: s.label, icon: s.icon, status: s.status(episode),
-              }))},
-            ].map((section, si) => (
+            {sidebarSections.map((section, si) => (
               <div key={si}>
                 <div className="mx-3 my-1.5 border-t border-border" />
                 {section.items.map(({ key, label, icon: Icon, status }) => (

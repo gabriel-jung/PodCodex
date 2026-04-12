@@ -21,7 +21,6 @@ import {
   buildLLMRequest,
   useLLMBackendStatus,
 } from "@/hooks/useLLMPipeline";
-import { useCapabilities } from "@/hooks/useCapabilities";
 import { modeToPreset } from "@/stores/pipelineConfigStore";
 import type { LLMConfig } from "@/stores/pipelineConfigStore";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
@@ -37,31 +36,28 @@ export default function CorrectPanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const audioPath = useAudioPath();
-  if (!episode) return null;
 
   const task = usePipelineTask(audioPath, "correct");
-  const expanded = task.expanded || !episode.corrected;
   const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
 
   const [config, setConfig] = useLLMConfig(episode, showMeta);
   const patch = (p: Partial<LLMConfig>) => setConfig({ ...config, ...p });
   const activePreset = modeToPreset(config.mode);
 
-  const { has: hasCap } = useCapabilities();
-  const hasLLM = hasCap("ollama") || hasCap("openai");
-  const { hasOllama, backendMissing, disabledTitle } = useLLMBackendStatus(activePreset);
+  const { hasLLM, backendMissing, disabledTitle } = useLLMBackendStatus(activePreset);
 
-  // Reference transcript for the diff view in TranscriptViewer.
+  const expanded = task.expanded || !episode?.corrected;
+
   const { data: transcriptSegments } = useQuery({
     queryKey: queryKeys.transcribeSegments(audioPath),
     queryFn: () => getSegments(audioPath!),
-    enabled: !!audioPath && episode.transcribed,
+    enabled: !!audioPath && !!episode?.transcribed,
   });
 
   const { data: allVersions } = useQuery({
     queryKey: queryKeys.allVersions(audioPath),
     queryFn: () => getAllVersions(audioPath),
-    enabled: !!audioPath && episode.transcribed && expanded,
+    enabled: !!audioPath && !!episode?.transcribed && expanded,
   });
   const inputVersions = useMemo(
     () => (allVersions ? filterVersionsForStep(allVersions, "correct") : undefined),
@@ -76,6 +72,8 @@ export default function CorrectPanel() {
       }),
     onSuccess: (data) => task.startTask(data.task_id),
   });
+
+  if (!episode) return null;
 
   return (
     <PipelinePanel
@@ -107,7 +105,6 @@ export default function CorrectPanel() {
             config={config}
             patch={patch}
             activePreset={activePreset}
-            hasOllama={hasOllama}
             inputVersions={inputVersions}
             sourceVersionId={sourceVersionId}
             onSourceVersionChange={setSourceVersionId}
