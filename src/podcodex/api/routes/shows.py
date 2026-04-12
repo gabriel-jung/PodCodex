@@ -190,7 +190,11 @@ async def get_artwork(show_folder: str = Query(...)):
             need_download = True
 
     if need_download:
-        cached = _download_artwork(artwork_url, path)
+        import asyncio
+
+        cached = await asyncio.get_running_loop().run_in_executor(
+            None, _download_artwork, artwork_url, path
+        )
 
     if not cached:
         raise HTTPException(502, "Failed to download artwork")
@@ -248,7 +252,7 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
 
     return CreateFromRSSResponse(
         folder=str(show_path),
-        name=folder_name,
+        name=show_name,
         episode_count=len(episodes),
     )
 
@@ -336,8 +340,6 @@ async def register_show(req: RegisterShowRequest) -> dict:
 
 # ── Episode serialization ────────────────────
 
-_EPISODE_FIELDS = {f.name for f in fields(EpisodeInfo)}
-
 
 def _episode_to_dict(ep: EpisodeInfo) -> dict:
     """Serialize an EpisodeInfo to a JSON-safe dict."""
@@ -381,8 +383,7 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
 @router.put("/{show_folder:path}/meta")
 async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
     """Persist updated show metadata to show.toml."""
-    path = Path(show_folder)
-    path.mkdir(parents=True, exist_ok=True)
+    path = require_show_folder(show_folder)
     p = meta.pipeline
     save_show_meta(
         path,
@@ -455,6 +456,7 @@ async def unified_episodes(
             db.populate_from_scan(episodes)
 
     status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
+    seg_counts = db.latest_segment_counts("transcript")
 
     local_audio = _scan_audio_files(path)
     episode_files = _scan_episode_files(path, local_audio)
@@ -482,11 +484,7 @@ async def unified_episodes(
         ep_files: list[str],
     ) -> dict:
         prov = _normalize_provenance(st.get("provenance", {}))
-        seg_count = None
-        if stem and st.get("transcribed"):
-            v = db.get_latest_version(stem, "transcript")
-            if v:
-                seg_count = v.get("segment_count")
+        seg_count = seg_counts.get(stem) if stem else None
         return {
             "id": ep_id,
             "title": title,

@@ -376,20 +376,16 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
     if not req.force and marker.exists():
         return False
 
-    # Need a transcript to index — try version DB first, then legacy files
-    from podcodex.core.transcribe import load_transcript
-
-    segments = load_transcript(audio_path)
-    if not segments:
-        return False
-
     ep_progress(i, step_offset, sw, 0.0, "Indexing...")
 
     from podcodex.api.routes._helpers import build_index_transcript
     from podcodex.rag.indexing import vectorize_batch
     from podcodex.rag.localstore import LocalStore
 
-    transcript = build_index_transcript(audio_path, req.show_name, stem, segments)
+    # Let build_index_transcript resolve the best source (corrected > transcript)
+    transcript = build_index_transcript(audio_path, req.show_name, stem)
+    if not transcript.get("segments"):
+        return False
 
     db_path = p.vectors_db
     local = LocalStore(db_path)
@@ -434,8 +430,8 @@ def _run_batch(progress_cb, req: BatchRequest):
     from podcodex.api.tasks import task_manager
 
     cancel = getattr(progress_cb, "cancel_event", None)
-    batch_task_id = task_manager.get_active(req.show_folder)
-    batch_task_id = batch_task_id.task_id if batch_task_id else "batch"
+    batch_info = task_manager.get_active(f"batch:{req.show_folder}")
+    batch_task_id = batch_info.task_id if batch_info else "batch"
     total = len(req.audio_paths)
     weight = _enabled_weight(req)
     completed = 0

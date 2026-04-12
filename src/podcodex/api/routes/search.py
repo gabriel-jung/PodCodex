@@ -327,18 +327,18 @@ async def index_stats(folder: str, show: str = "") -> dict:
         total_chunks = 0
         for col in collections:
             info = local.get_collection_info(col)
-            episodes = local.list_episodes(col)
-            chunk_count = sum(local.episode_chunk_count(col, ep) for ep in episodes)
+            ep_count = len(local.list_episodes(col))
+            chunk_count = local.collection_chunk_count(col)
             stats.append(
                 {
                     "collection": col,
                     "model": info["model"] if info else "",
                     "chunking": info["chunker"] if info else "",
-                    "episodes": len(episodes),
+                    "episodes": ep_count,
                     "chunks": chunk_count,
                 }
             )
-            total_episodes += len(episodes)
+            total_episodes += ep_count
             total_chunks += chunk_count
     finally:
         local.close()

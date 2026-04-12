@@ -183,6 +183,7 @@ def list_translations(
         db = _get_db(p.base)
         steps = db.list_steps(p.base.name)
     except Exception:
+        logger.opt(exception=True).debug("list_translations: DB error for {}", p.base)
         return []
-    non_translation = {"transcript", "corrected", "indexed"}
+    non_translation = {"transcript", "corrected", "indexed", "speaker_map"}
     return sorted(s for s in steps if s not in non_translation)

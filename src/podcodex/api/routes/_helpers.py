@@ -62,6 +62,7 @@ def _build_source_chain(
         step_id = model or mode or step
         return prev_chain + [step_id] if prev_chain else None
     except Exception:
+        logger.opt(exception=True).debug("source chain build failed for {}", audio_path)
         return None
 
 
@@ -214,6 +215,9 @@ def rss_episode_to_out(ep: RSSEpisode, show_folder: Path) -> dict:
 # ── Task submission ─────────────────────────────
 
 
+_GPU_STEPS = frozenset({"transcribe", "index", "batch"})
+
+
 def submit_task(step: str, audio_path: str, fn, *args) -> TaskResponse:
     """Submit a background task.
 
@@ -221,9 +225,11 @@ def submit_task(step: str, audio_path: str, fn, *args) -> TaskResponse:
     instead of raising an error — lets the UI reconnect after navigation.
     """
     from podcodex.api.tasks import task_manager
-    from podcodex.rag.embedder import clear_embedder_cache
 
-    clear_embedder_cache()
+    if step in _GPU_STEPS:
+        from podcodex.rag.embedder import clear_embedder_cache
+
+        clear_embedder_cache()
     try:
         info = task_manager.submit(step, audio_path, fn, *args)
     except ValueError:
@@ -298,19 +304,13 @@ def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
         segs = load_latest(p.base, "corrected")
         if segs:
             return segs, "corrected"
-        segs = load_latest(p.base, "transcript")
-        if segs:
-            return segs, "transcript"
-        # Legacy transcript file fallback
+        # load_transcript checks version DB then falls back to legacy files
         segs = load_transcript(str(p.audio_path))
         if segs:
             return segs, "transcript"
         raise ValueError("No transcript found — transcribe first")
 
     if source == "transcript":
-        segs = load_latest(p.base, "transcript")
-        if segs:
-            return segs, "transcript"
         segs = load_transcript(str(p.audio_path))
         if segs:
             return segs, "transcript"

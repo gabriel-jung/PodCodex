@@ -15,6 +15,8 @@ Factory:
 
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 from loguru import logger
 
@@ -244,13 +246,15 @@ class BGEEmbedder:
 
 
 _embedder_cache: dict[str, BGEEmbedder | E5Embedder | PplxEmbedder] = {}
+_embedder_lock = threading.Lock()
 
 
 def clear_embedder_cache() -> None:
     """Evict all cached embedders to free memory (e.g. before heavy pipeline tasks)."""
-    if _embedder_cache:
-        logger.info("Clearing embedder cache ({} model(s))", len(_embedder_cache))
-    _embedder_cache.clear()
+    with _embedder_lock:
+        if _embedder_cache:
+            logger.info("Clearing embedder cache ({} model(s))", len(_embedder_cache))
+        _embedder_cache.clear()
 
 
 def get_embedder(
@@ -271,21 +275,27 @@ def get_embedder(
     Raises:
         ValueError: if model_key is not in the registry.
     """
+    # Fast path — no lock needed for cache hits (dict reads are GIL-atomic)
     if model_key in _embedder_cache:
         return _embedder_cache[model_key]
 
-    if model_key not in MODELS:
-        valid = ", ".join(MODELS.keys())
-        raise ValueError(f"Unknown model '{model_key}'. Valid: {valid}")
+    with _embedder_lock:
+        # Re-check under lock to prevent duplicate construction
+        if model_key in _embedder_cache:
+            return _embedder_cache[model_key]
 
-    if model_key == "bge-m3":
-        embedder = BGEEmbedder(device=device)
-    elif model_key in ("e5-small", "e5-large"):
-        embedder = E5Embedder(model_key=model_key, device=device)
-    elif model_key == "pplx":
-        embedder = PplxEmbedder(device=device)
-    else:
-        raise ValueError(f"No embedder class registered for '{model_key}'")
+        if model_key not in MODELS:
+            valid = ", ".join(MODELS.keys())
+            raise ValueError(f"Unknown model '{model_key}'. Valid: {valid}")
 
-    _embedder_cache[model_key] = embedder
-    return embedder
+        if model_key == "bge-m3":
+            embedder = BGEEmbedder(device=device)
+        elif model_key in ("e5-small", "e5-large"):
+            embedder = E5Embedder(model_key=model_key, device=device)
+        elif model_key == "pplx":
+            embedder = PplxEmbedder(device=device)
+        else:
+            raise ValueError(f"No embedder class registered for '{model_key}'")
+
+        _embedder_cache[model_key] = embedder
+        return embedder

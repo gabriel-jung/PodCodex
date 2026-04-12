@@ -313,29 +313,6 @@ def group_by_speaker(segments: list[dict]) -> dict[str, list[dict]]:
     return by_speaker
 
 
-def save_segments_json(
-    path: Path,
-    segments: list[dict],
-    label: str,
-) -> Path:
-    """Write a segment list to a JSON file with standard formatting.
-
-    Args:
-        path       : output file path
-        segments   : list of segment dicts (already cleaned)
-        label      : human-readable label for the log message (e.g. "Corrected transcript")
-
-    Returns:
-        The path written to.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(segments, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    logger.success(f"{label} saved — {len(segments)} segments → {path.name}")
-    return path
-
-
 def batch_segments_by_duration(
     segments: list[dict], batch_minutes: float = DEFAULT_BATCH_MINUTES
 ) -> list[list[dict]]:

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -113,6 +114,7 @@ class PipelineDB:
 
     def __init__(self, db_path: Path | str):
         self._path = str(db_path)
+        self._lock = threading.Lock()
         if self._path != ":memory:":
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
@@ -173,43 +175,46 @@ class PipelineDB:
         if "translations" in fields and isinstance(fields["translations"], list):
             fields["translations"] = json.dumps(fields["translations"])
 
-        # Provenance is a dict keyed by step — merge with existing.
-        if "provenance" in fields and isinstance(fields["provenance"], dict):
-            existing = self._get_provenance(stem)
-            existing.update(fields["provenance"])
-            fields["provenance"] = json.dumps(existing)
+        with self._lock:
+            # Provenance is a dict keyed by step — merge with existing.
+            if "provenance" in fields and isinstance(fields["provenance"], dict):
+                existing = self._get_provenance(stem)
+                existing.update(fields["provenance"])
+                fields["provenance"] = json.dumps(existing)
 
-        cols = list(fields.keys())
-        vals = [fields[c] for c in cols]
+            cols = list(fields.keys())
+            vals = [fields[c] for c in cols]
 
-        set_clause = ", ".join(f"{c} = excluded.{c}" for c in cols)
-        placeholders = ", ".join("?" for _ in cols)
-        col_names = ", ".join(cols)
+            set_clause = ", ".join(f"{c} = excluded.{c}" for c in cols)
+            placeholders = ", ".join("?" for _ in cols)
+            col_names = ", ".join(cols)
 
-        sql = f"""
-            INSERT INTO episodes (stem, {col_names}, updated_at)
-            VALUES (?, {placeholders}, ?)
-            ON CONFLICT(stem) DO UPDATE SET {set_clause}, updated_at = excluded.updated_at
-        """
-        vals_full = [stem, *vals, time.time()]
-        self._conn.execute(sql, vals_full)
-        self._conn.commit()
+            sql = f"""
+                INSERT INTO episodes (stem, {col_names}, updated_at)
+                VALUES (?, {placeholders}, ?)
+                ON CONFLICT(stem) DO UPDATE SET {set_clause}, updated_at = excluded.updated_at
+            """
+            vals_full = [stem, *vals, time.time()]
+            self._conn.execute(sql, vals_full)
+            self._conn.commit()
 
     def ensure_episode(self, stem: str, audio_path: str | None = None) -> None:
         """Create an episode row if it does not exist (idempotent)."""
-        self._conn.execute(
-            """
-            INSERT OR IGNORE INTO episodes (stem, audio_path, updated_at)
-            VALUES (?, ?, ?)
-            """,
-            (stem, audio_path, time.time()),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO episodes (stem, audio_path, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (stem, audio_path, time.time()),
+            )
+            self._conn.commit()
 
     def remove_episode(self, stem: str) -> None:
         """Delete an episode row."""
-        self._conn.execute("DELETE FROM episodes WHERE stem = ?", (stem,))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("DELETE FROM episodes WHERE stem = ?", (stem,))
+            self._conn.commit()
 
     # ── Versions ─────────────────────────────────────────
 
@@ -218,28 +223,29 @@ class PipelineDB:
         params = meta.get("params", {})
         if isinstance(params, dict):
             params = json.dumps(params)
-        self._conn.execute(
-            """
-            INSERT OR REPLACE INTO versions
-                (id, stem, step, timestamp, type, model, params,
-                 manual_edit, content_hash, segment_count, input_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                meta["id"],
-                stem,
-                step,
-                meta["timestamp"],
-                meta["type"],
-                meta.get("model"),
-                params,
-                int(meta.get("manual_edit", False)),
-                meta["content_hash"],
-                meta["segment_count"],
-                meta.get("input_hash"),
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO versions
+                    (id, stem, step, timestamp, type, model, params,
+                     manual_edit, content_hash, segment_count, input_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    meta["id"],
+                    stem,
+                    step,
+                    meta["timestamp"],
+                    meta["type"],
+                    meta.get("model"),
+                    params,
+                    int(meta.get("manual_edit", False)),
+                    meta["content_hash"],
+                    meta["segment_count"],
+                    meta.get("input_hash"),
+                ),
+            )
+            self._conn.commit()
 
     def list_versions(self, stem: str, step: str) -> list[dict]:
         """List all versions for an episode step (newest first)."""
@@ -291,18 +297,20 @@ class PipelineDB:
         if not ids:
             return 0
         placeholders = ", ".join("?" for _ in ids)
-        cur = self._conn.execute(
-            f"DELETE FROM versions WHERE stem = ? AND step = ? AND id IN ({placeholders})",
-            [stem, step, *ids],
-        )
-        self._conn.commit()
-        return cur.rowcount
+        with self._lock:
+            cur = self._conn.execute(
+                f"DELETE FROM versions WHERE stem = ? AND step = ? AND id IN ({placeholders})",
+                [stem, step, *ids],
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     def delete_all_versions(self, stem: str) -> int:
         """Delete all versions for an episode. Returns count deleted."""
-        cur = self._conn.execute("DELETE FROM versions WHERE stem = ?", (stem,))
-        self._conn.commit()
-        return cur.rowcount
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM versions WHERE stem = ?", (stem,))
+            self._conn.commit()
+            return cur.rowcount
 
     @staticmethod
     def _version_to_dict(row: sqlite3.Row) -> dict:
@@ -312,6 +320,22 @@ class PipelineDB:
         d["params"] = json.loads(p) if isinstance(p, str) else (p or {})
         d["manual_edit"] = bool(d.get("manual_edit", 0))
         return d
+
+    def latest_segment_counts(self, step: str = "transcript") -> dict[str, int]:
+        """Return {stem: segment_count} for the latest version of each episode.
+
+        Uses a single query with a window function to avoid N+1 lookups.
+        """
+        rows = self._conn.execute(
+            """SELECT stem, segment_count
+               FROM (
+                   SELECT stem, segment_count,
+                          ROW_NUMBER() OVER (PARTITION BY stem ORDER BY timestamp DESC) AS rn
+                   FROM versions WHERE step = ?
+               ) WHERE rn = 1""",
+            (step,),
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
 
     # ── Bulk ──────────────────────────────────────────────
 
@@ -338,25 +362,26 @@ class PipelineDB:
                     now,
                 )
             )
-        self._conn.executemany(
-            """
-            INSERT INTO episodes (
-                stem, audio_path, transcribed, corrected, indexed, synthesized,
-                translations, provenance, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(stem) DO UPDATE SET
-                audio_path = excluded.audio_path,
-                transcribed = excluded.transcribed,
-                corrected = excluded.corrected,
-                indexed = excluded.indexed,
-                synthesized = excluded.synthesized,
-                translations = excluded.translations,
-                provenance = excluded.provenance,
-                updated_at = excluded.updated_at
-            """,
-            rows,
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.executemany(
+                """
+                INSERT INTO episodes (
+                    stem, audio_path, transcribed, corrected, indexed, synthesized,
+                    translations, provenance, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(stem) DO UPDATE SET
+                    audio_path = excluded.audio_path,
+                    transcribed = excluded.transcribed,
+                    corrected = excluded.corrected,
+                    indexed = excluded.indexed,
+                    synthesized = excluded.synthesized,
+                    translations = excluded.translations,
+                    provenance = excluded.provenance,
+                    updated_at = excluded.updated_at
+                """,
+                rows,
+            )
+            self._conn.commit()
 
     # ── Helpers ───────────────────────────────────────────
 
@@ -391,23 +416,26 @@ class PipelineDB:
 # ── Module-level instance cache ───────────────────────────
 
 _dbs: dict[Path, PipelineDB] = {}
+_dbs_lock = threading.Lock()
 
 
 def get_pipeline_db(show_folder: Path | str) -> PipelineDB:
     """Return a cached PipelineDB instance for the given show folder."""
     show_folder = Path(show_folder)
-    if show_folder not in _dbs:
-        db_path = show_folder / DB_FILENAME
-        _dbs[show_folder] = PipelineDB(db_path)
-    return _dbs[show_folder]
+    with _dbs_lock:
+        if show_folder not in _dbs:
+            db_path = show_folder / DB_FILENAME
+            _dbs[show_folder] = PipelineDB(db_path)
+        return _dbs[show_folder]
 
 
 def close_pipeline_db(show_folder: Path | str) -> None:
     """Close and remove a cached PipelineDB instance."""
     show_folder = Path(show_folder)
-    db = _dbs.pop(show_folder, None)
-    if db:
-        db.close()
+    with _dbs_lock:
+        db = _dbs.pop(show_folder, None)
+        if db:
+            db.close()
 
 
 def mark_step(show_dir: Path, stem: str, **fields: object) -> None:

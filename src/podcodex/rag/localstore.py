@@ -469,16 +469,12 @@ class LocalStore:
             collection: Collection name.
         """
         rows = self._conn.execute(
-            "SELECT DISTINCT meta_json FROM chunks WHERE collection=?",
+            """SELECT DISTINCT json_extract(meta_json, '$.source') AS src
+               FROM chunks WHERE collection = ? AND src IS NOT NULL
+               ORDER BY src""",
             (collection,),
         ).fetchall()
-        sources: set[str] = set()
-        for (meta_json,) in rows:
-            meta = json.loads(meta_json)
-            src = meta.get("source")
-            if src:
-                sources.add(src)
-        return sorted(sources)
+        return [r[0] for r in rows]
 
     def list_speakers(self, collection: str) -> list[str]:
         """Return sorted list of distinct speaker/dominant_speaker values.
@@ -487,16 +483,15 @@ class LocalStore:
             collection: Collection name.
         """
         rows = self._conn.execute(
-            "SELECT DISTINCT meta_json FROM chunks WHERE collection=?",
+            """SELECT DISTINCT COALESCE(
+                   json_extract(meta_json, '$.dominant_speaker'),
+                   json_extract(meta_json, '$.speaker')
+               ) AS spk
+               FROM chunks WHERE collection = ? AND spk IS NOT NULL
+               ORDER BY spk""",
             (collection,),
         ).fetchall()
-        speakers: set[str] = set()
-        for (meta_json,) in rows:
-            meta = json.loads(meta_json)
-            spk = meta.get("dominant_speaker") or meta.get("speaker")
-            if spk:
-                speakers.add(spk)
-        return sorted(speakers)
+        return [r[0] for r in rows]
 
     def get_episode_stats(self, collection: str) -> list[dict]:
         """Return per-episode statistics for a collection.
@@ -508,32 +503,29 @@ class LocalStore:
             List of dicts, each with keys ``{episode, chunk_count, duration,
             speakers}``, sorted by episode name.
         """
-        episodes = self._conn.execute(
-            "SELECT DISTINCT episode FROM chunks WHERE collection=? ORDER BY episode",
+        rows = self._conn.execute(
+            """SELECT
+                   episode,
+                   COUNT(*) AS chunk_count,
+                   MAX(json_extract(meta_json, '$.end')) AS max_end,
+                   GROUP_CONCAT(
+                       DISTINCT COALESCE(
+                           json_extract(meta_json, '$.dominant_speaker'),
+                           json_extract(meta_json, '$.speaker')
+                       )
+                   ) AS speakers_csv
+               FROM chunks
+               WHERE collection = ?
+               GROUP BY episode
+               ORDER BY episode""",
             (collection,),
         ).fetchall()
-        result = []
-        for (ep,) in episodes:
-            chunk_rows = self._conn.execute(
-                "SELECT meta_json FROM chunks WHERE collection=? AND episode=?",
-                (collection, ep),
-            ).fetchall()
-            speakers: set[str] = set()
-            max_end = 0.0
-            for (meta_json,) in chunk_rows:
-                meta = json.loads(meta_json)
-                spk = meta.get("dominant_speaker") or meta.get("speaker")
-                if spk:
-                    speakers.add(spk)
-                end = meta.get("end", 0.0)
-                if end > max_end:
-                    max_end = end
-            result.append(
-                {
-                    "episode": ep,
-                    "chunk_count": len(chunk_rows),
-                    "duration": max_end,
-                    "speakers": sorted(speakers),
-                }
-            )
-        return result
+        return [
+            {
+                "episode": r[0],
+                "chunk_count": r[1],
+                "duration": r[2] or 0.0,
+                "speakers": sorted(s for s in (r[3] or "").split(",") if s),
+            }
+            for r in rows
+        ]

@@ -58,23 +58,14 @@ async def index_sources(
     Includes provenance detail (model, provider) when available.
     """
     from podcodex.core.translate import list_translations
-    from podcodex.core.versions import load_latest
+    from podcodex.core.versions import get_latest_provenance
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     def _version_detail(step: str, lang: str | None = None) -> str:
-        """Build a short human-readable detail string from the latest version's provenance.
-
-        Args:
-            step: Pipeline step name (e.g. "transcript", "corrected", or a language key).
-            lang: Optional language code; when provided, appended as a title-cased label.
-
-        Returns:
-            Comma-separated string of provenance parts (model, provider/mode, lang,
-            "edited" flag), or an empty string if no provenance is available.
-        """
+        """Build a short human-readable detail string from the latest version's provenance."""
         try:
-            _, meta = load_latest(audio_path, step, output_dir=output_dir)
+            meta = get_latest_provenance(p.base, step)
             if not meta:
                 return ""
             parts: list[str] = []

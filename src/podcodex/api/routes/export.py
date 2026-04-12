@@ -10,25 +10,33 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from podcodex.core._utils import (
+    VECTORS_DB_FILENAME,
     AudioPaths,
     normalize_lang,
     segments_to_srt,
     segments_to_text,
     segments_to_vtt,
 )
+from podcodex.core.pipeline_db import DB_FILENAME
 from podcodex.core.versions import load_latest
 
 router = APIRouter()
 
-
-# Map export source names to version DB step names.
-_STEP_MAP = {"transcript": "transcript", "corrected": "corrected"}
+_EXCLUDE_NAMES = frozenset(
+    {
+        DB_FILENAME,
+        VECTORS_DB_FILENAME,
+        DB_FILENAME + "-wal",
+        DB_FILENAME + "-shm",
+    }
+)
+_EXCLUDE_DIRS = frozenset({".versions"})
 
 
 def _load_segments(audio_path: str, output_dir: str | None, source: str) -> list[dict]:
     """Load segments for the given source (transcript, corrected, or a language code)."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    step = _STEP_MAP.get(source) or normalize_lang(source)
+    step = normalize_lang(source)
     segments = load_latest(p.base, step)
     if segments is not None:
         return segments
@@ -86,9 +94,14 @@ def export_zip(
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in sorted(episode_dir.rglob("*")):
-            if f.is_file():
-                arcname = f.relative_to(episode_dir.parent)
-                zf.write(f, arcname)
+            if not f.is_file():
+                continue
+            if f.name in _EXCLUDE_NAMES:
+                continue
+            if any(d in f.parts for d in _EXCLUDE_DIRS):
+                continue
+            arcname = f.relative_to(episode_dir.parent)
+            zf.write(f, arcname)
 
     buf.seek(0)
     stem = Path(audio_path).stem
