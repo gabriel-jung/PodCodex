@@ -168,7 +168,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
             Logs ({log.length})
           </button>
           {showLog && (
-            <pre className="mt-2 p-2 bg-black/40 rounded text-2xs leading-relaxed text-muted-foreground max-h-48 overflow-auto font-mono">
+            <pre className="mt-2 p-2 bg-black/40 rounded text-[0.55rem] leading-normal text-muted-foreground max-h-80 overflow-auto font-mono">
               {log.map((line, i) => (
                 <div key={i}>{line}</div>
               ))}

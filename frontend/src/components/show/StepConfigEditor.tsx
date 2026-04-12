@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Episode } from "@/api/types";
-import { getIndexConfig, getAllVersions } from "@/api/search";
+import { getAllVersions } from "@/api/search";
 import type { VersionEntry } from "@/api/types";
 import { queryKeys } from "@/api/queryKeys";
 import { usePipelineConfig } from "@/hooks/usePipelineConfig";
@@ -190,13 +190,6 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
   const queryClient = useQueryClient();
   const { tc, setTc, llm, setLLM, targetLang, setTargetLang } = usePipelineConfig();
   const { whisperModels, detectedKeys: detected, apiProviders, getProviderInfo } = useLLMProviders();
-  const { data: indexConfig } = useQuery({
-    queryKey: queryKeys.indexConfig(),
-    queryFn: getIndexConfig,
-    enabled: step === "index",
-  });
-  const indexModel = usePipelineConfigStore((s) => s.indexModel);
-  const setIndexModel = usePipelineConfigStore((s) => s.setIndexModel);
   const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
   const applyTranscribePreset = usePipelineConfigStore((s) => s.applyTranscribePreset);
   const llmPreset = usePipelineConfigStore((s) => s.llmPreset);
@@ -427,16 +420,9 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
             </div>
           )}
 
-          {/* ── Preset cards (transcribe / index) ── */}
-          {canRun.length > 0 && !isLLMStep && (
-            <>
-              {step === "transcribe" && transcribeSource === "audio" && (
-                <PresetCards presets={TRANSCRIBE_PRESETS} active={transcribePreset} onSelect={applyTranscribePreset} />
-              )}
-              {step === "index" && (
-                <PresetCards presets={INDEX_PRESETS} active={indexPreset} onSelect={applyIndexPreset} />
-              )}
-            </>
+          {/* ── Preset cards (transcribe) ── */}
+          {canRun.length > 0 && step === "transcribe" && transcribeSource === "audio" && (
+            <PresetCards presets={TRANSCRIBE_PRESETS} active={transcribePreset} onSelect={applyTranscribePreset} />
           )}
 
           {/* ── Input source selector ── */}
@@ -521,6 +507,11 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                 </div>
               )}
             </div>
+          )}
+
+          {/* ── Preset cards (index) ── */}
+          {canRun.length > 0 && step === "index" && (
+            <PresetCards presets={INDEX_PRESETS} active={indexPreset} onSelect={applyIndexPreset} />
           )}
 
           {/* ── Custom version picker ── */}
@@ -947,19 +938,6 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                   </>
                 );
               })()}
-              {step === "index" && (
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium" title="Embedding model used for semantic search - larger models give better results but are slower">Embedding model</label>
-                  <select value={indexModel} onChange={(e) => setIndexModel(e.target.value)} className={selectFull}>
-                    {indexConfig?.models
-                      ? Object.entries(indexConfig.models as Record<string, { label: string; description: string }>).map(([key, spec]) => (
-                          <option key={key} value={key}>{key} - {spec.label}</option>
-                        ))
-                      : <option value={indexModel}>{indexModel}</option>
-                    }
-                  </select>
-                </div>
-              )}
             </div>
           )}
         </div>

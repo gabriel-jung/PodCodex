@@ -18,6 +18,7 @@ import AddShowModal from "@/components/show/AddShowModal";
 import { Plus, RefreshCw, List, LayoutGrid, Podcast, Group } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import AppSidebar from "@/components/layout/AppSidebar";
+import PageHeader from "@/components/layout/PageHeader";
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -87,28 +88,30 @@ export default function HomePage() {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <div className="px-6 py-4 border-b border-border flex items-center gap-4">
-        <h1 className="text-2xl font-bold">PodCodex</h1>
-        <div className="flex items-center gap-2 ml-auto">
-          {(rssShows.length > 0 || ytShows.length > 0) && (
-            <Button
-              onClick={() => refreshAllMutation.mutate()}
-              disabled={refreshAllMutation.isPending}
-              variant="outline"
-              size="sm"
-              title="Refresh RSS feeds for all shows"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${refreshAllMutation.isPending ? "animate-spin" : ""}`} />
-              {refreshAllMutation.isPending
-                ? "Refreshing..."
-                : oldestRssUpdate
-                  ? `Updated ${timeAgo(oldestRssUpdate)}`
-                  : "Update feeds"}
-            </Button>
-          )}
-          <Button onClick={() => setAddOpen(true)} size="sm"><Plus /> Add show</Button>
-        </div>
-      </div>
+      <PageHeader
+        title="PodCodex"
+        actions={
+          <div className="flex items-center gap-2">
+            {(rssShows.length > 0 || ytShows.length > 0) && (
+              <Button
+                onClick={() => refreshAllMutation.mutate()}
+                disabled={refreshAllMutation.isPending}
+                variant="outline"
+                size="sm"
+                title="Refresh RSS feeds for all shows"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${refreshAllMutation.isPending ? "animate-spin" : ""}`} />
+                {refreshAllMutation.isPending
+                  ? "Refreshing..."
+                  : oldestRssUpdate
+                    ? `Updated ${timeAgo(oldestRssUpdate)}`
+                    : "Update feeds"}
+              </Button>
+            )}
+            <Button onClick={() => setAddOpen(true)} size="sm"><Plus /> Add show</Button>
+          </div>
+        }
+      />
 
       <div className="flex-1 flex overflow-hidden">
       <AppSidebar />

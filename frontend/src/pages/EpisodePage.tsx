@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getEpisodes, getShowMeta, exportZipUrl, openFolder } from "@/api/client";
 import { audioFileUrl } from "@/api/client";
@@ -12,7 +12,7 @@ import { usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
 import { useDropZone } from "@/hooks/useDropZone";
 import DropOverlay from "@/components/common/DropOverlay";
-import BackNav from "@/components/layout/BackNav";
+import PageHeader from "@/components/layout/PageHeader";
 import AppSidebar from "@/components/layout/AppSidebar";
 import type { Episode, ShowMeta } from "@/api/types";
 import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
@@ -77,6 +77,7 @@ export default function EpisodePage({
   const { data: episodes } = useQuery({
     queryKey: queryKeys.episodes(folder, pipelineDefaults),
     queryFn: () => getEpisodes(folder!, pipelineDefaults),
+    placeholderData: keepPreviousData,
     enabled: !!folder,
     refetchInterval: downloadTaskId ? 5000 : false,
   });
@@ -162,7 +163,7 @@ export default function EpisodePage({
     return (
       <div className="p-6 text-muted-foreground">
         Episode not found.{" "}
-        <Button onClick={goBack} variant="link" size="sm">
+        <Button onClick={() => window.history.back()} variant="link" size="sm">
           Go back
         </Button>
       </div>
@@ -174,90 +175,71 @@ export default function EpisodePage({
   return (
     <div className="flex flex-col h-full">
       {isDragging && <DropOverlay message="Drop a transcript file here (JSON, SRT, VTT)" />}
-      <div className="px-6 py-4 border-b border-border flex items-center gap-4 relative overflow-hidden">
-        {artwork && (
-          <div
-            className="absolute inset-0 bg-cover bg-center opacity-[0.08] blur-2xl scale-110 pointer-events-none"
-            style={{ backgroundImage: `url(${artwork})` }}
-          />
-        )}
-        <BackNav
-          parentLabel={isStandalone ? "Home" : meta?.name ?? "Episodes"}
-          parentTo={isStandalone ? { to: "/" } : { to: "/show/$folder", params: { folder: encodeURIComponent(folder!) } }}
-        />
-        {episode.audio_path && artwork ? (
-          <button
-            onClick={() => seekTo(episode.audio_path!, 0)}
-            className="relative group shrink-0"
-          >
-            <img src={artwork} alt={episode.title} className="w-12 h-8 object-cover rounded-lg" />
-            <div className="absolute inset-0 rounded-lg bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-              <Play className="w-4 h-4 text-white fill-white" />
-            </div>
-          </button>
-        ) : artwork ? (
-          <img src={artwork} alt={episode.title} className="w-12 h-8 object-cover rounded-lg shrink-0" />
-        ) : null}
-        <div className="flex-1 min-w-0">
-          <h2 className="text-lg font-semibold truncate">
-            {episode.title}
-          </h2>
-          <div className="flex items-center gap-3 mt-0.5">
+      <PageHeader
+        title={episode.title}
+        parentLabel={isStandalone ? "Home" : meta?.name ?? "Episodes"}
+        parentTo={isStandalone ? { to: "/" } : { to: "/show/$folder", params: { folder: encodeURIComponent(folder!) } }}
+        className="relative overflow-hidden"
+        artwork={
+          episode.audio_path && artwork ? (
+            <button
+              onClick={() => seekTo(episode.audio_path!, 0)}
+              className="relative group shrink-0"
+            >
+              <img src={artwork} alt={episode.title} className="w-8 h-8 object-cover rounded-md" />
+              <div className="absolute inset-0 rounded-lg bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                <Play className="w-4 h-4 text-white fill-white" />
+              </div>
+            </button>
+          ) : artwork ? (
+            <img src={artwork} alt={episode.title} className="w-8 h-8 object-cover rounded-md shrink-0" />
+          ) : undefined
+        }
+        subtitle={
+          <>
             <div className="flex gap-2 text-xs text-muted-foreground">
               {episode.episode_number != null && <span>#{episode.episode_number}</span>}
               {episode.pub_date && <span>{formatDate(episode.pub_date)}</span>}
               {episode.duration > 0 && <span>{formatDuration(episode.duration)}</span>}
             </div>
             <PipelineStatus episode={episode} />
+          </>
+        }
+        actions={
+          <div className="flex items-center gap-1.5">
+            {!episode.downloaded && (
+              <Button
+                onClick={() => episodeDownloadMutation.mutate({ guids: [episode.id] })}
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                title="Download audio"
+                disabled={episodeDownloadMutation.isPending || !!downloadTaskId}
+              >
+                <Download className="w-3.5 h-3.5" />
+              </Button>
+            )}
+            {episode.audio_path && (
+              <Button
+                onClick={() => seekTo(episode.audio_path!, 0)}
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                title="Play"
+              >
+                <Play className="w-3.5 h-3.5" />
+              </Button>
+            )}
           </div>
-        </div>
-        <div className="flex items-center gap-1.5">
-          {!episode.downloaded && (
-            <Button
-              onClick={() => episodeDownloadMutation.mutate({ guids: [episode.id] })}
-              variant="outline"
-              size="icon"
-              className="h-8 w-8"
-              title="Download audio"
-              disabled={episodeDownloadMutation.isPending || !!downloadTaskId}
-            >
-              <Download className="w-3.5 h-3.5" />
-            </Button>
-          )}
-          {episode.audio_path && (
-            <Button
-              onClick={() => seekTo(episode.audio_path!, 0)}
-              variant="outline"
-              size="icon"
-              className="h-8 w-8"
-              title="Play"
-            >
-              <Play className="w-3.5 h-3.5" />
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {/* Description */}
-      {episode.description && (
-        <div className="px-6 py-3 border-b border-border relative">
-          <p
-            className={`text-sm text-muted-foreground whitespace-pre-line select-text ${descExpanded ? "" : "line-clamp-2"}`}
-            style={descExpanded ? undefined : {
-              WebkitMaskImage: "linear-gradient(to bottom, black 55%, transparent 100%)",
-              maskImage: "linear-gradient(to bottom, black 55%, transparent 100%)",
-            }}
-          >
-            {stripHtml(episode.description)}
-          </p>
-          <button
-            onClick={() => setDescExpanded(!descExpanded)}
-            className="mt-1 text-xs text-muted-foreground/70 hover:text-foreground transition"
-          >
-            {descExpanded ? "Show less" : "Show more"}
-          </button>
-        </div>
-      )}
+        }
+      >
+        {artwork && (
+          <div
+            className="absolute inset-0 bg-cover bg-center opacity-[0.08] blur-2xl scale-110 pointer-events-none"
+            style={{ backgroundImage: `url(${artwork})` }}
+          />
+        )}
+      </PageHeader>
 
       <div className="flex-1 flex overflow-hidden">
         <AppSidebar
@@ -266,19 +248,36 @@ export default function EpisodePage({
           onItemClick={(key) => setActiveStep(key as ActiveStep)}
         />
 
-        <div className="flex-1 overflow-y-auto">
-          <StepContent
-            step={activeStep}
-            episode={episode}
-            folder={folder}
-            meta={meta}
-            isYouTube={isYouTube}
-            onDownloadAudio={() => episodeDownloadMutation.mutate({ guids: [episode.id] })}
-            onImportSubs={(lang) => importSubsMutation.mutate({ ids: [episode?.id ?? ""], lang })}
-            downloadDisabled={episodeDownloadMutation.isPending || importSubsMutation.isPending || !!downloadTaskId}
-            downloadError={episodeDownloadMutation.isError ? errorMessage(episodeDownloadMutation.error) : importSubsMutation.isError ? errorMessage(importSubsMutation.error) : undefined}
-            onNavigateStep={setActiveStep}
-          />
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {episode.description && (
+            <div className="px-6 py-2 border-b border-border">
+              <p
+                className={`text-2xs text-muted-foreground whitespace-pre-line select-text ${descExpanded ? "" : "line-clamp-2"}`}
+              >
+                {stripHtml(episode.description)}
+              </p>
+              <button
+                onClick={() => setDescExpanded(!descExpanded)}
+                className="text-2xs text-muted-foreground/50 hover:text-foreground transition"
+              >
+                {descExpanded ? "Less" : "More"}
+              </button>
+            </div>
+          )}
+          <div className="flex-1 overflow-y-auto">
+            <StepContent
+              step={activeStep}
+              episode={episode}
+              folder={folder}
+              meta={meta}
+              isYouTube={isYouTube}
+              onDownloadAudio={() => episodeDownloadMutation.mutate({ guids: [episode.id] })}
+              onImportSubs={(lang) => importSubsMutation.mutate({ ids: [episode?.id ?? ""], lang })}
+              downloadDisabled={episodeDownloadMutation.isPending || importSubsMutation.isPending || !!downloadTaskId}
+              downloadError={episodeDownloadMutation.isError ? errorMessage(episodeDownloadMutation.error) : importSubsMutation.isError ? errorMessage(importSubsMutation.error) : undefined}
+              onNavigateStep={setActiveStep}
+            />
+          </div>
         </div>
       </div>
     </div>

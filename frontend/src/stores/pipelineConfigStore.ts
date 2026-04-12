@@ -54,10 +54,20 @@ export function modeToPreset(mode: LLMConfig["mode"]): LLMPresetKey {
 }
 
 export const INDEX_PRESETS = {
-  fast: { label: "Fast", desc: "Very fast to run", model: "e5-small" },
-  balanced: { label: "Balanced", desc: "Default, good search quality", model: "bge-m3" },
-  gpu: { label: "GPU", desc: "Context-aware, slow on CPU", model: "pplx" },
+  fast: { label: "Fast", desc: "Small model, ideal for light CPU", model: "e5-small" },
+  balanced: { label: "Balanced", desc: "Good quality, works on CPU", model: "bge-m3" },
+  gpu: { label: "GPU", desc: "Context-aware, very slow on CPU", model: "pplx" },
 } as const;
+
+export type IndexPresetKey = keyof typeof INDEX_PRESETS;
+
+/** Reverse lookup: model key → preset key (or "" if no preset matches). */
+export function modelToIndexPreset(model: string): IndexPresetKey | "" {
+  for (const [key, spec] of Object.entries(INDEX_PRESETS)) {
+    if (spec.model === model) return key as IndexPresetKey;
+  }
+  return "";
+}
 
 // ── Pipeline config state ────────────────────────────────
 
@@ -130,7 +140,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
       setTargetLang: (targetLang) => set({ targetLang }),
 
       indexModel: "bge-m3",
-      setIndexModel: (indexModel) => set({ indexModel, indexPreset: "" }),
+      setIndexModel: (indexModel) => set({ indexModel, indexPreset: modelToIndexPreset(indexModel) }),
 
       transcribePreset: "gpu",
       applyTranscribePreset: (key) =>

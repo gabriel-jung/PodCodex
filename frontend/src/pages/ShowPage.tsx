@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import {
@@ -13,7 +13,7 @@ import { queryKeys } from "@/api/queryKeys";
 import { artworkUrl } from "@/api/filesystem";
 import type { Episode } from "@/api/types";
 import { languageToISO, isOutdated } from "@/lib/utils";
-import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
+import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore } from "@/stores";
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useShowActions } from "@/hooks/useShowActions";
 
@@ -23,7 +23,7 @@ import {
   RefreshCw, Podcast, Search,
   Download, List, LayoutGrid,
 } from "lucide-react";
-import BackNav from "@/components/layout/BackNav";
+import PageHeader from "@/components/layout/PageHeader";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import ShowSettings from "@/components/show/ShowSettings";
@@ -75,6 +75,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const { data: episodes, isLoading: episodesLoading } = useQuery({
     queryKey: queryKeys.episodes(folder, pipelineDefaults),
     queryFn: () => getEpisodes(folder, pipelineDefaults),
+    placeholderData: keepPreviousData,
     refetchInterval: downloadTaskId || batchTaskId ? 5000 : false,
   });
 
@@ -213,6 +214,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const goEpisode = (stem: string) =>
     navigate({ to: "/show/$folder/episode/$stem", params: { folder: encodeURIComponent(folder), stem: encodeURIComponent(stem) } });
 
+  const indexModel = usePipelineConfigStore((s) => s.indexModel);
+
   const runStep = (step: "transcribe" | "correct" | "translate" | "index", filteredEpisodes?: Episode[], _sourceVersionIds?: Record<string, string>, transcribeSource?: string, force?: boolean) => {
     const source = filteredEpisodes || batchableSelected;
     const audioPaths = source.map(batchPath).filter(Boolean) as string[];
@@ -245,6 +248,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       llm_batch_minutes: llm.batchMinutes,
       engine,
       show_name: meta?.name || "",
+      index_model_keys: step === "index" ? [indexModel] : undefined,
       force,
     });
   };
@@ -252,32 +256,32 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      {/* Top bar */}
-      <div className="px-6 py-4 border-b border-border flex items-center gap-4">
-        <BackNav parentLabel="Shows" parentTo={{ to: "/" }} />
-        {meta?.artwork_url && (
-          <img src={artworkUrl(folder)} alt={showName} className="w-10 h-10 rounded-lg shrink-0" />
-        )}
-        <div className="flex-1 min-w-0">
-          <h2 className="text-lg font-semibold truncate">{showName}</h2>
-          <div className="flex gap-3 text-xs text-muted-foreground mt-0.5">
+      <PageHeader
+        title={showName}
+        parentLabel="Home"
+        parentTo={{ to: "/" }}
+        artwork={meta?.artwork_url ? <img src={artworkUrl(folder)} alt={showName} className="w-8 h-8 rounded-md shrink-0" /> : undefined}
+        subtitle={
+          <div className="flex gap-3 text-xs text-muted-foreground">
             {all.length > 0 && <span>{all.length} episode{all.length !== 1 && "s"}</span>}
             {meta?.language && <span>{meta.language}</span>}
             {meta?.speakers && meta.speakers.length > 0 && (
               <span>{meta.speakers.length} speaker{meta.speakers.length !== 1 && "s"}</span>
             )}
           </div>
-        </div>
-        <Button
-          onClick={() => refreshMutation.mutate()}
-          disabled={refreshMutation.isPending}
-          variant="outline"
-          size="sm"
-        >
-          <RefreshCw className={refreshMutation.isPending ? "animate-spin" : ""} />
-          {refreshMutation.isPending ? "Refreshing..." : isYouTube ? "Refresh YouTube" : "Refresh RSS"}
-        </Button>
-      </div>
+        }
+        actions={
+          <Button
+            onClick={() => refreshMutation.mutate()}
+            disabled={refreshMutation.isPending}
+            variant="outline"
+            size="sm"
+          >
+            <RefreshCw className={refreshMutation.isPending ? "animate-spin" : ""} />
+            {refreshMutation.isPending ? "Refreshing..." : isYouTube ? "Refresh YouTube" : "Refresh RSS"}
+          </Button>
+        }
+      />
 
       <div className="flex-1 flex overflow-hidden">
       <AppSidebar />

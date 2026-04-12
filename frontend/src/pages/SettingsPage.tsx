@@ -4,18 +4,15 @@ import { queryKeys } from "@/api/queryKeys";
 import type { ExtraInfo } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2 } from "lucide-react";
-import BackNav from "@/components/layout/BackNav";
 import AppSidebar from "@/components/layout/AppSidebar";
+import PageHeader from "@/components/layout/PageHeader";
 import { useState } from "react";
 
 export default function SettingsPage() {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <div className="px-6 py-4 border-b border-border flex items-center gap-4">
-        <BackNav parentLabel="Home" parentTo={{ to: "/" }} />
-        <h1 className="text-2xl font-bold">Settings</h1>
-      </div>
+      <PageHeader title="Settings" parentLabel="Home" parentTo={{ to: "/" }} />
       <div className="flex-1 flex overflow-hidden">
         <AppSidebar />
         <div className="flex-1 overflow-y-auto">
