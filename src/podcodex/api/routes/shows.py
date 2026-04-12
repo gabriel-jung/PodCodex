@@ -482,6 +482,11 @@ async def unified_episodes(
         ep_files: list[str],
     ) -> dict:
         prov = _normalize_provenance(st.get("provenance", {}))
+        seg_count = None
+        if stem and st.get("transcribed"):
+            v = db.get_latest_version(stem, "transcript")
+            if v:
+                seg_count = v.get("segment_count")
         return {
             "id": ep_id,
             "title": title,
@@ -503,6 +508,7 @@ async def unified_episodes(
             "has_subtitles": any(f.endswith(".vtt") for f in ep_files),
             "translations": st.get("translations", []),
             "artwork_url": artwork_url,
+            "segment_count": seg_count,
             "files": ep_files,
             "provenance": prov,
             **_step_statuses(st, prov, effective),

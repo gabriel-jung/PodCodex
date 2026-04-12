@@ -6,6 +6,8 @@ const api = createVersionApi("transcribe");
 
 export const getSegments = (audioPath: string, outputDir?: string) =>
   api.getSegments(audioPath, { output_dir: outputDir });
+export const getSegmentsPreview = (audioPath: string, limit: number) =>
+  api.getSegmentsPreview(audioPath, limit);
 export const saveSegments = (audioPath: string, segments: Segment[], outputDir?: string) =>
   api.saveSegments(audioPath, segments, { output_dir: outputDir });
 export const getTranscribeVersions = (audioPath: string, outputDir?: string) =>

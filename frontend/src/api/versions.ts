@@ -36,6 +36,9 @@ export function createVersionApi(step: string) {
     getSegments: (audioPath: string, extra?: Extra) =>
       json<Segment[]>(seg(audioPath, extra)),
 
+    getSegmentsPreview: (audioPath: string, limit: number, extra?: Extra) =>
+      json<Segment[]>(seg(audioPath, { ...extra, limit: String(limit) })),
+
     saveSegments: (audioPath: string, segments: Segment[], extra?: Extra) =>
       json<{ status: string; count: number }>(seg(audioPath, extra), {
         method: "PUT",

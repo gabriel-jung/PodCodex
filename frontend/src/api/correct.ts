@@ -5,6 +5,8 @@ import { createLLMPipelineApi } from "./versions";
 const api = createLLMPipelineApi("correct");
 
 export const getCorrectSegments = (audioPath: string) => api.getSegments(audioPath);
+export const getCorrectSegmentsPreview = (audioPath: string, limit: number) =>
+  api.getSegmentsPreview(audioPath, limit);
 export const saveCorrectSegments = (audioPath: string, segments: Segment[]) =>
   api.saveSegments(audioPath, segments);
 export const getCorrectVersions = (audioPath: string) => api.getVersions(audioPath);

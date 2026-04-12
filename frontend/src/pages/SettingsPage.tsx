@@ -1,25 +1,29 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
 import { getModels, deleteModel, getExtras, installExtra, removeExtra } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import type { ExtraInfo } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2 } from "lucide-react";
+import { Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2 } from "lucide-react";
+import BackNav from "@/components/layout/BackNav";
+import AppSidebar from "@/components/layout/AppSidebar";
 import { useState } from "react";
 
 export default function SettingsPage() {
-  const navigate = useNavigate();
+
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
-        <div className="flex items-center gap-4">
-          <Button onClick={() => navigate({ to: "/" })} variant="ghost" size="sm">
-            <ArrowLeft /> Home
-          </Button>
-          <h1 className="text-2xl font-bold">Settings</h1>
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="px-6 py-4 border-b border-border flex items-center gap-4">
+        <BackNav parentLabel="Home" parentTo={{ to: "/" }} />
+        <h1 className="text-2xl font-bold">Settings</h1>
+      </div>
+      <div className="flex-1 flex overflow-hidden">
+        <AppSidebar />
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
+            <PluginsPanel />
+            <ModelCachePanel />
+          </div>
         </div>
-        <PluginsPanel />
-        <ModelCachePanel />
       </div>
     </div>
   );

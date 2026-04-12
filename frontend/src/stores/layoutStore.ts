@@ -6,8 +6,6 @@ import { persist } from "zustand/middleware";
 export type ShowGroupBy = "none" | "source";
 
 interface LayoutState {
-  hideAppSidebar: boolean;
-  setHideAppSidebar: (v: boolean) => void;
   /** Show view mode on the home page. */
   showViewMode: "list" | "card";
   setShowViewMode: (mode: "list" | "card") => void;
@@ -22,8 +20,6 @@ interface LayoutState {
 export const useLayoutStore = create<LayoutState>()(
   persist(
     (set) => ({
-      hideAppSidebar: false,
-      setHideAppSidebar: (v) => set({ hideAppSidebar: v }),
       showViewMode: "card",
       setShowViewMode: (mode) => set({ showViewMode: mode }),
       showCardSize: 3,

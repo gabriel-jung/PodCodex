@@ -19,7 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Copy, Check } from "lucide-react";
 import { languageToISO, errorMessage, selectClass, cn, versionLabel, versionOption, stepTag, SOURCE_LABELS, SUB_LANGUAGES } from "@/lib/utils";
-import { filterVersionsForStep, type PipelineInputStep } from "@/lib/pipelineInputs";
+import { INPUT_STEPS, filterVersionsForStep, type PipelineInputStep } from "@/lib/pipelineInputs";
 import PresetCards from "@/components/common/PresetCards";
 import SectionHeader from "@/components/common/SectionHeader";
 import HelpLabel from "@/components/common/HelpLabel";

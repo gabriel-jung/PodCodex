@@ -17,11 +17,13 @@ import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useShowActions } from "@/hooks/useShowActions";
 
+import AppSidebar from "@/components/layout/AppSidebar";
 import { Button } from "@/components/ui/button";
 import {
-  ArrowLeft, RefreshCw, Podcast, Search,
+  RefreshCw, Podcast, Search,
   Download, List, LayoutGrid,
 } from "lucide-react";
+import BackNav from "@/components/layout/BackNav";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import ShowSettings from "@/components/show/ShowSettings";
@@ -252,9 +254,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     <div className="h-full flex flex-col overflow-hidden">
       {/* Top bar */}
       <div className="px-6 py-4 border-b border-border flex items-center gap-4">
-        <Button onClick={() => navigate({ to: "/" })} variant="ghost" size="sm">
-          <ArrowLeft /> Shows
-        </Button>
+        <BackNav parentLabel="Shows" parentTo={{ to: "/" }} />
         {meta?.artwork_url && (
           <img src={artworkUrl(folder)} alt={showName} className="w-10 h-10 rounded-lg shrink-0" />
         )}
@@ -278,6 +278,10 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           {refreshMutation.isPending ? "Refreshing..." : isYouTube ? "Refresh YouTube" : "Refresh RSS"}
         </Button>
       </div>
+
+      <div className="flex-1 flex overflow-hidden">
+      <AppSidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
 
       {/* Tabs + view toggle */}
       <div className="px-6 border-b border-border flex items-center">
@@ -506,6 +510,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           meta={meta}
         />
       )}
+    </div>
+    </div>
     </div>
   );
 }

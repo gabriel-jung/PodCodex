@@ -89,7 +89,7 @@ class UnifiedEpisodeOut(BaseModel):
     translations: list[str] = []
     artwork_url: str = ""
     provenance: dict = {}
-    # Key files present in episode directory
+    segment_count: int | None = None
     files: list[str] = []
     # Step status: "none" | "outdated" | "done"
     transcribe_status: str = "none"

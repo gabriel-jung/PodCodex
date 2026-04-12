@@ -31,6 +31,7 @@ register_version_routes(router, "corrected")
 async def get_corrected_segments(
     audio_path: str = Query(...),
     output_dir: str | None = Query(None),
+    limit: int | None = Query(None, ge=1, description="Max segments to return"),
 ) -> list[dict]:
     """Load corrected segments from the version DB."""
     from podcodex.api.routes._helpers import annotate_flags
@@ -40,6 +41,8 @@ async def get_corrected_segments(
     segments = load_latest(p.base, "corrected")
     if segments is None:
         raise HTTPException(404, "No corrected segments found")
+    if limit is not None:
+        segments = segments[:limit]
     return annotate_flags(segments)
 
 

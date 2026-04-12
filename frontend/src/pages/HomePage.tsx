@@ -17,6 +17,7 @@ import ShowListRow from "@/components/show/ShowListRow";
 import AddShowModal from "@/components/show/AddShowModal";
 import { Plus, RefreshCw, List, LayoutGrid, Podcast, Group } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
+import AppSidebar from "@/components/layout/AppSidebar";
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -85,30 +86,34 @@ export default function HomePage() {
     navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } });
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-6 py-8">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold">PodCodex</h1>
-          <div className="flex gap-2">
-            {(rssShows.length > 0 || ytShows.length > 0) && (
-              <Button
-                onClick={() => refreshAllMutation.mutate()}
-                disabled={refreshAllMutation.isPending}
-                variant="outline"
-                size="sm"
-                title="Refresh RSS feeds for all shows"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${refreshAllMutation.isPending ? "animate-spin" : ""}`} />
-                {refreshAllMutation.isPending
-                  ? "Refreshing..."
-                  : oldestRssUpdate
-                    ? `Updated ${timeAgo(oldestRssUpdate)}`
-                    : "Update feeds"}
-              </Button>
-            )}
-            <Button onClick={() => setAddOpen(true)} size="sm"><Plus /> Add show</Button>
-          </div>
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="px-6 py-4 border-b border-border flex items-center gap-4">
+        <h1 className="text-2xl font-bold">PodCodex</h1>
+        <div className="flex items-center gap-2 ml-auto">
+          {(rssShows.length > 0 || ytShows.length > 0) && (
+            <Button
+              onClick={() => refreshAllMutation.mutate()}
+              disabled={refreshAllMutation.isPending}
+              variant="outline"
+              size="sm"
+              title="Refresh RSS feeds for all shows"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshAllMutation.isPending ? "animate-spin" : ""}`} />
+              {refreshAllMutation.isPending
+                ? "Refreshing..."
+                : oldestRssUpdate
+                  ? `Updated ${timeAgo(oldestRssUpdate)}`
+                  : "Update feeds"}
+            </Button>
+          )}
+          <Button onClick={() => setAddOpen(true)} size="sm"><Plus /> Add show</Button>
         </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+      <AppSidebar />
+      <div className="flex-1 overflow-y-auto">
+      <div className="max-w-4xl mx-auto px-6 py-8">
 
         {sections && sections.length > 0 && (
           <>
@@ -199,6 +204,8 @@ export default function HomePage() {
             }}
           />
         )}
+      </div>
+      </div>
       </div>
     </div>
   );

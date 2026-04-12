@@ -1,46 +1,36 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getEpisodes, getShowMeta, exportZipUrl, openFolder } from "@/api/client";
 import { audioFileUrl } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { artworkUrl } from "@/api/filesystem";
-import { uploadTranscript } from "@/api/transcribe";
+import { uploadTranscript, getSpeakerMap } from "@/api/transcribe";
+import { getSegmentsPreview as getTranscribePreview } from "@/api/transcribe";
+import { getCorrectSegmentsPreview as getCorrectPreview } from "@/api/correct";
 import { useShowActions } from "@/hooks/useShowActions";
 import { usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
 import { useDropZone } from "@/hooks/useDropZone";
 import DropOverlay from "@/components/common/DropOverlay";
+import BackNav from "@/components/layout/BackNav";
+import AppSidebar from "@/components/layout/AppSidebar";
 import type { Episode, ShowMeta } from "@/api/types";
-import { useAudioStore, useEpisodeStore, useTaskStore, useLayoutStore } from "@/stores";
+import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import ShowSettings from "@/components/show/ShowSettings";
 import SearchPanel from "@/components/search/SearchPanel";
 import { formatDuration, formatDate, stripHtml, errorMessage } from "@/lib/utils";
-import { useTheme } from "@/hooks/useTheme";
 import {
-  ArrowLeft,
   Play,
   Info,
   Download,
   Search,
-  Settings,
-  PanelLeftOpen,
-  PanelLeftClose,
   FolderOpen,
-  Home,
-  Sun,
-  Moon,
-  Monitor,
 } from "lucide-react";
 import {
   PIPELINE_STEPS,
   STEP_BY_KEY,
   PipelineRow,
-  SidebarButton,
   PipelineStatus,
-  EpisodeDetails,
   type ActiveStep,
   type StepStatus,
 } from "@/components/episode/PipelineSteps";
@@ -69,19 +59,10 @@ export default function EpisodePage({
   stem?: string;
   audioFilePath?: string;
 }) {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { seekTo, setAudioMeta } = useAudioStore();
   const [activeStep, setActiveStep] = useState<ActiveStep>("info");
-  const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const [descExpanded, setDescExpanded] = useState(false);
-  const setHideAppSidebar = useLayoutStore((s) => s.setHideAppSidebar);
-  const { theme, setTheme } = useTheme();
-
-  useEffect(() => {
-    setHideAppSidebar(true);
-    return () => setHideAppSidebar(false);
-  }, [setHideAppSidebar]);
 
   const isStandalone = !!audioFilePath;
   const { downloadTaskId } = useTaskStore();
@@ -123,16 +104,6 @@ export default function EpisodePage({
       }
     : episodes?.find((e) => e.stem === stem || e.id === stem);
 
-  const goBack = () => {
-    if (isStandalone) {
-      navigate({ to: "/" });
-    } else {
-      navigate({
-        to: "/show/$folder",
-        params: { folder: encodeURIComponent(folder!) },
-      });
-    }
-  };
 
   const artwork = episode?.artwork_url || (meta?.artwork_url ? artworkUrl(folder) : "");
 
@@ -203,7 +174,6 @@ export default function EpisodePage({
   return (
     <div className="flex flex-col h-full">
       {isDragging && <DropOverlay message="Drop a transcript file here (JSON, SRT, VTT)" />}
-      {/* Header */}
       <div className="px-6 py-4 border-b border-border flex items-center gap-4 relative overflow-hidden">
         {artwork && (
           <div
@@ -211,9 +181,10 @@ export default function EpisodePage({
             style={{ backgroundImage: `url(${artwork})` }}
           />
         )}
-        <Button onClick={goBack} variant="ghost" size="sm">
-          <ArrowLeft /> {isStandalone ? "Home" : "Episodes"}
-        </Button>
+        <BackNav
+          parentLabel={isStandalone ? "Home" : meta?.name ?? "Episodes"}
+          parentTo={isStandalone ? { to: "/" } : { to: "/show/$folder", params: { folder: encodeURIComponent(folder!) } }}
+        />
         {episode.audio_path && artwork ? (
           <button
             onClick={() => seekTo(episode.audio_path!, 0)}
@@ -240,15 +211,31 @@ export default function EpisodePage({
             <PipelineStatus episode={episode} />
           </div>
         </div>
-        {episode.audio_path && (
-          <Button
-            onClick={() => seekTo(episode.audio_path!, 0)}
-            variant="outline"
-            size="sm"
-          >
-            <Play className="w-3.5 h-3.5" /> Play
-          </Button>
-        )}
+        <div className="flex items-center gap-1.5">
+          {!episode.downloaded && (
+            <Button
+              onClick={() => episodeDownloadMutation.mutate({ guids: [episode.id] })}
+              variant="outline"
+              size="icon"
+              className="h-8 w-8"
+              title="Download audio"
+              disabled={episodeDownloadMutation.isPending || !!downloadTaskId}
+            >
+              <Download className="w-3.5 h-3.5" />
+            </Button>
+          )}
+          {episode.audio_path && (
+            <Button
+              onClick={() => seekTo(episode.audio_path!, 0)}
+              variant="outline"
+              size="icon"
+              className="h-8 w-8"
+              title="Play"
+            >
+              <Play className="w-3.5 h-3.5" />
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Description */}
@@ -272,63 +259,13 @@ export default function EpisodePage({
         </div>
       )}
 
-      {/* Body: sidebar + content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Unified sidebar */}
-        <div
-          className={`border-r border-border flex flex-col shrink-0 transition-all duration-200 ${
-            sidebarExpanded ? "w-48" : "w-14"
-          }`}
-        >
-          <nav className="flex-1 py-2 flex flex-col overflow-y-auto">
-            {/* App items */}
-            <SidebarButton icon={Home} label="Home" expanded={sidebarExpanded} onClick={() => navigate({ to: "/" })} />
-            <SidebarButton icon={Settings} label="Settings" expanded={sidebarExpanded} onClick={() => navigate({ to: "/settings" })} />
-            <SidebarButton
-              icon={theme === "dark" ? Moon : theme === "light" ? Sun : Monitor}
-              label={`Theme: ${theme}`}
-              expanded={sidebarExpanded}
-              onClick={() => setTheme(theme === "dark" ? "light" : theme === "light" ? "system" : "dark")}
-            />
+        <AppSidebar
+          pageSections={sidebarSections}
+          activeItem={activeStep}
+          onItemClick={(key) => setActiveStep(key as ActiveStep)}
+        />
 
-            {/* Episode sections: info/search meta items, then pipeline steps by section */}
-            {sidebarSections.map((section, si) => (
-              <div key={si}>
-                <div className="mx-3 my-1.5 border-t border-border" />
-                {section.items.map(({ key, label, icon: Icon, status }) => (
-                  <button
-                    key={key}
-                    onClick={() => setActiveStep(key)}
-                    title={sidebarExpanded ? undefined : label}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition ${
-                      activeStep === key
-                        ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
-                    }`}
-                  >
-                    <Icon className="w-5 h-5 shrink-0" />
-                    {sidebarExpanded && <span className="truncate">{label}</span>}
-                    {status && (
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${sidebarExpanded ? "ml-auto" : ""} ${status === "partial" ? "bg-blue-500" : "bg-success"}`} />
-                    )}
-                  </button>
-                ))}
-              </div>
-            ))}
-          </nav>
-          <button
-            onClick={() => setSidebarExpanded(!sidebarExpanded)}
-            className="px-4 py-3 text-muted-foreground hover:text-foreground transition border-t border-border"
-          >
-            {sidebarExpanded ? (
-              <PanelLeftClose className="w-5 h-5" />
-            ) : (
-              <PanelLeftOpen className="w-5 h-5" />
-            )}
-          </button>
-        </div>
-
-        {/* Main content */}
         <div className="flex-1 overflow-y-auto">
           <StepContent
             step={activeStep}
@@ -340,6 +277,7 @@ export default function EpisodePage({
             onImportSubs={(lang) => importSubsMutation.mutate({ ids: [episode?.id ?? ""], lang })}
             downloadDisabled={episodeDownloadMutation.isPending || importSubsMutation.isPending || !!downloadTaskId}
             downloadError={episodeDownloadMutation.isError ? errorMessage(episodeDownloadMutation.error) : importSubsMutation.isError ? errorMessage(importSubsMutation.error) : undefined}
+            onNavigateStep={setActiveStep}
           />
         </div>
       </div>
@@ -347,36 +285,93 @@ export default function EpisodePage({
   );
 }
 
-function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError }: { step: ActiveStep; episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string }) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  if (step !== "info" && step !== "search") {
-    return STEP_BY_KEY[step].component();
-  }
-  if (step === "search") return <SearchPanel scope="episode" />;
-  return (
-        <div className="p-6 space-y-6">
-          <EpisodeDetails episode={episode} />
+/** Extract a human-readable provenance label for a pipeline step. */
+function getProvenanceLabel(provenance: Record<string, unknown> | undefined): string | undefined {
+  if (!provenance) return undefined;
+  const params = provenance.params as Record<string, unknown> | undefined;
+  const sourceChain = params?.source_chain as string[] | undefined;
+  // Show the last meaningful entry from the source chain
+  let label = sourceChain?.length ? sourceChain[sourceChain.length - 1] : undefined;
+  // Fall back to model if no chain
+  if (!label && provenance.model) label = String(provenance.model);
+  if (!label) return undefined;
+  // Append "(edited)" for manually edited versions
+  if (provenance.manual_edit) label += ", edited";
+  return label;
+}
 
-          {/* Show folder */}
-          {folder && (
-            <div className="space-y-1">
-              <h4 className="text-sm font-medium">Show Folder</h4>
-              <div className="flex items-center gap-2">
-                <p className="text-xs text-muted-foreground font-mono break-all">{folder}</p>
-                <button
-                  onClick={() => openFolder(folder)}
-                  className="shrink-0 text-muted-foreground hover:text-foreground transition"
-                  title="Open in file manager"
-                >
-                  <FolderOpen className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
+/** Map pipeline step keys to their provenance dict keys. */
+function stepProvenanceKey(stepKey: string, episode: Episode): string | undefined {
+  if (stepKey === "transcribe") return "transcript";
+  if (stepKey === "correct") return "corrected";
+  if (stepKey === "translate") {
+    // Return the first translation language found in provenance
+    return episode.translations?.find((lang) => episode.provenance?.[lang]);
+  }
+  return undefined;
+}
+
+/** Compute a next-action hint from episode state. */
+function getNextAction(episode: Episode): string | undefined {
+  if (!episode.downloaded && !episode.transcribed) return "Download audio to get started";
+  if (episode.downloaded && !episode.transcribed) return "Ready to transcribe";
+  if (episode.transcribed && !episode.corrected) return "Transcript ready for review";
+  if (episode.corrected && !episode.indexed) return "Ready to index or translate";
+  return undefined;
+}
+
+function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError, onNavigateStep }: { step: ActiveStep; episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string; onNavigateStep: (step: ActiveStep) => void }) {
+  if (step === "search") return <SearchPanel scope="episode" />;
+  if (step === "info") {
+    return (
+      <InfoTab
+        episode={episode}
+        folder={folder}
+        meta={meta}
+        isYouTube={isYouTube}
+        onDownloadAudio={onDownloadAudio}
+        onImportSubs={onImportSubs}
+        downloadDisabled={downloadDisabled}
+        downloadError={downloadError}
+        onNavigateStep={onNavigateStep}
+      />
+    );
+  }
+  return STEP_BY_KEY[step].component();
+}
+
+function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError, onNavigateStep }: { episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string; onNavigateStep: (step: ActiveStep) => void }) {
+  const audioPath = episode.audio_path;
+  const hasTranscript = !!episode.transcribed;
+
+  const { data: speakerMap } = useQuery({
+    queryKey: queryKeys.speakerMap(audioPath),
+    queryFn: () => getSpeakerMap(audioPath!),
+    enabled: !!audioPath && hasTranscript,
+  });
+  const previewStep = episode.corrected ? "correct" : "transcribe";
+  const PREVIEW_LIMIT = 5;
+  const { data: previewSegments } = useQuery({
+    queryKey: [...queryKeys.stepSegments(previewStep, audioPath), "preview"],
+    queryFn: () => (previewStep === "correct" ? getCorrectPreview(audioPath!, PREVIEW_LIMIT) : getTranscribePreview(audioPath!, PREVIEW_LIMIT)),
+    enabled: !!audioPath && hasTranscript,
+  });
+
+  const speakers = useMemo(() => {
+    if (!speakerMap) return [];
+    return [...new Set(Object.values(speakerMap))].filter(Boolean);
+  }, [speakerMap]);
+
+  const nextAction = getNextAction(episode);
+
+  return (
+        <div className="p-6 space-y-6 max-w-2xl">
+          {nextAction && (
+            <p className="text-sm text-muted-foreground italic">{nextAction}</p>
           )}
 
-          {/* Input files */}
           <div className="space-y-3">
-            <h4 className="text-sm font-medium">Input Files</h4>
+            <h4 className="text-sm font-medium">Input</h4>
             <PipelineRow
               label="Downloaded"
               status={episode.downloaded ? "done" : (episode.files ?? []).some((f) => !f.includes("/") || f.endsWith(".vtt") || f.endsWith(".srt")) ? "partial" : false}
@@ -399,7 +394,7 @@ function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, 
                 align="right"
               />
               {episode.audio_path && (
-                <a href={audioFileUrl(episode.audio_path)} download>
+                <a href={audioFileUrl(episode.audio_path)} download={`${episode.title}.${episode.audio_path.split(".").pop()}`}>
                   <Button variant="outline" size="sm">
                     <Download className="w-3.5 h-3.5" /> Save audio
                   </Button>
@@ -411,55 +406,76 @@ function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, 
             )}
           </div>
 
-          {/* Pipeline status */}
           <div className="space-y-3">
             <h4 className="text-sm font-medium">Pipeline</h4>
-            <div className="grid gap-1 max-w-md">
-              {PIPELINE_STEPS.map((s) => (
-                <PipelineRow
-                  key={s.key}
-                  label={s.rowLabel}
-                  status={s.status(episode)}
-                  detail={s.detail?.(episode)}
-                  provenance={
-                    s.provenanceKey
-                      ? (episode.provenance?.[s.provenanceKey] as Record<string, unknown> | undefined)
-                      : undefined
-                  }
-                  files={s.matchFiles ? episode.files?.filter((f) => s.matchFiles!(episode, f)) : undefined}
-                />
-              ))}
+            <div className="grid gap-1">
+              {PIPELINE_STEPS.map((s) => {
+                const provKey = stepProvenanceKey(s.key, episode);
+                const prov = provKey ? (episode.provenance?.[provKey] as Record<string, unknown> | undefined) : undefined;
+                return (
+                  <PipelineRow
+                    key={s.key}
+                    label={s.rowLabel}
+                    status={s.status(episode)}
+                    detail={s.detail?.(episode)}
+                    subtitle={getProvenanceLabel(prov)}
+                    provenance={prov}
+                    files={s.matchFiles ? episode.files?.filter((f) => s.matchFiles!(episode, f)) : undefined}
+                    onClick={() => onNavigateStep(s.key)}
+                  />
+                );
+              })}
             </div>
           </div>
 
-          {/* Export */}
-          {episode.audio_path && (
-            <div className="space-y-3">
-              <h4 className="text-sm font-medium">Export</h4>
-              <a href={exportZipUrl(episode.audio_path)} download>
-                <Button variant="outline" size="sm">
-                  <Download className="w-3.5 h-3.5" /> Download ZIP
-                </Button>
-              </a>
-            </div>
+          {previewSegments && previewSegments.length > 0 && (
+            <button
+              onClick={() => onNavigateStep(previewStep)}
+              className="w-full text-left rounded-lg bg-muted/50 px-4 py-3 space-y-2.5 hover:bg-muted/70 transition group"
+            >
+              <div className="flex items-baseline justify-between">
+                <div className="flex items-baseline gap-2">
+                  <h4 className="text-sm font-medium">Preview</h4>
+                  <span className="text-2xs text-muted-foreground">
+                    {[
+                      episode.segment_count != null ? `${episode.segment_count} segments` : null,
+                      speakers.length > 0 ? speakers.join(", ") : null,
+                    ].filter(Boolean).join(" · ")}
+                  </span>
+                </div>
+                <span className="text-2xs text-muted-foreground opacity-0 group-hover:opacity-100 transition shrink-0">
+                  Open {previewStep === "correct" ? "corrected" : "transcript"} &rarr;
+                </span>
+              </div>
+              <div className="space-y-1 text-sm">
+                {previewSegments.map((seg, i) => (
+                  <p key={i} className="text-muted-foreground line-clamp-1">
+                    {seg.speaker && <span className="font-medium text-foreground/70">{seg.speaker}: </span>}
+                    {seg.text}
+                  </p>
+                ))}
+              </div>
+            </button>
           )}
 
-          {/* Show settings dialog */}
-          {folder && meta && (
-            <>
-              <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
-                <Settings className="w-3.5 h-3.5" /> Show Settings
-              </Button>
-              <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-                <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-                  <DialogHeader>
-                    <DialogTitle>Show Settings — {meta.name}</DialogTitle>
-                  </DialogHeader>
-                  <ShowSettings folder={folder} meta={meta} />
-                </DialogContent>
-              </Dialog>
-            </>
-          )}
+          <div className="flex items-center gap-4 pt-2 border-t border-border text-xs text-muted-foreground">
+            {folder && (
+              <button
+                onClick={() => openFolder(folder)}
+                className="flex items-center gap-1.5 hover:text-foreground transition"
+                title={folder}
+              >
+                <FolderOpen className="w-3.5 h-3.5 shrink-0" />
+                <span className="break-all font-mono">{folder}</span>
+              </button>
+            )}
+            {episode.audio_path && (
+              <a href={exportZipUrl(episode.audio_path)} download className="flex items-center gap-1.5 hover:text-foreground transition ml-auto shrink-0">
+                <Download className="w-3.5 h-3.5" />
+                <span>Export ZIP</span>
+              </a>
+            )}
+          </div>
         </div>
   );
 }

@@ -81,6 +81,7 @@ export interface UnifiedEpisodeOut {
   translations?: string[];
   artwork_url?: string;
   provenance?: Record<string, unknown>;
+  segment_count?: number | null;
   files?: string[];
   transcribe_status?: string;
   correct_status?: string;
