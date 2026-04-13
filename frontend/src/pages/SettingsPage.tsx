@@ -12,7 +12,7 @@ export default function SettingsPage() {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <PageHeader title="Settings" parentLabel="Home" parentTo={{ to: "/" }} />
+      <PageHeader title="Settings" />
       <div className="flex-1 flex overflow-hidden">
         <AppSidebar />
         <div className="flex-1 overflow-y-auto">

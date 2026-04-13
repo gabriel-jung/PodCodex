@@ -4,12 +4,14 @@ import { SlidersHorizontal } from "lucide-react";
 import { useEpisodeStore } from "@/stores";
 
 export default function FilterDropdown() {
-  const {
-    minDurationMinutes, setMinDurationMinutes,
-    maxDurationMinutes, setMaxDurationMinutes,
-    titleInclude, setTitleInclude,
-    titleExclude, setTitleExclude,
-  } = useEpisodeStore();
+  const minDurationMinutes = useEpisodeStore((s) => s.minDurationMinutes);
+  const setMinDurationMinutes = useEpisodeStore((s) => s.setMinDurationMinutes);
+  const maxDurationMinutes = useEpisodeStore((s) => s.maxDurationMinutes);
+  const setMaxDurationMinutes = useEpisodeStore((s) => s.setMaxDurationMinutes);
+  const titleInclude = useEpisodeStore((s) => s.titleInclude);
+  const setTitleInclude = useEpisodeStore((s) => s.setTitleInclude);
+  const titleExclude = useEpisodeStore((s) => s.titleExclude);
+  const setTitleExclude = useEpisodeStore((s) => s.setTitleExclude);
   const [open, setOpen] = useState(false);
   const activeCount = [
     minDurationMinutes > 0,
@@ -49,7 +51,7 @@ export default function FilterDropdown() {
                   value={minDurationMinutes || ""}
                   onChange={(e) => setMinDurationMinutes(Math.max(0, Number(e.target.value)))}
                   placeholder="min"
-                  className="input w-16 py-1 text-xs text-center"
+                  className="input w-16 text-xs text-center"
                 />
                 <span className="text-xs text-muted-foreground">to</span>
                 <input
@@ -57,7 +59,7 @@ export default function FilterDropdown() {
                   value={maxDurationMinutes || ""}
                   onChange={(e) => setMaxDurationMinutes(Math.max(0, Number(e.target.value)))}
                   placeholder="max"
-                  className="input w-16 py-1 text-xs text-center"
+                  className="input w-16 text-xs text-center"
                 />
                 <span className="text-xs text-muted-foreground">min</span>
               </div>
@@ -68,7 +70,7 @@ export default function FilterDropdown() {
                 value={titleInclude}
                 onChange={(e) => setTitleInclude(e.target.value)}
                 placeholder="word or phrase..."
-                className="input w-full py-1 text-xs"
+                className="input w-full text-xs"
               />
             </div>
             <div className="space-y-2">
@@ -77,7 +79,7 @@ export default function FilterDropdown() {
                 value={titleExclude}
                 onChange={(e) => setTitleExclude(e.target.value)}
                 placeholder="word or phrase..."
-                className="input w-full py-1 text-xs"
+                className="input w-full text-xs"
               />
             </div>
             {activeCount > 0 && (

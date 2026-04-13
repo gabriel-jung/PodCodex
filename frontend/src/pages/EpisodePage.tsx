@@ -1,4 +1,5 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getEpisodes, getShowMeta, exportZipUrl, openFolder } from "@/api/client";
 import { audioFileUrl } from "@/api/client";
@@ -19,6 +20,7 @@ import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import SearchPanel from "@/components/search/SearchPanel";
 import { formatDuration, formatDate, stripHtml, errorMessage } from "@/lib/utils";
+import { speakerColor } from "@/lib/speakerColor";
 import {
   Play,
   Info,
@@ -60,6 +62,7 @@ export default function EpisodePage({
   audioFilePath?: string;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { seekTo, setAudioMeta } = useAudioStore();
   const [activeStep, setActiveStep] = useState<ActiveStep>("info");
   const [descExpanded, setDescExpanded] = useState(false);
@@ -170,16 +173,25 @@ export default function EpisodePage({
     );
   }
 
-  const sidebarSections = buildSidebarSections(episode);
+  const sidebarSections = useMemo(() => buildSidebarSections(episode), [episode]);
 
   return (
     <div className="flex flex-col h-full">
       {isDragging && <DropOverlay message="Drop a transcript file here (JSON, SRT, VTT)" />}
       <PageHeader
         title={episode.title}
-        parentLabel={isStandalone ? "Home" : meta?.name ?? "Episodes"}
-        parentTo={isStandalone ? { to: "/" } : { to: "/show/$folder", params: { folder: encodeURIComponent(folder!) } }}
         className="relative overflow-hidden"
+        breadcrumbs={
+          isStandalone
+            ? [{ label: "File", onClick: () => navigate({ to: "/" }) }, { label: episode.title }]
+            : [
+                { label: "Shows", onClick: () => navigate({ to: "/" }) },
+                ...(folder
+                  ? [{ label: meta?.name || folder, onClick: () => navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } }) }]
+                  : []),
+                { label: episode.title },
+              ]
+        }
         artwork={
           episode.audio_path && artwork ? (
             <button
@@ -198,6 +210,7 @@ export default function EpisodePage({
         subtitle={
           <>
             <div className="flex gap-2 text-xs text-muted-foreground">
+              {meta?.name && <span>{meta.name}</span>}
               {episode.episode_number != null && <span>#{episode.episode_number}</span>}
               {episode.pub_date && <span>{formatDate(episode.pub_date)}</span>}
               {episode.duration > 0 && <span>{formatDuration(episode.duration)}</span>}
@@ -243,6 +256,8 @@ export default function EpisodePage({
 
       <div className="flex-1 flex overflow-hidden">
         <AppSidebar
+          parentLabel={!isStandalone ? (meta?.name ?? "Show") : undefined}
+          onParent={!isStandalone && folder ? () => navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } }) : undefined}
           pageSections={sidebarSections}
           activeItem={activeStep}
           onItemClick={(key) => setActiveStep(key as ActiveStep)}
@@ -449,7 +464,7 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
               <div className="space-y-1 text-sm">
                 {previewSegments.map((seg, i) => (
                   <p key={i} className="text-muted-foreground line-clamp-1">
-                    {seg.speaker && <span className="font-medium text-foreground/70">{seg.speaker}: </span>}
+                    {seg.speaker && <span className="font-medium" style={{ color: speakerColor(seg.speaker) }}>{seg.speaker}: </span>}
                     {seg.text}
                   </p>
                 ))}

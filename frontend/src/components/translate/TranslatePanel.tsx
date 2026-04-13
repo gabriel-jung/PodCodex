@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
@@ -11,16 +11,15 @@ import {
   getTranslateManualPrompts,
   applyTranslateManual,
 } from "@/api/client";
-import { getAllVersions } from "@/api/search";
 import { queryKeys } from "@/api/queryKeys";
 import { selectClass } from "@/lib/utils";
-import { filterVersionsForStep } from "@/lib/pipelineInputs";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import {
   useLLMConfig,
   buildLLMRequest,
   useBestSourceSegments,
   useLLMBackendStatus,
+  useInputVersions,
 } from "@/hooks/useLLMPipeline";
 import { modeToPreset } from "@/stores/pipelineConfigStore";
 import type { LLMConfig } from "@/stores/pipelineConfigStore";
@@ -64,16 +63,8 @@ export default function TranslatePanel() {
   );
 
   // User can pick any corrected OR transcript version as input —
-  // filterVersionsForStep mirrors the batch pipeline's rules.
-  const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(audioPath),
-    queryFn: () => getAllVersions(audioPath),
-    enabled: !!audioPath && !!episode?.transcribed && expanded,
-  });
-  const inputVersions = useMemo(
-    () => (allVersions ? filterVersionsForStep(allVersions, "translate") : undefined),
-    [allVersions],
-  );
+  // useInputVersions mirrors the batch pipeline's rules.
+  const inputVersions = useInputVersions(audioPath, "translate", !!episode?.transcribed && expanded);
 
   const startMutation = useMutation({
     mutationFn: () =>
@@ -85,11 +76,13 @@ export default function TranslatePanel() {
     onSuccess: (data) => task.startTask(data.task_id),
   });
 
-  // Sync editingLang from episode on first load (can't use initializer since episode may be null)
+  // Sync editingLang from episode on first load
   const hasTranslations = (episode?.translations.length ?? 0) > 0;
-  if (episode && editingLang === "" && hasTranslations) {
-    setEditingLang(episode.translations[0]);
-  }
+  useEffect(() => {
+    if (episode && editingLang === "" && hasTranslations) {
+      setEditingLang(episode.translations[0]);
+    }
+  }, [episode, editingLang, hasTranslations]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!episode) return null;
 

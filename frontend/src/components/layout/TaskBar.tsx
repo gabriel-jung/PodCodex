@@ -1,11 +1,13 @@
 /** Global task progress bar — pinned above the audio bar like a persistent status strip. */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useTaskStore } from "@/stores";
+import { useNavigate } from "@tanstack/react-router";
+import { useTaskStore, useBatchHistoryStore } from "@/stores";
 import { cancelTask } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
-import { useProgress, type TaskProgress } from "@/hooks/useProgress";
+import { useProgress } from "@/hooks/useProgress";
+import { capitalize } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   AlertTriangle,
@@ -245,9 +247,10 @@ function BatchResultSummary({ result, onDismiss }: { result: BatchResult; onDism
 /* ── BatchStrip — expandable progress with per-episode detail ── */
 
 function BatchStrip() {
-  const { batchTaskId, batchFolder, batchEpisodeNames, batchStep, setBatchTask } = useTaskStore();
+  const { batchTaskId, batchFolder, batchEpisodes, batchStep, setBatchTask } = useTaskStore();
   const progress = useProgress(batchTaskId);
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [showResult, setShowResult] = useState(false);
@@ -298,15 +301,39 @@ function BatchStrip() {
     return () => clearTimeout(t);
   }, [isFinished, batchFolder]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const episodeStatuses = deriveEpisodeStatuses(batchEpisodeNames, progress);
-  const stepLabel = batchStep ? batchStep.charAt(0).toUpperCase() + batchStep.slice(1) : "Batch";
+  const episodeStatuses = useMemo(
+    () => deriveEpisodeStatuses(batchEpisodes, progress),
+    [batchEpisodes, progress?.status, progress?.message, progress?.result],
+  );
+
+  const savedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isFinished || savedRef.current === batchTaskId || !batchTaskId || !batchFolder || !batchStep || batchEpisodes.length === 0) return;
+    savedRef.current = batchTaskId;
+    const failed = episodeStatuses
+      .filter((e) => e.status === "failed")
+      .map((e) => ({ title: e.title, stem: e.stem, error: e.error ?? "unknown" }));
+    const showMeta = queryClient.getQueryData<{ name?: string }>(queryKeys.showMeta(batchFolder));
+    useBatchHistoryStore.getState().add({
+      step: batchStep,
+      folder: batchFolder,
+      showName: showMeta?.name,
+      episodes: batchEpisodes,
+      failed,
+      totalCount: batchEpisodes.length,
+      successCount: batchEpisodes.length - failed.length,
+      status: isDone ? "completed" : isFailed ? "failed" : "cancelled",
+    });
+  }, [isFinished, isDone, isFailed, batchTaskId, batchFolder, batchStep, batchEpisodes, episodeStatuses, queryClient]);
+
+  const stepLabel = batchStep ? capitalize(batchStep) : "Batch";
 
   return (
     <>
       <div>
         <div
           className="px-4 py-2 flex items-center gap-3 text-xs cursor-pointer hover:bg-accent/30 transition"
-          onClick={() => batchEpisodeNames.length > 0 && setExpanded(!expanded)}
+          onClick={() => batchEpisodes.length > 0 && setExpanded(!expanded)}
         >
           <Loader2
             className={`w-3.5 h-3.5 shrink-0 ${isFinished ? "text-muted-foreground" : "text-primary animate-spin"}`}
@@ -330,7 +357,7 @@ function BatchStrip() {
             <span className="text-muted-foreground shrink-0 w-8 text-right">{pct}%</span>
           </div>
           <span className="text-muted-foreground truncate max-w-[200px]">{msg}</span>
-          {batchEpisodeNames.length > 0 && (
+          {batchEpisodes.length > 0 && (
             expanded ? (
               <ChevronUp className="w-3 h-3 text-muted-foreground shrink-0" />
             ) : (
@@ -363,14 +390,30 @@ function BatchStrip() {
         {/* Expanded per-episode list */}
         {expanded && episodeStatuses.length > 0 && (
           <div className="px-4 pb-2 max-h-48 overflow-y-auto">
-            {episodeStatuses.map(({ name, status }, i) => {
+            {episodeStatuses.map(({ title, stem, status, error }, i) => {
               const Icon = STATUS_ICON[status];
               return (
-                <div key={i} className="flex items-center gap-2 py-0.5 text-xs">
+                <div
+                  key={i}
+                  className={`flex items-center gap-2 py-0.5 text-xs ${batchFolder ? "cursor-pointer hover:bg-accent/50 -mx-2 px-2 rounded" : ""}`}
+                  onClick={(e) => {
+                    if (!batchFolder) return;
+                    e.stopPropagation();
+                    navigate({
+                      to: "/show/$folder/episode/$stem",
+                      params: { folder: encodeURIComponent(batchFolder), stem: encodeURIComponent(stem) },
+                    });
+                  }}
+                >
                   <Icon className={`w-3 h-3 shrink-0 ${STATUS_COLOR[status]}`} />
-                  <span className={`truncate ${status === "running" ? "text-foreground font-medium" : "text-muted-foreground"}`}>
-                    {name}
+                  <span className={`truncate shrink-0 max-w-[40%] ${status === "running" ? "text-foreground font-medium" : "text-muted-foreground"}`}>
+                    {title}
                   </span>
+                  {error && (
+                    <span className="text-2xs text-destructive/80 truncate flex-1 min-w-0" title={error}>
+                      {error}
+                    </span>
+                  )}
                 </div>
               );
             })}

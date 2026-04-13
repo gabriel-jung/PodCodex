@@ -150,7 +150,7 @@ export default function TranscribePanel() {
       rerunLabel={transcribeSource === "audio" ? "Re-run transcription" : transcribeSource === "subtitles" ? "Reimport subtitles" : "Upload transcript"}
       settingsLabel={transcribeSource === "audio" ? "Transcription settings" : transcribeSource === "subtitles" ? "Import subtitles" : "Upload transcript"}
       taskId={task.activeTaskId}
-      onTaskComplete={() => { task.handleComplete(); }}
+      onTaskComplete={task.handleComplete}
       onRetry={task.handleRetry}
       onDismiss={task.handleDismiss}
       emptyMessage="No transcript yet."
@@ -353,7 +353,7 @@ function TranscribeAudioRows({
             value={customLang}
             onChange={(e) => setCustomLang(e.target.value.toLowerCase().slice(0, 5))}
             placeholder="ISO code (e.g. ja, zh, ar)"
-            className="input py-1 text-xs w-36"
+            className="input text-xs w-36"
             autoFocus
           />
         )}
@@ -382,7 +382,7 @@ function TranscribeAudioRows({
             value={hfToken}
             onChange={(e) => setHfToken(e.target.value)}
             placeholder="hf_..."
-            className="input py-1 text-sm"
+            className="input"
           />
         </>
       )}

@@ -1,8 +1,8 @@
-import { useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTheme } from "@/hooks/useTheme";
+import { useLayoutStore } from "@/stores";
 import {
-  Home, Settings, Sun, Moon, Monitor,
+  ArrowLeft, Home, Podcast, Settings, SunMoon,
   PanelLeftOpen, PanelLeftClose,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -18,16 +18,20 @@ export interface SidebarSection {
   items: SidebarItem[];
 }
 
-export default function AppSidebar({ pageSections, activeItem, onItemClick }: {
+export default function AppSidebar({ parentLabel, onParent, pageSections, activeItem, onItemClick }: {
+  /** Optional parent link shown between Back and Home (e.g. "Show name" on episode pages). */
+  parentLabel?: string;
+  onParent?: () => void;
   pageSections?: SidebarSection[];
   activeItem?: string;
   onItemClick?: (key: string) => void;
 }) {
   const navigate = useNavigate();
-  const [expanded, setExpanded] = useState(false);
+  const isHome = useRouterState({ select: (s) => s.location.pathname === "/" });
+  const expanded = useLayoutStore((s) => s.sidebarExpanded);
+  const setExpanded = useLayoutStore((s) => s.setSidebarExpanded);
   const { theme, setTheme } = useTheme();
   const nextTheme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
-  const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
 
   return (
     <div
@@ -36,8 +40,15 @@ export default function AppSidebar({ pageSections, activeItem, onItemClick }: {
       }`}
     >
       <nav className="flex-1 py-2 flex flex-col overflow-y-auto">
-        {/* App nav */}
-        <SidebarBtn icon={Home} label="Home" expanded={expanded} onClick={() => navigate({ to: "/" })} />
+        {/* Back + Parent + Home */}
+        <SidebarBtn icon={ArrowLeft} label="Back" expanded={expanded} onClick={() => {
+          if (window.history.length > 1) window.history.back();
+          else navigate({ to: "/" });
+        }} />
+        {parentLabel && onParent && (
+          <SidebarBtn icon={Podcast} label={parentLabel} expanded={expanded} onClick={onParent} />
+        )}
+        {!isHome && <SidebarBtn icon={Home} label="Home" expanded={expanded} onClick={() => navigate({ to: "/" })} />}
 
         {/* Page-specific sections */}
         {pageSections?.map((section, si) => (
@@ -68,7 +79,7 @@ export default function AppSidebar({ pageSections, activeItem, onItemClick }: {
       {/* Bottom: Settings + Theme */}
       <div className="flex flex-col border-t border-border py-1">
         <SidebarBtn icon={Settings} label="Settings" expanded={expanded} onClick={() => navigate({ to: "/settings" })} />
-        <SidebarBtn icon={ThemeIcon} label={`Theme: ${theme}`} expanded={expanded} onClick={() => setTheme(nextTheme)} />
+        <SidebarBtn icon={SunMoon} label={`Theme: ${theme}`} expanded={expanded} onClick={() => setTheme(nextTheme)} />
       </div>
 
       {/* Expand toggle */}
@@ -92,6 +103,7 @@ function SidebarBtn({ icon: Icon, label, expanded, onClick }: {
     <button
       onClick={onClick}
       title={expanded ? undefined : label}
+      aria-label={label}
       className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/50 transition"
     >
       <Icon className="w-5 h-5 shrink-0" />

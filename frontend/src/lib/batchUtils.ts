@@ -1,16 +1,24 @@
 import type { TaskProgress } from "@/hooks/useProgress";
+import type { BatchEpisode } from "@/stores/taskStore";
 
 export type EpStatus = "pending" | "running" | "done" | "failed";
+
+export interface EpisodeStatus {
+  title: string;
+  stem: string;
+  status: EpStatus;
+  error?: string;
+}
 
 /**
  * Derive per-episode status from the batch progress message format `[X/N] ...`.
  */
 export function deriveEpisodeStatuses(
-  names: string[],
+  episodes: BatchEpisode[],
   progress: TaskProgress | null,
-): { name: string; status: EpStatus }[] {
-  if (!names.length) return [];
-  if (!progress) return names.map((name) => ({ name, status: "pending" as const }));
+): EpisodeStatus[] {
+  if (!episodes.length) return [];
+  if (!progress) return episodes.map((ep) => ({ ...ep, status: "pending" as const }));
 
   const msg = progress.message || "";
   // Parse "[3/17] Correcting..." → current episode index is 3 (1-based)
@@ -20,20 +28,21 @@ export function deriveEpisodeStatuses(
 
   // Check result for detailed per-episode info
   const result = progress.result;
-  const errors: { episode: string }[] =
+  const errors: { episode: string; error: string }[] =
     result && typeof result === "object" && Array.isArray((result as Record<string, unknown>).errors)
-      ? (result as { errors: { episode: string }[] }).errors
+      ? (result as { errors: { episode: string; error: string }[] }).errors
       : [];
-  const failedEpisodes = new Set(errors.map((err) => err.episode));
+  const errorByEpisode = new Map(errors.map((e) => [e.episode, e.error]));
 
-  return names.map((name, i) => {
+  return episodes.map((ep, i) => {
+    const error = errorByEpisode.get(ep.title) ?? errorByEpisode.get(ep.stem);
     if (isFinished) {
-      if (failedEpisodes.has(name)) return { name, status: "failed" };
-      if (i <= currentIdx || progress.status === "completed") return { name, status: "done" };
-      return { name, status: "pending" };
+      if (error) return { ...ep, status: "failed", error };
+      if (i <= currentIdx || progress.status === "completed") return { ...ep, status: "done" };
+      return { ...ep, status: "pending" };
     }
-    if (i < currentIdx) return { name, status: "done" };
-    if (i === currentIdx) return { name, status: "running" };
-    return { name, status: "pending" };
+    if (i < currentIdx) return { ...ep, status: "done" };
+    if (i === currentIdx) return { ...ep, status: "running" };
+    return { ...ep, status: "pending" };
   });
 }

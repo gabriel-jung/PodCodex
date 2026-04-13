@@ -15,6 +15,7 @@ import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
 import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
 import { formatTime, versionOption, versionInfo, selectClass } from "@/lib/utils";
+import { speakerColor } from "@/lib/speakerColor";
 import { computeWordDiff } from "@/lib/diffUtils";
 import { Button } from "@/components/ui/button";
 import Pagination from "./Pagination";
@@ -268,20 +269,21 @@ function SegmentViewRow({
       className={`group py-1.5 px-4 rounded transition-colors ${
         isPendingRemoval ? "opacity-50 line-through bg-destructive/5 border-l-2 border-l-destructive/50" :
         isActive ? "bg-accent/60" :
-        isFlagged ? "border-l-2 border-l-yellow-500" :
+        isFlagged ? "border-l-2 border-l-warning" :
         isChanged ? "border-l-2 border-l-blue-500/50" :
         "hover:bg-accent/20"
       }`}
     >
       {/* Main row: checkbox | timestamp | speaker | text */}
       <div className="flex gap-3">
-        {/* Selection checkbox */}
-        <div className="shrink-0 pt-1">
+        {/* Selection checkbox — revealed on hover or when any row is selected */}
+        <div className={`shrink-0 pt-1 transition-opacity ${selected ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}>
           <input
             type="checkbox"
             checked={selected}
             onChange={onToggleSelect}
             className="w-3 h-3 accent-primary cursor-pointer"
+            aria-label="Select segment"
           />
         </div>
         {/* Timestamp — click to toggle editor */}
@@ -338,7 +340,8 @@ function SegmentViewRow({
             ) : (
               <button
                 onClick={() => setEditingSpeaker(true)}
-                className="text-xs font-medium text-primary/70 truncate w-full text-left hover:text-primary transition"
+                className="text-xs font-medium truncate w-full text-left hover:opacity-80 transition"
+                style={{ color: speakerColor(segment.speaker) }}
                 title="Click to edit speaker"
               >
                 {segment.speaker}
@@ -391,13 +394,13 @@ function SegmentViewRow({
 
       {/* Flag reason — always visible on flagged segments */}
       {isFlagged && flagReasonText && (
-        <div className="flex items-center gap-1 mt-0.5 text-yellow-500 text-2xs">
+        <div className="flex items-center gap-1 mt-0.5 text-warning text-2xs">
           <AlertTriangle className="w-3 h-3" />
           <span>{flagReasonText}</span>
           {onDismissFlag && (
             <button
               onClick={onDismissFlag}
-              className="hover:text-yellow-300 transition ml-0.5"
+              className="hover:text-warning/70 transition ml-0.5"
               title="Dismiss this flag"
             >
               <X className="w-3 h-3" />
@@ -950,6 +953,11 @@ export default function TranscriptViewer({
   const isPlayingThisFile = audioPath != null && storeAudioPath === audioPath;
   const [activeOrigIdx, setActiveOrigIdx] = useState<number | null>(null);
 
+  const editedSegmentsRef = useRef(editor.editedSegments);
+  editedSegmentsRef.current = editor.editedSegments;
+  const originalIndicesRef = useRef(editor.originalIndices);
+  originalIndicesRef.current = editor.originalIndices;
+
   useEffect(() => {
     if (!isPlayingThisFile) {
       setActiveOrigIdx(null);
@@ -958,18 +966,20 @@ export default function TranscriptViewer({
     const interval = setInterval(() => {
       const t = useAudioStore.getState().currentTime;
       if (!useAudioStore.getState().isPlaying) return;
-      for (let e = editor.editedSegments.length - 1; e >= 0; e--) {
-        const seg = editor.editedSegments[e];
+      const segs = editedSegmentsRef.current;
+      const indices = originalIndicesRef.current;
+      for (let e = segs.length - 1; e >= 0; e--) {
+        const seg = segs[e];
         if (seg.start <= t && t < seg.end) {
-          const origIdx = editor.originalIndices[e];
+          const origIdx = indices[e];
           setActiveOrigIdx((prev) => (prev === origIdx ? prev : origIdx));
           return;
         }
       }
-      setActiveOrigIdx(null);
+      setActiveOrigIdx((prev) => (prev == null ? prev : null));
     }, 250);
     return () => clearInterval(interval);
-  }, [isPlayingThisFile, editor.editedSegments, editor.originalIndices]);
+  }, [isPlayingThisFile]);
 
   // Auto-scroll to active segment
   useEffect(() => {
@@ -1227,7 +1237,7 @@ export default function TranscriptViewer({
             <button
               onClick={() => { filters.setShowFlaggedOnly(!filters.showFlaggedOnly); filters.setPage(0); }}
               className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border transition ${
-                filters.showFlaggedOnly ? "border-yellow-500/50 text-yellow-500" : "border-border text-muted-foreground hover:text-foreground"
+                filters.showFlaggedOnly ? "border-warning/50 text-warning" : "border-border text-muted-foreground hover:text-foreground"
               }`}
               title="Show flagged only"
             >

@@ -891,7 +891,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                             value={tc.language}
                             onChange={(e) => setTc({ language: e.target.value.toLowerCase().slice(0, 5) })}
                             placeholder="ISO code (e.g. ja, zh, ar)"
-                            className="input py-1 text-xs w-36"
+                            className="input text-xs w-36"
                             autoFocus
                           />
                         )}
@@ -932,7 +932,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                         value={tc.batchSize}
                         onChange={(e) => setTc({ batchSize: Number(e.target.value) })}
                         min={1}
-                        className="input py-1 text-sm w-20"
+                        className="input w-20"
                       />
                     </div>
                   </>

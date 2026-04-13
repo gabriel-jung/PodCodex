@@ -1,6 +1,7 @@
 import type { SearchResult } from "@/api/types";
 import { useAudioStore } from "@/stores";
 import { formatTime } from "@/lib/utils";
+import { speakerColor } from "@/lib/speakerColor";
 
 interface SearchResultCardProps {
   result: SearchResult;
@@ -24,11 +25,11 @@ export default function SearchResultCard({ result, audioPath }: SearchResultCard
           {result.score.toFixed(3)}
         </span>
         <span className="text-muted-foreground">{result.episode}</span>
-        <span className="text-muted-foreground">
+        <span className="text-muted-foreground font-mono">
           {formatTime(result.start, false)} - {formatTime(result.end, false)}
         </span>
         {result.speaker && (
-          <span className="font-medium">{result.speaker}</span>
+          <span className="font-medium" style={{ color: speakerColor(result.speaker) }}>{result.speaker}</span>
         )}
         {audioPath && (
           <button

@@ -217,21 +217,21 @@ export default function EditorToolbar({
         )}
 
         {flaggedCount > 0 && (
-          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-yellow-500/10 border border-yellow-500/20">
+          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-warning/10 border border-warning/20">
             <label className="flex items-center gap-1 cursor-pointer whitespace-nowrap">
-              <input type="checkbox" checked={showFlaggedOnly} onChange={(e) => onFlaggedFilterChange(e.target.checked)} className="accent-yellow-500" />
-              <span className="text-yellow-600 dark:text-yellow-400">{flaggedCount} flagged</span>
+              <input type="checkbox" checked={showFlaggedOnly} onChange={(e) => onFlaggedFilterChange(e.target.checked)} className="accent-warning" />
+              <span className="text-warning">{flaggedCount} flagged</span>
             </label>
             <button
               onClick={() => setShowAdvanced(!showAdvanced)}
-              className={`p-0.5 rounded hover:bg-yellow-500/20 transition ${showAdvanced ? "text-yellow-600 dark:text-yellow-400" : "text-yellow-600/50 dark:text-yellow-400/50"}`}
+              className={`p-0.5 rounded hover:bg-warning/20 transition ${showAdvanced ? "text-warning" : "text-warning/50"}`}
               title="Adjust density thresholds"
             >
               <SlidersHorizontal className="w-3 h-3" />
             </button>
             <button
               onClick={onDeleteFlagged}
-              className="p-0.5 rounded text-yellow-600/50 dark:text-yellow-400/50 hover:text-yellow-600 dark:hover:text-yellow-400 hover:bg-yellow-500/20 transition"
+              className="p-0.5 rounded text-warning/50 hover:text-warning hover:bg-warning/20 transition"
               title="Delete all flagged segments"
             >
               <Trash2 className="w-3 h-3" />
@@ -276,7 +276,7 @@ export default function EditorToolbar({
               Too sparse &lt;
               <Tip text="Flag segments where there's too little text for the time span. Normal speech is about 10-15 char/s." />
             </span>
-            <input type="range" min={0} max={10} step={0.5} value={densityThreshold} onChange={(e) => onDensityChange(Number(e.target.value))} className="flex-1 max-w-48 accent-yellow-500 h-1" />
+            <input type="range" min={0} max={10} step={0.5} value={densityThreshold} onChange={(e) => onDensityChange(Number(e.target.value))} className="flex-1 max-w-48 accent-warning h-1" />
             <span className="text-muted-foreground tabular-nums w-14">{densityThreshold} char/s</span>
           </div>
           <div className="flex items-center gap-2">
@@ -284,7 +284,7 @@ export default function EditorToolbar({
               Too dense &gt;
               <Tip text="Flag segments where there's too much text for the time span. Usually means repeated/hallucinated text." />
             </span>
-            <input type="range" min={10} max={100} step={5} value={maxDensityThreshold} onChange={(e) => onMaxDensityChange(Number(e.target.value))} className="flex-1 max-w-48 accent-yellow-500 h-1" />
+            <input type="range" min={10} max={100} step={5} value={maxDensityThreshold} onChange={(e) => onMaxDensityChange(Number(e.target.value))} className="flex-1 max-w-48 accent-warning h-1" />
             <span className="text-muted-foreground tabular-nums w-14">{maxDensityThreshold} char/s</span>
           </div>
         </div>

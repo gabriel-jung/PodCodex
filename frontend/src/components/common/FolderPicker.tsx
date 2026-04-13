@@ -259,7 +259,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
                 if (e.key === "Enter") handleCreateFolder();
                 if (e.key === "Escape") { setCreatingFolder(false); setNewFolderName(""); setCreateError(null); }
               }}
-              className="input flex-1 text-sm"
+              className="input flex-1"
               placeholder="Folder name"
               autoFocus
             />
@@ -309,7 +309,7 @@ function DirRow({
       className="w-full text-left px-4 py-1.5 text-sm hover:bg-accent
                  transition flex items-center gap-2 group"
     >
-      <Folder className={`w-4 h-4 shrink-0 ${dir.is_show ? "text-primary" : dir.has_audio ? "text-yellow-400" : "text-muted-foreground"}`} />
+      <Folder className={`w-4 h-4 shrink-0 ${dir.is_show ? "text-primary" : dir.has_audio ? "text-warning" : "text-muted-foreground"}`} />
 
       <button
         onClick={onNavigate}
@@ -324,7 +324,7 @@ function DirRow({
         </span>
       )}
       {dir.has_audio && !dir.is_show && (
-        <span className="text-2xs bg-yellow-600/20 text-yellow-400 px-1.5 py-0.5 rounded-full">
+        <span className="text-2xs bg-warning/20 text-warning px-1.5 py-0.5 rounded-full">
           audio
         </span>
       )}

@@ -21,6 +21,7 @@ import {
 import type { Segment } from "@/api/types";
 import { useAudioStore } from "@/stores";
 import { formatTime } from "@/lib/utils";
+import { speakerColor } from "@/lib/speakerColor";
 import { MIN_DENSITY } from "@/hooks/useSegmentFiltering";
 import SectionHeader from "@/components/common/SectionHeader";
 
@@ -274,7 +275,7 @@ export default function SpeakerStrip({
               "bg-primary/5 border-l-2 border-l-primary border-primary/30";
           } else if (chip.unnamed) {
             stateClass =
-              "bg-yellow-500/5 border-yellow-500/30 hover:bg-yellow-500/10";
+              "bg-warning/5 border-warning/30 hover:bg-warning/10";
           }
           if (isOpen) stateClass += " ring-1 ring-primary/40";
 
@@ -324,8 +325,13 @@ export default function SpeakerStrip({
                       : `${isRenamed ? `${pendingTo} ← ${chip.name}\n` : ""}${chip.count} segments · ${formatTime(chip.durationSec, false)}${pctLabel ? ` (${pctLabel})` : ""}`
                   }
                 >
-                  {chip.unnamed && (
-                    <AlertTriangle className="w-2.5 h-2.5 text-yellow-500 shrink-0" />
+                  {chip.unnamed ? (
+                    <AlertTriangle className="w-2.5 h-2.5 text-warning shrink-0" />
+                  ) : (
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ backgroundColor: speakerColor(isRenamed ? pendingTo : chip.name) }}
+                    />
                   )}
                   <span
                     className={`flex-1 min-w-0 truncate text-left ${
@@ -335,13 +341,13 @@ export default function SpeakerStrip({
                     {isRenamed ? pendingTo : chip.name}
                   </span>
                   {!chip.added && (
-                    <span className="text-muted-foreground/70 text-2xs tabular-nums shrink-0">
+                    <span className="text-muted-foreground/70 text-2xs font-mono shrink-0">
                       {formatTime(chip.durationSec, false)} · {pctLabel}
                     </span>
                   )}
                   {chip.suspectCount > 0 && !isRemoved && (
                     <span
-                      className="text-yellow-500 text-2xs shrink-0"
+                      className="text-warning text-2xs shrink-0"
                       title={`${chip.suspectCount} suspect segments`}
                     >
                       ⚠{chip.suspectCount}
@@ -441,7 +447,7 @@ export default function SpeakerStrip({
         )}
 
         {unnamedCount > 0 && (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-2xs text-yellow-500/80 shrink-0 ml-auto">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-2xs text-warning/80 shrink-0 ml-auto">
             <AlertTriangle className="w-3 h-3" />
             {unnamedCount} unnamed
           </span>
@@ -542,18 +548,18 @@ function ExcerptRow({
           <Play className="w-3.5 h-3.5" />
         )}
       </button>
-      <span className="tabular-nums text-muted-foreground shrink-0">
+      <span className="font-mono text-muted-foreground shrink-0">
         {formatTime(start, false)} – {formatTime(end, false)}
       </span>
       <span className="text-muted-foreground/70 shrink-0">({dur.toFixed(1)}s)</span>
       {suspect && (
-        <span className="text-yellow-500 shrink-0" title="Low speech density">
+        <span className="text-warning shrink-0" title="Low speech density">
           ⚠
         </span>
       )}
       <span
         className={`truncate ${
-          suspect ? "text-yellow-200/60 italic" : "text-foreground/80"
+          suspect ? "text-warning/60 italic" : "text-foreground/80"
         }`}
       >
         {text || <span className="italic text-muted-foreground">no text</span>}

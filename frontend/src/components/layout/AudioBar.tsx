@@ -6,6 +6,7 @@ import { audioFileUrl } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Play, Pause, X, Volume2, VolumeX, MessageSquareText } from "lucide-react";
 import { formatTime } from "@/lib/utils";
+import { speakerColor } from "@/lib/speakerColor";
 
 function findActiveSegment(segments: AudioSegment[] | null, time: number): AudioSegment | null {
   if (!segments || segments.length === 0) return null;
@@ -36,32 +37,38 @@ export default function AudioBar() {
   const [timeMode, setTimeMode] = useState<"remaining" | "elapsed" | "total">("remaining");
   const activeSeg = useMemo(() => findActiveSegment(audioSegments, currentTime), [audioSegments, currentTime]);
 
-  // Save position to localStorage on pause/time update
+  // Save position to localStorage periodically while playing
+  const currentTimeRef = useRef(currentTime);
+  currentTimeRef.current = currentTime;
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
+
   useEffect(() => {
     if (!audioPath || !playing) return;
     const save = () => {
-      if (currentTime > 5 && duration > 0) {
-        localStorage.setItem(`pos:${audioPath}`, JSON.stringify({ time: currentTime, duration }));
+      if (currentTimeRef.current > 5 && durationRef.current > 0) {
+        localStorage.setItem(`pos:${audioPath}`, JSON.stringify({ time: currentTimeRef.current, duration: durationRef.current }));
       }
     };
     const interval = setInterval(save, 5000);
     return () => { save(); clearInterval(interval); };
-  }, [audioPath, playing, currentTime, duration]);
+  }, [audioPath, playing]);
 
   // Reset when track changes — restore saved speed
   useEffect(() => {
     setCurrentTime(0);
     setDuration(0);
     setPlaying(false);
+    let newSpeed = speed;
     if (audioPath) {
       const savedSpeed = localStorage.getItem(`speed:${audioPath}`);
       if (savedSpeed) {
         const s = parseFloat(savedSpeed);
-        if (s >= 0.5 && s <= 3) setSpeed(s);
+        if (s >= 0.5 && s <= 3) { setSpeed(s); newSpeed = s; }
       }
     }
-    if (audioRef.current) audioRef.current.playbackRate = speed;
-  }, [audioPath]);
+    if (audioRef.current) audioRef.current.playbackRate = newSpeed;
+  }, [audioPath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Handle pending seek (from segment play buttons)
   useEffect(() => {
@@ -135,7 +142,7 @@ export default function AudioBar() {
       {/* Current segment text — collapsible */}
       {showSegment && activeSeg && (
         <div className="px-4 py-2 border-b border-border/50 text-sm">
-          <span className="text-xs text-muted-foreground mr-2">{activeSeg.speaker}</span>
+          <span className="text-xs mr-2 font-medium" style={{ color: speakerColor(activeSeg.speaker) }}>{activeSeg.speaker}</span>
           <span className="text-foreground/80">{activeSeg.text}</span>
         </div>
       )}
@@ -200,7 +207,7 @@ export default function AudioBar() {
         <div className="flex-1 flex items-center justify-center gap-0.5">
           <SkipLabelButton label="−15s" onClick={() => skip(-15)} title="Back 15s" />
           <SkipLabelButton label="−5s" onClick={() => skip(-5)} title="Back 5s" />
-          <Button onClick={togglePlay} variant="ghost" size="icon" className="h-9 w-9 mx-1">
+          <Button onClick={togglePlay} variant="ghost" size="icon" className="h-9 w-9 mx-1" aria-label={playing ? "Pause" : "Play"}>
             {playing ? <Pause className="w-4.5 h-4.5" /> : <Play className="w-4.5 h-4.5 ml-0.5" />}
           </Button>
           <SkipLabelButton label="+5s" onClick={() => skip(5)} title="Forward 5s" />
@@ -213,13 +220,15 @@ export default function AudioBar() {
             onClick={() => setSpeed((s) => Math.max(0.5, +(s - 0.25).toFixed(2)))}
             className="text-muted-foreground hover:text-foreground text-sm w-6 h-7 flex items-center justify-center rounded-l-full hover:bg-accent transition"
             title="Slower"
+            aria-label="Slower"
           >
             −
           </button>
           <button
             onClick={() => setSpeed(1)}
-            className="text-[11px] font-medium tabular-nums w-10 text-center text-foreground/80 hover:text-foreground h-7 transition"
+            className="text-[11px] font-medium font-mono w-10 text-center text-foreground/80 hover:text-foreground h-7 transition"
             title="Reset speed"
+            aria-label="Reset speed"
           >
             {speed.toFixed(2)}×
           </button>
@@ -227,6 +236,7 @@ export default function AudioBar() {
             onClick={() => setSpeed((s) => Math.min(3, +(s + 0.25).toFixed(2)))}
             className="text-muted-foreground hover:text-foreground text-sm w-6 h-7 flex items-center justify-center rounded-r-full hover:bg-accent transition"
             title="Faster"
+            aria-label="Faster"
           >
             +
           </button>
@@ -238,6 +248,7 @@ export default function AudioBar() {
             onClick={() => setMuted(!muted)}
             className="text-muted-foreground hover:text-foreground h-7 w-6 flex items-center justify-center transition"
             title={muted ? "Unmute" : "Mute"}
+            aria-label={muted ? "Unmute" : "Mute"}
           >
             {muted || volume === 0 ? (
               <VolumeX className="w-3.5 h-3.5" />
@@ -269,20 +280,21 @@ export default function AudioBar() {
                 : "bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/60"
             }`}
             title={showSegment ? "Hide segment text" : "Show current segment text"}
+            aria-label={showSegment ? "Hide segment text" : "Show segment text"}
           >
             <MessageSquareText className="w-3.5 h-3.5" />
           </button>
         )}
 
         {/* Close */}
-        <Button onClick={stopAudio} variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground">
+        <Button onClick={stopAudio} variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground" aria-label="Close player">
           <X className="w-3.5 h-3.5" />
         </Button>
       </div>
 
       {/* Row 2: Seek bar + time */}
       <div className="flex items-center gap-2">
-        <span className={`text-2xs text-muted-foreground ${timeColW} text-right shrink-0 tabular-nums`}>
+        <span className={`text-2xs text-muted-foreground ${timeColW} text-right shrink-0 font-mono`}>
           {formatTime(currentTime, false)}
         </span>
         <div
@@ -314,7 +326,7 @@ export default function AudioBar() {
           </div>
           {hoverTime && (
             <div
-              className="absolute bottom-full mb-1.5 -translate-x-1/2 bg-popover text-popover-foreground text-2xs tabular-nums px-1.5 py-0.5 rounded border border-border shadow-sm pointer-events-none"
+              className="absolute bottom-full mb-1.5 -translate-x-1/2 bg-popover text-popover-foreground text-2xs font-mono px-1.5 py-0.5 rounded border border-border shadow-sm pointer-events-none"
               style={{ left: `${hoverTime.pct}%` }}
             >
               {formatTime(hoverTime.time, false)}
@@ -323,7 +335,7 @@ export default function AudioBar() {
         </div>
         <button
           onClick={() => setTimeMode((m) => m === "remaining" ? "elapsed" : m === "elapsed" ? "total" : "remaining")}
-          className={`text-2xs text-muted-foreground ${timeColW} shrink-0 tabular-nums text-left hover:text-foreground transition`}
+          className={`text-2xs text-muted-foreground ${timeColW} shrink-0 font-mono text-left hover:text-foreground transition`}
           title="Click to toggle time display"
         >
           {timeMode === "remaining" && duration > 0
@@ -352,7 +364,7 @@ function SkipLabelButton({
     <button
       onClick={onClick}
       title={title}
-      className="h-7 px-2 flex items-center justify-center rounded-md text-[11px] font-medium tabular-nums text-muted-foreground hover:text-foreground hover:bg-accent transition"
+      className="h-7 px-2 flex items-center justify-center rounded-md text-[11px] font-medium font-mono text-muted-foreground hover:text-foreground hover:bg-accent transition"
     >
       {label}
     </button>

@@ -37,9 +37,9 @@ export function formatDate(dateStr: string | null | undefined): string {
 }
 
 /** Format an ISO date string as a relative time ago string. */
-export function timeAgo(dateStr: string | null | undefined): string {
-  if (!dateStr) return "";
-  const d = new Date(dateStr);
+export function timeAgo(date: string | number | null | undefined): string {
+  if (date == null || date === "") return "";
+  const d = new Date(date);
   if (isNaN(d.getTime())) return "";
   const diff = Date.now() - d.getTime();
   const mins = Math.floor(diff / 60000);
@@ -84,7 +84,11 @@ export function isOutdated(ep: { transcribe_status?: string; correct_status?: st
 }
 
 /** Shared CSS class for <select> elements across forms. */
-export const selectClass = "bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm";
+export const selectClass = "bg-secondary text-secondary-foreground rounded-md px-2 py-1 border border-border text-sm";
+
+export function capitalize(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
 
 /** Extract error message from a mutation error, with safe casting. */
 export function errorMessage(err: unknown): string {

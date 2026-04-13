@@ -89,7 +89,7 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
           onChange={(e) => setNewSpeaker(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addSpeaker())}
           placeholder="Add speaker..."
-          className="input py-1 text-sm flex-1"
+          className="input flex-1"
         />
         <Button onClick={addSpeaker} variant="outline" size="sm" disabled={!newSpeaker.trim()}>
           Add
@@ -98,7 +98,7 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
 
       {/* Save status */}
       <div className="flex items-center gap-3 text-xs">
-        {isDirty && <span className="text-yellow-400">Saving...</span>}
+        {isDirty && <span className="text-warning">Saving...</span>}
         {saveMutation.isSuccess && !isDirty && <span className="text-success">Saved</span>}
         {saveMutation.isError && <span className="text-destructive">{errorMessage(saveMutation.error)}</span>}
       </div>

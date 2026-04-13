@@ -61,7 +61,20 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
-const routeTree = rootRoute.addChildren([homeRoute, showRoute, episodeRoute, fileRoute, settingsRoute]);
+const notFoundRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "*",
+  component: function NotFound() {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
+        <p className="text-lg font-medium text-foreground">Page not found</p>
+        <a href="/" className="text-primary hover:underline text-sm">Go home</a>
+      </div>
+    );
+  },
+});
+
+const routeTree = rootRoute.addChildren([homeRoute, showRoute, episodeRoute, fileRoute, settingsRoute, notFoundRoute]);
 
 export const router = createRouter({ routeTree });
 

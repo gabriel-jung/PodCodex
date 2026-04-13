@@ -26,6 +26,7 @@ import {
 import PageHeader from "@/components/layout/PageHeader";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import ShowSettings from "@/components/show/ShowSettings";
 import SpeakersPanel from "@/components/show/SpeakersPanel";
 import { EpisodeRow } from "@/components/show/EpisodeRow";
@@ -34,7 +35,6 @@ import SearchPanel from "@/components/search/SearchPanel";
 import PipelineButtons from "@/components/show/PipelineButtons";
 import FilterDropdown from "@/components/show/FilterDropdown";
 import SortHeader from "@/components/show/SortHeader";
-import { errorMessage } from "@/lib/utils";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
 
 type ShowTab = "episodes" | "search" | "speakers" | "settings";
@@ -45,8 +45,13 @@ type SortKey = "date_desc" | "date_asc" | "title_asc" | "title_desc" | "duration
 
 export default function ShowPage({ folder, initialTab }: { folder: string; initialTab?: string }) {
   const navigate = useNavigate();
-  const { seekTo, setAudioMeta, audioPath } = useAudioStore();
-  const { minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude } = useEpisodeStore();
+  const seekTo = useAudioStore((s) => s.seekTo);
+  const setAudioMeta = useAudioStore((s) => s.setAudioMeta);
+  const audioPath = useAudioStore((s) => s.audioPath);
+  const minDurationMinutes = useEpisodeStore((s) => s.minDurationMinutes);
+  const maxDurationMinutes = useEpisodeStore((s) => s.maxDurationMinutes);
+  const titleInclude = useEpisodeStore((s) => s.titleInclude);
+  const titleExclude = useEpisodeStore((s) => s.titleExclude);
   const queryClient = useQueryClient();
 
 
@@ -94,14 +99,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(folder) }),
   });
 
-  const batchMutationEpisodesRef = useRef({ names: [] as string[], step: "" });
+  const batchMutationEpisodesRef = useRef({ episodes: [] as { title: string; stem: string }[], step: "" });
   const batchMutation = useMutation({
     mutationFn: (args: Parameters<typeof startBatch>[0]) => {
-      batchMutationEpisodesRef.current.names = batchableSelected.map((e) => e.title);
+      batchMutationEpisodesRef.current.episodes = batchableSelected.map((e) => ({ title: e.title, stem: e.stem || e.id }));
       return startBatch(args);
     },
     onSuccess: (data) => {
-      setBatchTask(data.task_id, folder, batchMutationEpisodesRef.current.names, batchMutationEpisodesRef.current.step);
+      setBatchTask(data.task_id, folder, batchMutationEpisodesRef.current.episodes, batchMutationEpisodesRef.current.step);
     },
   });
 
@@ -258,8 +263,10 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     <div className="h-full flex flex-col overflow-hidden">
       <PageHeader
         title={showName}
-        parentLabel="Home"
-        parentTo={{ to: "/" }}
+        breadcrumbs={[
+          { label: "Shows", onClick: () => navigate({ to: "/" }) },
+          { label: showName },
+        ]}
         artwork={meta?.artwork_url ? <img src={artworkUrl(folder)} alt={showName} className="w-8 h-8 rounded-md shrink-0" /> : undefined}
         subtitle={
           <div className="flex gap-3 text-xs text-muted-foreground">
@@ -408,13 +415,13 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
         />
         {batchMutation.isError && (
-          <span className="text-destructive text-xs">{errorMessage(batchMutation.error)}</span>
+          <ErrorAlert error={batchMutation.error} onDismiss={() => batchMutation.reset()} compact className="flex-1" />
         )}
         {downloadMutation.isError && (
-          <span className="text-destructive text-xs">{errorMessage(downloadMutation.error)}</span>
+          <ErrorAlert error={downloadMutation.error} onDismiss={() => downloadMutation.reset()} compact className="flex-1" />
         )}
         {importSubsMutation.isError && (
-          <span className="text-destructive text-xs">{errorMessage(importSubsMutation.error)}</span>
+          <ErrorAlert error={importSubsMutation.error} onDismiss={() => importSubsMutation.reset()} compact className="flex-1" />
         )}
       </div>
 
@@ -448,6 +455,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                   variant: "destructive",
                   onConfirm: () => deleteMutation.mutate(ep.audio_path!),
                 })}
+                onProcess={(step) => runStep(step, [ep])}
                 downloading={downloadMutation.isPending || !!downloadTaskId}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
               />
@@ -465,6 +473,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                 onOpen={() => goEpisode(ep.stem || ep.id)}
                 onPlay={() => ep.audio_path && (setAudioMeta(ep.audio_path, { title: ep.title, artwork: ep.artwork_url || meta?.artwork_url, showName }), seekTo(ep.audio_path, 0))}
                 onDownload={() => downloadMutation.mutate({ guids: [ep.id] })}
+                onDelete={() => ep.audio_path && confirmDialog.open({
+                  title: "Delete episode audio?",
+                  description: `This will remove the downloaded audio for "${ep.title}". You can re-download it later from RSS.`,
+                  confirmLabel: "Delete",
+                  variant: "destructive",
+                  onConfirm: () => deleteMutation.mutate(ep.audio_path!),
+                })}
+                onProcess={(step) => runStep(step, [ep])}
                 downloading={downloadMutation.isPending || !!downloadTaskId}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
               />
@@ -480,7 +496,12 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
             <EmptyState
               icon={Podcast}
               title="No episodes yet"
-              description={isYouTube ? "Refresh to fetch videos from YouTube." : "Refresh the RSS feed to fetch episodes, or add audio files manually."}
+              description={isYouTube ? "Refresh to fetch videos from YouTube." : "Refresh the RSS feed to fetch episodes, or drop audio files here."}
+              steps={[
+                { label: isYouTube ? "Refresh to pull the latest YouTube videos" : "Refresh to pull the latest RSS episodes" },
+                { label: "Download audio to enable transcription" },
+                { label: "Transcribe, correct, and index" },
+              ]}
               action={{ label: isYouTube ? "Refresh YouTube" : "Refresh RSS", onClick: () => refreshMutation.mutate() }}
             />
           ) : (
@@ -494,8 +515,13 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       </div>
 
       {refreshMutation.isError && (
-        <div className="px-6 py-2 border-t border-border text-destructive text-xs">
-          {errorMessage(refreshMutation.error)}
+        <div className="px-6 py-2 border-t border-border">
+          <ErrorAlert
+            error={refreshMutation.error}
+            onRetry={() => refreshMutation.mutate()}
+            onDismiss={() => refreshMutation.reset()}
+            compact
+          />
         </div>
       )}
       </>)}

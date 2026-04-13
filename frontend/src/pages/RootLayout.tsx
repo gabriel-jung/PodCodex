@@ -5,10 +5,14 @@ import { queryKeys } from "@/api/queryKeys";
 import AudioBar from "@/components/layout/AudioBar";
 import TaskBar from "@/components/layout/TaskBar";
 import CommandPalette from "@/components/CommandPalette";
+import ShortcutsHelp from "@/components/ShortcutsHelp";
+import BatchHistoryModal from "@/components/BatchHistoryModal";
 import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
 import { PlatformProvider } from "@/platform";
+import { useGlobalShortcuts } from "@/hooks/useGlobalShortcuts";
 
 export default function RootLayout() {
+  useGlobalShortcuts();
   const { data: health, error } = useQuery({
     queryKey: queryKeys.health(),
     queryFn: getHealth,
@@ -50,6 +54,8 @@ export default function RootLayout() {
         <AudioBar />
         <ConfirmDialogHost />
         <CommandPalette />
+        <ShortcutsHelp />
+        <BatchHistoryModal />
       </div>
     </PlatformProvider>
   );

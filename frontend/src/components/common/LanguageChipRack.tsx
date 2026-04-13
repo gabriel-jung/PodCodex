@@ -50,7 +50,7 @@ export default function LanguageChipRack({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={otherPlaceholder}
-          className="input py-1 text-xs w-40"
+          className="input text-xs w-40"
           autoFocus
         />
       )}

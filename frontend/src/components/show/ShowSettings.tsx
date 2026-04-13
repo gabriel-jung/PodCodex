@@ -183,20 +183,20 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       {/* ── Show Info ── */}
       <SettingSection title="Show Info" description="Basic metadata for this podcast.">
         <SettingRow label="Name" help="Display name for this podcast.">
-          <input value={name} onChange={(e) => setName(e.target.value)} className="input py-1 text-sm w-48" />
+          <input value={name} onChange={(e) => setName(e.target.value)} className="input w-48" />
         </SettingRow>
         <SettingRow label="Language" help="Primary spoken language (e.g. French, English).">
-          <input value={language} onChange={(e) => setLanguage(e.target.value)} className="input py-1 text-sm w-32" />
+          <input value={language} onChange={(e) => setLanguage(e.target.value)} className="input w-32" />
         </SettingRow>
         <SettingRow label="RSS URL" help="The podcast's RSS feed URL.">
-          <input value={rssUrl} onChange={(e) => setRssUrl(e.target.value)} placeholder="https://..." className="input py-1 text-sm w-64" />
+          <input value={rssUrl} onChange={(e) => setRssUrl(e.target.value)} placeholder="https://..." className="input w-64" />
         </SettingRow>
         <SettingRow label="YouTube URL" help="YouTube channel or playlist URL.">
-          <input value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)} placeholder="https://youtube.com/..." className="input py-1 text-sm w-64" />
+          <input value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)} placeholder="https://youtube.com/..." className="input w-64" />
         </SettingRow>
         <SettingRow label="Artwork" help="URL to the podcast cover image.">
           <div className="flex items-center gap-2">
-            <input value={artworkUrl} onChange={(e) => setArtworkUrl(e.target.value)} placeholder="https://..." className="input py-1 text-sm w-48" />
+            <input value={artworkUrl} onChange={(e) => setArtworkUrl(e.target.value)} placeholder="https://..." className="input w-48" />
             {artworkUrl && (
               <img src={artworkUrl} alt="Artwork preview" className="w-7 h-7 rounded object-cover shrink-0" onError={(e) => (e.currentTarget.style.display = "none")} />
             )}
@@ -207,7 +207,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       {/* Save status */}
       {(isDirty || saveMutation.isSuccess || saveMutation.isError) && (
         <div className="flex items-center gap-3 text-xs -mt-4">
-          {isDirty && <span className="text-yellow-400">Saving...</span>}
+          {isDirty && <span className="text-warning">Saving...</span>}
           {saveMutation.isSuccess && !isDirty && <span className="text-success">Saved</span>}
           {saveMutation.isError && <span className="text-destructive">{errorMessage(saveMutation.error)}</span>}
         </div>
@@ -249,7 +249,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
               value={minDurationMinutes || ""}
               onChange={(e) => setMinDurationMinutes(Math.max(0, Number(e.target.value)))}
               placeholder="0"
-              className="input w-16 py-1 text-sm text-center"
+              className="input w-16 text-center"
             />
             <span className="text-xs text-muted-foreground">min</span>
           </div>
@@ -263,7 +263,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
               value={maxDurationMinutes || ""}
               onChange={(e) => setMaxDurationMinutes(Math.max(0, Number(e.target.value)))}
               placeholder="0"
-              className="input w-16 py-1 text-sm text-center"
+              className="input w-16 text-center"
             />
             <span className="text-xs text-muted-foreground">min</span>
           </div>
@@ -273,7 +273,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             value={titleInclude}
             onChange={(e) => setTitleInclude(e.target.value)}
             placeholder="filter..."
-            className="input py-1 text-sm w-40"
+            className="input w-40"
           />
         </SettingRow>
         <SettingRow label="Title excludes" help="Hide episodes whose title contains this text.">
@@ -281,7 +281,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             value={titleExclude}
             onChange={(e) => setTitleExclude(e.target.value)}
             placeholder="exclude..."
-            className="input py-1 text-sm w-40"
+            className="input w-40"
           />
         </SettingRow>
       </SettingSection>
@@ -298,7 +298,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             value={pipeModelSize}
             onChange={(e) => setPipeModelSize(e.target.value)}
             placeholder="(use global)"
-            className="input py-1 text-sm w-32"
+            className="input w-32"
           />
         </SettingRow>
         <SettingRow label="Diarize" help="Whether transcription should include speaker diarization.">
@@ -325,7 +325,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             value={pipeLlmProvider}
             onChange={(e) => setPipeLlmProvider(e.target.value)}
             placeholder="(use global)"
-            className="input py-1 text-sm w-32"
+            className="input w-32"
           />
         </SettingRow>
         <SettingRow label="LLM model" help="Expected LLM model name. Leave empty for global default.">
@@ -333,7 +333,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             value={pipeLlmModel}
             onChange={(e) => setPipeLlmModel(e.target.value)}
             placeholder="(use global)"
-            className="input py-1 text-sm w-32"
+            className="input w-32"
           />
         </SettingRow>
         <SettingRow label="Target language" help="Expected translation target language. Leave empty for global default.">
@@ -341,7 +341,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             value={pipeTargetLang}
             onChange={(e) => setPipeTargetLang(e.target.value)}
             placeholder="(use global)"
-            className="input py-1 text-sm w-32"
+            className="input w-32"
           />
         </SettingRow>
       </SettingSection>

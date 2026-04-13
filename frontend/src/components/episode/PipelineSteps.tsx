@@ -4,12 +4,11 @@
  * Extracted to keep EpisodePage focused on layout and data fetching.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Episode } from "@/api/types";
-import { formatDuration, formatDate } from "@/lib/utils";
 import { isManualEdit } from "@/lib/stepStatus";
 import {
-  Mic, Sparkles, Languages, AudioLines, Database, ExternalLink,
+  Mic, Sparkles, Languages, AudioLines, Database,
 } from "lucide-react";
 
 import TranscribePanel from "@/components/transcribe/TranscribePanel";
@@ -177,12 +176,48 @@ export function PipelineRow({ label, status, detail, subtitle, provenance, files
 }
 
 export function PipelineStatus({ episode }: { episode: Episode }) {
+  const prevStatus = useRef<Partial<Record<PipelineStepKey, StepStatus>>>({});
+  const timers = useRef<Partial<Record<PipelineStepKey, ReturnType<typeof setTimeout>>>>({});
+  const [flashing, setFlashing] = useState<Set<PipelineStepKey>>(new Set());
+
+  useEffect(() => {
+    const justCompleted: PipelineStepKey[] = [];
+    for (const s of PIPELINE_STEPS) {
+      const prev = prevStatus.current[s.key];
+      const curr = s.status(episode);
+      if (prev !== undefined && prev !== "done" && curr === "done") {
+        justCompleted.push(s.key);
+      }
+      prevStatus.current[s.key] = curr;
+    }
+    if (justCompleted.length === 0) return;
+    setFlashing((f) => new Set([...f, ...justCompleted]));
+    // Per-key timers so simultaneous or staggered completions don't clobber
+    // each other's cleanup.
+    for (const k of justCompleted) {
+      if (timers.current[k]) clearTimeout(timers.current[k]);
+      timers.current[k] = setTimeout(() => {
+        setFlashing((f) => {
+          const n = new Set(f);
+          n.delete(k);
+          return n;
+        });
+        delete timers.current[k];
+      }, 900);
+    }
+  }, [episode]);
+
+  useEffect(() => () => {
+    for (const t of Object.values(timers.current)) if (t) clearTimeout(t);
+  }, []);
+
   const visible = PIPELINE_STEPS.filter((s) => s.headerBadge && s.status(episode));
   if (visible.length === 0) return null;
   return (
     <div className="flex gap-1.5">
       {visible.map((s) => {
         const status = s.status(episode);
+        const isFlashing = flashing.has(s.key);
         return (
           <span
             key={s.key}
@@ -190,50 +225,12 @@ export function PipelineStatus({ episode }: { episode: Episode }) {
               status === "partial"
                 ? "bg-blue-500/15 text-blue-500"
                 : "bg-success/15 text-success"
-            }`}
+            } ${isFlashing ? "complete-flash" : ""}`}
           >
             {s.rowLabel}
           </span>
         );
       })}
-    </div>
-  );
-}
-
-export function EpisodeDetails({ episode }: { episode: Episode }) {
-  const youtubeUrl = /^[\w-]{11}$/.test(episode.id) ? `https://www.youtube.com/watch?v=${episode.id}` : null;
-  if (episode.episode_number == null && !episode.pub_date && episode.duration <= 0 && !youtubeUrl) return null;
-  return (
-    <div className="space-y-3">
-      <h4 className="text-sm font-medium">Details</h4>
-      <div className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm max-w-md">
-        {episode.episode_number != null && (
-          <>
-            <span className="text-muted-foreground">Episode</span>
-            <span>#{episode.episode_number}</span>
-          </>
-        )}
-        {episode.pub_date && (
-          <>
-            <span className="text-muted-foreground">Published</span>
-            <span>{formatDate(episode.pub_date)}</span>
-          </>
-        )}
-        {episode.duration > 0 && (
-          <>
-            <span className="text-muted-foreground">Duration</span>
-            <span>{formatDuration(episode.duration)}</span>
-          </>
-        )}
-        {youtubeUrl && (
-          <>
-            <span className="text-muted-foreground">Source</span>
-            <a href={youtubeUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline flex items-center gap-1">
-              YouTube <ExternalLink className="w-3 h-3" />
-            </a>
-          </>
-        )}
-      </div>
     </div>
   );
 }

@@ -19,6 +19,11 @@ import { Plus, RefreshCw, List, LayoutGrid, Podcast, Group } from "lucide-react"
 import { EmptyState } from "@/components/ui/empty-state";
 import AppSidebar from "@/components/layout/AppSidebar";
 import PageHeader from "@/components/layout/PageHeader";
+import DropOverlay from "@/components/common/DropOverlay";
+import { useTauriFileDrop } from "@/hooks/useTauriFileDrop";
+import OnboardingModal from "@/components/OnboardingModal";
+
+const AUDIO_EXTS = [".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac"];
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -86,8 +91,18 @@ export default function HomePage() {
   const goToShow = (folder: string) =>
     navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } });
 
+  const { isHovering } = useTauriFileDrop({
+    accept: AUDIO_EXTS,
+    onDrop: (paths) => {
+      if (paths.length === 0) return;
+      navigate({ to: "/file/$path", params: { path: encodeURIComponent(paths[0]) } });
+    },
+  });
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
+      {isHovering && <DropOverlay message="Drop audio to preview and transcribe" />}
+      {sorted && sorted.length === 0 && <OnboardingModal onAddShow={() => setAddOpen(true)} />}
       <PageHeader
         title="PodCodex"
         actions={
@@ -116,7 +131,7 @@ export default function HomePage() {
       <div className="flex-1 flex overflow-hidden">
       <AppSidebar />
       <div className="flex-1 overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-6 py-8">
+      <div className="max-w-7xl mx-auto px-6 py-8">
 
         {sections && sections.length > 0 && (
           <>
@@ -186,9 +201,14 @@ export default function HomePage() {
         {sorted && sorted.length === 0 && (
           <EmptyState
             icon={Podcast}
-            title="No shows yet"
-            description="Search for a podcast or import an existing folder."
-            action={{ label: "Add show", onClick: () => setAddOpen(true) }}
+            title="Welcome to PodCodex"
+            description="Add a show to transcribe, correct, translate, and search podcast episodes."
+            steps={[
+              { label: "Add a show from RSS, YouTube, or a local folder" },
+              { label: "Download or import episodes" },
+              { label: "Transcribe, review, and index for search" },
+            ]}
+            action={{ label: "Add your first show", onClick: () => setAddOpen(true) }}
           />
         )}
 

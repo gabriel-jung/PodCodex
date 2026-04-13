@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
@@ -6,11 +6,9 @@ import {
   getIndexStatus,
   startIndex,
 } from "@/api/client";
-import { getAllVersions } from "@/api/search";
-import { queryKeys } from "@/api/queryKeys";
-import { filterVersionsForStep } from "@/lib/pipelineInputs";
 import { getShowName, selectClass, versionOption } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
+import { useInputVersions } from "@/hooks/useLLMPipeline";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import AdvancedToggle from "@/components/common/AdvancedToggle";
 import FormGrid from "@/components/common/FormGrid";
@@ -40,15 +38,7 @@ export default function IndexPanel() {
 
   const expanded = task.expanded || !episode?.indexed;
 
-  const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(audioPath),
-    queryFn: () => getAllVersions(audioPath),
-    enabled: !!audioPath && !!episode?.transcribed && expanded,
-  });
-  const inputVersions = useMemo(
-    () => (allVersions ? filterVersionsForStep(allVersions, "index") : undefined),
-    [allVersions],
-  );
+  const inputVersions = useInputVersions(audioPath, "index", !!episode?.transcribed && expanded);
 
   const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
   const indexModel = usePipelineConfigStore((s) => s.indexModel);
@@ -160,7 +150,7 @@ export default function IndexPanel() {
                 type="number"
                 value={chunkSize}
                 onChange={(e) => setChunkSize(Number(e.target.value))}
-                className="input py-1 text-sm w-20"
+                className="input w-20"
                 min={64}
                 max={1024}
               />
@@ -171,7 +161,7 @@ export default function IndexPanel() {
                     type="number"
                     value={threshold}
                     onChange={(e) => setThreshold(Number(e.target.value))}
-                    className="input py-1 text-sm w-20"
+                    className="input w-20"
                     min={0}
                     max={1}
                     step={0.05}

@@ -1,8 +1,10 @@
-import { useRef } from "react";
+import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getCorrectSegments, getSegments } from "@/api/client";
+import { getAllVersions } from "@/api/search";
 import { queryKeys } from "@/api/queryKeys";
 import { buildDefaultContext } from "@/lib/utils";
+import { filterVersionsForStep, type PipelineInputStep } from "@/lib/pipelineInputs";
 import type { LLMConfig, LLMPresetKey } from "@/stores/pipelineConfigStore";
 import type { Episode, ShowMeta, Segment } from "@/api/types";
 import { usePipelineConfigStore } from "@/stores";
@@ -20,21 +22,17 @@ export function useLLMConfig(
   const llm = usePipelineConfigStore((s) => s.llm);
   const setLLM = usePipelineConfigStore((s) => s.setLLM);
 
-  // Sync sourceLang and context when the episode or show changes, without an
-  // extra render cycle. Track previous identity and apply patches during render.
-  const prevRef = useRef<{ episodeId?: string; showName?: string }>({});
+  // Sync sourceLang and context when the episode or show changes
   const episodeId = episode?.id;
   const showName = showMeta?.name;
-  if (episodeId !== prevRef.current.episodeId || showName !== prevRef.current.showName) {
-    prevRef.current = { episodeId, showName };
-    if (episode) {
-      const patches: Partial<LLMConfig> = {};
-      if (showMeta?.language) patches.sourceLang = showMeta.language;
-      const ctx = buildDefaultContext(episode, showMeta);
-      if (ctx) patches.context = ctx;
-      if (Object.keys(patches).length > 0) setLLM(patches);
-    }
-  }
+  useEffect(() => {
+    if (!episode) return;
+    const patches: Partial<LLMConfig> = {};
+    if (showMeta?.language) patches.sourceLang = showMeta.language;
+    const ctx = buildDefaultContext(episode, showMeta);
+    if (ctx) patches.context = ctx;
+    if (Object.keys(patches).length > 0) setLLM(patches);
+  }, [episodeId, showName]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Provide a setState-like API for compatibility with existing panels
   const setter = (valOrFn: LLMConfig | ((prev: LLMConfig) => LLMConfig)) => {
@@ -107,6 +105,26 @@ export function useLLMBackendStatus(activePreset: LLMPresetKey) {
       : "Install the openai package to use cloud providers — or switch to Manual"
     : undefined;
   return { hasOllama, hasOpenAI, hasLLM, backendMissing, disabledTitle };
+}
+
+/**
+ * Fetch all versions for an episode, filtered to those valid as input for
+ * a given pipeline step. Used by CorrectPanel, TranslatePanel, IndexPanel.
+ */
+export function useInputVersions(
+  audioPath: string | null | undefined,
+  step: PipelineInputStep,
+  enabled: boolean,
+) {
+  const { data: allVersions } = useQuery({
+    queryKey: queryKeys.allVersions(audioPath),
+    queryFn: () => getAllVersions(audioPath),
+    enabled: !!audioPath && enabled,
+  });
+  return useMemo(
+    () => (allVersions ? filterVersionsForStep(allVersions, step) : undefined),
+    [allVersions, step],
+  );
 }
 
 /**

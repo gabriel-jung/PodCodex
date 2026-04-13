@@ -257,7 +257,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                 type="number"
                 value={topK}
                 onChange={(e) => setTopK(Number(e.target.value))}
-                className="input py-1 text-sm w-20"
+                className="input w-20"
                 min={1}
                 max={50}
               />

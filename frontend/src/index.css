@@ -29,6 +29,9 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
   --font-size-2xs: 0.625rem;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "Fraunces Variable", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 :root {
@@ -83,14 +86,30 @@
 
 @layer base {
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans;
+    font-feature-settings: "cv11", "ss01", "ss03";
+  }
+  h1, h2 {
+    @apply font-display;
+    font-feature-settings: "ss01", "onum";
+    letter-spacing: -0.015em;
   }
 }
 
 @layer components {
   .input {
-    @apply w-full bg-secondary text-sm text-foreground rounded-md px-3 py-2
+    @apply w-full bg-secondary text-sm text-foreground rounded-md px-2 py-1
            border border-border focus:border-primary focus:outline-none
            placeholder:text-muted-foreground;
   }
+}
+
+@keyframes complete-flash {
+  0%   { transform: scale(1); box-shadow: 0 0 0 0 var(--success); }
+  40%  { transform: scale(1.1); box-shadow: 0 0 0 5px color-mix(in oklch, var(--success) 35%, transparent); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 color-mix(in oklch, var(--success) 0%, transparent); }
+}
+
+.complete-flash {
+  animation: complete-flash 0.85s ease-out;
 }

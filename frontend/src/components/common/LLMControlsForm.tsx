@@ -102,7 +102,7 @@ export default function LLMControlsForm({
               value={config.apiBaseUrl}
               onChange={(e) => patch({ apiBaseUrl: e.target.value })}
               placeholder={providerInfo?.url || "https://api.example.com/v1"}
-              className="input py-1 text-sm"
+              className="input"
             />
 
             <HelpLabel label="API key" help={providerInfo?.env_var ? `Leave empty to read from the ${providerInfo.env_var} environment variable.` : "API key for your endpoint."} />
@@ -117,7 +117,7 @@ export default function LLMControlsForm({
                     ? `from ${providerInfo.env_var}`
                     : "required"
               }
-              className="input py-1 text-sm"
+              className="input"
             />
           </>
         )}
@@ -139,7 +139,7 @@ export default function LLMControlsForm({
                 ? "e.g. ChatGPT-4o, Claude 3.5…"
                 : "default"
           }
-          className="input py-1 text-sm"
+          className="input"
         />
 
         {languageRows}
@@ -155,7 +155,7 @@ export default function LLMControlsForm({
               onChange={(e) => setBatchCount(Number(e.target.value))}
               min={1}
               max={20}
-              className="input py-1 text-sm w-16"
+              className="input w-16"
             />
             {minutesPerBatch !== null && (
               <span className="text-xs text-muted-foreground">
@@ -171,7 +171,7 @@ export default function LLMControlsForm({
               onChange={(e) => patch({ batchMinutes: Number(e.target.value) })}
               min={1}
               step={5}
-              className="input py-1 text-sm w-20"
+              className="input w-20"
             />
             <span className="text-xs text-muted-foreground">min per batch</span>
           </div>
@@ -185,7 +185,7 @@ export default function LLMControlsForm({
           onChange={(e) => patch({ context: e.target.value })}
           placeholder="Describe the podcast, hosts, topics…"
           rows={4}
-          className="input py-1 text-sm resize-y w-full"
+          className="input resize-y w-full"
         />
       </div>
     </>

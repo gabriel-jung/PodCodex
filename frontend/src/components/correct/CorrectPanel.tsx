@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath } from "@/stores";
 import {
@@ -12,14 +12,13 @@ import {
   getCorrectManualPrompts,
   applyCorrectManual,
 } from "@/api/client";
-import { getAllVersions } from "@/api/search";
 import { queryKeys } from "@/api/queryKeys";
-import { filterVersionsForStep } from "@/lib/pipelineInputs";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import {
   useLLMConfig,
   buildLLMRequest,
   useLLMBackendStatus,
+  useInputVersions,
 } from "@/hooks/useLLMPipeline";
 import { modeToPreset } from "@/stores/pipelineConfigStore";
 import type { LLMConfig } from "@/stores/pipelineConfigStore";
@@ -54,15 +53,7 @@ export default function CorrectPanel() {
     enabled: !!audioPath && !!episode?.transcribed,
   });
 
-  const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(audioPath),
-    queryFn: () => getAllVersions(audioPath),
-    enabled: !!audioPath && !!episode?.transcribed && expanded,
-  });
-  const inputVersions = useMemo(
-    () => (allVersions ? filterVersionsForStep(allVersions, "correct") : undefined),
-    [allVersions],
-  );
+  const inputVersions = useInputVersions(audioPath, "correct", !!episode?.transcribed && expanded);
 
   const startMutation = useMutation({
     mutationFn: () =>
@@ -86,7 +77,7 @@ export default function CorrectPanel() {
       rerunLabel="Re-run correction"
       settingsLabel="Correction settings"
       taskId={task.activeTaskId}
-      onTaskComplete={() => { task.handleComplete(); }}
+      onTaskComplete={task.handleComplete}
       onRetry={task.handleRetry}
       onDismiss={task.handleDismiss}
       emptyMessage="No correction yet."

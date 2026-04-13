@@ -56,7 +56,7 @@ export default function TTSGenerationSection({
         <input
           value={language}
           onChange={(e) => setLanguage(e.target.value)}
-          className="input py-1 text-sm"
+          className="input"
         />
         <HelpLabel label="Model size" help="Larger models produce more natural speech but need more GPU memory." />
         <select
@@ -96,7 +96,7 @@ export default function TTSGenerationSection({
             type="number"
             value={maxChunkDuration}
             onChange={(e) => setMaxChunkDuration(Number(e.target.value))}
-            className="input py-1 text-sm w-20"
+            className="input w-20"
             min={5}
             max={60}
           />
