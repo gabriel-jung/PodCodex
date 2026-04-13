@@ -22,6 +22,7 @@ export const queryKeys = {
   // ── Shows & episodes ───────────────────────────────────
   shows: () => ["shows"] as const,
   showMeta: (folder: string) => ["showMeta", folder] as const,
+  speakerRoster: (folder: string) => ["speakerRoster", folder] as const,
   /** All episodes — broad invalidation (every folder, every defaults). */
   episodesAll: () => ["episodes"] as const,
   /** Episodes for a specific show folder. */

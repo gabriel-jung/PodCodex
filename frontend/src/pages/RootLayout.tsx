@@ -46,7 +46,7 @@ export default function RootLayout() {
 
   return (
     <PlatformProvider>
-      <div className="flex flex-col h-screen bg-background text-foreground">
+      <div className="flex flex-col h-screen overflow-hidden bg-background text-foreground">
         <main className="flex-1 overflow-hidden">
           <Outlet />
         </main>

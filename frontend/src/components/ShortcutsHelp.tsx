@@ -3,10 +3,10 @@
 import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
-type Shortcut = { keys: string[]; label: string };
-type ShortcutGroup = { heading: string; items: Shortcut[] };
+export type Shortcut = { keys: string[]; label: string };
+export type ShortcutGroup = { heading: string; items: Shortcut[] };
 
-const SHORTCUTS: ShortcutGroup[] = [
+export const SHORTCUTS: ShortcutGroup[] = [
   {
     heading: "Global",
     items: [
@@ -68,7 +68,7 @@ export default function ShortcutsHelp() {
   );
 }
 
-function Kbd({ children }: { children: React.ReactNode }) {
+export function Kbd({ children }: { children: React.ReactNode }) {
   return (
     <kbd className="inline-flex items-center justify-center min-w-[1.5rem] h-6 px-1.5 text-xs font-mono text-foreground bg-muted border border-border rounded">
       {children}

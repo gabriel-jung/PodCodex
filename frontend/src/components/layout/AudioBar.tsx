@@ -34,7 +34,6 @@ export default function AudioBar() {
   const [speed, setSpeed] = useState(1);
   const [showSegment, setShowSegment] = useState(false);
   const [hoverTime, setHoverTime] = useState<{ time: number; pct: number } | null>(null);
-  const [timeMode, setTimeMode] = useState<"remaining" | "elapsed" | "total">("remaining");
   const activeSeg = useMemo(() => findActiveSegment(audioSegments, currentTime), [audioSegments, currentTime]);
 
   // Save position to localStorage periodically while playing
@@ -130,15 +129,14 @@ export default function AudioBar() {
 
   if (!audioPath) return null;
 
-  // Time-label width adapts to the longest possible display for the current
-  // duration: `-MM:SS` fits in w-11, `-H:MM:SS` needs w-14, and anything from
-  // 10h upward (including day-long audiobooks) needs w-16.
-  const timeColW = duration >= 36000 ? "w-16"
-    : duration >= 3600 ? "w-14"
-    : "w-11";
+  // Right time always shows `−H:MM:SS` (or `−MM:SS`); the Unicode minus is
+  // wider than a hyphen, so size for the worst case at each duration tier.
+  const timeColW = duration >= 36000 ? "w-[4.75rem]"
+    : duration >= 3600 ? "w-[4.25rem]"
+    : "w-14";
 
   return (
-    <div className="border-t border-border bg-card">
+    <div className="border-t border-border bg-card overflow-hidden">
       {/* Current segment text — collapsible */}
       {showSegment && activeSeg && (
         <div className="px-4 py-2 border-b border-border/50 text-sm">
@@ -147,7 +145,7 @@ export default function AudioBar() {
         </div>
       )}
 
-    <div className="px-4 pt-3 pb-1.5">
+    <div className="px-4 pt-1.5 pb-1">
       {/* Hidden audio element */}
       <audio
         ref={audioRef}
@@ -175,7 +173,7 @@ export default function AudioBar() {
       />
 
       {/* Row 1: Artwork + info | centered transport | right controls */}
-      <div className="flex items-center gap-4 mb-1.5">
+      <div className="flex items-center gap-3 mb-0.5">
         {/* Artwork — click to open episode */}
         <button
           onClick={() => {
@@ -185,7 +183,7 @@ export default function AudioBar() {
               navigate({ to: "/file/$path", params: { path: encodeURIComponent(audioPath) } });
             }
           }}
-          className="w-10 h-10 rounded-md bg-muted shrink-0 overflow-hidden flex items-center justify-center hover:ring-2 hover:ring-primary/50 transition cursor-pointer"
+          className="w-8 h-8 rounded-md bg-muted shrink-0 overflow-hidden flex items-center justify-center hover:ring-2 hover:ring-primary/50 transition cursor-pointer"
           title="Go to episode"
         >
           {audioArtwork ? (
@@ -195,23 +193,28 @@ export default function AudioBar() {
           )}
         </button>
 
-        {/* Title + show name */}
-        <div className="flex-1 min-w-0 max-w-sm">
-          <p className="text-sm font-medium truncate" title={audioTitle || "Playing"}>{audioTitle || "Playing"}</p>
+        {/* Title + show name on one line. Show name shrinks ~infinitely faster
+            so it collapses to zero before the episode title starts truncating. */}
+        <div className="flex-[2] min-w-0 flex items-baseline gap-2">
+          <span className="text-sm font-medium truncate min-w-0" title={audioTitle || "Playing"}>
+            {audioTitle || "Playing"}
+          </span>
           {audioShowName && (
-            <p className="text-xs text-muted-foreground truncate">{audioShowName}</p>
+            <span className="text-xs text-muted-foreground truncate min-w-0 shrink-[9999] max-w-[10rem]">
+              {audioShowName}
+            </span>
           )}
         </div>
 
         {/* Centered transport */}
         <div className="flex-1 flex items-center justify-center gap-0.5">
-          <SkipLabelButton label="−15s" onClick={() => skip(-15)} title="Back 15s" />
-          <SkipLabelButton label="−5s" onClick={() => skip(-5)} title="Back 5s" />
-          <Button onClick={togglePlay} variant="ghost" size="icon" className="h-9 w-9 mx-1" aria-label={playing ? "Pause" : "Play"}>
-            {playing ? <Pause className="w-4.5 h-4.5" /> : <Play className="w-4.5 h-4.5 ml-0.5" />}
+          <SkipLabelButton label="−15" onClick={() => skip(-15)} title="Back 15s" />
+          <SkipLabelButton label="−5" onClick={() => skip(-5)} title="Back 5s" />
+          <Button onClick={togglePlay} variant="ghost" size="icon" className="h-7 w-7 mx-0.5" aria-label={playing ? "Pause" : "Play"}>
+            {playing ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
           </Button>
-          <SkipLabelButton label="+5s" onClick={() => skip(5)} title="Forward 5s" />
-          <SkipLabelButton label="+15s" onClick={() => skip(15)} title="Forward 15s" />
+          <SkipLabelButton label="+5" onClick={() => skip(5)} title="Forward 5s" />
+          <SkipLabelButton label="+15" onClick={() => skip(15)} title="Forward 15s" />
         </div>
 
         {/* Speed — grouped in a pill */}
@@ -242,33 +245,19 @@ export default function AudioBar() {
           </button>
         </div>
 
-        {/* Volume — icon + slider in a pill */}
-        <div className="flex items-center gap-1.5 shrink-0 bg-muted/40 rounded-full h-7 pl-1 pr-2.5">
-          <button
-            onClick={() => setMuted(!muted)}
-            className="text-muted-foreground hover:text-foreground h-7 w-6 flex items-center justify-center transition"
-            title={muted ? "Unmute" : "Mute"}
-            aria-label={muted ? "Unmute" : "Mute"}
-          >
-            {muted || volume === 0 ? (
-              <VolumeX className="w-3.5 h-3.5" />
-            ) : (
-              <Volume2 className="w-3.5 h-3.5" />
-            )}
-          </button>
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={muted ? 0 : volume}
-            onChange={(e) => {
-              setVolume(Number(e.target.value));
-              if (muted) setMuted(false);
-            }}
-            className="w-16 accent-primary h-1"
-          />
-        </div>
+        {/* Volume — single mute toggle. Use system volume for level adjustment. */}
+        <button
+          onClick={() => setMuted(!muted)}
+          className="shrink-0 h-7 w-7 flex items-center justify-center rounded-full bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition"
+          title={muted ? "Unmute" : "Mute"}
+          aria-label={muted ? "Unmute" : "Mute"}
+        >
+          {muted || volume === 0 ? (
+            <VolumeX className="w-3.5 h-3.5" />
+          ) : (
+            <Volume2 className="w-3.5 h-3.5" />
+          )}
+        </button>
 
         {/* Segment text toggle — matches pill styling so it reads as a real control */}
         {audioSegments && (
@@ -333,17 +322,9 @@ export default function AudioBar() {
             </div>
           )}
         </div>
-        <button
-          onClick={() => setTimeMode((m) => m === "remaining" ? "elapsed" : m === "elapsed" ? "total" : "remaining")}
-          className={`text-2xs text-muted-foreground ${timeColW} shrink-0 font-mono text-left hover:text-foreground transition`}
-          title="Click to toggle time display"
-        >
-          {timeMode === "remaining" && duration > 0
-            ? `-${formatTime(duration - currentTime, false)}`
-            : timeMode === "elapsed"
-              ? formatTime(currentTime, false)
-              : formatTime(duration, false)}
-        </button>
+        <span className={`text-2xs text-muted-foreground ${timeColW} shrink-0 font-mono text-left`}>
+          {duration > 0 ? `−${formatTime(Math.max(0, duration - currentTime), false)}` : "−0:00"}
+        </span>
       </div>
     </div>
     </div>
@@ -364,7 +345,7 @@ function SkipLabelButton({
     <button
       onClick={onClick}
       title={title}
-      className="h-7 px-2 flex items-center justify-center rounded-md text-[11px] font-medium font-mono text-muted-foreground hover:text-foreground hover:bg-accent transition"
+      className="h-7 px-1.5 flex items-center justify-center rounded-md text-[11px] font-medium font-mono text-muted-foreground hover:text-foreground hover:bg-accent transition"
     >
       {label}
     </button>

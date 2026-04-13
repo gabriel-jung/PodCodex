@@ -157,6 +157,30 @@ export interface SearchResult {
   speakers: { speaker: string; text: string; start: number; end: number }[] | null;
 }
 
+// ── Speaker roster ───────────────────────────────────────
+
+export interface SpeakerEpisodeEntry {
+  stem: string;
+  title: string;
+  segment_count: number;
+  total_seconds: number;
+}
+
+export interface SpeakerRosterEntry {
+  name: string;
+  is_known: boolean;
+  episode_count: number;
+  segment_count: number;
+  total_seconds: number;
+  episodes: SpeakerEpisodeEntry[];
+}
+
+export interface SpeakerRosterResponse {
+  speakers: SpeakerRosterEntry[];
+  episodes_scanned: number;
+  episodes_with_transcripts: number;
+}
+
 // ── Filesystem ───────────────────────────────────────────
 
 export interface DirEntry {

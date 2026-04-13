@@ -12,7 +12,7 @@ import {
   Search,
   Sparkles,
   Wand2,
-  Youtube,
+  Video,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { VisuallyHidden } from "radix-ui";
@@ -113,7 +113,7 @@ function StepWelcome() {
 function StepSources() {
   const sources = [
     { icon: Radio, label: "RSS feed", detail: "Any podcast feed URL" },
-    { icon: Youtube, label: "YouTube", detail: "Channel or playlist, with subtitles" },
+    { icon: Video, label: "YouTube", detail: "Channel or playlist, with subtitles" },
     { icon: FileAudio, label: "Local folder", detail: "Audio files you already have" },
   ];
   return (

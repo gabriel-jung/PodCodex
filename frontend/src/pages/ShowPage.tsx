@@ -18,12 +18,12 @@ import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfi
 import { useShowActions } from "@/hooks/useShowActions";
 
 import AppSidebar from "@/components/layout/AppSidebar";
+import EditorialHeader from "@/components/layout/EditorialHeader";
 import { Button } from "@/components/ui/button";
 import {
   RefreshCw, Podcast, Search,
-  Download, List, LayoutGrid,
+  List, LayoutGrid,
 } from "lucide-react";
-import PageHeader from "@/components/layout/PageHeader";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorAlert } from "@/components/ui/error-alert";
@@ -261,22 +261,21 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <PageHeader
+      <EditorialHeader
         title={showName}
         breadcrumbs={[
           { label: "Shows", onClick: () => navigate({ to: "/" }) },
           { label: showName },
         ]}
-        artwork={meta?.artwork_url ? <img src={artworkUrl(folder)} alt={showName} className="w-8 h-8 rounded-md shrink-0" /> : undefined}
-        subtitle={
-          <div className="flex gap-3 text-xs text-muted-foreground">
-            {all.length > 0 && <span>{all.length} episode{all.length !== 1 && "s"}</span>}
-            {meta?.language && <span>{meta.language}</span>}
-            {meta?.speakers && meta.speakers.length > 0 && (
-              <span>{meta.speakers.length} speaker{meta.speakers.length !== 1 && "s"}</span>
-            )}
-          </div>
-        }
+        artworkUrl={meta?.artwork_url ? artworkUrl(folder) : undefined}
+        fallbackIcon={Podcast}
+        stats={[
+          ...(all.length > 0 ? [{ value: all.length, label: `episode${all.length !== 1 ? "s" : ""}` }] : []),
+          ...(meta?.speakers && meta.speakers.length > 0
+            ? [{ value: meta.speakers.length, label: `speaker${meta.speakers.length !== 1 ? "s" : ""}` }]
+            : []),
+          ...(meta?.language ? [{ value: meta.language }] : []),
+        ]}
         actions={
           <Button
             onClick={() => refreshMutation.mutate()}

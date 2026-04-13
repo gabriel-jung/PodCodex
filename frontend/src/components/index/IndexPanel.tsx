@@ -6,6 +6,7 @@ import {
   getIndexStatus,
   startIndex,
 } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { getShowName, selectClass, versionOption } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useInputVersions } from "@/hooks/useLLMPipeline";

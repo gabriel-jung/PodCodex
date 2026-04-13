@@ -97,6 +97,32 @@ class UnifiedEpisodeOut(BaseModel):
     translate_status: str = "none"
 
 
+class SpeakerEpisodeEntry(BaseModel):
+    """Per-episode speaker stats in the roster response."""
+
+    stem: str
+    title: str
+    segment_count: int
+    total_seconds: float
+
+
+class SpeakerRosterEntry(BaseModel):
+    """One speaker aggregated across a show's episodes."""
+
+    name: str
+    is_known: bool  # listed in show.toml speakers
+    episode_count: int
+    segment_count: int
+    total_seconds: float
+    episodes: list[SpeakerEpisodeEntry] = []
+
+
+class SpeakerRosterResponse(BaseModel):
+    speakers: list[SpeakerRosterEntry]
+    episodes_scanned: int
+    episodes_with_transcripts: int
+
+
 class CreateFromRSSRequest(BaseModel):
     rss_url: str
     save_path: str  # absolute path where the show folder will be created

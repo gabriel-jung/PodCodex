@@ -1,10 +1,26 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PodCodex</title>
+    <script>
+      // Resolve theme before paint to avoid light/dark flash.
+      (function () {
+        try {
+          var stored = localStorage.getItem("podcodex-theme") || "system";
+          var isDark = stored === "dark" ||
+            (stored === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (isDark) document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
+    <style>
+      /* Pre-paint background — must match --background in index.css to avoid flash. */
+      html.dark { background: oklch(0.158 0.008 55); }
+      html:not(.dark) { background: oklch(0.962 0.012 78); }
+    </style>
   </head>
   <body>
     <div id="root"></div>

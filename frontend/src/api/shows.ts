@@ -9,6 +9,7 @@ import type {
   RSSEpisodeOut,
   ShowMeta,
   ShowSummary,
+  SpeakerRosterResponse,
   TaskResponse,
 } from "./types";
 import { json } from "./client";
@@ -52,6 +53,9 @@ export const registerShow = (path: string) =>
 
 export const getShowMeta = (folder: string) =>
   json<ShowMeta>(`/api/shows/${enc(folder)}/meta`);
+
+export const getSpeakerRoster = (folder: string) =>
+  json<SpeakerRosterResponse>(`/api/shows/${enc(folder)}/speakers/roster`);
 
 export const updateShowMeta = (folder: string, meta: ShowMeta) =>
   json<{ status: string }>(`/api/shows/${enc(folder)}/meta`, {

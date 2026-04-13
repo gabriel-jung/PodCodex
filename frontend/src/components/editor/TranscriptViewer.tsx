@@ -30,8 +30,6 @@ import {
   Trash2,
   Merge,
   Scissors,
-  ChevronDown,
-  ChevronRight,
   Search,
   X,
   Diff,
@@ -189,7 +187,6 @@ interface SegmentViewRowProps {
   onMergeNext?: () => void;
   onSplit?: (cursorPos: number) => void;
   referenceText?: string;
-  referenceLabel?: string;
 }
 
 function SegmentViewRow({
@@ -215,25 +212,34 @@ function SegmentViewRow({
   onMergeNext,
   onSplit,
   referenceText,
-  referenceLabel,
 }: SegmentViewRowProps) {
   const seekTo = useAudioStore((s) => s.seekTo);
   const pauseAudio = useAudioStore((s) => s.pauseAudio);
   const isPlaying = useAudioStore((s) => s.isPlaying);
   const [editingSpeaker, setEditingSpeaker] = useState(false);
   const [tsExpanded, setTsExpanded] = useState(false);
-  const [refExpanded, setRefExpanded] = useState(true);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const speakerInputRef = useRef<HTMLInputElement>(null);
 
   const getAudioTime = () => useAudioStore.getState().currentTime;
 
-  // Auto-resize textarea
+  // Auto-resize textarea — recomputes on text change AND on width change
+  // (layout shifts: sidebar toggle, comparison column, window resize).
   useEffect(() => {
     const el = textRef.current;
     if (!el) return;
-    el.style.height = "0";
-    el.style.height = el.scrollHeight + "px";
+    let lastWidth = -1;
+    const recompute = () => {
+      const w = el.clientWidth;
+      if (w === lastWidth) return;
+      lastWidth = w;
+      el.style.height = "0";
+      el.style.height = el.scrollHeight + "px";
+    };
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, [segment.text]);
 
   // Focus speaker input when entering edit mode
@@ -369,24 +375,11 @@ function SegmentViewRow({
             />
           </div>
           {hasRef && (
-            <div className="flex-1 min-w-0 mt-0.5 lg:mt-0">
-              {refExpanded && (
-                <div className="rounded border border-border/40 bg-secondary/30 px-1.5 py-0.5">
-                  {hasDiff
-                    ? <DiffView original={referenceText!} current={segment.text} />
-                    : <p className="text-sm leading-relaxed text-muted-foreground/50">{referenceText}</p>
-                  }
-                </div>
-              )}
-              <button
-                onClick={() => setRefExpanded(!refExpanded)}
-                className="flex items-center gap-0.5 text-2xs text-muted-foreground/60 hover:text-muted-foreground transition mt-0.5"
-                title={refExpanded ? "Hide reference" : "Show reference"}
-              >
-                <Diff className="w-3 h-3" />
-                {refExpanded ? <ChevronDown className="w-2.5 h-2.5" /> : <ChevronRight className="w-2.5 h-2.5" />}
-                <span>{referenceLabel}{!refExpanded && !hasDiff ? " ✓" : ""}</span>
-              </button>
+            <div className="flex-1 min-w-0 mt-0.5 lg:mt-0 rounded border border-border/40 bg-secondary/30 px-1.5 py-0.5">
+              {hasDiff
+                ? <DiffView original={referenceText!} current={segment.text} />
+                : <p className="text-sm leading-relaxed text-muted-foreground/50">{referenceText}</p>
+              }
             </div>
           )}
         </div>
@@ -785,11 +778,6 @@ export default function TranscriptViewer({
     refChoice === "default" ? referenceSegments :
     refChoice === "none" ? undefined :
     versionRefSegments ?? undefined;
-  const effectiveRefLabel =
-    refChoice === "default" ? referenceLabel :
-    refChoice === "none" ? "" :
-    versionRefLabel;
-
   // Map originalIndex → position in editedSegments
   const origToEditedIdx = useMemo(() => {
     const map = new Map<number, number>();
@@ -1404,7 +1392,6 @@ export default function TranscriptViewer({
                 onMergeNext={() => handleMerge(originalIndex, segment.speaker)}
                 onSplit={(cursorPos) => editor.splitAt(originalIndex, cursorPos)}
                 referenceText={ref && !isBreak ? ref.text : undefined}
-                referenceLabel={effectiveRefLabel}
               />
             </div>
           );

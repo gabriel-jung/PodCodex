@@ -18,7 +18,7 @@ import AddShowModal from "@/components/show/AddShowModal";
 import { Plus, RefreshCw, List, LayoutGrid, Podcast, Group } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import AppSidebar from "@/components/layout/AppSidebar";
-import PageHeader from "@/components/layout/PageHeader";
+import EditorialHeader from "@/components/layout/EditorialHeader";
 import DropOverlay from "@/components/common/DropOverlay";
 import { useTauriFileDrop } from "@/hooks/useTauriFileDrop";
 import OnboardingModal from "@/components/OnboardingModal";
@@ -103,8 +103,16 @@ export default function HomePage() {
     <div className="h-full flex flex-col overflow-hidden">
       {isHovering && <DropOverlay message="Drop audio to preview and transcribe" />}
       {sorted && sorted.length === 0 && <OnboardingModal onAddShow={() => setAddOpen(true)} />}
-      <PageHeader
+      <EditorialHeader
         title="PodCodex"
+        fallbackIcon={Podcast}
+        stats={[
+          ...(sorted && sorted.length > 0
+            ? [{ value: sorted.length, label: `show${sorted.length !== 1 ? "s" : ""}` }]
+            : []),
+          ...(rssShows.length > 0 ? [{ value: rssShows.length, label: "RSS" }] : []),
+          ...(ytShows.length > 0 ? [{ value: ytShows.length, label: "YouTube" }] : []),
+        ]}
         actions={
           <div className="flex items-center gap-2">
             {(rssShows.length > 0 || ytShows.length > 0) && (

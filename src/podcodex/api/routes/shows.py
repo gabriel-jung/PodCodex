@@ -26,6 +26,9 @@ from podcodex.api.schemas import (
     PipelineDefaultsSchema,
     RegisterShowRequest,
     ShowMeta,
+    SpeakerEpisodeEntry,
+    SpeakerRosterEntry,
+    SpeakerRosterResponse,
     UnifiedEpisodeOut,
 )
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
@@ -691,6 +694,110 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
         "correct_status": _check_correct(),
         "translate_status": _check_translate(),
     }
+
+
+def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
+    from podcodex.core._utils import BREAK_SPEAKER, UNKNOWN_SPEAKERS, group_by_speaker
+    from podcodex.core.versions import load_latest
+
+    db = get_pipeline_db(path)
+    if db.episode_count() == 0:
+        eps = scan_folder(path)
+        if eps:
+            db.populate_from_scan(eps)
+
+    meta = load_show_meta(path)
+    known = set(meta.speakers) if meta else set()
+
+    totals: dict[str, dict] = {}
+    per_episode: dict[str, list[SpeakerEpisodeEntry]] = {}
+    episodes_scanned = 0
+    episodes_with_transcripts = 0
+
+    for ep in db.all_episodes():
+        stem = ep["stem"]
+        episodes_scanned += 1
+        base = path / stem / stem
+        segments = load_latest(base, "corrected") or load_latest(base, "transcript")
+        if not segments:
+            continue
+        episodes_with_transcripts += 1
+
+        ep_meta = load_episode_meta(path / stem)
+        ep_title = ep_meta.title if ep_meta and ep_meta.title else stem
+
+        for spk, segs in group_by_speaker(segments).items():
+            if not spk or spk == BREAK_SPEAKER or spk in UNKNOWN_SPEAKERS:
+                continue
+            secs = sum(
+                max(0.0, float(s.get("end", 0.0)) - float(s.get("start", 0.0)))
+                for s in segs
+            )
+            row = totals.setdefault(
+                spk,
+                {"episode_count": 0, "segment_count": 0, "total_seconds": 0.0},
+            )
+            row["episode_count"] += 1
+            row["segment_count"] += len(segs)
+            row["total_seconds"] += secs
+            per_episode.setdefault(spk, []).append(
+                SpeakerEpisodeEntry(
+                    stem=stem,
+                    title=ep_title,
+                    segment_count=len(segs),
+                    total_seconds=secs,
+                )
+            )
+
+    for spk in known:
+        totals.setdefault(
+            spk,
+            {"episode_count": 0, "segment_count": 0, "total_seconds": 0.0},
+        )
+
+    entries = [
+        SpeakerRosterEntry(
+            name=name,
+            is_known=name in known,
+            episode_count=row["episode_count"],
+            segment_count=row["segment_count"],
+            total_seconds=row["total_seconds"],
+            episodes=sorted(
+                per_episode.get(name, []),
+                key=lambda e: e.total_seconds,
+                reverse=True,
+            ),
+        )
+        for name, row in totals.items()
+    ]
+    entries.sort(key=lambda s: (s.total_seconds, s.segment_count), reverse=True)
+
+    return SpeakerRosterResponse(
+        speakers=entries,
+        episodes_scanned=episodes_scanned,
+        episodes_with_transcripts=episodes_with_transcripts,
+    )
+
+
+@router.get(
+    "/{show_folder:path}/speakers/roster",
+    response_model=SpeakerRosterResponse,
+)
+async def speakers_roster(show_folder: str) -> SpeakerRosterResponse:
+    """Aggregate speaker stats across every transcribed episode in the show.
+
+    For each episode the most recent ``corrected`` segments are preferred,
+    falling back to the latest raw transcript. Placeholder labels from
+    ``UNKNOWN_SPEAKERS`` and the ``[BREAK]`` sentinel are filtered out.
+    Speakers listed in ``show.toml`` that never appear are still returned
+    with zero counts so the UI can surface configured-but-unseen names.
+    """
+    import asyncio
+
+    path = require_show_folder(show_folder)
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _compute_speaker_roster, path
+    )
 
 
 @router.post("/{show_folder:path}/resync")

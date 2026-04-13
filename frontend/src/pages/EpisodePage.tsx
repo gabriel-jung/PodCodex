@@ -13,7 +13,7 @@ import { usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
 import { useDropZone } from "@/hooks/useDropZone";
 import DropOverlay from "@/components/common/DropOverlay";
-import PageHeader from "@/components/layout/PageHeader";
+import EditorialHeader from "@/components/layout/EditorialHeader";
 import AppSidebar from "@/components/layout/AppSidebar";
 import type { Episode, ShowMeta } from "@/api/types";
 import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
@@ -27,6 +27,7 @@ import {
   Download,
   Search,
   FolderOpen,
+  Mic,
 } from "lucide-react";
 import {
   PIPELINE_STEPS,
@@ -158,6 +159,11 @@ export default function EpisodePage({
     disabled: !episode?.audio_path,
   });
 
+  const sidebarSections = useMemo(
+    () => (episode ? buildSidebarSections(episode) : []),
+    [episode],
+  );
+
   if (!isStandalone && !episodes) {
     return <div className="p-6 text-muted-foreground">Loading...</div>;
   }
@@ -173,14 +179,11 @@ export default function EpisodePage({
     );
   }
 
-  const sidebarSections = useMemo(() => buildSidebarSections(episode), [episode]);
-
   return (
     <div className="flex flex-col h-full">
       {isDragging && <DropOverlay message="Drop a transcript file here (JSON, SRT, VTT)" />}
-      <PageHeader
+      <EditorialHeader
         title={episode.title}
-        className="relative overflow-hidden"
         breadcrumbs={
           isStandalone
             ? [{ label: "File", onClick: () => navigate({ to: "/" }) }, { label: episode.title }]
@@ -192,32 +195,16 @@ export default function EpisodePage({
                 { label: episode.title },
               ]
         }
-        artwork={
-          episode.audio_path && artwork ? (
-            <button
-              onClick={() => seekTo(episode.audio_path!, 0)}
-              className="relative group shrink-0"
-            >
-              <img src={artwork} alt={episode.title} className="w-8 h-8 object-cover rounded-md" />
-              <div className="absolute inset-0 rounded-lg bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-                <Play className="w-4 h-4 text-white fill-white" />
-              </div>
-            </button>
-          ) : artwork ? (
-            <img src={artwork} alt={episode.title} className="w-8 h-8 object-cover rounded-md shrink-0" />
-          ) : undefined
-        }
-        subtitle={
-          <>
-            <div className="flex gap-2 text-xs text-muted-foreground">
-              {meta?.name && <span>{meta.name}</span>}
-              {episode.episode_number != null && <span>#{episode.episode_number}</span>}
-              {episode.pub_date && <span>{formatDate(episode.pub_date)}</span>}
-              {episode.duration > 0 && <span>{formatDuration(episode.duration)}</span>}
-            </div>
-            <PipelineStatus episode={episode} />
-          </>
-        }
+        artworkUrl={artwork || undefined}
+        fallbackIcon={Mic}
+        onArtworkClick={episode.audio_path ? () => seekTo(episode.audio_path!, 0) : undefined}
+        artworkOverlay={episode.audio_path ? <Play className="w-8 h-8 text-white fill-white" /> : undefined}
+        stats={[
+          ...(episode.episode_number != null ? [{ value: `#${episode.episode_number}` }] : []),
+          ...(episode.pub_date ? [{ value: formatDate(episode.pub_date) }] : []),
+          ...(episode.duration > 0 ? [{ value: formatDuration(episode.duration) }] : []),
+        ]}
+        statusSlot={<PipelineStatus episode={episode} />}
         actions={
           <div className="flex items-center gap-1.5">
             {!episode.downloaded && (
@@ -245,14 +232,7 @@ export default function EpisodePage({
             )}
           </div>
         }
-      >
-        {artwork && (
-          <div
-            className="absolute inset-0 bg-cover bg-center opacity-[0.08] blur-2xl scale-110 pointer-events-none"
-            style={{ backgroundImage: `url(${artwork})` }}
-          />
-        )}
-      </PageHeader>
+      />
 
       <div className="flex-1 flex overflow-hidden">
         <AppSidebar

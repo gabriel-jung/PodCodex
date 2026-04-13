@@ -3,25 +3,315 @@ import { getModels, deleteModel, getExtras, installExtra, removeExtra } from "@/
 import { queryKeys } from "@/api/queryKeys";
 import type { ExtraInfo } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2 } from "lucide-react";
+import {
+  Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2,
+  Sun, Moon, Monitor, Keyboard, Palette, Mic, Sparkles, Database, Languages,
+} from "lucide-react";
 import AppSidebar from "@/components/layout/AppSidebar";
 import PageHeader from "@/components/layout/PageHeader";
 import { useState } from "react";
+import { useTheme } from "@/hooks/useTheme";
+import { SHORTCUTS, Kbd } from "@/components/ShortcutsHelp";
+import PresetCards from "@/components/common/PresetCards";
+import { useLLMProviders } from "@/hooks/useLLMProviders";
+import {
+  TRANSCRIBE_PRESETS, LLM_PRESETS, INDEX_PRESETS,
+  CPU_LABELS, GPU_LABELS, CPU_MODELS, GPU_MODELS,
+  usePipelineConfigStore,
+} from "@/stores/pipelineConfigStore";
+import { selectClass } from "@/lib/utils";
+
+type SettingsTab = "app" | "pipeline" | "system";
+const TABS: { key: SettingsTab; label: string }[] = [
+  { key: "app", label: "App" },
+  { key: "pipeline", label: "Pipeline" },
+  { key: "system", label: "System" },
+];
 
 export default function SettingsPage() {
+  const [tab, setTab] = useState<SettingsTab>("app");
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <PageHeader title="Settings" />
       <div className="flex-1 flex overflow-hidden">
         <AppSidebar />
-        <div className="flex-1 overflow-y-auto">
-          <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
-            <PluginsPanel />
-            <ModelCachePanel />
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="px-6 border-b border-border flex items-center">
+            <div className="flex gap-1">
+              {TABS.map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`px-3 py-2 text-sm transition border-b-2 -mb-px ${
+                    tab === t.key
+                      ? "border-primary text-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
+              {tab === "app" && (
+                <>
+                  <AppearancePanel />
+                  <ShortcutsPanel />
+                </>
+              )}
+              {tab === "pipeline" && <PipelineDefaultsPanel />}
+              {tab === "system" && (
+                <>
+                  <PluginsPanel />
+                  <ModelCachePanel />
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Appearance ───────────────────────────────
+
+function AppearancePanel() {
+  const { theme, setTheme } = useTheme();
+  const options: { value: "light" | "dark" | "system"; label: string; icon: typeof Sun }[] = [
+    { value: "light", label: "Light", icon: Sun },
+    { value: "dark", label: "Dark", icon: Moon },
+    { value: "system", label: "System", icon: Monitor },
+  ];
+
+  return (
+    <section className="space-y-4">
+      <h2 className="text-lg font-semibold flex items-center gap-2">
+        <Palette className="w-5 h-5" /> Appearance
+      </h2>
+      <div className="flex gap-2">
+        {options.map(({ value, label, icon: Icon }) => (
+          <button
+            key={value}
+            onClick={() => setTheme(value)}
+            className={`flex-1 flex flex-col items-center gap-2 px-4 py-4 rounded-lg border transition ${
+              theme === value
+                ? "border-primary bg-primary/5"
+                : "border-border hover:bg-accent/50"
+            }`}
+          >
+            <Icon className={`w-5 h-5 ${theme === value ? "text-primary" : "text-muted-foreground"}`} />
+            <span className="text-sm">{label}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ── Shortcuts ────────────────────────────────
+
+function ShortcutsPanel() {
+  return (
+    <section className="space-y-4">
+      <h2 className="text-lg font-semibold flex items-center gap-2">
+        <Keyboard className="w-5 h-5" /> Keyboard shortcuts
+      </h2>
+      <div className="border border-border rounded-lg divide-y divide-border">
+        {SHORTCUTS.map((group) => (
+          <div key={group.heading} className="px-4 py-3">
+            <p className="text-xs font-medium text-muted-foreground mb-2">{group.heading}</p>
+            <ul className="space-y-1.5">
+              {group.items.map((sc) => (
+                <li key={sc.label} className="flex items-center justify-between text-sm">
+                  <span>{sc.label}</span>
+                  <span className="flex gap-1">
+                    {sc.keys.map((k) => <Kbd key={k}>{k}</Kbd>)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ── Pipeline defaults ────────────────────────
+
+function PipelineDefaultsPanel() {
+  const { apiProviders, whisperModels, detectedKeys } = useLLMProviders();
+
+  const transcribe = usePipelineConfigStore((s) => s.transcribe);
+  const setTranscribe = usePipelineConfigStore((s) => s.setTranscribe);
+  const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
+  const applyTranscribePreset = usePipelineConfigStore((s) => s.applyTranscribePreset);
+
+  const llm = usePipelineConfigStore((s) => s.llm);
+  const setLLM = usePipelineConfigStore((s) => s.setLLM);
+  const llmPreset = usePipelineConfigStore((s) => s.llmPreset);
+  const applyLLMPreset = usePipelineConfigStore((s) => s.applyLLMPreset);
+
+  const targetLang = usePipelineConfigStore((s) => s.targetLang);
+  const setTargetLang = usePipelineConfigStore((s) => s.setTargetLang);
+
+  const indexModel = usePipelineConfigStore((s) => s.indexModel);
+  const setIndexModel = usePipelineConfigStore((s) => s.setIndexModel);
+  const indexPreset = usePipelineConfigStore((s) => s.indexPreset);
+  const applyIndexPreset = usePipelineConfigStore((s) => s.applyIndexPreset);
+
+  const cpuEntries = Object.entries(CPU_LABELS);
+  const gpuEntries = Object.entries(GPU_LABELS);
+  const modelHasLabel = CPU_MODELS.has(transcribe.modelSize) || GPU_MODELS.has(transcribe.modelSize);
+  const customModels = modelHasLabel
+    ? []
+    : Object.keys(whisperModels).filter((m) => !CPU_MODELS.has(m) && !GPU_MODELS.has(m));
+
+  return (
+    <div className="space-y-10">
+      <div>
+        <p className="text-sm text-muted-foreground">
+          These values prefill every episode panel and the batch modal. Per-show
+          overrides live in each show&apos;s Settings tab; episode panels can
+          still tweak values for a single run.
+        </p>
+      </div>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Mic className="w-5 h-5" /> Transcribe
+        </h2>
+        <PresetCards
+          presets={TRANSCRIBE_PRESETS}
+          active={transcribePreset}
+          onSelect={applyTranscribePreset}
+        />
+        <label className="block">
+          <span className="text-xs text-muted-foreground">Whisper model</span>
+          <select
+            value={transcribe.modelSize}
+            onChange={(e) => setTranscribe({ modelSize: e.target.value })}
+            className={selectClass + " mt-1"}
+          >
+            <optgroup label="CPU-friendly">
+              {cpuEntries.map(([key, label]) => (
+                <option key={key} value={key}>{key} — {label}</option>
+              ))}
+            </optgroup>
+            <optgroup label="GPU">
+              {gpuEntries.map(([key, label]) => (
+                <option key={key} value={key}>{key} — {label}</option>
+              ))}
+            </optgroup>
+            {customModels.length > 0 && (
+              <optgroup label="Other">
+                {customModels.map((m) => <option key={m} value={m}>{m}</option>)}
+              </optgroup>
+            )}
+          </select>
+        </label>
+        <div className="flex items-center gap-6 text-sm">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={transcribe.diarize}
+              onChange={(e) => setTranscribe({ diarize: e.target.checked })}
+            />
+            Diarize speakers
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={transcribe.clean}
+              onChange={(e) => setTranscribe({ clean: e.target.checked })}
+            />
+            Clean low-quality segments
+          </label>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Sparkles className="w-5 h-5" /> Correct &amp; Translate (LLM)
+        </h2>
+        <PresetCards
+          presets={LLM_PRESETS}
+          active={llmPreset}
+          onSelect={applyLLMPreset}
+        />
+        {llm.mode === "api" && (
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-xs text-muted-foreground">Provider</span>
+              <select
+                value={llm.provider}
+                onChange={(e) => setLLM({ provider: e.target.value })}
+                className={selectClass + " mt-1"}
+              >
+                {apiProviders.map(([key, spec]) => (
+                  <option key={key} value={key}>
+                    {spec.label}{detectedKeys[key] ? " ✓" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs text-muted-foreground">Model</span>
+              <input
+                value={llm.model}
+                onChange={(e) => setLLM({ model: e.target.value })}
+                placeholder="e.g. gpt-4o-mini"
+                className="input mt-1"
+              />
+            </label>
+          </div>
+        )}
+        {llm.mode === "ollama" && (
+          <label className="block">
+            <span className="text-xs text-muted-foreground">Ollama model</span>
+            <input
+              value={llm.model}
+              onChange={(e) => setLLM({ model: e.target.value })}
+              placeholder="e.g. llama3.1:8b"
+              className="input mt-1"
+            />
+          </label>
+        )}
+        <label className="block">
+          <span className="text-xs text-muted-foreground flex items-center gap-1">
+            <Languages className="w-3 h-3" /> Default target language
+          </span>
+          <input
+            value={targetLang}
+            onChange={(e) => setTargetLang(e.target.value)}
+            placeholder="English"
+            className="input mt-1"
+          />
+        </label>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Database className="w-5 h-5" /> Index (embeddings)
+        </h2>
+        <PresetCards
+          presets={INDEX_PRESETS}
+          active={indexPreset}
+          onSelect={applyIndexPreset}
+        />
+        <label className="block">
+          <span className="text-xs text-muted-foreground">Embedding model</span>
+          <input
+            value={indexModel}
+            onChange={(e) => setIndexModel(e.target.value)}
+            className="input mt-1 font-mono text-xs"
+          />
+        </label>
+      </section>
     </div>
   );
 }
@@ -187,7 +477,6 @@ function ModelCachePanel() {
         </div>
       )}
 
-      {/* VRAM status */}
       {vram && (
         <div className="space-y-1.5">
           <div className="flex items-center gap-2 text-sm">
@@ -210,7 +499,6 @@ function ModelCachePanel() {
         </div>
       )}
 
-      {/* Model table */}
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading...</p>
       ) : models.length === 0 ? (
