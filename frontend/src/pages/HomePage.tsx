@@ -10,7 +10,7 @@ import {
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
 import { timeAgo } from "@/lib/utils";
-import { useLayoutStore, type ShowGroupBy } from "@/stores";
+import { useLayoutStore } from "@/stores";
 import type { ShowSummary } from "@/api/generated-types";
 import ShowCard from "@/components/show/ShowCard";
 import ShowListRow from "@/components/show/ShowListRow";
@@ -105,6 +105,7 @@ export default function HomePage() {
       {sorted && sorted.length === 0 && <OnboardingModal onAddShow={() => setAddOpen(true)} />}
       <EditorialHeader
         title="PodCodex"
+        subtitle="Transcribe, translate, search your podcasts."
         fallbackIcon={Podcast}
         stats={[
           ...(sorted && sorted.length > 0

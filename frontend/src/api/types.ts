@@ -149,6 +149,8 @@ export interface CollectionInfo {
 export interface SearchResult {
   text: string;
   episode: string;
+  episode_stem: string;
+  audio_path: string;
   speaker: string;
   start: number;
   end: number;

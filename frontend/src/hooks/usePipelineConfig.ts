@@ -18,7 +18,7 @@ export function usePipelineConfig() {
 
 /** Stable defaults object for step-status comparison (used by episode queries). */
 export function usePipelineDefaults() {
-  const { tc, llm, targetLang } = usePipelineConfig();
+  const { tc, targetLang } = usePipelineConfig();
   return useMemo(() => ({
     model_size: tc.modelSize,
     diarize: tc.diarize,

@@ -129,6 +129,13 @@ export const SUB_LANGUAGES = [
   { code: "ru", label: "Русский" },
 ] as const;
 
+/** Display label for a language code, e.g. "fr" → "Français". Falls back to capitalised code. */
+export function langLabel(code: string): string {
+  const known = SUB_LANGUAGES.find((l) => l.code === code);
+  if (known) return known.label;
+  return code.charAt(0).toUpperCase() + code.slice(1).replace(/_/g, " ");
+}
+
 // ── Version formatting ────────────────────────────────────
 
 /** Format a version's timestamp as a short date string. */

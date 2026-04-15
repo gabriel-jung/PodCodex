@@ -1,0 +1,46 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Tauri / Rust build artifacts
+src-tauri/target/
+target/
+
+# Pipeline data & versioned outputs
+.versions/
+*.db
+*.sqlite
+*.sqlite3
+
+# Audio / media binaries
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.ogg
+*.opus
+*.mp4
+*.mkv
+*.webm
+*.vtt
+*.srt
+
+# Models / caches
+.podcodex/
+models/
+
+# Misc
+.DS_Store
+*.log
+dist/
+build/

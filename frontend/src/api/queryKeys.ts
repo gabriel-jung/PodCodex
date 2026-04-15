@@ -53,8 +53,7 @@ export const queryKeys = {
 
   // ── Index & search ─────────────────────────────────────
   searchConfig: () => ["search", "config"] as const,
-  searchStats: (folder: string, showName: string) =>
-    ["search", "stats", folder, showName] as const,
+  searchStats: (showName: string) => ["search", "stats", showName] as const,
 
   indexConfig: () => ["index", "config"] as const,
   indexStatus: (audioPath: AudioPath, showName: string) =>
@@ -62,6 +61,9 @@ export const queryKeys = {
   indexSources: (audioPath: AudioPath) => ["index", "sources", audioPath] as const,
   indexStepVersions: (audioPath: AudioPath, source: string) =>
     ["index", "step-versions", audioPath, source] as const,
+  /** Collections this episode currently lives in (one row per entry). */
+  episodeCollections: (audioPath: AudioPath, showName: string) =>
+    ["index", "episode-collections", audioPath, showName] as const,
 
   // ── Step-scoped (TranscriptViewer editor key: "transcribe" | "correct" | "translate-xxx") ──
   /** All queries for a given editor step. */

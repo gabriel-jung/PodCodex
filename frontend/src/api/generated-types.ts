@@ -260,9 +260,6 @@ export interface BatchRequest {
 
 export interface SearchRequest {
   query: string;
-  audio_path?: string | null;
-  folder?: string | null;
-  output_dir?: string | null;
   show: string;
   model?: string;
   chunking?: string;
@@ -285,8 +282,6 @@ export interface SearchResultSchema {
 
 export interface ExactRequest {
   query: string;
-  folder?: string | null;
-  audio_path?: string | null;
   show: string;
   model?: string;
   chunking?: string;
@@ -296,8 +291,6 @@ export interface ExactRequest {
 }
 
 export interface RandomRequest {
-  folder?: string | null;
-  audio_path?: string | null;
   show: string;
   model?: string;
   chunking?: string;

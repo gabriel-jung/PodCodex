@@ -9,7 +9,6 @@ import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { errorMessage } from "@/lib/utils";
-import SectionHeader from "@/components/common/SectionHeader";
 import FolderLocationFields from "@/components/common/FolderLocationFields";
 import PipelineSettings from "./PipelineSettings";
 import { FolderOpen, Trash2 } from "lucide-react";

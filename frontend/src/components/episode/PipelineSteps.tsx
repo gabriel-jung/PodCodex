@@ -4,7 +4,7 @@
  * Extracted to keep EpisodePage focused on layout and data fetching.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Episode } from "@/api/types";
 import { isManualEdit } from "@/lib/stepStatus";
 import {
@@ -28,7 +28,7 @@ export interface PipelineStepDef {
   icon: typeof Mic;
   section: "core" | "bonus";
   headerBadge: boolean;
-  component: () => JSX.Element;
+  component: () => ReactNode;
   status: (e: Episode) => StepStatus;
   matchFiles?: (e: Episode, f: string) => boolean;
   detail?: (e: Episode) => string | undefined;

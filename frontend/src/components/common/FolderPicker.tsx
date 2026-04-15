@@ -55,9 +55,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
 
   const goForward = () => {
     if (!canGoForward) return;
-    const next = history[historyIndex + 2] || history[historyIndex + 1];
     setHistoryIndex(historyIndex + 1);
-    // We need to navigate forward — the "current" after going back is one ahead
     if (history[historyIndex + 1]) {
       setCurrentPath(history[historyIndex + 1]);
     }

@@ -29,7 +29,7 @@ _CAPABILITY_CHECKS: dict[str, str] = {
     "bot": "discord",
     "torch": "torch",
     "embeddings": "sentence_transformers",
-    "bm25": "bm25s",
+    "lancedb": "lancedb",
     "yt_dlp": "yt_dlp",
 }
 
@@ -45,7 +45,7 @@ INSTALLABLE_EXTRAS: dict[str, str] = {
 # Single source of truth — used by list_extras, install, and remove.
 _EXTRA_CAPS: dict[str, list[str]] = {
     "pipeline": ["whisperx", "soundfile", "ollama", "tts"],
-    "rag": ["torch", "embeddings", "bm25"],
+    "rag": ["torch", "embeddings", "lancedb"],
     "bot": ["bot"],
     "youtube": ["yt_dlp"],
 }

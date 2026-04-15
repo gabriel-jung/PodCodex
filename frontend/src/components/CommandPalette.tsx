@@ -80,7 +80,6 @@ export default function CommandPalette() {
       queryFn: () =>
         exactSearch({
           query: debouncedQuery,
-          folder: show.path,
           show: show.name || show.path,
           top_k: 3,
         }),

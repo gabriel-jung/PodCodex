@@ -184,7 +184,7 @@ class BGEEmbedder:
     BGE-M3 embedder (BAAI/bge-m3). Dense 1024-dim vectors.
 
     BGE-M3 also produces sparse lexical weights but those are not used here —
-    BM25 is handled separately by the Retriever via bm25s.
+    keyword search is handled separately by LanceDB's FTS index.
     """
 
     MODEL = MODELS["bge-m3"].hf_model

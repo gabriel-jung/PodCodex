@@ -2,7 +2,7 @@
 podcodex.core.pipeline_db — Per-show SQLite database for pipeline status.
 
 Tracks which pipeline steps have been completed for each episode.
-One ``pipeline.db`` per show folder, next to the existing ``vectors.db``.
+One ``pipeline.db`` per show folder.
 
 Usage::
 

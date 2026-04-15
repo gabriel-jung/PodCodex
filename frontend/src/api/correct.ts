@@ -1,5 +1,4 @@
 import type { CorrectRequest, Segment, TaskResponse } from "./types";
-import { json } from "./client";
 import { createLLMPipelineApi } from "./versions";
 
 const api = createLLMPipelineApi("correct");

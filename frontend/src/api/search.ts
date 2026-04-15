@@ -54,6 +54,36 @@ export const getIndexSources = (audioPath: string) =>
     `/api/index/sources?audio_path=${encodeURIComponent(audioPath)}`,
   );
 
+export interface EpisodeCollection {
+  collection: string;
+  model: string;
+  chunker: string;
+  source: string;
+  chunk_count: number;
+}
+
+/** Index entries this episode currently lives in (one per collection). */
+export const getEpisodeCollections = (audioPath: string, show: string) => {
+  const params = new URLSearchParams({ audio_path: audioPath, show });
+  return json<EpisodeCollection[]>(`/api/index/episode-collections?${params}`);
+};
+
+export const deleteEpisodeCollection = (
+  audioPath: string,
+  show: string,
+  collection: string,
+) => {
+  const params = new URLSearchParams({
+    audio_path: audioPath,
+    show,
+    collection,
+  });
+  return json<{ status: string; still_indexed: boolean }>(
+    `/api/index/episode?${params}`,
+    { method: "DELETE" },
+  );
+};
+
 export const startIndex = (req: IndexRequest) =>
   json<TaskResponse>("/api/index/start", {
     method: "POST",
@@ -85,8 +115,6 @@ export const exactSearch = (req: SearchRequest) =>
   });
 
 export const randomQuote = (req: {
-  folder?: string | null;
-  audio_path?: string | null;
   show: string;
   model?: string;
   chunking?: string;
@@ -99,9 +127,9 @@ export const randomQuote = (req: {
     body: JSON.stringify(req),
   });
 
-export const getIndexStats = (folder: string, show: string = "") =>
+export const getIndexStats = (show: string = "") =>
   json<{
     collections: { collection: string; model: string; chunking: string; episodes: number; chunks: number }[];
     total_episodes: number;
     total_chunks: number;
-  }>(`/api/search/stats?folder=${encodeURIComponent(folder)}&show=${encodeURIComponent(show)}`);
+  }>(`/api/search/stats?show=${encodeURIComponent(show)}`);

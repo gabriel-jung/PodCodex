@@ -1,15 +1,14 @@
-import { useState } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { SearchResult } from "@/api/types";
-import { useEpisodeStore, useAudioPath, useSearchStore } from "@/stores";
+import { useEpisodeStore, useSearchStore } from "@/stores";
 import { getSearchConfig, getIndexStats, searchQuery, exactSearch, randomQuote } from "@/api/client";
+import { artworkUrl } from "@/api/filesystem";
 import { queryKeys } from "@/api/queryKeys";
-import { errorMessage, getShowName, selectClass } from "@/lib/utils";
+import { errorMessage, getShowName } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Settings2, Shuffle } from "lucide-react";
 import { useCapabilities } from "@/hooks/useCapabilities";
-import FormGrid from "@/components/common/FormGrid";
-import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
 import SearchResultCard from "./SearchResultCard";
 
@@ -23,8 +22,9 @@ interface EpisodeSearchProps {
 /** Show-wide search (from ShowPage). */
 interface ShowSearchProps {
   scope: "show";
-  folder: string;
   showName: string;
+  folder: string;
+  artwork?: string;
 }
 
 type SearchPanelProps = EpisodeSearchProps | ShowSearchProps;
@@ -33,11 +33,13 @@ export default function SearchPanel(props: SearchPanelProps) {
   const isShowScope = props.scope === "show";
   const storeEpisode = useEpisodeStore((s) => s.episode);
   const storeShowMeta = useEpisodeStore((s) => s.showMeta);
-  const storeAudioPath = useAudioPath();
-  const showName = isShowScope ? props.showName : getShowName(storeShowMeta, storeEpisode?.audio_path);
-  const folder = isShowScope ? props.folder : undefined;
+  const storeFolder = useEpisodeStore((s) => s.folder);
+  const showName = isShowScope ? props.showName : getShowName(storeShowMeta, storeEpisode?.audio_path ?? null);
   const episode = isShowScope ? undefined : storeEpisode;
-  const audioPath = isShowScope ? undefined : (storeAudioPath ?? undefined);
+  const showFolder = isShowScope ? props.folder : (storeFolder ?? undefined);
+  const showArtwork = isShowScope
+    ? props.artwork
+    : (storeShowMeta?.artwork_url ? artworkUrl(storeFolder ?? "") : undefined);
 
   const { lastQuery, addToHistory, setLastQuery } = useSearchStore();
   const [query, setQuery] = useState(lastQuery);
@@ -56,10 +58,30 @@ export default function SearchPanel(props: SearchPanelProps) {
   });
 
   const { data: stats } = useQuery({
-    queryKey: queryKeys.searchStats(folder ?? "", showName),
-    queryFn: () => getIndexStats(folder!, showName),
-    enabled: isShowScope,
+    queryKey: queryKeys.searchStats(showName),
+    queryFn: () => getIndexStats(showName),
+    enabled: !!showName && isShowScope,
   });
+
+  const availableModels = useMemo(
+    () => Array.from(new Set((stats?.collections ?? []).map((c) => c.model))),
+    [stats],
+  );
+  const availableChunkings = useMemo(
+    () => Array.from(new Set((stats?.collections ?? []).map((c) => c.chunking))),
+    [stats],
+  );
+
+  useEffect(() => {
+    if (availableModels.length > 0 && !availableModels.includes(model)) {
+      setModel(availableModels[0]);
+    }
+  }, [availableModels, model]);
+  useEffect(() => {
+    if (availableChunkings.length > 0 && !availableChunkings.includes(chunking)) {
+      setChunking(availableChunkings[0]);
+    }
+  }, [availableChunkings, chunking]);
 
   const searchMutation = useMutation({
     mutationFn: () => {
@@ -69,7 +91,6 @@ export default function SearchPanel(props: SearchPanelProps) {
         model,
         chunking,
         top_k: topK,
-        ...(folder ? { folder } : { audio_path: audioPath! }),
         ...(!isShowScope && !scopeAll ? { episode: episode?.stem || undefined } : {}),
       };
       return mode === "exact"
@@ -85,7 +106,6 @@ export default function SearchPanel(props: SearchPanelProps) {
         show: showName,
         model,
         chunking,
-        ...(folder ? { folder } : { audio_path: audioPath! }),
         ...(!isShowScope && !scopeAll ? { episode: episode?.stem || undefined } : {}),
       }),
     onSuccess: (data) => setResults(data ? [data] : []),
@@ -178,24 +198,17 @@ export default function SearchPanel(props: SearchPanelProps) {
           </form>
 
           {/* Mode + scope + advanced toggle */}
-          <div className="flex items-center gap-3 text-xs">
-            <div className="flex gap-2">
-              {(["semantic", "exact"] as const).map((m) => (
-                <label key={m} className="flex items-center gap-1 cursor-pointer">
-                  <input
-                    type="radio"
-                    checked={mode === m}
-                    onChange={() => setMode(m)}
-                    className="accent-primary"
-                  />
-                  <span className={mode === m ? "text-foreground" : "text-muted-foreground"}>
-                    {m === "semantic" ? "Semantic" : "Exact match"}
-                  </span>
-                </label>
-              ))}
-            </div>
+          <div className="flex items-center gap-4 text-xs">
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={mode === "exact"}
+                onChange={(e) => setMode(e.target.checked ? "exact" : "semantic")}
+                className="accent-primary"
+              />
+              <span className="text-muted-foreground">Exact match only</span>
+            </label>
 
-            {/* Scope toggle (episode scope only) */}
             {!isShowScope && (
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
@@ -219,53 +232,56 @@ export default function SearchPanel(props: SearchPanelProps) {
             </button>
           </div>
 
-          {/* Advanced settings */}
-          {showAdvanced && (
-            <FormGrid className="pl-3 border-l-2 border-border">
-              <HelpLabel label="Embedding model" help="Embedding model used during indexing. Must match what you selected in the Index tab." />
-              {config ? (
-                <select
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  className={selectClass}
-                >
-                  {Object.entries(config.models).map(([key, spec]) => (
-                    <option key={key} value={key}>{spec.label}</option>
-                  ))}
-                </select>
-              ) : (
-                <span className="text-muted-foreground text-xs">Loading...</span>
-              )}
+          {/* Advanced settings — single inline strip */}
+          {showAdvanced && config && (
+            <div className="flex items-center gap-3 text-xs flex-wrap pl-3 border-l-2 border-border/60">
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                disabled={availableModels.length === 0}
+                title="Embedding model (only indexed ones listed)"
+                className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none cursor-pointer"
+              >
+                {availableModels.length === 0 && <option>no model indexed</option>}
+                {availableModels.map((key) => (
+                  <option key={key} value={key}>{config.models[key]?.label ?? key}</option>
+                ))}
+              </select>
 
-              <HelpLabel label="Chunking" help="Chunking strategy used during indexing. Must match what you selected in the Index tab." />
-              {config ? (
-                <select
-                  value={chunking}
-                  onChange={(e) => setChunking(e.target.value)}
-                  className={selectClass}
-                >
-                  {Object.entries(config.chunking_strategies).map(([key, desc]) => (
-                    <option key={key} value={key} title={desc}>{key}</option>
-                  ))}
-                </select>
-              ) : (
-                <span className="text-muted-foreground text-xs">Loading...</span>
-              )}
+              <span className="text-muted-foreground/40">·</span>
 
-              <HelpLabel label="Results" help="Maximum number of results to return." />
-              <input
-                type="number"
-                value={topK}
-                onChange={(e) => setTopK(Number(e.target.value))}
-                className="input w-20"
-                min={1}
-                max={50}
-              />
+              <select
+                value={chunking}
+                onChange={(e) => setChunking(e.target.value)}
+                disabled={availableChunkings.length === 0}
+                title="Chunking strategy (only indexed ones listed)"
+                className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none cursor-pointer"
+              >
+                {availableChunkings.length === 0 && <option>no chunker indexed</option>}
+                {availableChunkings.map((key) => (
+                  <option key={key} value={key} title={config.chunking_strategies[key]}>{key}</option>
+                ))}
+              </select>
+
+              <span className="text-muted-foreground/40">·</span>
+
+              <label className="flex items-center gap-1 text-muted-foreground">
+                <input
+                  type="number"
+                  value={topK}
+                  onChange={(e) => setTopK(Number(e.target.value))}
+                  min={1}
+                  max={50}
+                  className="bg-transparent border-0 p-0 w-8 text-foreground text-right focus:outline-none focus:underline"
+                />
+                <span>results</span>
+              </label>
 
               {mode === "semantic" && (
                 <>
-                  <HelpLabel label="Keyword vs meaning" help="Balance between keyword and semantic search. 0 = pure keywords, 1 = pure meaning, 0.5 = balanced mix." />
-                  <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground/40">·</span>
+                  <div className="flex items-center gap-2 flex-1 min-w-40">
+                    <span className="italic text-muted-foreground/60 text-2xs">keyword</span>
                     <input
                       type="range"
                       value={alpha}
@@ -273,13 +289,14 @@ export default function SearchPanel(props: SearchPanelProps) {
                       min={0}
                       max={1}
                       step={0.1}
-                      className="flex-1"
+                      className="flex-1 accent-primary"
+                      title={`Blend: ${alpha.toFixed(1)} (0 = keyword, 1 = meaning)`}
                     />
-                    <span className="text-xs text-muted-foreground w-6 text-right">{alpha.toFixed(1)}</span>
+                    <span className="italic text-muted-foreground/60 text-2xs">meaning</span>
                   </div>
                 </>
               )}
-            </FormGrid>
+            </div>
           )}
         </div>
 
@@ -298,7 +315,11 @@ export default function SearchPanel(props: SearchPanelProps) {
                 {results.length} result{results.length !== 1 ? "s" : ""}
               </p>
               {results.map((r, i) => (
-                <SearchResultCard key={i} result={r} audioPath={audioPath} />
+                <SearchResultCard
+                  key={i}
+                  result={r}
+                  show={{ name: showName, folder: showFolder, artwork: showArtwork }}
+                />
               ))}
             </div>
           )}

@@ -1,48 +1,117 @@
+import { useState } from "react";
 import type { SearchResult } from "@/api/types";
 import { useAudioStore } from "@/stores";
 import { formatTime } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
+import { Play } from "lucide-react";
+import SegmentContextDialog from "./SegmentContextDialog";
+
+interface ShowContext {
+  name?: string;
+  folder?: string;
+  artwork?: string;
+}
 
 interface SearchResultCardProps {
   result: SearchResult;
-  audioPath?: string;
+  show?: ShowContext;
 }
 
-export default function SearchResultCard({ result, audioPath }: SearchResultCardProps) {
-  const { seekTo } = useAudioStore();
+export default function SearchResultCard({ result, show }: SearchResultCardProps) {
+  const playEpisode = useAudioStore((s) => s.playEpisode);
+  const [contextOpen, setContextOpen] = useState(false);
 
-  const scoreColor =
+  const scoreEmphasis =
     result.score >= 0.8
-      ? "bg-success/15 text-success"
+      ? "text-success"
       : result.score >= 0.5
-        ? "bg-warning/15 text-warning"
-        : "bg-muted text-muted-foreground";
+        ? "text-warning"
+        : "text-muted-foreground/60";
+
+  const path = result.audio_path;
+
+  const playAt = (time: number) => {
+    if (!path) return;
+    playEpisode(path, time, {
+      title: result.episode,
+      artwork: show?.artwork,
+      showName: show?.name,
+      folder: show?.folder,
+      stem: result.episode_stem || undefined,
+    });
+  };
+
+  const turns: { speaker: string; text: string }[] =
+    result.speakers && result.speakers.length > 0
+      ? result.speakers
+      : result.speaker
+        ? [{ speaker: result.speaker, text: result.text }]
+        : [];
 
   return (
-    <div className="px-4 py-3 rounded-lg bg-secondary border border-border space-y-2">
-      <div className="flex items-center gap-2 text-xs">
-        <span className={`px-2 py-0.5 rounded-full font-mono ${scoreColor}`}>
-          {result.score.toFixed(3)}
-        </span>
-        <span className="text-muted-foreground">{result.episode}</span>
-        <span className="text-muted-foreground font-mono">
-          {formatTime(result.start, false)} - {formatTime(result.end, false)}
-        </span>
-        {result.speaker && (
-          <span className="font-medium" style={{ color: speakerColor(result.speaker) }}>{result.speaker}</span>
-        )}
-        {audioPath && (
-          <button
-            onClick={() => seekTo(audioPath, result.start)}
-            className="ml-auto text-xs px-2 py-0.5 rounded bg-accent hover:bg-accent/80 transition"
-          >
-            Seek
-          </button>
-        )}
+    <>
+      <div className="group px-4 py-3 rounded-lg bg-secondary border border-border space-y-2">
+        <div className="flex items-start gap-2 text-xs">
+          {path && (
+            <button
+              onClick={() => playAt(result.start)}
+              className="shrink-0 mt-0.5 w-6 h-6 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition"
+              title={`Play from ${formatTime(result.start, false)}`}
+            >
+              <Play className="w-3 h-3 fill-current" />
+            </button>
+          )}
+          <div className="flex-1 min-w-0 space-y-0.5">
+            <div className="text-sm font-medium truncate">{result.episode}</div>
+            <div className="font-mono text-muted-foreground">
+              {formatTime(result.start, false)} – {formatTime(result.end, false)}
+            </div>
+          </div>
+          <span className={`shrink-0 italic font-mono text-2xs tabular-nums ${scoreEmphasis}`}>
+            {result.score.toFixed(2)}
+          </span>
+        </div>
+        <button
+          onClick={() => path && setContextOpen(true)}
+          disabled={!path}
+          className="text-left w-full disabled:cursor-default"
+          title={path ? "Open in context" : undefined}
+        >
+          {turns.length > 0 ? (
+            <ol className="space-y-1 text-sm">
+              {turns.map((turn, i) => (
+                <li
+                  key={i}
+                  className="grid grid-cols-[auto_1fr] gap-x-3 leading-relaxed items-baseline"
+                >
+                  <span
+                    className="font-medium text-xs shrink-0"
+                    style={{ color: speakerColor(turn.speaker) }}
+                  >
+                    {turn.speaker}
+                  </span>
+                  <span className="whitespace-pre-wrap">{turn.text}</span>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="text-sm leading-relaxed whitespace-pre-wrap">{result.text}</p>
+          )}
+        </button>
       </div>
-      <p className="text-sm leading-relaxed whitespace-pre-wrap">
-        {result.text}
-      </p>
-    </div>
+
+      {path && (
+        <SegmentContextDialog
+          open={contextOpen}
+          onOpenChange={setContextOpen}
+          audioPath={path}
+          source={result.source}
+          start={result.start}
+          end={result.end}
+          episodeTitle={result.episode}
+          onSeek={playAt}
+        />
+      )}
+    </>
   );
 }

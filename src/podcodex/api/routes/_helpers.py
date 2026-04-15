@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -18,6 +19,14 @@ from podcodex.ingest.rss import RSSEpisode, episode_stem
 # ── Shared constants ────────────────────────────
 
 AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".opus", ".wma"}
+
+
+@lru_cache(maxsize=1)
+def get_index_store():
+    """Return the process-wide LanceDB IndexStore singleton."""
+    from podcodex.rag.index_store import IndexStore
+
+    return IndexStore()
 
 
 def _build_source_chain(

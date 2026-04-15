@@ -22,9 +22,10 @@ const homeRoute = createRoute({
 const showRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/show/$folder",
-  validateSearch: (search: Record<string, unknown>) => ({
-    tab: (search.tab as string) || undefined,
-  }),
+  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
+    const tab = typeof search.tab === "string" ? search.tab : undefined;
+    return tab ? { tab } : {};
+  },
   component: function ShowWrapper() {
     const { folder } = showRoute.useParams();
     const { tab } = showRoute.useSearch();

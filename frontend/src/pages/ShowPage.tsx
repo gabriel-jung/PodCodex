@@ -17,11 +17,11 @@ import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore } 
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useShowActions } from "@/hooks/useShowActions";
 
-import AppSidebar from "@/components/layout/AppSidebar";
+import AppSidebar, { type SidebarSection } from "@/components/layout/AppSidebar";
 import EditorialHeader from "@/components/layout/EditorialHeader";
 import { Button } from "@/components/ui/button";
 import {
-  RefreshCw, Podcast, Search,
+  RefreshCw, Podcast, Search, Users, SlidersHorizontal,
   List, LayoutGrid,
 } from "lucide-react";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
@@ -221,6 +221,17 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const indexModel = usePipelineConfigStore((s) => s.indexModel);
 
+  const sidebarSections: SidebarSection[] = [
+    {
+      items: [
+        { key: "episodes", label: "Episodes", icon: Podcast },
+        { key: "search", label: "Search", icon: Search },
+        { key: "speakers", label: "Speakers", icon: Users },
+        { key: "settings", label: "Show settings", icon: SlidersHorizontal },
+      ],
+    },
+  ];
+
   const runStep = (step: "transcribe" | "correct" | "translate" | "index", filteredEpisodes?: Episode[], _sourceVersionIds?: Record<string, string>, transcribeSource?: string, force?: boolean) => {
     const source = filteredEpisodes || batchableSelected;
     const audioPaths = source.map(batchPath).filter(Boolean) as string[];
@@ -290,48 +301,15 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       />
 
       <div className="flex-1 flex overflow-hidden">
-      <AppSidebar />
+      <AppSidebar
+        pageSections={sidebarSections}
+        activeItem={tab}
+        onItemClick={(key) => setTab(key as ShowTab)}
+      />
       <div className="flex-1 flex flex-col overflow-hidden">
 
-      {/* Tabs + view toggle */}
-      <div className="px-6 border-b border-border flex items-center">
-        <div className="flex gap-1">
-          {TABS.map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-3 py-2 text-sm capitalize transition border-b-2 -mb-px ${
-                tab === t
-                  ? "border-primary text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-        {tab === "episodes" && (
-          <>
-            <div className="flex-1" />
-            <div className="flex items-center gap-2">
-              {view === "card" && (
-                <input type="range" min={1} max={5} value={cardSize} onChange={(e) => setCardSize(Number(e.target.value))} className="w-16 accent-primary" />
-              )}
-              <div className="flex border border-border rounded overflow-hidden">
-                <button onClick={() => setView("list")} className={`px-1.5 py-1 transition ${view === "list" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`} title="List view">
-                  <List className="w-3.5 h-3.5" />
-                </button>
-                <button onClick={() => setView("card")} className={`px-1.5 py-1 transition ${view === "card" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`} title="Card view">
-                  <LayoutGrid className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-
       {tab === "episodes" && (<>
-      {/* Toolbar: select-all + filters | search */}
+      {/* Toolbar: filters + search + view toggle */}
       <div className="px-6 py-2 border-b border-border flex items-center gap-2">
         <select
           value={filter}
@@ -353,6 +331,18 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           placeholder="Search episodes..."
           className="input w-40 py-1.5 text-xs"
         />
+        <div className="flex-1" />
+        {view === "card" && (
+          <input type="range" min={1} max={5} value={cardSize} onChange={(e) => setCardSize(Number(e.target.value))} className="w-16 accent-primary" />
+        )}
+        <div className="flex border border-border rounded overflow-hidden">
+          <button onClick={() => setView("list")} className={`px-1.5 py-1 transition ${view === "list" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`} title="List view">
+            <List className="w-3.5 h-3.5" />
+          </button>
+          <button onClick={() => setView("card")} className={`px-1.5 py-1 transition ${view === "card" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`} title="Card view">
+            <LayoutGrid className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Selection + actions toolbar */}
@@ -526,7 +516,12 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       </>)}
 
       {tab === "search" && (
-        <SearchPanel scope="show" folder={folder} showName={showName} />
+        <SearchPanel
+          scope="show"
+          showName={showName}
+          folder={folder}
+          artwork={meta?.artwork_url ? artworkUrl(folder) : undefined}
+        />
       )}
 
       {tab === "speakers" && meta && (

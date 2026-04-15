@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
   deleteTranslateVersion,
@@ -11,7 +11,6 @@ import {
   getTranslateManualPrompts,
   applyTranslateManual,
 } from "@/api/client";
-import { queryKeys } from "@/api/queryKeys";
 import { selectClass } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import {

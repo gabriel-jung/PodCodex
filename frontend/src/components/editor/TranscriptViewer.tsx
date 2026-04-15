@@ -749,26 +749,19 @@ export default function TranscriptViewer({
   }, [referenceSegments]);
 
   const [versionRefSegments, setVersionRefSegments] = useState<Segment[] | null>(null);
-  const [versionRefLabel, setVersionRefLabel] = useState("");
 
   const handleRefChoiceChange = async (choice: string) => {
     setRefChoice(choice);
     if (choice === "default" || choice === "none") {
       setVersionRefSegments(null);
-      setVersionRefLabel("");
       return;
     }
     if (loadVersion) {
       try {
         const data = await loadVersion(choice);
         setVersionRefSegments(data);
-        const v = versions?.find((ver) => ver.id === choice);
-        setVersionRefLabel(
-          v ? `Version ${new Date(v.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "Version",
-        );
       } catch {
         setVersionRefSegments(null);
-        setVersionRefLabel("");
         setRefChoice("none");
       }
     }

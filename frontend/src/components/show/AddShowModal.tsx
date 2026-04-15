@@ -33,8 +33,6 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
   const [customLang, setCustomLang] = useState("");
   const [localPickerOpen, setLocalPickerOpen] = useState<"folder" | "file" | null>(null);
 
-  const fullPath = `${savePath.replace(/\/+$/, "")}/${folderName}`;
-
   const { data: health } = useQuery({ queryKey: queryKeys.health(), queryFn: getHealth });
   const hasYtDlp = health?.capabilities?.yt_dlp ?? false;
 

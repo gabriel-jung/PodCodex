@@ -70,8 +70,8 @@ from podcodex.rag.defaults import (
     MODELS,
     TOP_K,
 )
+from podcodex.rag.index_store import IndexStore
 from podcodex.rag.retriever import Retriever
-from podcodex.rag.localstore import LocalStore
 from podcodex.rag.store import collection_name
 
 # ── Slash-command choices ─────────────────────
@@ -125,7 +125,7 @@ class BotConfig:
     model: str = DEFAULT_MODEL
     chunker: str = DEFAULT_CHUNKING
     top_k: int = TOP_K
-    db_path: str | None = None
+    index_path: str | None = None
     merge_strategy: str = "roundrobin"
     cooldown_seconds: float = 5.0
     dev_guild_id: int | None = None
@@ -233,7 +233,7 @@ class PodCodexBot(discord.Client):
         self._cooldown = CooldownManager(seconds=config.cooldown_seconds)
         self._access_control = bool(config.shows)
 
-        self._local: LocalStore | None = None
+        self._local: IndexStore | None = None
         self._retrievers: dict[str, Retriever] = {}
         self._server_cfg: dict[int, ServerSettings] = self._load_server_config()
         self._ac_cache = _AutocompleteCache(episodes={}, sources={}, speakers={})
@@ -339,9 +339,9 @@ class PodCodexBot(discord.Client):
     # ── Lazy singletons ──────────────────────
 
     @property
-    def local(self) -> LocalStore:
+    def local(self) -> IndexStore:
         if self._local is None:
-            self._local = LocalStore(db_path=self.config.db_path)
+            self._local = IndexStore(self.config.index_path)
         return self._local
 
     def retriever(self, model: str) -> Retriever:
@@ -1595,7 +1595,11 @@ def main() -> None:
         "--chunking", default=DEFAULT_CHUNKING, choices=list(CHUNKING_STRATEGIES.keys())
     )
     parser.add_argument("--top-k", default=TOP_K, type=int)
-    parser.add_argument("--db", default=None, help="Path to vectors.db")
+    parser.add_argument(
+        "--index",
+        default=None,
+        help="Path to LanceDB index directory (default: ~/.local/share/podcodex/index)",
+    )
     parser.add_argument(
         "--merge-strategy", default="roundrobin", choices=["roundrobin", "score"]
     )
@@ -1645,7 +1649,7 @@ def main() -> None:
         model=args.model,
         chunker=args.chunking,
         top_k=args.top_k,
-        db_path=args.db,
+        index_path=args.index,
         merge_strategy=args.merge_strategy,
         cooldown_seconds=args.cooldown,
         dev_guild_id=args.dev_guild,

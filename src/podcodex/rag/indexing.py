@@ -2,7 +2,7 @@
 podcodex.rag.indexing — Transcript vectorization pipeline.
 
 Chunks a transcript, embeds each chunk with the chosen model, and writes the
-result into the per-show :class:`LocalStore` SQLite database.
+result into the global :class:`IndexStore` LanceDB index.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from loguru import logger
 from podcodex.rag.chunker import semantic_chunks, speaker_chunks
 from podcodex.rag.defaults import CHUNK_SIZE, CHUNK_THRESHOLD, MODELS
 from podcodex.rag.embedder import get_embedder
-from podcodex.rag.localstore import LocalStore
+from podcodex.rag.index_store import IndexStore
 from podcodex.rag.store import collection_name
 
 
@@ -50,7 +50,7 @@ def vectorize_episode(
     episode: str,
     model_key: str,
     chunking: str,
-    local: LocalStore,
+    local: IndexStore,
     *,
     chunks: list[dict] | None = None,
     chunk_size: int = CHUNK_SIZE,
@@ -59,13 +59,13 @@ def vectorize_episode(
     device: str = "cpu",
 ) -> tuple[list[dict], int]:
     """
-    Vectorize a single (model, chunker) combination into LocalStore.
+    Vectorize a single (model, chunker) combination into the IndexStore.
 
     Args:
         transcript : parsed transcript dict (with meta.show / meta.episode set)
         show, episode : identifiers
         model_key, chunking : which model and chunker to use
-        local : LocalStore instance (SQLite)
+        local : IndexStore instance (LanceDB)
         chunks : pre-computed chunks for this chunking strategy (avoids re-chunking)
         chunk_size, threshold : semantic chunking params
         overwrite : delete and recreate if already indexed
@@ -81,9 +81,7 @@ def vectorize_episode(
     dim = MODELS[model_key].dim
     local.ensure_collection(col, show=show, model=model_key, chunker=chunking, dim=dim)
 
-    # ── Already in LocalStore? ──
     if local.episode_is_indexed(col, episode) and not overwrite:
-        # Stale source detection: auto-upgrade if a better source is now available
         new_source = transcript.get("meta", {}).get("source", "")
         stored = local.load_chunks_no_embeddings(col, episode)
         stored_source = stored[0].get("source", "") if stored else ""
@@ -94,7 +92,6 @@ def vectorize_episode(
                 f"{stored_source} → {new_source} ({col})"
             )
             local.delete_episode(col, episode)
-            # Fall through to re-chunk + re-embed below
         else:
             local_count = local.episode_chunk_count(col, episode)
             logger.info(f"[SKIP] '{episode}' cached ({col}, {local_count} chunks)")
@@ -103,13 +100,11 @@ def vectorize_episode(
     if overwrite and local.episode_is_indexed(col, episode):
         local.delete_episode(col, episode)
 
-    # ── Chunk (reuse if already computed for this strategy) ──
     if chunks is None:
         chunks = _chunk_transcript(transcript, chunking, chunk_size, threshold)
     if not chunks:
         raise ValueError(f"No chunks produced for strategy '{chunking}'")
 
-    # ── Embed & save to LocalStore ──
     embedder = get_embedder(model_key, device=device)
     embeddings = embedder.encode_passages(chunks)
     local.save_chunks(col, episode, chunks, embeddings)
@@ -124,7 +119,7 @@ def vectorize_batch(
     episode: str,
     model_keys: list[str],
     chunkings: list[str],
-    local: LocalStore,
+    local: IndexStore,
     *,
     chunk_size: int = CHUNK_SIZE,
     threshold: float = CHUNK_THRESHOLD,
@@ -133,7 +128,7 @@ def vectorize_batch(
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> int:
     """
-    Vectorize all (model, chunker) combinations into LocalStore.
+    Vectorize all (model, chunker) combinations into the IndexStore.
 
     Chunks once per strategy, then embeds with each model.
 

@@ -29,8 +29,15 @@ export default function AudioBar() {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(0.8);
+  const [volume, setVolume] = useState<number>(() => {
+    const saved = parseFloat(localStorage.getItem("audioVolume") ?? "");
+    return Number.isFinite(saved) && saved >= 0 && saved <= 1 ? saved : 0.8;
+  });
   const [muted, setMuted] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem("audioVolume", String(volume));
+  }, [volume]);
   const [speed, setSpeed] = useState(1);
   const [showSegment, setShowSegment] = useState(false);
   const [hoverTime, setHoverTime] = useState<{ time: number; pct: number } | null>(null);
@@ -136,7 +143,7 @@ export default function AudioBar() {
     : "w-14";
 
   return (
-    <div className="border-t border-border bg-card overflow-hidden">
+    <div className="border-t border-border bg-card">
       {/* Current segment text — collapsible */}
       {showSegment && activeSeg && (
         <div className="px-4 py-2 border-b border-border/50 text-sm">
@@ -245,19 +252,39 @@ export default function AudioBar() {
           </button>
         </div>
 
-        {/* Volume — single mute toggle. Use system volume for level adjustment. */}
-        <button
-          onClick={() => setMuted(!muted)}
-          className="shrink-0 h-7 w-7 flex items-center justify-center rounded-full bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition"
-          title={muted ? "Unmute" : "Mute"}
-          aria-label={muted ? "Unmute" : "Mute"}
-        >
-          {muted || volume === 0 ? (
-            <VolumeX className="w-3.5 h-3.5" />
-          ) : (
-            <Volume2 className="w-3.5 h-3.5" />
-          )}
-        </button>
+        {/* Volume — mute toggle; hover reveals a vertical slider above. */}
+        <div className="group/vol relative shrink-0">
+          <button
+            onClick={() => setMuted(!muted)}
+            className="h-7 w-7 flex items-center justify-center rounded-full bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition"
+            title={muted ? "Unmute" : "Mute"}
+            aria-label={muted ? "Unmute" : "Mute"}
+          >
+            {muted || volume === 0 ? (
+              <VolumeX className="w-3.5 h-3.5" />
+            ) : (
+              <Volume2 className="w-3.5 h-3.5" />
+            )}
+          </button>
+          <div
+            className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-1.5 py-3 rounded-md bg-popover border border-border shadow-md opacity-0 pointer-events-none group-hover/vol:opacity-100 group-hover/vol:pointer-events-auto transition-opacity"
+          >
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={muted ? 0 : volume}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setVolume(v);
+                if (v > 0 && muted) setMuted(false);
+              }}
+              aria-label="Volume"
+              className="accent-primary cursor-pointer h-20 w-1 [writing-mode:vertical-lr] [direction:rtl]"
+            />
+          </div>
+        </div>
 
         {/* Segment text toggle — matches pill styling so it reads as a real control */}
         {audioSegments && (
@@ -283,7 +310,7 @@ export default function AudioBar() {
 
       {/* Row 2: Seek bar + time */}
       <div className="flex items-center gap-2">
-        <span className={`text-2xs text-muted-foreground ${timeColW} text-right shrink-0 font-mono`}>
+        <span className={`text-[11px] font-light text-muted-foreground ${timeColW} text-right shrink-0 font-mono tabular-nums`}>
           {formatTime(currentTime, false)}
         </span>
         <div
@@ -322,7 +349,7 @@ export default function AudioBar() {
             </div>
           )}
         </div>
-        <span className={`text-2xs text-muted-foreground ${timeColW} shrink-0 font-mono text-left`}>
+        <span className={`text-[11px] font-light text-muted-foreground ${timeColW} shrink-0 font-mono tabular-nums text-left`}>
           {duration > 0 ? `−${formatTime(Math.max(0, duration - currentTime), false)}` : "−0:00"}
         </span>
       </div>

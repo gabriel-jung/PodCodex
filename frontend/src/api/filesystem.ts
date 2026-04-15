@@ -16,6 +16,13 @@ export const openFolder = (path: string) =>
     { method: "POST" },
   );
 
+/** Delete a non-audio auxiliary file (subtitles, JSON exports, etc). */
+export const deleteFile = (path: string) =>
+  json<{ status: string; path: string }>(
+    `/api/fs/file?path=${encodeURIComponent(path)}`,
+    { method: "DELETE" },
+  );
+
 // ── Artwork ────────────────────────────────
 
 export const artworkUrl = (showFolder: string) =>

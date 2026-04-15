@@ -10,7 +10,6 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from podcodex.core._utils import (
-    VECTORS_DB_FILENAME,
     AudioPaths,
     normalize_lang,
     segments_to_srt,
@@ -25,7 +24,6 @@ router = APIRouter()
 _EXCLUDE_NAMES = frozenset(
     {
         DB_FILENAME,
-        VECTORS_DB_FILENAME,
         DB_FILENAME + "-wal",
         DB_FILENAME + "-shm",
     }

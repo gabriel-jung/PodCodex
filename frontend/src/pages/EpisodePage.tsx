@@ -1,25 +1,34 @@
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getEpisodes, getShowMeta, exportZipUrl, openFolder } from "@/api/client";
 import { audioFileUrl } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
-import { artworkUrl } from "@/api/filesystem";
-import { uploadTranscript, getSpeakerMap } from "@/api/transcribe";
+import { artworkUrl, deleteFile } from "@/api/filesystem";
+import { uploadTranscript, getSpeakerMap, deleteTranscribeVersion } from "@/api/transcribe";
 import { getSegmentsPreview as getTranscribePreview } from "@/api/transcribe";
-import { getCorrectSegmentsPreview as getCorrectPreview } from "@/api/correct";
+import { getCorrectSegmentsPreview as getCorrectPreview, deleteCorrectVersion } from "@/api/correct";
+import { deleteTranslateVersion } from "@/api/translate";
+import {
+  deleteEpisodeCollection,
+  getAllVersions,
+  getEpisodeCollections,
+  type EpisodeCollection,
+} from "@/api/search";
 import { useShowActions } from "@/hooks/useShowActions";
 import { usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
+import InlineConfirm from "@/components/common/InlineConfirm";
 import { useDropZone } from "@/hooks/useDropZone";
 import DropOverlay from "@/components/common/DropOverlay";
 import EditorialHeader from "@/components/layout/EditorialHeader";
 import AppSidebar from "@/components/layout/AppSidebar";
-import type { Episode, ShowMeta } from "@/api/types";
+import type { Episode, ShowMeta, VersionEntry } from "@/api/types";
 import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import SearchPanel from "@/components/search/SearchPanel";
-import { formatDuration, formatDate, stripHtml, errorMessage } from "@/lib/utils";
+import SegmentContextDialog from "@/components/search/SegmentContextDialog";
+import { formatDuration, formatDate, stripHtml, errorMessage, langLabel, versionDate, versionLabel } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import {
   Play,
@@ -28,15 +37,23 @@ import {
   Search,
   FolderOpen,
   Mic,
+  Sparkles,
+  Languages,
+  AudioLines,
+  Database,
+  FileAudio,
+  FileText,
+  Trash2,
 } from "lucide-react";
 import {
   PIPELINE_STEPS,
   STEP_BY_KEY,
-  PipelineRow,
   PipelineStatus,
   type ActiveStep,
   type StepStatus,
 } from "@/components/episode/PipelineSteps";
+import OutputGroup from "@/components/episode/OutputGroup";
+import VersionRow from "@/components/episode/VersionRow";
 
 function buildSidebarSections(episode: Episode) {
   const meta = [
@@ -279,32 +296,6 @@ export default function EpisodePage({
   );
 }
 
-/** Extract a human-readable provenance label for a pipeline step. */
-function getProvenanceLabel(provenance: Record<string, unknown> | undefined): string | undefined {
-  if (!provenance) return undefined;
-  const params = provenance.params as Record<string, unknown> | undefined;
-  const sourceChain = params?.source_chain as string[] | undefined;
-  // Show the last meaningful entry from the source chain
-  let label = sourceChain?.length ? sourceChain[sourceChain.length - 1] : undefined;
-  // Fall back to model if no chain
-  if (!label && provenance.model) label = String(provenance.model);
-  if (!label) return undefined;
-  // Append "(edited)" for manually edited versions
-  if (provenance.manual_edit) label += ", edited";
-  return label;
-}
-
-/** Map pipeline step keys to their provenance dict keys. */
-function stepProvenanceKey(stepKey: string, episode: Episode): string | undefined {
-  if (stepKey === "transcribe") return "transcript";
-  if (stepKey === "correct") return "corrected";
-  if (stepKey === "translate") {
-    // Return the first translation language found in provenance
-    return episode.translations?.find((lang) => episode.provenance?.[lang]);
-  }
-  return undefined;
-}
-
 /** Compute a next-action hint from episode state. */
 function getNextAction(episode: Episode): string | undefined {
   if (!episode.downloaded && !episode.transcribed) return "Download audio to get started";
@@ -337,6 +328,9 @@ function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, 
 function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError, onNavigateStep }: { episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string; onNavigateStep: (step: ActiveStep) => void }) {
   const audioPath = episode.audio_path;
   const hasTranscript = !!episode.transcribed;
+  const { seekTo } = useAudioStore();
+  const [previewSource, setPreviewSource] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const { data: speakerMap } = useQuery({
     queryKey: queryKeys.speakerMap(audioPath),
@@ -351,125 +345,555 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
     enabled: !!audioPath && hasTranscript,
   });
 
+  const { data: allVersions } = useQuery({
+    queryKey: queryKeys.allVersions(audioPath),
+    queryFn: () => getAllVersions(audioPath!),
+    enabled: !!audioPath && hasTranscript,
+  });
+
+  const showName = meta?.name ?? "";
+  const { data: indexEntries } = useQuery({
+    queryKey: queryKeys.episodeCollections(audioPath, showName),
+    queryFn: () => getEpisodeCollections(audioPath!, showName),
+    enabled: !!audioPath && !!showName && !!episode.indexed,
+  });
+
+  const invalidateAll = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodeCollections(audioPath, showName) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+  }, [audioPath, showName, queryClient]);
+
+  const deleteVersionMutation = useMutation({
+    mutationFn: async ({ step, id }: { step: string; id: string }) => {
+      if (!audioPath) return;
+      if (step === "transcript") return deleteTranscribeVersion(audioPath, id);
+      if (step === "corrected") return deleteCorrectVersion(audioPath, id);
+      return deleteTranslateVersion(audioPath, step, id);
+    },
+    onSuccess: invalidateAll,
+  });
+
+  const deleteCollectionMutation = useMutation({
+    mutationFn: (collection: string) =>
+      deleteEpisodeCollection(audioPath!, showName, collection),
+    onSuccess: invalidateAll,
+  });
+
+  const deleteFileMutation = useMutation({
+    mutationFn: (path: string) => deleteFile(path),
+    onSuccess: invalidateAll,
+  });
+
   const speakers = useMemo(() => {
     if (!speakerMap) return [];
     return [...new Set(Object.values(speakerMap))].filter(Boolean);
   }, [speakerMap]);
 
+  const versionGroups = useMemo(
+    () => groupVersions(allVersions, episode.translations ?? EMPTY_LANGS),
+    [allVersions, episode.translations],
+  );
+  const translations = episode.translations ?? EMPTY_LANGS;
+
   const nextAction = getNextAction(episode);
+  const subtitleFiles = useMemo(
+    () => (episode.files ?? []).filter((f) => !f.includes("/") && /\.(vtt|srt|info\.json)$/.test(f)),
+    [episode.files],
+  );
 
   return (
-        <div className="p-6 space-y-6 max-w-2xl">
-          {nextAction && (
-            <p className="text-sm text-muted-foreground italic">{nextAction}</p>
-          )}
+    <div className="p-6 space-y-5 max-w-2xl">
+      {nextAction && (
+        <p className="text-sm text-muted-foreground italic">{nextAction}</p>
+      )}
 
-          <div className="space-y-3">
-            <h4 className="text-sm font-medium">Input</h4>
-            <PipelineRow
-              label="Downloaded"
-              status={episode.downloaded ? "done" : (episode.files ?? []).some((f) => !f.includes("/") || f.endsWith(".vtt") || f.endsWith(".srt")) ? "partial" : false}
-              detail={!episode.downloaded && (episode.files ?? []).some((f) => f.endsWith(".vtt") || f.endsWith(".srt")) ? "subtitles only" : undefined}
-              files={(episode.files ?? []).filter((f) => !f.includes("/") || f.endsWith(".vtt") || f.endsWith(".srt"))}
+      <SourcesSection
+        episode={episode}
+        folder={folder}
+        meta={meta}
+        isYouTube={isYouTube}
+        subtitleFiles={subtitleFiles}
+        onDownloadAudio={onDownloadAudio}
+        onImportSubs={onImportSubs}
+        downloadDisabled={downloadDisabled}
+        downloadError={downloadError}
+        onDeleteSubtitle={(filename) => {
+          if (folder) deleteFileMutation.mutate(`${folder}/${filename}`);
+        }}
+        onPreviewFile={hasTranscript ? () => setPreviewSource(episode.corrected ? "corrected" : "transcript") : undefined}
+      />
+
+      <div className="space-y-2">
+        <h4 className="text-sm font-medium px-1">Outputs</h4>
+
+        <StepGroup
+          title="Transcripts"
+          icon={Mic}
+          versions={versionGroups.transcript}
+          onPreview={() => setPreviewSource("transcript")}
+          onOpenEditor={() => onNavigateStep("transcribe")}
+          onDelete={(id) => deleteVersionMutation.mutate({ step: "transcript", id })}
+          emptyHint="Not transcribed yet."
+          emptyOnClick={() => onNavigateStep("transcribe")}
+        />
+
+        {episode.transcribed && (
+          <StepGroup
+            title="Corrected"
+            icon={Sparkles}
+            versions={versionGroups.corrected}
+            onPreview={() => setPreviewSource("corrected")}
+            onOpenEditor={() => onNavigateStep("correct")}
+            onDelete={(id) => deleteVersionMutation.mutate({ step: "corrected", id })}
+            emptyHint="Not corrected yet."
+            emptyOnClick={() => onNavigateStep("correct")}
+          />
+        )}
+
+        {episode.transcribed && translations.length > 0 &&
+          translations.map((lang) => (
+            <StepGroup
+              key={lang}
+              title={`Translation · ${langLabel(lang)}`}
+              icon={Languages}
+              versions={versionGroups.translations[lang] ?? []}
+              onPreview={() => setPreviewSource(lang)}
+              onOpenEditor={() => onNavigateStep("translate")}
+              onDelete={(id) => deleteVersionMutation.mutate({ step: lang, id })}
+              emptyHint="No versions."
+              emptyOnClick={() => onNavigateStep("translate")}
             />
-            <div className="flex flex-wrap items-center gap-2">
-              <DownloadDropdown
-                isYouTube={isYouTube}
-                showLanguage={meta?.language || ""}
-                onDownload={onDownloadAudio}
-                onImportSubs={onImportSubs}
-                subsLabel={episode.transcribed ? "Re-import subtitles" : "Import subtitles"}
-                subsEnabled={true}
-                audioLabel="Download audio"
-                showAudio={!episode.downloaded}
-                audioEnabled={!episode.downloaded}
-                disabled={downloadDisabled}
-                variant={episode.downloaded ? "outline" : "default"}
-                align="right"
-              />
-              {episode.audio_path && (
-                <a href={audioFileUrl(episode.audio_path)} download={`${episode.title}.${episode.audio_path.split(".").pop()}`}>
-                  <Button variant="outline" size="sm">
-                    <Download className="w-3.5 h-3.5" /> Save audio
-                  </Button>
-                </a>
-              )}
+          ))}
+
+        {episode.synthesized && (
+          <OutputGroup
+            title="Synthesized audio"
+            icon={AudioLines}
+            count={1}
+            summary="present"
+            defaultOpen={false}
+          >
+            <div className="px-4 py-2 text-xs text-muted-foreground">
+              Open the Synthesize step to inspect or rebuild.
             </div>
-            {downloadError && (
-              <p className="text-destructive text-xs">{downloadError}</p>
-            )}
-          </div>
+          </OutputGroup>
+        )}
 
-          <div className="space-y-3">
-            <h4 className="text-sm font-medium">Pipeline</h4>
-            <div className="grid gap-1">
-              {PIPELINE_STEPS.map((s) => {
-                const provKey = stepProvenanceKey(s.key, episode);
-                const prov = provKey ? (episode.provenance?.[provKey] as Record<string, unknown> | undefined) : undefined;
-                return (
-                  <PipelineRow
-                    key={s.key}
-                    label={s.rowLabel}
-                    status={s.status(episode)}
-                    detail={s.detail?.(episode)}
-                    subtitle={getProvenanceLabel(prov)}
-                    provenance={prov}
-                    files={s.matchFiles ? episode.files?.filter((f) => s.matchFiles!(episode, f)) : undefined}
-                    onClick={() => onNavigateStep(s.key)}
-                  />
-                );
-              })}
+        {episode.transcribed && (
+          <IndexGroup
+            indexed={!!episode.indexed}
+            entries={indexEntries ?? []}
+            onOpen={() => onNavigateStep("index")}
+            onDelete={(collection) => deleteCollectionMutation.mutate(collection)}
+          />
+        )}
+      </div>
+
+      {previewSegments && previewSegments.length > 0 && (
+        <button
+          onClick={() => onNavigateStep(previewStep)}
+          className="w-full text-left rounded-lg bg-muted/50 px-4 py-3 space-y-2.5 hover:bg-muted/70 transition group"
+        >
+          <div className="flex items-baseline justify-between">
+            <div className="flex items-baseline gap-2">
+              <h4 className="text-sm font-medium">Preview</h4>
+              <span className="text-2xs text-muted-foreground">
+                {[
+                  episode.segment_count != null ? `${episode.segment_count} segments` : null,
+                  speakers.length > 0 ? speakers.join(", ") : null,
+                ].filter(Boolean).join(" · ")}
+              </span>
             </div>
+            <span className="text-2xs text-muted-foreground opacity-0 group-hover:opacity-100 transition shrink-0">
+              Open {previewStep === "correct" ? "corrected" : "transcript"} &rarr;
+            </span>
           </div>
+          <div className="space-y-1 text-sm">
+            {previewSegments.map((seg, i) => (
+              <p key={i} className="text-muted-foreground line-clamp-1">
+                {seg.speaker && <span className="font-medium" style={{ color: speakerColor(seg.speaker) }}>{seg.speaker}: </span>}
+                {seg.text}
+              </p>
+            ))}
+          </div>
+        </button>
+      )}
 
-          {previewSegments && previewSegments.length > 0 && (
-            <button
-              onClick={() => onNavigateStep(previewStep)}
-              className="w-full text-left rounded-lg bg-muted/50 px-4 py-3 space-y-2.5 hover:bg-muted/70 transition group"
-            >
-              <div className="flex items-baseline justify-between">
-                <div className="flex items-baseline gap-2">
-                  <h4 className="text-sm font-medium">Preview</h4>
-                  <span className="text-2xs text-muted-foreground">
-                    {[
-                      episode.segment_count != null ? `${episode.segment_count} segments` : null,
-                      speakers.length > 0 ? speakers.join(", ") : null,
-                    ].filter(Boolean).join(" · ")}
-                  </span>
-                </div>
-                <span className="text-2xs text-muted-foreground opacity-0 group-hover:opacity-100 transition shrink-0">
-                  Open {previewStep === "correct" ? "corrected" : "transcript"} &rarr;
-                </span>
-              </div>
-              <div className="space-y-1 text-sm">
-                {previewSegments.map((seg, i) => (
-                  <p key={i} className="text-muted-foreground line-clamp-1">
-                    {seg.speaker && <span className="font-medium" style={{ color: speakerColor(seg.speaker) }}>{seg.speaker}: </span>}
-                    {seg.text}
-                  </p>
-                ))}
-              </div>
-            </button>
-          )}
+      <div className="flex items-center gap-4 pt-2 border-t border-border text-xs text-muted-foreground">
+        {folder && (
+          <button
+            onClick={() => openFolder(folder)}
+            className="flex items-center gap-1.5 hover:text-foreground transition"
+            title={folder}
+          >
+            <FolderOpen className="w-3.5 h-3.5 shrink-0" />
+            <span className="break-all font-mono">{folder}</span>
+          </button>
+        )}
+        {episode.audio_path && (
+          <a href={exportZipUrl(episode.audio_path)} download className="flex items-center gap-1.5 hover:text-foreground transition ml-auto shrink-0">
+            <Download className="w-3.5 h-3.5" />
+            <span>Export ZIP</span>
+          </a>
+        )}
+      </div>
 
-          <div className="flex items-center gap-4 pt-2 border-t border-border text-xs text-muted-foreground">
-            {folder && (
-              <button
-                onClick={() => openFolder(folder)}
-                className="flex items-center gap-1.5 hover:text-foreground transition"
-                title={folder}
+      {audioPath && previewSource && (
+        <SegmentContextDialog
+          open={true}
+          onOpenChange={(open) => { if (!open) setPreviewSource(null); }}
+          audioPath={audioPath}
+          source={previewSource}
+          episodeTitle={episode.title}
+          onSeek={(t) => seekTo(audioPath, t)}
+          onOpenEditor={() => {
+            setPreviewSource(null);
+            if (previewSource === "corrected") onNavigateStep("correct");
+            else if (previewSource === "transcript") onNavigateStep("transcribe");
+            else onNavigateStep("translate");
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── InfoTab helpers ──────────────────────────────────────────────────────
+
+const EMPTY_LANGS: string[] = [];
+
+interface VersionGroups {
+  transcript: VersionEntry[];
+  corrected: VersionEntry[];
+  translations: Record<string, VersionEntry[]>;
+}
+
+function groupVersions(
+  versions: VersionEntry[] | undefined,
+  languages: string[],
+): VersionGroups {
+  const groups: VersionGroups = { transcript: [], corrected: [], translations: {} };
+  for (const lang of languages) groups.translations[lang] = [];
+  if (!versions) return groups;
+  for (const v of versions) {
+    if (v.step === "transcript") groups.transcript.push(v);
+    else if (v.step === "corrected") groups.corrected.push(v);
+    else if (v.step && languages.includes(v.step)) {
+      (groups.translations[v.step] ??= []).push(v);
+    }
+  }
+  return groups;
+}
+
+
+function StepGroup({
+  title,
+  icon,
+  versions,
+  onPreview,
+  onOpenEditor,
+  onDelete,
+  emptyHint,
+  emptyOnClick,
+}: {
+  title: string;
+  icon: typeof Mic;
+  versions: VersionEntry[];
+  onPreview: () => void;
+  onOpenEditor: () => void;
+  onDelete: (id: string) => void;
+  emptyHint?: string;
+  emptyOnClick?: () => void;
+}) {
+  if (versions.length === 0) {
+    if (!emptyHint) return null;
+    const Icon = icon;
+    return (
+      <div className="rounded-lg border border-border/50 px-4 py-2.5 flex items-center gap-3 text-sm text-muted-foreground italic">
+        <Icon className="w-3.5 h-3.5" />
+        <span className="flex-1">{emptyHint}</span>
+        {emptyOnClick && (
+          <button
+            onClick={emptyOnClick}
+            className="text-xs not-italic text-foreground hover:underline"
+          >
+            Open &rarr;
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const latest = versions[0];
+  return (
+    <OutputGroup
+      title={title}
+      icon={icon}
+      count={versions.length}
+      summary={latestSummary(latest)}
+      defaultOpen={versions.length <= 3}
+    >
+      {versions.map((v, i) => (
+        <VersionRow
+          key={v.id}
+          version={v}
+          isLatest={i === 0}
+          onOpen={onPreview}
+          onDelete={() => onDelete(v.id)}
+        />
+      ))}
+      <div className="px-4 py-1.5 border-t border-border/40">
+        <button
+          onClick={onOpenEditor}
+          className="text-xs text-muted-foreground hover:text-foreground transition"
+        >
+          Open editor &rarr;
+        </button>
+      </div>
+    </OutputGroup>
+  );
+}
+
+function latestSummary(v: VersionEntry): string {
+  const edited = v.type === "validated" || v.manual_edit;
+  return `${versionLabel(v)} · ${versionDate(v)}${edited ? " · edited" : ""}`;
+}
+
+function SourcesSection({
+  episode,
+  folder,
+  meta,
+  isYouTube,
+  subtitleFiles,
+  onDownloadAudio,
+  onImportSubs,
+  downloadDisabled,
+  downloadError,
+  onDeleteSubtitle,
+  onPreviewFile,
+}: {
+  episode: Episode;
+  folder?: string;
+  meta?: ShowMeta;
+  isYouTube: boolean;
+  subtitleFiles: string[];
+  onDownloadAudio: () => void;
+  onImportSubs: (lang: string) => void;
+  downloadDisabled: boolean;
+  downloadError?: string;
+  onDeleteSubtitle: (filename: string) => void;
+  onPreviewFile?: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <h4 className="text-sm font-medium px-1">Sources</h4>
+
+      <div className="rounded-lg border border-border/50 divide-y divide-border/40">
+        {episode.audio_path ? (
+          <SourceFileRow
+            icon={FileAudio}
+            label={episode.audio_path.split("/").pop() ?? "audio"}
+            sublabel="audio"
+            action={
+              <a
+                href={audioFileUrl(episode.audio_path)}
+                download={`${episode.title}.${episode.audio_path.split(".").pop()}`}
+                className="text-2xs text-muted-foreground hover:text-foreground transition"
               >
-                <FolderOpen className="w-3.5 h-3.5 shrink-0" />
-                <span className="break-all font-mono">{folder}</span>
-              </button>
-            )}
-            {episode.audio_path && (
-              <a href={exportZipUrl(episode.audio_path)} download className="flex items-center gap-1.5 hover:text-foreground transition ml-auto shrink-0">
-                <Download className="w-3.5 h-3.5" />
-                <span>Export ZIP</span>
+                Save
               </a>
-            )}
+            }
+          />
+        ) : (
+          <div className="px-4 py-3 text-sm text-muted-foreground italic">
+            No audio yet.
           </div>
-        </div>
+        )}
+
+        {subtitleFiles.map((f) => (
+          <SourceFileRow
+            key={f}
+            icon={FileText}
+            label={f}
+            sublabel="subtitles"
+            onClick={/\.(vtt|srt)$/.test(f) ? onPreviewFile : undefined}
+            onDelete={folder ? () => onDeleteSubtitle(f) : undefined}
+          />
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <DownloadDropdown
+          isYouTube={isYouTube}
+          showLanguage={meta?.language || ""}
+          onDownload={onDownloadAudio}
+          onImportSubs={onImportSubs}
+          subsLabel={episode.transcribed ? "Re-import subtitles" : "Import subtitles"}
+          subsEnabled={true}
+          audioLabel="Download audio"
+          showAudio={!episode.downloaded}
+          audioEnabled={!episode.downloaded}
+          disabled={downloadDisabled}
+          variant={episode.downloaded ? "outline" : "default"}
+          align="right"
+        />
+      </div>
+      {downloadError && (
+        <p className="text-destructive text-xs">{downloadError}</p>
+      )}
+    </div>
+  );
+}
+
+function SourceFileRow({
+  icon: Icon,
+  label,
+  sublabel,
+  action,
+  onClick,
+  onDelete,
+}: {
+  icon: typeof FileAudio;
+  label: string;
+  sublabel?: string;
+  action?: React.ReactNode;
+  onClick?: () => void;
+  onDelete?: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
+  if (confirming && onDelete) {
+    return (
+      <div className="px-4 py-2">
+        <InlineConfirm
+          message={`Delete ${label}?`}
+          onConfirm={() => {
+            setConfirming(false);
+            onDelete();
+          }}
+          onCancel={() => setConfirming(false)}
+        />
+      </div>
+    );
+  }
+
+  const LabelTag = onClick ? "button" : "span";
+  return (
+    <div className="px-4 py-2 flex items-center gap-3 group/row hover:bg-accent/30 transition">
+      <Icon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+      <LabelTag
+        onClick={onClick}
+        className={`flex-1 min-w-0 text-xs font-mono truncate text-left ${onClick ? "hover:underline cursor-pointer" : ""}`}
+      >
+        {label}
+      </LabelTag>
+      {sublabel && (
+        <span className="text-2xs text-muted-foreground shrink-0">{sublabel}</span>
+      )}
+      {action}
+      {onDelete && (
+        <button
+          onClick={() => setConfirming(true)}
+          className="shrink-0 text-muted-foreground/40 hover:text-destructive p-0.5 opacity-0 group-hover/row:opacity-100 transition"
+          title={`Delete ${label}`}
+        >
+          <Trash2 className="w-3 h-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function IndexGroup({
+  indexed,
+  entries,
+  onOpen,
+  onDelete,
+}: {
+  indexed: boolean;
+  entries: EpisodeCollection[];
+  onOpen: () => void;
+  onDelete: (collection: string) => void;
+}) {
+  if (!indexed || entries.length === 0) {
+    return (
+      <div className="rounded-lg border border-border/50 px-4 py-2.5 flex items-center gap-3 text-sm text-muted-foreground italic">
+        <Database className="w-3.5 h-3.5" />
+        <span className="flex-1">Not indexed.</span>
+        <button
+          onClick={onOpen}
+          className="text-xs not-italic text-foreground hover:underline"
+        >
+          Open &rarr;
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <OutputGroup
+      title="Search index"
+      icon={Database}
+      count={entries.length}
+      summary={entries
+        .map((e) => `${e.model}·${e.chunker}`)
+        .slice(0, 2)
+        .join(", ")}
+      defaultOpen={entries.length <= 3}
+    >
+      {entries.map((e) => (
+        <IndexRow key={e.collection} entry={e} onDelete={() => onDelete(e.collection)} />
+      ))}
+    </OutputGroup>
+  );
+}
+
+function IndexRow({
+  entry,
+  onDelete,
+}: {
+  entry: EpisodeCollection;
+  onDelete: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
+  if (confirming) {
+    return (
+      <div className="px-4 py-2 border-l-2 border-transparent">
+        <InlineConfirm
+          message={`Remove from ${entry.collection}?`}
+          onConfirm={() => {
+            setConfirming(false);
+            onDelete();
+          }}
+          onCancel={() => setConfirming(false)}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 py-2 flex items-center gap-2 group/row hover:bg-accent/40 transition border-l-2 border-transparent">
+      <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-blue-500" />
+      <span className="flex-1 truncate text-xs">
+        <span className="text-foreground">
+          {entry.model} · {entry.chunker}
+        </span>
+        {entry.source && (
+          <span className="text-muted-foreground"> · from {entry.source}</span>
+        )}
+      </span>
+      <span className="shrink-0 font-mono text-2xs text-muted-foreground/60 tabular-nums">
+        {entry.chunk_count} chunks
+      </span>
+      <button
+        onClick={() => setConfirming(true)}
+        className="shrink-0 text-muted-foreground/40 hover:text-destructive p-0.5 opacity-0 group-hover/row:opacity-100 transition"
+        title="Remove from this collection"
+      >
+        <Trash2 className="w-3 h-3" />
+      </button>
+    </div>
   );
 }

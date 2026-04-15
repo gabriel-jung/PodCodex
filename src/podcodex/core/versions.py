@@ -309,10 +309,67 @@ def list_versions(base: Path, step: str) -> list[dict]:
     return db.list_versions(base.name, step)
 
 
+def _backfill_episode(base: Path, db) -> None:
+    """Lazily backfill version entries for a single episode if legacy files exist.
+
+    Called when list_all_versions returns empty for an episode that may have been
+    transcribed before the versioning DB was introduced.
+    """
+    stem = base.name
+    ep_dir = base.parent
+
+    steps_to_check = [
+        (
+            "transcript",
+            [
+                ep_dir / f"{stem}.transcript.json",
+                ep_dir / f"{stem}.transcript.raw.json",
+            ],
+        ),
+        (
+            "corrected",
+            [
+                ep_dir / f"{stem}.corrected.json",
+            ],
+        ),
+    ]
+
+    for step, candidates in steps_to_check:
+        if db.list_versions(stem, step):
+            continue
+        seg_file = next((f for f in candidates if f.exists()), None)
+        if not seg_file:
+            continue
+        try:
+            segments = json.loads(seg_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        vtype = (
+            "validated"
+            if step == "transcript" and seg_file.name.endswith(".transcript.json")
+            else "raw"
+        )
+        save_version(
+            base=base,
+            step=step,
+            segments=segments,
+            provenance={"step": step, "type": vtype},
+        )
+        logger.debug("Lazy-backfilled {} version for {}", step, stem)
+
+
 def list_all_versions(base: Path) -> list[dict]:
-    """List all versions across all steps for an episode (newest first)."""
+    """List all versions across all steps for an episode (newest first).
+
+    If the DB is empty for this episode but legacy transcript files exist on
+    disk, performs a one-time lazy backfill before returning.
+    """
     db = _get_db(base)
-    return db.list_all_versions(base.name)
+    versions = db.list_all_versions(base.name)
+    if not versions:
+        _backfill_episode(base, db)
+        versions = db.list_all_versions(base.name)
+    return versions
 
 
 def version_count(base: Path, step: str) -> int:

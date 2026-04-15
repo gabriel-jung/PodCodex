@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
 import { Search, X, SlidersHorizontal, Clock, Undo2, HelpCircle, Trash2, History } from "lucide-react";
 import type { VersionEntry } from "@/api/types";
-import { versionOption, versionInfo } from "@/lib/utils";
+import VersionRow from "@/components/episode/VersionRow";
 
 function Tip({ text }: { text: string }) {
   const [show, setShow] = useState(false);
@@ -91,7 +91,6 @@ export default function EditorToolbar({
 }: EditorToolbarProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
-  const [expandedVersion, setExpandedVersion] = useState<string | null>(null);
   const versionsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -133,56 +132,26 @@ export default function EditorToolbar({
               <History className="w-3 h-3 mr-1" /> History ({versions.length})
             </Button>
             {showVersions && (
-              <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-72 max-h-80 overflow-y-auto">
-                <div className="px-3 py-1 text-muted-foreground/60 flex items-center gap-3 border-b border-border/50 mb-1">
+              <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg min-w-72 max-h-80 overflow-y-auto">
+                <div className="px-3 py-1 text-muted-foreground/60 flex items-center gap-3 border-b border-border/50">
                   <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" /> pipeline</span>
                   <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-success" /> edited</span>
                 </div>
-                {versions.map((v) => {
-                  const isExpanded = expandedVersion === v.id;
-                  const info = isExpanded ? versionInfo(v) : [];
-                  return (
-                    <div key={v.id} className="border-b border-border/30 last:border-0">
-                      <div className="flex items-center gap-1.5 px-3 py-1.5 text-xs hover:bg-accent transition">
-                        <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${v.type === "validated" ? "bg-success" : "bg-blue-500"}`} />
-                        <button
-                          className="flex-1 text-left truncate"
-                          onClick={() => { onLoadVersion(v.id); setShowVersions(false); }}
-                        >
-                          {versionOption(v)}
-                        </button>
-                        <button
-                          className="shrink-0 text-muted-foreground/40 hover:text-muted-foreground p-0.5"
-                          onClick={() => setExpandedVersion(isExpanded ? null : v.id)}
-                          title="Version details"
-                        >
-                          <HelpCircle className="w-3 h-3" />
-                        </button>
-                        {onDeleteVersion && (
-                          <button
-                            className="shrink-0 text-muted-foreground/40 hover:text-destructive p-0.5"
-                            onClick={() => onDeleteVersion(v.id)}
-                            title="Delete this version"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        )}
-                      </div>
-                      {isExpanded && (
-                        <div className="px-3 pb-2 ml-3 text-xs">
-                          <div className="bg-secondary/50 rounded border border-border/50 px-2 py-1.5 space-y-0.5">
-                            {info.map(({ key, value }) => (
-                              <div key={key} className="flex gap-2">
-                                <span className="text-muted-foreground shrink-0 w-24">{key}</span>
-                                <span className="truncate">{value}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                <div className="divide-y divide-border/30">
+                  {versions.map((v, i) => (
+                    <VersionRow
+                      key={v.id}
+                      version={v}
+                      dense
+                      isLatest={i === 0}
+                      onOpen={() => {
+                        onLoadVersion(v.id);
+                        setShowVersions(false);
+                      }}
+                      onDelete={onDeleteVersion ? () => onDeleteVersion(v.id) : undefined}
+                    />
+                  ))}
+                </div>
               </div>
             )}
           </div>

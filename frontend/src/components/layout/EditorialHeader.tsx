@@ -17,6 +17,7 @@ export interface Stat {
 
 interface Props {
   title: string;
+  subtitle?: string;
   breadcrumbs?: Crumb[];
   /** URL for both the artwork card and the blurred backdrop. */
   artworkUrl?: string;
@@ -34,6 +35,7 @@ interface Props {
 
 export default function EditorialHeader({
   title,
+  subtitle,
   breadcrumbs,
   artworkUrl,
   fallbackIcon: FallbackIcon,
@@ -84,26 +86,26 @@ export default function EditorialHeader({
           </Artwork>
         )}
         <div className="flex-1 min-w-0 flex flex-col gap-1">
-          {hasCrumbs && (
-            <nav className="flex items-center gap-1 text-2xs text-muted-foreground truncate">
-              {breadcrumbs!.map((c, i) => (
-                <Fragment key={i}>
-                  {i > 0 && <ChevronRight className="w-3 h-3 shrink-0 opacity-60" />}
-                  {c.onClick ? (
-                    <button
-                      onClick={c.onClick}
-                      className="hover:text-foreground transition truncate max-w-[14rem]"
-                    >
-                      {c.label}
-                    </button>
-                  ) : (
-                    <span className="truncate max-w-[14rem] text-foreground/70">{c.label}</span>
-                  )}
-                </Fragment>
-              ))}
-            </nav>
-          )}
-          <div className="flex items-baseline gap-4 min-w-0">
+          <div className="text-2xs text-muted-foreground truncate min-h-4 flex items-center gap-1">
+            {hasCrumbs
+              ? breadcrumbs!.map((c, i) => (
+                  <Fragment key={i}>
+                    {i > 0 && <ChevronRight className="w-3 h-3 shrink-0 opacity-60" />}
+                    {c.onClick ? (
+                      <button
+                        onClick={c.onClick}
+                        className="hover:text-foreground transition truncate max-w-[14rem]"
+                      >
+                        {c.label}
+                      </button>
+                    ) : (
+                      <span className="truncate max-w-[14rem] text-foreground/70">{c.label}</span>
+                    )}
+                  </Fragment>
+                ))
+              : subtitle && <span className="truncate">{subtitle}</span>}
+          </div>
+          <div className="flex items-center gap-4 min-w-0">
             <h1
               className="font-display text-2xl font-semibold leading-tight truncate"
               title={title}

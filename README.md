@@ -1,8 +1,10 @@
-# podcodex
+# PodCodex
+
+**Transcribe, translate, search your podcasts.**
 
 Turn audio into a searchable knowledge base. Ingest podcasts, YouTube channels, lectures, or interviews — anything with speech — and build a structured, multilingual library you can query by meaning.
 
-PodCodex is a **local-first desktop app** that transcribes, diarizes, corrects, translates, and indexes your audio into a SQLite knowledge store. A bundled **Discord bot** lets anyone search the library with slash commands.
+PodCodex is a **local-first desktop app** that transcribes, diarizes, corrects, translates, and indexes your audio into an embedded LanceDB vector store. A bundled **Discord bot** lets anyone search the library with slash commands.
 
 ---
 
@@ -15,7 +17,7 @@ Point it at a podcast RSS feed, a YouTube channel, or a folder of recordings and
 3. **Correct** — fix transcription errors with an LLM (Ollama, OpenAI, Anthropic, Mistral, or manual copy/paste).
 4. **Translate** — any target language, via the same LLM backends.
 5. **Synthesize** (optional) — Qwen3-TTS voice cloning for dubbed versions.
-6. **Index & search** — vectorize into a local SQLite store, then search by meaning (semantic), keywords (exact), or random sampling.
+6. **Index & search** — vectorize into a local LanceDB index with hybrid retrieval (vector ANN + Tantivy FTS), then search by meaning (semantic), keywords (exact), or random sampling.
 
 All steps share a segment editor (inline editing, speaker mapping, timestamp snapping) and a global audio player (WaveSurfer waveform, per-episode speed, segment-level playback). Everything runs on your machine — no cloud lock-in, no external vector DB.
 

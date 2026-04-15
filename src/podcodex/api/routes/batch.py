@@ -378,28 +378,22 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
 
     ep_progress(i, step_offset, sw, 0.0, "Indexing...")
 
-    from podcodex.api.routes._helpers import build_index_transcript
+    from podcodex.api.routes._helpers import build_index_transcript, get_index_store
     from podcodex.rag.indexing import vectorize_batch
-    from podcodex.rag.localstore import LocalStore
 
-    # Let build_index_transcript resolve the best source (corrected > transcript)
     transcript = build_index_transcript(audio_path, req.show_name, stem)
     if not transcript.get("segments"):
         return False
 
-    db_path = p.vectors_db
-    local = LocalStore(db_path)
-    try:
-        upserted = vectorize_batch(
-            transcript,
-            req.show_name,
-            stem,
-            req.index_model_keys,
-            req.index_chunkings,
-            local,
-        )
-    finally:
-        local.close()
+    local = get_index_store()
+    upserted = vectorize_batch(
+        transcript,
+        req.show_name,
+        stem,
+        req.index_model_keys,
+        req.index_chunkings,
+        local,
+    )
 
     if upserted == 0:
         logger.warning("Index produced 0 chunks for {} — not marking as indexed", stem)

@@ -1,4 +1,4 @@
-"""Indexing routes — vectorize episodes into LocalStore for search."""
+"""Indexing routes — vectorize episodes into the LanceDB IndexStore."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import submit_task
+from podcodex.api.routes._helpers import get_index_store, submit_task
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import AudioPaths
 
@@ -138,34 +138,26 @@ async def index_status(
 ) -> dict:
     """Check indexing status per (model, chunking) combination."""
     from podcodex.rag.defaults import CHUNKING_STRATEGIES, MODELS
-    from podcodex.rag.localstore import LocalStore
     from podcodex.rag.store import collection_name
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
 
-    db_path = p.vectors_db
-    if not db_path.exists():
-        return {"combinations": [], "db_exists": False}
-
-    local = LocalStore(db_path)
-    try:
-        combinations = []
-        for model_key in MODELS:
-            for chunking in CHUNKING_STRATEGIES:
-                col = collection_name(show, model_key, chunking)
-                indexed = local.episode_is_indexed(col, episode)
-                count = local.episode_chunk_count(col, episode) if indexed else 0
-                combinations.append(
-                    {
-                        "model": model_key,
-                        "chunking": chunking,
-                        "indexed": indexed,
-                        "chunk_count": count,
-                    }
-                )
-    finally:
-        local.close()
+    local = get_index_store()
+    combinations = []
+    for model_key in MODELS:
+        for chunking in CHUNKING_STRATEGIES:
+            col = collection_name(show, model_key, chunking)
+            indexed = local.episode_is_indexed(col, episode)
+            count = local.episode_chunk_count(col, episode) if indexed else 0
+            combinations.append(
+                {
+                    "model": model_key,
+                    "chunking": chunking,
+                    "indexed": indexed,
+                    "chunk_count": count,
+                }
+            )
     return {"combinations": combinations, "db_exists": True}
 
 
@@ -174,34 +166,87 @@ async def index_status(
 
 @router.get("/collections")
 async def list_collections(
+    show: str = Query(""),
+) -> list[dict]:
+    """List indexed collections, optionally filtered by show."""
+    local = get_index_store()
+    result = []
+    for col_name in local.list_collections(show=show):
+        info = local.get_collection_info(col_name)
+        episodes = local.list_episodes(col_name)
+        result.append(
+            {
+                "name": col_name,
+                "model": info.get("model", "") if info else "",
+                "chunker": info.get("chunker", "") if info else "",
+                "episode_count": len(episodes),
+            }
+        )
+    return result
+
+
+@router.get("/episode-collections")
+async def episode_collections(
     audio_path: str = Query(...),
+    show: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
-    """List all collections in the show's vectors.db."""
-    from podcodex.rag.localstore import LocalStore
+    """List the index entries this episode currently lives in.
+
+    Returns one row per (collection, episode) — including model, chunker,
+    the source step (transcript / corrected / <lang>) the chunks were
+    derived from, and the chunk count.
+    """
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    episode = p.audio_path.stem
+
+    local = get_index_store()
+    out: list[dict] = []
+    for col_name in local.list_collections(show=show):
+        count = local.episode_chunk_count(col_name, episode)
+        if not count:
+            continue
+        info = local.get_collection_info(col_name) or {}
+        out.append(
+            {
+                "collection": col_name,
+                "model": info.get("model", ""),
+                "chunker": info.get("chunker", ""),
+                "source": local.episode_source(col_name, episode),
+                "chunk_count": count,
+            }
+        )
+    return out
+
+
+@router.delete("/episode")
+async def delete_episode_from_index(
+    audio_path: str = Query(...),
+    show: str = Query(...),
+    collection: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> dict:
+    """Remove this episode's chunks from one collection.
+
+    If no other collections still hold the episode, also flips its
+    ``indexed`` flag in pipeline.db so the UI reflects the change.
+    """
+    from podcodex.core.pipeline_db import mark_step
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    db_path = p.vectors_db
-    if not db_path.exists():
-        return []
+    episode = p.audio_path.stem
 
-    local = LocalStore(db_path)
-    try:
-        result = []
-        for col_name in local.list_collections():
-            info = local.get_collection_info(col_name)
-            episodes = local.list_episodes(col_name)
-            result.append(
-                {
-                    "name": col_name,
-                    "model": info.get("model", "") if info else "",
-                    "chunker": info.get("chunker", "") if info else "",
-                    "episode_count": len(episodes),
-                }
-            )
-    finally:
-        local.close()
-    return result
+    local = get_index_store()
+    local.delete_episode(collection, episode)
+
+    # If this episode is no longer in any collection of this show, clear flag.
+    still_indexed = any(
+        local.episode_is_indexed(c, episode) for c in local.list_collections(show=show)
+    )
+    if not still_indexed:
+        mark_step(p.show_dir, episode, indexed=False)
+
+    return {"status": "deleted", "still_indexed": still_indexed}
 
 
 # ── Vectorize (background task) ──────────────────────────
@@ -238,7 +283,7 @@ class IndexRequest(BaseModel):
 
 @router.post("/start", response_model=TaskResponse)
 async def start_index(req: IndexRequest) -> TaskResponse:
-    """Vectorize an episode into LocalStore as a background task."""
+    """Vectorize an episode into the IndexStore as a background task."""
 
     def run_index(progress_cb, req_data):
         """Execute the full vectorization pipeline for one episode.
@@ -254,7 +299,6 @@ async def start_index(req: IndexRequest) -> TaskResponse:
         from podcodex.api.routes._helpers import build_index_transcript
         from podcodex.core.versions import load_version
         from podcodex.rag.indexing import vectorize_batch
-        from podcodex.rag.localstore import LocalStore
 
         p = AudioPaths.from_audio(req_data.audio_path, output_dir=req_data.output_dir)
         episode = p.audio_path.stem
@@ -283,32 +327,26 @@ async def start_index(req: IndexRequest) -> TaskResponse:
 
         source_label = transcript["meta"].get("source", "auto")
 
-        # Open LocalStore at show level
-        db_path = p.vectors_db
-        local = LocalStore(db_path)
+        local = get_index_store()
+        progress_cb(0.05, "Starting vectorization...")
 
-        try:
-            progress_cb(0.05, "Starting vectorization...")
+        def on_progress(step, total, label):
+            """Forward per-batch progress to the task progress callback."""
+            frac = 0.05 + 0.9 * (step / max(total, 1))
+            progress_cb(frac, f"{label} ({step + 1}/{total})")
 
-            def on_progress(step, total, label):
-                """Forward per-batch progress from vectorize_batch to the task progress callback."""
-                frac = 0.05 + 0.9 * (step / max(total, 1))
-                progress_cb(frac, f"{label} ({step + 1}/{total})")
-
-            total_upserted = vectorize_batch(
-                transcript,
-                req_data.show,
-                episode,
-                req_data.model_keys,
-                req_data.chunkings,
-                local,
-                chunk_size=req_data.chunk_size,
-                threshold=req_data.threshold,
-                overwrite=req_data.overwrite,
-                on_progress=on_progress,
-            )
-        finally:
-            local.close()
+        total_upserted = vectorize_batch(
+            transcript,
+            req_data.show,
+            episode,
+            req_data.model_keys,
+            req_data.chunkings,
+            local,
+            chunk_size=req_data.chunk_size,
+            threshold=req_data.threshold,
+            overwrite=req_data.overwrite,
+            on_progress=on_progress,
+        )
 
         if total_upserted == 0:
             raise ValueError(
