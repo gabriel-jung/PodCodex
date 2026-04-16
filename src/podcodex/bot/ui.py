@@ -6,7 +6,7 @@ import asyncio
 
 import discord
 
-from podcodex.bot.formatting import format_context
+from podcodex.bot.formatting import fmt_timestamp, speaker_lines, truncate_description
 
 # ──────────────────────────────────────────────
 # Episode chunk cache
@@ -38,62 +38,104 @@ async def _fetch_episode_chunks(store, collection: str, episode: str) -> list[di
 
 
 # ──────────────────────────────────────────────
-# Context expand UI
+# Transcript pagination UI
 # ──────────────────────────────────────────────
 
 
-class ContextView(discord.ui.View):
+def _transcript_embed(
+    chunk: dict,
+    pos: int,
+    total: int,
+    show: str,
+    *,
+    is_match: bool = False,
+) -> discord.Embed:
+    """Build a single embed for one transcript chunk."""
+    description = truncate_description(speaker_lines(chunk))
+    color = discord.Color.gold() if is_match else discord.Color.dark_gray()
+    embed = discord.Embed(description=description, color=color)
+
+    episode_display = chunk.get("episode_title") or chunk.get("episode", "")
+    title = episode_display or "(untitled)"
+    if show:
+        title += f" ({show})"
+    embed.title = title
+
+    start = chunk.get("start", 0.0)
+    end = chunk.get("end", 0.0)
+    timed = chunk.get("timed", True)
+    ts = fmt_timestamp(start, end, timed=timed)
+    if ts:
+        embed.add_field(name="Timestamp", value=ts, inline=True)
+
+    marker = " ◀ matched" if is_match else ""
+    embed.set_footer(text=f"Segment {pos + 1} of {total}{marker}")
+    return embed
+
+
+class TranscriptView(discord.ui.View):
+    """Paginated view over all segments of an episode, one per page.
+
+    Opens at the segment that was returned by the search result so users
+    can immediately read forward/backward through the transcript.
+    """
+
     def __init__(
         self,
-        collection: str,
-        episode: str,
+        chunks: list[dict],
+        match_pos: int,
         show: str,
-        start: float,
-        neighbors: list[dict],
-        n: int,
-        has_more: bool,
     ) -> None:
         super().__init__(timeout=300)
-        if has_more:
-            self.add_item(
-                _ExpandMoreButton(collection, episode, show, start, neighbors, n + 2)
-            )
-
-
-class _ExpandMoreButton(discord.ui.Button):
-    def __init__(
-        self,
-        collection: str,
-        episode: str,
-        show: str,
-        start: float,
-        neighbors: list[dict],
-        n: int,
-    ) -> None:
-        super().__init__(
-            label=f"Show more ↕ (±{n})", style=discord.ButtonStyle.secondary
-        )
-        self._collection = collection
-        self._episode = episode
+        self._chunks = chunks
+        self._match_pos = match_pos
+        self._pos = match_pos
         self._show = show
-        self._start = start
-        self._neighbors = neighbors
-        self._n = n
+        self._update_nav()
 
-    async def callback(self, interaction: discord.Interaction) -> None:
-        content, has_more = format_context(
-            self._neighbors, self._start, self._n, self._show, self._episode
-        )
-        view = ContextView(
-            self._collection,
-            self._episode,
+    @property
+    def current_embed(self) -> discord.Embed:
+        return _transcript_embed(
+            self._chunks[self._pos],
+            self._pos,
+            len(self._chunks),
             self._show,
-            self._start,
-            self._neighbors,
-            n=self._n,
-            has_more=has_more,
+            is_match=(self._pos == self._match_pos),
         )
-        await interaction.response.edit_message(content=content, view=view)
+
+    def _update_nav(self) -> None:
+        self.prev_button.disabled = self._pos == 0
+        self.next_button.disabled = self._pos == len(self._chunks) - 1
+        self.counter_button.label = f"{self._pos + 1} / {len(self._chunks)}"
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, row=0)
+    async def prev_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._pos -= 1
+        self._update_nav()
+        await interaction.response.edit_message(embed=self.current_embed, view=self)
+
+    @discord.ui.button(
+        label="1 / ?", style=discord.ButtonStyle.gray, disabled=True, row=0
+    )
+    async def counter_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer()
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary, row=0)
+    async def next_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._pos += 1
+        self._update_nav()
+        await interaction.response.edit_message(embed=self.current_embed, view=self)
+
+
+# ──────────────────────────────────────────────
+# Context expand button (wired to search results)
+# ──────────────────────────────────────────────
 
 
 class ExpandView(discord.ui.View):
@@ -114,22 +156,22 @@ class _ExpandButton(discord.ui.Button):
         from podcodex.bot.bot import PodCodexBot
 
         bot: PodCodexBot = interaction.client  # type: ignore[assignment]
-        neighbors = await _fetch_episode_chunks(
-            bot.local, self._collection, self._episode
+        chunks = await _fetch_episode_chunks(bot.local, self._collection, self._episode)
+
+        # Find the matched chunk by start time
+        match_pos = next(
+            (
+                i
+                for i, c in enumerate(chunks)
+                if abs(c.get("start", -1) - self._start) < 0.1
+            ),
+            0,
         )
-        content, has_more = format_context(
-            neighbors, self._start, 2, self._show, self._episode
+
+        view = TranscriptView(chunks, match_pos, self._show)
+        await interaction.response.send_message(
+            embed=view.current_embed, view=view, ephemeral=True
         )
-        view = ContextView(
-            self._collection,
-            self._episode,
-            self._show,
-            self._start,
-            neighbors,
-            n=2,
-            has_more=has_more,
-        )
-        await interaction.response.send_message(content, view=view, ephemeral=True)
 
 
 # ──────────────────────────────────────────────
@@ -142,6 +184,31 @@ class NoExpandView(discord.ui.View):
 
     def __init__(self) -> None:
         super().__init__(timeout=300)
+
+
+# ──────────────────────────────────────────────
+# /ask sources reveal UI
+# ──────────────────────────────────────────────
+
+
+class SourcesView(discord.ui.View):
+    """Attaches a 'Show sources' button to a /ask answer embed.
+
+    Clicking reveals an ephemeral paginated view of the retrieved chunks.
+    """
+
+    def __init__(self, pages: list[tuple[discord.Embed, discord.ui.View]]) -> None:
+        super().__init__(timeout=300)
+        self._pages = pages
+
+    @discord.ui.button(label="Show sources ↗", style=discord.ButtonStyle.secondary)
+    async def show_sources(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        view = PaginatedResultView(self._pages)
+        await interaction.response.send_message(
+            embed=view.current_embed, view=view, ephemeral=True
+        )
 
 
 class PaginatedResultView(discord.ui.View):
@@ -165,14 +232,12 @@ class PaginatedResultView(discord.ui.View):
 
     def _sync_expand(self) -> None:
         """Swap in the expand button for the current page, if any."""
-        # Remove previous expand item
         if self._expand_item is not None:
             self.remove_item(self._expand_item)
             self._expand_item = None
 
         expand_view = self._results[self._index][1]
         if expand_view.children:
-            # Clone the button so it isn't bound to the other view
             src: _ExpandButton = expand_view.children[0]  # type: ignore
             btn = _ExpandButton(src._collection, src._episode, src._show, src._start)
             btn.row = 1

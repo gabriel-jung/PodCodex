@@ -37,16 +37,24 @@ class Retriever:
         device: str = "cpu",
     ):
         from podcodex.rag.defaults import MODELS
-        from podcodex.rag.embedder import get_embedder
 
         if model not in MODELS:
             valid = ", ".join(MODELS.keys())
             raise ValueError(f"Unknown model '{model}'. Valid: {valid}")
 
         self._model_key = model
-        self._embedder = get_embedder(model, device=device)
+        self._device = device
+        self._embedder = None  # loaded lazily on first retrieve()
         self._local = local or IndexStore()
-        logger.info(f"Retriever ready (model={model})")
+
+    @property
+    def embedder(self):
+        if self._embedder is None:
+            from podcodex.rag.embedder import get_embedder
+
+            self._embedder = get_embedder(self._model_key, device=self._device)
+            logger.info(f"Retriever ready (model={self._model_key})")
+        return self._embedder
 
     # ── Public API ───────────────────────────────────────────────────────
 
@@ -83,17 +91,27 @@ class Retriever:
         self,
         query: str,
         collection: str,
-        top_k: int = 25,
         episode: str | None = None,
         source: str | None = None,
         speaker: str | None = None,
     ) -> list[dict]:
-        """Tokenized keyword search via LanceDB FTS, ordered by start time."""
-        hits = self._local.search_fts(
-            collection, query, top_k, episode=episode, source=source, speaker=speaker
+        """Three-tier phrase search: exact (1.0), accent variant (0.8), near-typo (0.6).
+
+        FTS ~2 pre-filter for speed; Python phrase checks for tier classification.
+        Returns all matches — no top_k cap.
+        """
+        exact, accent_only, fuzzy_only = self._local.search_literal(
+            collection,
+            query,
+            episode=episode,
+            source=source,
+            speaker=speaker,
         )
-        hits.sort(key=lambda c: (c.get("episode", ""), c.get("start", 0.0)))
-        return [{**c, "score": 1.0} for c in hits[:top_k]]
+        return (
+            exact
+            + [{**c, "accent_match": True} for c in accent_only]
+            + [{**c, "fuzzy_match": True} for c in fuzzy_only]
+        )
 
     def random(
         self,
@@ -155,7 +173,7 @@ class Retriever:
         source: str | None,
         speaker: str | None,
     ) -> list[dict]:
-        qv = self._embedder.encode_query(query).astype(np.float32)
+        qv = self.embedder.encode_query(query).astype(np.float32)
         hits = self._local.search_vector(
             collection,
             qv,

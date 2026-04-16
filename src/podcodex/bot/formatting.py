@@ -6,6 +6,8 @@ import time
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from podcodex.rag.index_store import fold_text
+
 if TYPE_CHECKING:
     import discord
 
@@ -14,7 +16,8 @@ if TYPE_CHECKING:
 # ──────────────────────────────────────────────
 
 _MAX_CONTEXT_N = 8
-_MAX_CHARS = 1900
+_MAX_CHARS = 3900  # context sent as embed description (Discord limit: 4096)
+_MAX_DESC_CHARS = 4000  # result / answer embed description guard
 COOLDOWN_SECONDS = 5.0
 
 # ──────────────────────────────────────────────
@@ -47,10 +50,10 @@ def speaker(chunk: dict) -> str:
 
 
 def count_occurrences(text: str, query: str) -> int:
-    """Count case-insensitive occurrences of *query* in *text*."""
+    """Count accent- and case-insensitive occurrences of *query* in *text*."""
     if not query:
         return 0
-    return text.lower().count(query.lower())
+    return fold_text(text).count(fold_text(query))
 
 
 def highlight(text: str, query: str) -> str:
@@ -96,6 +99,11 @@ def safe_truncate(text: str, max_chars: int = _MAX_CHARS) -> tuple[str, bool]:
     cut = text.rfind(" ", 0, max_chars)
     cut = cut if cut != -1 else max_chars
     return text[:cut] + "\n\n*…(truncated)*", True
+
+
+def truncate_description(text: str) -> str:
+    """Truncate embed description to Discord's 4096-char limit."""
+    return safe_truncate(text, _MAX_DESC_CHARS)[0]
 
 
 # ──────────────────────────────────────────────
@@ -237,14 +245,15 @@ class CooldownManager:
         self._seconds = seconds
         self._last_used: dict[int, float] = {}
 
-    def check(self, user_id: int) -> float:
-        """
-        Returns 0.0 if the user is allowed to proceed,
-        or the remaining wait time in seconds if they are on cooldown.
+    def check(self, user_id: int, seconds: float | None = None) -> float:
+        """Return 0.0 if the user may proceed, or remaining wait time.
+
+        *seconds* overrides the instance default when provided.
         """
         now = time.monotonic()
         last = self._last_used.get(user_id, 0.0)
-        remaining = self._seconds - (now - last)
+        duration = seconds if seconds is not None else self._seconds
+        remaining = duration - (now - last)
         return max(0.0, remaining)
 
     def consume(self, user_id: int) -> None:

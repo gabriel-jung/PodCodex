@@ -118,6 +118,8 @@ class SearchResult(BaseModel):
     score: float
     source: str
     speakers: list[dict] | None = None
+    accent_match: bool = False
+    fuzzy_match: bool = False
 
 
 @router.post("/query", response_model=list[SearchResult])
@@ -175,6 +177,8 @@ def _result_to_dict(
         "score": r.get("score", 0.0),
         "source": r.get("source", ""),
         "speakers": r.get("speakers"),
+        "accent_match": bool(r.get("accent_match", False)),
+        "fuzzy_match": bool(r.get("fuzzy_match", False)),
     }
 
 
@@ -186,23 +190,14 @@ class ExactRequest(BaseModel):
     show: str
     model: str = "bge-m3"
     chunking: str = "semantic"
-    top_k: int = 25
     episode: str | None = None
     speaker: str | None = None
     source: str | None = None
 
-    @field_validator("top_k")
-    @classmethod
-    def top_k_positive(cls, v: int) -> int:
-        """Validate that top_k is at least 1."""
-        if v < 1:
-            raise ValueError("top_k must be at least 1")
-        return v
-
 
 @router.post("/exact", response_model=list[SearchResult])
 async def exact_search(req: ExactRequest) -> list[dict]:
-    """Keyword-style search via LanceDB full-text index (tokenized)."""
+    """Phrase search: returns all exact, accent-variant, and near-typo matches."""
     from podcodex.rag.retriever import Retriever
     from podcodex.rag.store import collection_name
 
@@ -211,7 +206,6 @@ async def exact_search(req: ExactRequest) -> list[dict]:
     hits = retriever.find(
         req.query,
         col,
-        top_k=req.top_k,
         episode=req.episode,
         speaker=req.speaker,
         source=req.source,

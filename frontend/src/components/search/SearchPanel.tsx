@@ -51,6 +51,8 @@ export default function SearchPanel(props: SearchPanelProps) {
   const [source, setSource] = useState<string>("");
   const [scopeAll, setScopeAll] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [submittedQuery, setSubmittedQuery] = useState("");
+  const [searchMs, setSearchMs] = useState<number | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const { data: config } = useQuery({
@@ -90,31 +92,34 @@ export default function SearchPanel(props: SearchPanelProps) {
 
   const searchMutation = useMutation({
     mutationFn: () => {
+      const t0 = performance.now();
       const base = {
         query,
         show: showName,
         model,
         chunking,
-        top_k: topK,
         source: source || null,
         ...(!isShowScope && !scopeAll ? { episode: episode?.stem || undefined } : {}),
       };
-      return mode === "exact"
+      const req = mode === "exact"
         ? exactSearch(base)
-        : searchQuery({ ...base, alpha });
+        : searchQuery({ ...base, top_k: topK, alpha });
+      return req.then((data) => { setSearchMs(performance.now() - t0); return data; });
     },
     onSuccess: (data) => setResults(data),
   });
 
   const randomMutation = useMutation({
-    mutationFn: () =>
-      randomQuote({
+    mutationFn: () => {
+      const t0 = performance.now();
+      return randomQuote({
         show: showName,
         model,
         chunking,
         source: source || null,
         ...(!isShowScope && !scopeAll ? { episode: episode?.stem || undefined } : {}),
-      }),
+      }).then((data) => { setSearchMs(performance.now() - t0); return data; });
+    },
     onSuccess: (data) => setResults(data ? [data] : []),
   });
 
@@ -123,9 +128,18 @@ export default function SearchPanel(props: SearchPanelProps) {
     if (query.trim()) {
       setLastQuery(query);
       addToHistory(query);
+      setSubmittedQuery(query);
       searchMutation.mutate();
     }
   };
+
+  const tiers = useMemo(() => {
+    const exact = results.filter((r) => !r.accent_match && !r.fuzzy_match);
+    const accent = results.filter((r) => r.accent_match);
+    const fuzzy = results.filter((r) => r.fuzzy_match);
+    const displayed = mode === "exact" ? [...exact, ...accent, ...fuzzy] : results;
+    return { exact, accent, fuzzy, displayed };
+  }, [results, mode]);
 
   const isPending = searchMutation.isPending || randomMutation.isPending;
   const isError = searchMutation.isError || randomMutation.isError;
@@ -333,24 +347,42 @@ export default function SearchPanel(props: SearchPanelProps) {
 
         {/* Results */}
         <div className="flex-1 overflow-y-auto">
-          {results.length > 0 && (
-            <div className={`${isShowScope ? "p-6" : "p-4"} space-y-3`}>
-              <p className="text-xs text-muted-foreground">
-                {results.length} result{results.length !== 1 ? "s" : ""}
-              </p>
-              {results.map((r, i) => (
-                <SearchResultCard
-                  key={i}
-                  result={r}
-                  show={{ name: showName, folder: showFolder, artwork: showArtwork }}
-                />
-              ))}
-            </div>
-          )}
+          {hasResults && (() => {
+            const { exact, accent, fuzzy, displayed } = tiers;
+            const timingLabel = searchMs != null
+              ? searchMs < 1000 ? `${searchMs.toFixed(0)} ms` : `${(searchMs / 1000).toFixed(2)} s`
+              : null;
 
-          {hasResults && results.length === 0 && (
-            <div className="p-6 text-muted-foreground text-sm">No results found.</div>
-          )}
+            return (
+              <div className={`${isShowScope ? "p-6" : "p-4"} space-y-3`}>
+                <div className="text-xs text-muted-foreground">
+                  {results.length === 0 ? (
+                    <>No results found{timingLabel ? ` in ${timingLabel}.` : "."}</>
+                  ) : mode === "exact" ? (
+                    <>
+                      {`Found ${displayed.length} result${displayed.length !== 1 ? "s" : ""}`}
+                      {timingLabel ? ` in ${timingLabel}` : ""}
+                      {` (`}
+                      {exact.length} exact
+                      {accent.length > 0 && `, ${accent.length} variant${accent.length !== 1 ? "s" : ""}`}
+                      {fuzzy.length > 0 && `, ${fuzzy.length} near-typo${fuzzy.length !== 1 ? "s" : ""}`}
+                      {`)`}
+                    </>
+                  ) : (
+                    <>{`Found ${results.length} result${results.length !== 1 ? "s" : ""}`}{timingLabel ? ` in ${timingLabel}.` : "."}</>
+                  )}
+                </div>
+                {displayed.map((r, i) => (
+                  <SearchResultCard
+                    key={i}
+                    result={r}
+                    show={{ name: showName, folder: showFolder, artwork: showArtwork }}
+                    query={submittedQuery}
+                  />
+                ))}
+              </div>
+            );
+          })()}
         </div>
       </>)}
     </div>

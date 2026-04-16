@@ -1,162 +1,249 @@
-# Deploying Multiple Shows
+# Deploying the Bot
 
-How to serve multiple podcast shows from a single VPS with data isolation between Discord servers.
+How to serve one or more podcast shows from a VPS, with optional per-server access control.
 
 ## Architecture
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│  VPS                                                        │
-│                                                             │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │  podcodex-bot --shows-config shows.toml              │   │
-│  │  (single process, single Discord token)              │   │
-│  └──────────────────────┬───────────────────────────────┘   │
-│                         │                                    │
-│                  ┌──────┴──────┐                              │
-│                  │   SQLite    │                              │
-│                  │  vectors.db │                              │
-│                  └─────────────┘                              │
-│                  Collections:                                 │
-│                  ├─ les_pieds_sur_terre__bge-m3__semantic      │
-│                  └─ transfert__bge-m3__semantic                │
-└─────────────────────────────────────────────────────────────┘
+Local machine (GPU)                   VPS
+───────────────────                   ───
+Desktop app                           podcodex-bot
+  transcribe (WhisperX)    rsync →      LanceDB index (read-only)
+  correct / translate                   BGE-M3 on CPU (query embedding)
+  index (BGE-M3 GPU)                    Discord slash commands
+  ~/.local/share/podcodex/index/
 ```
 
 **Key principles:**
 
-- **One bot, one process, one token** — serves all Discord servers
-- **Shows are invisible by default** — empty `allowed_shows` = no access
-- **Password-gated discovery** — server admins unlock shows via `/unlock`
-- **Complete data isolation** — a server can only query shows it has unlocked; no enumeration of other shows possible
-- **Self-service** — server admins lock/unlock independently, no bot owner intervention needed
+- **Compute locally, serve remotely** — GPU work (transcription, indexing) happens on your machine. The VPS only embeds queries (CPU, ~2.5 GB RAM) and serves results.
+- **One bot, one process, one token** — serves all Discord servers from one container.
+- **Shows invisible by default** — access control via `shows.toml`; admins unlock with `/unlock`.
+- **No database on VPS** — the LanceDB index directory is self-contained. rsync it and done.
 
-## Step-by-step setup
+---
+
+## Initial setup
 
 ### 1. Index shows locally
 
-Use the desktop app to process each show's transcripts and run the Index step — it writes `vectors.db` inside the show folder with all chunks, embeddings, and RSS metadata (episode titles, pub dates) already attached. See the main [README](../README.md) for setup.
+Use the desktop app: add a show, run Transcribe → Correct → Index. The Index step writes the LanceDB index into:
 
-### 2. Copy SQLite DBs to VPS
-
-```bash
-scp "/path/to/Les Pieds sur terre/vectors.db" vps:/path/to/deploy/data/pieds_sur_terre.db
-scp "/path/to/Transfert/vectors.db" vps:/path/to/deploy/data/transfert.db
+```
+~/.local/share/podcodex/index/
 ```
 
-### 3. Rebuild the bot image
+Each show gets its own collection table inside that directory. You can index multiple shows — they all go into the same directory.
 
-The bot code must be updated before anything else (for `--shows-config`, `--hash-password`, `/unlock`, `/lock`).
+### 2. Transfer the index to VPS
+
+```bash
+# First time — full copy
+rsync -av --progress \
+  ~/.local/share/podcodex/index/ \
+  vps:/path/to/deploy/data/index/
+
+# After adding or updating a show — incremental
+rsync -av --progress \
+  ~/.local/share/podcodex/index/ \
+  vps:/path/to/deploy/data/index/
+```
+
+rsync is safe to run while the bot is running — LanceDB is read-only on the bot side.
+
+### 3. Configure environment
+
+```bash
+cd deploy
+cp .env.example .env.production
+# Edit .env.production:
+#   DISCORD_TOKEN=<your bot token>
+#   PODCODEX_INDEX=/app/data/index   ← already set in example
+```
+
+If you want `/ask` (LLM synthesis), add the key for your provider:
+
+```bash
+# In .env.production — add whichever provider you'll use
+OPENAI_API_KEY=sk-...
+# or MISTRAL_API_KEY=...
+# or ANTHROPIC_API_KEY=...
+```
+
+### 4. Install and start
+
+**Option A — uv (simpler, recommended for single-service VPS):**
+
+```bash
+# On the VPS
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv pip install --python 3.12 \
+  --extra-index-url https://download.pytorch.org/whl/cpu \
+  "podcodex[bot,rag]"
+
+# Run (reads DISCORD_TOKEN and PODCODEX_INDEX from env / .env file)
+podcodex-bot
+```
+
+Use a systemd unit for restarts:
+
+```ini
+# /etc/systemd/system/podcodex-bot.service
+[Unit]
+Description=PodCodex Discord Bot
+After=network.target
+
+[Service]
+EnvironmentFile=/path/to/deploy/.env.production
+ExecStart=/root/.local/bin/podcodex-bot
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl enable --now podcodex-bot
+journalctl -u podcodex-bot -f
+```
+
+**Option B — Docker (useful for multi-service VPS or isolated environments):**
 
 ```bash
 cd deploy
 docker compose build bot
+docker compose up -d bot
+docker compose logs -f bot
 ```
 
-### 4. Register shows
+Both options download BGE-M3 (~2.5 GB) on first run — subsequent starts are instant.
 
-Run `--add-show` once per show. It asks for the name and a password, then appends the entry to `shows.toml` with the correct key and hash:
+### 5. Verify
+
+In any Discord server the bot has been invited to:
+
+```
+/stats          → shows indexed collections
+/search question:hello world   → returns results
+```
+
+---
+
+## Access control (multi-show, multi-server)
+
+Skip this section if you're running a private bot with no password protection.
+
+### Register shows
+
+Run `--add-show` once per show — it prompts for name + password and appends to `shows.toml`:
 
 ```bash
 docker compose run --rm bot --add-show --shows-config /app/shows.toml
 # Show name: Les Pieds sur terre
 # Password: ****
 # Confirm password: ****
-# Added 'Les Pieds sur terre' to /app/shows.toml
-
-docker compose run --rm bot --add-show --shows-config /app/shows.toml
-# Show name: Transfert
-# Password: ****
-# Confirm password: ****
-# Added 'Transfert' to /app/shows.toml
+# Added 'Les Pieds sur terre' to shows.toml
 ```
 
-This creates `deploy/shows.toml` (since it's mounted at `/app/shows.toml`). The password you choose is what server admins will type in `/unlock` — remember it or write it down.
+Repeat for each show. The password you set is what server admins type in `/unlock`.
 
-### 5. Update docker-compose.yml
+### Mount shows.toml
 
-Mount `shows.toml` into the bot service. The bot auto-detects it — no `command` override needed:
+`docker-compose.yml` already mounts `./shows.toml:/app/shows.toml:ro`. If the file exists, access control activates automatically — all shows are invisible until unlocked.
 
-```yaml
-  bot:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    env_file:
-      - .env.production
-    volumes:
-      - ./data:/app/data
-      - ./shows.toml:/app/shows.toml:ro
-      - model_cache:/root/.cache
-    deploy:
-      resources:
-        limits:
-          memory: 3G
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "3"
-```
-
-The only change from a single-show setup is the `shows.toml` volume mount. Remove it (or delete the file) to go back to no access control.
-
-### 6. Deploy
+### Restart to pick up changes
 
 ```bash
-docker compose up -d bot
+docker compose restart bot
 ```
 
-> **Warning:** enabling `--shows-config` turns on access control. All shows become invisible until unlocked. If you have an existing Discord server using the bot, you must run `/unlock` there (step 9) or it will stop returning results.
+### Unlock shows in Discord
 
-### 7. Unlock shows in Discord servers
+In each Discord server, an admin with `manage_guild` runs:
 
-In each Discord server, an admin (with `manage_guild` permission) runs `/unlock` with the show name and the password you chose in step 5. The bot verifies the hash and grants access. Responses are ephemeral — other users see nothing.
+```
+/unlock show:Les Pieds sur terre password:****
+```
 
-`/lock` removes a show from the server.
+The bot verifies the hash and grants access. Response is ephemeral. `/lock` removes a show.
+
+---
+
+## Configuring /ask (LLM synthesis)
+
+`/ask` requires a provider to be configured per server (by an admin):
+
+```
+/setup ask_provider:openai ask_model:gpt-4o-mini
+/setup ask_provider:mistral
+/setup ask_provider:anthropic ask_model:claude-haiku-4-5-20251001
+```
+
+The API key is read from the env var for the provider (`OPENAI_API_KEY`, `MISTRAL_API_KEY`, `ANTHROPIC_API_KEY`) — it is never stored in `server_config.json`. Set it in `.env.production` before starting the bot.
+
+The ask cooldown (default 30s) can also be adjusted:
+
+```
+/setup ask_cooldown:60
+```
+
+---
 
 ## Adding a new show later
 
-1. Index the show in the desktop app (produces `vectors.db` in the show folder)
-2. `scp vectors.db` to VPS
-3. `docker compose run --rm bot --add-show --shows-config /app/shows.toml`
+1. Desktop app: index the new show locally
+2. `rsync` the index directory to VPS (incremental — only new files transferred)
+3. If using access control: `docker compose run --rm bot --add-show --shows-config /app/shows.toml`
 4. `docker compose restart bot` (to reload `shows.toml`)
-5. Share the password with the server admin — they run `/unlock` themselves
+5. Share the password with the server admin — they run `/unlock`
 
-## Security
+---
 
-- **`/unlock` and `/lock` responses are ephemeral** — other users in the channel see nothing (not even that the command was used)
-- **Password never stored by the bot** — only the sha256 hash is in `shows.toml`; the bot compares and discards immediately
-- **Password travels over TLS** to Discord servers. Discord can see it server-side, which is acceptable for a podcast access key
-- **`/unlock` requires `manage_guild` permission** — regular users cannot unlock shows
-- **`/setup` blocks show management** when access control is on — `show_add`/`show_remove`/`show_clear` are rejected with a message pointing to `/unlock` and `/lock`
-- **Bot owner can rotate passwords** in `shows.toml` without affecting already-unlocked servers
-- **Backward compatible** — without `--shows-config`, the bot behaves exactly as before (no access control, all shows visible)
+## Updating the bot
 
-## Scaling
+```bash
+git pull
+docker compose build bot
+docker compose up -d bot   # zero-downtime rolling restart
+```
 
-| Shows  | RAM    | Notes                                                   |
-| ------ | ------ | ------------------------------------------------------- |
-| 1      | ~3 GB  | Current setup, no `--shows-config` needed               |
-| 2-20   | ~3 GB  | Single bot + `shows.toml` (this guide)                  |
-| 20-100 | ~4 GB  | Add a shared embedding service (TEI or FastAPI)         |
-| 100+   | ~25 GB | One bot per show + shared embedding service (see below) |
+The index and model cache volumes are preserved across rebuilds.
 
-The bottleneck at scale is the embedding model: BGE-M3 uses ~2.5 GB RAM. One bot = one model load = fine. If you ever need separate bot processes per show (separate tokens for full process-level isolation), extract the embedding model into a shared HTTP service so each bot is only ~200 MB.
+---
 
-## Bot commands reference
+## Security notes
 
-| Command                         | Who      | Description                               |
-| ------------------------------- | -------- | ----------------------------------------- |
-| `/unlock show password`         | Admin    | Unlock a show for this server             |
-| `/lock show`                    | Admin    | Remove a show from this server            |
-| `/setup`                        | Admin    | View/change model, top-k, source, compact |
-| `/search question [show] [...]` | Everyone | Hybrid keyword + semantic search          |
-| `/exact query [show] [...]`     | Everyone | Literal substring match                   |
-| `/random [show] [...]`          | Everyone | Random quote                              |
-| `/stats [show]`                 | Everyone | Index overview                            |
-| `/episodes show`                | Everyone | List episodes for a show                  |
-| `/help`                         | Everyone | Show available commands                   |
+- `/unlock` and `/lock` responses are ephemeral — other users see nothing
+- Password is never stored — only sha256 hash in `shows.toml`
+- API keys for `/ask` are env-var only — not persisted to disk by the bot
+- `/setup` blocks `show_add`/`show_remove` when access control is active — use `/unlock`/`/lock`
 
-All user-facing commands are scoped to `allowed_shows` — users can only see and search shows that have been unlocked in their server.
+---
+
+## Resource requirements
+
+| Setup                  | RAM     | Notes                                          |
+| ---------------------- | ------- | ---------------------------------------------- |
+| Bot only (no /ask)     | ~2.5 GB | BGE-M3 for query embedding                     |
+| Bot + /ask             | ~2.5 GB | LLM call is external API, no extra RAM         |
+| Many shows (20+)       | ~3 GB   | LanceDB scales well; RAM stays flat            |
+| Separate embedding svc | ~200 MB | Extract BGE-M3 into shared HTTP service (TEI)  |
+
+---
+
+## Command reference
+
+| Command                              | Who      | Description                                      |
+| ------------------------------------ | -------- | ------------------------------------------------ |
+| `/search question [show] [...]`      | Everyone | Hybrid keyword + semantic search                 |
+| `/ask question [show] [...]`         | Everyone | LLM-synthesized answer from transcript passages  |
+| `/exact query [show] [...]`          | Everyone | Literal substring match                          |
+| `/random [show] [...]`               | Everyone | Random quote                                     |
+| `/stats [show]`                      | Everyone | Index overview                                   |
+| `/episodes show`                     | Everyone | List episodes for a show                         |
+| `/help`                              | Everyone | Show available commands                          |
+| `/setup [model] [top_k] [ask_*] …`  | Admin    | Configure server defaults                        |
+| `/unlock show password`              | Admin    | Unlock a show for this server                    |
+| `/lock show`                         | Admin    | Remove a show from this server                   |
+| `/sync`                              | Admin    | Manually re-sync slash commands                  |

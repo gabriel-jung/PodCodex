@@ -6,8 +6,9 @@ services:
     env_file:
       - .env.production
     volumes:
-      - ./data:/app/data
-      - model_cache:/root/.cache
+      - ./data:/app/data          # index lives at /app/data/index (set via PODCODEX_INDEX)
+      - ./shows.toml:/app/shows.toml:ro   # optional: remove to disable access control
+      - model_cache:/root/.cache  # BGE-M3 model cache — persisted across rebuilds
     deploy:
       resources:
         limits:

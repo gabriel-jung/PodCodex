@@ -3,6 +3,7 @@ import type { SearchResult } from "@/api/types";
 import { useAudioStore } from "@/stores";
 import { formatTime } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
+import { highlightText } from "@/lib/highlight";
 import { Play } from "lucide-react";
 import SegmentContextDialog from "./SegmentContextDialog";
 
@@ -15,9 +16,10 @@ interface ShowContext {
 interface SearchResultCardProps {
   result: SearchResult;
   show?: ShowContext;
+  query?: string;
 }
 
-export default function SearchResultCard({ result, show }: SearchResultCardProps) {
+export default function SearchResultCard({ result, show, query = "" }: SearchResultCardProps) {
   const playEpisode = useAudioStore((s) => s.playEpisode);
   const [contextOpen, setContextOpen] = useState(false);
 
@@ -68,7 +70,7 @@ export default function SearchResultCard({ result, show }: SearchResultCardProps
             </div>
           </div>
           <span className={`shrink-0 italic font-mono text-2xs tabular-nums ${scoreEmphasis}`}>
-            {result.score.toFixed(2)}
+            {Math.round(result.score * 100)}%
           </span>
         </div>
         <button
@@ -90,12 +92,12 @@ export default function SearchResultCard({ result, show }: SearchResultCardProps
                   >
                     {turn.speaker}
                   </span>
-                  <span className="whitespace-pre-wrap">{turn.text}</span>
+                  <span className="whitespace-pre-wrap">{highlightText(turn.text, query)}</span>
                 </li>
               ))}
             </ol>
           ) : (
-            <p className="text-sm leading-relaxed whitespace-pre-wrap">{result.text}</p>
+            <p className="text-sm leading-relaxed whitespace-pre-wrap">{highlightText(result.text, query)}</p>
           )}
         </button>
       </div>

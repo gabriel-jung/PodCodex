@@ -64,7 +64,7 @@ All steps share a segment editor (inline editing, speaker mapping, timestamp sna
 | Transcription  | WhisperX, pyannote-audio                            |
 | LLM            | Ollama (local), OpenAI, Anthropic, Mistral          |
 | Voice cloning  | Qwen3-TTS                                           |
-| Search         | SQLite + numpy, BGE-M3 / E5 embeddings, Chonkie     |
+| Search         | LanceDB, BGE-M3 / E5 embeddings, Chonkie            |
 | Audio          | WaveSurfer.js, ffmpeg, sox                          |
 
 ---
@@ -95,11 +95,11 @@ For a native window (requires Rust + GTK/WebKit on Linux), run `make dev` instea
 |------------|----------------------------------------------------|--------------------------------------|
 | `desktop`  | fastapi, uvicorn                                   | Desktop app backend                  |
 | `pipeline` | whisperx, pyannote-audio, ollama, openai, qwen-tts | Transcription, correction, synthesis |
-| `rag`      | torch, sentence-transformers, chonkie, bm25s       | Embeddings & semantic search         |
+| `rag`      | torch, sentence-transformers, chonkie, lancedb     | Embeddings & semantic search         |
 | `youtube`  | yt-dlp                                             | YouTube ingest                       |
+| `bot`      | discord.py, openai                                 | Discord bot                          |
 
 > **YouTube subtitles:** Manual subtitles download instantly. Auto-generated subtitles require deno (yt-dlp uses it to solve YouTube's JS challenges) and take ~60 seconds per episode due to rate limiting.
-| `bot`      | discord.py                                         | Discord bot                          |
 
 ### Environment variables
 
@@ -123,6 +123,7 @@ Search your transcripts from Discord with slash commands.
 | Command     | Description                                             |
 |-------------|---------------------------------------------------------|
 | `/search`   | Semantic / hybrid search by meaning                     |
+| `/ask`      | Retrieval-augmented Q&A (synthesized answer + sources)  |
 | `/exact`    | Literal substring match (like Ctrl+F)                   |
 | `/random`   | Random quote, with show/episode/speaker/source filters  |
 | `/stats`    | Index overview (shows, episodes, duration)              |
@@ -165,10 +166,10 @@ Deploy to a VPS: the [`deploy/`](deploy/) directory ships a Docker Compose setup
   - Shared `LLMRequest` base model, `_batch_llm_step()` unified handler, `_resolve_source_segments()` for version DB lookups.
 - **Core** (`src/podcodex/core/`) — transcribe, correct, translate, synthesize, versioning, per-show pipeline DB.
   - `run_llm_pipeline()` — single LLM dispatch function shared by correct and translate.
-- **RAG** (`src/podcodex/rag/`) — chunking, embedding, SQLite store, hybrid retrieval.
+- **RAG** (`src/podcodex/rag/`) — chunking, embedding, LanceDB index store, hybrid retrieval (vector ANN + BM25 FTS).
 - **Tauri** (`src-tauri/`) — thin Rust shell, auto-spawns backend, native file dialogs.
 
-Every pipeline save (transcribe, correct, translate, manual edit) is archived as a **version** under `.versions/{step}/` with full provenance (model, params, content hash). Episode status is tracked in a per-show `pipeline.db` SQLite. All embeddings live in a single `vectors.db` — no external vector store, search is numpy cosine similarity. Collection names follow `{show}__{model}__{chunker}`.
+Every pipeline save (transcribe, correct, translate, manual edit) is archived as a **version** under `.versions/{step}/` with full provenance (model, params, content hash). Episode status is tracked in a per-show `pipeline.db` SQLite. All embeddings live in a single LanceDB index (`~/.local/share/podcodex/index` by default). Collection names follow `{show}__{model}__{chunker}`.
 
 ## Roadmap
 

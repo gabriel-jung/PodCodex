@@ -393,6 +393,7 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
         req.index_model_keys,
         req.index_chunkings,
         local,
+        overwrite=req.force,
     )
 
     if upserted == 0:
