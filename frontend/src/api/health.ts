@@ -33,6 +33,18 @@ export const removeExtra = (extra: string) =>
     body: JSON.stringify({ extra }),
   });
 
+export const getTaskStatus = (taskId: string) =>
+  json<{
+    task_id: string;
+    status: string;
+    progress: number;
+    message: string;
+    steps?: string[];
+    log?: string[];
+    result?: Record<string, unknown>;
+    error?: string;
+  } | null>(`/api/tasks/${encodeURIComponent(taskId)}`);
+
 export const cancelTask = (taskId: string) =>
   json<{ status: string; task_id: string }>(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
     method: "POST",

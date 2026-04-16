@@ -29,10 +29,11 @@ function DownloadStrip() {
   const progress = useProgress(downloadTaskId);
   const queryClient = useQueryClient();
 
-  // Auto-dismiss if task ID is set but no progress arrives (stale after server restart)
+  // Auto-dismiss if task ID is set but neither WS nor API polling returns progress.
+  // 12s gives the 5s poll interval time to fire and hydrate before we give up.
   useEffect(() => {
     if (!downloadTaskId || progress) return;
-    const timer = setTimeout(() => setDownloadTask(null), 5000);
+    const timer = setTimeout(() => setDownloadTask(null), 12_000);
     return () => clearTimeout(timer);
   }, [downloadTaskId, progress, setDownloadTask]);
 
@@ -256,10 +257,11 @@ function BatchStrip() {
   const [showResult, setShowResult] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
 
-  // Auto-dismiss if task ID is set but no progress arrives (stale after server restart)
+  // Auto-dismiss if task ID is set but neither WS nor API polling returns progress.
+  // 12s gives the 5s poll interval time to fire and hydrate before we give up.
   useEffect(() => {
     if (!batchTaskId || progress) return;
-    const timer = setTimeout(() => setBatchTask(null), 5000);
+    const timer = setTimeout(() => setBatchTask(null), 12_000);
     return () => clearTimeout(timer);
   }, [batchTaskId, progress, setBatchTask]);
 
@@ -446,7 +448,7 @@ function BatchStrip() {
       {/* Results summary dialog */}
       {showResult && progress?.result && (
         <BatchResultSummary
-          result={progress.result as BatchResult}
+          result={progress.result as unknown as BatchResult}
           onDismiss={() => { setShowResult(false); dismiss(); }}
         />
       )}

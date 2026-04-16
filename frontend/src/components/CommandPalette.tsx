@@ -27,7 +27,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { listShows, getEpisodes } from "@/api/shows";
-import { exactSearch } from "@/api/search";
+import { exactSearch } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore, useBatchHistoryStore } from "@/stores";
 import { useTheme } from "@/hooks/useTheme";

@@ -129,7 +129,7 @@ export const randomQuote = (req: {
 
 export const getIndexStats = (show: string = "") =>
   json<{
-    collections: { collection: string; model: string; chunking: string; episodes: number; chunks: number }[];
+    collections: { collection: string; model: string; chunking: string; episodes: number; chunks: number; sources: string[] }[];
     total_episodes: number;
     total_chunks: number;
   }>(`/api/search/stats?show=${encodeURIComponent(show)}`);

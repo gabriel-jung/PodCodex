@@ -48,6 +48,7 @@ export default function SearchPanel(props: SearchPanelProps) {
   const [chunking, setChunking] = useState("semantic");
   const [topK, setTopK] = useState(isShowScope ? 10 : 5);
   const [alpha, setAlpha] = useState(0.5);
+  const [source, setSource] = useState<string>("");
   const [scopeAll, setScopeAll] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -71,6 +72,10 @@ export default function SearchPanel(props: SearchPanelProps) {
     () => Array.from(new Set((stats?.collections ?? []).map((c) => c.chunking))),
     [stats],
   );
+  const availableSources = useMemo(
+    () => Array.from(new Set((stats?.collections ?? []).flatMap((c) => c.sources ?? []))).sort(),
+    [stats],
+  );
 
   useEffect(() => {
     if (availableModels.length > 0 && !availableModels.includes(model)) {
@@ -91,6 +96,7 @@ export default function SearchPanel(props: SearchPanelProps) {
         model,
         chunking,
         top_k: topK,
+        source: source || null,
         ...(!isShowScope && !scopeAll ? { episode: episode?.stem || undefined } : {}),
       };
       return mode === "exact"
@@ -106,6 +112,7 @@ export default function SearchPanel(props: SearchPanelProps) {
         show: showName,
         model,
         chunking,
+        source: source || null,
         ...(!isShowScope && !scopeAll ? { episode: episode?.stem || undefined } : {}),
       }),
     onSuccess: (data) => setResults(data ? [data] : []),
@@ -262,6 +269,23 @@ export default function SearchPanel(props: SearchPanelProps) {
                   <option key={key} value={key} title={config.chunking_strategies[key]}>{key}</option>
                 ))}
               </select>
+
+              {availableSources.length > 1 && (
+                <>
+                  <span className="text-muted-foreground/40">·</span>
+                  <select
+                    value={source}
+                    onChange={(e) => setSource(e.target.value)}
+                    title="Filter by indexed source version"
+                    className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none cursor-pointer"
+                  >
+                    <option value="">all sources</option>
+                    {availableSources.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </>
+              )}
 
               <span className="text-muted-foreground/40">·</span>
 

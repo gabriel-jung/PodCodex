@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { getTaskStatus } from "@/api/client";
 
 export interface TaskProgress {
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -12,11 +13,18 @@ export interface TaskProgress {
 
 type Listener = (data: TaskProgress) => void;
 
+/** Milliseconds of WS silence before falling back to HTTP polling. */
+const STALE_THRESHOLD_MS = 5_000;
+/** How often to poll when WS is silent. */
+const POLL_INTERVAL_MS = 5_000;
+
 class ProgressManager {
   private ws: WebSocket | null = null;
   private listeners = new Map<string, Set<Listener>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
+  /** Timestamp of last WS message received (any task). */
+  lastWsMessage = 0;
 
   connect(): void {
     if (this.ws && this.ws.readyState <= WebSocket.OPEN) return;
@@ -28,6 +36,7 @@ class ProgressManager {
     this.ws = new WebSocket(url);
 
     this.ws.onmessage = (event) => {
+      this.lastWsMessage = Date.now();
       try {
         const data = JSON.parse(event.data) as TaskProgress & { task_id: string };
         const callbacks = this.listeners.get(data.task_id);
@@ -79,13 +88,44 @@ const manager = new ProgressManager();
 
 export function useProgress(taskId: string | null): TaskProgress | null {
   const [state, setState] = useState<TaskProgress | null>(null);
+  const lastWsUpdateRef = useRef<number>(0);
 
   useEffect(() => {
     if (!taskId) {
       setState(null);
       return;
     }
-    return manager.subscribe(taskId, setState);
+
+    const unsubscribe = manager.subscribe(taskId, (data) => {
+      lastWsUpdateRef.current = Date.now();
+      setState(data);
+    });
+
+    // Poll the REST API when WS has been silent — covers server restarts,
+    // dropped connections, and tasks that ended without broadcasting.
+    const interval = setInterval(async () => {
+      const sinceLastUpdate = Date.now() - lastWsUpdateRef.current;
+      if (sinceLastUpdate < STALE_THRESHOLD_MS) return;
+
+      try {
+        const status = await getTaskStatus(taskId);
+        if (status) {
+          lastWsUpdateRef.current = Date.now();
+          setState(status as TaskProgress);
+        } else {
+          // Task gone from server (cleaned up or never existed).
+          // Reset to null so TaskBar dismiss timer can fire.
+          setState(null);
+        }
+      } catch {
+        // Transient network error — don't clear state, retry next interval.
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => {
+      unsubscribe();
+      clearInterval(interval);
+    };
   }, [taskId]);
 
   return state;

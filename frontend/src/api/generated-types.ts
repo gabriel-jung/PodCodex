@@ -267,6 +267,7 @@ export interface SearchRequest {
   alpha?: number;
   episode?: string | null;
   speaker?: string | null;
+  source?: string | null;
 }
 
 export interface SearchResultSchema {

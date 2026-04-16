@@ -139,6 +139,31 @@ async def get_active_task(
     return resp
 
 
+@router.get("/tasks/{task_id}")
+async def get_task(task_id: str) -> dict | None:
+    """Return current state of a task by ID (any status, until cleanup)."""
+    from podcodex.api.tasks import task_manager
+
+    info = task_manager.get(task_id)
+    if not info:
+        return None
+    resp: dict = {
+        "task_id": info.task_id,
+        "status": info.status,
+        "progress": info.progress,
+        "message": info.message,
+    }
+    if info.steps:
+        resp["steps"] = info.steps
+    if info.log:
+        resp["log"] = info.log
+    if info.result is not None:
+        resp["result"] = info.result
+    if info.error is not None:
+        resp["error"] = info.error
+    return resp
+
+
 @router.post("/tasks/{task_id}/cancel")
 async def cancel_task(task_id: str) -> dict:
     """Cancel a running or pending task."""

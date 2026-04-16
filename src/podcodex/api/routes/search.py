@@ -88,6 +88,7 @@ class SearchRequest(BaseModel):
     alpha: float = 0.5
     episode: str | None = None
     speaker: str | None = None
+    source: str | None = None
 
     @field_validator("top_k")
     @classmethod
@@ -141,6 +142,7 @@ async def search_query(req: SearchRequest) -> list[dict]:
             alpha=req.alpha,
             episode=req.episode,
             speaker=req.speaker,
+            source=req.source,
         )
     except Exception:
         logger.opt(exception=True).warning("Search failed for collection {}", col)
@@ -187,6 +189,7 @@ class ExactRequest(BaseModel):
     top_k: int = 25
     episode: str | None = None
     speaker: str | None = None
+    source: str | None = None
 
     @field_validator("top_k")
     @classmethod
@@ -206,7 +209,12 @@ async def exact_search(req: ExactRequest) -> list[dict]:
     col = collection_name(req.show, req.model, req.chunking)
     retriever = Retriever(model=req.model, local=get_index_store())
     hits = retriever.find(
-        req.query, col, top_k=req.top_k, episode=req.episode, speaker=req.speaker
+        req.query,
+        col,
+        top_k=req.top_k,
+        episode=req.episode,
+        speaker=req.speaker,
+        source=req.source,
     )
     audio_lookup = _build_audio_lookup()
     return [_result_to_dict(h, audio_lookup) for h in hits]
@@ -221,6 +229,7 @@ class RandomRequest(BaseModel):
     chunking: str = "semantic"
     episode: str | None = None
     speaker: str | None = None
+    source: str | None = None
 
 
 @router.post("/random", response_model=SearchResult | None)
@@ -231,7 +240,9 @@ async def random_quote(req: RandomRequest) -> dict | None:
 
     col = collection_name(req.show, req.model, req.chunking)
     retriever = Retriever(model=req.model, local=get_index_store())
-    chunk = retriever.random(col, episode=req.episode, speaker=req.speaker)
+    chunk = retriever.random(
+        col, episode=req.episode, speaker=req.speaker, source=req.source
+    )
     if chunk is None:
         return None
     return _result_to_dict({**chunk, "score": 1.0}, _build_audio_lookup())
@@ -253,6 +264,7 @@ async def index_stats(show: str = "") -> dict:
         info = local.get_collection_info(col)
         ep_count = len(local.list_episodes(col))
         chunk_count = local.collection_chunk_count(col)
+        sources = local.list_sources(col)
         stats.append(
             {
                 "collection": col,
@@ -260,6 +272,7 @@ async def index_stats(show: str = "") -> dict:
                 "chunking": info["chunker"] if info else "",
                 "episodes": ep_count,
                 "chunks": chunk_count,
+                "sources": sources,
             }
         )
         total_episodes += ep_count
