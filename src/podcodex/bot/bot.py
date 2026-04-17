@@ -1881,6 +1881,14 @@ class PodCodexBot(discord.Client):
         interaction: discord.Interaction,
         password: str,
     ) -> None:
+        # Refresh from disk so passwords set via the desktop app (while the
+        # bot is already running) are picked up without a restart.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._reload_shows)
+
+        # Strip: Discord mobile clients sometimes append a space on paste.
+        password = password.strip()
+
         # Find show by password — intentionally no show name in the command
         # so available show names are never exposed to users.
         entry = next(
@@ -1892,7 +1900,11 @@ class PodCodexBot(discord.Client):
             None,
         )
         if entry is None:
-            logger.warning(f"Failed unlock attempt in guild {interaction.guild_id}")
+            logger.warning(
+                f"Failed unlock attempt in guild {interaction.guild_id} "
+                f"(bot sees {len(self._shows)} protected show(s): "
+                f"{sorted(e.name for e in self._shows.values())})"
+            )
             await interaction.response.send_message("Invalid password.", ephemeral=True)
             return
 
