@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 import discord
 
@@ -215,19 +216,45 @@ class SourcesView(discord.ui.View):
         )
 
 
+_MARKDOWN_STRIP = re.compile(r"[*_`~]+")
+
+
+def _option_snippet(embed: discord.Embed) -> str:
+    """Build a short snippet for a jump-dropdown option description."""
+    ts = ""
+    for f in embed.fields:
+        if f.name == "Timestamp":
+            ts = f.value or ""
+            break
+
+    raw = (embed.description or "").strip()
+    first_line = raw.split("\n", 1)[0] if raw else ""
+    text = _MARKDOWN_STRIP.sub("", first_line).strip()
+
+    if ts and text:
+        return f"{ts} • {text}"
+    return ts or text
+
+
 class PaginatedResultView(discord.ui.View):
     """
-    Single-message paginated result display with ◀ counter ▶ buttons.
+    Single-message paginated result display with ◀ counter ▶ buttons
+    plus a 'Jump to result…' dropdown (windowed to 25 entries).
     Optionally shows a 'Show context ↕' button per page if the page has one.
     """
+
+    # Discord hard cap on Select options per component.
+    _JUMP_WINDOW = 25
 
     def __init__(self, results: list[tuple[discord.Embed, discord.ui.View]]) -> None:
         super().__init__(timeout=300)
         self._results = results
         self._index = 0
-        # _expand_item holds the dynamically swapped button (row 1)
-        self._expand_item: discord.ui.Button | None = None
+        # Dynamically swapped components:
+        self._expand_item: discord.ui.Button | None = None  # row 1
+        self._jump_item: discord.ui.Select | None = None  # row 2
         self._sync_expand()
+        self._sync_jump()
         self._update_nav()
 
     @property
@@ -248,6 +275,56 @@ class PaginatedResultView(discord.ui.View):
             self.add_item(btn)
             self._expand_item = btn
 
+    def _sync_jump(self) -> None:
+        """Rebuild the jump-to dropdown, windowed around the current index."""
+        if self._jump_item is not None:
+            self.remove_item(self._jump_item)
+            self._jump_item = None
+
+        n = len(self._results)
+        if n <= 1:
+            return
+
+        window = min(self._JUMP_WINDOW, n)
+        start = max(0, min(n - window, self._index - window // 2))
+        end = start + window
+
+        options: list[discord.SelectOption] = []
+        for i in range(start, end):
+            embed = self._results[i][0]
+            title = (embed.title or "(untitled)").strip()
+            label = f"#{i + 1} • {title}"
+            desc = _option_snippet(embed)
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    description=(desc[:100] or None) if desc else None,
+                    value=str(i),
+                    default=(i == self._index),
+                )
+            )
+
+        placeholder = f"Jump to result… ({self._index + 1} / {n})"
+        if n > window:
+            placeholder = f"Jump (showing {start + 1}–{end} of {n})"
+
+        select = discord.ui.Select(
+            placeholder=placeholder[:150],
+            options=options,
+            row=2,
+        )
+        select.callback = self._on_jump  # type: ignore[assignment]
+        self.add_item(select)
+        self._jump_item = select
+
+    async def _on_jump(self, interaction: discord.Interaction) -> None:
+        assert self._jump_item is not None
+        self._index = int(self._jump_item.values[0])
+        self._sync_expand()
+        self._sync_jump()
+        self._update_nav()
+        await interaction.response.edit_message(embed=self.current_embed, view=self)
+
     def _update_nav(self) -> None:
         self.prev_button.disabled = self._index == 0
         self.next_button.disabled = self._index == len(self._results) - 1
@@ -259,6 +336,7 @@ class PaginatedResultView(discord.ui.View):
     ) -> None:
         self._index -= 1
         self._sync_expand()
+        self._sync_jump()
         self._update_nav()
         await interaction.response.edit_message(embed=self.current_embed, view=self)
 
@@ -276,5 +354,6 @@ class PaginatedResultView(discord.ui.View):
     ) -> None:
         self._index += 1
         self._sync_expand()
+        self._sync_jump()
         self._update_nav()
         await interaction.response.edit_message(embed=self.current_embed, view=self)
