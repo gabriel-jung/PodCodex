@@ -148,85 +148,62 @@ def _chunk_key(chunk: dict) -> str:
     return f"{chunk.get('episode', '')}|{chunk.get('start', 0)}"
 
 
-_MIN_APPROX_LEN = 5  # tokens shorter than this must match exactly in multi-word fuzzy
+def _approx_substring(
+    pattern: str, text: str, max_dist: int
+) -> tuple[int, int, int] | None:
+    """Approximate substring match via Sellers' algorithm.
 
+    Finds the substring of ``text`` with minimum Levenshtein distance to
+    ``pattern``. Wagner-Fischer DP with row-0 seeded to zeros (free start
+    in text) and the final row min taken over all columns (free end).
+    Tracks the start column through the DP so we can return the matched
+    span's ``[start, end)`` indices, not just its distance.
 
-def _phrase_fuzzy(
-    match_words: list[str],
-    text: str,
-    max_dist: int,
-    phrase_len: int,
-) -> tuple[float, str] | None:
-    """Sliding-window phrase fuzzy match.
-
-    Scans the text in windows of ``phrase_len + 2`` tokens. Within each window,
-    every token in ``match_words`` must have a match within ``max_dist`` edits
-    (tokens shorter than ``_MIN_APPROX_LEN`` must match exactly). Exactly one
-    token may be approximate; if all are exact the window is skipped (phrase
-    would have been caught by substring tiers).
+    Order is preserved by construction (no reordering is possible in a
+    substring search) — unlike token-window fuzzy matching, "lumière
+    très" cannot match "êtres de lumière" at low distance.
 
     Args:
-        match_words: Filtered query tokens to match (≥ 3 chars).
-        text: Chunk text to search.
-        max_dist: Maximum Levenshtein distance for long tokens.
-        phrase_len: Total original token count (including short ones), used to
-            size the sliding window so filtered tokens don't shrink it.
+        pattern: Folded query phrase.
+        text:    Folded chunk text to search.
+        max_dist: Distance ceiling; early-exits when every row cell
+            exceeds it, returning ``None``.
 
     Returns:
-        ``(score, matched_span)`` for the best window, or ``None``.
-        ``matched_span`` is the original-text slice covering the matched
-        tokens (including punctuation between them).
+        ``(distance, start, end)`` of the best substring, or ``None``
+        when distance exceeds ``max_dist``.
     """
-    folded_qws = [fold_text(qw) for qw in match_words]
-    matches = list(_WORD_TOKEN_RE.finditer(text))
-    raw_tokens = [m.group(0) for m in matches]
-    positions = [(m.start(), m.end()) for m in matches]
-    text_tokens = [fold_text(w) for w in raw_tokens]
-    window = phrase_len + 2  # +2 slack for phrase variation
-    best: tuple[float, str] | None = None
-
-    for i in range(max(1, len(text_tokens) - window + 1)):
-        win_folded = text_tokens[i : i + window]
-        approx_count = 0
-        approx_qw = ""
-        approx_j = -1
-        ok = True
-        used: set[int] = set()
-        for qw in folded_qws:
-            best_d, best_j = 999, -1
-            for j, tw in enumerate(win_folded):
-                if j in used:
-                    continue
-                d = _levenshtein(qw, tw, best_d - 1)
-                if d < best_d:
-                    best_d, best_j = d, j
-            effective_max = max_dist if len(qw) >= _MIN_APPROX_LEN else 0
-            if best_d > effective_max:
-                ok = False
-                break
-            if best_d > 0:
-                approx_count += 1
-                if approx_count > 1:
-                    ok = False
-                    break
-                approx_qw, approx_j = qw, best_j
-            if best_j >= 0:
-                used.add(best_j)
-        if ok and approx_count == 1:
-            # Score: char match on the one approximate word only — using the
-            # full phrase would dilute the typo signal into near-100%.
-            fm = win_folded[approx_j]
-            matching = sum(
-                b.size
-                for b in SequenceMatcher(None, approx_qw, fm).get_matching_blocks()
-            )
-            score = matching / max(len(approx_qw), 1)
-            if best is None or score > best[0]:
-                abs_indices = sorted(used)
-                span_start = positions[i + abs_indices[0]][0]
-                span_end = positions[i + abs_indices[-1]][1]
-                best = (score, text[span_start:span_end])
-    return best
+    if not pattern:
+        return (0, 0, 0)
+    n = len(text)
+    prev_cost = [0] * (n + 1)
+    prev_start = list(range(n + 1))  # free start: each column starts at itself
+    for i, pc in enumerate(pattern, 1):
+        curr_cost = [i] + [0] * n
+        curr_start = [0] + [0] * n
+        row_min = i
+        for j in range(1, n + 1):
+            sub = prev_cost[j - 1] + (0 if pc == text[j - 1] else 1)
+            ins = curr_cost[j - 1] + 1
+            dele = prev_cost[j] + 1
+            best = sub
+            start = prev_start[j - 1]
+            if ins < best:
+                best, start = ins, curr_start[j - 1]
+            if dele < best:
+                best, start = dele, prev_start[j]
+            curr_cost[j] = best
+            curr_start[j] = start
+            if best < row_min:
+                row_min = best
+        if row_min > max_dist:
+            return None
+        prev_cost, prev_start = curr_cost, curr_start
+    best_d = min(prev_cost)
+    if best_d > max_dist:
+        return None
+    end = prev_cost.index(best_d)
+    return (best_d, prev_start[end], end)
 
 
 _HOME_INDEX_PATH: Path = Path.home() / ".local" / "share" / "podcodex" / "index"
@@ -949,16 +926,27 @@ class IndexStore:
                         }
                     )
                 else:
-                    result = (
-                        _fuzzy_match(fts_tokens[0], text, max_dist)
-                        if single_word
-                        else _phrase_fuzzy(
-                            fts_tokens, text, max_dist, phrase_len=len(all_tokens)
-                        )
-                    )
-                    if result is not None:
-                        score, span = result
-                        fuzzy_only.append({**c, "score": score, "match_text": span})
+                    if single_word:
+                        result = _fuzzy_match(fts_tokens[0], text, max_dist)
+                        if result is not None:
+                            score, span = result
+                            fuzzy_only.append({**c, "score": score, "match_text": span})
+                    else:
+                        # Tolerance ~12% of phrase length: short queries stay
+                        # strict, long ones accept one or two real typos.
+                        phrase_max = max(1, len(folded_q) // 8)
+                        hit = _approx_substring(folded_q, folded_t, phrase_max)
+                        if hit is not None:
+                            d, fs, fe = hit
+                            if len(folded_t) == len(text):
+                                span = text[fs:fe]
+                            else:
+                                span = (
+                                    _find_original_span(text, folded_t[fs:fe])
+                                    or folded_t[fs:fe]
+                                )
+                            score = 1.0 - d / max(len(folded_q), 1)
+                            fuzzy_only.append({**c, "score": score, "match_text": span})
 
         exact.sort(key=lambda c: (c.get("episode", ""), c.get("start", 0.0)))
         accent_only.sort(key=lambda c: (c.get("episode", ""), c.get("start", 0.0)))
