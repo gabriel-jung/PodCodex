@@ -43,7 +43,7 @@ from podcodex.core._utils import (
 
 
 def _text_hash(text: str) -> str:
-    """Short hash of segment text — changes when text is re-polished/re-translated."""
+    """Return a truncated SHA-256 hash of segment text for change detection."""
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
 
@@ -52,7 +52,16 @@ def _sample_key(
     speaker: str,
     sample_index: dict[str, int] | int = 0,
 ) -> str:
-    """Return the filename of the voice sample used for a speaker."""
+    """Return the filename of the voice sample selected for a speaker.
+
+    Args:
+        voice_samples: mapping of speaker to their extracted sample dicts.
+        speaker: speaker label to look up.
+        sample_index: which sample to use — int (global) or dict per speaker.
+
+    Returns:
+        Filename string of the selected sample, or ``""`` if no samples exist.
+    """
     samples = voice_samples.get(speaker, [])
     if not samples:
         return ""
@@ -64,7 +73,16 @@ def _sample_key(
 
 
 def load_manifest(segments_dir: Path) -> dict:
-    """Load the generation manifest, or return empty structure."""
+    """Load the generation manifest from disk.
+
+    Args:
+        segments_dir: directory containing ``manifest.json``.
+
+    Returns:
+        Parsed manifest dict, or an empty structure
+        ``{"model": None, "language": None, "segments": {}}`` if the file
+        is missing or corrupt.
+    """
     manifest_path = segments_dir / "manifest.json"
     if manifest_path.exists():
         try:
@@ -75,7 +93,12 @@ def load_manifest(segments_dir: Path) -> dict:
 
 
 def save_manifest(segments_dir: Path, manifest: dict) -> None:
-    """Write the generation manifest to disk."""
+    """Write the generation manifest to disk.
+
+    Args:
+        segments_dir: directory where ``manifest.json`` will be written.
+        manifest: manifest dict containing model, language, and per-segment entries.
+    """
     manifest_path = segments_dir / "manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, indent=2, default=str), encoding="utf-8"
@@ -94,10 +117,23 @@ def segment_is_current(
     """Check if a previously generated segment is still valid.
 
     A segment is valid only if ALL of these match:
+
     - The WAV file exists (checked by caller)
     - Run-level settings (model, language) match
     - Segment text hasn't changed (hash match)
     - Same voice sample was used for this speaker
+
+    Args:
+        manifest: loaded manifest dict from :func:`load_manifest`.
+        filename: WAV filename key in the manifest (e.g. ``"0001_Alice.wav"``).
+        text: current segment text to compare against stored hash.
+        speaker: speaker label (used only for logging context).
+        voice_sample_name: filename of the voice sample that would be used now.
+        model_size: TTS model size (``"0.6B"`` or ``"1.7B"``).
+        language: target language string.
+
+    Returns:
+        ``True`` if the existing segment can be reused, ``False`` otherwise.
     """
     if manifest.get("model") != model_size or manifest.get("language") != language:
         return False
@@ -131,6 +167,13 @@ def is_hallucination(text: str) -> bool:
     Catches the most common artifacts produced on music or silence:
     repeated punctuation (``... ...``), very short strings, and
     known French/English subtitle watermarks.
+
+    Args:
+        text: segment text to evaluate.
+
+    Returns:
+        ``True`` if the text matches known hallucination patterns, ``False``
+        for empty strings or genuine speech.
     """
     t = text.strip()
     if not t:
@@ -164,7 +207,17 @@ def _select_candidates(
 
     Filters by duration range and hallucination detection, then returns
     up to *top_k* segments sorted by duration descending.
-    Returns an empty list if no usable candidates remain.
+
+    Args:
+        segs: all segments for this speaker, each with a ``duration`` key.
+        speaker: speaker label (used for log messages).
+        min_duration: minimum clip duration in seconds (``None`` to skip).
+        max_duration: maximum clip duration in seconds (``None`` to skip).
+        top_k: maximum number of candidates to return.
+
+    Returns:
+        Up to *top_k* candidate dicts sorted by duration descending,
+        or an empty list if no usable candidates remain.
     """
     candidates = segs
 
@@ -197,7 +250,19 @@ def _select_candidates(
 
 
 def _extract_clip(audio_path: Path, seg: dict, output_path: Path) -> dict:
-    """Extract a single audio clip with ffmpeg and return its metadata."""
+    """Extract a single audio clip via ffmpeg, resampled to 16 kHz mono WAV.
+
+    Args:
+        audio_path: source audio file.
+        seg: segment dict with ``start``, ``end``, ``duration``, and ``text`` keys.
+        output_path: destination path for the extracted WAV clip.
+
+    Returns:
+        Dict with ``file``, ``start``, ``end``, ``duration``, and ``text`` fields.
+
+    Raises:
+        subprocess.CalledProcessError: if ffmpeg exits with a non-zero status.
+    """
     subprocess.run(
         [
             "ffmpeg",
@@ -437,14 +502,20 @@ def _split_text(text: str, max_parts: int) -> list[str]:
     """Split text into at most *max_parts*, breaking at natural boundaries.
 
     Strategy:
-        1. Split at sentence endings (. ! ?)
-        2. If that yields fewer parts than needed, also split at commas
-        3. If we now have more parts than needed, greedily group them into
-           balanced chunks by character count
 
-    Returns at most *max_parts* strings.  If there are fewer natural
-    breakpoints than requested, returns what's available without forcing
-    artificial mid-word splits.
+    1. Split at sentence endings (``.`` ``!`` ``?``)
+    2. If that yields fewer parts than needed, also split at commas
+    3. If we now have more parts than needed, greedily group them into
+       balanced chunks by character count
+
+    Args:
+        text: input text to split.
+        max_parts: maximum number of parts to produce.
+
+    Returns:
+        List of at most *max_parts* strings. If there are fewer natural
+        breakpoints than requested, returns what is available without
+        forcing artificial mid-word splits.
     """
     text = text.strip()
     if not text or max_parts <= 1:
@@ -592,11 +663,10 @@ def generate_segments(
     if their text and voice sample haven't changed (tracked via manifest.json).
 
     Convenience wrapper around load_tts_model + build_clone_prompts + generate_segment.
-    For segment-by-segment control (e.g. in Streamlit), use those functions directly.
 
     Args:
         audio_path         : source audio file (used to resolve output_dir)
-        segments           : output of load_translation()
+        segments           : translated segment dicts
         voice_samples      : output of extract_voice_samples()
         output_dir         : directory relative to audio_path for outputs
         model_size         : "0.6B" or "1.7B"
@@ -783,7 +853,9 @@ def load_voice_samples(
     Returns:
         {speaker: [{"file": Path, "duration": float, "text": ""}, ...]}
     """
-    samples_dir = Path(output_dir) / "voice_samples"
+    from podcodex.core._utils import VOICE_SAMPLES_DIR
+
+    samples_dir = Path(output_dir) / VOICE_SAMPLES_DIR
     if not samples_dir.exists():
         logger.debug(f"No voice_samples/ directory in {output_dir}")
         return {}
@@ -829,7 +901,9 @@ def load_generated_segments(
         for segments that have been generated.  Missing segments are omitted
         (previously this returned [] if any were missing).
     """
-    segments_dir = Path(output_dir) / "tts_segments"
+    from podcodex.core._utils import TTS_SEGMENTS_DIR
+
+    segments_dir = Path(output_dir) / TTS_SEGMENTS_DIR
     if not segments_dir.exists():
         logger.debug(f"No tts_segments/ directory in {output_dir}")
         return []

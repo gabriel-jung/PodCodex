@@ -1,6 +1,7 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useActiveTask } from "@/hooks/useActiveTask";
+import { queryKeys } from "@/api/queryKeys";
 
 /**
  * Shared hook for pipeline panel task management.
@@ -17,17 +18,24 @@ export function usePipelineTask(
   const [expanded, setExpanded] = useState(false);
   const activeTaskId = taskId || resumedTaskId;
 
+  // Keep a stable ref to onComplete so handleComplete doesn't change identity
+  const onCompleteRef = useRef(opts?.onComplete);
+  onCompleteRef.current = opts?.onComplete;
+
   const refreshQueries = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: [stepKey] });
-    queryClient.invalidateQueries({ queryKey: ["episodes"] });
-  }, [queryClient, stepKey]);
+    queryClient.invalidateQueries({ queryKey: queryKeys.stepAll(stepKey) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+    // Unified versions endpoint feeds cross-step input-version selectors
+    // (e.g. Translate can read both corrected and transcript versions).
+    queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
+  }, [queryClient, stepKey, audioPath]);
 
   const handleComplete = useCallback(() => {
     refreshQueries();
     setTaskId(null);
     setExpanded(false);
-    opts?.onComplete?.();
-  }, [refreshQueries, opts?.onComplete]);
+    onCompleteRef.current?.();
+  }, [refreshQueries]);
 
   const handleRetry = useCallback(() => {
     setTaskId(null);

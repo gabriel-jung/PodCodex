@@ -1,8 +1,9 @@
 import type { UseMutationResult } from "@tanstack/react-query";
 import type { PipelineConfig, SynthesisStatus } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import SectionHeader from "@/components/common/SectionHeader";
+import FormGrid from "@/components/common/FormGrid";
 import HelpLabel from "@/components/common/HelpLabel";
+import SectionHeader from "@/components/common/SectionHeader";
 import { errorMessage, selectClass } from "@/lib/utils";
 
 export interface AssemblySectionProps {
@@ -31,7 +32,7 @@ export default function AssemblySection({
     <section className="space-y-3 border-t border-border/50 pt-3">
       <SectionHeader>3. Assemble Episode</SectionHeader>
 
-      <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm">
+      <FormGrid>
         <HelpLabel label="Strategy" help="How to handle pauses between segments in the final audio." />
         <select
           value={assembleStrategy}
@@ -45,7 +46,7 @@ export default function AssemblySection({
             : <option value={assembleStrategy}>{assembleStrategy}</option>
           }
         </select>
-      </div>
+      </FormGrid>
 
       <div className="flex items-center gap-3">
         <Button

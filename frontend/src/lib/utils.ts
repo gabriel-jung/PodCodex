@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import type { Episode, ShowMeta } from "@/api/types";
+import type { Episode, ShowMeta, VersionEntry } from "@/api/types";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(...inputs));
@@ -37,9 +37,9 @@ export function formatDate(dateStr: string | null | undefined): string {
 }
 
 /** Format an ISO date string as a relative time ago string. */
-export function timeAgo(dateStr: string | null | undefined): string {
-  if (!dateStr) return "";
-  const d = new Date(dateStr);
+export function timeAgo(date: string | number | null | undefined): string {
+  if (date == null || date === "") return "";
+  const d = new Date(date);
   if (isNaN(d.getTime())) return "";
   const diff = Date.now() - d.getTime();
   const mins = Math.floor(diff / 60000);
@@ -52,6 +52,12 @@ export function timeAgo(dateStr: string | null | undefined): string {
   return formatDate(dateStr);
 }
 
+/** Strip HTML tags and decode common entities. */
+export function stripHtml(html: string): string {
+  const text = html.replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ");
+  return text.replace(/\s+/g, " ").trim();
+}
+
 /** Build a default LLM context string from show metadata and episode info. */
 export function buildDefaultContext(episode: Episode, showMeta: ShowMeta | null | undefined): string {
   const parts: string[] = [];
@@ -59,7 +65,9 @@ export function buildDefaultContext(episode: Episode, showMeta: ShowMeta | null 
   if (showMeta?.language) parts.push(`${showMeta.language} podcast`);
   if (showMeta?.speakers?.length) parts.push(`hosted by ${showMeta.speakers.join(" and ")}`);
   if (episode.title) parts.push(`episode: ${episode.title}`);
-  return parts.join(", ");
+  let ctx = parts.join(", ");
+  if (episode.description) ctx += `\nDescription: ${stripHtml(episode.description)}`;
+  return ctx;
 }
 
 /** Derive a show name from metadata or audio path. */
@@ -70,8 +78,17 @@ export function getShowName(showMeta: ShowMeta | null | undefined, audioPath: st
   return parts[parts.length - 2] || parts[parts.length - 1] || "";
 }
 
+/** True if any pipeline step is outdated (transcribe, correct, or translate). */
+export function isOutdated(ep: { transcribe_status?: string; correct_status?: string; translate_status?: string }): boolean {
+  return ep.transcribe_status === "outdated" || ep.correct_status === "outdated" || ep.translate_status === "outdated";
+}
+
 /** Shared CSS class for <select> elements across forms. */
-export const selectClass = "bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border text-sm";
+export const selectClass = "bg-secondary text-secondary-foreground rounded-md px-2 py-1 border border-border text-sm";
+
+export function capitalize(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
 
 /** Extract error message from a mutation error, with safe casting. */
 export function errorMessage(err: unknown): string {
@@ -86,7 +103,7 @@ export function languageToISO(lang: string): string {
     english: "en", french: "fr", german: "de", spanish: "es",
     italian: "it", portuguese: "pt", dutch: "nl", russian: "ru",
     japanese: "ja", chinese: "zh", korean: "ko", arabic: "ar",
-    hindi: "hi", turkish: "tr", polish: "pl", swedish: "sv",
+    hindi: "hi", turkish: "tr", correct: "co", swedish: "sv",
     danish: "da", norwegian: "no", finnish: "fi", greek: "el",
     czech: "cs", romanian: "ro", hungarian: "hu", ukrainian: "uk",
     catalan: "ca", hebrew: "he", thai: "th", vietnamese: "vi",
@@ -94,4 +111,115 @@ export function languageToISO(lang: string): string {
   };
   const lower = lang.toLowerCase().trim();
   return map[lower] || lower;
+}
+
+// ── Subtitle languages (shared by download dropdowns) ────
+
+export const SUB_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "fr", label: "Français" },
+  { code: "de", label: "Deutsch" },
+  { code: "es", label: "Español" },
+  { code: "it", label: "Italiano" },
+  { code: "pt", label: "Português" },
+  { code: "ja", label: "日本語" },
+  { code: "ko", label: "한국어" },
+  { code: "zh", label: "中文" },
+  { code: "ar", label: "العربية" },
+  { code: "ru", label: "Русский" },
+] as const;
+
+/** Display label for a language code, e.g. "fr" → "Français". Falls back to capitalised code. */
+export function langLabel(code: string): string {
+  const known = SUB_LANGUAGES.find((l) => l.code === code);
+  if (known) return known.label;
+  return code.charAt(0).toUpperCase() + code.slice(1).replace(/_/g, " ");
+}
+
+// ── Version formatting ────────────────────────────────────
+
+/** Format a version's timestamp as a short date string. */
+export function versionDate(v: VersionEntry): string {
+  const d = new Date(v.timestamp);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+export const SOURCE_LABELS: Record<string, string> = {
+  whisper: "Whisper",
+  "youtube-subtitles": "YouTube subtitles",
+  upload: "Upload",
+  import: "Import",
+};
+
+const STEP_LABELS: Record<string, string> = {
+  transcript: "Transcript",
+  corrected: "Corrected",
+  segments: "Segments",
+  diarization: "Diarization",
+  diarized_segments: "Diarized segments",
+};
+
+/** Format a version's step as a display tag, e.g. "transcript", "translated · fr". */
+export function stepTag(step: string, type?: string): string {
+  const edited = type === "validated" ? " · edited" : "";
+  if (step in STEP_LABELS) return `${STEP_LABELS[step]}${edited}`;
+  return `translated · ${step}${edited}`;
+};
+
+/** Build a compact label for a version (model, provider, language info).
+ *  Does NOT include the edited marker — that lives in stepTag so the two
+ *  can be composed via versionOption without duplication. */
+export function versionLabel(v: VersionEntry): string {
+  const p = v.params as Record<string, unknown>;
+  if (p.skipped) return "Skipped (copy)";
+
+  // Source chain: "Whisper/base, diarized → ollama → openai"
+  const chain = p.source_chain as string[] | undefined;
+  if (chain && chain.length > 0) {
+    return chain.map((s) => {
+      // Split "whisper/base, diarized" → map source part, keep rest
+      const [main, ...rest] = s.split(", ");
+      const [source, ...model] = main.split("/");
+      const label = [SOURCE_LABELS[source] || source, ...model].join(" ");
+      return rest.length > 0 ? `${label}, ${rest.join(", ")}` : label;
+    }).join(" → ");
+  }
+
+  // Legacy / transcript: flat label from individual params
+  const parts: string[] = [];
+  if (p.source) parts.push(SOURCE_LABELS[String(p.source)] || String(p.source));
+  if (v.model) parts.push(v.model);
+  if (p.llm_provider) parts.push(String(p.llm_provider));
+  else if (p.llm_mode === "manual") parts.push("Manual");
+  else if (p.llm_mode) parts.push(String(p.llm_mode));
+  if (p.language) parts.push(String(p.language));
+  else if (p.source_lang && p.target_lang) parts.push(`${p.source_lang} → ${p.target_lang}`);
+  else if (p.source_lang) parts.push(String(p.source_lang));
+  if (p.diarize === true) parts.push("diarized");
+  return parts.join(", ") || "Unknown";
+}
+
+/** Full single-line label for a version: "[Transcript · edited] 9 Apr, 10:37 — base (21 seg)".
+ *  Use this in every dropdown / picker so the format stays identical everywhere. */
+export function versionOption(v: VersionEntry): string {
+  const step = v.step ? `[${stepTag(v.step, v.type)}] ` : "";
+  return `${step}${versionDate(v)} — ${versionLabel(v)} (${v.segment_count} seg)`;
+}
+
+/** Params to hide from the version info box (internal / not user-relevant). */
+const HIDDEN_VERSION_PARAMS = new Set(["meta", "batch_size", "batch_minutes", "engine", "input_source", "skipped", "source", "source_chain"]);
+
+/** Format all params as key: value rows for a version info box. */
+export function versionInfo(v: VersionEntry): { key: string; value: string }[] {
+  const rows: { key: string; value: string }[] = [];
+  if (v.model) rows.push({ key: "Model", value: v.model });
+  rows.push({ key: "Segments", value: String(v.segment_count) });
+  rows.push({ key: "Hash", value: v.content_hash.replace("sha256:", "").slice(0, 8) });
+  const p = v.params as Record<string, unknown>;
+  for (const [k, val] of Object.entries(p)) {
+    if (HIDDEN_VERSION_PARAMS.has(k) || val === null || val === undefined) continue;
+    const label = k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    rows.push({ key: label, value: typeof val === "boolean" ? (val ? "yes" : "no") : String(val) });
+  }
+  return rows;
 }

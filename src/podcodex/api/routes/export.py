@@ -11,36 +11,33 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from podcodex.core._utils import (
     AudioPaths,
-    read_json,
+    normalize_lang,
     segments_to_srt,
     segments_to_text,
     segments_to_vtt,
 )
+from podcodex.core.pipeline_db import DB_FILENAME
+from podcodex.core.versions import load_latest
 
 router = APIRouter()
 
+_EXCLUDE_NAMES = frozenset(
+    {
+        DB_FILENAME,
+        DB_FILENAME + "-wal",
+        DB_FILENAME + "-shm",
+    }
+)
+_EXCLUDE_DIRS = frozenset({".versions"})
+
 
 def _load_segments(audio_path: str, output_dir: str | None, source: str) -> list[dict]:
-    """Load segments for the given source (transcript, polished, or a language code)."""
+    """Load segments for the given source (transcript, corrected, or a language code)."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    if source == "transcript":
-        candidates = [f"{p.base}.transcript.json", f"{p.base}.transcript.raw.json"]
-    elif source == "polished":
-        candidates = [f"{p.base}.polished.json", f"{p.base}.polished.raw.json"]
-    else:
-        # Treat as language code
-        candidates = [f"{p.base}.{source}.json", f"{p.base}.{source}.raw.json"]
-
-    for candidate in candidates:
-        path = Path(candidate)
-        if path.exists():
-            data = read_json(path)
-            # JSON files store segments under a "segments" key
-            if isinstance(data, dict) and "segments" in data:
-                return data["segments"]
-            if isinstance(data, list):
-                return data
-            return []
+    step = normalize_lang(source)
+    segments = load_latest(p.base, step)
+    if segments is not None:
+        return segments
 
     raise HTTPException(404, f"No segments found for source={source}")
 
@@ -95,9 +92,14 @@ def export_zip(
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in sorted(episode_dir.rglob("*")):
-            if f.is_file():
-                arcname = f.relative_to(episode_dir.parent)
-                zf.write(f, arcname)
+            if not f.is_file():
+                continue
+            if f.name in _EXCLUDE_NAMES:
+                continue
+            if any(d in f.parts for d in _EXCLUDE_DIRS):
+                continue
+            arcname = f.relative_to(episode_dir.parent)
+            zf.write(f, arcname)
 
     buf.seek(0)
     stem = Path(audio_path).stem

@@ -129,8 +129,8 @@ def test_map_offsets_to_metadata_no_overlap_returns_none():
     assert _map_offsets_to_metadata(0, 50, offset_map) is None
 
 
-def test_map_offsets_to_metadata_no_speaker_returns_none():
-    """Overlapping turns with no speaker key should not crash max()."""
+def test_map_offsets_to_metadata_no_speaker_uses_unknown():
+    """Overlapping turns with no speaker key should use 'UNKNOWN' as speaker."""
     offset_map = [
         {
             "start_char": 0,
@@ -140,7 +140,9 @@ def test_map_offsets_to_metadata_no_speaker_returns_none():
             "text": "hello",
         },
     ]
-    assert _map_offsets_to_metadata(0, 10, offset_map) is None
+    result = _map_offsets_to_metadata(0, 10, offset_map)
+    assert result is not None
+    assert result["dominant_speaker"] == "UNKNOWN"
 
 
 # ──────────────────────────────────────────────
@@ -299,7 +301,7 @@ def test_semantic_chunks_empty_after_filter_returns_empty():
 
 def test_speaker_chunks_include_source_field():
     t = {
-        "meta": {"show": "S", "episode": "E", "source": "polished"},
+        "meta": {"show": "S", "episode": "E", "source": "corrected"},
         "segments": [
             {
                 "start": 0.0,
@@ -311,7 +313,7 @@ def test_speaker_chunks_include_source_field():
     }
     chunks = speaker_chunks(t, min_chars=5)
     assert len(chunks) == 1
-    assert chunks[0]["source"] == "polished"
+    assert chunks[0]["source"] == "corrected"
 
 
 def test_speaker_chunks_source_defaults_empty():

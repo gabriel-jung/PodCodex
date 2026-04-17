@@ -3,34 +3,28 @@
 from __future__ import annotations
 
 import time
-from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from podcodex.api.routes._helpers import is_downloaded, require_show_folder, submit_task
+from podcodex.api.routes._helpers import (
+    is_downloaded,
+    require_show_folder,
+    rss_episode_to_out,
+    submit_task,
+)
 from podcodex.api.schemas import RSSEpisodeOut, TaskResponse
 from podcodex.ingest.rss import (
-    RSSEpisode,
     download_audio,
     episode_stem,
+    feed_artwork,
     fetch_feed,
     load_feed_cache,
     save_feed_cache,
 )
-from podcodex.ingest.show import load_show_meta
+from podcodex.ingest.show import load_show_meta, save_show_meta
 
 router = APIRouter()
-
-
-def _rss_to_out(ep: RSSEpisode, show_folder: Path) -> dict:
-    """Convert an RSSEpisode to an RSSEpisodeOut dict."""
-    stem = episode_stem(ep)
-    return {
-        **asdict(ep),
-        "local_stem": stem,
-        "downloaded": is_downloaded(show_folder, stem),
-    }
 
 
 @router.post("/{show_folder:path}/rss/fetch", response_model=list[RSSEpisodeOut])
@@ -38,8 +32,8 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
     """Fetch (or refresh) the RSS feed for a show. Uses show.toml rss_url if not provided."""
     path = require_show_folder(show_folder)
 
+    meta = load_show_meta(path)
     if not rss_url:
-        meta = load_show_meta(path)
         if meta and meta.rss_url:
             rss_url = meta.rss_url
     if not rss_url:
@@ -50,7 +44,17 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
         raise HTTPException(502, "Feed returned no episodes (parse error or empty)")
 
     save_feed_cache(path, episodes)
-    return [_rss_to_out(ep, path) for ep in episodes]
+
+    # Upgrade artwork if missing or low-res (e.g. old 60px iTunes thumbnails)
+    if meta:
+        current = meta.artwork_url or ""
+        if not current or "60x60" in current or "artworkUrl60" in current:
+            fresh = feed_artwork(rss_url)
+            if fresh and fresh != current:
+                meta.artwork_url = fresh
+                save_show_meta(path, meta)
+
+    return [rss_episode_to_out(ep, path) for ep in episodes]
 
 
 @router.get("/{show_folder:path}/rss/cache", response_model=list[RSSEpisodeOut])
@@ -60,7 +64,7 @@ async def rss_cache(show_folder: str) -> list[dict]:
     cached = load_feed_cache(path)
     if cached is None:
         return []
-    return [_rss_to_out(ep, path) for ep in cached]
+    return [rss_episode_to_out(ep, path) for ep in cached]
 
 
 @router.post(
@@ -70,6 +74,7 @@ async def rss_cache(show_folder: str) -> list[dict]:
 async def rss_download(
     show_folder: str,
     guids: list[str] | None = None,
+    force: bool = False,
 ) -> TaskResponse:
     """Download episodes as a background task. Progress is streamed via WebSocket."""
     path = Path(show_folder)
@@ -84,29 +89,47 @@ async def rss_download(
         if not targets:
             raise HTTPException(404, "No matching episodes found for the given GUIDs")
 
-    def run_downloads(progress_cb, episodes=targets, show_path=path):
+    def run_downloads(progress_cb, episodes=targets, show_path=path, force_dl=force):
+        """Download each episode in sequence, reporting progress via callback."""
         from podcodex.ingest.folder import invalidate_scan_cache
 
         cancel = getattr(progress_cb, "cancel_event", None)
         results = []
         total = len(episodes)
+        downloaded = 0
+        skipped = 0
+        failed = 0
+
+        def _summary() -> str:
+            parts = []
+            if downloaded:
+                parts.append(f"{downloaded} downloaded")
+            if skipped:
+                parts.append(f"{skipped} skipped")
+            if failed:
+                parts.append(f"{failed} failed")
+            return " · ".join(parts) if parts else ""
+
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
-                progress_cb(i / total, "Cancelled")
+                progress_cb(i / total, f"Cancelled — {_summary()}")
                 break
 
             stem = episode_stem(ep)
-            progress_cb(i / total, f"Downloading {i + 1}/{total}")
+            progress_cb(i / total, f"[{i + 1}/{total}] Downloading…")
 
-            if is_downloaded(show_path, stem):
+            if not force_dl and is_downloaded(show_path, stem):
+                skipped += 1
                 results.append({"stem": stem, "status": "exists"})
                 continue
             if not ep.audio_url:
+                skipped += 1
                 results.append({"stem": stem, "status": "no_audio"})
                 continue
 
-            audio_path = download_audio(ep, show_path)
+            audio_path = download_audio(ep, show_path, force=force_dl)
             if audio_path:
+                downloaded += 1
                 results.append(
                     {
                         "stem": stem,
@@ -116,12 +139,16 @@ async def rss_download(
                 )
                 invalidate_scan_cache(show_path)
             else:
+                failed += 1
                 results.append({"stem": stem, "status": "failed"})
 
-            # Small delay between downloads to be respectful to servers
-            if total > 1:
-                time.sleep(1)
+            progress_cb((i + 1) / total, f"[{i + 1}/{total}] {_summary()}")
 
+            # Delay between actual downloads to be respectful to servers
+            if total > 1:
+                time.sleep(5)
+
+        progress_cb(1.0, _summary() or "Done")
         return results
 
-    return submit_task("download", str(path), run_downloads)
+    return submit_task("download", f"download:{path}", run_downloads)

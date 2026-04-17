@@ -55,9 +55,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
 
   const goForward = () => {
     if (!canGoForward) return;
-    const next = history[historyIndex + 2] || history[historyIndex + 1];
     setHistoryIndex(historyIndex + 1);
-    // We need to navigate forward — the "current" after going back is one ahead
     if (history[historyIndex + 1]) {
       setCurrentPath(history[historyIndex + 1]);
     }
@@ -124,7 +122,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
     return crumbs;
   })();
 
-  const displayTitle = title || (mode === "file" ? "Select audio file" : "Select folder");
+  const displayTitle = title || (mode === "file" ? "Browse for an audio file" : "Browse for a folder");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -196,7 +194,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
         <div className="flex flex-1 min-h-0">
           {/* Sidebar */}
           <div className="w-40 border-r border-border py-2 flex flex-col shrink-0">
-            <span className="text-[10px] text-muted-foreground uppercase tracking-wider px-3 mb-1">Quick access</span>
+            <span className="text-xs text-muted-foreground px-3 mb-1">Quick access</span>
             {QUICK_ACCESS.map((item) => (
               <button
                 key={item.path}
@@ -259,7 +257,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
                 if (e.key === "Enter") handleCreateFolder();
                 if (e.key === "Escape") { setCreatingFolder(false); setNewFolderName(""); setCreateError(null); }
               }}
-              className="input flex-1 text-sm"
+              className="input flex-1"
               placeholder="Folder name"
               autoFocus
             />
@@ -286,7 +284,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
           </Button>
           {mode === "folder" && (
             <Button onClick={handleSelect} size="sm">
-              Select this folder
+              Use this folder
             </Button>
           )}
         </div>
@@ -309,7 +307,7 @@ function DirRow({
       className="w-full text-left px-4 py-1.5 text-sm hover:bg-accent
                  transition flex items-center gap-2 group"
     >
-      <Folder className={`w-4 h-4 shrink-0 ${dir.is_show ? "text-primary" : dir.has_audio ? "text-yellow-400" : "text-muted-foreground"}`} />
+      <Folder className={`w-4 h-4 shrink-0 ${dir.is_show ? "text-primary" : dir.has_audio ? "text-warning" : "text-muted-foreground"}`} />
 
       <button
         onClick={onNavigate}
@@ -319,12 +317,12 @@ function DirRow({
       </button>
 
       {dir.is_show && (
-        <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded-full">
+        <span className="text-2xs bg-primary/20 text-primary px-1.5 py-0.5 rounded-full">
           show
         </span>
       )}
       {dir.has_audio && !dir.is_show && (
-        <span className="text-[10px] bg-yellow-600/20 text-yellow-400 px-1.5 py-0.5 rounded-full">
+        <span className="text-2xs bg-warning/20 text-warning px-1.5 py-0.5 rounded-full">
           audio
         </span>
       )}
@@ -355,7 +353,7 @@ function FileRow({
       className="w-full text-left px-4 py-1.5 text-sm hover:bg-accent
                  transition flex items-center gap-2"
     >
-      <Music className="w-4 h-4 shrink-0 text-green-400" />
+      <Music className="w-4 h-4 shrink-0 text-success" />
       <span className="flex-1 truncate">{file.name}</span>
     </button>
   );

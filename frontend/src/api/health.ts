@@ -1,5 +1,5 @@
 import type { ExtrasResponse, HealthResponse, ModelsResponse, TaskResponse } from "./types";
-import { json } from "./base";
+import { json } from "./client";
 
 export const getHealth = () => json<HealthResponse>("/api/health");
 
@@ -25,6 +25,25 @@ export const installExtra = (extra: string) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ extra }),
   });
+
+export const removeExtra = (extra: string) =>
+  json<TaskResponse>("/api/system/remove-extra", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ extra }),
+  });
+
+export const getTaskStatus = (taskId: string) =>
+  json<{
+    task_id: string;
+    status: string;
+    progress: number;
+    message: string;
+    steps?: string[];
+    log?: string[];
+    result?: Record<string, unknown>;
+    error?: string;
+  } | null>(`/api/tasks/${encodeURIComponent(taskId)}`);
 
 export const cancelTask = (taskId: string) =>
   json<{ status: string; task_id: string }>(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {

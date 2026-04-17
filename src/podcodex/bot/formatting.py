@@ -2,9 +2,43 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections import defaultdict
 from typing import TYPE_CHECKING
+
+from podcodex.rag.index_store import fold_text
+
+_STEM_PREFIX_RE = re.compile(r"^\d+_(?:episode_\d+_)?", re.IGNORECASE)
+
+
+def humanize_stem(stem: str) -> str:
+    """Convert an episode file stem into a readable fallback title."""
+    s = _STEM_PREFIX_RE.sub("", stem).replace("_", " ").strip()
+    return (s[:1].upper() + s[1:]) if s else stem
+
+
+def episode_display(chunk: dict) -> str:
+    """RSS title if present, else humanized stem."""
+    return chunk.get("episode_title") or humanize_stem(chunk.get("episode", ""))
+
+
+def format_filter_suffix(
+    *,
+    episode: str | None = None,
+    speaker: str | None = None,
+    source: str | None = None,
+) -> str:
+    """Return ``" (filters: episode=`X`, speaker=`Y`)"`` or ``""`` when empty."""
+    parts: list[str] = []
+    if episode:
+        parts.append(f"episode=`{episode}`")
+    if speaker:
+        parts.append(f"speaker=`{speaker}`")
+    if source:
+        parts.append(f"source=`{source}`")
+    return f" (filters: {', '.join(parts)})" if parts else ""
+
 
 if TYPE_CHECKING:
     import discord
@@ -14,7 +48,8 @@ if TYPE_CHECKING:
 # ──────────────────────────────────────────────
 
 _MAX_CONTEXT_N = 8
-_MAX_CHARS = 1900
+_MAX_CHARS = 3900  # context sent as embed description (Discord limit: 4096)
+_MAX_DESC_CHARS = 4000  # result / answer embed description guard
 COOLDOWN_SECONDS = 5.0
 
 # ──────────────────────────────────────────────
@@ -47,10 +82,10 @@ def speaker(chunk: dict) -> str:
 
 
 def count_occurrences(text: str, query: str) -> int:
-    """Count case-insensitive occurrences of *query* in *text*."""
+    """Count accent- and case-insensitive occurrences of *query* in *text*."""
     if not query:
         return 0
-    return text.lower().count(query.lower())
+    return fold_text(text).count(fold_text(query))
 
 
 def highlight(text: str, query: str) -> str:
@@ -96,6 +131,11 @@ def safe_truncate(text: str, max_chars: int = _MAX_CHARS) -> tuple[str, bool]:
     cut = text.rfind(" ", 0, max_chars)
     cut = cut if cut != -1 else max_chars
     return text[:cut] + "\n\n*…(truncated)*", True
+
+
+def truncate_description(text: str) -> str:
+    """Truncate embed description to Discord's 4096-char limit."""
+    return safe_truncate(text, _MAX_DESC_CHARS)[0]
 
 
 # ──────────────────────────────────────────────
@@ -156,7 +196,9 @@ def format_context(
     current = neighbors[pos]
     after = neighbors[pos + 1 : hi]
 
-    ep_display = (neighbors[0].get("episode_title") if neighbors else None) or episode
+    ep_display = (
+        neighbors[0].get("episode_title") if neighbors else ""
+    ) or humanize_stem(episode)
     header = f"**{show} — {ep_display}**" if (show or ep_display) else "*Context*"
     lines = [header + f" · ±{n} turns\n"]
 
@@ -237,14 +279,15 @@ class CooldownManager:
         self._seconds = seconds
         self._last_used: dict[int, float] = {}
 
-    def check(self, user_id: int) -> float:
-        """
-        Returns 0.0 if the user is allowed to proceed,
-        or the remaining wait time in seconds if they are on cooldown.
+    def check(self, user_id: int, seconds: float | None = None) -> float:
+        """Return 0.0 if the user may proceed, or remaining wait time.
+
+        *seconds* overrides the instance default when provided.
         """
         now = time.monotonic()
         last = self._last_used.get(user_id, 0.0)
-        remaining = self._seconds - (now - last)
+        duration = seconds if seconds is not None else self._seconds
+        remaining = duration - (now - last)
         return max(0.0, remaining)
 
     def consume(self, user_id: int) -> None:
@@ -277,7 +320,7 @@ def build_compact_embed(
     )
     for i, (chunk, _col) in enumerate(results[:25], 1):
         show = chunk.get("show", "")
-        episode = chunk.get("episode_title") or chunk.get("episode", "")
+        episode = episode_display(chunk)
         score = chunk.get("score", 0.0)
         start = chunk.get("start", 0.0)
         text = chunk.get("text", "")

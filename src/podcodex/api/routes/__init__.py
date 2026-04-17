@@ -9,7 +9,7 @@ from podcodex.api.routes import (
     health,
     index,
     models,
-    polish,
+    correct,
     rss,
     search,
     shows,
@@ -17,6 +17,7 @@ from podcodex.api.routes import (
     transcribe,
     translate,
     ws,
+    youtube,
 )
 
 __all__ = [
@@ -28,7 +29,8 @@ __all__ = [
     "health",
     "index",
     "models",
-    "polish",
+    "correct",
+    "export",
     "rss",
     "search",
     "shows",
@@ -36,4 +38,5 @@ __all__ = [
     "transcribe",
     "translate",
     "ws",
+    "youtube",
 ]

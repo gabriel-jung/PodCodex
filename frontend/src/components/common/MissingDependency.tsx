@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { installExtra, getExtras } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { errorMessage } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Download, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
@@ -51,15 +52,15 @@ export default function MissingDependency({ extra, label, description }: Missing
     if (pollRef.current) clearInterval(pollRef.current);
     setTaskId(null);
     setDone(true);
-    queryClient.invalidateQueries({ queryKey: ["system", "extras"] });
-    queryClient.invalidateQueries({ queryKey: ["health"] });
-    queryClient.invalidateQueries({ queryKey: ["pipeline-config"] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.capabilities() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.health() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.pipelineConfig() });
   };
 
   if (done) {
     return (
-      <div className="flex items-center gap-3 p-4 rounded-md bg-green-500/10 border border-green-500/20">
-        <CheckCircle2 className="w-5 h-5 text-green-500 shrink-0" />
+      <div className="flex items-center gap-3 p-4 rounded-md bg-success/10 border border-success/20">
+        <CheckCircle2 className="w-5 h-5 text-success shrink-0" />
         <div>
           <p className="text-sm font-medium">Installed successfully</p>
           <p className="text-xs text-muted-foreground mt-0.5">

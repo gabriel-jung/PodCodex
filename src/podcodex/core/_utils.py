@@ -21,17 +21,19 @@ from loguru import logger
 # ──────────────────────────────────────────────
 
 
+VOICE_SAMPLES_DIR = "voice_samples"
+TTS_SEGMENTS_DIR = "tts_segments"
+
+
 @dataclass
 class AudioPaths:
     """All derived file paths for a given audio file.
 
-    Centralises path logic for the entire pipeline (transcribe, polish,
+    Centralises path logic for the entire pipeline (transcribe, correct,
     translate, synthesize).  Create via the ``from_audio`` classmethod::
 
         p = AudioPaths.from_audio("episode.mp3")
         p.transcript        # → …/episode/episode.transcript.json
-        p.polished_raw      # → …/episode/episode.polished.raw.json
-        p.translation("en") # → …/episode/episode.translated.en.json
         p.synthesized       # → …/episode/episode.synthesized.wav
     """
 
@@ -67,14 +69,20 @@ class AudioPaths:
     @classmethod
     def from_audio(
         cls,
-        audio_path: str | Path,
+        audio_path: str | Path | None = None,
         output_dir: str | Path | None = None,
     ) -> Self:
-        audio_path = Path(audio_path)
-        root = cls.output_dir(audio_path, output_dir)
-        base = root / audio_path.stem
+        if audio_path:
+            audio_path = Path(audio_path)
+            root = cls.output_dir(audio_path, output_dir)
+            base = root / audio_path.stem
+        elif output_dir:
+            root = Path(output_dir)
+            base = root / root.name
+        else:
+            raise ValueError("Either audio_path or output_dir must be provided")
         base.parent.mkdir(parents=True, exist_ok=True)
-        return cls(audio_path=audio_path, base=base)
+        return cls(audio_path=audio_path or base, base=base)
 
     # — RAG —
 
@@ -83,36 +91,7 @@ class AudioPaths:
         """Show-level directory (parent of the episode output dir)."""
         return self.base.parent.parent
 
-    @property
-    def vectors_db(self) -> Path:
-        """Show-level SQLite vector store."""
-        return self.show_dir / "vectors.db"
-
     # — Transcription —
-
-    @property
-    def segments(self) -> Path:
-        return self.base.with_suffix(".segments.parquet")
-
-    @property
-    def segments_meta(self) -> Path:
-        return self.base.with_suffix(".segments.meta.json")
-
-    @property
-    def diarization(self) -> Path:
-        return self.base.with_suffix(".diarization.parquet")
-
-    @property
-    def diarization_meta(self) -> Path:
-        return self.base.with_suffix(".diarization.meta.json")
-
-    @property
-    def diarized_segments(self) -> Path:
-        return self.base.with_suffix(".diarized_segments.parquet")
-
-    @property
-    def speaker_map(self) -> Path:
-        return self.base.with_suffix(".speaker_map.json")
 
     @property
     def transcript_raw(self) -> Path:
@@ -127,64 +106,17 @@ class AudioPaths:
         """Validated transcript if it exists, else raw."""
         return self.transcript if self.transcript.exists() else self.transcript_raw
 
-    # — Polish —
-
-    @property
-    def polished(self) -> Path:
-        return self.base.with_suffix(".polished.json")
-
-    @property
-    def polished_raw(self) -> Path:
-        return self.base.with_suffix(".polished.raw.json")
-
-    @property
-    def polished_best(self) -> Path:
-        """Validated polished if it exists, else raw."""
-        return self.polished if self.polished.exists() else self.polished_raw
-
-    # — Translation —
-
-    def translation(self, lang: str) -> Path:
-        lang = lang.lower().strip().replace(" ", "_")
-        return self.base.parent / f"{self.base.name}.translated.{lang}.json"
-
-    def translation_raw(self, lang: str) -> Path:
-        lang = lang.lower().strip().replace(" ", "_")
-        return self.base.parent / f"{self.base.name}.translated.{lang}.raw.json"
-
-    def _translation_legacy(self, lang: str) -> Path:
-        """Old naming: {stem}.{lang}.json (before 'translated' prefix)."""
-        lang = lang.lower().strip().replace(" ", "_")
-        return self.base.parent / f"{self.base.name}.{lang}.json"
-
-    def _translation_raw_legacy(self, lang: str) -> Path:
-        """Old naming: {stem}.{lang}.raw.json."""
-        lang = lang.lower().strip().replace(" ", "_")
-        return self.base.parent / f"{self.base.name}.{lang}.raw.json"
-
-    def translation_best(self, lang: str) -> Path:
-        """Best translation file: new naming first, then legacy."""
-        for p in [
-            self.translation(lang),
-            self.translation_raw(lang),
-            self._translation_legacy(lang),
-            self._translation_raw_legacy(lang),
-        ]:
-            if p.exists():
-                return p
-        return self.translation(lang)  # default to new path
-
     # — Synthesis —
 
     @property
     def voice_samples_dir(self) -> Path:
-        d = self.base.parent / "voice_samples"
+        d = self.base.parent / VOICE_SAMPLES_DIR
         d.mkdir(parents=True, exist_ok=True)
         return d
 
     @property
     def tts_segments_dir(self) -> Path:
-        d = self.base.parent / "tts_segments"
+        d = self.base.parent / TTS_SEGMENTS_DIR
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -196,23 +128,6 @@ class AudioPaths:
 # ──────────────────────────────────────────────
 # Constants
 # ──────────────────────────────────────────────
-
-
-# LLM API provider presets: name → (base_url, env_var for key, default model).
-API_PROVIDERS = {
-    "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY", "gpt-4o-mini"),
-    "anthropic": (
-        "https://api.anthropic.com/v1/",
-        "ANTHROPIC_API_KEY",
-        "claude-sonnet-4-20250514",
-    ),
-    "mistral": ("https://api.mistral.ai/v1", "MISTRAL_API_KEY", "mistral-small-latest"),
-    "groq": (
-        "https://api.groq.com/openai/v1",
-        "GROQ_API_KEY",
-        "llama-3.3-70b-versatile",
-    ),
-}
 
 
 # Speaker labels that don't represent a real person (unresolved diarization placeholders).
@@ -228,27 +143,60 @@ BREAK_SPEAKER = "[BREAK]"
 # Audio sample rate used by Whisper / TTS pipeline (16 kHz mono).
 SAMPLE_RATE = 16000
 
+
+def normalize_lang(lang: str) -> str:
+    """Normalize a language name: lowercase, strip, collapse spaces to underscores.
+
+    Used everywhere a language becomes a file-path component or version step name.
+    """
+    return lang.strip().lower().replace(" ", "_")
+
+
+_ISO_TO_NAME: dict[str, str] = {
+    "en": "English",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "ru": "Russian",
+    "ja": "Japanese",
+    "zh": "Chinese",
+    "ko": "Korean",
+    "ar": "Arabic",
+    "hi": "Hindi",
+    "tr": "Turkish",
+    "sv": "Swedish",
+    "da": "Danish",
+    "no": "Norwegian",
+    "fi": "Finnish",
+    "el": "Greek",
+    "cs": "Czech",
+    "ro": "Romanian",
+    "hu": "Hungarian",
+    "uk": "Ukrainian",
+    "ca": "Catalan",
+    "he": "Hebrew",
+    "th": "Thai",
+    "vi": "Vietnamese",
+    "id": "Indonesian",
+    "ms": "Malay",
+    "pl": "Polish",
+}
+
+
+def iso_to_language(code: str) -> str:
+    """Convert an ISO 639-1 code to a language name. Returns the code as-is if unknown."""
+    return _ISO_TO_NAME.get(code.lower().strip(), code)
+
+
 # Default time-based thresholds shared across pipeline modules.
 DEFAULT_MAX_GAP = 10.0
 DEFAULT_BATCH_MINUTES = 15.0
 
-# LLM temperature for deterministic output in polish / translate.
+# LLM temperature for deterministic output in correct / translate.
 DEFAULT_TEMPERATURE = 0
-
-
-# Internal file suffixes that are never translation language names.
-# Used by translate.py (to detect languages) and ingest/folder.py (to scan episodes).
-INTERNAL_SUFFIXES = frozenset(
-    {
-        "transcript",
-        "polished",
-        "words",
-        "diar",
-        "assigned",
-        "speaker_map",
-        "imported",
-    }
-)
 
 
 # ──────────────────────────────────────────────
@@ -290,14 +238,52 @@ def wav_duration(path: Path) -> float:
         return 0.0
 
 
-def free_vram(model) -> None:
-    """Release VRAM after model use."""
+def default_batch_size() -> int:
+    """Return 16 if total VRAM > 10 GB, else 8."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            _, total = torch.cuda.mem_get_info()
+            if total > 10 * 1024 * 1024 * 1024:
+                return 16
+    except Exception:
+        pass
+    return 8
+
+
+def free_vram() -> None:
+    """Flush VRAM — call after ``del model`` in the caller's scope."""
     import torch
 
-    del model
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def check_vram(label: str = "model", min_mb: int = 512) -> None:
+    """Flush caches then raise if free VRAM is below *min_mb*.
+
+    Call this on CUDA devices before loading a heavy model.  On CPU or
+    when CUDA is unavailable, this is a no-op.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return
+    # flush first so the reading is accurate
+    gc.collect()
+    torch.cuda.empty_cache()
+    free_bytes, total_bytes = torch.cuda.mem_get_info()
+    free_mb = free_bytes // (1024 * 1024)
+    total_mb = total_bytes // (1024 * 1024)
+    logger.info(f"VRAM before {label}: {free_mb} MB free / {total_mb} MB total")
+    if free_mb < min_mb:
+        raise RuntimeError(
+            f"Not enough VRAM to load {label}: {free_mb} MB free, "
+            f"need at least {min_mb} MB. "
+            f"Try closing other GPU processes or restarting the backend."
+        )
 
 
 # ──────────────────────────────────────────────
@@ -319,29 +305,6 @@ def group_by_speaker(segments: list[dict]) -> dict[str, list[dict]]:
         speaker = seg.get("speaker", "UNKNOWN")
         by_speaker.setdefault(speaker, []).append(seg)
     return by_speaker
-
-
-def save_segments_json(
-    path: Path,
-    segments: list[dict],
-    label: str,
-) -> Path:
-    """Write a segment list to a JSON file with standard formatting.
-
-    Args:
-        path       : output file path
-        segments   : list of segment dicts (already cleaned)
-        label      : human-readable label for the log message (e.g. "Polished transcript")
-
-    Returns:
-        The path written to.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(segments, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    logger.success(f"{label} saved — {len(segments)} segments → {path.name}")
-    return path
 
 
 def batch_segments_by_duration(
@@ -454,6 +417,219 @@ def _vtt_ts(seconds: float) -> str:
     s = int(seconds % 60)
     ms = int((seconds % 1) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
+# ── Subtitle parsing (inverse of segments_to_srt / segments_to_vtt) ────
+
+
+def _parse_srt_ts(ts: str) -> float:
+    """Parse an SRT timestamp (``HH:MM:SS,mmm``) to seconds."""
+    ts = ts.strip().replace(",", ".")
+    parts = ts.split(":")
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + float(parts[1])
+    return float(parts[0])
+
+
+def _parse_vtt_ts(ts: str) -> float:
+    """Parse a VTT timestamp (``HH:MM:SS.mmm`` or ``MM:SS.mmm``) to seconds."""
+    ts = ts.strip()
+    parts = ts.split(":")
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + float(parts[1])
+    return float(parts[0])
+
+
+_VTT_SPEAKER_RE = re.compile(r"<v\s+([^>]+)>")
+
+
+def _merge_parsed_cues(cues: list[dict]) -> list[dict]:
+    """Deduplicate subtitle cues, preserving original timing.
+
+    YouTube auto-generated subtitles often produce overlapping cues with
+    repeated text.  This pass deduplicates consecutive identical lines and
+    cleans HTML entities, but does NOT merge distinct cues — the original
+    subtitle timing is kept as-is.
+    """
+    if not cues:
+        return []
+
+    # Clean HTML entities from all cues
+    for cue in cues:
+        cue["text"] = (
+            cue["text"]
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", '"')
+        )
+        # Collapse multiple spaces
+        cue["text"] = re.sub(r"  +", " ", cue["text"]).strip()
+
+    # Deduplicate consecutive identical text
+    deduped: list[dict] = [cues[0]]
+    for cue in cues[1:]:
+        prev = deduped[-1]
+        if cue["text"] == prev["text"] and cue["speaker"] == prev["speaker"]:
+            # Extend end time of previous cue
+            prev["end"] = max(prev["end"], cue["end"])
+        else:
+            deduped.append(cue)
+
+    # Detect and collapse rolling/progressive subtitles.
+    # YouTube auto-generated VTTs display text progressively: each cue shows
+    # the previously completed line plus new words.  Between the rolling cues
+    # there are brief "flash" cues (< 0.05s) that just repeat completed text.
+    # We strip the flash cues, detect rolling overlap, and extract only the
+    # new text from each cue.
+    if len(deduped) >= 4:
+        # Remove near-zero-duration "flash" cues
+        no_flash: list[dict] = []
+        for cue in deduped:
+            if cue["end"] - cue["start"] >= 0.05:
+                no_flash.append(cue)
+
+        # Detect rolling pattern: suffix of cue[i] == prefix of cue[i+1]
+        if len(no_flash) >= 4:
+            overlap_count = 0
+            for i in range(len(no_flash) - 1):
+                t1, t2 = no_flash[i]["text"], no_flash[i + 1]["text"]
+                # Check if any suffix of t1 (>10 chars) is a prefix of t2
+                min_overlap = min(10, len(t1) // 2)
+                for length in range(len(t1), min_overlap - 1, -1):
+                    if t2.startswith(t1[-length:]):
+                        overlap_count += 1
+                        break
+
+            if overlap_count > len(no_flash) * 0.3:
+                collapsed: list[dict] = []
+                for i, cue in enumerate(no_flash):
+                    if i == 0:
+                        collapsed.append(cue)
+                        continue
+                    prev_text = no_flash[i - 1]["text"]
+                    cur_text = cue["text"]
+                    # Find longest suffix of prev that is a prefix of cur
+                    best_overlap = 0
+                    for length in range(len(prev_text), 0, -1):
+                        if cur_text.startswith(prev_text[-length:]):
+                            best_overlap = length
+                            break
+                    if best_overlap > 0:
+                        new_text = cur_text[best_overlap:].strip()
+                        if new_text:
+                            collapsed.append(
+                                {
+                                    **cue,
+                                    "text": new_text,
+                                }
+                            )
+                    else:
+                        collapsed.append(cue)
+                deduped = collapsed
+
+    return deduped
+
+
+def srt_to_segments(srt_text: str) -> list[dict]:
+    """Parse SRT subtitle text into segment dicts.
+
+    Returns a list of ``{"speaker": str, "text": str, "start": float,
+    "end": float}`` dicts.  Speaker is extracted from a ``Speaker: ``
+    prefix if present.
+
+    Args:
+        srt_text: Full SRT file content.
+    """
+    cues: list[dict] = []
+    blocks = re.split(r"\n\s*\n", srt_text.strip())
+    for block in blocks:
+        lines = block.strip().splitlines()
+        if len(lines) < 2:
+            continue
+        # Find the timestamp line (skip the index line)
+        ts_line = None
+        text_start = 0
+        for idx, line in enumerate(lines):
+            if "-->" in line:
+                ts_line = line
+                text_start = idx + 1
+                break
+        if ts_line is None:
+            continue
+        parts = ts_line.split("-->")
+        if len(parts) != 2:
+            continue
+        start = _parse_srt_ts(parts[0])
+        end = _parse_srt_ts(parts[1])
+        text = " ".join(lines[text_start:]).strip()
+        # Extract speaker from "Speaker: text" prefix
+        speaker = ""
+        if ": " in text:
+            maybe_speaker, rest = text.split(": ", 1)
+            if maybe_speaker and not any(c in maybe_speaker for c in ".,!?"):
+                speaker = maybe_speaker
+                text = rest
+        if text:
+            cues.append({"speaker": speaker, "text": text, "start": start, "end": end})
+
+    return _merge_parsed_cues(cues)
+
+
+def vtt_to_segments(vtt_text: str) -> list[dict]:
+    """Parse WebVTT subtitle text into segment dicts.
+
+    Handles YouTube's auto-generated format with overlapping/duplicate cues
+    and ``<v SpeakerName>`` voice tags.
+
+    Returns a list of ``{"speaker": str, "text": str, "start": float,
+    "end": float}`` dicts.
+
+    Args:
+        vtt_text: Full WebVTT file content.
+    """
+    cues: list[dict] = []
+    blocks = re.split(r"\n\s*\n", vtt_text.strip())
+    for block in blocks:
+        lines = block.strip().splitlines()
+        # Find timestamp line
+        ts_line = None
+        text_start = 0
+        for idx, line in enumerate(lines):
+            if "-->" in line:
+                ts_line = line
+                text_start = idx + 1
+                break
+        if ts_line is None:
+            continue
+        # Strip position/alignment metadata after timestamp
+        ts_part = ts_line.split("-->")
+        if len(ts_part) != 2:
+            continue
+        start = _parse_vtt_ts(ts_part[0].split()[0] if ts_part[0].strip() else "0")
+        end_raw = ts_part[1].strip().split()
+        end = _parse_vtt_ts(end_raw[0]) if end_raw else start
+
+        text = " ".join(lines[text_start:]).strip()
+        if not text:
+            continue
+        # Extract speaker from <v SpeakerName> tags
+        speaker = ""
+        m = _VTT_SPEAKER_RE.search(text)
+        if m:
+            speaker = m.group(1).strip()
+            text = _VTT_SPEAKER_RE.sub("", text).strip()
+        # Strip remaining HTML-like tags
+        text = re.sub(r"<[^>]+>", "", text).strip()
+        if text:
+            cues.append({"speaker": speaker, "text": text, "start": start, "end": end})
+
+    return _merge_parsed_cues(cues)
 
 
 def merge_consecutive_segments(
@@ -745,7 +921,21 @@ def run_ollama(
     label: str = "",
     on_batch: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
-    """Run segments through a local Ollama model."""
+    """Run segments through a local Ollama model.
+
+    Args:
+        segments: source segments to process.
+        system_prompt: system prompt for the LLM.
+        model: Ollama model name.
+        batch_minutes: max audio duration per batch in minutes.
+        instruction: verb for user-message formatting (e.g. "Correct", "Translate").
+        min_length_ratio: minimum output/input length ratio before flagging.
+        label: human-readable label for log messages.
+        on_batch: optional callback(batch_num, total_batches) for progress.
+
+    Returns:
+        Processed segments with updated text fields.
+    """
     from ollama import Client
 
     client = Client()
@@ -793,16 +983,35 @@ def run_api(
     label: str = "",
     on_batch: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
-    """Run segments through an OpenAI-compatible API."""
+    """Run segments through an OpenAI-compatible API.
+
+    Args:
+        segments: source segments to process.
+        system_prompt: system prompt for the LLM.
+        model: model name (auto-detected from provider if empty).
+        api_base_url: base URL (auto-detected from provider if empty).
+        api_key: API key (None reads from provider's env variable).
+        batch_minutes: max audio duration per batch in minutes.
+        provider: provider shorthand ("openai", "anthropic", "mistral").
+        instruction: verb for user-message formatting.
+        min_length_ratio: minimum output/input length ratio before flagging.
+        label: human-readable label for log messages.
+        on_batch: optional callback(batch_num, total_batches) for progress.
+
+    Returns:
+        Processed segments with updated text fields.
+    """
     import os
 
     from openai import OpenAI
 
-    if provider and provider in API_PROVIDERS:
-        base_url, env_var, default_model = API_PROVIDERS[provider]
-        api_base_url = api_base_url or base_url
-        model = model or default_model
-        api_key = api_key or os.environ.get(env_var)
+    from podcodex.core.constants import LLM_PROVIDERS
+
+    if provider and provider in LLM_PROVIDERS:
+        spec = LLM_PROVIDERS[provider]
+        api_base_url = api_base_url or spec["url"]
+        model = model or spec["model"]
+        api_key = api_key or os.environ.get(spec.get("env_var", ""))
 
     key = api_key or os.environ.get("API_KEY")
     if not key:
@@ -879,3 +1088,61 @@ def validate_manual(
 
     logger.info(f"Manual corrections validated — {len(results)} segments")
     return results
+
+
+def run_llm_pipeline(
+    segments: list[dict],
+    system_prompt: str,
+    *,
+    mode: str = "ollama",
+    model: str = "",
+    api_base_url: str = "",
+    api_key: str | None = None,
+    batch_minutes: float = DEFAULT_BATCH_MINUTES,
+    provider: str | None = None,
+    instruction: str = "Process",
+    label: str = "",
+    original_segments: list[dict] | None = None,
+    merge: bool = True,
+    max_gap: float = DEFAULT_MAX_GAP,
+    on_batch: Callable[[int, int], None] | None = None,
+) -> list[dict]:
+    """Run an LLM pipeline (correct or translate) on segments.
+
+    Handles manual/ollama/api modes, optional merge, and progress callbacks.
+    """
+    if mode == "manual":
+        orig = original_segments if original_segments is not None else segments
+        return validate_manual(segments, orig)
+
+    if merge:
+        segments = merge_consecutive_segments(segments, max_gap=max_gap)
+        logger.info(f"After merge: {len(segments)} segments")
+
+    if mode == "ollama":
+        return run_ollama(
+            segments,
+            system_prompt,
+            model=model or "qwen3:4b",
+            batch_minutes=batch_minutes,
+            instruction=instruction,
+            label=label,
+            on_batch=on_batch,
+        )
+    elif mode == "api":
+        return run_api(
+            segments,
+            system_prompt,
+            model=model,
+            api_base_url=api_base_url,
+            api_key=api_key,
+            batch_minutes=batch_minutes,
+            provider=provider,
+            instruction=instruction,
+            label=label,
+            on_batch=on_batch,
+        )
+    else:
+        raise ValueError(
+            f"Unknown mode: {mode!r}. Choose from 'manual', 'ollama', 'api'."
+        )

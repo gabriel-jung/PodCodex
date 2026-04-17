@@ -1,18 +1,49 @@
-"""Search routes — hybrid retrieval over indexed episodes."""
+"""Search routes — hybrid retrieval over the global LanceDB IndexStore."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import submit_task
-from podcodex.api.schemas import TaskResponse
-from podcodex.core._utils import AudioPaths
+from podcodex.api.routes._helpers import AUDIO_EXTS, get_index_store
 
 router = APIRouter()
+
+
+_STEM_PREFIX_RE = re.compile(r"^\d+_(?:episode_\d+_)?", re.IGNORECASE)
+
+
+def _humanize_stem(stem: str) -> str:
+    s = _STEM_PREFIX_RE.sub("", stem).replace("_", " ").strip()
+    return (s[:1].upper() + s[1:]) if s else stem
+
+
+def _build_audio_lookup() -> dict[str, dict[str, str]]:
+    """Per-request map: show name → {episode_stem: audio_path_str}.
+
+    Each show folder is scanned once (one ``iterdir``) rather than probing
+    every ``AUDIO_EXTS`` extension per search hit.
+    """
+    from podcodex.api.routes.config import _load
+    from podcodex.ingest.show import load_show_meta
+
+    out: dict[str, dict[str, str]] = {}
+    for folder_path in _load().show_folders:
+        p = Path(folder_path)
+        if not p.is_dir():
+            continue
+        meta = load_show_meta(p)
+        name = (meta.name if meta else None) or p.name
+        stems: dict[str, str] = {}
+        for f in p.iterdir():
+            if f.is_file() and f.suffix.lower() in AUDIO_EXTS:
+                stems[f.stem] = str(f)
+        out[name] = stems
+    return out
 
 
 # ── Config ────────────────────────────────────────────────
@@ -50,9 +81,6 @@ async def search_config() -> dict:
 
 class SearchRequest(BaseModel):
     query: str
-    audio_path: str | None = None
-    folder: str | None = None
-    output_dir: str | None = None
     show: str
     model: str = "bge-m3"
     chunking: str = "semantic"
@@ -60,10 +88,12 @@ class SearchRequest(BaseModel):
     alpha: float = 0.5
     episode: str | None = None
     speaker: str | None = None
+    source: str | None = None
 
     @field_validator("top_k")
     @classmethod
     def top_k_positive(cls, v: int) -> int:
+        """Validate that top_k is at least 1."""
         if v < 1:
             raise ValueError("top_k must be at least 1")
         return v
@@ -71,6 +101,7 @@ class SearchRequest(BaseModel):
     @field_validator("alpha")
     @classmethod
     def alpha_in_range(cls, v: float) -> float:
+        """Validate that alpha is between 0.0 and 1.0 inclusive."""
         if not 0.0 <= v <= 1.0:
             raise ValueError("alpha must be between 0.0 and 1.0")
         return v
@@ -79,425 +110,167 @@ class SearchRequest(BaseModel):
 class SearchResult(BaseModel):
     text: str
     episode: str
+    episode_stem: str = ""
+    audio_path: str = ""
     speaker: str
     start: float
     end: float
     score: float
     source: str
     speakers: list[dict] | None = None
+    accent_match: bool = False
+    fuzzy_match: bool = False
 
 
 @router.post("/query", response_model=list[SearchResult])
 async def search_query(req: SearchRequest) -> list[dict]:
-    """Hybrid search: tries Qdrant first, falls back to local SQLite."""
+    """Hybrid search over the global LanceDB index."""
     from podcodex.rag.defaults import MODELS
+    from podcodex.rag.retriever import Retriever
     from podcodex.rag.store import collection_name
 
     if req.model not in MODELS:
         raise HTTPException(400, f"Unknown model: {req.model}")
 
     col = collection_name(req.show, req.model, req.chunking)
-
-    # Try Qdrant-backed retriever first
-    results = _try_qdrant_search(req, col)
-
-    # Fall back to local SQLite search
-    if results is None:
-        db_path = _resolve_vectors_db(req)
-        results = _local_search(
-            db_path=db_path,
-            collection=col,
-            query=req.query,
-            model=req.model,
-            top_k=req.top_k,
-            episode=req.episode,
-            speaker=req.speaker,
-        )
-
-    return [_result_to_dict(r) for r in results]
-
-
-def _try_qdrant_search(req: SearchRequest, col: str) -> list[dict] | None:
-    """Attempt Qdrant search. Returns None if Qdrant is unavailable."""
-    from podcodex.rag.store import qdrant_available
-
-    if not qdrant_available():
-        return None
-
+    local = get_index_store()
+    logger.info("Search: show={!r} col={!r} episode={!r}", req.show, col, req.episode)
     try:
-        from podcodex.rag.retriever import Retriever
-
-        retriever = Retriever(model=req.model)
-        return retriever.retrieve(
+        retriever = Retriever(model=req.model, local=local)
+        results = retriever.retrieve(
             req.query,
             col,
             top_k=req.top_k,
             alpha=req.alpha,
             episode=req.episode,
             speaker=req.speaker,
+            source=req.source,
         )
     except Exception:
-        logger.opt(exception=True).warning(
-            "Qdrant search failed for collection {}, falling back to local", col
-        )
-        return None
+        logger.opt(exception=True).warning("Search failed for collection {}", col)
+        results = []
+
+    logger.info("Search: {} result(s)", len(results))
+    audio_lookup = _build_audio_lookup()
+    return [_result_to_dict(r, audio_lookup) for r in results]
 
 
-def _local_search(
-    db_path,
-    collection: str,
-    query: str,
-    model: str,
-    top_k: int,
-    episode: str | None = None,
-    speaker: str | None = None,
-) -> list[dict]:
-    """Dense-only search over LocalStore embeddings (no BM25)."""
-    import numpy as np
-
-    from podcodex.rag.embedder import get_embedder
-    from podcodex.rag.localstore import LocalStore
-
-    if not db_path.exists():
-        return []
-
-    local = LocalStore(db_path)
-    try:
-        # Get all episodes in this collection
-        episodes = local.list_episodes(collection)
-        if not episodes:
-            return []
-
-        if episode:
-            episodes = [e for e in episodes if e == episode]
-
-        # Load all chunks with embeddings
-        all_chunks = []
-        all_embeddings = []
-        for ep in episodes:
-            chunks = local.load_chunks(collection, ep)
-            for chunk in chunks:
-                if (
-                    speaker
-                    and chunk.get("dominant_speaker", chunk.get("speaker")) != speaker
-                ):
-                    continue
-                emb = chunk.pop("embedding", None)
-                if emb is not None:
-                    all_chunks.append(chunk)
-                    all_embeddings.append(emb)
-    finally:
-        local.close()
-
-    if not all_chunks:
-        return []
-
-    # Embed the query
-    embedder = get_embedder(model, device="cpu")
-    query_vec = embedder.encode_query(query)
-
-    # Cosine similarity
-    embeddings_matrix = np.stack(all_embeddings)
-    norms = np.linalg.norm(embeddings_matrix, axis=1, keepdims=True)
-    norms = np.maximum(norms, 1e-8)
-    normalized = embeddings_matrix / norms
-
-    query_norm = query_vec / max(np.linalg.norm(query_vec), 1e-8)
-    scores = normalized @ query_norm
-
-    # Top-k
-    k = min(top_k, len(scores))
-    top_indices = np.argsort(scores)[::-1][:k]
-
-    results = []
-    for idx in top_indices:
-        score = float(scores[idx])
-        if score < 0.01:
-            continue
-        results.append({**all_chunks[idx], "score": score})
-
-    return results
-
-
-def _resolve_vectors_db(req) -> Path:
-    """Resolve vectors.db path from either audio_path or folder."""
-    if getattr(req, "folder", None):
-        return Path(req.folder) / "vectors.db"
-    if getattr(req, "audio_path", None):
-        output_dir = getattr(req, "output_dir", None)
-        p = AudioPaths.from_audio(req.audio_path, output_dir=output_dir)
-        return p.vectors_db
-    raise HTTPException(400, "Either audio_path or folder is required")
-
-
-def _result_to_dict(r: dict) -> dict:
-    """Normalize a retriever result into the SearchResult shape."""
+def _result_to_dict(
+    r: dict, audio_lookup: dict[str, dict[str, str]] | None = None
+) -> dict:
+    stem = r.get("episode", "")
+    title = r.get("episode_title") or _humanize_stem(stem)
+    show_name = r.get("show", "")
+    audio_path = (
+        (audio_lookup.get(show_name) or {}).get(stem, "")
+        if audio_lookup is not None and stem and show_name
+        else ""
+    )
     return {
         "text": r.get("text", ""),
-        "episode": r.get("episode_title") or r.get("episode", ""),
+        "episode": title,
+        "episode_stem": stem,
+        "audio_path": audio_path,
         "speaker": r.get("dominant_speaker", r.get("speaker", "")),
         "start": r.get("start", 0.0),
         "end": r.get("end", 0.0),
         "score": r.get("score", 0.0),
         "source": r.get("source", ""),
         "speakers": r.get("speakers"),
+        "accent_match": bool(r.get("accent_match", False)),
+        "fuzzy_match": bool(r.get("fuzzy_match", False)),
     }
 
 
-# ── Sync to Qdrant ───────────────────────────────────────
-
-
-class SyncRequest(BaseModel):
-    folder: str
-    show: str
-    overwrite: bool = False
-    qdrant_url: str | None = None
-
-
-@router.post("/sync")
-async def sync_to_qdrant(req: SyncRequest) -> TaskResponse:
-    """Push indexed episodes from LocalStore (SQLite) to Qdrant."""
-    db_path = Path(req.folder) / "vectors.db"
-    if not db_path.exists():
-        raise HTTPException(404, "No vectors.db found — index episodes first")
-
-    def run_sync(progress_cb):
-        import numpy as np
-
-        from podcodex.rag.localstore import LocalStore
-        from podcodex.rag.store import QdrantStore
-
-        local = LocalStore(db_path=db_path)
-        try:
-            store = QdrantStore(url=req.qdrant_url)
-
-            collections = local.list_collections(show=req.show)
-            if not collections:
-                progress_cb(1.0, "No collections found")
-                return
-
-            total_chunks = 0
-            for ci, col in enumerate(collections):
-                info = local.get_collection_info(col)
-                if info is None:
-                    continue
-
-                store.create_collection(
-                    col, model=info["model"], overwrite=req.overwrite
-                )
-
-                episodes = local.list_episodes(col)
-                for ei, ep in enumerate(episodes):
-                    cached = local.load_chunks(col, ep)
-                    if not cached:
-                        continue
-
-                    local_count = len(cached)
-
-                    if not req.overwrite:
-                        qdrant_count = store.episode_point_count(col, ep)
-                        if local_count == qdrant_count:
-                            continue
-                        if qdrant_count > 0:
-                            store.delete_episode_points(col, ep)
-
-                    chunks = [
-                        {k: v for k, v in c.items() if k != "embedding"} for c in cached
-                    ]
-                    embeddings = np.stack([c["embedding"] for c in cached])
-                    store.upsert(col, chunks, embeddings)
-                    total_chunks += len(chunks)
-
-                    frac = (ci + (ei + 1) / len(episodes)) / len(collections)
-                    progress_cb(frac, f"Synced {ep} ({len(chunks)} chunks)")
-
-            progress_cb(1.0, f"Done — {total_chunks} chunks pushed to Qdrant")
-        finally:
-            local.close()
-
-    return submit_task("sync", req.folder, run_sync)
-
-
-# ── Exact (substring) search ────────────────────────────
+# ── Exact (token-match) search ───────────────────────────
 
 
 class ExactRequest(BaseModel):
     query: str
-    folder: str | None = None
-    audio_path: str | None = None
     show: str
     model: str = "bge-m3"
     chunking: str = "semantic"
-    top_k: int = 25
     episode: str | None = None
     speaker: str | None = None
-
-    @field_validator("top_k")
-    @classmethod
-    def top_k_positive(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("top_k must be at least 1")
-        return v
+    source: str | None = None
 
 
 @router.post("/exact", response_model=list[SearchResult])
 async def exact_search(req: ExactRequest) -> list[dict]:
-    """Case-insensitive substring search over indexed chunks (like Ctrl+F)."""
-    from podcodex.rag.localstore import LocalStore
+    """Phrase search: returns all exact, accent-variant, and near-typo matches."""
+    from podcodex.rag.retriever import Retriever
     from podcodex.rag.store import collection_name
 
-    db_path = _resolve_vectors_db(req)
-    if not db_path.exists():
-        return []
-
     col = collection_name(req.show, req.model, req.chunking)
-    local = LocalStore(db_path)
-    try:
-        episodes = local.list_episodes(col)
-        if not episodes:
-            return []
-
-        if req.episode:
-            episodes = [e for e in episodes if e == req.episode]
-
-        query_lower = req.query.lower()
-        results: list[dict] = []
-        for ep in episodes:
-            chunks = local.load_chunks_no_embeddings(col, ep)
-            for chunk in chunks:
-                if query_lower not in chunk.get("text", "").lower():
-                    continue
-                if (
-                    req.speaker
-                    and chunk.get("dominant_speaker", chunk.get("speaker"))
-                    != req.speaker
-                ):
-                    continue
-                results.append({**chunk, "score": 1.0})
-                if len(results) >= req.top_k:
-                    break
-            if len(results) >= req.top_k:
-                break
-    finally:
-        local.close()
-    results.sort(key=lambda c: (c.get("episode", ""), c.get("start", 0.0)))
-    return [_result_to_dict(r) for r in results[: req.top_k]]
+    retriever = Retriever(model=req.model, local=get_index_store())
+    hits = retriever.find(
+        req.query,
+        col,
+        episode=req.episode,
+        speaker=req.speaker,
+        source=req.source,
+    )
+    audio_lookup = _build_audio_lookup()
+    return [_result_to_dict(h, audio_lookup) for h in hits]
 
 
 # ── Random quote ─────────────────────────────────────────
 
 
 class RandomRequest(BaseModel):
-    folder: str | None = None
-    audio_path: str | None = None
     show: str
     model: str = "bge-m3"
     chunking: str = "semantic"
     episode: str | None = None
     speaker: str | None = None
+    source: str | None = None
 
 
 @router.post("/random", response_model=SearchResult | None)
 async def random_quote(req: RandomRequest) -> dict | None:
-    """Pick a random indexed chunk."""
-    import random as rng
-
-    from podcodex.rag.localstore import LocalStore
+    """Pick a random indexed chunk (optionally filtered)."""
+    from podcodex.rag.retriever import Retriever
     from podcodex.rag.store import collection_name
 
-    db_path = _resolve_vectors_db(req)
-    if not db_path.exists():
-        return None
-
     col = collection_name(req.show, req.model, req.chunking)
-    local = LocalStore(db_path)
-    try:
-        episodes = local.list_episodes(col)
-        if not episodes:
-            return None
-
-        if req.episode:
-            episodes = [e for e in episodes if e == req.episode]
-        if not episodes:
-            return None
-
-        # Pick a random episode, then a random chunk from it
-        ep = rng.choice(episodes)
-        chunks = local.load_chunks_no_embeddings(col, ep)
-    finally:
-        local.close()
-
-    if req.speaker:
-        chunks = [
-            c
-            for c in chunks
-            if c.get("dominant_speaker", c.get("speaker")) == req.speaker
-        ]
-
-    if not chunks:
+    retriever = Retriever(model=req.model, local=get_index_store())
+    chunk = retriever.random(
+        col, episode=req.episode, speaker=req.speaker, source=req.source
+    )
+    if chunk is None:
         return None
-
-    chunk = rng.choice(chunks)
-
-    # If chunk has multiple speaker turns, pick one
-    turns: list[dict] = chunk.get("speakers") or []
-    if len(turns) > 1:
-        if req.speaker:
-            matching = [t for t in turns if t.get("speaker") == req.speaker]
-            turns = matching or turns
-        turn = rng.choice(turns)
-        return _result_to_dict(
-            {
-                "episode": chunk.get("episode", ep),
-                "episode_title": chunk.get("episode_title"),
-                "source": chunk.get("source", ""),
-                "speaker": turn.get("speaker", ""),
-                "text": turn.get("text", ""),
-                "start": turn.get("start", chunk.get("start", 0.0)),
-                "end": turn.get("end", chunk.get("end", 0.0)),
-                "score": 1.0,
-            }
-        )
-
-    return _result_to_dict({**chunk, "score": 1.0})
+    return _result_to_dict({**chunk, "score": 1.0}, _build_audio_lookup())
 
 
 # ── Index stats ──────────────────────────────────────────
 
 
 @router.get("/stats")
-async def index_stats(folder: str, show: str = "") -> dict:
-    """Return index statistics for a show folder."""
-    from podcodex.rag.localstore import LocalStore
+async def index_stats(show: str = "") -> dict:
+    """Return index statistics, optionally scoped to one show."""
+    local = get_index_store()
+    collections = local.list_collections(show=show)
 
-    db_path = Path(folder) / "vectors.db"
-    if not db_path.exists():
-        return {"collections": [], "total_episodes": 0, "total_chunks": 0}
-
-    local = LocalStore(db_path)
-    try:
-        collections = local.list_collections(show=show)
-
-        stats: list[dict] = []
-        total_episodes = 0
-        total_chunks = 0
-        for col in collections:
-            info = local.get_collection_info(col)
-            episodes = local.list_episodes(col)
-            chunk_count = sum(local.episode_chunk_count(col, ep) for ep in episodes)
-            stats.append(
-                {
-                    "collection": col,
-                    "model": info["model"] if info else "",
-                    "chunking": info["chunker"] if info else "",
-                    "episodes": len(episodes),
-                    "chunks": chunk_count,
-                }
-            )
-            total_episodes += len(episodes)
-            total_chunks += chunk_count
-    finally:
-        local.close()
+    stats: list[dict] = []
+    total_episodes = 0
+    total_chunks = 0
+    for col in collections:
+        info = local.get_collection_info(col)
+        ep_count = len(local.list_episodes(col))
+        chunk_count = local.collection_chunk_count(col)
+        sources = local.list_sources(col)
+        stats.append(
+            {
+                "collection": col,
+                "model": info["model"] if info else "",
+                "chunking": info["chunker"] if info else "",
+                "episodes": ep_count,
+                "chunks": chunk_count,
+                "sources": sources,
+            }
+        )
+        total_episodes += ep_count
+        total_chunks += chunk_count
     return {
         "collections": stats,
         "total_episodes": total_episodes,

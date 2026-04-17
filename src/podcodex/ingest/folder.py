@@ -19,7 +19,6 @@ from pathlib import Path
 
 from loguru import logger
 
-from podcodex.core._utils import INTERNAL_SUFFIXES as _INTERNAL_SUFFIXES
 from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.ingest.rss import EPISODE_META_FILE
 
@@ -47,11 +46,11 @@ class EpisodeInfo:
     segments_ready: bool = False
     diarized: bool = False
     assigned: bool = False
-    mapped: bool = False  # speaker_map.json exists
     transcribed: bool = False  # transcript exported (raw or validated)
-    polished: bool = False
+    corrected: bool = False
     indexed: bool = False
     synthesized: bool = False
+    has_subtitles: bool = False
     translations: list[str] = field(default_factory=list)
 
     @property
@@ -60,8 +59,15 @@ class EpisodeInfo:
         return self.audio_path
 
 
-def _episode_status(stem: str, existing: set[str]) -> dict:
-    """Derive pipeline status flags from the set of filenames in an output dir."""
+def _episode_status(
+    stem: str, existing: set[str], output_dir: Path | None = None
+) -> dict:
+    """Derive pipeline status flags from the set of filenames in an output dir.
+
+    Only detects artifacts that are still written to disk (transcription
+    intermediates, transcript files, synthesis outputs, RAG marker).
+    Correct/translation status comes from the version DB via ``mark_step``.
+    """
     segments_ready = (
         f"{stem}.segments.parquet" in existing
         and f"{stem}.segments.meta.json" in existing
@@ -71,47 +77,34 @@ def _episode_status(stem: str, existing: set[str]) -> dict:
         and f"{stem}.diarization.meta.json" in existing
     )
     assigned = f"{stem}.diarized_segments.parquet" in existing
-    mapped = f"{stem}.speaker_map.json" in existing
 
     transcript_raw = f"{stem}.transcript.raw.json" in existing
     transcript_val = f"{stem}.transcript.json" in existing
-    transcribed = transcript_raw or transcript_val
-
-    polished_raw = f"{stem}.polished.raw.json" in existing
-    polished_val = f"{stem}.polished.json" in existing
-    polished = polished_raw or polished_val
+    # Check for actual transcript version files (.json) inside transcript/,
+    # not just the directory existing (it gets created early by parquet sub-steps).
+    has_version_transcript = False
+    if output_dir and (output_dir / "transcript").is_dir():
+        has_version_transcript = any(
+            f.suffix == ".json"
+            for f in (output_dir / "transcript").iterdir()
+            if f.is_file()
+        )
+    transcribed = transcript_raw or transcript_val or has_version_transcript
 
     indexed = ".rag_indexed" in existing
     synthesized = f"{stem}.synthesized.wav" in existing
-
-    # Translations: derive from filenames
-    # New convention: {stem}.translated.{lang}.(raw.)json
-    # Legacy convention: {stem}.{lang}.(raw.)json (simple name, no dots)
-    langs: set[str] = set()
-    for fname in existing:
-        if not fname.startswith(f"{stem}.") or not fname.endswith(".json"):
-            continue
-        suffix = fname[len(stem) + 1 : -5]  # strip "{stem}." and ".json"
-        if suffix.endswith(".raw"):
-            suffix = suffix[:-4]
-        # New convention: translated.{lang}
-        if suffix.startswith("translated."):
-            langs.add(suffix[len("translated.") :])
-            continue
-        # Legacy: simple name with no dots, not an internal suffix
-        if "." not in suffix and suffix not in _INTERNAL_SUFFIXES:
-            langs.add(suffix)
+    has_subtitles = any(f.endswith(".vtt") for f in existing)
 
     return {
         "segments_ready": segments_ready,
         "diarized": diarized,
         "assigned": assigned,
-        "mapped": mapped,
         "transcribed": transcribed,
-        "polished": polished,
+        "corrected": False,
         "indexed": indexed,
         "synthesized": synthesized,
-        "translations": sorted(langs),
+        "has_subtitles": has_subtitles,
+        "translations": [],
     }
 
 
@@ -147,7 +140,7 @@ def _make_episode(
         stem=stem,
         output_dir=output_dir,
         title=_load_title(output_dir),
-        **_episode_status(stem, existing),
+        **_episode_status(stem, existing, output_dir),
     )
 
 
@@ -218,26 +211,12 @@ def _scan_folder_uncached(show_folder: Path) -> list[EpisodeInfo]:
         if name in episodes:
             continue
         existing = subdir_files[name]
-        has_transcript = any(f"{name}.{m}" in existing for m in _TRANSCRIPT_MARKERS)
+        has_transcript = (
+            any(f"{name}.{m}" in existing for m in _TRANSCRIPT_MARKERS)
+            or "transcript" in existing
+        )
         has_meta = EPISODE_META_FILE in existing
         if has_transcript or has_meta:
             episodes[name] = _make_episode(name, show_folder / name, existing)
 
     return sorted(episodes.values(), key=lambda ep: ep.stem)
-
-
-def find_audio(show_folder: str | Path, episode: str) -> Path | None:
-    """Locate the audio file for a given episode stem in a show folder.
-
-    Tries each known audio extension in order. Returns None if not found.
-    """
-    if not show_folder or not episode:
-        return None
-    folder = Path(show_folder)
-    if not folder.is_dir():
-        return None
-    for ext in AUDIO_EXTENSIONS:
-        candidate = folder / f"{episode}{ext}"
-        if candidate.exists():
-            return candidate
-    return None

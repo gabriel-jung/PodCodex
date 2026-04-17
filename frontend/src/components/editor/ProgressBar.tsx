@@ -79,7 +79,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
           <span className="text-muted-foreground truncate mr-2">{currentMsg}</span>
           <div className="flex items-center gap-2 shrink-0">
             {stale && isRunning && (
-              <span className="text-xs text-yellow-500">No updates</span>
+              <span className="text-xs text-warning">No updates</span>
             )}
             <span className="text-muted-foreground">{pct}%</span>
             {onCancel && isRunning && (
@@ -97,7 +97,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
         <div className="h-2 rounded-full bg-muted overflow-hidden">
           <div
             className={`h-full rounded-full transition-all duration-300 ${
-              isFailed ? "bg-destructive" : stale ? "bg-yellow-500" : isDone ? "bg-green-500" : "bg-primary"
+              isFailed ? "bg-destructive" : stale ? "bg-warning" : isDone ? "bg-success" : "bg-primary"
             }`}
             style={{ width: `${pct}%` }}
           />
@@ -117,7 +117,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
                 ) : isFailed && isLast ? (
                   <AlertCircle className="w-3 h-3 text-destructive shrink-0" />
                 ) : (
-                  <Check className="w-3 h-3 text-green-500 shrink-0" />
+                  <Check className="w-3 h-3 text-success shrink-0" />
                 )}
                 <span className={isActive ? "text-foreground" : "text-muted-foreground"}>
                   {step}
@@ -135,7 +135,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
 
       {/* Done */}
       {isDone && (
-        <p className="text-green-400 text-xs">Complete</p>
+        <p className="text-success text-xs">Complete</p>
       )}
 
       {/* Retry / Dismiss actions */}
@@ -168,7 +168,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
             Logs ({log.length})
           </button>
           {showLog && (
-            <pre className="mt-2 p-2 bg-black/40 rounded text-[10px] leading-relaxed text-muted-foreground max-h-48 overflow-auto font-mono">
+            <pre className="mt-2 p-2 bg-black/40 rounded text-[0.55rem] leading-normal text-muted-foreground max-h-80 overflow-auto font-mono">
               {log.map((line, i) => (
                 <div key={i}>{line}</div>
               ))}

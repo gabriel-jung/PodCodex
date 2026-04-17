@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import platform
+import subprocess
 from pathlib import Path
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from podcodex.api.routes._helpers import AUDIO_EXTS
 
 router = APIRouter()
+
+# Non-audio auxiliary files only; audio has its own delete endpoint.
+_DELETABLE_EXTS = {".vtt", ".srt", ".json", ".txt", ".info.json"}
 
 
 @router.get("/list")
@@ -47,7 +52,9 @@ async def list_directory(
             if item.name.startswith("."):
                 continue
             if item.is_dir():
-                is_show = (item / "show.toml").exists()
+                from podcodex.ingest.show import SHOW_META_FILENAME
+
+                is_show = (item / SHOW_META_FILENAME).exists()
                 try:
                     has_audio = any(
                         f.suffix.lower() in AUDIO_EXTS
@@ -103,3 +110,55 @@ async def make_directory(
     except PermissionError:
         return {"path": None, "error": "Permission denied"}
     return {"path": str(target), "error": None}
+
+
+@router.delete("/file")
+async def delete_file(
+    path: str = Query(..., description="Absolute path to the file to delete"),
+) -> dict:
+    """Delete a non-audio auxiliary file (subtitles, metadata, etc).
+
+    Safety: only removes files whose suffix is in a small allow-list, and
+    only when the file lives inside a folder that looks like a show folder
+    (contains ``show.toml``) to prevent arbitrary filesystem writes.
+    """
+    from podcodex.ingest.show import SHOW_META_FILENAME
+
+    p = Path(path).expanduser().resolve()
+    if p.suffix.lower() not in _DELETABLE_EXTS:
+        raise HTTPException(400, f"Refusing to delete file type: {p.suffix}")
+
+    parent = p.parent
+    while True:
+        if (parent / SHOW_META_FILENAME).exists():
+            break
+        if parent.parent == parent:
+            raise HTTPException(400, "File is not inside a known show folder")
+        parent = parent.parent
+
+    try:
+        p.unlink()
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"File not found: {path}") from e
+    return {"status": "deleted", "path": str(p)}
+
+
+@router.post("/open")
+async def open_folder(
+    path: str = Query(..., description="Folder to open in the OS file manager"),
+) -> dict:
+    """Open a folder in the OS file manager (Finder, Explorer, etc.)."""
+    target = Path(path).expanduser().resolve()
+    if not target.is_dir():
+        return {"error": "Not a directory"}
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.Popen(["open", str(target)])
+        elif system == "Windows":
+            subprocess.Popen(["explorer", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
+    except Exception as exc:
+        return {"error": str(exc)}
+    return {"error": None}

@@ -1,20 +1,17 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SlidersHorizontal } from "lucide-react";
+import { useEpisodeStore } from "@/stores";
 
-export interface FilterDropdownProps {
-  minDurationMinutes: number; setMinDurationMinutes: (v: number) => void;
-  maxDurationMinutes: number; setMaxDurationMinutes: (v: number) => void;
-  titleInclude: string; setTitleInclude: (v: string) => void;
-  titleExclude: string; setTitleExclude: (v: string) => void;
-}
-
-export default function FilterDropdown({
-  minDurationMinutes, setMinDurationMinutes,
-  maxDurationMinutes, setMaxDurationMinutes,
-  titleInclude, setTitleInclude,
-  titleExclude, setTitleExclude,
-}: FilterDropdownProps) {
+export default function FilterDropdown() {
+  const minDurationMinutes = useEpisodeStore((s) => s.minDurationMinutes);
+  const setMinDurationMinutes = useEpisodeStore((s) => s.setMinDurationMinutes);
+  const maxDurationMinutes = useEpisodeStore((s) => s.maxDurationMinutes);
+  const setMaxDurationMinutes = useEpisodeStore((s) => s.setMaxDurationMinutes);
+  const titleInclude = useEpisodeStore((s) => s.titleInclude);
+  const setTitleInclude = useEpisodeStore((s) => s.setTitleInclude);
+  const titleExclude = useEpisodeStore((s) => s.titleExclude);
+  const setTitleExclude = useEpisodeStore((s) => s.setTitleExclude);
   const [open, setOpen] = useState(false);
   const activeCount = [
     minDurationMinutes > 0,
@@ -40,7 +37,7 @@ export default function FilterDropdown({
       >
         <SlidersHorizontal className="w-3 h-3" />
         Filters
-        {activeCount > 0 && <span className="bg-primary text-primary-foreground rounded-full px-1 text-[10px]">{activeCount}</span>}
+        {activeCount > 0 && <span className="bg-primary text-primary-foreground rounded-full px-1 text-2xs">{activeCount}</span>}
       </Button>
       {open && (
         <>
@@ -54,7 +51,7 @@ export default function FilterDropdown({
                   value={minDurationMinutes || ""}
                   onChange={(e) => setMinDurationMinutes(Math.max(0, Number(e.target.value)))}
                   placeholder="min"
-                  className="input w-16 py-1 text-xs text-center"
+                  className="input w-16 text-xs text-center"
                 />
                 <span className="text-xs text-muted-foreground">to</span>
                 <input
@@ -62,7 +59,7 @@ export default function FilterDropdown({
                   value={maxDurationMinutes || ""}
                   onChange={(e) => setMaxDurationMinutes(Math.max(0, Number(e.target.value)))}
                   placeholder="max"
-                  className="input w-16 py-1 text-xs text-center"
+                  className="input w-16 text-xs text-center"
                 />
                 <span className="text-xs text-muted-foreground">min</span>
               </div>
@@ -73,7 +70,7 @@ export default function FilterDropdown({
                 value={titleInclude}
                 onChange={(e) => setTitleInclude(e.target.value)}
                 placeholder="word or phrase..."
-                className="input w-full py-1 text-xs"
+                className="input w-full text-xs"
               />
             </div>
             <div className="space-y-2">
@@ -82,7 +79,7 @@ export default function FilterDropdown({
                 value={titleExclude}
                 onChange={(e) => setTitleExclude(e.target.value)}
                 placeholder="word or phrase..."
-                className="input w-full py-1 text-xs"
+                className="input w-full text-xs"
               />
             </div>
             {activeCount > 0 && (

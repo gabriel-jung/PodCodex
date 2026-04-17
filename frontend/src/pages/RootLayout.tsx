@@ -1,30 +1,23 @@
 import { useQuery } from "@tanstack/react-query";
 import { Outlet } from "@tanstack/react-router";
-import { getHealth, getExtras } from "@/api/client";
+import { getHealth } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import AudioBar from "@/components/layout/AudioBar";
 import TaskBar from "@/components/layout/TaskBar";
+import CommandPalette from "@/components/CommandPalette";
+import ShortcutsHelp from "@/components/ShortcutsHelp";
+import BatchHistoryModal from "@/components/BatchHistoryModal";
 import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
 import { PlatformProvider } from "@/platform";
-import { useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
-import { useTheme } from "@/hooks/useTheme";
-import { Home, Sun, Moon, Monitor, Settings, PanelLeftOpen, PanelLeftClose } from "lucide-react";
+import { useGlobalShortcuts } from "@/hooks/useGlobalShortcuts";
 
 export default function RootLayout() {
+  useGlobalShortcuts();
   const { data: health, error } = useQuery({
-    queryKey: ["health"],
+    queryKey: queryKeys.health(),
     queryFn: getHealth,
     retry: 3,
     retryDelay: 1000,
-  });
-
-  // Prefetch capabilities at startup so panels never flash "not installed"
-  useQuery({
-    queryKey: ["system", "extras"],
-    queryFn: getExtras,
-    staleTime: Infinity,
-    gcTime: Infinity,
-    enabled: !!health,
   });
 
   if (error) {
@@ -53,59 +46,17 @@ export default function RootLayout() {
 
   return (
     <PlatformProvider>
-      <div className="flex h-screen bg-background text-foreground">
-        <AppSidebar />
-        <div className="flex flex-col flex-1 overflow-hidden">
-          <main className="flex-1 overflow-hidden">
-            <Outlet />
-          </main>
-          <TaskBar />
-          <AudioBar />
-        </div>
+      <div className="flex flex-col h-screen overflow-hidden bg-background text-foreground">
+        <main className="flex-1 overflow-hidden">
+          <Outlet />
+        </main>
+        <TaskBar />
+        <AudioBar />
         <ConfirmDialogHost />
+        <CommandPalette />
+        <ShortcutsHelp />
+        <BatchHistoryModal />
       </div>
     </PlatformProvider>
-  );
-}
-
-function AppSidebar() {
-  const navigate = useNavigate();
-  const [expanded, setExpanded] = useState(false);
-  const { theme, setTheme } = useTheme();
-  const nextTheme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
-  const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
-
-  const items = [
-    { icon: Home, label: "Home", onClick: () => navigate({ to: "/" }) },
-    { icon: Settings, label: "Settings", onClick: () => navigate({ to: "/settings" }) },
-    { icon: ThemeIcon, label: `Theme: ${theme}`, onClick: () => setTheme(nextTheme) },
-  ];
-
-  return (
-    <div
-      className={`border-r border-border flex flex-col shrink-0 transition-all duration-200 ${
-        expanded ? "w-44" : "w-11"
-      }`}
-    >
-      <nav className="flex-1 py-3 flex flex-col gap-1">
-        {items.map(({ icon: Icon, label, onClick }) => (
-          <button
-            key={label}
-            onClick={onClick}
-            title={expanded ? undefined : label}
-            className="w-full flex items-center gap-3 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent/50 transition"
-          >
-            <Icon className="w-4 h-4 shrink-0" />
-            {expanded && <span className="truncate text-xs">{label}</span>}
-          </button>
-        ))}
-      </nav>
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="px-3 py-2 text-muted-foreground hover:text-foreground transition border-t border-border"
-      >
-        {expanded ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
-      </button>
-    </div>
   );
 }

@@ -115,131 +115,6 @@ def test_scan_folder_validated_transcript(tmp_path):
 
 
 # ──────────────────────────────────────────────
-# polished flags
-# ──────────────────────────────────────────────
-
-
-def test_scan_folder_polished_validated(tmp_path):
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / "ep01.polished.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert result[0].polished is True
-
-
-def test_scan_folder_polished_raw_only(tmp_path):
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / "ep01.polished.raw.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert result[0].polished is True
-
-
-# ──────────────────────────────────────────────
-# translations flags
-# ──────────────────────────────────────────────
-
-
-def test_scan_folder_translation_validated(tmp_path):
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / "ep01.english.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert result[0].translations == ["english"]
-
-
-def test_scan_folder_translation_raw_only(tmp_path):
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / "ep01.english.raw.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert result[0].translations == ["english"]
-
-
-def test_scan_folder_translation_both_raw_and_validated(tmp_path):
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / "ep01.english.json").touch()
-    (ep_dir / "ep01.english.raw.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert result[0].translations == ["english"]
-
-
-def test_scan_folder_translation_new_naming(tmp_path):
-    """New convention: {stem}.translated.{lang}.json."""
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / "ep01.translated.english.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert result[0].translations == ["english"]
-
-
-def test_scan_folder_translation_new_naming_raw(tmp_path):
-    """New convention raw: {stem}.translated.{lang}.raw.json."""
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / "ep01.translated.spanish.raw.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert result[0].translations == ["spanish"]
-
-
-def test_scan_folder_internal_suffixes_excluded(tmp_path):
-    """transcript.json, polished.json etc. are not treated as translations."""
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / "ep01.transcript.json").touch()
-    (ep_dir / "ep01.polished.json").touch()
-    (ep_dir / "ep01.speaker_map.json").touch()
-    (ep_dir / "ep01.segments.meta.json").touch()
-    (ep_dir / "ep01.diarization.meta.json").touch()
-    (ep_dir / "ep01.nodiar.transcript.json").touch()
-    (ep_dir / "ep01.transcript.raw.json").touch()
-    (ep_dir / "ep01.polished.raw.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert result[0].translations == []
-
-
-# ──────────────────────────────────────────────
 # indexed flag
 # ──────────────────────────────────────────────
 
@@ -302,7 +177,7 @@ def test_scan_folder_no_output_dir_yet(tmp_path):
     ep = result[0]
 
     assert ep.transcribed is False
-    assert ep.polished is False
+    assert ep.corrected is False
     assert ep.indexed is False
     assert ep.translations == []
 

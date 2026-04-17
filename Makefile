@@ -28,8 +28,8 @@
 setup: setup-python setup-frontend  ## One-time setup: install all dependencies
 	@echo "\n✅ Setup complete. Run 'make dev' to start developing."
 
-setup-python:  ## Install Python deps (core + desktop + ingest)
-	uv pip install -e ".[desktop,ingest]" --python .venv/bin/python
+setup-python:  ## Install Python deps (desktop + pipeline + rag + youtube)
+	uv sync --extra desktop --extra pipeline --extra rag --extra youtube
 
 setup-frontend:  ## Install frontend deps
 	cd frontend && npm install
@@ -76,6 +76,9 @@ clean:  ## Remove build artifacts
 
 test:  ## Run Python tests
 	.venv/bin/python -m pytest tests/ -x -q
+
+types:  ## Regenerate frontend TS types from Pydantic models
+	.venv/bin/python scripts/generate_types.py
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \

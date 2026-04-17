@@ -1,34 +1,38 @@
+import { useRef, useState } from "react";
 import type { Episode } from "@/api/types";
-import { CheckCircle, Play, Trash2, Download } from "lucide-react";
+import { Play, Download, MoreVertical } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
-import { StatusDots } from "./StatusDots";
+import { StatusChips } from "./StatusChips";
+import { EpisodeMenu, type PipelineStep } from "./EpisodeMenu";
 
 export interface EpisodeRowProps {
   ep: Episode;
   selected: boolean;
-  onToggle: () => void;
+  onToggle: (shiftKey: boolean) => void;
   onOpen: () => void;
   onPlay: () => void;
-  onDownload: () => void;
+  onDownload?: () => void;
   onDelete: () => void;
-  downloading: boolean;
+  onProcess?: (step: PipelineStep) => void;
+  downloading?: boolean;
   isPlaying: boolean;
 }
 
-export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying }: EpisodeRowProps) {
-  const canDownload = !ep.downloaded && !!ep.audio_url;
+export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload, onDelete, onProcess, downloading, isPlaying }: EpisodeRowProps) {
+  const shiftRef = useRef(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+
+  const onContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    menuTriggerRef.current?.click();
+  };
+
   return (
-    <div className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
-      {canDownload || ep.downloaded ? (
-        <div className="flex items-center gap-1.5 shrink-0">
-          <input type="checkbox" checked={selected} onChange={onToggle} className="accent-primary" />
-          {ep.downloaded && <CheckCircle className="w-3.5 h-3.5 text-green-500" />}
-        </div>
-      ) : (
-        <div className="w-4" />
-      )}
+    <div onContextMenu={onContextMenu} className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
+      <input type="checkbox" checked={selected} onMouseDown={(e) => { shiftRef.current = e.shiftKey; }} onChange={() => onToggle(shiftRef.current)} className="accent-primary cursor-pointer shrink-0" />
       {ep.artwork_url && (
-        <img src={ep.artwork_url} alt="" className="w-8 h-8 rounded shrink-0" loading="lazy" />
+        <img src={ep.artwork_url} alt={ep.title} className="w-8 h-6 object-cover rounded shrink-0" loading="lazy" />
       )}
       {ep.episode_number != null && (
         <span className="text-xs text-muted-foreground w-8 text-right shrink-0">#{ep.episode_number}</span>
@@ -39,25 +43,37 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
       >
         {ep.title}
       </button>
-      <StatusDots ep={ep} />
+      <StatusChips ep={ep} compact />
       <span className="text-xs text-muted-foreground w-20 text-right shrink-0">{formatDate(ep.pub_date)}</span>
       <span className="text-xs text-muted-foreground w-12 text-right shrink-0">{formatDuration(ep.duration)}</span>
       <div className="w-20 flex justify-end gap-2.5 shrink-0">
-        {ep.audio_path && (
-          <button onClick={onPlay} title="Play" className={`transition ${isPlaying ? "text-green-400" : "text-muted-foreground hover:text-foreground"}`}>
+        {ep.audio_path ? (
+          <button onClick={onPlay} title="Play" aria-label="Play" className={`transition ${isPlaying ? "text-success" : "text-muted-foreground hover:text-foreground"}`}>
             <Play className="w-3.5 h-3.5" />
           </button>
-        )}
-        {ep.audio_path && (
-          <button onClick={onDelete} title="Delete audio" className="text-muted-foreground hover:text-destructive transition">
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        )}
-        {canDownload && !selected && (
-          <button onClick={onDownload} disabled={downloading} title="Download" className="text-green-400 hover:text-green-300 transition">
+        ) : onDownload && (
+          <button onClick={onDownload} disabled={downloading} title="Download audio" aria-label="Download audio" className="text-muted-foreground hover:text-foreground transition disabled:opacity-50">
             <Download className="w-3.5 h-3.5" />
           </button>
         )}
+        <EpisodeMenu
+          ep={ep}
+          onOpen={onOpen}
+          onPlay={ep.audio_path ? onPlay : undefined}
+          onDownload={onDownload}
+          onDelete={onDelete}
+          onProcess={onProcess}
+        >
+          <button
+            ref={menuTriggerRef}
+            onClick={(e) => { e.stopPropagation(); setMenuOpen(!menuOpen); }}
+            className="text-muted-foreground hover:text-foreground transition opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
+            title="More actions"
+            aria-label="More actions"
+          >
+            <MoreVertical className="w-3.5 h-3.5" />
+          </button>
+        </EpisodeMenu>
       </div>
     </div>
   );

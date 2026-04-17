@@ -18,12 +18,17 @@ SHOW_META_FILENAME = "show.toml"
 
 @dataclass
 class PipelineDefaults:
-    """Expected pipeline settings for a show — used to detect outdated runs."""
+    """Expected pipeline settings for a show — used to detect outdated runs.
+
+    Fields default to empty/None so "unset" can be distinguished from an
+    explicit user choice — callers merging these into effective defaults
+    only override when a value is actually set.
+    """
 
     # Transcribe
     model_size: str = ""
-    diarize: bool = True
-    # Polish / Translate (LLM)
+    diarize: bool | None = None
+    # Correct / Translate (LLM)
     llm_mode: str = ""  # "ollama" | "api"
     llm_provider: str = ""  # "openai", "anthropic", etc.
     llm_model: str = ""
@@ -37,6 +42,7 @@ class ShowMeta:
 
     name: str
     rss_url: str = ""
+    youtube_url: str = ""
     speakers: list[str] = field(default_factory=list)
     language: str = ""
     artwork_url: str = ""
@@ -56,7 +62,7 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
     pipe_raw = raw.get("pipeline", {})
     pipeline = PipelineDefaults(
         model_size=pipe_raw.get("model_size", ""),
-        diarize=pipe_raw.get("diarize", True),
+        diarize=pipe_raw.get("diarize"),
         llm_mode=pipe_raw.get("llm_mode", ""),
         llm_provider=pipe_raw.get("llm_provider", ""),
         llm_model=pipe_raw.get("llm_model", ""),
@@ -65,6 +71,7 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
     return ShowMeta(
         name=raw.get("name", ""),
         rss_url=raw.get("rss_url", ""),
+        youtube_url=raw.get("youtube_url", ""),
         speakers=raw.get("speakers", []),
         language=raw.get("language", ""),
         artwork_url=raw.get("artwork_url", ""),
@@ -86,6 +93,8 @@ def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
     lines: list[str] = [f'name = "{_toml_string(meta.name)}"']
     if meta.rss_url:
         lines.append(f'rss_url = "{_toml_string(meta.rss_url)}"')
+    if meta.youtube_url:
+        lines.append(f'youtube_url = "{_toml_string(meta.youtube_url)}"')
     if meta.language:
         lines.append(f'language = "{_toml_string(meta.language)}"')
     if meta.artwork_url:
@@ -99,7 +108,8 @@ def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
     pipe_lines: list[str] = []
     if p.model_size:
         pipe_lines.append(f'model_size = "{_toml_string(p.model_size)}"')
-    pipe_lines.append(f"diarize = {'true' if p.diarize else 'false'}")
+    if p.diarize is not None:
+        pipe_lines.append(f"diarize = {'true' if p.diarize else 'false'}")
     if p.llm_mode:
         pipe_lines.append(f'llm_mode = "{_toml_string(p.llm_mode)}"')
     if p.llm_provider:

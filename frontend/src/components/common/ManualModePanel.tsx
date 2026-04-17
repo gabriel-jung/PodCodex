@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Copy, Check, ChevronLeft, ChevronRight } from "lucide-react";
 
 interface ManualModePanelProps {
+  batchMinutes: number;
   generatePrompts: (batchMinutes: number) => Promise<PromptBatch[]>;
   applyCorrections: (corrections: unknown[]) => Promise<unknown>;
   onApplied?: () => void;
@@ -17,11 +18,11 @@ interface PromptBatch {
 }
 
 export default function ManualModePanel({
+  batchMinutes,
   generatePrompts,
   applyCorrections,
   onApplied,
 }: ManualModePanelProps) {
-  const [batchMinutes, setBatchMinutes] = useState(15);
   const [prompts, setPrompts] = useState<PromptBatch[] | null>(null);
   const [currentBatch, setCurrentBatch] = useState(0);
   const [batchResults, setBatchResults] = useState<Record<number, unknown[]>>({});
@@ -92,28 +93,13 @@ export default function ManualModePanel({
         Generate prompts, paste them into your LLM of choice one batch at a time, then paste the JSON response back.
       </p>
 
-      {/* Batch duration + generate */}
-      <div className="flex items-center gap-3 text-sm">
-        <label className="text-muted-foreground text-xs whitespace-nowrap">Batch duration</label>
-        <input
-          type="range"
-          min={5}
-          max={180}
-          step={5}
-          value={batchMinutes}
-          onChange={(e) => setBatchMinutes(Number(e.target.value))}
-          className="flex-1 max-w-48"
-        />
-        <span className="text-xs text-muted-foreground tabular-nums w-12">{batchMinutes} min</span>
-        <Button
-          onClick={() => generateMutation.mutate()}
-          disabled={generateMutation.isPending}
-          variant="outline"
-          size="sm"
-        >
-          {generateMutation.isPending ? "Generating..." : prompts ? "Regenerate" : "Generate prompts"}
-        </Button>
-      </div>
+      <Button
+        onClick={() => generateMutation.mutate()}
+        disabled={generateMutation.isPending}
+        size="sm"
+      >
+        {generateMutation.isPending ? "Generating..." : prompts ? "Regenerate prompts" : "Generate prompts"}
+      </Button>
       {generateMutation.isError && (
         <p className="text-destructive text-xs">{errorMessage(generateMutation.error)}</p>
       )}
@@ -151,11 +137,11 @@ export default function ManualModePanel({
                 <button
                   key={i}
                   onClick={() => { setCurrentBatch(i); setPastedText(""); setParseError(null); }}
-                  className={`w-6 h-6 rounded text-[10px] font-medium transition ${
+                  className={`w-6 h-6 rounded text-2xs font-medium transition ${
                     i === currentBatch
                       ? "bg-primary text-primary-foreground"
                       : batchResults[i] != null
-                        ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                        ? "bg-success/20 text-success border border-success/30"
                         : "bg-secondary text-muted-foreground border border-border"
                   }`}
                 >
@@ -180,7 +166,7 @@ export default function ManualModePanel({
             <div className="flex items-center justify-between px-3 py-1.5 bg-secondary/50 border-b border-border">
               <span className="text-xs text-muted-foreground">
                 Batch {currentBatch + 1} — {batch.segment_count} segments
-                {batchDone && <span className="text-green-400 ml-2">validated</span>}
+                {batchDone && <span className="text-success ml-2">validated</span>}
               </span>
               <Button
                 onClick={() => copyToClipboard(batch.prompt, batch.batch_index)}
@@ -189,7 +175,7 @@ export default function ManualModePanel({
                 className="h-6 px-2"
               >
                 {copiedIdx === batch.batch_index ? (
-                  <Check className="w-3 h-3 text-green-400" />
+                  <Check className="w-3 h-3 text-success" />
                 ) : (
                   <Copy className="w-3 h-3" />
                 )}
@@ -224,8 +210,8 @@ export default function ManualModePanel({
             </div>
           ) : (
             <div className="flex items-center gap-2 text-xs">
-              <Check className="w-3.5 h-3.5 text-green-400" />
-              <span className="text-green-400">Batch {currentBatch + 1} validated ({(batchResults[currentBatch] as unknown[]).length} segments)</span>
+              <Check className="w-3.5 h-3.5 text-success" />
+              <span className="text-success">Batch {currentBatch + 1} validated ({(batchResults[currentBatch] as unknown[]).length} segments)</span>
               <Button
                 onClick={() => {
                   const next = { ...batchResults };
@@ -248,7 +234,11 @@ export default function ManualModePanel({
               disabled={!allDone || applyMutation.isPending}
               size="sm"
             >
-              {applyMutation.isPending ? "Applying..." : `Apply all ${prompts.length} batches`}
+              {applyMutation.isPending
+                ? "Applying..."
+                : prompts.length === 1
+                  ? "Apply corrections"
+                  : `Apply all ${prompts.length} batches`}
             </Button>
             <Button
               onClick={() => { setPrompts(null); setBatchResults({}); setPastedText(""); }}

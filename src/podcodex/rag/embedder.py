@@ -15,6 +15,8 @@ Factory:
 
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 from loguru import logger
 
@@ -36,11 +38,16 @@ class PplxEmbedder:
     episode are passed together so each embedding is influenced by its neighbors.
     Query encoding uses the separate pplx-embed-v1-0.6B query model.
 
-    Dense vectors (dim from MODELS registry). Unnormalized — Qdrant handles
-    cosine normalization at query time.
+    Dense vectors (dim from MODELS registry). Unnormalized — the retriever
+    normalizes at cache-build time for cosine similarity.
     """
 
     def __init__(self, device: str = "cpu"):
+        """Initialize the Perplexity embedder, loading both context and query models.
+
+        Args:
+            device: Torch device string (e.g. ``"cpu"``, ``"cuda"``, ``"mps"``).
+        """
         from transformers import AutoModel
         from sentence_transformers import SentenceTransformer
 
@@ -84,7 +91,14 @@ class PplxEmbedder:
         return result
 
     def encode_query(self, query: str) -> np.ndarray:
-        """Returns float32 vector of dim from MODELS registry."""
+        """Encode a single query string using the separate query model.
+
+        Args:
+            query: Natural language query text.
+
+        Returns:
+            Float32 vector of shape ``(dim,)``.
+        """
         emb = self._query_model.encode(query)
         return np.array(emb, dtype=np.float32)
 
@@ -108,6 +122,13 @@ class E5Embedder:
         device: str = "cpu",
         batch_size: int = 64,
     ):
+        """Initialize the E5 embedder.
+
+        Args:
+            model_key: Registry key (``"e5-small"`` or ``"e5-large"``).
+            device: Torch device string.
+            batch_size: Encoding batch size.
+        """
         from sentence_transformers import SentenceTransformer
 
         hf_model = MODELS[model_key].hf_model
@@ -122,9 +143,13 @@ class E5Embedder:
         self._batch_size = batch_size
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
-        """
+        """Encode passage chunks with the ``"passage: "`` prefix.
+
+        Args:
+            chunks: List of chunk dicts, each containing a ``"text"`` key.
+
         Returns:
-            np.ndarray of shape (n, dim), dtype float32, L2-normalized
+            L2-normalized float32 array of shape ``(n, dim)``.
         """
         texts = ["passage: " + c["text"] for c in chunks]
         embs = self._model.encode(
@@ -137,7 +162,14 @@ class E5Embedder:
         return np.array(embs, dtype=np.float32)
 
     def encode_query(self, query: str) -> np.ndarray:
-        """Returns normalized float32 vector."""
+        """Encode a single query string with the ``"query: "`` prefix.
+
+        Args:
+            query: Natural language query text.
+
+        Returns:
+            L2-normalized float32 vector of shape ``(dim,)``.
+        """
         emb = self._model.encode("query: " + query, normalize_embeddings=True)
         return np.array(emb, dtype=np.float32).squeeze()
 
@@ -152,7 +184,7 @@ class BGEEmbedder:
     BGE-M3 embedder (BAAI/bge-m3). Dense 1024-dim vectors.
 
     BGE-M3 also produces sparse lexical weights but those are not used here —
-    BM25 is handled separately by the Retriever via bm25s.
+    keyword search is handled separately by LanceDB's FTS index.
     """
 
     MODEL = MODELS["bge-m3"].hf_model
@@ -163,6 +195,13 @@ class BGEEmbedder:
     def __init__(
         self, device: str = "cpu", use_fp16: bool = True, batch_size: int = 32
     ):
+        """Initialize the BGE-M3 embedder.
+
+        Args:
+            device: Torch device string.
+            use_fp16: Whether to use half-precision for faster inference.
+            batch_size: Encoding batch size.
+        """
         from FlagEmbedding import BGEM3FlagModel
         from podcodex.core.cache import get_hf_cache_dir
 
@@ -173,9 +212,13 @@ class BGEEmbedder:
         self._batch_size = batch_size
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
-        """
+        """Encode passage chunks using BGE-M3 dense encoding.
+
+        Args:
+            chunks: List of chunk dicts, each containing a ``"text"`` key.
+
         Returns:
-            np.ndarray of shape (n, 1024), dtype float32
+            Float32 array of shape ``(n, 1024)``.
         """
         texts = [c["text"] for c in chunks]
         output = self._model.encode(
@@ -185,7 +228,14 @@ class BGEEmbedder:
         return np.array(output["dense_vecs"], dtype=np.float32)
 
     def encode_query(self, query: str) -> np.ndarray:
-        """Returns float32 vector of dim 1024."""
+        """Encode a single query string.
+
+        Args:
+            query: Natural language query text.
+
+        Returns:
+            Float32 vector of shape ``(1024,)``.
+        """
         output = self._model.encode([query], **self._ENCODE_OPTS)
         return np.array(output["dense_vecs"][0], dtype=np.float32)
 
@@ -195,10 +245,25 @@ class BGEEmbedder:
 # ──────────────────────────────────────────────
 
 
+_embedder_cache: dict[str, BGEEmbedder | E5Embedder | PplxEmbedder] = {}
+_embedder_lock = threading.Lock()
+
+
+def clear_embedder_cache() -> None:
+    """Evict all cached embedders to free memory (e.g. before heavy pipeline tasks)."""
+    with _embedder_lock:
+        if _embedder_cache:
+            logger.info("Clearing embedder cache ({} model(s))", len(_embedder_cache))
+        _embedder_cache.clear()
+
+
 def get_embedder(
     model_key: str, device: str = "cpu"
 ) -> BGEEmbedder | E5Embedder | PplxEmbedder:
-    """Return the appropriate embedder instance for the given model key.
+    """Return a cached embedder instance for the given model key.
+
+    The embedder is created on first call and reused on subsequent calls
+    with the same model_key (the heavy model load only happens once).
 
     Args:
         model_key: one of the keys in MODELS registry (e.g. "bge-m3", "e5-small").
@@ -210,15 +275,27 @@ def get_embedder(
     Raises:
         ValueError: if model_key is not in the registry.
     """
-    if model_key not in MODELS:
-        valid = ", ".join(MODELS.keys())
-        raise ValueError(f"Unknown model '{model_key}'. Valid: {valid}")
+    # Fast path — no lock needed for cache hits (dict reads are GIL-atomic)
+    if model_key in _embedder_cache:
+        return _embedder_cache[model_key]
 
-    if model_key == "bge-m3":
-        return BGEEmbedder(device=device)
-    if model_key in ("e5-small", "e5-large"):
-        return E5Embedder(model_key=model_key, device=device)
-    if model_key == "pplx":
-        return PplxEmbedder(device=device)
+    with _embedder_lock:
+        # Re-check under lock to prevent duplicate construction
+        if model_key in _embedder_cache:
+            return _embedder_cache[model_key]
 
-    raise ValueError(f"No embedder class registered for '{model_key}'")
+        if model_key not in MODELS:
+            valid = ", ".join(MODELS.keys())
+            raise ValueError(f"Unknown model '{model_key}'. Valid: {valid}")
+
+        if model_key == "bge-m3":
+            embedder = BGEEmbedder(device=device)
+        elif model_key in ("e5-small", "e5-large"):
+            embedder = E5Embedder(model_key=model_key, device=device)
+        elif model_key == "pplx":
+            embedder = PplxEmbedder(device=device)
+        else:
+            raise ValueError(f"No embedder class registered for '{model_key}'")
+
+        _embedder_cache[model_key] = embedder
+        return embedder

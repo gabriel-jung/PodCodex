@@ -47,15 +47,15 @@ def test_mark_creates_row(db):
     db.mark("ep1", transcribed=True)
     row = db.get_episode("ep1")
     assert row["transcribed"] is True
-    assert row["polished"] is False
+    assert row["corrected"] is False
 
 
 def test_mark_updates_row(db):
     db.mark("ep1", transcribed=True)
-    db.mark("ep1", polished=True)
+    db.mark("ep1", corrected=True)
     row = db.get_episode("ep1")
     assert row["transcribed"] is True
-    assert row["polished"] is True
+    assert row["corrected"] is True
 
 
 def test_mark_invalid_column(db):
@@ -92,7 +92,7 @@ class FakeEpisode:
     stem: str
     audio_path: Path | None = None
     transcribed: bool = False
-    polished: bool = False
+    corrected: bool = False
     indexed: bool = False
     synthesized: bool = False
     translations: list[str] = field(default_factory=list)
@@ -100,7 +100,7 @@ class FakeEpisode:
 
 def test_populate_from_scan(db):
     episodes = [
-        FakeEpisode(stem="ep1", transcribed=True, polished=True, translations=["en"]),
+        FakeEpisode(stem="ep1", transcribed=True, corrected=True, translations=["en"]),
         FakeEpisode(stem="ep2", audio_path=Path("/a/ep2.mp3"), indexed=True),
         FakeEpisode(stem="ep3"),
     ]
@@ -109,7 +109,7 @@ def test_populate_from_scan(db):
 
     ep1 = db.get_episode("ep1")
     assert ep1["transcribed"] is True
-    assert ep1["polished"] is True
+    assert ep1["corrected"] is True
     assert ep1["translations"] == ["en"]
 
     ep2 = db.get_episode("ep2")
@@ -123,10 +123,10 @@ def test_populate_from_scan(db):
 def test_populate_upserts(db):
     """populate_from_scan updates existing rows."""
     db.mark("ep1", transcribed=True)
-    episodes = [FakeEpisode(stem="ep1", transcribed=True, polished=True)]
+    episodes = [FakeEpisode(stem="ep1", transcribed=True, corrected=True)]
     db.populate_from_scan(episodes)
     row = db.get_episode("ep1")
-    assert row["polished"] is True
+    assert row["corrected"] is True
 
 
 # ── all_episodes ordering ────────────────────────────────
@@ -134,7 +134,7 @@ def test_populate_upserts(db):
 
 def test_all_episodes_sorted(db):
     db.mark("c", transcribed=True)
-    db.mark("a", polished=True)
+    db.mark("a", corrected=True)
     db.mark("b", indexed=True)
     stems = [row["stem"] for row in db.all_episodes()]
     assert stems == ["a", "b", "c"]
@@ -194,11 +194,11 @@ def test_provenance_stored_and_read(db):
 def test_provenance_merge_across_steps(db):
     """Each step key merges into the existing provenance dict."""
     db.mark("ep1", transcribed=True, provenance={"transcript": {"model": "large-v3"}})
-    db.mark("ep1", polished=True, provenance={"polished": {"model": "qwen3:4b"}})
+    db.mark("ep1", corrected=True, provenance={"corrected": {"model": "qwen3:4b"}})
     db.mark("ep1", provenance={"english": {"model": "gpt-4o"}})
     row = db.get_episode("ep1")
     assert row["provenance"]["transcript"]["model"] == "large-v3"
-    assert row["provenance"]["polished"]["model"] == "qwen3:4b"
+    assert row["provenance"]["corrected"]["model"] == "qwen3:4b"
     assert row["provenance"]["english"]["model"] == "gpt-4o"
 
 
@@ -229,14 +229,14 @@ def test_provenance_in_populate(db):
 
 def _make_status_row(
     transcribed=False,
-    polished=False,
+    corrected=False,
     translations=None,
     provenance=None,
 ):
     """Build a minimal status dict like PipelineDB.all_episodes() returns."""
     return {
         "transcribed": transcribed,
-        "polished": polished,
+        "corrected": corrected,
         "indexed": False,
         "synthesized": False,
         "translations": translations or [],
@@ -257,22 +257,27 @@ class TestStepStatuses:
         st = _make_status_row()
         result = self._step_statuses(st, {}, {"model_size": "large-v3"})
         assert result["transcribe_status"] == "none"
-        assert result["polish_status"] == "none"
+        assert result["correct_status"] == "none"
         assert result["translate_status"] == "none"
 
     def test_done_when_matching(self):
         prov = {
-            "transcript": {"model": "large-v3", "params": {"diarize": True}},
-            "polished": {
+            "transcript": {
+                "model": "large-v3",
+                "type": "validated",
+                "params": {"diarize": True},
+            },
+            "corrected": {
                 "model": "qwen3:4b",
-                "params": {"mode": "ollama", "provider": ""},
+                "type": "validated",
+                "params": {"llm_mode": "ollama", "llm_provider": ""},
             },
         }
-        st = _make_status_row(transcribed=True, polished=True, provenance=prov)
+        st = _make_status_row(transcribed=True, corrected=True, provenance=prov)
         effective = {"model_size": "large-v3", "diarize": True, "llm_mode": "ollama"}
         result = self._step_statuses(st, prov, effective)
         assert result["transcribe_status"] == "done"
-        assert result["polish_status"] == "done"
+        assert result["correct_status"] == "done"
 
     def test_outdated_model_mismatch(self):
         prov = {"transcript": {"model": "small", "params": {"diarize": True}}}
@@ -288,28 +293,28 @@ class TestStepStatuses:
         result = self._step_statuses(st, prov, effective)
         assert result["transcribe_status"] == "outdated"
 
-    def test_outdated_polish_provider_mismatch(self):
+    def test_outdated_correct_provider_mismatch(self):
         prov = {
-            "polished": {
+            "corrected": {
                 "model": "qwen3:4b",
-                "params": {"mode": "ollama", "provider": ""},
+                "params": {"llm_mode": "ollama", "llm_provider": ""},
             }
         }
-        st = _make_status_row(polished=True, provenance=prov)
+        st = _make_status_row(corrected=True, provenance=prov)
         effective = {"llm_mode": "api", "llm_provider": "openai"}
         result = self._step_statuses(st, prov, effective)
-        assert result["polish_status"] == "outdated"
+        assert result["correct_status"] == "outdated"
 
     def test_done_no_provenance(self):
         """Episodes without provenance default to 'done' (pre-existing episodes)."""
-        st = _make_status_row(transcribed=True, polished=True)
+        st = _make_status_row(transcribed=True, corrected=True)
         result = self._step_statuses(st, {}, {"model_size": "large-v3"})
         assert result["transcribe_status"] == "done"
-        assert result["polish_status"] == "done"
+        assert result["correct_status"] == "done"
 
     def test_done_no_defaults(self):
         """No defaults configured → everything is 'done'."""
-        prov = {"transcript": {"model": "small", "params": {}}}
+        prov = {"transcript": {"model": "small", "type": "validated", "params": {}}}
         st = _make_status_row(transcribed=True, provenance=prov)
         result = self._step_statuses(st, prov, {})
         assert result["transcribe_status"] == "done"
@@ -318,7 +323,7 @@ class TestStepStatuses:
         prov = {
             "english": {
                 "model": "gpt-4o",
-                "params": {"mode": "api", "provider": "openai"},
+                "params": {"llm_mode": "api", "llm_provider": "openai"},
             }
         }
         st = _make_status_row(translations=["english"], provenance=prov)
@@ -341,7 +346,7 @@ class TestStepStatuses:
         prov = {
             "english": {
                 "model": "old-model",
-                "params": {"mode": "api", "provider": "openai"},
+                "params": {"llm_mode": "api", "llm_provider": "openai"},
             }
         }
         st = _make_status_row(translations=["english"], provenance=prov)

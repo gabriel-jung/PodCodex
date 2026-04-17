@@ -26,8 +26,8 @@ async def synthesis_status(
 ) -> dict:
     """Check which synthesis artifacts exist on disk."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    voice_dir = p.base.parent / "voice_samples"
-    tts_dir = p.base.parent / "tts_segments"
+    voice_dir = p.voice_samples_dir
+    tts_dir = p.tts_segments_dir
     return {
         "voice_samples_extracted": voice_dir.is_dir() and any(voice_dir.glob("*.wav")),
         "tts_segments_generated": tts_dir.is_dir() and any(tts_dir.glob("*.wav")),
@@ -48,6 +48,7 @@ class ExtractVoicesRequest(BaseModel):
     @field_validator("top_k")
     @classmethod
     def top_k_positive(cls, v: int) -> int:
+        """Validate that top_k is at least 1."""
         if v < 1:
             raise ValueError("top_k must be at least 1")
         return v
@@ -58,6 +59,7 @@ async def extract_voices(req: ExtractVoicesRequest) -> TaskResponse:
     """Extract voice samples for cloning as a background task."""
 
     def run_extract(progress_cb, req_data):
+        """Load transcript and extract speaker voice samples."""
         from podcodex.core.synthesize import extract_voice_samples
         from podcodex.core.transcribe import load_transcript
 
@@ -239,6 +241,7 @@ class GenerateRequest(BaseModel):
     @field_validator("max_chunk_duration")
     @classmethod
     def max_chunk_duration_positive(cls, v: float) -> float:
+        """Validate that max_chunk_duration is a positive number."""
         if v <= 0:
             raise ValueError("max_chunk_duration must be positive")
         return v
@@ -254,6 +257,7 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
     """
 
     def run_generate(progress_cb, req_data):
+        """Load source segments, run incremental TTS generation, and save a manifest."""
         from podcodex.core._utils import free_vram
         from podcodex.core.synthesize import (
             _sample_key,
@@ -269,15 +273,14 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
 
         progress_cb(0.0, "Loading source segments...")
         # Try to load translation matching the target language
+        from podcodex.core.versions import load_latest as _load_latest
+
         p = AudioPaths.from_audio(req_data.audio_path, output_dir=req_data.output_dir)
         segments = None
         if req_data.source_lang:
-            lang_file = p.translation_best(req_data.source_lang)
-            if lang_file.exists():
-                import json
+            from podcodex.core._utils import normalize_lang
 
-                data = json.loads(lang_file.read_text(encoding="utf-8"))
-                segments = data if isinstance(data, list) else data.get("segments")
+            segments = _load_latest(p.base, normalize_lang(req_data.source_lang))
 
         if not segments:
             try:
@@ -380,6 +383,13 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
         progress_cb(
             0.1, f"Loading TTS model ({len(to_generate)} segments to generate)..."
         )
+        from podcodex.core._utils import check_vram
+        from podcodex.core.constants import TTS_VRAM_MB
+
+        check_vram(
+            f"TTS ({req_data.model_size})",
+            TTS_VRAM_MB.get(req_data.model_size, 4000),
+        )
         model = load_tts_model(model_size=req_data.model_size)
         clone_prompts = build_clone_prompts(model, voice_samples)
 
@@ -415,7 +425,8 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
         save_manifest(segments_dir, manifest)
 
         progress_cb(0.98, "Releasing GPU memory...")
-        free_vram(model)
+        del model
+        free_vram()
 
         new_count = len(to_generate)
         return {"count": new_count, "reused": reused, "skipped": total - len(generated)}
@@ -469,6 +480,7 @@ class AssembleRequest(BaseModel):
     @field_validator("silence_duration")
     @classmethod
     def silence_duration_non_negative(cls, v: float) -> float:
+        """Validate that silence_duration is zero or positive."""
         if v < 0:
             raise ValueError("silence_duration must be non-negative")
         return v

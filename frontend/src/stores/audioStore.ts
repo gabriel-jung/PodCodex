@@ -42,6 +42,8 @@ interface AudioState {
   setAudioSegments: (path: string, segments: AudioSegment[]) => void;
   /** Play/seek — loads the file if needed, seeks to time (0 = start). */
   seekTo: (path: string, time: number) => void;
+  /** Set metadata then seek — atomic version of setAudioMeta + seekTo. */
+  playEpisode: (path: string, time: number, meta: AudioMeta) => void;
   pauseAudio: () => void;
   consumeSeek: () => void;
   stopAudio: () => void;
@@ -89,6 +91,18 @@ export const useAudioStore = create<AudioState>((set, get) => ({
         pendingSeek: time,
       });
     }
+  },
+  playEpisode: (path, time, meta) => {
+    set({
+      audioPath: path,
+      audioTitle: meta.title,
+      audioArtwork: meta.artwork || null,
+      audioShowName: meta.showName || null,
+      audioFolder: meta.folder || null,
+      audioStem: meta.stem || null,
+      audioSegments: get().audioPath === path ? get().audioSegments : null,
+      pendingSeek: time,
+    });
   },
   consumeSeek: () => set({ pendingSeek: null }),
   stopAudio: () =>

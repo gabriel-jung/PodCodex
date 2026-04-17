@@ -1,9 +1,10 @@
 import type { UseMutationResult } from "@tanstack/react-query";
 import type { PipelineConfig, GeneratedSegment, SynthesisStatus } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import SectionHeader from "@/components/common/SectionHeader";
-import HelpLabel from "@/components/common/HelpLabel";
 import AdvancedToggle from "@/components/common/AdvancedToggle";
+import FormGrid from "@/components/common/FormGrid";
+import HelpLabel from "@/components/common/HelpLabel";
+import SectionHeader from "@/components/common/SectionHeader";
 import { errorMessage, selectClass } from "@/lib/utils";
 
 export interface TTSGenerationSectionProps {
@@ -50,14 +51,14 @@ export default function TTSGenerationSection({
     <section className="space-y-3 border-t border-border/50 pt-3">
       <SectionHeader>2. Generate TTS Segments</SectionHeader>
 
-      <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm">
+      <FormGrid>
         <HelpLabel label="Language" help="The language the generated speech should sound like." />
         <input
           value={language}
           onChange={(e) => setLanguage(e.target.value)}
-          className="input py-1 text-sm"
+          className="input"
         />
-        <HelpLabel label="Model size" help="Larger model produces more natural-sounding speech but needs more GPU memory." />
+        <HelpLabel label="Model size" help="Larger models produce more natural speech but need more GPU memory." />
         <select
           value={modelSize}
           onChange={(e) => setModelSize(e.target.value)}
@@ -72,7 +73,7 @@ export default function TTSGenerationSection({
         </select>
         {translations.length > 0 && (
           <>
-            <HelpLabel label="Text source" help="Which text to synthesize. 'Best available' picks the translation if one exists, otherwise the polished or raw transcript." />
+            <HelpLabel label="Text source" help="Which text to synthesize. 'Best available' uses the translation if one exists, otherwise the corrected or raw transcript." />
             <select
               value={sourceLang}
               onChange={(e) => setSourceLang(e.target.value)}
@@ -85,21 +86,21 @@ export default function TTSGenerationSection({
             </select>
           </>
         )}
-      </div>
+      </FormGrid>
 
       {/* Advanced TTS settings */}
       <AdvancedToggle className="space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-2 sm:gap-y-3 items-start sm:items-center text-sm pl-3 border-l-2 border-border">
-          <HelpLabel label="Max chunk (s)" help="Maximum duration in seconds for each TTS chunk. Shorter chunks are more stable, longer ones sound more natural." />
+        <FormGrid className="pl-3 border-l-2 border-border">
+          <HelpLabel label="Max chunk (s)" help="Maximum duration per TTS chunk in seconds. Shorter chunks are more stable, longer ones sound more natural." />
           <input
             type="number"
             value={maxChunkDuration}
             onChange={(e) => setMaxChunkDuration(Number(e.target.value))}
-            className="input py-1 text-sm w-20"
+            className="input w-20"
             min={5}
             max={60}
           />
-        </div>
+        </FormGrid>
       </AdvancedToggle>
 
       <div className="flex items-center gap-3">
@@ -114,7 +115,7 @@ export default function TTSGenerationSection({
           <span className="text-xs text-muted-foreground">Extract voices first</span>
         )}
         {status?.tts_segments_generated && (
-          <span className="text-xs text-green-400">
+          <span className="text-xs text-success">
             {generatedSegments?.length ?? "?"} segments generated
           </span>
         )}

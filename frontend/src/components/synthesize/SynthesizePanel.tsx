@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment } from "@/api/types";
-import { useEpisodeStore } from "@/stores";
+import { useEpisodeStore, useAudioStore } from "@/stores";
 import {
   getSynthesisStatus,
   getVoiceSamples,
@@ -12,14 +12,14 @@ import {
   assembleEpisode,
   getPipelineConfig,
   getSegments,
-  getPolishSegments,
+  getCorrectSegments,
 } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import MissingDependency from "@/components/common/MissingDependency";
 import ProgressBar from "@/components/editor/ProgressBar";
 import PipelinePanel from "@/components/common/PipelinePanel";
-import { useAudioStore } from "@/stores";
 import VoiceExtractionSection, { segKey } from "./VoiceExtractionSection";
 import TTSGenerationSection from "./TTSGenerationSection";
 import AssemblySection from "./AssemblySection";
@@ -27,7 +27,6 @@ import AssemblySection from "./AssemblySection";
 export default function SynthesizePanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
-  if (!episode) return null;
   const queryClient = useQueryClient();
   const { seekTo, setAudioMeta } = useAudioStore();
 
@@ -38,8 +37,8 @@ export default function SynthesizePanel() {
   const [sourceLang, setSourceLang] = useState("");
   const [maxChunkDuration, setMaxChunkDuration] = useState(20);
   const [assembleStrategy, setAssembleStrategy] = useState("original_timing");
-  const [expanded, setExpanded] = useState(!episode.synthesized);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState(!episode?.synthesized);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [expandedSeg, setExpandedSeg] = useState<string | null>(null);
   const [showCount, setShowCount] = useState<Record<string, number>>({});
   const [timeFrom, setTimeFrom] = useState("");
@@ -47,28 +46,28 @@ export default function SynthesizePanel() {
   const [speakerOverrides, setSpeakerOverrides] = useState<Record<string, string>>({});
 
   const { data: pipelineConfig } = useQuery({
-    queryKey: ["pipeline-config"],
+    queryKey: queryKeys.pipelineConfig(),
     queryFn: getPipelineConfig,
     staleTime: Infinity,
   });
 
   const { data: status, refetch: refetchStatus } = useQuery({
-    queryKey: ["synthesize", "status", episode.audio_path],
-    queryFn: () => getSynthesisStatus(episode.audio_path!),
-    enabled: !!episode.audio_path,
+    queryKey: queryKeys.synthesizeStatus(episode?.audio_path),
+    queryFn: () => getSynthesisStatus(episode!.audio_path!),
+    enabled: !!episode?.audio_path,
   });
 
   // Load transcript segments for speaker browsing
   const { data: transcriptSegments } = useQuery({
-    queryKey: ["synth-source-segments", episode.audio_path],
+    queryKey: queryKeys.synthSourceSegments(episode?.audio_path),
     queryFn: async () => {
-      if (!episode.audio_path) return [];
+      if (!episode?.audio_path) return [];
       try {
-        if (episode.polished) return await getPolishSegments(episode.audio_path);
+        if (episode.corrected) return await getCorrectSegments(episode.audio_path);
       } catch { /* fall through */ }
       return getSegments(episode.audio_path);
     },
-    enabled: !!episode.audio_path && episode.transcribed,
+    enabled: !!episode?.audio_path && !!episode?.transcribed,
   });
 
   /** Parse "mm:ss" or "hh:mm:ss" or plain seconds to seconds. */
@@ -113,21 +112,21 @@ export default function SynthesizePanel() {
   }, [transcriptSegments, fromSec, toSec, speakerOverrides]);
 
   const { data: voiceSamples, refetch: refetchVoiceSamples } = useQuery({
-    queryKey: ["synthesize", "voices", episode.audio_path],
+    queryKey: queryKeys.synthesizeVoices(episode.audio_path),
     queryFn: () => getVoiceSamples(episode.audio_path!),
     enabled: !!episode.audio_path && !!status?.voice_samples_extracted,
   });
 
   const { data: generatedSegments } = useQuery({
-    queryKey: ["synthesize", "generated", episode.audio_path],
+    queryKey: queryKeys.synthesizeGenerated(episode.audio_path),
     queryFn: () => getGeneratedSegments(episode.audio_path!),
     enabled: !!episode.audio_path && !!status?.tts_segments_generated,
   });
 
   const refreshQueries = useCallback(() => {
     refetchStatus();
-    queryClient.invalidateQueries({ queryKey: ["synthesize"] });
-    queryClient.invalidateQueries({ queryKey: ["episodes"] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.synthesizeAll() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
   }, [queryClient, refetchStatus]);
 
   const extractMutation = useMutation({
@@ -140,7 +139,7 @@ export default function SynthesizePanel() {
           end: seg.end,
           text: seg.text,
         }));
-      return extractSelectedSamples(episode.audio_path!, selections);
+      return extractSelectedSamples(episode!.audio_path!, selections);
     },
     onSuccess: () => {
       refreshQueries();
@@ -150,7 +149,7 @@ export default function SynthesizePanel() {
 
   const uploadMutation = useMutation({
     mutationFn: ({ speaker, file }: { speaker: string; file: File }) =>
-      uploadVoiceSample(episode.audio_path!, speaker, file),
+      uploadVoiceSample(episode!.audio_path!, speaker, file),
     onSuccess: () => {
       refreshQueries();
       refetchVoiceSamples();
@@ -160,7 +159,7 @@ export default function SynthesizePanel() {
   const generateMutation = useMutation({
     mutationFn: () =>
       startGenerateTTS({
-        audio_path: episode.audio_path!,
+        audio_path: episode!.audio_path!,
         model_size: modelSize,
         language,
         source_lang: sourceLang || undefined,
@@ -172,7 +171,7 @@ export default function SynthesizePanel() {
   const assembleMutation = useMutation({
     mutationFn: () =>
       assembleEpisode({
-        audio_path: episode.audio_path!,
+        audio_path: episode!.audio_path!,
         strategy: assembleStrategy,
       }),
     onSuccess: () => {
@@ -194,6 +193,8 @@ export default function SynthesizePanel() {
   const { has: hasCap } = useCapabilities();
   const hasTTS = hasCap("tts") && hasCap("soundfile");
 
+  if (!episode) return null;
+
   const prereq = !episode.audio_path
     ? "Download the audio file first before synthesizing."
     : !episode.transcribed
@@ -205,7 +206,7 @@ export default function SynthesizePanel() {
   return (
     <PipelinePanel
       title="Synthesize"
-      description="Re-create the episode with cloned voices — extract voice samples, generate speech for each segment, then assemble the final audio."
+      description="Re-create the episode with cloned voices: extract voice samples, generate speech for each segment, then assemble the final audio."
       prerequisite={prereq}
       blocker={!prereq && !hasTTS ? (
         <MissingDependency
@@ -296,7 +297,7 @@ export default function SynthesizePanel() {
       {status?.synthesized && !expanded && !isRunning && (
         <div className="p-4 space-y-3">
           {assembleMutation.data && (
-            <p className="text-xs text-green-400">
+            <p className="text-xs text-success">
               Assembled ({(assembleMutation.data.duration / 60).toFixed(1)} min)
             </p>
           )}

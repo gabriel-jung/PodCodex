@@ -1,78 +1,104 @@
-import { useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEpisodeStore, usePipelineConfigStore } from "@/stores";
+import { useEffect, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
+  deleteTranslateVersion,
   getTranslateSegments,
   getTranslateVersions,
   loadTranslateVersion,
   saveTranslateSegments,
-  getTranslateLanguages,
   startTranslate,
   getTranslateManualPrompts,
   applyTranslateManual,
 } from "@/api/client";
-import { errorMessage, selectClass } from "@/lib/utils";
+import { selectClass } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
-import { useLLMConfig, useBestSourceSegments } from "@/hooks/useLLMPipeline";
-import HelpLabel from "@/components/common/HelpLabel";
-import SegmentEditor from "@/components/editor/SegmentEditor";
+import {
+  useLLMConfig,
+  buildLLMRequest,
+  useBestSourceSegments,
+  useLLMBackendStatus,
+  useInputVersions,
+} from "@/hooks/useLLMPipeline";
+import { modeToPreset } from "@/stores/pipelineConfigStore";
+import type { LLMConfig } from "@/stores/pipelineConfigStore";
+import TranscriptViewer from "@/components/editor/TranscriptViewer";
 import PipelinePanel from "@/components/common/PipelinePanel";
-import LLMControls from "@/components/common/LLMControls";
+import HelpLabel from "@/components/common/HelpLabel";
+import MissingDependency from "@/components/common/MissingDependency";
+import ManualModePanel from "@/components/common/ManualModePanel";
+import LanguageChipRack from "@/components/common/LanguageChipRack";
+import LLMControlsForm from "@/components/common/LLMControlsForm";
+import PipelineRunFooter from "@/components/common/PipelineRunFooter";
+
+// Backend identifies translations by a normalized filesystem-safe key.
+const langKey = (lang: string) => lang.toLowerCase().replace(/\s+/g, "_");
 
 export default function TranslatePanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
-  if (!episode) return null;
+  const audioPath = useAudioPath();
+
   const targetLang = usePipelineConfigStore((s) => s.targetLang);
   const setTargetLang = usePipelineConfigStore((s) => s.setTargetLang);
-  const [editingLang, setEditingLang] = useState(episode.translations[0] || "");
+  const [editingLang, setEditingLang] = useState("");
+  const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
 
-  const task = usePipelineTask(episode.audio_path, "translate", {
-    onComplete: () => setEditingLang(targetLang.toLowerCase().replace(/\s+/g, "_")),
+  const task = usePipelineTask(audioPath, "translate", {
+    onComplete: () => setEditingLang(langKey(targetLang)),
   });
-  const expanded = task.expanded || episode.translations.length === 0;
 
   const [config, setConfig] = useLLMConfig(episode, showMeta);
+  const patch = (p: Partial<LLMConfig>) => setConfig({ ...config, ...p });
+  const activePreset = modeToPreset(config.mode);
 
-  const { data: languages } = useQuery({
-    queryKey: ["translate", "languages", episode.audio_path],
-    queryFn: () => getTranslateLanguages(episode.audio_path!),
-    enabled: !!episode.audio_path,
-  });
+  const { hasLLM, backendMissing, disabledTitle } = useLLMBackendStatus(activePreset);
+
+  const expanded = task.expanded || (episode?.translations.length ?? 0) === 0;
 
   const { data: referenceSegments } = useBestSourceSegments(
-    episode.audio_path,
-    { enabled: episode.transcribed, polished: episode.polished },
+    audioPath,
+    { enabled: !!episode?.transcribed, corrected: !!episode?.corrected },
   );
+
+  // User can pick any corrected OR transcript version as input —
+  // useInputVersions mirrors the batch pipeline's rules.
+  const inputVersions = useInputVersions(audioPath, "translate", !!episode?.transcribed && expanded);
 
   const startMutation = useMutation({
     mutationFn: () =>
       startTranslate({
-        audio_path: episode.audio_path!,
-        mode: config.mode === "api" ? "api" : "ollama",
-        provider: config.mode === "api" && config.provider !== "custom" ? config.provider : undefined,
-        model: config.model,
-        context: config.context,
-        source_lang: config.sourceLang,
+        ...buildLLMRequest(audioPath!, config),
         target_lang: targetLang,
-        batch_minutes: config.batchMinutes,
-        api_base_url: config.apiBaseUrl || undefined,
-        api_key: config.apiKey || undefined,
+        source_version_id: sourceVersionId ?? undefined,
       }),
     onSuccess: (data) => task.startTask(data.task_id),
   });
 
-  const hasTranslations = (languages?.length ?? 0) > 0;
+  // Sync editingLang from episode on first load
+  const hasTranslations = (episode?.translations.length ?? 0) > 0;
+  useEffect(() => {
+    if (episode && editingLang === "" && hasTranslations) {
+      setEditingLang(episode.translations[0]);
+    }
+  }, [episode, editingLang, hasTranslations]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!episode) return null;
+
+  const missingTarget = !targetLang.trim();
+  const runDisabled = backendMissing || missingTarget;
+  const runDisabledTitle = disabledTitle || (missingTarget ? "Pick a target language first" : undefined);
 
   return (
     <PipelinePanel
       title="Translate"
-      description="Translate the transcript into another language using AI. If you polished the text first, the translation will use that improved version."
+      description="Translate the transcript into another language using AI. If you corrected the text first, the translation will use that improved version."
       prerequisite={!episode.transcribed ? "You need a transcript first. Go to the Transcribe tab to create one." : undefined}
       done={hasTranslations}
       expanded={expanded}
       onToggle={() => task.setExpanded(!expanded)}
       rerunLabel="New translation"
+      settingsLabel="Translation settings"
       taskId={task.activeTaskId}
       onTaskComplete={task.handleComplete}
       onRetry={task.handleRetry}
@@ -87,71 +113,107 @@ export default function TranslatePanel() {
                 onChange={(e) => setEditingLang(e.target.value)}
                 className={selectClass}
               >
-                {languages!.map((lang) => (
+                {episode.translations.map((lang) => (
                   <option key={lang} value={lang}>{lang}</option>
                 ))}
               </select>
             </div>
           )}
           {expanded && (
-            <LLMControls
-              config={config}
-              onChange={(patch) => setConfig({ ...config, ...patch })}
-              onRun={() => startMutation.mutate()}
-              isPending={startMutation.isPending}
-              error={startMutation.isError ? errorMessage(startMutation.error) : null}
-              runLabel="Run translation"
-              extraFields={
-                <>
-                  <HelpLabel label="Target language" help="The language to translate into (e.g. English, Spanish, German)." />
-                  <input
-                    value={targetLang}
-                    onChange={(e) => setTargetLang(e.target.value)}
-                    className="input py-1 text-sm"
+            <div className="px-4 pt-3 pb-4 space-y-4">
+              {!hasLLM && (
+                <MissingDependency
+                  extra="pipeline"
+                  label="LLM libraries"
+                  description="Required for automatic AI processing. Manual mode works without them — it gives you prompts to paste into any chatbot."
+                />
+              )}
+
+              <LLMControlsForm
+                episode={episode}
+                config={config}
+                patch={patch}
+                activePreset={activePreset}
+                inputVersions={inputVersions}
+                sourceVersionId={sourceVersionId}
+                onSourceVersionChange={setSourceVersionId}
+                sourceLabel="Source text"
+                sourceHelp="Which version the AI should translate from. Defaults to the latest corrected version, or the transcript if no corrections exist."
+                languageRows={
+                  <>
+                    <HelpLabel label="From" help="The language spoken in the podcast." />
+                    <LanguageChipRack value={config.sourceLang} onChange={(v) => patch({ sourceLang: v })} />
+                    <HelpLabel label="To" help="The language to translate into." />
+                    <LanguageChipRack value={targetLang} onChange={setTargetLang} />
+                  </>
+                }
+                contextHelp="Describe the podcast: host names, recurring guests, technical terms, niche vocabulary. Helps the AI produce better translations."
+              />
+
+              {activePreset !== "manual" && (
+                <PipelineRunFooter
+                  onRun={() => startMutation.mutate()}
+                  isPending={startMutation.isPending}
+                  mutationError={startMutation.isError ? startMutation.error : null}
+                  hasExisting={hasTranslations}
+                  initialLabel="Translate with AI"
+                  rerunLabel="Run translation"
+                  disabled={runDisabled}
+                  disabledTitle={runDisabledTitle}
+                />
+              )}
+
+              {activePreset === "manual" && (
+                <div className="border-t border-border/50 pt-3">
+                  <ManualModePanel
+                    batchMinutes={config.batchMinutes}
+                    generatePrompts={(batchMinutes) =>
+                      getTranslateManualPrompts({
+                        audio_path: audioPath!,
+                        context: config.context,
+                        source_lang: config.sourceLang,
+                        target_lang: targetLang,
+                        batch_minutes: batchMinutes,
+                        source_version_id: sourceVersionId ?? undefined,
+                      })
+                    }
+                    applyCorrections={(corrections) =>
+                      applyTranslateManual({
+                        audio_path: audioPath!,
+                        lang: targetLang,
+                        corrections,
+                      })
+                    }
+                    onApplied={() => {
+                      task.refreshQueries();
+                      task.setExpanded(false);
+                      setEditingLang(langKey(targetLang));
+                    }}
                   />
-                </>
-              }
-              manualPrompts={{
-                generate: (batchMinutes) =>
-                  getTranslateManualPrompts({
-                    audio_path: episode.audio_path!,
-                    context: config.context,
-                    source_lang: config.sourceLang,
-                    target_lang: targetLang,
-                    batch_minutes: batchMinutes,
-                  }),
-                apply: (corrections) =>
-                  applyTranslateManual({
-                    audio_path: episode.audio_path!,
-                    lang: targetLang,
-                    corrections,
-                  }),
-                onApplied: () => {
-                  task.refreshQueries();
-                  task.setExpanded(false);
-                  setEditingLang(targetLang.toLowerCase().replace(/\s+/g, "_"));
-                },
-              }}
-            />
+                </div>
+              )}
+            </div>
           )}
         </>
       }
     >
       {hasTranslations && editingLang && !task.activeTaskId && !expanded && (
-        <SegmentEditor
+        <TranscriptViewer
           editorKey={`translate-${editingLang}`}
-          audioPath={episode.audio_path ?? undefined}
-          episodeDuration={episode.duration}
-          loadSegments={() => getTranslateSegments(episode.audio_path!, editingLang)}
-          saveSegments={(segs) => saveTranslateSegments(episode.audio_path!, editingLang, segs)}
+          audioPath={audioPath ?? undefined}
+          loadSegments={() => getTranslateSegments(audioPath!, editingLang)}
+          saveSegments={(segs) => saveTranslateSegments(audioPath!, editingLang, segs)}
+          exportSource={`translated_${editingLang}`}
+          exportFilename={episode.stem ? `${episode.stem}_${editingLang}` : undefined}
           showDelete
           showFlags={false}
           showSpeaker
           referenceSegments={referenceSegments}
           referenceLabel="Source text"
           speakers={showMeta?.speakers}
-          loadVersions={() => getTranslateVersions(episode.audio_path!, editingLang)}
-          loadVersion={(id) => loadTranslateVersion(episode.audio_path!, editingLang, id)}
+          loadVersions={() => getTranslateVersions(audioPath!, editingLang)}
+          loadVersion={(id) => loadTranslateVersion(audioPath!, editingLang, id)}
+          deleteVersion={(id) => deleteTranslateVersion(audioPath!, editingLang, id)}
         />
       )}
     </PipelinePanel>

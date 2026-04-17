@@ -2,25 +2,23 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
-import { updateShowMeta, syncToQdrant, moveShow } from "@/api/client";
-import { useConfigStore } from "@/stores";
+import { updateShowMeta, moveShow, deleteShow } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
+import { useEpisodeStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { errorMessage } from "@/lib/utils";
-import SectionHeader from "@/components/common/SectionHeader";
-import ProgressBar from "@/components/editor/ProgressBar";
-import FolderPicker from "@/components/common/FolderPicker";
+import FolderLocationFields from "@/components/common/FolderLocationFields";
 import PipelineSettings from "./PipelineSettings";
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, Trash2 } from "lucide-react";
 
 interface ShowSettingsProps {
   folder: string;
   meta: ShowMeta;
-  hasIndex: boolean;
 }
 
-export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsProps) {
+export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -28,6 +26,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
   const [name, setName] = useState(meta.name);
   const [language, setLanguage] = useState(meta.language);
   const [rssUrl, setRssUrl] = useState(meta.rss_url);
+  const [youtubeUrl, setYoutubeUrl] = useState(meta.youtube_url ?? "");
   const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
   const [pipeModelSize, setPipeModelSize] = useState(meta.pipeline?.model_size ?? "");
   const [pipeDiarize, setPipeDiarize] = useState(meta.pipeline?.diarize ?? true);
@@ -36,20 +35,20 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
   const [pipeLlmModel, setPipeLlmModel] = useState(meta.pipeline?.llm_model ?? "");
   const [pipeTargetLang, setPipeTargetLang] = useState(meta.pipeline?.target_lang ?? "");
 
-  const [syncTaskId, setSyncTaskId] = useState<string | null>(null);
-  const [overwrite, setOverwrite] = useState(false);
-
   // ── Move folder ──
   const folderBasename = folder.split("/").filter(Boolean).pop() || folder;
-  const folderParent = folder.slice(0, folder.length - folderBasename.length).replace(/\/+$/, "") || "/";
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const folderParentDefault = folder.slice(0, folder.length - folderBasename.length).replace(/\/+$/, "") || "/";
   const moveFilesRef = useRef(true);
   const [folderName, setFolderName] = useState(folderBasename);
+  const [parentPath, setParentPath] = useState(folderParentDefault);
+  const destPath = `${parentPath.replace(/\/+$/, "")}/${folderName}`;
+  const hasChanges = destPath !== folder;
 
   useEffect(() => {
     setName(meta.name);
     setLanguage(meta.language);
     setRssUrl(meta.rss_url);
+    setYoutubeUrl(meta.youtube_url ?? "");
     setArtworkUrl(meta.artwork_url);
     setPipeModelSize(meta.pipeline?.model_size ?? "");
     setPipeDiarize(meta.pipeline?.diarize ?? true);
@@ -63,6 +62,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
     name !== meta.name ||
     language !== meta.language ||
     rssUrl !== meta.rss_url ||
+    youtubeUrl !== (meta.youtube_url ?? "") ||
     artworkUrl !== meta.artwork_url ||
     pipeModelSize !== (meta.pipeline?.model_size ?? "") ||
     pipeDiarize !== (meta.pipeline?.diarize ?? true) ||
@@ -77,6 +77,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         name,
         language,
         rss_url: rssUrl,
+        youtube_url: youtubeUrl,
         speakers: meta.speakers,
         artwork_url: artworkUrl,
         pipeline: {
@@ -89,44 +90,72 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         },
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["showMeta", folder] });
-      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
     },
   });
 
   const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const isDirtyRef = useRef(isDirty);
+  isDirtyRef.current = isDirty;
   const autoSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => saveMutation.mutate(), 1500);
+    saveTimer.current = setTimeout(() => {
+      if (isDirtyRef.current) saveMutation.mutate();
+    }, 1500);
   }, [saveMutation]);
 
   useEffect(() => {
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [name, language, rssUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeLlmMode, pipeLlmProvider, pipeLlmModel, pipeTargetLang]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const syncMutation = useMutation({
-    mutationFn: () =>
-      syncToQdrant({ folder, show: meta.name || name, overwrite }),
-    onSuccess: (data) => setSyncTaskId(data.task_id),
-  });
+  }, [name, language, rssUrl, youtubeUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeLlmMode, pipeLlmProvider, pipeLlmModel, pipeTargetLang]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const moveMutation = useMutation({
     mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
       moveShow(folder, newPath, mf),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["shows"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
       navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(data.new_path) } });
     },
   });
 
-  const handlePickedFolder = (parentPath: string) => {
-    const dest = `${parentPath.replace(/\/+$/, "")}/${folderName}`;
-    if (dest === folder) return;
+  const deleteFilesRef = useRef(false);
+  const deleteMutation = useMutation({
+    mutationFn: (deleteFiles: boolean) => deleteShow(folder, deleteFiles),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+      navigate({ to: "/" });
+    },
+  });
+
+  const handleDelete = () => {
+    deleteFilesRef.current = false;
+    confirmDialog.open({
+      title: "Remove this show?",
+      description: `This will unregister "${meta.name}" from PodCodex.`,
+      content: (
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            defaultChecked={false}
+            onChange={(e) => { deleteFilesRef.current = e.target.checked; }}
+            className="accent-destructive"
+          />
+          Also delete local files on disk
+        </label>
+      ),
+      confirmLabel: "Remove",
+      variant: "destructive",
+      onConfirm: () => deleteMutation.mutate(deleteFilesRef.current),
+    });
+  };
+
+  const handleMove = () => {
+    if (!hasChanges) return;
     moveFilesRef.current = true;
     confirmDialog.open({
       title: "Move show folder?",
-      description: `${folder}  →  ${dest}`,
+      description: `${folder}  →  ${destPath}`,
       content: (
         <label className="flex items-center gap-2 text-sm cursor-pointer">
           <input
@@ -140,7 +169,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
       ),
       confirmLabel: "Move",
       variant: "destructive",
-      onConfirm: () => moveMutation.mutate({ newPath: dest, moveFiles: moveFilesRef.current }),
+      onConfirm: () => moveMutation.mutate({ newPath: destPath, moveFiles: moveFilesRef.current }),
     });
   };
 
@@ -150,26 +179,29 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
     maxDurationMinutes, setMaxDurationMinutes,
     titleInclude, setTitleInclude,
     titleExclude, setTitleExclude,
-  } = useConfigStore();
+  } = useEpisodeStore();
 
   return (
     <div className="flex-1 overflow-y-auto p-6 space-y-8 max-w-2xl">
       {/* ── Show Info ── */}
       <SettingSection title="Show Info" description="Basic metadata for this podcast.">
         <SettingRow label="Name" help="Display name for this podcast.">
-          <input value={name} onChange={(e) => setName(e.target.value)} className="input py-1 text-sm w-48" />
+          <input value={name} onChange={(e) => setName(e.target.value)} className="input w-48" />
         </SettingRow>
         <SettingRow label="Language" help="Primary spoken language (e.g. French, English).">
-          <input value={language} onChange={(e) => setLanguage(e.target.value)} className="input py-1 text-sm w-32" />
+          <input value={language} onChange={(e) => setLanguage(e.target.value)} className="input w-32" />
         </SettingRow>
         <SettingRow label="RSS URL" help="The podcast's RSS feed URL.">
-          <input value={rssUrl} onChange={(e) => setRssUrl(e.target.value)} placeholder="https://..." className="input py-1 text-sm w-64" />
+          <input value={rssUrl} onChange={(e) => setRssUrl(e.target.value)} placeholder="https://..." className="input w-64" />
+        </SettingRow>
+        <SettingRow label="YouTube URL" help="YouTube channel or playlist URL.">
+          <input value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)} placeholder="https://youtube.com/..." className="input w-64" />
         </SettingRow>
         <SettingRow label="Artwork" help="URL to the podcast cover image.">
           <div className="flex items-center gap-2">
-            <input value={artworkUrl} onChange={(e) => setArtworkUrl(e.target.value)} placeholder="https://..." className="input py-1 text-sm w-48" />
+            <input value={artworkUrl} onChange={(e) => setArtworkUrl(e.target.value)} placeholder="https://..." className="input w-48" />
             {artworkUrl && (
-              <img src={artworkUrl} alt="" className="w-7 h-7 rounded object-cover shrink-0" onError={(e) => (e.currentTarget.style.display = "none")} />
+              <img src={artworkUrl} alt="Artwork preview" className="w-7 h-7 rounded object-cover shrink-0" onError={(e) => (e.currentTarget.style.display = "none")} />
             )}
           </div>
         </SettingRow>
@@ -178,28 +210,24 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
       {/* Save status */}
       {(isDirty || saveMutation.isSuccess || saveMutation.isError) && (
         <div className="flex items-center gap-3 text-xs -mt-4">
-          {isDirty && <span className="text-yellow-400">Saving...</span>}
-          {saveMutation.isSuccess && !isDirty && <span className="text-green-400">Saved</span>}
+          {isDirty && <span className="text-warning">Saving...</span>}
+          {saveMutation.isSuccess && !isDirty && <span className="text-success">Saved</span>}
           {saveMutation.isError && <span className="text-destructive">{errorMessage(saveMutation.error)}</span>}
         </div>
       )}
 
       {/* ── Folder Location ── */}
       <SettingSection title="Folder" description="Location of show files on disk.">
-        <SettingRow label="Current path">
-          <span className="text-xs text-muted-foreground font-mono truncate max-w-xs" title={folder}>{folder}</span>
-        </SettingRow>
-        <SettingRow label="Folder name" help="Rename the show folder (applied on move).">
-          <input
-            value={folderName}
-            onChange={(e) => setFolderName(e.target.value)}
-            className="input py-1 text-sm w-48 font-mono"
-          />
-        </SettingRow>
+        <FolderLocationFields
+          folderName={folderName}
+          onFolderNameChange={setFolderName}
+          parentPath={parentPath}
+          onParentPathChange={setParentPath}
+        />
         <div className="flex items-center gap-3">
           <Button
-            onClick={() => setPickerOpen(true)}
-            disabled={moveMutation.isPending || !folderName.trim()}
+            onClick={handleMove}
+            disabled={moveMutation.isPending || !folderName.trim() || !hasChanges}
             variant="outline"
             size="sm"
             className="gap-1.5"
@@ -213,15 +241,6 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
         </div>
       </SettingSection>
 
-      <FolderPicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        onSelect={handlePickedFolder}
-        initialPath={folderParent}
-        title={`Move "${folderName}" to...`}
-        description="Select the parent directory"
-      />
-
       {/* ── Episode Filters ── */}
       <SettingSection title="Episode Filters" description="Filter which episodes are shown in the list.">
         <SettingRow label="Min duration" help="Hide episodes shorter than this (minutes). 0 = show all.">
@@ -233,7 +252,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
               value={minDurationMinutes || ""}
               onChange={(e) => setMinDurationMinutes(Math.max(0, Number(e.target.value)))}
               placeholder="0"
-              className="input w-16 py-1 text-sm text-center"
+              className="input w-16 text-center"
             />
             <span className="text-xs text-muted-foreground">min</span>
           </div>
@@ -247,7 +266,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
               value={maxDurationMinutes || ""}
               onChange={(e) => setMaxDurationMinutes(Math.max(0, Number(e.target.value)))}
               placeholder="0"
-              className="input w-16 py-1 text-sm text-center"
+              className="input w-16 text-center"
             />
             <span className="text-xs text-muted-foreground">min</span>
           </div>
@@ -257,7 +276,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
             value={titleInclude}
             onChange={(e) => setTitleInclude(e.target.value)}
             placeholder="filter..."
-            className="input py-1 text-sm w-40"
+            className="input w-40"
           />
         </SettingRow>
         <SettingRow label="Title excludes" help="Hide episodes whose title contains this text.">
@@ -265,7 +284,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
             value={titleExclude}
             onChange={(e) => setTitleExclude(e.target.value)}
             placeholder="exclude..."
-            className="input py-1 text-sm w-40"
+            className="input w-40"
           />
         </SettingRow>
       </SettingSection>
@@ -282,7 +301,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
             value={pipeModelSize}
             onChange={(e) => setPipeModelSize(e.target.value)}
             placeholder="(use global)"
-            className="input py-1 text-sm w-32"
+            className="input w-32"
           />
         </SettingRow>
         <SettingRow label="Diarize" help="Whether transcription should include speaker diarization.">
@@ -293,7 +312,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
             className="accent-primary"
           />
         </SettingRow>
-        <SettingRow label="LLM mode" help="Expected LLM mode for polish/translate. Leave empty for global default.">
+        <SettingRow label="LLM mode" help="Expected LLM mode for correct/translate. Leave empty for global default.">
           <select
             value={pipeLlmMode}
             onChange={(e) => setPipeLlmMode(e.target.value)}
@@ -309,7 +328,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
             value={pipeLlmProvider}
             onChange={(e) => setPipeLlmProvider(e.target.value)}
             placeholder="(use global)"
-            className="input py-1 text-sm w-32"
+            className="input w-32"
           />
         </SettingRow>
         <SettingRow label="LLM model" help="Expected LLM model name. Leave empty for global default.">
@@ -317,7 +336,7 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
             value={pipeLlmModel}
             onChange={(e) => setPipeLlmModel(e.target.value)}
             placeholder="(use global)"
-            className="input py-1 text-sm w-32"
+            className="input w-32"
           />
         </SettingRow>
         <SettingRow label="Target language" help="Expected translation target language. Leave empty for global default.">
@@ -325,42 +344,30 @@ export default function ShowSettings({ folder, meta, hasIndex }: ShowSettingsPro
             value={pipeTargetLang}
             onChange={(e) => setPipeTargetLang(e.target.value)}
             placeholder="(use global)"
-            className="input py-1 text-sm w-32"
+            className="input w-32"
           />
         </SettingRow>
       </SettingSection>
 
-      {/* ── Qdrant Sync ── */}
-      {hasIndex && (
-        <div className="border-t border-border pt-6 space-y-3">
-          <SectionHeader>Qdrant Sync</SectionHeader>
-          <p className="text-xs text-muted-foreground">
-            Push indexed episodes from the local database to Qdrant for faster search across large collections.
-          </p>
-
-          {syncTaskId ? (
-            <ProgressBar taskId={syncTaskId} onComplete={() => setSyncTaskId(null)} />
-          ) : (
-            <div className="flex items-center gap-3">
-              <Button
-                onClick={() => syncMutation.mutate()}
-                disabled={syncMutation.isPending}
-                variant="outline"
-                size="sm"
-              >
-                {syncMutation.isPending ? "Starting..." : "Sync to Qdrant"}
-              </Button>
-              <label className="flex items-center gap-1.5 cursor-pointer text-xs text-muted-foreground">
-                <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} className="accent-primary" />
-                Overwrite existing
-              </label>
-              {syncMutation.isError && (
-                <span className="text-xs text-destructive">{errorMessage(syncMutation.error)}</span>
-              )}
-            </div>
+      {/* ── Danger Zone ── */}
+      <SettingSection title="Danger Zone" description="Irreversible actions.">
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={handleDelete}
+            disabled={deleteMutation.isPending}
+            variant="destructive"
+            size="sm"
+            className="gap-1.5"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            {deleteMutation.isPending ? "Removing..." : "Remove show"}
+          </Button>
+          {deleteMutation.isError && (
+            <span className="text-xs text-destructive">{errorMessage(deleteMutation.error)}</span>
           )}
         </div>
-      )}
+      </SettingSection>
+
     </div>
   );
 }

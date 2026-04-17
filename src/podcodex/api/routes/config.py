@@ -33,6 +33,7 @@ class AppConfig(BaseModel):
 
 
 def _load() -> AppConfig:
+    """Load app config from disk, migrating legacy formats if needed."""
     if CONFIG_PATH.exists():
         try:
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -49,6 +50,7 @@ def _load() -> AppConfig:
 
 
 def _save(cfg: AppConfig) -> None:
+    """Persist app config to disk as JSON."""
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(cfg.model_dump_json(indent=2), encoding="utf-8")
 
@@ -110,11 +112,13 @@ async def pipeline_config() -> dict:
 
 @router.get("/config", response_model=AppConfig)
 async def get_config() -> AppConfig:
+    """Return the current app configuration."""
     return _load()
 
 
 @router.put("/config", response_model=AppConfig)
 async def put_config(cfg: AppConfig) -> AppConfig:
+    """Persist and return an updated app configuration."""
     _save(cfg)
     return cfg
 

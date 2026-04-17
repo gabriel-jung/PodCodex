@@ -2,8 +2,8 @@
 podcodex.rag.defaults — Centralized model registry and default parameters.
 
 All model specs, HF model IDs, and tunable defaults live here.
-CLI, bot, Streamlit app, and RAG modules import from this file — never
-redefine constants elsewhere.
+CLI, bot, and RAG modules import from this file — never redefine
+constants elsewhere.
 """
 
 from __future__ import annotations
@@ -18,13 +18,22 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ModelSpec:
-    label: str  # human-readable display name
-    hf_model: str  # HuggingFace model ID for passage encoding
-    dim: int  # dense vector dimension
-    description: str  # human-readable, also used in Discord command choices
-    hf_query_model: str = (
-        ""  # separate query model if different from hf_model (pplx only)
-    )
+    """Specification for a supported embedding model.
+
+    Attributes:
+        label: Human-readable display name.
+        hf_model: HuggingFace model ID for passage encoding.
+        dim: Dense vector dimensionality.
+        description: Human-readable summary, also used in Discord command choices.
+        hf_query_model: Separate query model if different from ``hf_model``
+            (used by Perplexity only; empty string otherwise).
+    """
+
+    label: str
+    hf_model: str
+    dim: int
+    description: str
+    hf_query_model: str = ""
 
 
 MODELS: dict[str, ModelSpec] = {
@@ -32,25 +41,25 @@ MODELS: dict[str, ModelSpec] = {
         label="BGE-M3",
         hf_model="BAAI/bge-m3",
         dim=1024,
-        description="BAAI/bge-m3 — multilingual, dense + sparse (full hybrid)",
+        description="Default, good search quality",
     ),
     "e5-small": ModelSpec(
         label="E5 Small",
         hf_model="intfloat/multilingual-e5-small",
         dim=384,
-        description="intfloat/multilingual-e5-small — fast, dense only",
+        description="Very fast to run",
     ),
     "e5-large": ModelSpec(
         label="E5 Large",
         hf_model="intfloat/multilingual-e5-large",
         dim=1024,
-        description="intfloat/multilingual-e5-large — accurate, dense only",
+        description="Better than E5 Small but slower",
     ),
     "pplx": ModelSpec(
         label="Perplexity",
         hf_model="perplexity-ai/pplx-embed-context-v1-0.6B",
         dim=1024,
-        description="perplexity-ai/pplx-embed — context-aware, dense only (experimental)",
+        description="Understands surrounding text, slow on CPU",
         hf_query_model="perplexity-ai/pplx-embed-v1-0.6B",
     ),
 }

@@ -2,11 +2,8 @@
 podcodex.core.constants — Single source of truth for pipeline settings.
 
 Every model name, description, and default value used across the app is
-defined here.  Both user interfaces (desktop and Streamlit) read from this
-file, so you only ever need to update descriptions in one place.
-
-The desktop API exposes these via ``GET /api/pipeline-config`` so the React
-frontend can display them without duplicating any text.
+defined here. The desktop API exposes these via ``GET /api/pipeline-config``
+so the React frontend can display them without duplicating any text.
 """
 
 from __future__ import annotations
@@ -26,6 +23,20 @@ WHISPER_MODELS: dict[str, str] = {
     "tiny": "Fastest, lowest accuracy — ~1 GB VRAM",
 }
 
+# Minimum free VRAM (MB) needed to load each model.
+# Used by check_vram() to fail fast instead of hanging on OOM.
+WHISPER_VRAM_MB: dict[str, int] = {
+    "large-v3": 5000,
+    "large-v3-turbo": 4000,
+    "medium": 3000,
+    "small": 2000,
+    "base": 1000,
+    "tiny": 500,
+}
+
+# Pyannote diarization pipeline VRAM requirement (MB).
+DIARIZATION_VRAM_MB = 1500
+
 DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 
 # ── Text-to-Speech (TTS) model sizes ────────────────────────────────────────
@@ -36,6 +47,11 @@ DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 TTS_MODEL_SIZES: dict[str, str] = {
     "1.7B": "Higher quality voice cloning — needs ~8 GB GPU memory",
     "0.6B": "Faster generation — needs ~4 GB GPU memory",
+}
+
+TTS_VRAM_MB: dict[str, int] = {
+    "1.7B": 8000,
+    "0.6B": 4000,
 }
 
 DEFAULT_TTS_MODEL_SIZE = "1.7B"
@@ -58,7 +74,7 @@ VOICE_TOP_K = 3  # how many samples to keep per speaker
 DEFAULT_MAX_CHUNK_DURATION = 20.0  # max seconds per TTS chunk
 DEFAULT_SILENCE_DURATION = 0.5  # gap duration for the "silence" strategy
 
-# ── LLM providers (for Polish & Translate) ───────────────────────────────────
+# ── LLM providers (for Correct & Translate) ───────────────────────────────────
 #
 # Each provider entry contains the API base URL, a sensible default model,
 # and a human-friendly label for the UI.  "ollama" (local) is handled

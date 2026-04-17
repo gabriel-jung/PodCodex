@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from fastapi import WebSocket
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # Max debug log lines kept per task (ring buffer)
 _MAX_DEBUG_LINES = 200
@@ -22,6 +22,26 @@ _MAX_DEBUG_LINES = 200
 
 @dataclass
 class TaskInfo:
+    """Mutable state for a single background pipeline task.
+
+    Tracks status, progress percentage, milestone steps, debug log lines,
+    and a threading event for cooperative cancellation.
+
+    Attributes:
+        task_id: Unique identifier (``{step}_{hex8}``).
+        audio_path: Filesystem path this task operates on (used for locking).
+        status: One of ``"pending"``, ``"running"``, ``"completed"``,
+            ``"failed"``, or ``"cancelled"``.
+        progress: Completion fraction in ``[0.0, 1.0]``.
+        message: Most recent human-readable progress message.
+        result: Return value of the wrapped callable on success.
+        error: Stringified exception on failure.
+        finished_at: ``time.monotonic()`` timestamp when the task ended.
+        steps: Ordered list of milestone messages (no tick-level noise).
+        log: Ring-buffered debug log lines (capped at ``_MAX_DEBUG_LINES``).
+        cancel_event: Set by ``TaskManager.cancel`` to request cooperative stop.
+    """
+
     task_id: str
     audio_path: str = ""
     status: str = "pending"  # pending | running | completed | failed | cancelled
@@ -35,18 +55,35 @@ class TaskInfo:
     cancel_event: threading.Event = field(default_factory=threading.Event)
 
     def add_step(self, message: str) -> None:
+        """Append a milestone message to the steps list."""
         self.steps.append(message)
 
     def add_log(self, message: str) -> None:
+        """Append a debug line to the log ring buffer.
+
+        When the buffer exceeds ``_MAX_DEBUG_LINES``, the oldest half is
+        discarded to keep memory bounded.
+        """
         if len(self.log) >= _MAX_DEBUG_LINES:
             self.log = self.log[-_MAX_DEBUG_LINES // 2 :]
         self.log.append(message)
 
 
 class TaskManager:
-    """Manages background pipeline tasks with WebSocket progress updates."""
+    """Manages background pipeline tasks with WebSocket progress updates.
+
+    Wraps a ``ThreadPoolExecutor`` to run pipeline callables off the async
+    event loop, while broadcasting real-time progress to connected WebSocket
+    clients.  Per-audio-path locking prevents duplicate concurrent runs on
+    the same file.
+    """
 
     def __init__(self, max_workers: int = 2) -> None:
+        """Initialise the task manager.
+
+        Args:
+            max_workers: Maximum concurrent background threads.
+        """
         self._tasks: dict[str, TaskInfo] = {}
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
         self._ws_connections: set[WebSocket] = set()
@@ -56,20 +93,37 @@ class TaskManager:
     # ── Public lock API ────────────────────────────
 
     def lock(self, audio_path: str, task_id: str) -> None:
-        """Acquire a lock on an audio path for a given task."""
+        """Acquire a processing lock on an audio path.
+
+        Args:
+            audio_path: Filesystem path to lock.
+            task_id: Owning task identifier.
+        """
         self._audio_locks[audio_path] = task_id
 
     def unlock(self, audio_path: str) -> None:
-        """Release the lock on an audio path."""
+        """Release the processing lock on an audio path.
+
+        Args:
+            audio_path: Filesystem path to unlock.
+        """
         self._audio_locks.pop(audio_path, None)
 
     def release_locks_for_task(self, task_id: str) -> None:
-        """Release ALL locks held by a given task (used for batch cleanup)."""
+        """Release all locks held by a given task.
+
+        Useful for batch-task cleanup where one task may lock multiple
+        audio paths.
+
+        Args:
+            task_id: Task whose locks should be released.
+        """
         stale = [k for k, v in self._audio_locks.items() if v == task_id]
         for k in stale:
             del self._audio_locks[k]
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
+        """Return the cached asyncio event loop, refreshing if stale."""
         if self._loop is None or self._loop.is_closed():
             try:
                 self._loop = asyncio.get_running_loop()
@@ -100,8 +154,26 @@ class TaskManager:
     ) -> TaskInfo:
         """Submit a pipeline function for background execution.
 
-        ``fn`` receives a progress callback as its first argument:
-        ``fn(progress_cb, *args)`` where ``progress_cb(progress, message)``.
+        ``fn`` receives a progress callback as its first positional argument::
+
+            fn(progress_cb, *args)
+
+        where ``progress_cb(progress: float, message: str)`` updates the
+        task's progress and broadcasts to WebSocket clients.  The callback
+        also carries a ``cancel_event`` attribute for cooperative cancellation.
+
+        Args:
+            step: Short label for the pipeline step (e.g. ``"transcribe"``).
+            audio_path: Filesystem path being processed (used for locking).
+            fn: Callable to run in a background thread.
+            *args: Extra positional arguments forwarded to *fn* after the
+                progress callback.
+
+        Returns:
+            The newly created ``TaskInfo`` instance.
+
+        Raises:
+            ValueError: If another task is already running on *audio_path*.
         """
         self._cleanup_stale()
         # Capture the event loop while we're still in async context
@@ -170,6 +242,16 @@ class TaskManager:
     )
 
     def update_progress(self, task_id: str, progress: float, message: str) -> None:
+        """Update a task's progress and broadcast the change.
+
+        Milestone messages are recorded as steps; tick-level messages
+        (matching ``_TICK_RE``) are sent to the debug log only.
+
+        Args:
+            task_id: Task to update.
+            progress: New completion fraction in ``[0.0, 1.0]``.
+            message: Human-readable progress description.
+        """
         info = self._tasks.get(task_id)
         if info:
             if message and message != info.message:
@@ -184,10 +266,25 @@ class TaskManager:
             self._broadcast_sync(task_id)
 
     def get(self, task_id: str) -> TaskInfo | None:
+        """Look up a task by its identifier.
+
+        Args:
+            task_id: Task identifier to look up.
+
+        Returns:
+            The ``TaskInfo`` if found, otherwise ``None``.
+        """
         return self._tasks.get(task_id)
 
     def get_active(self, audio_path: str) -> TaskInfo | None:
-        """Return the running task for an audio path, if any."""
+        """Return the active (pending or running) task for an audio path.
+
+        Args:
+            audio_path: Filesystem path to check.
+
+        Returns:
+            The ``TaskInfo`` if a task is currently active, otherwise ``None``.
+        """
         task_id = self._audio_locks.get(audio_path)
         if not task_id:
             return None
@@ -197,13 +294,26 @@ class TaskManager:
         return None
 
     def cancel(self, task_id: str) -> bool:
-        """Request cancellation of a running task. Returns True if the event was set."""
+        """Request cooperative cancellation of a running task.
+
+        Sets the task's ``cancel_event``, marks it as cancelled, releases
+        all locks, and broadcasts the final state.
+
+        Args:
+            task_id: Task to cancel.
+
+        Returns:
+            ``True`` if the cancellation event was set, ``False`` if the task
+            was not found or already finished.
+        """
         info = self._tasks.get(task_id)
-        if not info or info.status not in ("pending", "running"):
+        if not info:
             return False
+        if info.status not in ("pending", "running"):
+            return True  # already cancelled/finished — idempotent
         info.cancel_event.set()
         info.status = "cancelled"
-        info.message = "Cancelled"
+        info.message = "Cancelling (waiting for current step to finish)…"
         info.finished_at = time.monotonic()
         # Release primary lock + any per-episode locks held by this task
         self._audio_locks.pop(info.audio_path, None)
@@ -226,6 +336,7 @@ class TaskManager:
             logger.warning("WebSocket broadcast failed for %s: %s", task_id, exc)
 
     async def _broadcast(self, task_id: str) -> None:
+        """Send a task's current state to all connected WebSocket clients."""
         info = self._tasks.get(task_id)
         if not info:
             return
@@ -254,6 +365,14 @@ class TaskManager:
             self._ws_connections.discard(ws)
 
     async def register_ws(self, ws: WebSocket) -> None:
+        """Register a WebSocket connection and replay active task states.
+
+        Sends the current state of all pending/running tasks so that
+        reconnecting clients can catch up immediately.
+
+        Args:
+            ws: The WebSocket connection to register.
+        """
         self._ws_connections.add(ws)
         # Send current state of all active tasks so reconnecting clients catch up
         for info in self._tasks.values():
@@ -274,6 +393,11 @@ class TaskManager:
                     pass
 
     def unregister_ws(self, ws: WebSocket) -> None:
+        """Remove a WebSocket connection from the broadcast set.
+
+        Args:
+            ws: The WebSocket connection to remove.
+        """
         self._ws_connections.discard(ws)
 
 
@@ -300,6 +424,7 @@ def _add_loguru_sink(info: TaskInfo, manager: "TaskManager") -> int | None:
 
 
 def _remove_loguru_sink(sink_id: int | None) -> None:
+    """Remove a previously added loguru sink, ignoring errors."""
     if sink_id is None:
         return
     try:
@@ -316,6 +441,7 @@ class _TaskLogHandler(logging.Handler):
     def __init__(
         self, task_info: TaskInfo, manager: "TaskManager", level: int = logging.DEBUG
     ) -> None:
+        """Bind this handler to a specific task and manager for broadcasting."""
         super().__init__(level)
         self._info = task_info
         self._manager = manager
@@ -323,6 +449,7 @@ class _TaskLogHandler(logging.Handler):
         self.setFormatter(logging.Formatter("%(name)s: %(message)s"))
 
     def emit(self, record: logging.LogRecord) -> None:
+        """Write the formatted record to the task log, throttling broadcasts."""
         try:
             self._info.add_log(self.format(record))
             # Throttle broadcasts to at most once per second

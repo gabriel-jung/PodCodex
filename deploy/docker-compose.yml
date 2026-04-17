@@ -1,40 +1,16 @@
 services:
-  qdrant:
-    image: qdrant/qdrant:v1.17.0
-    ports:
-      - "127.0.0.1:6333:6333"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-    # healthcheck:
-    #   test: ["CMD-SHELL", "cat < /dev/tcp/localhost/6333 || exit 1"]
-    #   interval: 5s
-    #   timeout: 3s
-    #   retries: 5
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "3"
-
   bot:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    depends_on:
-      qdrant:
-        condition: service_started
     env_file:
-      - .env.production
-    environment:
-      - QDRANT_URL=http://qdrant:6333
+      - .env
     volumes:
-      - ./data:/app/data
-      - model_cache:/root/.cache
+      # Index directory — same path as the desktop app and the uv install use
+      # by default, so a single location works for everyone. Override by
+      # setting PODCODEX_INDEX_HOST in .env if your index lives elsewhere.
+      - ${PODCODEX_INDEX_HOST:-~/.local/share/podcodex/index}:/root/.local/share/podcodex/index
+      - model_cache:/root/.cache  # BGE-M3 model cache — persisted across rebuilds
     deploy:
       resources:
         limits:
@@ -47,5 +23,4 @@ services:
         max-file: "3"
 
 volumes:
-  qdrant_data:
   model_cache:

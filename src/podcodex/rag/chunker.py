@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from loguru import logger
 
+from podcodex.ingest.rss import clean_description
 from podcodex.rag.defaults import CHUNKER_MODEL
 
 
@@ -27,8 +28,9 @@ _SEP = " "
 def _meta_fields(transcript: dict) -> tuple[str, str, str, dict]:
     """Extract (show, episode, source, extras) from transcript metadata.
 
-    ``extras`` contains optional display fields (episode_title, pub_date,
-    episode_number) when available — only non-empty values are included.
+    ``extras`` carries optional display fields (episode_title, pub_date,
+    episode_number, description). RSS description is HTML-stripped and
+    truncated so bot commands can surface it without an extra lookup.
     """
     meta = transcript.get("meta", {})
     episode = meta.get("episode", "")
@@ -40,20 +42,27 @@ def _meta_fields(transcript: dict) -> tuple[str, str, str, dict]:
         extras["pub_date"] = meta["rss_pub_date"]
     if meta.get("episode_number") is not None:
         extras["episode_number"] = meta["episode_number"]
+    rss_description = meta.get("rss_description", "")
+    if rss_description:
+        cleaned = clean_description(rss_description)
+        if cleaned:
+            extras["description"] = cleaned
     if not meta.get("timed", True):
         extras["timed"] = False
     return meta.get("show", ""), episode, meta.get("source", ""), extras
 
 
 def _build_episode_text(segments: list[dict]) -> tuple[str, list[dict]]:
-    """
-    Concatenate turns into a single string, tracking character offsets per turn.
+    """Concatenate turns into a single string, tracking character offsets per turn.
 
     Segments are assumed to be pre-filtered (all must have ``text``).
 
+    Args:
+        segments: List of segment dicts, each with at least a ``text`` key.
+
     Returns:
-        (full_text, offset_map) — offset_map entries:
-        {start_char, end_char, speaker, start, end, text}
+        A ``(full_text, offset_map)`` tuple where *offset_map* entries are dicts
+        with keys ``{start_char, end_char, speaker, start, end, text}``.
     """
     offset_map = []
     parts = []
@@ -64,7 +73,7 @@ def _build_episode_text(segments: list[dict]) -> tuple[str, list[dict]]:
             {
                 "start_char": cursor,
                 "end_char": cursor + len(text),
-                "speaker": seg.get("speaker", "UNKNOWN"),
+                "speaker": seg.get("speaker") or "UNKNOWN",
                 "start": seg.get("start", 0.0),
                 "end": seg.get("end", 0.0),
                 "text": text,
@@ -78,11 +87,16 @@ def _build_episode_text(segments: list[dict]) -> tuple[str, list[dict]]:
 def _map_offsets_to_metadata(
     chunk_start: int, chunk_end: int, offset_map: list[dict]
 ) -> dict | None:
-    """
-    Map chunk character offsets back to timing + speaker metadata.
+    """Map chunk character offsets back to timing and speaker metadata.
 
-    Returns dominant speaker (by character coverage) and the full list of
-    overlapping turns, or None if the chunk doesn't overlap any turn.
+    Args:
+        chunk_start: Start character index of the chunk in the full text.
+        chunk_end: End character index of the chunk in the full text.
+        offset_map: Per-turn offset entries produced by ``_build_episode_text``.
+
+    Returns:
+        A dict with ``{start, end, dominant_speaker, speakers}`` if the chunk
+        overlaps at least one turn, or ``None`` otherwise.
     """
     overlapping = [
         t
@@ -97,12 +111,8 @@ def _map_offsets_to_metadata(
         chars = max(
             0, min(t["end_char"], chunk_end) - max(t["start_char"], chunk_start)
         )
-        spk = t.get("speaker")
-        if spk:
-            speaker_chars[spk] = speaker_chars.get(spk, 0) + chars
-
-    if not speaker_chars:
-        return None
+        spk = t.get("speaker") or "UNKNOWN"
+        speaker_chars[spk] = speaker_chars.get(spk, 0) + chars
 
     return {
         "start": overlapping[0]["start"],

@@ -49,7 +49,16 @@ def list_cached_models() -> list[dict]:
     for entry in sorted(hf_hub.iterdir()):
         if not entry.is_dir() or entry.name.startswith("."):
             continue
-        size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+        # Only count blobs/ to avoid double-counting via snapshot symlinks
+        blobs_dir = entry / "blobs"
+        if blobs_dir.is_dir():
+            size = sum(f.stat().st_size for f in blobs_dir.rglob("*") if f.is_file())
+        else:
+            size = sum(
+                f.stat().st_size
+                for f in entry.rglob("*")
+                if f.is_file() and not f.is_symlink()
+            )
         # Extract a readable model name from the directory name
         # HF hub dirs look like "models--org--name"
         name = entry.name.replace("models--", "").replace("--", "/")

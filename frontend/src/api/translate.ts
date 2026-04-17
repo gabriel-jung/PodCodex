@@ -1,47 +1,31 @@
-import type { Segment, TaskResponse, TranslateRequest, VersionEntry } from "./types";
-import { json } from "./base";
+import type { Segment, TaskResponse, TranslateRequest } from "./types";
+import { createLLMPipelineApi } from "./versions";
+
+const api = createLLMPipelineApi("translate");
 
 export const getTranslateSegments = (audioPath: string, lang: string) =>
-  json<Segment[]>(`/api/translate/segments?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`);
-
+  api.getSegments(audioPath, { lang });
 export const saveTranslateSegments = (audioPath: string, lang: string, segments: Segment[]) =>
-  json<{ status: string; count: number }>(`/api/translate/segments?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(segments),
-  });
-
+  api.saveSegments(audioPath, segments, { lang });
 export const getTranslateVersions = (audioPath: string, lang: string) =>
-  json<VersionEntry[]>(`/api/translate/versions?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`);
-
+  api.getVersions(audioPath, { lang });
 export const loadTranslateVersion = (audioPath: string, lang: string, versionId: string) =>
-  json<Segment[]>(`/api/translate/versions/${encodeURIComponent(versionId)}?audio_path=${encodeURIComponent(audioPath)}&lang=${encodeURIComponent(lang)}`);
-
-export const getTranslateLanguages = (audioPath: string) =>
-  json<string[]>(`/api/translate/languages?audio_path=${encodeURIComponent(audioPath)}`);
+  api.loadVersion(audioPath, versionId, { lang });
+export const deleteTranslateVersion = (audioPath: string, lang: string, versionId: string) =>
+  api.deleteVersion(audioPath, versionId, { lang });
 
 export const startTranslate = (req: TranslateRequest) =>
-  json<TaskResponse>("/api/translate/start", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
-  });
+  api.start(req as unknown as Record<string, unknown>) as Promise<TaskResponse>;
 
 export const getTranslateManualPrompts = (params: {
-  audio_path: string;
+  audio_path?: string;
+  output_dir?: string;
   context?: string;
   source_lang?: string;
   target_lang?: string;
   batch_minutes?: number;
-}) =>
-  json<{ batch_index: number; prompt: string; segment_count: number }[]>(
-    "/api/translate/manual-prompts",
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params) },
-  );
+  source_version_id?: string;
+}) => api.getManualPrompts(params);
 
-export const applyTranslateManual = (params: { audio_path: string; lang: string; corrections: unknown[] }) =>
-  json<{ status: string; count: number }>("/api/translate/apply-manual", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  });
+export const applyTranslateManual = (params: { audio_path?: string; output_dir?: string; lang: string; corrections: unknown[] }) =>
+  api.applyManual(params);

@@ -11,6 +11,7 @@ router = APIRouter()
 
 @router.websocket("/ws")
 async def websocket_progress(ws: WebSocket) -> None:
+    """Accept a WebSocket connection and stream task progress events to the client."""
     await ws.accept()
     await task_manager.register_ws(ws)
     try:

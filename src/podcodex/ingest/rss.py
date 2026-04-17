@@ -188,7 +188,9 @@ def search_itunes(query: str, limit: int = 8) -> list[PodcastSearchResult]:
                 name=r.get("collectionName", ""),
                 artist=r.get("artistName", ""),
                 feed_url=feed,
-                artwork_url=r.get("artworkUrl60", ""),
+                artwork_url=r.get("artworkUrl600", "")
+                or r.get("artworkUrl100", "")
+                or r.get("artworkUrl60", ""),
             )
         )
     return results
@@ -254,6 +256,14 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
+def clean_description(raw: str, max_chars: int = 500) -> str:
+    """Strip HTML and soft-truncate at the nearest word boundary."""
+    desc = _HTML_TAG_RE.sub("", raw).strip()
+    if len(desc) > max_chars:
+        desc = desc[:max_chars].rsplit(" ", 1)[0] + "…"
+    return desc
+
+
 def build_episode_context(
     show_name: str = "",
     episode_dir: Path | str | None = None,
@@ -262,7 +272,7 @@ def build_episode_context(
     """Build an LLM context string from show name + RSS episode metadata.
 
     Returns a multi-line string suitable for the ``context`` parameter of
-    :func:`~podcodex.core.polish.polish_segments` and
+    :func:`~podcodex.core.correct.correct_segments` and
     :func:`~podcodex.core.translate.translate_segments`.
 
     Args:
@@ -286,12 +296,10 @@ def build_episode_context(
                 elif meta.episode_number is not None:
                     ep_id = f" (Episode {meta.episode_number})"
                 parts.append(f'Episode: "{meta.title}"{ep_id}')
-            # HTML-stripped, truncated description
             if meta.description:
-                desc = _HTML_TAG_RE.sub("", meta.description).strip()
-                if len(desc) > max_desc:
-                    desc = desc[:max_desc].rsplit(" ", 1)[0] + "…"
-                parts.append(f"Description: {desc}")
+                parts.append(
+                    f"Description: {clean_description(meta.description, max_desc)}"
+                )
 
     return "\n".join(parts)
 
@@ -299,9 +307,19 @@ def build_episode_context(
 # ── Audio download ────────────────────────────
 
 
+def _cleanup_partial(path: Path) -> None:
+    """Remove a partial download, ignoring errors (e.g. Windows/WSL file locks)."""
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
 def download_audio(
     rss_episode: RSSEpisode,
     show_folder: Path,
+    force: bool = False,
 ) -> Path | None:
     """Download audio from *rss_episode.audio_url* into *show_folder*.
 
@@ -318,25 +336,43 @@ def download_audio(
     # Always persist episode metadata (even if audio already downloaded)
     save_episode_meta(Path(show_folder) / stem, rss_episode)
 
-    if dest.exists():
+    if not force and dest.exists():
         logger.info(f"Audio already exists: {dest.name}")
         return dest
 
     import httpx
+    import time as _time
 
+    max_retries = 3
+    # connect=15s, read=30s per chunk, no total cap (large files need time)
+    timeout = httpx.Timeout(connect=15, read=30, write=30, pool=15)
     logger.info(f"Downloading {rss_episode.audio_url} → {dest.name}")
-    try:
-        with httpx.stream("GET", rss_episode.audio_url, follow_redirects=True) as resp:
-            resp.raise_for_status()
-            with open(dest, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=65536):
-                    f.write(chunk)
-    except (httpx.HTTPStatusError, httpx.TransportError) as exc:
-        logger.warning(f"Download failed for {dest.name}: {exc}")
-        # Clean up partial file
-        if dest.exists():
-            dest.unlink()
-        return None
+    for attempt in range(1, max_retries + 1):
+        try:
+            with httpx.stream(
+                "GET", rss_episode.audio_url, follow_redirects=True, timeout=timeout
+            ) as resp:
+                resp.raise_for_status()
+                with open(dest, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        f.write(chunk)
+            break  # success
+        except httpx.HTTPStatusError:
+            logger.warning(
+                f"Download failed for {dest.name} (HTTP error, attempt {attempt}/{max_retries})"
+            )
+            _cleanup_partial(dest)
+            if attempt == max_retries:
+                return None
+            _time.sleep(2 * attempt)
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            logger.warning(
+                f"Download failed for {dest.name}: {exc} (attempt {attempt}/{max_retries})"
+            )
+            _cleanup_partial(dest)
+            if attempt == max_retries:
+                return None
+            _time.sleep(2 * attempt)
 
     logger.success(
         f"Downloaded {dest.name} ({dest.stat().st_size / 1024 / 1024:.1f} MB)"

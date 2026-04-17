@@ -1,4 +1,4 @@
-"""Tests for podcodex.bot — pure functions only (no Discord, no Qdrant)."""
+"""Tests for podcodex.bot — pure functions only (no Discord)."""
 
 import pytest
 
@@ -25,14 +25,14 @@ from podcodex.bot.formatting import (
 def test_botconfig_defaults():
     cfg = BotConfig()
     assert cfg.top_k == 5
-    assert cfg.qdrant_url is None
+    assert cfg.index_path is None
     assert cfg.chunker == "semantic"
 
 
 def test_botconfig_custom():
-    cfg = BotConfig(top_k=3, qdrant_url="http://qdrant:6333", chunker="speaker")
+    cfg = BotConfig(top_k=3, index_path="/tmp/lance-index", chunker="speaker")
     assert cfg.top_k == 3
-    assert cfg.qdrant_url == "http://qdrant:6333"
+    assert cfg.index_path == "/tmp/lance-index"
     assert cfg.chunker == "speaker"
 
 
@@ -142,7 +142,7 @@ def test_result_embed_show_in_title_query_as_author():
         question="film music",
     )
     assert embed.author.name == '🔎 "film music"'
-    assert "ep01" in embed.title
+    assert "Ep01" in embed.title
     assert "My Podcast" in embed.title
 
 
@@ -224,7 +224,7 @@ def test_format_context_header_shows_show_and_episode():
         _NEIGHBORS, start=10.0, n=2, show="My Podcast", episode="ep01"
     )
     assert "My Podcast" in content
-    assert "ep01" in content
+    assert "Ep01" in content
 
 
 def test_result_embed_returns_expand_view():
@@ -389,10 +389,10 @@ def test_server_settings_new_fields_default():
 
 def test_server_settings_with_new_fields():
     s = ServerSettings(
-        allowed_shows=["Show A"], default_source="polished", compact=True
+        allowed_shows=["Show A"], default_source="corrected", compact=True
     )
     assert s.allowed_shows == ["Show A"]
-    assert s.default_source == "polished"
+    assert s.default_source == "corrected"
     assert s.compact is True
 
 
@@ -456,7 +456,7 @@ def test_compact_embed_returns_single_embed():
 def test_compact_embed_field_names_have_rank_and_episode():
     embed = build_compact_embed(_COMPACT_RESULTS, "test")
     assert "#1" in embed.fields[0].name
-    assert "ep01" in embed.fields[0].name
+    assert "Ep01" in embed.fields[0].name
     assert "Podcast A" in embed.fields[0].name
 
 
@@ -501,7 +501,7 @@ def test_effective_settings_carries_new_fields(tmp_path):
                     "chunker": "semantic",
                     "top_k": 5,
                     "allowed_shows": ["ShowA", "ShowB"],
-                    "default_source": "polished",
+                    "default_source": "corrected",
                     "compact": True,
                 }
             }
@@ -509,13 +509,13 @@ def test_effective_settings_carries_new_fields(tmp_path):
     )
     from unittest.mock import patch
 
-    with patch("podcodex.bot.bot.QdrantStore"), patch("podcodex.bot.bot.Retriever"):
+    with patch("podcodex.bot.bot.IndexStore"), patch("podcodex.bot.bot.Retriever"):
         from podcodex.bot.bot import BotConfig, PodCodexBot
 
         bot = PodCodexBot(BotConfig(), server_config_path=cfg_path)
     eff = bot._effective_settings(guild_id=1, model="", top_k=0)
     assert eff.allowed_shows == ["ShowA", "ShowB"]
-    assert eff.default_source == "polished"
+    assert eff.default_source == "corrected"
     assert eff.compact is True
     # Per-query model override should still work
     eff2 = bot._effective_settings(guild_id=1, model="e5-small", top_k=10)
@@ -532,7 +532,7 @@ def test_effective_settings_carries_new_fields(tmp_path):
 def test_autocomplete_cache_starts_stale():
     from podcodex.bot.bot import _AutocompleteCache
 
-    cache = _AutocompleteCache(episodes={}, sources={}, speakers={})
+    cache = _AutocompleteCache(episodes={}, episode_titles={}, sources={}, speakers={})
     assert cache.is_stale() is True
 
 
@@ -541,7 +541,11 @@ def test_autocomplete_cache_fresh_after_timestamp_set():
     from podcodex.bot.bot import _AutocompleteCache
 
     cache = _AutocompleteCache(
-        episodes={}, sources={}, speakers={}, timestamp=time.monotonic()
+        episodes={},
+        episode_titles={},
+        sources={},
+        speakers={},
+        timestamp=time.monotonic(),
     )
     assert cache.is_stale() is False
 
@@ -552,6 +556,7 @@ def test_autocomplete_cache_stale_after_ttl():
 
     cache = _AutocompleteCache(
         episodes={},
+        episode_titles={},
         sources={},
         speakers={},
         timestamp=time.monotonic() - 301,

@@ -73,7 +73,7 @@ export default function VoiceExtractionSection({
     <section className="space-y-3">
       <SectionHeader>1. Select Voice Samples</SectionHeader>
       <p className="text-xs text-muted-foreground">
-        Pick the best segments for each speaker to use as voice cloning references.
+        Choose the best segments for each speaker to use as voice cloning references.
         Play segments to audition them, check the ones you want, then extract.
       </p>
 
@@ -177,7 +177,7 @@ export default function VoiceExtractionSection({
                                       else next[key] = e.target.value;
                                       setSpeakerOverrides(next);
                                     }}
-                                    className="shrink-0 bg-transparent border border-border rounded px-1 py-0 text-[10px] w-20 text-muted-foreground"
+                                    className="shrink-0 bg-transparent border border-border rounded px-1 py-0 text-2xs w-20 text-muted-foreground"
                                     title="Reassign speaker"
                                   >
                                     {allSpeakers.map((sp) => (
@@ -228,7 +228,7 @@ export default function VoiceExtractionSection({
             : `Extract ${selected.size} sample${selected.size !== 1 ? "s" : ""}`}
         </Button>
         {status?.voice_samples_extracted && (
-          <span className="text-xs text-green-400">Samples on disk</span>
+          <span className="text-xs text-success">Samples on disk</span>
         )}
         {extractMutation.isError && (
           <span className="text-xs text-destructive">
@@ -290,7 +290,7 @@ export default function VoiceExtractionSection({
           <div className="flex items-center gap-2 text-xs pt-1">
             <label className="flex items-center gap-1.5 cursor-pointer text-muted-foreground hover:text-foreground transition">
               <Upload className="w-3.5 h-3.5" />
-              <span>Upload external sample</span>
+              <span>Upload a sample</span>
               <input
                 type="file"
                 accept="audio/*"
@@ -308,7 +308,7 @@ export default function VoiceExtractionSection({
                 }}
               />
             </label>
-            {uploadMutation.isPending && <span className="text-muted-foreground">Uploading...</span>}
+            {uploadMutation.isPending && <span className="text-muted-foreground">Uploading…</span>}
             {uploadMutation.isError && <span className="text-destructive">{errorMessage(uploadMutation.error)}</span>}
           </div>
         )}

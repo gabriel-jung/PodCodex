@@ -1,5 +1,5 @@
 import type { DirListing } from "./types";
-import { BASE, json } from "./base";
+import { BASE, json } from "./client";
 
 export const listDirectory = (path: string, showFiles = false) =>
   json<DirListing>(`/api/fs/list?path=${encodeURIComponent(path)}&show_files=${showFiles}`);
@@ -9,6 +9,24 @@ export const createDirectory = (path: string, name: string) =>
     `/api/fs/mkdir?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`,
     { method: "POST" },
   );
+
+export const openFolder = (path: string) =>
+  json<{ error: string | null }>(
+    `/api/fs/open?path=${encodeURIComponent(path)}`,
+    { method: "POST" },
+  );
+
+/** Delete a non-audio auxiliary file (subtitles, JSON exports, etc). */
+export const deleteFile = (path: string) =>
+  json<{ status: string; path: string }>(
+    `/api/fs/file?path=${encodeURIComponent(path)}`,
+    { method: "DELETE" },
+  );
+
+// ── Artwork ────────────────────────────────
+
+export const artworkUrl = (showFolder: string) =>
+  `${BASE}/api/shows/artwork?show_folder=${encodeURIComponent(showFolder)}`;
 
 // ── Audio ───────────────────────────────────
 
