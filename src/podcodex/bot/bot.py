@@ -3,10 +3,8 @@ podcodex.bot.bot — Discord bot for podcast transcript search.
 
 Entrypoint:
     podcodex-bot [--model bge-m3] [--chunking semantic] [--top-k 5]
-                 [--db PATH] [--server-config FILE]
-                 [--shows-config shows.toml] [--dev-guild ID]
-    podcodex-bot --hash-password
-    podcodex-bot --add-show [--shows-config FILE]
+                 [--index PATH] [--server-config FILE] [--dev-guild ID]
+    podcodex-bot --manage-passwords [--index PATH]
 
 Slash commands (user-facing):
     /search   question [show] [episode] [speaker] [alpha] [model] [top_k] [source] [compact]
@@ -46,7 +44,6 @@ import hmac
 import json
 import os
 import random
-import re
 import secrets
 import sys
 import time
@@ -62,8 +59,11 @@ from podcodex.bot.formatting import (
     CooldownManager,
     build_compact_embed,
     count_occurrences,
+    episode_display,
     fmt_time,
     fmt_timestamp,
+    format_filter_suffix,
+    humanize_stem,
     merge_results,
     score_bar,
     speaker_lines,
@@ -71,6 +71,7 @@ from podcodex.bot.formatting import (
 )
 from podcodex.bot.synthesis import synthesize_answer
 from podcodex.bot.ui import ExpandView, NoExpandView, PaginatedResultView, SourcesView
+from podcodex.core.constants import LLM_PROVIDERS
 from podcodex.rag.defaults import (
     ALPHA,
     CHUNKING_STRATEGIES,
@@ -83,27 +84,7 @@ from podcodex.rag.index_store import IndexStore
 from podcodex.rag.retriever import Retriever
 from podcodex.rag.store import collection_name
 
-# ── Display helpers ───────────────────────────
-
-_STEM_PREFIX_RE = re.compile(r"^\d+_(?:episode_\d+_)?", re.IGNORECASE)
-
-
-def _humanize_stem(stem: str) -> str:
-    s = _STEM_PREFIX_RE.sub("", stem).replace("_", " ").strip()
-    return (s[:1].upper() + s[1:]) if s else stem
-
-
 # ── Slash-command choices ─────────────────────
-
-_MODEL_CHOICES = [
-    app_commands.Choice(name=spec.description, value=key)
-    for key, spec in MODELS.items()
-]
-
-_CHUNKER_CHOICES = [
-    app_commands.Choice(name=desc, value=key)
-    for key, desc in CHUNKING_STRATEGIES.items()
-]
 
 _BOOL_CHOICES = [
     app_commands.Choice(name="True", value="true"),
@@ -229,7 +210,7 @@ def _result_embed(
     """Build a Discord embed + context-expand view for a single search result."""
     show = chunk.get("show", "")
     episode = chunk.get("episode", "")
-    episode_display = chunk.get("episode_title") or episode
+    ep_title = episode_display(chunk)
     start = chunk.get("start", 0.0)
     end = chunk.get("end", 0.0)
     score = chunk.get("score", 0.0)
@@ -239,7 +220,7 @@ def _result_embed(
     embed = discord.Embed(description=description, color=discord.Color.blurple())
     if q:
         embed.set_author(name=f'🔎 "{q}"')
-    title = episode_display or "(untitled)"
+    title = ep_title or "(untitled)"
     if show:
         title += f" ({show})"
     embed.title = title
@@ -338,12 +319,13 @@ class PodCodexBot(discord.Client):
         guild_id: int | None,
         model: str = "",
         top_k: int = 0,
+        chunker: str = "",
     ) -> ServerSettings:
         """Merge per-query overrides with server defaults."""
         base = self._server_settings(guild_id)
         return ServerSettings(
             model=model or base.model,
-            chunker=base.chunker,
+            chunker=chunker or base.chunker,
             top_k=top_k or base.top_k,
             allowed_shows=base.allowed_shows,
             default_source=base.default_source,
@@ -372,6 +354,56 @@ class PodCodexBot(discord.Client):
         ):
             return ResolvedShows(ShowAccess.LOCKED)
         return ResolvedShows(ShowAccess.SPECIFIC, (explicit_show,))
+
+    def _empty_collections_message(
+        self,
+        col_info: dict[str, dict],
+        settings: ServerSettings,
+        shows: "ResolvedShows | None" = None,
+    ) -> str:
+        """Explain to the user why no collections matched.
+
+        Distinguishes: empty index, wrong model, locked/no-unlock, missing show.
+        """
+        if not col_info:
+            return (
+                "Nothing has been indexed yet. "
+                "Add a show in the desktop app and run the **Index** step."
+            )
+
+        model_label = (
+            MODELS[settings.model].label if settings.model in MODELS else settings.model
+        )
+        same_model = {
+            info["model"]
+            for info in col_info.values()
+            if info["chunker"] == settings.chunker
+        }
+
+        if settings.model not in same_model:
+            others = sorted(m for m in same_model if m)
+            hint = (
+                f"Available models: {', '.join(others)}. "
+                f"Switch with `/setup model:{others[0]}` or pass `model:` to this command."
+                if others
+                else "No other models available either — index something first."
+            )
+            return (
+                f"No shows are indexed with the **{model_label}** embedding model. "
+                f"{hint}"
+            )
+
+        if shows and shows.is_locked:
+            return (
+                "No shows are unlocked for this Discord server. "
+                "An admin can unlock one with `/unlock password:****`."
+            )
+
+        if shows and shows.is_specific:
+            missing = ", ".join(f"**{s}**" for s in shows.shows)
+            return f"{missing} is not indexed with the **{model_label}** model on this server."
+
+        return "No shows are available to search here."
 
     def _filter_collections(
         self,
@@ -588,7 +620,7 @@ class PodCodexBot(discord.Client):
             stems = await self._cached_episodes(col)
             titles = await self._cached_episode_titles(col)
             for stem in stems:
-                all_episodes[stem] = titles.get(stem) or _humanize_stem(stem)
+                all_episodes[stem] = titles.get(stem) or humanize_stem(stem)
 
         return [
             app_commands.Choice(name=display, value=stem)
@@ -618,6 +650,44 @@ class PodCodexBot(discord.Client):
             app_commands.Choice(name=s, value=s)
             for s in sorted(all_sources)
             if current.lower() in s.lower()
+        ][:25]
+
+    async def _model_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Only offer embedding models that are actually present in the index."""
+        self._cache_clear_if_stale()
+        col_info = await self._cached_col_info()
+        present = sorted(
+            {info["model"] for info in col_info.values() if info["model"] in MODELS}
+        )
+        return [
+            app_commands.Choice(name=MODELS[m].description, value=m)
+            for m in present
+            if current.lower() in m.lower()
+        ][:25]
+
+    async def _chunker_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Only offer chunkers actually present in the index."""
+        self._cache_clear_if_stale()
+        col_info = await self._cached_col_info()
+        present = sorted(
+            {
+                info["chunker"]
+                for info in col_info.values()
+                if info["chunker"] in CHUNKING_STRATEGIES
+            }
+        )
+        return [
+            app_commands.Choice(name=CHUNKING_STRATEGIES[c], value=c)
+            for c in present
+            if current.lower() in c.lower()
         ][:25]
 
     async def _cached_speakers(self, collection: str) -> list[str]:
@@ -680,7 +750,7 @@ class PodCodexBot(discord.Client):
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
-        """Autocomplete from shows defined in shows.toml (for /unlock)."""
+        """Autocomplete from password-protected shows in the index (for /unlock)."""
         available = [entry.name for entry in self._shows.values()]
         return [
             app_commands.Choice(name=s, value=s)
@@ -695,40 +765,86 @@ class PodCodexBot(discord.Client):
         # /search ─────────────────────────────
         @self.tree.command(
             name="search",
-            description="Search podcast transcripts (keyword ↔ semantic blend)",
+            description="Search podcast transcripts (uses server defaults)",
         )
         @app_commands.describe(
             question="What are you looking for?",
             show="Pick a show (searches all if empty)",
             episode="Pick an episode",
             speaker="Filter by speaker name",
-            alpha="0 = keywords only → 1 = meaning only (default 0.5)",
-            model="Search model (leave empty for server default)",
-            top_k="How many results to show (leave empty for server default)",
-            source="Where to search: corrected, transcript, etc.",
-            compact="Show results in a single compact embed",
+            source="Transcript version: corrected, transcript, or a language code",
         )
-        @app_commands.choices(model=_MODEL_CHOICES, compact=_BOOL_CHOICES)
         async def search(
             interaction: discord.Interaction,
             question: str,
             show: str = "",
             episode: str = "",
             speaker: str = "",
+            source: str = "",
+        ) -> None:
+            if not await self._check_cooldown(interaction):
+                return
+            settings = self._effective_settings(interaction.guild_id)
+            effective_source = source or settings.default_source or None
+            shows = self._resolve_shows(settings, show)
+            label = f"α={ALPHA:.2f} • {MODELS[settings.model].label}"
+            await self._run_search(
+                interaction,
+                question,
+                shows,
+                settings,
+                ALPHA,
+                label,
+                source=effective_source,
+                episode=episode or None,
+                speaker=speaker or None,
+                compact=settings.compact,
+            )
+
+        search.autocomplete("show")(self._show_autocomplete)
+        search.autocomplete("episode")(self._episode_autocomplete)
+        search.autocomplete("source")(self._source_autocomplete)
+        search.autocomplete("speaker")(self._speaker_autocomplete)
+
+        # /search-advanced ────────────────────
+        @self.tree.command(
+            name="search-advanced",
+            description="Search with full control over retrieval tuning",
+        )
+        @app_commands.describe(
+            question="What are you looking for?",
+            show="Pick a show (searches all if empty)",
+            episode="Pick an episode",
+            speaker="Filter by speaker name",
+            source="Transcript version: corrected, transcript, or a language code",
+            alpha="0 = keywords only → 1 = meaning only (default 0.5)",
+            model="Embedding model (leave empty for server default)",
+            chunker="Chunking strategy (leave empty for server default)",
+            top_k="How many results to show (leave empty for server default)",
+            compact="Show results in a single compact embed",
+        )
+        @app_commands.choices(compact=_BOOL_CHOICES)
+        async def search_advanced(
+            interaction: discord.Interaction,
+            question: str,
+            show: str = "",
+            episode: str = "",
+            speaker: str = "",
+            source: str = "",
             alpha: app_commands.Range[float, 0.0, 1.0] = ALPHA,
             model: str = "",
+            chunker: str = "",
             top_k: app_commands.Range[int, 1, 25] = 0,
-            source: str = "",
             compact: str = "",
         ) -> None:
             if not await self._check_cooldown(interaction):
                 return
-            settings = self._effective_settings(interaction.guild_id, model, top_k)
+            settings = self._effective_settings(
+                interaction.guild_id, model, top_k, chunker
+            )
             effective_source = source or settings.default_source or None
             use_compact = compact == "true" if compact else settings.compact
-
             shows = self._resolve_shows(settings, show)
-
             label = f"α={alpha:.2f} • {MODELS[settings.model].label}"
             await self._run_search(
                 interaction,
@@ -743,24 +859,24 @@ class PodCodexBot(discord.Client):
                 compact=use_compact,
             )
 
-        search.autocomplete("show")(self._show_autocomplete)
-        search.autocomplete("episode")(self._episode_autocomplete)
-        search.autocomplete("source")(self._source_autocomplete)
-        search.autocomplete("speaker")(self._speaker_autocomplete)
+        search_advanced.autocomplete("show")(self._show_autocomplete)
+        search_advanced.autocomplete("episode")(self._episode_autocomplete)
+        search_advanced.autocomplete("source")(self._source_autocomplete)
+        search_advanced.autocomplete("speaker")(self._speaker_autocomplete)
+        search_advanced.autocomplete("model")(self._model_autocomplete)
+        search_advanced.autocomplete("chunker")(self._chunker_autocomplete)
 
         # /ask ────────────────────────────────
         @self.tree.command(
             name="ask",
-            description="Ask a question — retrieves relevant passages and synthesizes an answer",
+            description="Ask a question — synthesized answer from transcript passages",
         )
         @app_commands.describe(
             question="What do you want to know?",
             show="Pick a show (searches all if empty)",
             episode="Pick an episode",
             speaker="Filter by speaker name",
-            alpha="0 = keywords only → 1 = meaning only (default 0.5)",
-            top_k="How many passages to retrieve (leave empty for server default)",
-            source="Where to search: corrected, transcript, etc.",
+            source="Transcript version: corrected, transcript, or a language code",
         )
         async def ask(
             interaction: discord.Interaction,
@@ -768,9 +884,51 @@ class PodCodexBot(discord.Client):
             show: str = "",
             episode: str = "",
             speaker: str = "",
-            alpha: app_commands.Range[float, 0.0, 1.0] = ALPHA,
-            top_k: app_commands.Range[int, 1, 25] = 0,
             source: str = "",
+        ) -> None:
+            if not await self._check_ask_cooldown(interaction):
+                return
+            await self._handle_ask(
+                interaction,
+                question,
+                show=show or None,
+                episode=episode or None,
+                speaker=speaker or None,
+                source=source or None,
+            )
+
+        ask.autocomplete("show")(self._show_autocomplete)
+        ask.autocomplete("episode")(self._episode_autocomplete)
+        ask.autocomplete("source")(self._source_autocomplete)
+        ask.autocomplete("speaker")(self._speaker_autocomplete)
+
+        # /ask-advanced ───────────────────────
+        @self.tree.command(
+            name="ask-advanced",
+            description="Ask with full control over retrieval tuning",
+        )
+        @app_commands.describe(
+            question="What do you want to know?",
+            show="Pick a show (searches all if empty)",
+            episode="Pick an episode",
+            speaker="Filter by speaker name",
+            source="Transcript version: corrected, transcript, or a language code",
+            alpha="0 = keywords only → 1 = meaning only (default 0.5)",
+            model="Embedding model (leave empty for server default)",
+            chunker="Chunking strategy (leave empty for server default)",
+            top_k="How many passages to retrieve (leave empty for server default)",
+        )
+        async def ask_advanced(
+            interaction: discord.Interaction,
+            question: str,
+            show: str = "",
+            episode: str = "",
+            speaker: str = "",
+            source: str = "",
+            alpha: app_commands.Range[float, 0.0, 1.0] = ALPHA,
+            model: str = "",
+            chunker: str = "",
+            top_k: app_commands.Range[int, 1, 25] = 0,
         ) -> None:
             if not await self._check_ask_cooldown(interaction):
                 return
@@ -783,12 +941,16 @@ class PodCodexBot(discord.Client):
                 alpha=alpha,
                 top_k=top_k,
                 source=source or None,
+                model=model,
+                chunker=chunker,
             )
 
-        ask.autocomplete("show")(self._show_autocomplete)
-        ask.autocomplete("episode")(self._episode_autocomplete)
-        ask.autocomplete("source")(self._source_autocomplete)
-        ask.autocomplete("speaker")(self._speaker_autocomplete)
+        ask_advanced.autocomplete("show")(self._show_autocomplete)
+        ask_advanced.autocomplete("episode")(self._episode_autocomplete)
+        ask_advanced.autocomplete("source")(self._source_autocomplete)
+        ask_advanced.autocomplete("speaker")(self._speaker_autocomplete)
+        ask_advanced.autocomplete("model")(self._model_autocomplete)
+        ask_advanced.autocomplete("chunker")(self._chunker_autocomplete)
 
         # /exact ──────────────────────────────
         @self.tree.command(
@@ -800,43 +962,29 @@ class PodCodexBot(discord.Client):
             show="Pick a show (searches all if empty)",
             episode="Pick an episode",
             speaker="Filter by speaker name",
-            top_k="How many results to show (default 25)",
-            source="Where to search: corrected, transcript, etc.",
-            compact="Show results in a single compact embed",
         )
-        @app_commands.choices(compact=_BOOL_CHOICES)
         async def exact(
             interaction: discord.Interaction,
             query: str,
             show: str = "",
             episode: str = "",
             speaker: str = "",
-            top_k: app_commands.Range[int, 1, 50] = 25,
-            source: str = "",
-            compact: str = "",
         ) -> None:
             if not await self._check_cooldown(interaction):
                 return
             settings = self._server_settings(interaction.guild_id)
-            effective_source = source or settings.default_source or None
-            use_compact = compact == "true" if compact else settings.compact
-
             shows = self._resolve_shows(settings, show)
 
             await self._run_exact(
                 interaction,
                 query,
                 shows,
-                top_k,
-                source=effective_source,
                 episode=episode or None,
                 speaker=speaker or None,
-                compact=use_compact,
             )
 
         exact.autocomplete("show")(self._show_autocomplete)
         exact.autocomplete("episode")(self._episode_autocomplete)
-        exact.autocomplete("source")(self._source_autocomplete)
         exact.autocomplete("speaker")(self._speaker_autocomplete)
 
         # /random ─────────────────────────────
@@ -848,33 +996,27 @@ class PodCodexBot(discord.Client):
             show="Pick a show (random from all if empty)",
             episode="Pick an episode",
             speaker="Filter by speaker name",
-            source="Where to search: corrected, transcript, etc.",
         )
         async def random_cmd(
             interaction: discord.Interaction,
             show: str = "",
             episode: str = "",
             speaker: str = "",
-            source: str = "",
         ) -> None:
             if not await self._check_cooldown(interaction):
                 return
             settings = self._server_settings(interaction.guild_id)
-            effective_source = source or settings.default_source or None
-
             shows = self._resolve_shows(settings, show)
 
             await self._run_random(
                 interaction,
                 shows,
-                source=effective_source,
                 episode=episode or None,
                 speaker=speaker or None,
             )
 
         random_cmd.autocomplete("show")(self._show_autocomplete)
         random_cmd.autocomplete("episode")(self._episode_autocomplete)
-        random_cmd.autocomplete("source")(self._source_autocomplete)
         random_cmd.autocomplete("speaker")(self._speaker_autocomplete)
 
         # /stats ──────────────────────────────
@@ -886,7 +1028,6 @@ class PodCodexBot(discord.Client):
             show="Pick a show (shows all if empty)",
             model="Search model (leave empty for server default)",
         )
-        @app_commands.choices(model=_MODEL_CHOICES)
         async def stats(
             interaction: discord.Interaction,
             show: str = "",
@@ -895,6 +1036,7 @@ class PodCodexBot(discord.Client):
             await self._handle_stats(interaction, show or None, model or None)
 
         stats.autocomplete("show")(self._show_autocomplete)
+        stats.autocomplete("model")(self._model_autocomplete)
 
         # /episodes ───────────────────────────
         @self.tree.command(
@@ -905,7 +1047,6 @@ class PodCodexBot(discord.Client):
             show="Pick a show (auto-selected if only one)",
             model="Search model (leave empty for server default)",
         )
-        @app_commands.choices(model=_MODEL_CHOICES)
         async def episodes(
             interaction: discord.Interaction,
             show: str = "",
@@ -914,6 +1055,7 @@ class PodCodexBot(discord.Client):
             await self._handle_episodes(interaction, show or None, model or None)
 
         episodes.autocomplete("show")(self._show_autocomplete)
+        episodes.autocomplete("model")(self._model_autocomplete)
 
         # /setup ──────────────────────────────
         @self.tree.command(
@@ -936,8 +1078,6 @@ class PodCodexBot(discord.Client):
             ask_cooldown="Per-user cooldown for /ask in seconds (default 30)",
         )
         @app_commands.choices(
-            model=_MODEL_CHOICES,
-            chunker=_CHUNKER_CHOICES,
             show_clear=_BOOL_CHOICES,
             compact=_BOOL_CHOICES,
         )
@@ -975,6 +1115,8 @@ class PodCodexBot(discord.Client):
         setup.autocomplete("show_add")(self._show_autocomplete)
         setup.autocomplete("show_remove")(self._pinned_show_autocomplete)
         setup.autocomplete("default_source")(self._source_autocomplete)
+        setup.autocomplete("model")(self._model_autocomplete)
+        setup.autocomplete("chunker")(self._chunker_autocomplete)
 
         # /sync ───────────────────────────────
         @self.tree.command(
@@ -985,7 +1127,11 @@ class PodCodexBot(discord.Client):
         async def sync(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True)
             await self.tree.sync()
-            await interaction.followup.send("✅ Command tree synced.", ephemeral=True)
+            await interaction.followup.send(
+                "✅ Command tree synced. New or renamed commands may take up to "
+                "an hour to appear in this server (Discord cache).",
+                ephemeral=True,
+            )
 
         # /unlock ─────────────────────────────
         @self.tree.command(
@@ -1148,13 +1294,20 @@ class PodCodexBot(discord.Client):
         except Exception:
             logger.exception(f"Search error: {question!r}")
             await interaction.followup.send(
-                "❌ Something went wrong. Please try again later.",
+                "❌ Search failed — please try again in a moment.",
                 ephemeral=True,
             )
             return
 
         if not results:
-            await interaction.followup.send("No results found.", ephemeral=True)
+            suffix = format_filter_suffix(
+                episode=episode, speaker=speaker, source=source
+            )
+            await interaction.followup.send(
+                f'No results for **"{question}"**{suffix}.\n'
+                "Try simpler wording, drop filters, or use `/exact` for literal matches.",
+                ephemeral=True,
+            )
             return
 
         if compact:
@@ -1232,9 +1385,11 @@ class PodCodexBot(discord.Client):
         alpha: float = ALPHA,
         top_k: int = 0,
         source: str | None = None,
+        model: str = "",
+        chunker: str = "",
     ) -> None:
         await interaction.response.defer()
-        settings = self._effective_settings(interaction.guild_id, "", top_k)
+        settings = self._effective_settings(interaction.guild_id, model, top_k, chunker)
         effective_source = source or settings.default_source or None
 
         # Validate LLM configured
@@ -1291,12 +1446,23 @@ class PodCodexBot(discord.Client):
             )
         except ValueError as exc:
             logger.warning(f"ask: config error — {exc}")
-            await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+            provider = settings.ask_provider or "unset"
+            env_var = (
+                LLM_PROVIDERS.get(settings.ask_provider, {}).get("env_var", "")
+                or "the provider's API key env var"
+            )
+            await interaction.followup.send(
+                "❌ `/ask` is not fully configured on this server.\n"
+                f"Provider `{provider}` is missing its API key. "
+                f"An admin needs to set `{env_var}` on the bot host.",
+                ephemeral=True,
+            )
             return
         except Exception:
             logger.exception(f"ask: synthesis error for {question!r}")
             await interaction.followup.send(
-                "❌ Answer synthesis failed. Please try again later.", ephemeral=True
+                "❌ The LLM provider failed to answer. Try again in a moment.",
+                ephemeral=True,
             )
             return
 
@@ -1326,29 +1492,26 @@ class PodCodexBot(discord.Client):
         interaction: discord.Interaction,
         query: str,
         shows: ResolvedShows,
-        top_k: int,
         *,
         source: str | None = None,
         episode: str | None = None,
         speaker: str | None = None,
-        compact: bool = False,
     ) -> None:
         await interaction.response.defer()
         settings = self._server_settings(interaction.guild_id)
         loop = asyncio.get_running_loop()
 
         try:
+            col_info = await self._cached_col_info()
             if shows.is_specific:
                 collections = [
                     collection_name(s, settings.model, settings.chunker)
                     for s in shows.shows
+                    if collection_name(s, settings.model, settings.chunker) in col_info
                 ]
             elif shows.is_locked:
                 collections = []
             else:
-                col_info = await loop.run_in_executor(
-                    None, self.local.get_all_collection_info
-                )
                 collections = [
                     name
                     for name, info in col_info.items()
@@ -1358,7 +1521,8 @@ class PodCodexBot(discord.Client):
                 collections = self._filter_collections(collections, settings, col_info)
             if not collections:
                 await interaction.followup.send(
-                    "No indexed shows found.", ephemeral=True
+                    self._empty_collections_message(col_info, settings, shows),
+                    ephemeral=True,
                 )
                 return
 
@@ -1401,7 +1565,7 @@ class PodCodexBot(discord.Client):
             [r for r in all_results if r[0].get("fuzzy_match")],
             key=lambda x: -x[0].get("score", 0.6),
         )
-        all_results = (phrase + fuzzy)[:top_k]
+        all_results = phrase + fuzzy
 
         n_exact = sum(
             1
@@ -1423,16 +1587,12 @@ class PodCodexBot(discord.Client):
             f"in {len(all_results)} chunk{'s' if len(all_results) != 1 else ''}"
         )
         label = " · ".join(label_parts)
-        if compact:
-            embed = build_compact_embed(all_results, label, query=query)
-            await interaction.followup.send(embed=embed)
-        else:
-            pages = [
-                _result_embed(chunk, rank, len(all_results), col, label, query=query)
-                for rank, (chunk, col) in enumerate(all_results, 1)
-            ]
-            view = PaginatedResultView(pages)
-            await interaction.followup.send(embed=view.current_embed, view=view)
+        pages = [
+            _result_embed(chunk, rank, len(all_results), col, label, query=query)
+            for rank, (chunk, col) in enumerate(all_results, 1)
+        ]
+        view = PaginatedResultView(pages)
+        await interaction.followup.send(embed=view.current_embed, view=view)
 
     # ── /random handler ───────────────────────
 
@@ -1450,17 +1610,16 @@ class PodCodexBot(discord.Client):
         loop = asyncio.get_running_loop()
 
         try:
+            col_info = await self._cached_col_info()
             if shows.is_specific:
                 collections = [
                     collection_name(s, settings.model, settings.chunker)
                     for s in shows.shows
+                    if collection_name(s, settings.model, settings.chunker) in col_info
                 ]
             elif shows.is_locked:
                 collections = []
             else:
-                col_info = await loop.run_in_executor(
-                    None, self.local.get_all_collection_info
-                )
                 collections = [
                     name
                     for name, info in col_info.items()
@@ -1470,7 +1629,8 @@ class PodCodexBot(discord.Client):
                 collections = self._filter_collections(collections, settings, col_info)
             if not collections:
                 await interaction.followup.send(
-                    "No indexed shows found.", ephemeral=True
+                    self._empty_collections_message(col_info, settings, shows),
+                    ephemeral=True,
                 )
                 return
 
@@ -1490,12 +1650,18 @@ class PodCodexBot(discord.Client):
             return
 
         if chunk is None:
-            await interaction.followup.send("No segments found.", ephemeral=True)
+            suffix = format_filter_suffix(
+                episode=episode, speaker=speaker, source=source
+            )
+            await interaction.followup.send(
+                f"No segments found{suffix}. Try without filters.",
+                ephemeral=True,
+            )
             return
 
         show = chunk.get("show", "")
         ep = chunk.get("episode", "")
-        ep_display = chunk.get("episode_title") or ep
+        ep_display = episode_display(chunk)
         spk = chunk.get("speaker") or chunk.get("dominant_speaker") or "Unknown"
         start = chunk.get("start", 0.0)
         end = chunk.get("end", 0.0)
@@ -1757,9 +1923,7 @@ class PodCodexBot(discord.Client):
         loop = asyncio.get_running_loop()
 
         try:
-            col_info = await loop.run_in_executor(
-                None, self.local.get_all_collection_info
-            )
+            col_info = await self._cached_col_info()
             collections = [
                 name
                 for name, info in col_info.items()
@@ -1769,8 +1933,10 @@ class PodCodexBot(discord.Client):
             ]
             collections = self._filter_collections(collections, settings, col_info)
             if not collections:
+                stats_shows = self._resolve_shows(settings, show) if show else None
                 await interaction.followup.send(
-                    "No indexed shows found.", ephemeral=True
+                    self._empty_collections_message(col_info, settings, stats_shows),
+                    ephemeral=True,
                 )
                 return
 
@@ -1828,17 +1994,21 @@ class PodCodexBot(discord.Client):
         # Auto-resolve show: explicit > unlocked > single accessible show > ask
         show_auto_resolved = not show
         # Check access control for explicit show
-        if show and self._resolve_shows(settings, show).is_locked:
-            await interaction.followup.send("No indexed shows found.", ephemeral=True)
-            return
+        if show:
+            resolved = self._resolve_shows(settings, show)
+            if resolved.is_locked:
+                col_info = await self._cached_col_info()
+                await interaction.followup.send(
+                    self._empty_collections_message(col_info, settings, resolved),
+                    ephemeral=True,
+                )
+                return
 
         if not show:
             if settings.allowed_shows:
                 show = settings.allowed_shows[0]
             else:
-                col_info = await loop.run_in_executor(
-                    None, self.local.get_all_collection_info
-                )
+                col_info = await self._cached_col_info()
                 collections = [
                     name
                     for name, info in col_info.items()
@@ -1853,7 +2023,8 @@ class PodCodexBot(discord.Client):
                     show = shows[0]
                 elif not shows:
                     await interaction.followup.send(
-                        "No indexed shows found.", ephemeral=True
+                        self._empty_collections_message(col_info, settings),
+                        ephemeral=True,
                     )
                     return
                 else:
@@ -1897,7 +2068,7 @@ class PodCodexBot(discord.Client):
             embed = discord.Embed(title=f"🎙 {show}", color=discord.Color.blurple())
             for ep in page:
                 speakers = ", ".join(ep.get("speakers", [])) or "—"
-                ep_display = ep.get("episode_title") or _humanize_stem(ep["episode"])
+                ep_display = episode_display(ep)
                 embed.add_field(
                     name=ep_display,
                     value=f"{speakers} · `{fmt_time(ep['duration'])}`",
@@ -1990,9 +2161,9 @@ def main() -> None:
     logger.remove()
     logger.add(sys.stderr, level="DEBUG")
 
-    from dotenv import load_dotenv
+    from dotenv import find_dotenv, load_dotenv
 
-    load_dotenv()
+    load_dotenv(find_dotenv(usecwd=True))
 
     parser = argparse.ArgumentParser(prog="podcodex-bot")
     parser.add_argument("--model", default=DEFAULT_MODEL, choices=list(MODELS.keys()))

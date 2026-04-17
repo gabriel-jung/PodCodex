@@ -4,10 +4,12 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     env_file:
-      - .env.production
+      - .env
     volumes:
-      - ./data:/app/data          # index lives at /app/data/index (set via PODCODEX_INDEX)
-      - ./shows.toml:/app/shows.toml:ro   # optional: remove to disable access control
+      # Index directory — same path as the desktop app and the uv install use
+      # by default, so a single location works for everyone. Override by
+      # setting PODCODEX_INDEX_HOST in .env if your index lives elsewhere.
+      - ${PODCODEX_INDEX_HOST:-~/.local/share/podcodex/index}:/root/.local/share/podcodex/index
       - model_cache:/root/.cache  # BGE-M3 model cache — persisted across rebuilds
     deploy:
       resources:

@@ -6,7 +6,7 @@ import os
 
 from loguru import logger
 
-from podcodex.bot.formatting import fmt_time
+from podcodex.bot.formatting import episode_display, fmt_time
 from podcodex.core.constants import LLM_PROVIDERS
 
 # ──────────────────────────────────────────────
@@ -31,7 +31,7 @@ def _format_chunks(chunks: list[dict]) -> str:
     for i, chunk in enumerate(chunks, 1):
         speaker = chunk.get("speaker") or chunk.get("dominant_speaker") or "Unknown"
         start = chunk.get("start", 0.0)
-        episode = chunk.get("episode_title") or chunk.get("episode", "")
+        episode = episode_display(chunk)
         show = chunk.get("show", "")
         text = chunk.get("text", "")
 

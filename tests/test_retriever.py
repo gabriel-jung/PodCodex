@@ -61,10 +61,10 @@ def _make_retriever(
     mock_emb = MagicMock()
     mock_emb.encode_query.return_value = np.random.rand(DIM).astype(np.float32)
 
-    with patch("podcodex.rag.embedder.get_embedder", return_value=mock_emb):
-        from podcodex.rag.retriever import Retriever
+    from podcodex.rag.retriever import Retriever
 
-        retriever = Retriever(model="bge-m3", local=local)
+    retriever = Retriever(model="bge-m3", local=local)
+    retriever._embedder = mock_emb  # bypass lazy load of real BGE-M3
 
     return retriever, mock_emb, col
 
@@ -87,7 +87,8 @@ def test_retriever_uses_get_embedder(tmp_path):
     with patch("podcodex.rag.embedder.get_embedder", mock_factory):
         from podcodex.rag.retriever import Retriever
 
-        Retriever(model="e5-small", local=local)
+        retriever = Retriever(model="e5-small", local=local)
+        _ = retriever.embedder  # trigger lazy load
 
     mock_factory.assert_called_once_with("e5-small", device="cpu")
 

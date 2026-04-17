@@ -142,7 +142,7 @@ def test_result_embed_show_in_title_query_as_author():
         question="film music",
     )
     assert embed.author.name == '🔎 "film music"'
-    assert "ep01" in embed.title
+    assert "Ep01" in embed.title
     assert "My Podcast" in embed.title
 
 
@@ -224,7 +224,7 @@ def test_format_context_header_shows_show_and_episode():
         _NEIGHBORS, start=10.0, n=2, show="My Podcast", episode="ep01"
     )
     assert "My Podcast" in content
-    assert "ep01" in content
+    assert "Ep01" in content
 
 
 def test_result_embed_returns_expand_view():
@@ -456,7 +456,7 @@ def test_compact_embed_returns_single_embed():
 def test_compact_embed_field_names_have_rank_and_episode():
     embed = build_compact_embed(_COMPACT_RESULTS, "test")
     assert "#1" in embed.fields[0].name
-    assert "ep01" in embed.fields[0].name
+    assert "Ep01" in embed.fields[0].name
     assert "Podcast A" in embed.fields[0].name
 
 
@@ -532,7 +532,7 @@ def test_effective_settings_carries_new_fields(tmp_path):
 def test_autocomplete_cache_starts_stale():
     from podcodex.bot.bot import _AutocompleteCache
 
-    cache = _AutocompleteCache(episodes={}, sources={}, speakers={})
+    cache = _AutocompleteCache(episodes={}, episode_titles={}, sources={}, speakers={})
     assert cache.is_stale() is True
 
 
@@ -541,7 +541,11 @@ def test_autocomplete_cache_fresh_after_timestamp_set():
     from podcodex.bot.bot import _AutocompleteCache
 
     cache = _AutocompleteCache(
-        episodes={}, sources={}, speakers={}, timestamp=time.monotonic()
+        episodes={},
+        episode_titles={},
+        sources={},
+        speakers={},
+        timestamp=time.monotonic(),
     )
     assert cache.is_stale() is False
 
@@ -552,6 +556,7 @@ def test_autocomplete_cache_stale_after_ttl():
 
     cache = _AutocompleteCache(
         episodes={},
+        episode_titles={},
         sources={},
         speakers={},
         timestamp=time.monotonic() - 301,

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from loguru import logger
 
+from podcodex.ingest.rss import clean_description
 from podcodex.rag.defaults import CHUNKER_MODEL
 
 
@@ -27,8 +28,9 @@ _SEP = " "
 def _meta_fields(transcript: dict) -> tuple[str, str, str, dict]:
     """Extract (show, episode, source, extras) from transcript metadata.
 
-    ``extras`` contains optional display fields (episode_title, pub_date,
-    episode_number) when available — only non-empty values are included.
+    ``extras`` carries optional display fields (episode_title, pub_date,
+    episode_number, description). RSS description is HTML-stripped and
+    truncated so bot commands can surface it without an extra lookup.
     """
     meta = transcript.get("meta", {})
     episode = meta.get("episode", "")
@@ -40,6 +42,11 @@ def _meta_fields(transcript: dict) -> tuple[str, str, str, dict]:
         extras["pub_date"] = meta["rss_pub_date"]
     if meta.get("episode_number") is not None:
         extras["episode_number"] = meta["episode_number"]
+    rss_description = meta.get("rss_description", "")
+    if rss_description:
+        cleaned = clean_description(rss_description)
+        if cleaned:
+            extras["description"] = cleaned
     if not meta.get("timed", True):
         extras["timed"] = False
     return meta.get("show", ""), episode, meta.get("source", ""), extras

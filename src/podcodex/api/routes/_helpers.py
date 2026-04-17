@@ -389,6 +389,8 @@ def build_index_transcript(
             transcript["meta"].setdefault("rss_pub_date", ep_meta.pub_date)
         if ep_meta.episode_number is not None:
             transcript["meta"].setdefault("episode_number", ep_meta.episode_number)
+        if ep_meta.description:
+            transcript["meta"].setdefault("rss_description", ep_meta.description)
 
     return transcript
 

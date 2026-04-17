@@ -2,11 +2,43 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from podcodex.rag.index_store import fold_text
+
+_STEM_PREFIX_RE = re.compile(r"^\d+_(?:episode_\d+_)?", re.IGNORECASE)
+
+
+def humanize_stem(stem: str) -> str:
+    """Convert an episode file stem into a readable fallback title."""
+    s = _STEM_PREFIX_RE.sub("", stem).replace("_", " ").strip()
+    return (s[:1].upper() + s[1:]) if s else stem
+
+
+def episode_display(chunk: dict) -> str:
+    """RSS title if present, else humanized stem."""
+    return chunk.get("episode_title") or humanize_stem(chunk.get("episode", ""))
+
+
+def format_filter_suffix(
+    *,
+    episode: str | None = None,
+    speaker: str | None = None,
+    source: str | None = None,
+) -> str:
+    """Return ``" (filters: episode=`X`, speaker=`Y`)"`` or ``""`` when empty."""
+    parts: list[str] = []
+    if episode:
+        parts.append(f"episode=`{episode}`")
+    if speaker:
+        parts.append(f"speaker=`{speaker}`")
+    if source:
+        parts.append(f"source=`{source}`")
+    return f" (filters: {', '.join(parts)})" if parts else ""
+
 
 if TYPE_CHECKING:
     import discord
@@ -164,7 +196,9 @@ def format_context(
     current = neighbors[pos]
     after = neighbors[pos + 1 : hi]
 
-    ep_display = (neighbors[0].get("episode_title") if neighbors else None) or episode
+    ep_display = (
+        neighbors[0].get("episode_title") if neighbors else ""
+    ) or humanize_stem(episode)
     header = f"**{show} — {ep_display}**" if (show or ep_display) else "*Context*"
     lines = [header + f" · ±{n} turns\n"]
 
@@ -286,7 +320,7 @@ def build_compact_embed(
     )
     for i, (chunk, _col) in enumerate(results[:25], 1):
         show = chunk.get("show", "")
-        episode = chunk.get("episode_title") or chunk.get("episode", "")
+        episode = episode_display(chunk)
         score = chunk.get("score", 0.0)
         start = chunk.get("start", 0.0)
         text = chunk.get("text", "")

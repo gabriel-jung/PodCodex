@@ -109,7 +109,7 @@ Create `.env` at the repo root, set only what you need:
 HF_TOKEN=your_huggingface_token   # speaker diarization (pyannote)
 API_KEY=your_api_key              # any OpenAI-compatible provider
 DISCORD_TOKEN=your_bot_token      # Discord bot
-PODCODEX_DB=/path/to/vectors.db   # optional override of SQLite location
+PODCODEX_INDEX=/path/to/index     # optional override of LanceDB location
 ```
 
 `HF_TOKEN` requires accepting the terms for [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) and [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0).
@@ -134,10 +134,10 @@ Run locally:
 
 ```bash
 uv sync --extra bot --extra rag
-DISCORD_TOKEN=... podcodex-bot --model bge-m3 --chunking semantic --top-k 5
+DISCORD_TOKEN=... uv run podcodex-bot
 ```
 
-Deploy to a VPS: the [`deploy/`](deploy/) directory ships a Docker Compose setup (bot-only image, ~3 GB, auto-restarts). See [`deploy/MULTI_SHOW.md`](deploy/MULTI_SHOW.md) for multi-show config.
+Full install guide (uv and Docker paths, token setup, access control, VPS deploy): see [`deploy/BOT.md`](deploy/BOT.md).
 
 ---
 

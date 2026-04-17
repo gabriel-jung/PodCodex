@@ -141,7 +141,7 @@ def _chunk_key(chunk: dict) -> str:
     return f"{chunk.get('episode', '')}|{chunk.get('start', 0)}"
 
 
-_MIN_APPROX_LEN = 6  # tokens shorter than this must match exactly in multi-word fuzzy
+_MIN_APPROX_LEN = 5  # tokens shorter than this must match exactly in multi-word fuzzy
 
 
 def _phrase_fuzzy(
@@ -215,12 +215,39 @@ def _phrase_fuzzy(
     return best
 
 
-DEFAULT_INDEX_PATH: Path = Path(
-    os.environ.get(
-        "PODCODEX_INDEX",
-        str(Path.home() / ".local" / "share" / "podcodex" / "index"),
-    )
-)
+_HOME_INDEX_PATH: Path = Path.home() / ".local" / "share" / "podcodex" / "index"
+_REPO_FALLBACKS: tuple[Path, ...] = (Path("deploy") / "index", Path("index"))
+
+
+def _dir_has_data(path: Path) -> bool:
+    try:
+        return path.is_dir() and any(path.iterdir())
+    except OSError as exc:
+        logger.warning(f"Cannot read {path}: {exc}")
+        return False
+
+
+def _resolve_default_index_path() -> tuple[Path, str]:
+    """Pick the default index path when no explicit one is passed.
+
+    Resolution order:
+      1. ``PODCODEX_INDEX`` env var (explicit override)
+      2. ``~/.local/share/podcodex/index`` if populated (desktop app default)
+      3. ``./deploy/index`` or ``./index`` (repo-local fallback, if populated)
+      4. ``~/.local/share/podcodex/index`` (created empty)
+
+    Returns ``(path, reason)`` for logging.
+    """
+    override = os.environ.get("PODCODEX_INDEX", "").strip()
+    if override:
+        return Path(override), "PODCODEX_INDEX env"
+    if _dir_has_data(_HOME_INDEX_PATH):
+        return _HOME_INDEX_PATH, "home default"
+    for candidate in _REPO_FALLBACKS:
+        resolved = candidate.resolve()
+        if _dir_has_data(resolved):
+            return resolved, f"repo-local fallback ({candidate})"
+    return _HOME_INDEX_PATH, "home default (new, empty)"
 
 
 def _chunk_schema(dim: int) -> pa.Schema:
@@ -279,21 +306,23 @@ class IndexStore:
     """LanceDB-backed store for chunk text, metadata, and embeddings.
 
     Args:
-        path: Directory holding the LanceDB database. Defaults to
-            ``DEFAULT_INDEX_PATH`` (``PODCODEX_INDEX`` env or
-            ``~/.local/share/podcodex/index``).
+        path: Directory holding the LanceDB database. When ``None``, resolved
+            via :func:`_resolve_default_index_path`.
     """
 
     def __init__(self, path: Path | str | None = None):
         import lancedb
 
         if path is None:
-            path = DEFAULT_INDEX_PATH
-        self._path = Path(path)
+            resolved, reason = _resolve_default_index_path()
+            self._path = resolved
+            logger.info(f"IndexStore opened: {self._path} ({reason})")
+        else:
+            self._path = Path(path)
+            logger.info(f"IndexStore opened: {self._path} (explicit path)")
         self._path.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self._path))
         self._fts_ready: set[str] = set()
-        logger.debug(f"IndexStore opened: {self._path}")
 
     # ── Internal: collections metadata table ─────────────────────────────
 

@@ -94,7 +94,6 @@ secrets.yaml
 config.local.yaml
 HF_TOKEN
 OPENAI_API_KEY
-deploy/shows.toml
 
 # ============================================================================
 # IDE & Editors

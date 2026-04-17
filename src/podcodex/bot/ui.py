@@ -6,7 +6,12 @@ import asyncio
 
 import discord
 
-from podcodex.bot.formatting import fmt_timestamp, speaker_lines, truncate_description
+from podcodex.bot.formatting import (
+    episode_display,
+    fmt_timestamp,
+    speaker_lines,
+    truncate_description,
+)
 
 # ──────────────────────────────────────────────
 # Episode chunk cache
@@ -55,8 +60,7 @@ def _transcript_embed(
     color = discord.Color.gold() if is_match else discord.Color.dark_gray()
     embed = discord.Embed(description=description, color=color)
 
-    episode_display = chunk.get("episode_title") or chunk.get("episode", "")
-    title = episode_display or "(untitled)"
+    title = episode_display(chunk) or "(untitled)"
     if show:
         title += f" ({show})"
     embed.title = title

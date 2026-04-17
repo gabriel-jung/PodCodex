@@ -256,6 +256,14 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
+def clean_description(raw: str, max_chars: int = 500) -> str:
+    """Strip HTML and soft-truncate at the nearest word boundary."""
+    desc = _HTML_TAG_RE.sub("", raw).strip()
+    if len(desc) > max_chars:
+        desc = desc[:max_chars].rsplit(" ", 1)[0] + "…"
+    return desc
+
+
 def build_episode_context(
     show_name: str = "",
     episode_dir: Path | str | None = None,
@@ -288,12 +296,10 @@ def build_episode_context(
                 elif meta.episode_number is not None:
                     ep_id = f" (Episode {meta.episode_number})"
                 parts.append(f'Episode: "{meta.title}"{ep_id}')
-            # HTML-stripped, truncated description
             if meta.description:
-                desc = _HTML_TAG_RE.sub("", meta.description).strip()
-                if len(desc) > max_desc:
-                    desc = desc[:max_desc].rsplit(" ", 1)[0] + "…"
-                parts.append(f"Description: {desc}")
+                parts.append(
+                    f"Description: {clean_description(meta.description, max_desc)}"
+                )
 
     return "\n".join(parts)
 
