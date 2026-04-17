@@ -10,7 +10,7 @@
 
 **Batch pipeline** - multi-episode operations with per-step config dialogs, global task bar with per-episode logs, show speakers panel, move/rename folder, pipeline config store, duration-based LLM batching, task cancellation + result summaries
 
-**Search & bot** - RAG module (SQLite + numpy, hybrid retrieval), CLI (`vectorize / query / list / delete`), Discord bot (`/search`, `/exact`, `/random`, `/stats`, `/episodes`)
+**Search & bot** - RAG module (LanceDB hybrid retrieval: vector ANN + Tantivy FTS), CLI (`vectorize / query / list / delete`), Discord bot slash commands (`/search`, `/ask` LLM-synthesized answers, `/exact`, `/random`, `/stats`, `/episodes`, `/setup`), multi-show cross-collection search, password-gated show access (`/unlock`, `/lock`, `/changepassword`), simple/advanced command split, `deploy/BOT.md` install guide (uv + Docker paths)
 
 **Ingest** - RSS feed parsing, episode download, folder scanning, transcript import
 
@@ -66,8 +66,6 @@ PyInstaller sidecar to bundle the Python backend. `make build` produces shareabl
 Can happen alongside any phase.
 
 - Conversation context (thread-based or stateful per-user)
-- LLM-synthesized answers on top of retrieved chunks
-- Multi-show cross-collection search
 
 ---
 

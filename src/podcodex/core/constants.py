@@ -2,11 +2,8 @@
 podcodex.core.constants — Single source of truth for pipeline settings.
 
 Every model name, description, and default value used across the app is
-defined here.  Both user interfaces (desktop and Streamlit) read from this
-file, so you only ever need to update descriptions in one place.
-
-The desktop API exposes these via ``GET /api/pipeline-config`` so the React
-frontend can display them without duplicating any text.
+defined here. The desktop API exposes these via ``GET /api/pipeline-config``
+so the React frontend can display them without duplicating any text.
 """
 
 from __future__ import annotations

@@ -2,8 +2,8 @@
 podcodex.rag.defaults — Centralized model registry and default parameters.
 
 All model specs, HF model IDs, and tunable defaults live here.
-CLI, bot, Streamlit app, and RAG modules import from this file — never
-redefine constants elsewhere.
+CLI, bot, and RAG modules import from this file — never redefine
+constants elsewhere.
 """
 
 from __future__ import annotations
