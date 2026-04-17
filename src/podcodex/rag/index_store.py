@@ -88,18 +88,20 @@ def _find_original_span(text: str, folded_q: str) -> str | None:
     return None
 
 
-def _accent_score(query: str, text: str, folded_t: str, folded_q: str) -> float:
-    """Similarity between query and its matched span in text (accent tier).
+def _accent_span(text: str, folded_t: str, folded_q: str) -> str | None:
+    """Locate the original-text slice that accent-folds to ``folded_q``.
 
-    When no ligatures are present, the folded-text index maps directly to the
-    original text position.  When ligatures exist (ﬁ→fi shifts offsets), a
-    short scan locates the correct original span.
+    Fast path when no ligatures expand (folded length == original length);
+    fallback scan handles ligature-induced offset drift.
     """
     if len(folded_t) == len(text):
         idx = folded_t.find(folded_q)
-        span = text[idx : idx + len(folded_q)]
-    else:
-        span = _find_original_span(text, folded_q) or query
+        return text[idx : idx + len(folded_q)] if idx >= 0 else None
+    return _find_original_span(text, folded_q)
+
+
+def _accent_score(query: str, span: str) -> float:
+    """Similarity between query and its matched original-text span."""
     return SequenceMatcher(None, query.lower(), span.lower()).ratio()
 
 
@@ -121,20 +123,24 @@ def _levenshtein(a: str, b: str, max_dist: int = 999) -> int:
     return row[-1]
 
 
-def _fuzzy_match(query: str, text: str, max_dist: int) -> float | None:
-    """Return similarity score if any word in text is within max_dist edits of
-    the folded single-word query, else None."""
+_WORD_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _fuzzy_match(query: str, text: str, max_dist: int) -> tuple[float, str] | None:
+    """Return (similarity, matched original span) if any word in text is within
+    max_dist edits of the folded single-word query, else None."""
     q = fold_text(query)
-    best: float | None = None
-    for raw in _WORD_RE.split(text):
-        if not raw:
-            continue
+    best: tuple[float, str] | None = None
+    for m in _WORD_TOKEN_RE.finditer(text):
+        raw = m.group(0)
         w = fold_text(raw)
+        if not w:
+            continue
         d = _levenshtein(q, w, max_dist)
         if d <= max_dist:
             ratio = 1.0 - d / max(len(q), len(w), 1)
-            if best is None or ratio > best:
-                best = ratio
+            if best is None or ratio > best[0]:
+                best = (ratio, raw)
     return best
 
 
@@ -150,7 +156,7 @@ def _phrase_fuzzy(
     text: str,
     max_dist: int,
     phrase_len: int,
-) -> float | None:
+) -> tuple[float, str] | None:
     """Sliding-window phrase fuzzy match.
 
     Scans the text in windows of ``phrase_len + 2`` tokens. Within each window,
@@ -167,13 +173,17 @@ def _phrase_fuzzy(
             size the sliding window so filtered tokens don't shrink it.
 
     Returns:
-        Best window score or None if no qualifying window found.
+        ``(score, matched_span)`` for the best window, or ``None``.
+        ``matched_span`` is the original-text slice covering the matched
+        tokens (including punctuation between them).
     """
     folded_qws = [fold_text(qw) for qw in match_words]
-    raw_tokens = [w for w in _WORD_RE.split(text) if w]
+    matches = list(_WORD_TOKEN_RE.finditer(text))
+    raw_tokens = [m.group(0) for m in matches]
+    positions = [(m.start(), m.end()) for m in matches]
     text_tokens = [fold_text(w) for w in raw_tokens]
     window = phrase_len + 2  # +2 slack for phrase variation
-    best: float | None = None
+    best: tuple[float, str] | None = None
 
     for i in range(max(1, len(text_tokens) - window + 1)):
         win_folded = text_tokens[i : i + window]
@@ -211,8 +221,11 @@ def _phrase_fuzzy(
                 for b in SequenceMatcher(None, approx_qw, fm).get_matching_blocks()
             )
             score = matching / max(len(approx_qw), 1)
-            if best is None or score > best:
-                best = score
+            if best is None or score > best[0]:
+                abs_indices = sorted(used)
+                span_start = positions[i + abs_indices[0]][0]
+                span_end = positions[i + abs_indices[-1]][1]
+                best = (score, text[span_start:span_end])
     return best
 
 
@@ -863,25 +876,27 @@ class IndexStore:
         fts_tokens = list(dict.fromkeys(t for t in all_tokens if len(t) >= 3))
         single_word = len(fts_tokens) == 1
 
-        # FTS pre-filter: fuzziness=2 via MatchQuery on accent-folded token(s).
-        # Tantivy keeps accents in the index, so accent mismatch + typo = 2 edits.
-        # For multi-word: run one fuzzy FTS per token and intersect chunk hits so
-        # every meaningful token must appear (approximately) in the same chunk.
-        if len(fts_tokens) == 1:
-            candidates = self.search_fts(
+        # FTS pre-filter: fuzziness=2 via MatchQuery, per token. Tantivy keeps
+        # accents in the index and its fuzzy query has a non-zero effective
+        # prefix_length, so an accent-swap on the leading char (e.g. "etres"
+        # → "êtres") won't match even at distance=1. We search both the
+        # original token and its accent-folded form and union the hits to
+        # cover both "accented query, no-accent typing" directions.
+        # Multi-word: intersect per-token chunk hits so every token must
+        # appear (approximately) in the same chunk.
+        def _fts_token(token: str) -> list[dict]:
+            hits = self.search_fts(
                 collection,
-                fold_text(fts_tokens[0]),
+                token,
                 10_000,
                 episode=episode,
                 source=source,
                 speaker=speaker,
                 fuzziness=2,
             )
-        else:
-            hit_count: Counter = Counter()
-            chunk_map: dict[str, dict] = {}
-            for token in fts_tokens:
-                ft = fold_text(token)
+            ft = fold_text(token)
+            if ft and ft != token:
+                seen = {_chunk_key(h) for h in hits}
                 for h in self.search_fts(
                     collection,
                     ft,
@@ -891,6 +906,19 @@ class IndexStore:
                     speaker=speaker,
                     fuzziness=2,
                 ):
+                    k = _chunk_key(h)
+                    if k not in seen:
+                        hits.append(h)
+                        seen.add(k)
+            return hits
+
+        if len(fts_tokens) == 1:
+            candidates = _fts_token(fts_tokens[0])
+        else:
+            hit_count: Counter = Counter()
+            chunk_map: dict[str, dict] = {}
+            for token in fts_tokens:
+                for h in _fts_token(token):
                     key = _chunk_key(h)
                     hit_count[key] += 1
                     chunk_map.setdefault(key, h)
@@ -903,24 +931,34 @@ class IndexStore:
         fuzzy_only: list[dict] = []
         for c in candidates:
             text = c.get("text", "")
-            if query_lower in text.lower():
-                exact.append({**c, "score": 1.0})
+            lower = text.lower()
+            if query_lower in lower:
+                idx = lower.find(query_lower)
+                exact.append(
+                    {**c, "score": 1.0, "match_text": text[idx : idx + len(query)]}
+                )
             else:
                 folded_t = fold_text(text)
                 if folded_q in folded_t:
+                    span = _accent_span(text, folded_t, folded_q) or query
                     accent_only.append(
-                        {**c, "score": _accent_score(query, text, folded_t, folded_q)}
+                        {
+                            **c,
+                            "score": _accent_score(query, span),
+                            "match_text": span,
+                        }
                     )
                 else:
-                    score = (
+                    result = (
                         _fuzzy_match(fts_tokens[0], text, max_dist)
                         if single_word
                         else _phrase_fuzzy(
                             fts_tokens, text, max_dist, phrase_len=len(all_tokens)
                         )
                     )
-                    if score is not None:
-                        fuzzy_only.append({**c, "score": score})
+                    if result is not None:
+                        score, span = result
+                        fuzzy_only.append({**c, "score": score, "match_text": span})
 
         exact.sort(key=lambda c: (c.get("episode", ""), c.get("start", 0.0)))
         accent_only.sort(key=lambda c: (c.get("episode", ""), c.get("start", 0.0)))
@@ -929,18 +967,44 @@ class IndexStore:
         return exact, accent_only, fuzzy_only
 
     def _ensure_fts(self, collection: str, table) -> None:
-        """Ensure a Tantivy FTS index exists on the ``text`` column (memoized)."""
+        """Ensure an ASCII-folding FTS index exists on the ``text`` column.
+
+        ``ascii_folding=True`` + ``lower_case=True`` normalize both indexed
+        text and the query, so accented terms in the corpus match unaccented
+        queries (e.g. "etres" → "êtres"). Without folding, tantivy's fuzzy
+        query has an effective leading-char prefix constraint that prevents
+        1-edit matches when the first char is the accented one.
+
+        A sentinel file (``.fts_folded_v1``) records the one-time upgrade so
+        we rebuild only when a pre-existing non-folding index is found, not
+        on every process restart.
+        """
         if collection in self._fts_ready:
             return
+        sentinel = self._path / f"{collection}.fts_folded_v1"
         try:
             existing = {idx.name for idx in table.list_indices()}
         except Exception:
             existing = set()
-        if not any("text" in n.lower() for n in existing):
-            try:
-                table.create_fts_index("text", replace=False)
-            except Exception:
-                logger.opt(exception=True).debug("FTS index creation skipped")
+        has_text_idx = any("text" in n.lower() for n in existing)
+        needs_rebuild = has_text_idx and not sentinel.exists()
+        try:
+            if not has_text_idx or needs_rebuild:
+                table.create_fts_index(
+                    "text",
+                    replace=needs_rebuild,
+                    ascii_folding=True,
+                    lower_case=True,
+                    stem=False,
+                    remove_stop_words=False,
+                )
+                sentinel.touch()
+                if needs_rebuild:
+                    logger.info(
+                        f"FTS index rebuilt with ASCII folding for {collection}"
+                    )
+        except Exception:
+            logger.opt(exception=True).debug("FTS index creation skipped")
         self._fts_ready.add(collection)
 
     # ── Stats ────────────────────────────────────────────────────────────

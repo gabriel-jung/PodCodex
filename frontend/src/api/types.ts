@@ -159,6 +159,7 @@ export interface SearchResult {
   speakers: { speaker: string; text: string; start: number; end: number }[] | null;
   accent_match: boolean;
   fuzzy_match: boolean;
+  match_text: string | null;
 }
 
 // ── Speaker roster ───────────────────────────────────────

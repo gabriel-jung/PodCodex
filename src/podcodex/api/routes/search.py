@@ -113,6 +113,7 @@ class SearchResult(BaseModel):
     speakers: list[dict] | None = None
     accent_match: bool = False
     fuzzy_match: bool = False
+    match_text: str | None = None
 
 
 @router.post("/query", response_model=list[SearchResult])
@@ -170,6 +171,7 @@ def _result_to_dict(
         "speakers": r.get("speakers"),
         "accent_match": bool(r.get("accent_match", False)),
         "fuzzy_match": bool(r.get("fuzzy_match", False)),
+        "match_text": r.get("match_text"),
     }
 
 

@@ -85,17 +85,23 @@ def highlight(text: str, query: str) -> str:
 
 
 def speaker_lines(chunk: dict, query: str = "") -> str:
-    """Format chunk text with per-turn speaker labels when available."""
+    """Format chunk text with per-turn speaker labels when available.
+
+    If the chunk carries a ``match_text`` (from /exact's accent/fuzzy tiers),
+    highlight that exact substring so the user sees which span matched.
+    Otherwise fall back to highlighting the raw query.
+    """
     turns: list[dict] = chunk.get("speakers") or []
+    mark = chunk.get("match_text") or query
     if not turns:
         text = chunk.get("text", "")
-        return highlight(text, query) if query else text
+        return highlight(text, mark) if mark else text
     lines = []
     for t in turns:
         spk = t.get("speaker", "Unknown")
         start = t.get("start", 0)
         ts_part = f" ({fmt_time(start)})" if start else ""
-        text = highlight(t.get("text", ""), query) if query else t.get("text", "")
+        text = highlight(t.get("text", ""), mark) if mark else t.get("text", "")
         lines.append(f"**{spk}**{ts_part}: {text}")
     return "\n".join(lines)
 

@@ -109,12 +109,12 @@ export default function SearchResultCard({ result, show, query = "" }: SearchRes
                   >
                     {turn.speaker}
                   </span>
-                  <span className="whitespace-pre-wrap">{highlightText(turn.text, query)}</span>
+                  <span className="whitespace-pre-wrap">{highlightText(turn.text, result.match_text || query)}</span>
                 </li>
               ))}
             </ol>
           ) : (
-            <p className="text-sm leading-relaxed whitespace-pre-wrap">{highlightText(result.text, query)}</p>
+            <p className="text-sm leading-relaxed whitespace-pre-wrap">{highlightText(result.text, result.match_text || query)}</p>
           )}
         </button>
       </div>

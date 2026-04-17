@@ -89,15 +89,11 @@ def _map_offsets_to_metadata(
 ) -> dict | None:
     """Map chunk character offsets back to timing and speaker metadata.
 
-    ``overlapping`` covers every turn whose text range touches the chunk
-    — used for the chunk's time range and dominant-speaker weighting,
-    both of which need to reflect the full text content.
-
-    ``speakers`` (shown in search results) is narrowed to turns whose
-    ``start_char`` falls in this chunk. That deduplicates boundary turns
-    so adjacent chunks don't both display the same exchange verbatim.
-    Monologue chunks with no turn starting inside fall back to the
-    enclosing turn so they still carry a speaker label.
+    Every overlapping turn is returned in ``speakers``, but each turn's
+    ``text`` is clipped to the chunk's char bounds so adjacent chunks
+    don't duplicate the boundary turn's content. The clip ensures the
+    displayed text stays in sync with the chunk's literal slice, so an
+    exact-match hit in a boundary turn is visible in the result card.
 
     Args:
         chunk_start: Start character index of the chunk in the full text.
@@ -116,19 +112,19 @@ def _map_offsets_to_metadata(
     if not overlapping:
         return None
 
-    speakers = [t for t in overlapping if chunk_start <= t["start_char"] < chunk_end]
-    if not speakers:
-        # Chunk wholly inside a single long turn — keep it as the displayed
-        # speaker so the chunk isn't shown speaker-less.
-        speakers = overlapping
-
+    speakers = []
     speaker_chars: dict[str, int] = {}
     for t in overlapping:
-        chars = max(
-            0, min(t["end_char"], chunk_end) - max(t["start_char"], chunk_start)
-        )
+        clip_start = max(t["start_char"], chunk_start) - t["start_char"]
+        clip_end = min(t["end_char"], chunk_end) - t["start_char"]
+        clipped = t["text"][clip_start:clip_end].strip()
         spk = t.get("speaker") or "UNKNOWN"
-        speaker_chars[spk] = speaker_chars.get(spk, 0) + chars
+        if clipped:
+            speakers.append({**t, "text": clipped})
+            speaker_chars[spk] = speaker_chars.get(spk, 0) + len(clipped)
+
+    if not speakers:
+        return None
 
     return {
         "start": overlapping[0]["start"],
