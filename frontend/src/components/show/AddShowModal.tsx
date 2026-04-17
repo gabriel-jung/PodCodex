@@ -81,10 +81,12 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
     setStep("location");
   };
 
-  const handleLocalImport = async (path: string) => {
-    await registerShow(path);
-    onCreated(path);
-  };
+  const importMutation = useMutation({
+    mutationFn: (path: string) => registerShow(path),
+    onSuccess: (_, path) => onCreated(path),
+  });
+
+  const handleLocalImport = (path: string) => importMutation.mutate(path);
 
   return (
     <>
@@ -220,6 +222,13 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                       </Button>
                     )}
                   </div>
+
+                  {importMutation.isPending && (
+                    <p className="text-xs text-muted-foreground">Registering show…</p>
+                  )}
+                  {importMutation.isError && (
+                    <p className="text-destructive text-xs">{errorMessage(importMutation.error)}</p>
+                  )}
                 </>
               )}
 

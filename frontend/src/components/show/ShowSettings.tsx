@@ -96,9 +96,13 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   });
 
   const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const isDirtyRef = useRef(isDirty);
+  isDirtyRef.current = isDirty;
   const autoSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => saveMutation.mutate(), 1500);
+    saveTimer.current = setTimeout(() => {
+      if (isDirtyRef.current) saveMutation.mutate();
+    }, 1500);
   }, [saveMutation]);
 
   useEffect(() => {

@@ -373,19 +373,25 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
     sw = _STEP_WEIGHTS["index"]
     marker = p.base.parent / ".rag_indexed"
 
-    if not req.force and marker.exists():
-        return False
-
-    ep_progress(i, step_offset, sw, 0.0, "Indexing...")
-
     from podcodex.api.routes._helpers import build_index_transcript, get_index_store
     from podcodex.rag.indexing import vectorize_batch
+    from podcodex.rag.store import collection_name
+
+    local = get_index_store()
+
+    if not req.force:
+        wanted = [(m, c) for m in req.index_model_keys for c in req.index_chunkings]
+        if wanted and all(
+            local.episode_is_indexed(collection_name(req.show_name, m, c), stem)
+            for m, c in wanted
+        ):
+            return False
+
+    ep_progress(i, step_offset, sw, 0.0, "Indexing...")
 
     transcript = build_index_transcript(audio_path, req.show_name, stem)
     if not transcript.get("segments"):
         return False
-
-    local = get_index_store()
     upserted = vectorize_batch(
         transcript,
         req.show_name,

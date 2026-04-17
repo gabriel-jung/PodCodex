@@ -51,6 +51,7 @@ import secrets
 import sys
 import time
 from dataclasses import asdict, dataclass, field, fields
+from enum import Enum
 from pathlib import Path
 
 import discord
@@ -110,6 +111,35 @@ _BOOL_CHOICES = [
 ]
 
 
+# ── Access control ───────────────────────────
+
+
+class ShowAccess(Enum):
+    """Outcome of resolving an optional show argument against access policy."""
+
+    ALL = "all"  # no explicit show → enumerate all server-visible collections
+    LOCKED = "locked"  # explicit show exists but is password-protected & not unlocked
+    SPECIFIC = "specific"  # explicit show is accessible; query only that show
+
+
+@dataclass(frozen=True)
+class ResolvedShows:
+    access: ShowAccess
+    shows: tuple[str, ...] = ()
+
+    @property
+    def is_all(self) -> bool:
+        return self.access is ShowAccess.ALL
+
+    @property
+    def is_locked(self) -> bool:
+        return self.access is ShowAccess.LOCKED
+
+    @property
+    def is_specific(self) -> bool:
+        return self.access is ShowAccess.SPECIFIC
+
+
 # ── Autocomplete cache ───────────────────────
 
 
@@ -119,6 +149,7 @@ class _AutocompleteCache:
     episode_titles: dict[str, dict[str, str]]  # collection -> {stem: rss_title}
     sources: dict[str, list[str]]  # collection -> source values
     speakers: dict[str, list[str]]  # collection -> speaker names
+    col_info: dict[str, dict] | None = None  # {collection: {show, model, chunker, dim}}
     timestamp: float = 0.0
     ttl: float = 300.0  # 5 minutes
 
@@ -175,10 +206,11 @@ class ServerSettings:
 
 def _verify_password(password: str, stored_hash: str) -> bool:
     """Verify a password against a stored 'sha256:<hex>' hash."""
+    # Hash before format check so malformed rows take the same time as valid ones.
+    actual = hashlib.sha256(password.encode()).hexdigest()
     if not stored_hash.startswith("sha256:"):
         return False
     expected = stored_hash.removeprefix("sha256:")
-    actual = hashlib.sha256(password.encode()).hexdigest()
     return hmac.compare_digest(actual, expected)
 
 
@@ -326,27 +358,20 @@ class PodCodexBot(discord.Client):
 
     def _resolve_shows(
         self, settings: ServerSettings, explicit_show: str = ""
-    ) -> list[str] | None:
+    ) -> "ResolvedShows":
         """Resolve which shows a command may query.
 
         Shows are public by default. A show becomes password-protected only
         when the bot owner sets a password via ``--manage-passwords``.
-
-        Returns:
-            ``[show]``  — explicit show is accessible.
-            ``[]``      — explicit show is locked and not unlocked on this server.
-            ``None``    — no explicit show; let ``_filter_collections`` apply
-                          per-collection access control.
         """
-        if explicit_show:
-            if (
-                explicit_show in self._locked_show_names
-                and explicit_show not in settings.allowed_shows
-            ):
-                return []
-            return [explicit_show]
-        # No explicit show: signal callers to use _filter_collections.
-        return None
+        if not explicit_show:
+            return ResolvedShows(ShowAccess.ALL)
+        if (
+            explicit_show in self._locked_show_names
+            and explicit_show not in settings.allowed_shows
+        ):
+            return ResolvedShows(ShowAccess.LOCKED)
+        return ResolvedShows(ShowAccess.SPECIFIC, (explicit_show,))
 
     def _filter_collections(
         self,
@@ -451,19 +476,14 @@ class PodCodexBot(discord.Client):
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
+        self._cache_clear_if_stale()
         settings = self._server_settings(interaction.guild_id)
         model = getattr(interaction.namespace, "model", "") or settings.model
         chunker = settings.chunker
 
-        loop = asyncio.get_running_loop()
-        col_info = await loop.run_in_executor(None, self.local.get_all_collection_info)
-        collections = [
-            name
-            for name, info in col_info.items()
-            if (not model or info["model"] == model)
-            and (not chunker or info["chunker"] == chunker)
-        ]
-        collections = self._filter_collections(collections, settings, col_info)
+        collections, col_info = await self._visible_collections(
+            settings, model, chunker
+        )
         shows = sorted(
             {
                 col_info[col]["show"]
@@ -484,7 +504,31 @@ class PodCodexBot(discord.Client):
             cache.episode_titles.clear()
             cache.sources.clear()
             cache.speakers.clear()
+            cache.col_info = None
             cache.timestamp = time.monotonic()
+
+    async def _cached_col_info(self) -> dict[str, dict]:
+        """Return ``{collection: info}`` map, cached with the autocomplete TTL."""
+        cache = self._ac_cache
+        if cache.col_info is None:
+            loop = asyncio.get_running_loop()
+            cache.col_info = await loop.run_in_executor(
+                None, self.local.get_all_collection_info
+            )
+        return cache.col_info or {}
+
+    async def _visible_collections(
+        self, settings: "ServerSettings", model: str, chunker: str
+    ) -> tuple[list[str], dict[str, dict]]:
+        """Return collections matching (model, chunker) that the server is allowed to see."""
+        col_info = await self._cached_col_info()
+        cols = [
+            name
+            for name, info in col_info.items()
+            if (not model or info["model"] == model)
+            and (not chunker or info["chunker"] == chunker)
+        ]
+        return self._filter_collections(cols, settings, col_info), col_info
 
     async def _cached_episodes(self, collection: str) -> list[str]:
         """Return episode stems, using the TTL cache."""
@@ -531,13 +575,16 @@ class PodCodexBot(discord.Client):
 
         # Determine which show(s) to look at
         show = getattr(interaction.namespace, "show", "")
-        shows = self._resolve_shows(settings, show)
-        if not shows:
+        resolved = self._resolve_shows(settings, show)
+        if resolved.is_locked:
             return []
 
         all_episodes: dict[str, str] = {}  # stem -> display name
-        for s in shows:
-            col = collection_name(s, model, chunker)
+        if resolved.is_specific:
+            cols = [collection_name(s, model, chunker) for s in resolved.shows]
+        else:
+            cols, _ = await self._visible_collections(settings, model, chunker)
+        for col in cols:
             stems = await self._cached_episodes(col)
             titles = await self._cached_episode_titles(col)
             for stem in stems:
@@ -561,15 +608,7 @@ class PodCodexBot(discord.Client):
         model = getattr(interaction.namespace, "model", "") or settings.model
         chunker = settings.chunker
 
-        loop = asyncio.get_running_loop()
-        col_info = await loop.run_in_executor(None, self.local.get_all_collection_info)
-        collections = [
-            name
-            for name, info in col_info.items()
-            if (not model or info["model"] == model)
-            and (not chunker or info["chunker"] == chunker)
-        ]
-        collections = self._filter_collections(collections, settings, col_info)
+        collections, _ = await self._visible_collections(settings, model, chunker)
 
         all_sources: set[str] = set()
         for col in collections:
@@ -603,25 +642,17 @@ class PodCodexBot(discord.Client):
         chunker = settings.chunker
 
         show = getattr(interaction.namespace, "show", "")
-        shows = self._resolve_shows(settings, show)
+        resolved = self._resolve_shows(settings, show)
+        if resolved.is_locked:
+            return []
 
         all_speakers: set[str] = set()
-        if shows is not None:
-            for s in shows:
+        if resolved.is_specific:
+            for s in resolved.shows:
                 col = collection_name(s, model, chunker)
                 all_speakers.update(await self._cached_speakers(col))
         else:
-            loop = asyncio.get_running_loop()
-            col_info = await loop.run_in_executor(
-                None, self.local.get_all_collection_info
-            )
-            collections = [
-                name
-                for name, info in col_info.items()
-                if (not model or info["model"] == model)
-                and (not chunker or info["chunker"] == chunker)
-            ]
-            collections = self._filter_collections(collections, settings, col_info)
+            collections, _ = await self._visible_collections(settings, model, chunker)
             for col in collections:
                 all_speakers.update(await self._cached_speakers(col))
 
@@ -1088,7 +1119,7 @@ class PodCodexBot(discord.Client):
         self,
         interaction: discord.Interaction,
         question: str,
-        shows: list[str] | None,
+        shows: ResolvedShows,
         settings: ServerSettings,
         alpha: float,
         label: str,
@@ -1140,7 +1171,7 @@ class PodCodexBot(discord.Client):
     def _hybrid_search(
         self,
         question: str,
-        shows: list[str] | None,
+        shows: ResolvedShows,
         settings: ServerSettings,
         alpha: float,
         *,
@@ -1150,8 +1181,10 @@ class PodCodexBot(discord.Client):
     ) -> list[tuple[dict, str]]:
         """Run hybrid retrieval across collections and merge results."""
         model, chunker = settings.model, settings.chunker
-        if shows is not None:
-            collections = [collection_name(s, model, chunker) for s in shows]
+        if shows.is_specific:
+            collections = [collection_name(s, model, chunker) for s in shows.shows]
+        elif shows.is_locked:
+            collections = []
         else:
             col_info = self.local.get_all_collection_info()
             collections = [
@@ -1292,7 +1325,7 @@ class PodCodexBot(discord.Client):
         self,
         interaction: discord.Interaction,
         query: str,
-        shows: list[str] | None,
+        shows: ResolvedShows,
         top_k: int,
         *,
         source: str | None = None,
@@ -1305,10 +1338,13 @@ class PodCodexBot(discord.Client):
         loop = asyncio.get_running_loop()
 
         try:
-            if shows is not None:
+            if shows.is_specific:
                 collections = [
-                    collection_name(s, settings.model, settings.chunker) for s in shows
+                    collection_name(s, settings.model, settings.chunker)
+                    for s in shows.shows
                 ]
+            elif shows.is_locked:
+                collections = []
             else:
                 col_info = await loop.run_in_executor(
                     None, self.local.get_all_collection_info
@@ -1403,7 +1439,7 @@ class PodCodexBot(discord.Client):
     async def _run_random(
         self,
         interaction: discord.Interaction,
-        shows: list[str] | None,
+        shows: ResolvedShows,
         *,
         source: str | None = None,
         episode: str | None = None,
@@ -1414,10 +1450,13 @@ class PodCodexBot(discord.Client):
         loop = asyncio.get_running_loop()
 
         try:
-            if shows is not None:
+            if shows.is_specific:
                 collections = [
-                    collection_name(s, settings.model, settings.chunker) for s in shows
+                    collection_name(s, settings.model, settings.chunker)
+                    for s in shows.shows
                 ]
+            elif shows.is_locked:
+                collections = []
             else:
                 col_info = await loop.run_in_executor(
                     None, self.local.get_all_collection_info
@@ -1695,11 +1734,12 @@ class PodCodexBot(discord.Client):
                 f"Password for **{show}** has been rotated. Check your DMs.",
                 ephemeral=True,
             )
-        except discord.Forbidden:
-            # DMs disabled — fall back to ephemeral (still not in audit log body).
+        except discord.HTTPException:
+            # DM failed (blocked, rate-limited, server error) — fall back to ephemeral
+            # so the caller still receives the new password.
             await interaction.response.send_message(
                 f"Password for **{show}** rotated.\n"
-                f"**Could not send DM** (enable DMs from server members).\n"
+                f"**Could not send DM** (enable DMs from server members, or try again).\n"
                 f"New password: `{password}`",
                 ephemeral=True,
             )
@@ -1788,8 +1828,7 @@ class PodCodexBot(discord.Client):
         # Auto-resolve show: explicit > unlocked > single accessible show > ask
         show_auto_resolved = not show
         # Check access control for explicit show
-        shows_check = self._resolve_shows(settings, show) if show else None
-        if show and shows_check == []:
+        if show and self._resolve_shows(settings, show).is_locked:
             await interaction.followup.send("No indexed shows found.", ephemeral=True)
             return
 

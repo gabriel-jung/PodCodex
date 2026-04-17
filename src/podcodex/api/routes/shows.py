@@ -447,7 +447,10 @@ async def unified_episodes(
     path = require_show_folder(show_folder)
 
     # ── Resolve effective defaults (app → show override) ──
-    app_defaults = _json.loads(defaults) if defaults else {}
+    try:
+        app_defaults = _json.loads(defaults) if defaults else {}
+    except _json.JSONDecodeError as exc:
+        raise HTTPException(400, f"Invalid JSON in 'defaults' parameter: {exc}")
     show_meta = load_show_meta(path)
     effective = _resolve_defaults(app_defaults, show_meta)
 

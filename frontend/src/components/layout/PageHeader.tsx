@@ -39,7 +39,7 @@ export default function PageHeader({
         {hasCrumbs && (
           <nav className="flex items-center gap-1 text-2xs text-muted-foreground mb-0.5 truncate">
             {breadcrumbs.map((b, i) => (
-              <Fragment key={i}>
+              <Fragment key={b.label}>
                 {i > 0 && <ChevronRight className="w-3 h-3 shrink-0 opacity-60" />}
                 {b.onClick ? (
                   <button

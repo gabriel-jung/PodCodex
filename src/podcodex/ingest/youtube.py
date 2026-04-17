@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -34,6 +35,7 @@ _BACKOFF_AFTER = 20  # start increasing delay after this many requests
 _MAX_DELAY = 8.0  # maximum delay between requests
 _CONSECUTIVE_FAIL_LIMIT = 3  # abort batch after this many consecutive failures
 _request_count = 0
+_pace_lock = threading.Lock()
 
 # yt-dlp error strings that indicate rate limiting / bot detection
 _THROTTLE_PATTERNS = (
@@ -59,15 +61,17 @@ def _pace_request() -> None:
     import time
 
     global _request_count
-    _request_count += 1
+    with _pace_lock:
+        _request_count += 1
+        count = _request_count
 
-    if _request_count <= 1:
+    if count <= 1:
         return
 
-    if _request_count <= _BACKOFF_AFTER:
+    if count <= _BACKOFF_AFTER:
         delay = _BASE_DELAY
     else:
-        extra = min((_request_count - _BACKOFF_AFTER) / 30.0, 1.0)
+        extra = min((count - _BACKOFF_AFTER) / 30.0, 1.0)
         delay = _BASE_DELAY + extra * (_MAX_DELAY - _BASE_DELAY)
 
     time.sleep(delay)
@@ -76,7 +80,8 @@ def _pace_request() -> None:
 def reset_pace() -> None:
     """Reset the request counter (call at the start of a new batch)."""
     global _request_count
-    _request_count = 0
+    with _pace_lock:
+        _request_count = 0
 
 
 def _base_ydl_opts(**extra: Any) -> dict[str, Any]:

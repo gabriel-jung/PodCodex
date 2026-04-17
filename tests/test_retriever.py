@@ -176,14 +176,14 @@ def test_dense_search_speaker_filter(tmp_path):
 
 def test_find_returns_token_match(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
-    results = retriever.find("neural", col, top_k=25)
+    results = retriever.find("neural", col)
     assert len(results) > 0
     assert all(r["score"] == 1.0 for r in results)
 
 
 def test_find_no_match(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
-    assert retriever.find("xyznonexistent", col, top_k=25) == []
+    assert retriever.find("xyznonexistent", col) == []
 
 
 def test_random_returns_chunk(tmp_path):

@@ -55,37 +55,38 @@ CREATE INDEX IF NOT EXISTS idx_versions_stem_step
     ON versions(stem, step);
 """
 
-_MIGRATIONS = [
-    # (check_sql, apply_sql) — each runs once if check returns no rows.
+_MIGRATIONS: list[tuple[str, list[str]]] = [
+    # (check_sql, [apply_stmts]) — each migration runs once if check returns no rows.
     (
         "SELECT 1 FROM pragma_table_info('episodes') WHERE name='provenance'",
-        "ALTER TABLE episodes ADD COLUMN provenance TEXT DEFAULT '{}'",
+        ["ALTER TABLE episodes ADD COLUMN provenance TEXT DEFAULT '{}'"],
     ),
     # Rename polished → corrected
     (
         "SELECT 1 FROM pragma_table_info('episodes') WHERE name='corrected'",
-        "ALTER TABLE episodes RENAME COLUMN polished TO corrected",
+        ["ALTER TABLE episodes RENAME COLUMN polished TO corrected"],
     ),
     (
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='versions'",
-        """
-        CREATE TABLE IF NOT EXISTS versions (
-            id              TEXT NOT NULL,
-            stem            TEXT NOT NULL,
-            step            TEXT NOT NULL,
-            timestamp       TEXT NOT NULL,
-            type            TEXT NOT NULL,
-            model           TEXT,
-            params          TEXT DEFAULT '{}',
-            manual_edit     INTEGER DEFAULT 0,
-            content_hash    TEXT NOT NULL,
-            segment_count   INTEGER NOT NULL,
-            input_hash      TEXT,
-            PRIMARY KEY (id, stem, step)
-        );
-        CREATE INDEX IF NOT EXISTS idx_versions_stem_step
-            ON versions(stem, step);
-        """,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS versions (
+                id              TEXT NOT NULL,
+                stem            TEXT NOT NULL,
+                step            TEXT NOT NULL,
+                timestamp       TEXT NOT NULL,
+                type            TEXT NOT NULL,
+                model           TEXT,
+                params          TEXT DEFAULT '{}',
+                manual_edit     INTEGER DEFAULT 0,
+                content_hash    TEXT NOT NULL,
+                segment_count   INTEGER NOT NULL,
+                input_hash      TEXT,
+                PRIMARY KEY (id, stem, step)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_versions_stem_step ON versions(stem, step)",
+        ],
     ),
 ]
 
@@ -126,9 +127,12 @@ class PipelineDB:
 
     def _run_migrations(self) -> None:
         """Apply any pending schema migrations."""
-        for check_sql, apply_sql in _MIGRATIONS:
-            if not self._conn.execute(check_sql).fetchone():
-                self._conn.executescript(apply_sql)
+        for check_sql, apply_stmts in _MIGRATIONS:
+            if self._conn.execute(check_sql).fetchone():
+                continue
+            with self._conn:  # atomic: BEGIN/COMMIT or ROLLBACK on exception
+                for stmt in apply_stmts:
+                    self._conn.execute(stmt)
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""

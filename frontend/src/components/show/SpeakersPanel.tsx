@@ -182,7 +182,7 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
                     {sp.name}
                   </span>
                   {sp.episode_count === 0 && (
-                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70 shrink-0">
+                    <span className="text-[10px] italic text-muted-foreground/70 shrink-0">
                       unseen
                     </span>
                   )}

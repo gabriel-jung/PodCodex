@@ -368,7 +368,7 @@ class IndexStore:
             self._db.create_table(name, schema=_chunk_schema(dim))
 
         meta = self._collections_table()
-        existing = meta.search().where(f"name = '{name}'").limit(1).to_list()
+        existing = meta.search().where(f"name = '{_escape(name)}'").limit(1).to_list()
         if not existing:
             meta.add(
                 [
@@ -418,6 +418,7 @@ class IndexStore:
             self._db.drop_table(name)
         meta = self._collections_table()
         meta.delete(f"name = '{_escape(name)}'")
+        self._fts_ready.discard(name)
         logger.debug(f"Deleted collection '{name}'")
 
     def get_collection_info(self, name: str) -> dict | None:
@@ -493,6 +494,7 @@ class IndexStore:
             return
         t = self._table(collection)
         t.delete(f"episode = '{_escape(episode)}'")
+        self._fts_ready.discard(collection)
         logger.debug(f"Deleted episode '{episode}' from '{collection}'")
 
     def list_episodes(self, collection: str) -> list[str]:
@@ -573,6 +575,7 @@ class IndexStore:
                 }
             )
         t.add(rows)
+        self._fts_ready.discard(collection)
         logger.debug(f"Saved {len(rows)} chunks for '{episode}' in '{collection}'")
 
     # ── Read helpers ─────────────────────────────────────────────────────

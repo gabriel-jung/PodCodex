@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getCorrectSegments, getSegments } from "@/api/client";
 import { getAllVersions } from "@/api/search";
@@ -34,15 +34,17 @@ export function useLLMConfig(
     if (Object.keys(patches).length > 0) setLLM(patches);
   }, [episodeId, showName]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Provide a setState-like API for compatibility with existing panels
-  const setter = (valOrFn: LLMConfig | ((prev: LLMConfig) => LLMConfig)) => {
-    if (typeof valOrFn === "function") {
-      const next = valOrFn(llm);
-      setLLM(next);
-    } else {
-      setLLM(valOrFn);
-    }
-  };
+  const setter = useCallback(
+    (valOrFn: LLMConfig | ((prev: LLMConfig) => LLMConfig)) => {
+      if (typeof valOrFn === "function") {
+        const prev = usePipelineConfigStore.getState().llm;
+        setLLM(valOrFn(prev));
+      } else {
+        setLLM(valOrFn);
+      }
+    },
+    [setLLM],
+  );
 
   return [llm, setter];
 }

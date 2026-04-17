@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
@@ -48,6 +48,11 @@ export default function IndexPanel() {
   const [chunkSize, setChunkSize] = useState(256);
   const [threshold, setThreshold] = useState(0.5);
   const [overwrite, setOverwrite] = useState(!!episode?.indexed);
+  // Reset on episode switch only — preserve user toggle when status refetches.
+  useEffect(() => {
+    setOverwrite(!!episode?.indexed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [episode?.id]);
 
   const startMutation = useMutation({
     mutationFn: () =>
