@@ -220,13 +220,29 @@ def _result_embed(
 
     q = question or query
     description = truncate_description(speaker_lines(chunk, query=query))
-    embed = discord.Embed(description=description, color=discord.Color.blurple())
+
+    # Highlight non-exact /exact hits: accent-tolerant ("café" ≈ "cafe") and
+    # fuzzy near-typo matches get a distinct color + title badge so users
+    # don't confuse them with literal hits.
+    if chunk.get("fuzzy_match"):
+        color = discord.Color.orange()
+        badge = "〜 near-typo"
+    elif chunk.get("accent_match"):
+        color = discord.Color.gold()
+        badge = "≈ accent variant"
+    else:
+        color = discord.Color.blurple()
+        badge = ""
+
+    embed = discord.Embed(description=description, color=color)
     if q:
         embed.set_author(name=f'🔎 "{q}"')
     title = ep_title or "(untitled)"
     if show:
         title += f" ({show})"
     embed.title = title
+    if badge:
+        embed.add_field(name="Match", value=badge, inline=True)
     timed = chunk.get("timed", True)
     ts_label = fmt_timestamp(start, end, timed=timed)
     if ts_label:

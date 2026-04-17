@@ -89,14 +89,24 @@ def _map_offsets_to_metadata(
 ) -> dict | None:
     """Map chunk character offsets back to timing and speaker metadata.
 
+    ``overlapping`` covers every turn whose text range touches the chunk
+    — used for the chunk's time range and dominant-speaker weighting,
+    both of which need to reflect the full text content.
+
+    ``speakers`` (shown in search results) is narrowed to turns whose
+    ``start_char`` falls in this chunk. That deduplicates boundary turns
+    so adjacent chunks don't both display the same exchange verbatim.
+    Monologue chunks with no turn starting inside fall back to the
+    enclosing turn so they still carry a speaker label.
+
     Args:
         chunk_start: Start character index of the chunk in the full text.
         chunk_end: End character index of the chunk in the full text.
         offset_map: Per-turn offset entries produced by ``_build_episode_text``.
 
     Returns:
-        A dict with ``{start, end, dominant_speaker, speakers}`` if the chunk
-        overlaps at least one turn, or ``None`` otherwise.
+        A dict with ``{start, end, dominant_speaker, speakers}`` if any
+        turn overlaps the chunk, or ``None`` otherwise.
     """
     overlapping = [
         t
@@ -105,6 +115,12 @@ def _map_offsets_to_metadata(
     ]
     if not overlapping:
         return None
+
+    speakers = [t for t in overlapping if chunk_start <= t["start_char"] < chunk_end]
+    if not speakers:
+        # Chunk wholly inside a single long turn — keep it as the displayed
+        # speaker so the chunk isn't shown speaker-less.
+        speakers = overlapping
 
     speaker_chars: dict[str, int] = {}
     for t in overlapping:
@@ -118,7 +134,7 @@ def _map_offsets_to_metadata(
         "start": overlapping[0]["start"],
         "end": overlapping[-1]["end"],
         "dominant_speaker": max(speaker_chars, key=speaker_chars.__getitem__),
-        "speakers": overlapping,
+        "speakers": speakers,
     }
 
 

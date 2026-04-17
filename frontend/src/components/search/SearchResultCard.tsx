@@ -30,6 +30,14 @@ export default function SearchResultCard({ result, show, query = "" }: SearchRes
         ? "text-warning"
         : "text-muted-foreground/60";
 
+  // Badge for /exact hits that aren't literal: accent-folded ("cafe" ≈ "café")
+  // or fuzzy near-typo. Signals to the user that this isn't a verbatim hit.
+  const matchBadge = result.fuzzy_match
+    ? { label: "〜 near-typo", tone: "bg-orange-500/15 text-orange-700 dark:text-orange-300 border-orange-500/30" }
+    : result.accent_match
+      ? { label: "≈ variant", tone: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30" }
+      : null;
+
   const path = result.audio_path;
 
   const playAt = (time: number) => {
@@ -64,7 +72,16 @@ export default function SearchResultCard({ result, show, query = "" }: SearchRes
             </button>
           )}
           <div className="flex-1 min-w-0 space-y-0.5">
-            <div className="text-sm font-medium truncate">{result.episode}</div>
+            <div className="text-sm font-medium truncate flex items-center gap-1.5">
+              <span className="truncate">{result.episode}</span>
+              {matchBadge && (
+                <span
+                  className={`shrink-0 inline-flex items-center text-[10px] border rounded-full px-1.5 py-0 font-normal ${matchBadge.tone}`}
+                >
+                  {matchBadge.label}
+                </span>
+              )}
+            </div>
             <div className="font-mono text-muted-foreground">
               {formatTime(result.start, false)} – {formatTime(result.end, false)}
             </div>
