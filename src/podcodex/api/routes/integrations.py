@@ -16,7 +16,9 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import sys
+from functools import cache
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -26,6 +28,70 @@ from pydantic import BaseModel
 from podcodex.core._utils import write_json_atomic
 
 router = APIRouter()
+
+_BIN_NAME = "podcodex-mcp"
+_WSL_LAUNCHER = "wsl.exe"
+_SERVER_KEY = "podcodex"
+
+
+# ── WSL interop ─────────────────────────────────────────────────────────
+
+
+@cache
+def _is_wsl() -> bool:
+    """True when running inside WSL (Claude Desktop lives on Windows).
+
+    Cached: WSL-ness is process-stable and this is on the status-poll path.
+    """
+    if platform.system() != "Linux":
+        return False
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
+def _run_text(argv: list[str], *, cwd: str | None = None) -> str | None:
+    """Run ``argv`` and return stripped stdout, or ``None`` on any failure.
+
+    Thin wrapper used by WSL interop probes — both calls need the same
+    ``check=True``/``capture_output``/``timeout`` shape and the same
+    error-swallowing semantics.
+    """
+    try:
+        out = subprocess.run(
+            argv,
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out or None
+
+
+@cache
+def _wsl_windows_claude_config() -> Path | None:
+    """Resolve the Windows-side Claude Desktop config, reachable from WSL.
+
+    Uses ``cmd.exe`` to read ``%APPDATA%`` on the Windows host, then
+    translates it via ``wslpath`` to a ``/mnt/c/...`` path the WSL
+    process can read and write. Returns ``None`` when Win32 interop is
+    unavailable (headless WSL, unusual configurations) — callers fall
+    back to the in-distro Linux config path.
+
+    Cached: the Windows ``%APPDATA%`` path doesn't change within a
+    process, and the status endpoint is polled.
+    """
+    appdata = _run_text(["cmd.exe", "/c", "echo %APPDATA%"], cwd="/mnt/c")
+    if not appdata or "%APPDATA%" in appdata:
+        return None
+    unix = _run_text(["wslpath", "-u", appdata])
+    if not unix:
+        return None
+    return Path(unix) / "Claude" / "claude_desktop_config.json"
 
 
 # ── Path resolution ─────────────────────────────────────────────────────
@@ -37,6 +103,8 @@ def _claude_config_path() -> Path:
     macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json
     Linux:   ~/.config/Claude/claude_desktop_config.json
     Windows: %APPDATA%\\Claude\\claude_desktop_config.json
+    WSL:     Windows-side %APPDATA%, translated to /mnt/c/... so the
+             Claude Desktop app on the Windows host actually reads it.
     """
     system = platform.system()
     if system == "Darwin":
@@ -50,6 +118,10 @@ def _claude_config_path() -> Path:
     if system == "Windows":
         appdata = os.environ.get("APPDATA") or str(Path.home())
         return Path(appdata) / "Claude" / "claude_desktop_config.json"
+    if _is_wsl():
+        win_cfg = _wsl_windows_claude_config()
+        if win_cfg is not None:
+            return win_cfg
     return Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
 
 
@@ -93,11 +165,11 @@ def _podcodex_mcp_path() -> str:
     is the venv's ``bin``/``Scripts`` folder when the API itself runs
     inside it, which is the common case.
     """
-    found = shutil.which("podcodex-mcp")
+    found = shutil.which(_BIN_NAME)
     if found:
         return str(Path(found).resolve())
     suffix = ".exe" if platform.system() == "Windows" else ""
-    fallback = Path(sys.executable).parent / f"podcodex-mcp{suffix}"
+    fallback = Path(sys.executable).parent / f"{_BIN_NAME}{suffix}"
     return str(fallback.resolve())
 
 
@@ -109,17 +181,39 @@ def _entry() -> dict:
     configuration". So we point it at the stdio binary and let Claude
     spawn it as a subprocess (the HTTP endpoint on the API backend is
     for other clients like Claude Code).
+
+    Under WSL the stdio binary is Linux-ELF and unreachable to a
+    Windows-hosted Claude Desktop, so we wrap it with ``wsl.exe`` and
+    pin the distro when ``WSL_DISTRO_NAME`` is known. Claude spawns
+    ``wsl.exe``, which in turn launches the Linux binary inside the
+    correct distro.
     """
+    if _is_wsl():
+        args: list[str] = []
+        distro = os.environ.get("WSL_DISTRO_NAME")
+        if distro:
+            args += ["-d", distro]
+        args += ["-e", _podcodex_mcp_path()]
+        return {"command": _WSL_LAUNCHER, "args": args}
     return {"command": _podcodex_mcp_path()}
 
 
 def _is_enabled(cfg: dict) -> bool:
-    """True if the config has a podcodex stdio entry pointing at our binary."""
-    entry = (cfg.get("mcpServers") or {}).get("podcodex")
+    """True if the config has a podcodex stdio entry pointing at our binary.
+
+    Accepts both the direct-binary shape (macOS/Linux/Windows) and the
+    ``wsl.exe``-wrapped shape written when the API runs inside WSL.
+    """
+    entry = (cfg.get("mcpServers") or {}).get(_SERVER_KEY)
     if not isinstance(entry, dict):
         return False
     command = str(entry.get("command", ""))
-    return command.endswith("podcodex-mcp") or command.endswith("podcodex-mcp.exe")
+    if command.endswith(_BIN_NAME) or command.endswith(f"{_BIN_NAME}.exe"):
+        return True
+    if command == _WSL_LAUNCHER or command.endswith(f"\\{_WSL_LAUNCHER}"):
+        args = entry.get("args") or []
+        return any(isinstance(a, str) and a.endswith(_BIN_NAME) for a in args)
+    return False
 
 
 # ── Response model ─────────────────────────────────────────────────────
@@ -178,7 +272,7 @@ async def enable_claude_desktop(request: Request) -> ClaudeDesktopStatus:
     path = _claude_config_path()
     cfg = _read_config(path)
     servers = dict(cfg.get("mcpServers") or {})
-    servers["podcodex"] = _entry()
+    servers[_SERVER_KEY] = _entry()
     cfg["mcpServers"] = servers
     write_json_atomic(path, cfg, prefix=".claude_cfg_")
     logger.info(f"integrations: enabled podcodex entry in {path}")
@@ -191,8 +285,8 @@ async def disable_claude_desktop(request: Request) -> ClaudeDesktopStatus:
     path = _claude_config_path()
     cfg = _read_config(path)
     servers = dict(cfg.get("mcpServers") or {})
-    if "podcodex" in servers:
-        servers.pop("podcodex")
+    if _SERVER_KEY in servers:
+        servers.pop(_SERVER_KEY)
         if servers:
             cfg["mcpServers"] = servers
         else:

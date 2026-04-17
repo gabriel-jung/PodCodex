@@ -46,6 +46,28 @@ PodCodex's desktop app does not need to be running for Claude Desktop to use the
 - Absolute path to the binary resolved correctly for your venv.
 - Merge-safe write — every other key in the config is preserved.
 
+### WSL (PodCodex in WSL, Claude Desktop on Windows)
+
+Supported out of the box. When the toggle runs inside WSL it:
+
+1. Detects WSL via `/proc/version` and resolves `%APPDATA%` on the Windows host through `cmd.exe` + `wslpath`, so it writes to the Windows-side config the Windows Claude Desktop actually reads (`\\wsl$\...` is not involved on the hot path — the config lives on the Windows filesystem, the subprocess lives in WSL).
+2. Emits a `wsl.exe`-wrapped entry so Windows Claude Desktop can launch the Linux binary:
+
+   ```json
+   {
+     "mcpServers": {
+       "podcodex": {
+         "command": "wsl.exe",
+         "args": ["-d", "Ubuntu", "-e", "/home/you/PodCodex/.venv/bin/podcodex-mcp"]
+       }
+     }
+   }
+   ```
+
+   `-d <distro>` is set from `WSL_DISTRO_NAME` so Claude always lands in the distro where you installed PodCodex, even if it isn't your WSL default. The Linux path in `args[-1]` is the same binary the Linux path resolver returns.
+
+If Win32 interop isn't available (headless WSL, unusual configs), the toggle falls back to the in-distro Linux config path — harmless, but Windows Claude Desktop won't pick it up. Check `cmd.exe /c "echo %APPDATA%"` runs from your WSL shell.
+
 ### HTTP endpoint (other clients)
 
 When the desktop app is running, the same MCP tools are also served over HTTP at `http://127.0.0.1:18811/mcp`. That's for Claude Code and other MCP clients that support HTTP transport — Claude Desktop itself only accepts stdio entries in its config, which is why the toggle writes stdio.
@@ -107,6 +129,10 @@ Restart Claude Desktop. You should see the 🔌 plug icon next to the composer a
 ### Register with Claude Code
 
 `claude mcp add podcodex /path/to/PodCodex/.venv/bin/podcodex-mcp`
+
+### WSL + manual register
+
+If Path A can't reach interop and you want to register manually from WSL, edit the Windows-side config (`\\wsl.localhost\...` from Windows, or `/mnt/c/Users/<you>/AppData/Roaming/Claude/claude_desktop_config.json` from WSL) with the `wsl.exe` shape shown in Path A's WSL section.
 
 ---
 

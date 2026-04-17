@@ -215,3 +215,85 @@ def test_enable_then_disable_round_trips_cleanly(client, _redirect_config):
     client.post("/api/integrations/claude-desktop/enable")
     client.post("/api/integrations/claude-desktop/disable")
     assert _read(_redirect_config) == original
+
+
+# ── WSL ─────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def _force_wsl(monkeypatch):
+    """Pretend we're inside WSL with a known distro."""
+    monkeypatch.setattr(integrations, "_is_wsl", lambda: True)
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+
+
+def test_wsl_enable_writes_wsl_exe_entry(client, _redirect_config, _force_wsl):
+    r = client.post("/api/integrations/claude-desktop/enable")
+    assert r.status_code == 200, r.text
+    assert r.json()["enabled"] is True
+    entry = _read(_redirect_config)["mcpServers"]["podcodex"]
+    assert entry["command"] == "wsl.exe"
+    assert entry["args"][:2] == ["-d", "Ubuntu"]
+    assert entry["args"][2] == "-e"
+    assert entry["args"][3].endswith("podcodex-mcp")
+
+
+def test_wsl_status_detects_wsl_exe_shape(client, _redirect_config, _force_wsl):
+    _redirect_config.parent.mkdir(parents=True, exist_ok=True)
+    _redirect_config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "podcodex": {
+                        "command": "wsl.exe",
+                        "args": [
+                            "-d",
+                            "Ubuntu",
+                            "-e",
+                            "/home/me/PodCodex/.venv/bin/podcodex-mcp",
+                        ],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    r = client.get("/api/integrations/claude-desktop")
+    assert r.json()["enabled"] is True
+
+
+def test_wsl_disable_removes_wsl_exe_entry(client, _redirect_config, _force_wsl):
+    _redirect_config.parent.mkdir(parents=True, exist_ok=True)
+    _redirect_config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "podcodex": {
+                        "command": "wsl.exe",
+                        "args": [
+                            "-e",
+                            "/home/me/PodCodex/.venv/bin/podcodex-mcp",
+                        ],
+                    },
+                    "zotero": {"command": "uvx", "args": ["zotero-mcp"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    client.post("/api/integrations/claude-desktop/disable")
+    cfg = _read(_redirect_config)
+    assert list(cfg["mcpServers"]) == ["zotero"]
+
+
+def test_wsl_enable_without_distro_omits_distro_flag(
+    client, _redirect_config, monkeypatch
+):
+    monkeypatch.setattr(integrations, "_is_wsl", lambda: True)
+    monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    client.post("/api/integrations/claude-desktop/enable")
+    entry = _read(_redirect_config)["mcpServers"]["podcodex"]
+    assert entry["command"] == "wsl.exe"
+    assert "-d" not in entry["args"]
+    assert entry["args"][0] == "-e"
+    assert entry["args"][1].endswith("podcodex-mcp")
