@@ -86,6 +86,15 @@ export function isOutdated(ep: { transcribe_status?: string; correct_status?: st
 /** Shared CSS class for <select> elements across forms. */
 export const selectClass = "bg-secondary text-secondary-foreground rounded-md px-2 py-1 border border-border text-sm";
 
+/** Input width tokens — use these instead of ad-hoc w-* classes. */
+export const inputWidth = {
+  numeric: "w-20",
+  short: "w-32",
+  medium: "w-48",
+  long: "w-72",
+  full: "w-full",
+} as const;
+
 export function capitalize(s: string): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }

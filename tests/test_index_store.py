@@ -167,6 +167,56 @@ def test_save_chunks_length_mismatch_raises(tmp_path):
         s.save_chunks("c", "ep1", _chunks(3), _rng_embeddings(2))
 
 
+# ── get_chunk_window ─────────────────────────────────────────────────────
+
+
+def _prepare_episode(tmp_path: Path, n: int = 10) -> IndexStore:
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    s.save_chunks("c", "ep1", _chunks(n, "ep1"), _rng_embeddings(n))
+    return s
+
+
+def test_get_chunk_window_returns_center_plus_neighbors(tmp_path):
+    s = _prepare_episode(tmp_path, n=10)
+    window = s.get_chunk_window("c", "ep1", chunk_index=5, window=2)
+    assert [c["chunk_index"] for c in window] == [3, 4, 5, 6, 7]
+
+
+def test_get_chunk_window_clamps_at_start(tmp_path):
+    s = _prepare_episode(tmp_path, n=10)
+    window = s.get_chunk_window("c", "ep1", chunk_index=1, window=3)
+    assert [c["chunk_index"] for c in window] == [0, 1, 2, 3, 4]
+
+
+def test_get_chunk_window_clamps_at_end(tmp_path):
+    s = _prepare_episode(tmp_path, n=10)
+    window = s.get_chunk_window("c", "ep1", chunk_index=9, window=3)
+    assert [c["chunk_index"] for c in window] == [6, 7, 8, 9]
+
+
+def test_get_chunk_window_zero_width_returns_center_only(tmp_path):
+    s = _prepare_episode(tmp_path, n=5)
+    window = s.get_chunk_window("c", "ep1", chunk_index=2, window=0)
+    assert [c["chunk_index"] for c in window] == [2]
+
+
+def test_get_chunk_window_missing_center_returns_empty(tmp_path):
+    s = _prepare_episode(tmp_path, n=5)
+    assert s.get_chunk_window("c", "ep1", chunk_index=99) == []
+
+
+def test_get_chunk_window_missing_episode_returns_empty(tmp_path):
+    s = _prepare_episode(tmp_path, n=3)
+    assert s.get_chunk_window("c", "missing", chunk_index=0) == []
+
+
+def test_get_chunk_window_negative_window_treated_as_zero(tmp_path):
+    s = _prepare_episode(tmp_path, n=5)
+    window = s.get_chunk_window("c", "ep1", chunk_index=2, window=-3)
+    assert [c["chunk_index"] for c in window] == [2]
+
+
 # ── Native search ────────────────────────────────────────────────────────
 
 

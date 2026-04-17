@@ -228,6 +228,63 @@ def write_json(path: Path, data) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+# ──────────────────────────────────────────────
+# Episode title display
+# ──────────────────────────────────────────────
+
+_STEM_PREFIX_RE = re.compile(r"^\d+_(?:episode_\d+_)?", re.IGNORECASE)
+
+
+def humanize_stem(stem: str) -> str:
+    """Convert an episode file stem to a readable fallback title.
+
+    Strips the numeric prefix used for sort stability (``"0027_"``, also
+    matches ``"0027_episode_3_..."``), replaces underscores with spaces
+    and capitalises the first letter. Used when an RSS title is not
+    available in the chunk metadata.
+    """
+    s = _STEM_PREFIX_RE.sub("", stem).replace("_", " ").strip()
+    return (s[:1].upper() + s[1:]) if s else stem
+
+
+def episode_display(chunk: dict) -> str:
+    """Best human-readable episode title for a chunk.
+
+    Canonical resolution order:
+      1. ``chunk["episode_title"]`` — RSS title injected at index time.
+      2. humanised ``chunk["episode"]`` stem.
+
+    Used by the bot, MCP server, and the desktop API so every consumer
+    cites the same title for the same episode.
+    """
+    return chunk.get("episode_title") or humanize_stem(chunk.get("episode", ""))
+
+
+def write_json_atomic(path: Path, data, *, prefix: str = ".tmp_") -> None:
+    """Write ``data`` as formatted JSON atomically.
+
+    Uses a same-directory temp file + ``os.replace`` so a crash mid-write
+    can never leave a half-written config visible to readers (this matters
+    for files other tools — Claude Desktop, the bot — may read concurrently).
+    """
+    import os
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=str(path.parent),
+        prefix=prefix,
+        suffix=".tmp",
+        delete=False,
+    ) as tmp:
+        json.dump(data, tmp, indent=2, ensure_ascii=False)
+        tmp.write("\n")
+        tmp_path = Path(tmp.name)
+    os.replace(tmp_path, path)
+
+
 def wav_duration(path: Path) -> float:
     """Return WAV duration in seconds, or 0.0 on error."""
     import soundfile as sf

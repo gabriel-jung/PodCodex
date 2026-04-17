@@ -20,6 +20,7 @@ import unicodedata
 from collections import Counter
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -534,6 +535,19 @@ class IndexStore:
         """
         return self._distinct(collection, "episode")
 
+    def episode_count(self, collection: str) -> int:
+        """Number of distinct episodes in the collection (no sort).
+
+        Cheaper than ``len(list_episodes(...))`` — skips the sort step,
+        suitable for dashboards / tool responses where order does not
+        matter.
+        """
+        if not self.collection_exists(collection):
+            return 0
+        t = self._table(collection)
+        rows = t.search().select(["episode"]).limit(1_000_000).to_list()
+        return len({r["episode"] for r in rows if r.get("episode")})
+
     def list_episode_titles(self, collection: str) -> dict[str, str]:
         """Return ``{episode_stem: rss_title}`` for episodes that have one.
 
@@ -646,6 +660,46 @@ class IndexStore:
         out = [_row_to_chunk(r) for r in rows]
         out.sort(key=lambda c: c.get("chunk_index", 0))
         return out
+
+    def get_chunk_window(
+        self,
+        collection: str,
+        episode: str,
+        chunk_index: int,
+        window: int = 3,
+    ) -> list[dict]:
+        """Return chunks around a center chunk_index, ordered by position.
+
+        Used to expand a retrieved hit with its neighbors so callers
+        (Discord ``/ask``, MCP ``get_context``) get enough surrounding
+        dialogue for grounded answers.
+
+        Args:
+            collection: Collection name.
+            episode: Episode identifier.
+            chunk_index: The center chunk's position in the episode.
+            window: Number of chunks to include on each side. Clamped to
+                ``[0, ...]``. ``0`` returns only the center chunk.
+
+        Returns:
+            Slice of the episode's chunks covering
+            ``[chunk_index - window, chunk_index + window]``, inclusive,
+            sorted by ``chunk_index``. Empty if the episode or center
+            chunk is not found.
+        """
+        window = max(0, window)
+        chunks = self.load_chunks_no_embeddings(collection, episode)
+        if not chunks:
+            return []
+        center = next(
+            (i for i, c in enumerate(chunks) if c.get("chunk_index") == chunk_index),
+            -1,
+        )
+        if center < 0:
+            return []
+        lo = max(0, center - window)
+        hi = min(len(chunks), center + window + 1)
+        return chunks[lo:hi]
 
     def load_all_chunks(
         self, collection: str, episode: str | None = None
@@ -909,6 +963,89 @@ class IndexStore:
         """Return sorted distinct ``dominant_speaker`` values in a collection."""
         return self._distinct(collection, "dominant_speaker")
 
+    def speaker_stats_multi(self, collections: list[str]) -> list[dict]:
+        """Aggregate :meth:`speaker_stats` across multiple collections.
+
+        Merges per-speaker counts/duration/episodes so callers can pass
+        every collection for a show (or every default-model collection)
+        and get a single ranking. Used by the Discord bot's ``/speakers``
+        command and the MCP ``speaker_stats`` tool.
+        """
+        merged: dict[str, dict] = {}
+        for col in collections:
+            for row in self.speaker_stats(col):
+                m = merged.setdefault(
+                    row["speaker"],
+                    {"chunk_count": 0, "total_duration": 0.0, "episodes": 0},
+                )
+                m["chunk_count"] += row["chunk_count"]
+                m["total_duration"] += row["total_duration"]
+                m["episodes"] += row["episodes"]
+        return sorted(
+            (
+                {
+                    "speaker": sp,
+                    "chunk_count": m["chunk_count"],
+                    "total_duration": round(m["total_duration"], 2),
+                    "episodes": m["episodes"],
+                }
+                for sp, m in merged.items()
+            ),
+            key=lambda x: x["chunk_count"],
+            reverse=True,
+        )
+
+    def speaker_stats(self, collection: str) -> list[dict]:
+        """Return per-speaker chunk counts / duration / episode reach.
+
+        One pass over the collection — no per-speaker search required.
+        Each record: ``{speaker, chunk_count, total_duration, episodes}``
+        sorted by ``chunk_count`` descending. Chunks with no
+        ``dominant_speaker`` are skipped (they'd tell us nothing about
+        who is speaking).
+
+        ``total_duration`` is a rough proxy for airtime — it sums each
+        chunk's ``(end - start)`` attributed to its dominant speaker.
+        """
+        if not self.collection_exists(collection):
+            return []
+        rows = (
+            self._table(collection)
+            .search()
+            .select(["episode", "dominant_speaker", "start", "end"])
+            .limit(1_000_000)
+            .to_list()
+        )
+        groups: dict[str, dict] = {}
+        for r in rows:
+            sp = r.get("dominant_speaker")
+            if not sp:
+                continue
+            g = groups.setdefault(
+                sp, {"chunk_count": 0, "total_duration": 0.0, "episodes": set()}
+            )
+            g["chunk_count"] += 1
+            start = float(r.get("start") or 0.0)
+            end = float(r.get("end") or 0.0)
+            if end > start:
+                g["total_duration"] += end - start
+            ep = r.get("episode")
+            if ep:
+                g["episodes"].add(ep)
+        return sorted(
+            (
+                {
+                    "speaker": sp,
+                    "chunk_count": g["chunk_count"],
+                    "total_duration": round(g["total_duration"], 2),
+                    "episodes": len(g["episodes"]),
+                }
+                for sp, g in groups.items()
+            ),
+            key=lambda x: x["chunk_count"],
+            reverse=True,
+        )
+
     def get_episode_stats(self, collection: str) -> list[dict]:
         """Return per-episode ``{episode, episode_title, chunk_count, duration, speakers}``."""
         if not self.collection_exists(collection):
@@ -1024,3 +1161,17 @@ def _row_to_chunk(row: dict) -> dict:
         if key in row and row[key] is not None:
             chunk[key] = row[key]
     return chunk
+
+
+# ── Process-wide singleton ───────────────────────────────────────────────
+
+
+@cache
+def get_index_store() -> IndexStore:
+    """Process-wide cached IndexStore using the default path resolution.
+
+    Respects ``PODCODEX_INDEX`` env var, then ``~/.local/share/podcodex/index``,
+    then repo-local fallbacks. Callers that need a different path should
+    instantiate ``IndexStore(custom_path)`` directly.
+    """
+    return IndexStore()

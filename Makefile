@@ -28,8 +28,8 @@
 setup: setup-python setup-frontend  ## One-time setup: install all dependencies
 	@echo "\n✅ Setup complete. Run 'make dev' to start developing."
 
-setup-python:  ## Install Python deps (desktop + pipeline + rag + youtube)
-	uv sync --extra desktop --extra pipeline --extra rag --extra youtube
+setup-python:  ## Install Python deps (desktop + pipeline + rag + youtube + mcp)
+	uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp
 
 setup-frontend:  ## Install frontend deps
 	cd frontend && npm install

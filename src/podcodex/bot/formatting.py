@@ -4,23 +4,10 @@ from __future__ import annotations
 
 import re
 import time
-from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from podcodex.core._utils import episode_display, humanize_stem  # noqa: F401 — re-exported
 from podcodex.rag.index_store import fold_text
-
-_STEM_PREFIX_RE = re.compile(r"^\d+_(?:episode_\d+_)?", re.IGNORECASE)
-
-
-def humanize_stem(stem: str) -> str:
-    """Convert an episode file stem into a readable fallback title."""
-    s = _STEM_PREFIX_RE.sub("", stem).replace("_", " ").strip()
-    return (s[:1].upper() + s[1:]) if s else stem
-
-
-def episode_display(chunk: dict) -> str:
-    """RSS title if present, else humanized stem."""
-    return chunk.get("episode_title") or humanize_stem(chunk.get("episode", ""))
 
 
 def format_filter_suffix(
@@ -90,7 +77,6 @@ def count_occurrences(text: str, query: str) -> int:
 
 def highlight(text: str, query: str) -> str:
     """Case-insensitive highlight: wrap all occurrences of *query* in bold."""
-    import re
 
     if not query:
         return text
@@ -212,59 +198,6 @@ def format_context(
 
     content, truncated = safe_truncate("\n\n".join(lines))
     return content, has_more and not truncated
-
-
-# ──────────────────────────────────────────────
-# Result merging
-# ──────────────────────────────────────────────
-
-
-def merge_results(
-    hits_by_collection: dict[str, list[dict]],
-    top_k: int,
-    strategy: str = "roundrobin",
-) -> list[tuple[dict, str]]:
-    """
-    Merge per-collection hits into a final ranked list of (chunk, collection).
-
-    Strategies:
-      - "score"      : global sort by score, slice to top_k (original behaviour,
-                       prone to one dominant show flooding results)
-      - "roundrobin" : interleave one result per collection in score order,
-                       ensures show diversity (default)
-    """
-    if strategy == "score":
-        all_hits = [
-            (chunk, col)
-            for col, chunks in hits_by_collection.items()
-            for chunk in chunks
-        ]
-        all_hits.sort(key=lambda x: x[0].get("score", 0.0), reverse=True)
-        return all_hits[:top_k]
-
-    # Round-robin: sort each collection's hits by score, then interleave
-    sorted_cols: dict[str, list[dict]] = {
-        col: sorted(chunks, key=lambda c: c.get("score", 0.0), reverse=True)
-        for col, chunks in hits_by_collection.items()
-    }
-    result: list[tuple[dict, str]] = []
-    queues = list(sorted_cols.items())
-    idx = defaultdict(int)
-
-    while len(result) < top_k:
-        advanced = False
-        for col, chunks in queues:
-            if len(result) >= top_k:
-                break
-            i = idx[col]
-            if i < len(chunks):
-                result.append((chunks[i], col))
-                idx[col] += 1
-                advanced = True
-        if not advanced:
-            break  # all collections exhausted
-
-    return result
 
 
 # ──────────────────────────────────────────────

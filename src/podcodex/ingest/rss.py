@@ -320,14 +320,20 @@ def download_audio(
     rss_episode: RSSEpisode,
     show_folder: Path,
     force: bool = False,
-) -> Path | None:
+) -> tuple[Path | None, str | None]:
     """Download audio from *rss_episode.audio_url* into *show_folder*.
 
     Also persists episode metadata to the episode output directory.
-    Returns the local path, or None if no audio URL is available.
+
+    Returns ``(path, error)``:
+      - ``(path, None)`` on success (or if file already existed).
+      - ``(None, reason)`` on failure — ``reason`` is a short
+        user-facing string like ``"HTTP 429 (rate limited)"`` or
+        ``"timeout"``, suitable for surfacing in a progress bar.
+      - ``(None, None)`` only when *rss_episode* has no audio URL.
     """
     if not rss_episode.audio_url:
-        return None
+        return None, None
 
     ext = _audio_ext_from_url(rss_episode.audio_url)
     stem = episode_stem(rss_episode)
@@ -338,43 +344,82 @@ def download_audio(
 
     if not force and dest.exists():
         logger.info(f"Audio already exists: {dest.name}")
-        return dest
+        return dest, None
 
     import httpx
     import time as _time
 
-    max_retries = 3
+    max_retries = 2
     # connect=15s, read=30s per chunk, no total cap (large files need time)
     timeout = httpx.Timeout(connect=15, read=30, write=30, pool=15)
+    # Default httpx User-Agent trips bot filters on some podcast CDNs (ausha, etc.).
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) PodCodex/0.1"
+        ),
+        "Accept": "*/*",
+    }
+    last_error: str = "unknown error"
     logger.info(f"Downloading {rss_episode.audio_url} → {dest.name}")
     for attempt in range(1, max_retries + 1):
         try:
             with httpx.stream(
-                "GET", rss_episode.audio_url, follow_redirects=True, timeout=timeout
+                "GET",
+                rss_episode.audio_url,
+                follow_redirects=True,
+                timeout=timeout,
+                headers=headers,
             ) as resp:
                 resp.raise_for_status()
                 with open(dest, "wb") as f:
                     for chunk in resp.iter_bytes(chunk_size=65536):
                         f.write(chunk)
             break  # success
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status == 429:
+                last_error = "HTTP 429 (rate limited)"
+            elif status == 503:
+                last_error = "HTTP 503 (server overloaded)"
+            elif status == 404:
+                last_error = "HTTP 404 (audio not found)"
+            elif status in (401, 403):
+                last_error = f"HTTP {status} (access denied)"
+            else:
+                last_error = f"HTTP {status}"
             logger.warning(
-                f"Download failed for {dest.name} (HTTP error, attempt {attempt}/{max_retries})"
+                f"Download failed for {dest.name} ({last_error}, attempt {attempt}/{max_retries})"
             )
             _cleanup_partial(dest)
             if attempt == max_retries:
-                return None
-            _time.sleep(2 * attempt)
-        except (httpx.TransportError, httpx.TimeoutException) as exc:
+                return None, last_error
+            if status in (429, 503):
+                wait = 15
+            else:
+                wait = 2 * attempt
+            logger.info(f"Retrying {dest.name} in {wait}s")
+            _time.sleep(wait)
+        except httpx.TimeoutException as exc:
+            last_error = "timeout"
             logger.warning(
                 f"Download failed for {dest.name}: {exc} (attempt {attempt}/{max_retries})"
             )
             _cleanup_partial(dest)
             if attempt == max_retries:
-                return None
+                return None, last_error
+            _time.sleep(2 * attempt)
+        except httpx.TransportError as exc:
+            last_error = f"network error: {type(exc).__name__}"
+            logger.warning(
+                f"Download failed for {dest.name}: {exc} (attempt {attempt}/{max_retries})"
+            )
+            _cleanup_partial(dest)
+            if attempt == max_retries:
+                return None, last_error
             _time.sleep(2 * attempt)
 
     logger.success(
         f"Downloaded {dest.name} ({dest.stat().st_size / 1024 / 1024:.1f} MB)"
     )
-    return dest
+    return dest, None

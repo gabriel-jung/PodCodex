@@ -5,10 +5,11 @@ import type { ExtraInfo } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import {
   Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2,
-  Sun, Moon, Monitor, Keyboard, Palette, Mic, Sparkles, Database, Languages,
+  Sun, Moon, Monitor, Keyboard, Palette, Mic, Sparkles, Database, Languages, Plug,
 } from "lucide-react";
 import AppSidebar from "@/components/layout/AppSidebar";
 import PageHeader from "@/components/layout/PageHeader";
+import IntegrationsPanel from "@/components/settings/IntegrationsPanel";
 import { useState } from "react";
 import { useTheme } from "@/hooks/useTheme";
 import { SHORTCUTS, Kbd } from "@/components/ShortcutsHelp";
@@ -19,57 +20,45 @@ import {
   CPU_LABELS, GPU_LABELS, CPU_MODELS, GPU_MODELS,
   usePipelineConfigStore,
 } from "@/stores/pipelineConfigStore";
-import { selectClass } from "@/lib/utils";
+import { selectClass, inputWidth } from "@/lib/utils";
 
-type SettingsTab = "app" | "pipeline" | "system";
-const TABS: { key: SettingsTab; label: string }[] = [
-  { key: "app", label: "App" },
-  { key: "pipeline", label: "Pipeline" },
-  { key: "system", label: "System" },
+type SettingsTab = "general" | "pipeline" | "integrations" | "plugins" | "cache";
+const SETTINGS_SECTIONS = [
+  {
+    items: [
+      { key: "general", label: "General", icon: Palette },
+      { key: "pipeline", label: "Pipeline", icon: Sparkles },
+      { key: "integrations", label: "Integrations", icon: Plug },
+      { key: "plugins", label: "Plugins", icon: Puzzle },
+      { key: "cache", label: "Model cache", icon: HardDrive },
+    ],
+  },
 ];
 
 export default function SettingsPage() {
-  const [tab, setTab] = useState<SettingsTab>("app");
+  const [tab, setTab] = useState<SettingsTab>("general");
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <PageHeader title="Settings" />
       <div className="flex-1 flex overflow-hidden">
-        <AppSidebar />
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="px-6 border-b border-border flex items-center">
-            <div className="flex gap-1">
-              {TABS.map((t) => (
-                <button
-                  key={t.key}
-                  onClick={() => setTab(t.key)}
-                  className={`px-3 py-2 text-sm transition border-b-2 -mb-px ${
-                    tab === t.key
-                      ? "border-primary text-foreground"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
-              {tab === "app" && (
-                <>
-                  <AppearancePanel />
-                  <ShortcutsPanel />
-                </>
-              )}
-              {tab === "pipeline" && <PipelineDefaultsPanel />}
-              {tab === "system" && (
-                <>
-                  <PluginsPanel />
-                  <ModelCachePanel />
-                </>
-              )}
-            </div>
+        <AppSidebar
+          pageSections={SETTINGS_SECTIONS}
+          activeItem={tab}
+          onItemClick={(k) => setTab(k as SettingsTab)}
+        />
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-3xl mx-auto px-10 py-10 space-y-10">
+            {tab === "general" && (
+              <>
+                <AppearancePanel />
+                <ShortcutsPanel />
+              </>
+            )}
+            {tab === "pipeline" && <PipelineDefaultsPanel />}
+            {tab === "integrations" && <IntegrationsPanel />}
+            {tab === "plugins" && <PluginsPanel />}
+            {tab === "cache" && <ModelCachePanel />}
           </div>
         </div>
       </div>
@@ -214,22 +203,34 @@ function PipelineDefaultsPanel() {
             )}
           </select>
         </label>
-        <div className="flex items-center gap-6 text-sm">
-          <label className="flex items-center gap-2">
+        <div className="space-y-2 text-sm">
+          <label className="flex items-start gap-2">
             <input
               type="checkbox"
               checked={transcribe.diarize}
               onChange={(e) => setTranscribe({ diarize: e.target.checked })}
+              className="mt-1"
             />
-            Diarize speakers
+            <span>
+              Diarize speakers
+              <span className="block text-xs text-muted-foreground">
+                Detect and label different speakers (requires a HuggingFace token).
+              </span>
+            </span>
           </label>
-          <label className="flex items-center gap-2">
+          <label className="flex items-start gap-2">
             <input
               type="checkbox"
               checked={transcribe.clean}
               onChange={(e) => setTranscribe({ clean: e.target.checked })}
+              className="mt-1"
             />
-            Clean low-quality segments
+            <span>
+              Clean low-quality segments
+              <span className="block text-xs text-muted-foreground">
+                Drop garbled or off-mic segments that the model flags as low-confidence.
+              </span>
+            </span>
           </label>
         </div>
       </section>

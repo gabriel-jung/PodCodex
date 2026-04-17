@@ -100,7 +100,7 @@ export default function PipelinePanel({
       )}
 
       {/* Progress */}
-      {taskId && <ProgressBar taskId={taskId} onComplete={onTaskComplete} onRetry={onRetry} onDismiss={onDismiss} />}
+      {taskId && <ProgressBar taskId={taskId} onComplete={onTaskComplete} onRetry={onRetry} onDismiss={onDismiss} onCancel={onDismiss} />}
 
       {/* Main content (editor, results, etc.) */}
       {children}

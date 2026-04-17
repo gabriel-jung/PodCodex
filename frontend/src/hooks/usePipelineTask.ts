@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useActiveTask } from "@/hooks/useActiveTask";
+import { cancelTask } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 
 /**
@@ -13,7 +14,7 @@ export function usePipelineTask(
   opts?: { onComplete?: () => void },
 ) {
   const queryClient = useQueryClient();
-  const resumedTaskId = useActiveTask(audioPath);
+  const [resumedTaskId, setResumedTaskId] = useActiveTask(audioPath);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const activeTaskId = taskId || resumedTaskId;
@@ -21,6 +22,11 @@ export function usePipelineTask(
   // Keep a stable ref to onComplete so handleComplete doesn't change identity
   const onCompleteRef = useRef(opts?.onComplete);
   onCompleteRef.current = opts?.onComplete;
+
+  const clearActive = useCallback(() => {
+    setTaskId(null);
+    setResumedTaskId(null);
+  }, [setResumedTaskId]);
 
   const refreshQueries = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.stepAll(stepKey) });
@@ -32,19 +38,24 @@ export function usePipelineTask(
 
   const handleComplete = useCallback(() => {
     refreshQueries();
-    setTaskId(null);
+    clearActive();
     setExpanded(false);
     onCompleteRef.current?.();
-  }, [refreshQueries]);
+  }, [refreshQueries, clearActive]);
 
   const handleRetry = useCallback(() => {
-    setTaskId(null);
+    clearActive();
     setExpanded(true);
-  }, []);
+  }, [clearActive]);
 
+  // Hybrid dismiss — also asks backend to cancel so a hung/running task
+  // releases its audio-path lock, otherwise the next run hits "already
+  // running". Backend cancel is idempotent for finished tasks.
   const handleDismiss = useCallback(() => {
-    setTaskId(null);
-  }, []);
+    const id = taskId || resumedTaskId;
+    if (id) cancelTask(id).catch(() => {});
+    clearActive();
+  }, [taskId, resumedTaskId, clearActive]);
 
   const startTask = useCallback((taskId: string) => {
     setTaskId(taskId);

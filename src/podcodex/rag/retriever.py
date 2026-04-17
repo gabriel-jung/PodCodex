@@ -12,11 +12,14 @@ column.
 from __future__ import annotations
 
 import random
+from collections import defaultdict
+from functools import lru_cache
 
 import numpy as np
 from loguru import logger
 
-from podcodex.rag.index_store import IndexStore
+from podcodex.rag.defaults import DEFAULT_MODEL
+from podcodex.rag.index_store import IndexStore, get_index_store
 
 
 class Retriever:
@@ -58,6 +61,11 @@ class Retriever:
 
     # ── Public API ───────────────────────────────────────────────────────
 
+    def encode_query(self, query: str) -> np.ndarray:
+        """Return the float32 query vector (kept separate so callers can hoist
+        the encode across multiple collections)."""
+        return self.embedder.encode_query(query).astype(np.float32)
+
     def retrieve(
         self,
         query: str,
@@ -67,6 +75,7 @@ class Retriever:
         episode: str | None = None,
         source: str | None = None,
         speaker: str | None = None,
+        query_vector: np.ndarray | None = None,
     ) -> list[dict]:
         """Return the top_k most relevant chunks for a query.
 
@@ -77,15 +86,22 @@ class Retriever:
             alpha: Blend between FTS (0.0) and dense (1.0). Out-of-range
                 values are clamped to ``[0, 1]``.
             episode, source, speaker: Optional equality filters.
+            query_vector: Precomputed query embedding. If provided, skips the
+                embedder call — lets callers that fan out over N collections
+                encode once.
 
         Returns:
             List of chunk dicts with a ``score`` key added.
         """
         if alpha >= 1.0:
-            return self._dense(query, collection, top_k, episode, source, speaker)
+            return self._dense(
+                query, collection, top_k, episode, source, speaker, query_vector
+            )
         if alpha <= 0.0:
             return self._fts(query, collection, top_k, episode, source, speaker)
-        return self._weighted(query, collection, top_k, alpha, episode, source, speaker)
+        return self._weighted(
+            query, collection, top_k, alpha, episode, source, speaker, query_vector
+        )
 
     def find(
         self,
@@ -172,8 +188,13 @@ class Retriever:
         episode: str | None,
         source: str | None,
         speaker: str | None,
+        query_vector: np.ndarray | None = None,
     ) -> list[dict]:
-        qv = self.embedder.encode_query(query).astype(np.float32)
+        qv = (
+            query_vector
+            if query_vector is not None
+            else self.embedder.encode_query(query).astype(np.float32)
+        )
         hits = self._local.search_vector(
             collection,
             qv,
@@ -212,11 +233,12 @@ class Retriever:
         episode: str | None,
         source: str | None,
         speaker: str | None,
+        query_vector: np.ndarray | None = None,
     ) -> list[dict]:
         """Linear blend of rank-normalized dense and FTS scores."""
         k = top_k * 4
         dense_hits = _rank_normalize(
-            self._dense(query, collection, k, episode, source, speaker)
+            self._dense(query, collection, k, episode, source, speaker, query_vector)
         )
         fts_hits = self._fts(query, collection, k, episode, source, speaker)
 
@@ -251,3 +273,60 @@ def _rank_normalize(results: list[dict]) -> list[dict]:
     if n == 0:
         return results
     return [{**r, "score": 1.0 - (i / n)} for i, r in enumerate(results)]
+
+
+@lru_cache(maxsize=4)
+def get_retriever(model: str = DEFAULT_MODEL) -> Retriever:
+    """Process-wide cached Retriever for a given model.
+
+    Shared by the desktop API, MCP server, and anything else that wants a
+    hybrid retriever against the default IndexStore. Bot instances that need
+    a custom index path keep their own Retriever cache.
+    """
+    return Retriever(model=model, local=get_index_store())
+
+
+def merge_results(
+    hits_by_collection: dict[str, list[dict]],
+    top_k: int,
+    strategy: str = "roundrobin",
+) -> list[tuple[dict, str]]:
+    """Merge per-collection hits into a ranked list of ``(chunk, collection)``.
+
+    Strategies:
+      - ``"score"``      — global sort by score, slice to top_k. Prone to one
+                           dominant collection flooding the output.
+      - ``"roundrobin"`` — interleave one result per collection in score order.
+                           Ensures diversity across collections (default).
+    """
+    if strategy == "score":
+        all_hits = [
+            (chunk, col)
+            for col, chunks in hits_by_collection.items()
+            for chunk in chunks
+        ]
+        all_hits.sort(key=lambda x: x[0].get("score", 0.0), reverse=True)
+        return all_hits[:top_k]
+
+    sorted_cols: dict[str, list[dict]] = {
+        col: sorted(chunks, key=lambda c: c.get("score", 0.0), reverse=True)
+        for col, chunks in hits_by_collection.items()
+    }
+    result: list[tuple[dict, str]] = []
+    queues = list(sorted_cols.items())
+    idx = defaultdict(int)
+
+    while len(result) < top_k:
+        advanced = False
+        for col, chunks in queues:
+            if len(result) >= top_k:
+                break
+            i = idx[col]
+            if i < len(chunks):
+                result.append((chunks[i], col))
+                idx[col] += 1
+                advanced = True
+        if not advanced:
+            break  # all collections exhausted
+
+    return result

@@ -24,6 +24,7 @@ import { formatTime } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import { MIN_DENSITY } from "@/hooks/useSegmentFiltering";
 import SectionHeader from "@/components/common/SectionHeader";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
 
 // Matches raw diarizer output like SPEAKER_00, SPEAKER_12.
 const DIARIZER_DEFAULT_RE = /^SPEAKER_\d+$/;
@@ -166,10 +167,27 @@ export default function SpeakerStrip({
       setError(null);
       return;
     }
-    // Conflict: target name already in use (by another chip or another pending rename).
+    // Target name already in use — offer to merge instead of blocking.
     const usedByOther = allNames.has(to) && to !== (pendingRenames[from] ?? null);
     if (usedByOther) {
-      setError(`"${to}" already exists — merge via bulk assign instead`);
+      const fromInfo = infoByName.get(from);
+      const toInfo = infoByName.get(to);
+      const fromCount = fromInfo?.count ?? 0;
+      const targetCount = toInfo?.count ?? 0;
+      confirmDialog.open({
+        title: `Merge "${from}" into "${to}"?`,
+        description:
+          `${fromCount} segment${fromCount === 1 ? "" : "s"} currently labelled "${from}" will be reassigned to "${to}"` +
+          (targetCount > 0 ? ` (which already has ${targetCount} segment${targetCount === 1 ? "" : "s"})` : "") +
+          ". This is applied when you save.",
+        confirmLabel: "Merge",
+        variant: "destructive",
+        onConfirm: () => {
+          onRename(from, to);
+          setEditingFor(null);
+          setError(null);
+        },
+      });
       return;
     }
     onRename(from, to);

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from functools import lru_cache
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -15,18 +14,13 @@ from pydantic import BaseModel, field_validator
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import UNKNOWN_SPEAKERS
 from podcodex.ingest.rss import RSSEpisode, episode_stem
+from podcodex.rag.index_store import get_index_store  # re-export
+
+__all__ = ["get_index_store"]
 
 # ── Shared constants ────────────────────────────
 
 AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".opus", ".wma"}
-
-
-@lru_cache(maxsize=1)
-def get_index_store():
-    """Return the process-wide LanceDB IndexStore singleton."""
-    from podcodex.rag.index_store import IndexStore
-
-    return IndexStore()
 
 
 def _build_source_chain(

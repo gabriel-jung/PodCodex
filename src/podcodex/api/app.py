@@ -9,21 +9,27 @@ import os
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from loguru import logger
 
 from podcodex.api.routes import (
     audio,
     batch,
+    bot_access,
     config,
     export,
     filesystem,
     health,
     index,
+    integrations,
+    mcp_prompts as mcp_prompts_route,
     models,
     correct,
     rss,
@@ -39,13 +45,42 @@ from podcodex.api.routes import (
 load_dotenv()
 
 
+# ── Optional MCP (desktop extra) ────────────────────────────────────────
+try:
+    from podcodex.mcp.server import mcp as _mcp  # type: ignore[import-not-found]
+except Exception as exc:
+    _mcp = None
+    _mcp_import_error: Exception | None = exc
+else:
+    _mcp_import_error = None
+
+
+def _make_lifespan(mcp_http):
+    """Nest the mounted MCP sub-app's lifespan under FastAPI's."""
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if mcp_http is not None:
+            async with mcp_http.router.lifespan_context(app):
+                yield
+        else:
+            yield
+
+    return lifespan
+
+
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
+    mcp_http = _mcp.streamable_http_app() if _mcp is not None else None
     app = FastAPI(
         title="PodCodex",
         version="0.1.0",
         description="Podcast processing pipeline API",
+        lifespan=_make_lifespan(mcp_http),
     )
+    app.state.mcp_available = _mcp is not None
+    if _mcp_import_error is not None:
+        logger.warning(f"MCP extra unavailable: {_mcp_import_error}")
 
     app.add_middleware(
         CORSMiddleware,
@@ -81,11 +116,23 @@ def create_app() -> FastAPI:
     app.include_router(batch.router, prefix="/api/batch", tags=["batch"])
     app.include_router(models.router, prefix="/api/models", tags=["models"])
     app.include_router(export.router, prefix="/api/export", tags=["export"])
+    app.include_router(
+        integrations.router, prefix="/api/integrations", tags=["integrations"]
+    )
+    app.include_router(mcp_prompts_route.router, prefix="/api/mcp", tags=["mcp"])
+    app.include_router(bot_access.router, prefix="/api/bot-access", tags=["bot-access"])
+
+    if mcp_http is not None:
+        app.mount("/mcp", mcp_http)
 
     return app
 
 
+_DEFAULT_API_PORT = 18811
+_API_PORT = int(os.environ.get("PODCODEX_API_PORT", _DEFAULT_API_PORT))
+
 app = create_app()
+app.state.api_port = _API_PORT
 
 
 def main() -> None:
@@ -93,7 +140,7 @@ def main() -> None:
     uvicorn.run(
         "podcodex.api.app:app",
         host="127.0.0.1",
-        port=18811,
+        port=_API_PORT,
         reload=False,
     )
 

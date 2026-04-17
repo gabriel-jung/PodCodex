@@ -9,12 +9,12 @@ from podcodex.bot.formatting import (
     CooldownManager,
     build_compact_embed,
     fmt_time as _fmt_time,
-    merge_results,
     safe_truncate,
     speaker as _speaker,
     score_bar as _score_bar,
     format_context as _format_context,
 )
+from podcodex.rag.retriever import merge_results
 
 
 # ──────────────────────────────────────────────

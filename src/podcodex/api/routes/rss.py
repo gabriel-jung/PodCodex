@@ -99,6 +99,9 @@ async def rss_download(
         downloaded = 0
         skipped = 0
         failed = 0
+        consecutive_failures = 0
+        last_error: str | None = None
+        abort_reason: str | None = None
 
         def _summary() -> str:
             parts = []
@@ -120,6 +123,7 @@ async def rss_download(
 
             if not force_dl and is_downloaded(show_path, stem):
                 skipped += 1
+                consecutive_failures = 0
                 results.append({"stem": stem, "status": "exists"})
                 continue
             if not ep.audio_url:
@@ -127,9 +131,10 @@ async def rss_download(
                 results.append({"stem": stem, "status": "no_audio"})
                 continue
 
-            audio_path = download_audio(ep, show_path, force=force_dl)
+            audio_path, error = download_audio(ep, show_path, force=force_dl)
             if audio_path:
                 downloaded += 1
+                consecutive_failures = 0
                 results.append(
                     {
                         "stem": stem,
@@ -140,7 +145,19 @@ async def rss_download(
                 invalidate_scan_cache(show_path)
             else:
                 failed += 1
-                results.append({"stem": stem, "status": "failed"})
+                consecutive_failures += 1
+                last_error = error
+                results.append({"stem": stem, "status": "failed", "error": error})
+                # Stop the batch on repeated rate-limits / outages — retrying
+                # every episode past the 3rd consecutive failure just wastes
+                # time and extends the rate-limit window.
+                if consecutive_failures >= 3 and total > 1:
+                    abort_reason = error or "repeated failures"
+                    progress_cb(
+                        (i + 1) / total,
+                        f"Stopped after 3 failures ({abort_reason}) — {_summary()}",
+                    )
+                    break
 
             progress_cb((i + 1) / total, f"[{i + 1}/{total}] {_summary()}")
 
@@ -148,7 +165,13 @@ async def rss_download(
             if total > 1:
                 time.sleep(5)
 
-        progress_cb(1.0, _summary() or "Done")
+        if abort_reason:
+            final = f"Stopped: {abort_reason} — {_summary()}"
+        elif failed and not downloaded:
+            final = f"Failed: {last_error or 'all downloads failed'}"
+        else:
+            final = _summary() or "Done"
+        progress_cb(1.0, final)
         return results
 
     return submit_task("download", f"download:{path}", run_downloads)

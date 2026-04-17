@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -10,16 +9,10 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import AUDIO_EXTS, get_index_store
+from podcodex.core._utils import humanize_stem
+from podcodex.rag.retriever import get_retriever
 
 router = APIRouter()
-
-
-_STEM_PREFIX_RE = re.compile(r"^\d+_(?:episode_\d+_)?", re.IGNORECASE)
-
-
-def _humanize_stem(stem: str) -> str:
-    s = _STEM_PREFIX_RE.sub("", stem).replace("_", " ").strip()
-    return (s[:1].upper() + s[1:]) if s else stem
 
 
 def _build_audio_lookup() -> dict[str, dict[str, str]]:
@@ -126,17 +119,15 @@ class SearchResult(BaseModel):
 async def search_query(req: SearchRequest) -> list[dict]:
     """Hybrid search over the global LanceDB index."""
     from podcodex.rag.defaults import MODELS
-    from podcodex.rag.retriever import Retriever
     from podcodex.rag.store import collection_name
 
     if req.model not in MODELS:
         raise HTTPException(400, f"Unknown model: {req.model}")
 
     col = collection_name(req.show, req.model, req.chunking)
-    local = get_index_store()
     logger.info("Search: show={!r} col={!r} episode={!r}", req.show, col, req.episode)
     try:
-        retriever = Retriever(model=req.model, local=local)
+        retriever = get_retriever(req.model)
         results = retriever.retrieve(
             req.query,
             col,
@@ -159,7 +150,7 @@ def _result_to_dict(
     r: dict, audio_lookup: dict[str, dict[str, str]] | None = None
 ) -> dict:
     stem = r.get("episode", "")
-    title = r.get("episode_title") or _humanize_stem(stem)
+    title = r.get("episode_title") or humanize_stem(stem)
     show_name = r.get("show", "")
     audio_path = (
         (audio_lookup.get(show_name) or {}).get(stem, "")
@@ -198,11 +189,10 @@ class ExactRequest(BaseModel):
 @router.post("/exact", response_model=list[SearchResult])
 async def exact_search(req: ExactRequest) -> list[dict]:
     """Phrase search: returns all exact, accent-variant, and near-typo matches."""
-    from podcodex.rag.retriever import Retriever
     from podcodex.rag.store import collection_name
 
     col = collection_name(req.show, req.model, req.chunking)
-    retriever = Retriever(model=req.model, local=get_index_store())
+    retriever = get_retriever(req.model)
     hits = retriever.find(
         req.query,
         col,
@@ -229,11 +219,10 @@ class RandomRequest(BaseModel):
 @router.post("/random", response_model=SearchResult | None)
 async def random_quote(req: RandomRequest) -> dict | None:
     """Pick a random indexed chunk (optionally filtered)."""
-    from podcodex.rag.retriever import Retriever
     from podcodex.rag.store import collection_name
 
     col = collection_name(req.show, req.model, req.chunking)
-    retriever = Retriever(model=req.model, local=get_index_store())
+    retriever = get_retriever(req.model)
     chunk = retriever.random(
         col, episode=req.episode, speaker=req.speaker, source=req.source
     )

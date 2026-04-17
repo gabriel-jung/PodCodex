@@ -309,8 +309,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       <div className="flex-1 flex flex-col overflow-hidden">
 
       {tab === "episodes" && (<>
-      {/* Toolbar: filters + search + view toggle */}
+      {/* Toolbar: search + filters + view toggle */}
       <div className="px-6 py-2 border-b border-border flex items-center gap-2">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search episodes..."
+          className="input w-40 py-1.5 text-xs"
+        />
         <select
           value={filter}
           onChange={(e) => setFilter(e.target.value as StatusFilter)}
@@ -325,12 +331,6 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           <option value="outdated">Outdated ({filterCounts.outdated})</option>
         </select>
         <FilterDropdown />
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search episodes..."
-          className="input w-40 py-1.5 text-xs"
-        />
         <div className="flex-1" />
         {view === "card" && (
           <input type="range" min={1} max={5} value={cardSize} onChange={(e) => setCardSize(Number(e.target.value))} className="w-16 accent-primary" />

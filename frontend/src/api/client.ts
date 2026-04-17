@@ -30,3 +30,6 @@ export * from "./translate";
 export * from "./synthesize";
 export * from "./search";
 export * from "./filesystem";
+export * from "./integrations";
+export * from "./mcpPrompts";
+export * from "./botAccess";

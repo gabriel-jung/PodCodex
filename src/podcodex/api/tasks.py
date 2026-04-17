@@ -198,12 +198,14 @@ class TaskManager:
         def run() -> None:
             info.status = "running"
             self._broadcast_sync(task_id)
-            # Attach a log handler that captures debug output for this task
-            log_handler = _TaskLogHandler(info, self)
+            # Bind log capture to this worker thread so concurrent tasks
+            # don't bleed each other's records into the per-task log buffer.
+            thread_id = threading.get_ident()
+            log_handler = _TaskLogHandler(info, self, thread_id=thread_id)
             root = logging.getLogger()
             root.addHandler(log_handler)
             # Also capture loguru output (used by core pipeline modules)
-            loguru_sink_id = _add_loguru_sink(info, self)
+            loguru_sink_id = _add_loguru_sink(info, self, thread_id=thread_id)
             try:
                 result = fn(progress_cb, *args)
                 if not info.cancel_event.is_set():
@@ -401,7 +403,9 @@ class TaskManager:
         self._ws_connections.discard(ws)
 
 
-def _add_loguru_sink(info: TaskInfo, manager: "TaskManager") -> int | None:
+def _add_loguru_sink(
+    info: TaskInfo, manager: "TaskManager", thread_id: int | None = None
+) -> int | None:
     """Add a loguru sink that feeds into a task's log buffer."""
     try:
         from loguru import logger as loguru_logger
@@ -418,7 +422,12 @@ def _add_loguru_sink(info: TaskInfo, manager: "TaskManager") -> int | None:
                 _last_broadcast["t"] = now
                 manager._broadcast_sync(info.task_id)
 
-        return loguru_logger.add(sink, level="INFO", format="{name}: {message}")
+        filter_fn = (
+            (lambda r: r["thread"].id == thread_id) if thread_id is not None else None
+        )
+        return loguru_logger.add(
+            sink, level="INFO", format="{name}: {message}", filter=filter_fn
+        )
     except ImportError:
         return None
 
@@ -439,18 +448,24 @@ class _TaskLogHandler(logging.Handler):
     """Captures log records from any logger while a task is running."""
 
     def __init__(
-        self, task_info: TaskInfo, manager: "TaskManager", level: int = logging.DEBUG
+        self,
+        task_info: TaskInfo,
+        manager: "TaskManager",
+        thread_id: int | None = None,
+        level: int = logging.DEBUG,
     ) -> None:
         """Bind this handler to a specific task and manager for broadcasting."""
         super().__init__(level)
         self._info = task_info
         self._manager = manager
+        self._thread_id = thread_id
         self._last_broadcast = 0.0
         self.setFormatter(logging.Formatter("%(name)s: %(message)s"))
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Write the formatted record to the task log, throttling broadcasts."""
         try:
+            if self._thread_id is not None and record.thread != self._thread_id:
+                return
             self._info.add_log(self.format(record))
             # Throttle broadcasts to at most once per second
             now = time.monotonic()

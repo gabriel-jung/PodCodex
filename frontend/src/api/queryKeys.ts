@@ -65,6 +65,15 @@ export const queryKeys = {
   episodeCollections: (audioPath: AudioPath, showName: string) =>
     ["index", "episode-collections", audioPath, showName] as const,
 
+  // ── Integrations & MCP ────────────────────────────────
+  claudeDesktop: () => ["integrations", "claude-desktop"] as const,
+  mcpPrompts: () => ["mcp", "prompts"] as const,
+
+  // ── Bot access ────────────────────────────────────────
+  showAccess: (showName: string) =>
+    ["bot-access", "show", showName] as const,
+  showAccessList: () => ["bot-access", "list"] as const,
+
   // ── Step-scoped (TranscriptViewer editor key: "transcribe" | "correct" | "translate-xxx") ──
   /** All queries for a given editor step. */
   stepAll: (editorKey: string) => [editorKey] as const,

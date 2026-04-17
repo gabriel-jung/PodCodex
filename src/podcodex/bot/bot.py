@@ -17,6 +17,8 @@ Slash commands (user-facing):
               Index overview: shows, episodes, segments, duration.
     /episodes show [model]
               List episodes for a show with segment counts.
+    /speakers [show] [model]
+              Per-speaker chunk counts and airtime, ranked.
 
 Slash commands (info):
     /help     Show available commands and how to use them.
@@ -47,6 +49,7 @@ import random
 import secrets
 import sys
 import time
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
@@ -64,7 +67,6 @@ from podcodex.bot.formatting import (
     fmt_timestamp,
     format_filter_suffix,
     humanize_stem,
-    merge_results,
     score_bar,
     speaker_lines,
     truncate_description,
@@ -75,13 +77,14 @@ from podcodex.core.constants import LLM_PROVIDERS
 from podcodex.rag.defaults import (
     ALPHA,
     CHUNKING_STRATEGIES,
+    CONTEXT_WINDOW,
     DEFAULT_CHUNKING,
     DEFAULT_MODEL,
     MODELS,
     TOP_K,
 )
-from podcodex.rag.index_store import IndexStore
-from podcodex.rag.retriever import Retriever
+from podcodex.rag.index_store import IndexStore, get_index_store
+from podcodex.rag.retriever import Retriever, get_retriever, merge_results
 from podcodex.rag.store import collection_name
 
 # ── Slash-command choices ─────────────────────
@@ -439,10 +442,18 @@ class PodCodexBot(discord.Client):
     @property
     def local(self) -> IndexStore:
         if self._local is None:
-            self._local = IndexStore(self.config.index_path)
+            # When no custom path is set, share the process-wide singleton so
+            # embedder / Retriever caches are reused across bot + API + MCP.
+            self._local = (
+                IndexStore(self.config.index_path)
+                if self.config.index_path
+                else get_index_store()
+            )
         return self._local
 
     def retriever(self, model: str) -> Retriever:
+        if self.config.index_path is None:
+            return get_retriever(model)
         if model not in self._retrievers:
             self._retrievers[model] = Retriever(model=model, local=self.local)
         return self._retrievers[model]
@@ -1057,6 +1068,25 @@ class PodCodexBot(discord.Client):
         episodes.autocomplete("show")(self._show_autocomplete)
         episodes.autocomplete("model")(self._model_autocomplete)
 
+        # /speakers ───────────────────────────
+        @self.tree.command(
+            name="speakers",
+            description="Who speaks the most — chunk count and airtime per speaker",
+        )
+        @app_commands.describe(
+            show="Pick a show (aggregates all if empty)",
+            model="Search model (leave empty for server default)",
+        )
+        async def speakers(
+            interaction: discord.Interaction,
+            show: str = "",
+            model: str = "",
+        ) -> None:
+            await self._handle_speakers(interaction, show or None, model or None)
+
+        speakers.autocomplete("show")(self._show_autocomplete)
+        speakers.autocomplete("model")(self._model_autocomplete)
+
         # /setup ──────────────────────────────
         @self.tree.command(
             name="setup",
@@ -1228,6 +1258,11 @@ class PodCodexBot(discord.Client):
             embed.add_field(
                 name="/stats",
                 value="Overview of what's indexed: shows, episodes, segments, duration.",
+                inline=False,
+            )
+            embed.add_field(
+                name="/speakers",
+                value="Who speaks the most — chunk counts and airtime per speaker.",
                 inline=False,
             )
             embed.add_field(
@@ -1430,14 +1465,43 @@ class PodCodexBot(discord.Client):
             )
             return
 
-        chunks = [chunk for chunk, _col in results]
+        # Group hits by (collection, episode) so each episode is loaded once,
+        # then slice windows around each hit in memory. Avoids N full-episode
+        # scans when multiple hits come from the same episode.
+        groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        for chunk, col in results:
+            groups[(col, chunk.get("episode", ""))].append(chunk)
+
+        expanded: list[dict] = []
+        seen: set[tuple[str, str, int]] = set()
+        for (col, ep), hits in groups.items():
+            ep_chunks = await loop.run_in_executor(
+                None, self.local.load_chunks_no_embeddings, col, ep
+            )
+            by_idx = {c.get("chunk_index"): i for i, c in enumerate(ep_chunks)}
+            for hit in hits:
+                ci = hit.get("chunk_index")
+                center = by_idx.get(ci, -1) if ci is not None else -1
+                if center < 0:
+                    window = [hit]
+                else:
+                    lo = max(0, center - CONTEXT_WINDOW)
+                    hi = min(len(ep_chunks), center + CONTEXT_WINDOW + 1)
+                    window = ep_chunks[lo:hi]
+                for w in window:
+                    wci = w.get("chunk_index")
+                    key = (col, w.get("episode", ""), wci if wci is not None else -1)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    expanded.append(w)
 
         try:
             answer = await loop.run_in_executor(
                 None,
                 lambda: synthesize_answer(
                     question,
-                    chunks,
+                    expanded,
                     provider=settings.ask_provider,
                     model=settings.ask_model,
                     api_base_url=settings.ask_api_url,
@@ -1479,7 +1543,7 @@ class PodCodexBot(discord.Client):
         )
         embed.set_author(name=f'❓ "{question}"')
         embed.set_footer(
-            text=f"{len(chunks)} source{'s' if len(chunks) != 1 else ''} · {provider_label}"
+            text=f"{len(results)} source{'s' if len(results) != 1 else ''} · {provider_label}"
         )
 
         view = SourcesView(source_pages)
@@ -1976,6 +2040,82 @@ class PodCodexBot(discord.Client):
             inline=False,
         )
         embed.set_footer(text=f"Model: {MODELS[settings.model].label}")
+
+        await interaction.followup.send(embed=embed)
+
+    # ── /speakers handler ─────────────────────
+
+    async def _handle_speakers(
+        self,
+        interaction: discord.Interaction,
+        show: str | None,
+        model: str | None,
+    ) -> None:
+        await interaction.response.defer()
+        settings = self._effective_settings(interaction.guild_id, model or "", 0)
+        loop = asyncio.get_running_loop()
+
+        try:
+            col_info = await self._cached_col_info()
+            collections = [
+                name
+                for name, info in col_info.items()
+                if (not show or info["show"] == show)
+                and info["model"] == settings.model
+                and info["chunker"] == settings.chunker
+            ]
+            collections = self._filter_collections(collections, settings, col_info)
+            if not collections:
+                speaker_shows = self._resolve_shows(settings, show) if show else None
+                await interaction.followup.send(
+                    self._empty_collections_message(col_info, settings, speaker_shows),
+                    ephemeral=True,
+                )
+                return
+
+            ranked = await loop.run_in_executor(
+                None, self.local.speaker_stats_multi, collections
+            )
+
+        except Exception:
+            logger.exception("Speakers error")
+            await interaction.followup.send(
+                "❌ Could not retrieve speaker stats.", ephemeral=True
+            )
+            return
+
+        if not ranked:
+            await interaction.followup.send(
+                "No speaker attribution found in these transcripts.",
+                ephemeral=True,
+            )
+            return
+
+        top = ranked[:15]
+        total_duration = sum(r["total_duration"] for r in ranked)
+
+        lines = []
+        for i, r in enumerate(top, start=1):
+            share = (
+                (r["total_duration"] / total_duration * 100) if total_duration else 0
+            )
+            lines.append(
+                f"`{i:>2}.` **{r['speaker']}** — `{fmt_time(r['total_duration'])}` "
+                f"({share:.0f}%) · {r['chunk_count']} seg · {r['episodes']} ep"
+            )
+
+        scope = show or f"{len(collections)} show{'s' if len(collections) > 1 else ''}"
+        embed = discord.Embed(
+            title=f"🎙 Speakers — {scope}",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+        )
+        if len(ranked) > len(top):
+            embed.set_footer(
+                text=f"Showing top {len(top)} of {len(ranked)} · Model: {MODELS[settings.model].label}"
+            )
+        else:
+            embed.set_footer(text=f"Model: {MODELS[settings.model].label}")
 
         await interaction.followup.send(embed=embed)
 
