@@ -525,15 +525,19 @@ def export_transcript(
         segments = raw["segments"]
         mapping = {}
 
+    def _resolve_speaker(raw) -> str:
+        # NaN from parquet is a float that is truthy — coerce to "" first.
+        if raw is None or (isinstance(raw, float) and raw != raw):
+            raw = ""
+        raw = str(raw)
+        return mapping.get(raw, raw) or "UNKNOWN"
+
     resolved = [
         {
             "start": round(float(seg["start"]), 3),
             "end": round(float(seg["end"]), 3),
             "speaker": (
-                mapping.get(seg.get("speaker") or "", seg.get("speaker") or "")
-                or "UNKNOWN"
-                if diarized
-                else NARRATOR_SPEAKER
+                _resolve_speaker(seg.get("speaker")) if diarized else NARRATOR_SPEAKER
             ),
             "text": str(seg.get("text", "")).strip(),
         }
