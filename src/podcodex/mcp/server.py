@@ -232,7 +232,7 @@ def exact(
     out: list[dict] = []
     for col in collections:
         try:
-            matches = ret.find(query, col, episode=episode, speaker=speaker)
+            matches = ret.exact(query, col, episode=episode, speaker=speaker)
         except Exception:
             logger.exception(f"exact: collection {col!r} failed; skipping")
             continue

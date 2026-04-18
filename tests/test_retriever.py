@@ -172,19 +172,19 @@ def test_dense_search_speaker_filter(tmp_path):
     assert all(r.get("dominant_speaker") == "Alice" for r in results)
 
 
-# ── find / random ────────────────────────────────────────────────────────
+# ── exact / random ────────────────────────────────────────────────────────
 
 
-def test_find_returns_token_match(tmp_path):
+def test_exact_returns_token_match(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
-    results = retriever.find("neural", col)
+    results = retriever.exact("neural", col)
     assert len(results) > 0
     assert all(r["score"] == 1.0 for r in results)
 
 
-def test_find_no_match(tmp_path):
+def test_exact_no_match(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
-    assert retriever.find("xyznonexistent", col) == []
+    assert retriever.exact("xyznonexistent", col) == []
 
 
 def test_random_returns_chunk(tmp_path):

@@ -1610,7 +1610,7 @@ class PodCodexBot(discord.Client):
             for col in collections:
                 hits = await loop.run_in_executor(
                     None,
-                    lambda c=col: self.retriever(settings.model).find(
+                    lambda c=col: self.retriever(settings.model).exact(
                         query,
                         c,
                         source=source,

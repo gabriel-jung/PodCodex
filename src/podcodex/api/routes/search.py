@@ -195,7 +195,7 @@ async def exact_search(req: ExactRequest) -> list[dict]:
 
     col = collection_name(req.show, req.model, req.chunking)
     retriever = get_retriever(req.model)
-    hits = retriever.find(
+    hits = retriever.exact(
         req.query,
         col,
         episode=req.episode,

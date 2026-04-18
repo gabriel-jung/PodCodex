@@ -103,7 +103,7 @@ class Retriever:
             query, collection, top_k, alpha, episode, source, speaker, query_vector
         )
 
-    def find(
+    def exact(
         self,
         query: str,
         collection: str,
@@ -168,13 +168,12 @@ class Retriever:
                 turns = matching or turns
             turn = random.choice(turns)
             return {
-                "show": chunk.get("show", ""),
-                "episode": chunk.get("episode", ""),
-                "source": chunk.get("source", ""),
+                **chunk,
                 "speaker": turn.get("speaker", "Unknown"),
                 "text": turn.get("text", ""),
                 "start": turn.get("start", chunk.get("start", 0.0)),
                 "end": turn.get("end", chunk.get("end", 0.0)),
+                "speakers": [turn],
             }
         return chunk
 
