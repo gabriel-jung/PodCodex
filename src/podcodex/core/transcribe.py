@@ -577,7 +577,7 @@ def export_transcript(
             "transcript",
             resolved,
             _make_prov(
-                _build_meta(resolved), ptype="edited", extra_params={"clean": True}
+                _build_meta(resolved), ptype="validated", extra_params={"clean": True}
             ),
         )
         logger.success(f"Clean export — {len(resolved)} segments (filtered)")

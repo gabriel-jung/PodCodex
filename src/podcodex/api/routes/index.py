@@ -58,7 +58,7 @@ async def index_sources(
     Includes provenance detail (model, provider) when available.
     """
     from podcodex.core.translate import list_translations
-    from podcodex.core.versions import get_latest_provenance
+    from podcodex.core.versions import get_latest_provenance, is_edited
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
@@ -78,7 +78,7 @@ async def index_sources(
                 parts.append(str(params["llm_mode"]))
             if lang:
                 parts.append(lang.replace("_", " ").title())
-            if meta.get("manual_edit") or meta.get("type") == "validated":
+            if is_edited(meta):
                 parts.append("edited")
             return ", ".join(parts)
         except Exception:

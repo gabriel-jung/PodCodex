@@ -28,7 +28,7 @@ import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import SearchPanel from "@/components/search/SearchPanel";
 import SegmentContextDialog from "@/components/search/SegmentContextDialog";
-import { formatDuration, formatDate, stripHtml, errorMessage, langLabel, versionDate, versionLabel } from "@/lib/utils";
+import { formatDuration, formatDate, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import {
   Play,
@@ -658,8 +658,7 @@ function StepGroup({
 }
 
 function latestSummary(v: VersionEntry): string {
-  const edited = v.type === "validated" || v.manual_edit;
-  return `${versionLabel(v)} · ${versionDate(v)}${edited ? " · edited" : ""}`;
+  return `${versionLabel(v)} · ${versionDate(v)}${isEdited(v) ? " · edited" : ""}`;
 }
 
 function SourcesSection({

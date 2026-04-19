@@ -154,13 +154,25 @@ def test_batch_single_batch_when_under_limit():
 
 
 def test_batch_splits_by_duration():
-    # Each segment is 10 minutes → 15-minute limit fits one per batch.
+    # Segments start every ~17 min → each falls in its own 15-min window.
     segments = [
-        {"speaker": "A", "start": i * 600, "end": (i + 1) * 600, "text": f"s{i}"}
+        {"speaker": "A", "start": i * 1000, "end": i * 1000 + 300, "text": f"s{i}"}
         for i in range(3)
     ]
     batches = batch_segments_by_duration(segments, batch_minutes=15)
     assert len(batches) == 3
+
+
+def test_batch_merges_tiny_overshoot_tail():
+    # Segments run 5 s past the second 15-min cutoff. Expect 2 batches,
+    # not 3 — the tiny tail is absorbed into the previous batch.
+    segments = [
+        {"speaker": "A", "start": float(s), "end": float(s) + 0.5, "text": f"s{s}"}
+        for s in range(0, 1906, 100)
+    ]
+    batches = batch_segments_by_duration(segments, batch_minutes=15)
+    assert len(batches) == 2
+    assert sum(len(b) for b in batches) == len(segments)
 
 
 def test_batch_groups_short_segments():

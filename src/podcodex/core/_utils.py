@@ -426,6 +426,18 @@ def batch_segments_by_duration(
     if current:
         batches.append(current)
 
+    # Merge a tiny overshoot tail into the previous batch. When segments
+    # extend just past the final cutoff (e.g. episode.duration under-reports
+    # the real transcript span), the user's chosen batch count would otherwise
+    # gain a spurious extra batch containing only the last few seconds.
+    if len(batches) >= 2:
+        last_batch_start = cutoff - max_seconds
+        last_seg = batches[-1][-1]
+        last_end = float(last_seg.get("end", last_seg.get("start", 0)))
+        span = last_end - last_batch_start
+        if 0 <= span < max_seconds * 0.15:
+            batches[-2].extend(batches.pop())
+
     return batches
 
 

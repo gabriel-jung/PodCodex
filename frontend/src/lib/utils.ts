@@ -168,11 +168,21 @@ const STEP_LABELS: Record<string, string> = {
   diarized_segments: "Diarized segments",
 };
 
+/** True when a version should be labelled "edited" in the UI — covers both
+ *  user hand-edits (`manual_edit`) and processed-but-not-raw outputs such as
+ *  clean exports or applied manual-LLM passes (`type === "validated"`).
+ *  Use this helper everywhere the UI shows an edited marker, so the check
+ *  never drifts between surfaces. */
+export function isEdited(v: { type?: string; manual_edit?: boolean } | null | undefined): boolean {
+  if (!v) return false;
+  return v.type === "validated" || v.manual_edit === true;
+}
+
 /** Format a version's step as a display tag, e.g. "transcript", "translated · fr". */
-export function stepTag(step: string, type?: string): string {
-  const edited = type === "validated" ? " · edited" : "";
-  if (step in STEP_LABELS) return `${STEP_LABELS[step]}${edited}`;
-  return `translated · ${step}${edited}`;
+export function stepTag(step: string, edited: boolean = false): string {
+  const suffix = edited ? " · edited" : "";
+  if (step in STEP_LABELS) return `${STEP_LABELS[step]}${suffix}`;
+  return `translated · ${step}${suffix}`;
 };
 
 /** Build a compact label for a version (model, provider, language info).
@@ -211,7 +221,7 @@ export function versionLabel(v: VersionEntry): string {
 /** Full single-line label for a version: "[Transcript · edited] 9 Apr, 10:37 — base (21 seg)".
  *  Use this in every dropdown / picker so the format stays identical everywhere. */
 export function versionOption(v: VersionEntry): string {
-  const step = v.step ? `[${stepTag(v.step, v.type)}] ` : "";
+  const step = v.step ? `[${stepTag(v.step, isEdited(v))}] ` : "";
   return `${step}${versionDate(v)} — ${versionLabel(v)} (${v.segment_count} seg)`;
 }
 

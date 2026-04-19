@@ -573,7 +573,7 @@ export interface TranscriptViewerProps {
   saveSpeakerMap?: (mapping: Record<string, string>) => Promise<unknown>;
   // Version support
   loadVersions?: () => Promise<VersionEntry[]>;
-  loadVersion?: (id: string) => Promise<Segment[]>;
+  loadVersion?: (id: string, version?: VersionEntry) => Promise<Segment[]>;
   deleteVersion?: (id: string) => Promise<unknown>;
   // Export
   exportSource?: string;
@@ -675,7 +675,10 @@ export default function TranscriptViewer({
 
   const { data: versionSegments } = useQuery({
     queryKey: queryKeys.stepVersionSegments(editorKey, audioPath, selectedVersionId),
-    queryFn: () => loadVersion!(selectedVersionId!),
+    queryFn: () => {
+      const v = versions?.find((x) => x.id === selectedVersionId);
+      return loadVersion!(selectedVersionId!, v);
+    },
     enabled: !!loadVersion && !!selectedVersionId,
   });
 
@@ -813,7 +816,8 @@ export default function TranscriptViewer({
     }
     if (loadVersion) {
       try {
-        const data = await loadVersion(choice);
+        const v = versions?.find((x) => x.id === choice);
+        const data = await loadVersion(choice, v);
         setVersionRefSegments(data);
       } catch {
         setVersionRefSegments(null);

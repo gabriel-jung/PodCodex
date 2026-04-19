@@ -70,9 +70,24 @@ export default function ManualModePanel({
     try {
       const parsed = JSON.parse(pastedText);
       const arr = Array.isArray(parsed) ? parsed : [parsed];
+      const expected = prompts?.[currentBatch]?.segment_count;
+      // Per-batch count check catches LLM drift before the whole apply runs.
+      // Without this, one off-by-one batch would cause the backend to reject
+      // all corrections as an index-drift mismatch.
+      if (expected != null && arr.length !== expected) {
+        const startIndex = (prompts ?? [])
+          .slice(0, currentBatch)
+          .reduce((s, p) => s + p.segment_count, 0);
+        const drift = describeDrift(arr, prompts?.[currentBatch]?.prompt ?? "", startIndex);
+        setParseError(
+          `Batch ${currentBatch + 1} expects ${expected} entries, got ${arr.length}. ` +
+          (drift ? drift + " " : "") +
+          "Regenerate this batch or trim the response so the counts match.",
+        );
+        return;
+      }
       setBatchResults({ ...batchResults, [currentBatch]: arr });
       setPastedText("");
-      // Auto-advance to next unfinished batch
       if (prompts) {
         const next = findNextUnfinished(currentBatch, prompts.length, { ...batchResults, [currentBatch]: arr });
         if (next !== null) setCurrentBatch(next);
@@ -272,4 +287,98 @@ function findNextUnfinished(
     if (results[i] == null) return i;
   }
   return null;
+}
+
+/** Pull expected `[N] text` lines out of a prompt. Ignores trailing
+ *  instruction block. Returns map {absIndex: text}. */
+function parsePromptEntries(prompt: string): Map<number, string> {
+  const map = new Map<number, string>();
+  const re = /^\[(\d+)\]\s+(.+)$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(prompt)) !== null) {
+    map.set(Number(m[1]), m[2]);
+  }
+  return map;
+}
+
+/** Locate the first point where the LLM response diverges from the prompt.
+ *  Three signals, in order of reliability:
+ *    1. `index` field on entries (LLM often echoes the prompt's [N] markers).
+ *    2. Text similarity to the corresponding prompt entry.
+ *    3. Fallback: surface the first and last few entries so the user can
+ *       eyeball where the list got too long or short. */
+function describeDrift(
+  arr: unknown[],
+  prompt: string,
+  startIndex: number,
+): string | null {
+  const expected = parsePromptEntries(prompt);
+  const preview = (s: unknown, n = 50) =>
+    String(s ?? "").replace(/\s+/g, " ").slice(0, n);
+
+  // Signal 1: explicit index field drift
+  for (let i = 0; i < arr.length; i++) {
+    const item = arr[i] as { index?: unknown; text?: unknown } | null;
+    if (item && typeof item.index === "number") {
+      const want = i + startIndex;
+      if (item.index !== want) {
+        const expText = expected.get(want) ?? "(prompt entry missing)";
+        return (
+          `Drift begins around entry #${i + 1}: expected index=${want} ` +
+          `("${preview(expText)}…"), got index=${item.index} ` +
+          `("${preview(item.text)}…").`
+        );
+      }
+    }
+  }
+
+  // Signal 2: text similarity (Jaccard on first ~40 chars)
+  if (expected.size > 0) {
+    for (let i = 0; i < arr.length; i++) {
+      const expText = expected.get(i + startIndex);
+      if (!expText) continue;
+      const gotText = (arr[i] as { text?: unknown })?.text;
+      if (typeof gotText !== "string") continue;
+      if (!looksRelated(expText, gotText)) {
+        return (
+          `Drift begins around entry #${i + 1}: prompt had ` +
+          `"${preview(expText)}…", response has "${preview(gotText)}…".`
+        );
+      }
+    }
+  }
+
+  // Signal 3: count-only difference — show head/tail so user can scan
+  const diff = arr.length - expected.size;
+  if (diff !== 0 && arr.length > 0) {
+    const head = arr.slice(0, 2).map((x, i) => `#${i + 1}: "${preview((x as { text?: unknown })?.text)}…"`);
+    const tail = arr.slice(-2).map((x, i) => `#${arr.length - 1 + i}: "${preview((x as { text?: unknown })?.text)}…"`);
+    return `No index field to pinpoint drift. Head: ${head.join(", ")}. Tail: ${tail.join(", ")}.`;
+  }
+  return null;
+}
+
+/** Cheap "same-ish line" check. Normalises punctuation and diacritics
+ *  before tokenising so LLM corrections like "moi" → "muy" or "Si" → "Sí"
+ *  still count as related. Low threshold (0.2) keeps short segments from
+ *  producing false positives — the goal is only to catch clearly different
+ *  lines, not to verify wording. */
+function looksRelated(a: string, b: string): boolean {
+  const toks = (s: string) =>
+    new Set(
+      s
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "") // strip combining diacritics
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, " ") // strip punctuation
+        .split(/\s+/)
+        .slice(0, 10)
+        .filter((w) => w.length > 1),
+    );
+  const A = toks(a);
+  const B = toks(b);
+  if (A.size === 0 || B.size === 0) return true;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  return inter / Math.min(A.size, B.size) >= 0.2;
 }

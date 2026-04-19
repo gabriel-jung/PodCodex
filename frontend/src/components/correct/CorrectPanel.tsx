@@ -8,6 +8,8 @@ import {
   loadCorrectVersion,
   saveCorrectSegments,
   getSegments,
+  getTranscribeVersions,
+  loadTranscribeVersion,
   startCorrect,
   getCorrectManualPrompts,
   applyCorrectManual,
@@ -162,8 +164,21 @@ export default function CorrectPanel() {
           referenceSegments={transcriptSegments}
           referenceLabel="Input transcript"
           speakers={showMeta?.speakers}
-          loadVersions={() => getCorrectVersions(audioPath!)}
-          loadVersion={(id) => loadCorrectVersion(audioPath!, id)}
+          loadVersions={async () => {
+            // Corrected versions + transcript versions so user can compare
+            // against any earlier transcript, not just the latest. Each entry
+            // keeps its `step` so loadVersion can route to the right API.
+            const [corrected, transcripts] = await Promise.all([
+              getCorrectVersions(audioPath!),
+              getTranscribeVersions(audioPath!),
+            ]);
+            return [...corrected, ...transcripts];
+          }}
+          loadVersion={(id, v) =>
+            v?.step === "transcript"
+              ? loadTranscribeVersion(audioPath!, id)
+              : loadCorrectVersion(audioPath!, id)
+          }
           deleteVersion={(id) => deleteCorrectVersion(audioPath!, id)}
         />
       )}

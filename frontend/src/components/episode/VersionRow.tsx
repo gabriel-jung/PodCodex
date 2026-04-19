@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { HelpCircle, Trash2 } from "lucide-react";
 import type { VersionEntry } from "@/api/types";
-import { versionInfo, versionLabel, versionDate } from "@/lib/utils";
+import { versionInfo, versionLabel, versionDate, isEdited } from "@/lib/utils";
 import InlineConfirm from "@/components/common/InlineConfirm";
 
 interface Props {
@@ -24,7 +24,7 @@ export default function VersionRow({
   const [expanded, setExpanded] = useState(false);
   const [confirming, setConfirming] = useState(false);
 
-  const edited = version.type === "validated" || version.manual_edit;
+  const edited = isEdited(version);
   const dotColor = edited ? "bg-success" : "bg-blue-500";
   const hash = version.content_hash.replace("sha256:", "").slice(0, 6);
   const padding = dense ? "px-3 py-1.5" : "px-4 py-2";

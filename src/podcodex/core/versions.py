@@ -76,6 +76,19 @@ def compute_hash(segments: list[dict]) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
+def is_edited(meta: dict | None) -> bool:
+    """Return True when a version should be labelled "edited" in the UI.
+
+    Covers both user hand-edits (``manual_edit``) and processed-but-not-raw
+    outputs such as clean exports or applied manual-LLM passes
+    (``type == "validated"``). Mirrors the frontend ``isEdited`` helper so
+    the check cannot drift between surfaces.
+    """
+    if not meta:
+        return False
+    return meta.get("type") == "validated" or bool(meta.get("manual_edit"))
+
+
 def versions_dir(base: Path) -> Path:
     """Return the versions directory for an episode (the episode output dir)."""
     return base.parent

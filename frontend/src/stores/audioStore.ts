@@ -62,17 +62,19 @@ export const useAudioStore = create<AudioState>((set, get) => ({
   isPlaying: false,
   pauseAudio: () => set({ pendingSeek: -1 }),
   setAudioMeta: (path, meta) => {
-    const state = get();
-    if (state.audioPath === path || !state.audioPath) {
-      set({
-        audioPath: path,
-        audioTitle: meta.title,
-        audioArtwork: meta.artwork || null,
-        audioShowName: meta.showName || null,
-        audioFolder: meta.folder || null,
-        audioStem: meta.stem || null,
-      });
-    }
+    // Always write. An earlier guard ("only update if state.audioPath ===
+    // path or unset") produced null titles when navigating between episodes:
+    // the new EpisodePage's setAudioMeta was dropped because the store still
+    // held the prior episode's path, and the next seekTo then wiped the
+    // title. Trust the caller — pages invoke this for the audio they own.
+    set({
+      audioPath: path,
+      audioTitle: meta.title,
+      audioArtwork: meta.artwork || null,
+      audioShowName: meta.showName || null,
+      audioFolder: meta.folder || null,
+      audioStem: meta.stem || null,
+    });
   },
   setAudioSegments: (path, segments) => {
     if (get().audioPath === path) {
