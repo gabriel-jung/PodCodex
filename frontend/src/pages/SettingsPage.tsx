@@ -20,6 +20,7 @@ import {
   CPU_LABELS, GPU_LABELS, CPU_MODELS, GPU_MODELS,
   usePipelineConfigStore,
 } from "@/stores/pipelineConfigStore";
+import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
 import { selectClass, inputWidth } from "@/lib/utils";
 
 type SettingsTab = "general" | "pipeline" | "integrations" | "plugins" | "cache";
@@ -313,7 +314,40 @@ function PipelineDefaultsPanel() {
           />
         </label>
       </section>
+
+      <FlagPatternsSection />
     </div>
+  );
+}
+
+function FlagPatternsSection() {
+  const patterns = useFlagPatternsStore((s) => s.patterns);
+  const setPatterns = useFlagPatternsStore((s) => s.setPatterns);
+  const [draft, setDraft] = useState(patterns.join("\n"));
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-lg font-semibold flex items-center gap-2">
+        <Sparkles className="w-5 h-5" /> Editor flagging
+      </h2>
+      <p className="text-xs text-muted-foreground">
+        One pattern per line. Segments whose text contains any pattern
+        (case-insensitive substring) are flagged for review. Punctuation-only
+        segments are flagged automatically.
+      </p>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          const list = draft.split("\n").map((p) => p.trim()).filter(Boolean);
+          setPatterns(list);
+          setDraft(list.join("\n"));
+        }}
+        placeholder={"Sous-titres réalisés par\n[Music]\nthanks for watching"}
+        rows={6}
+        className="input w-full font-mono text-xs resize-y"
+      />
+    </section>
   );
 }
 

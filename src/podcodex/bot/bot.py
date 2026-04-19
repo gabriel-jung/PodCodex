@@ -1766,7 +1766,8 @@ class PodCodexBot(discord.Client):
             footer_text += f" (from {pool:,} segments)"
         embed.set_footer(text=footer_text)
 
-        view = ExpandView(col, ep, show, start)
+        context_start = chunk.get("_chunk_start", start)
+        view = ExpandView(col, ep, show, context_start)
         await interaction.followup.send(embed=embed, view=view)
 
     # ── /setup handler ────────────────────────

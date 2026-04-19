@@ -1,7 +1,10 @@
 import { useMemo, useRef, useState, useEffect } from "react";
 import type { Segment } from "@/api/types";
+import { matchFlagPattern } from "@/stores/flagPatternsStore";
 
 const UNKNOWN_SPEAKERS = new Set(["UNKNOWN", "UNK", "None", "none", ""]);
+/** Matches any letter (Unicode) or digit. Segments with none = punctuation/symbols only. */
+const HAS_WORD_CHAR = /[\p{L}\p{N}]/u;
 
 /** Speech density thresholds (chars/s) — must match backend MIN_DENSITY / MAX_DENSITY. */
 export const MIN_DENSITY = 2;
@@ -40,10 +43,15 @@ export function flagReason(
   seg: Segment,
   densityThreshold: number,
   maxDensityThreshold: number,
+  customPatterns: string[] = [],
 ): string | null {
   if (seg.speaker === "[BREAK]") return null;
   if (UNKNOWN_SPEAKERS.has(seg.speaker)) return "Unknown speaker";
   if (seg.speaker === "[remove]") return "Marked for removal";
+  const text = seg.text.trim();
+  if (text && !HAS_WORD_CHAR.test(text)) return "Punctuation/symbols only";
+  const matched = matchFlagPattern(text, customPatterns);
+  if (matched) return `Matches pattern: ${matched}`;
   const dur = seg.end - seg.start;
   if (dur > 0) {
     const density = seg.text.length / dur;
@@ -84,15 +92,17 @@ export function useFilteredSegments(
   opts: {
     dismissedFlags: Set<number>;
     isChanged: (seg: Segment, origIdx: number) => boolean;
+    recentlyEdited?: Set<number>;
+    customPatterns?: string[];
   },
 ): FilteredResult {
   const { speakerFilter, showFlaggedOnly, showChangedOnly, searchQuery, page, pageSize, densityThreshold, maxDensityThreshold } = filters;
-  const { dismissedFlags, isChanged } = opts;
+  const { dismissedFlags, isChanged, recentlyEdited, customPatterns = [] } = opts;
   const searchLower = searchQuery.toLowerCase().trim();
 
   const isFlaggedSeg = (seg: Segment, origIdx?: number): boolean => {
     if (origIdx != null && dismissedFlags.has(origIdx)) return false;
-    return flagReason(seg, densityThreshold, maxDensityThreshold) !== null;
+    return flagReason(seg, densityThreshold, maxDensityThreshold, customPatterns) !== null;
   };
 
   const displaySegments = useMemo(() => {
@@ -102,11 +112,14 @@ export function useFilteredSegments(
     for (let e = 0; e < editedSegments.length; e++) {
       const seg = editedSegments[e];
       const origIdx = originalIndices[e];
+      const sticky = recentlyEdited?.has(origIdx) ?? false;
 
-      if (speakerFilter && seg.speaker !== speakerFilter && seg.speaker !== "[BREAK]") continue;
-      if (showFlaggedOnly && !isFlaggedSeg(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
-      if (showChangedOnly && !isChanged(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
-      if (searchLower && !seg.text.toLowerCase().includes(searchLower) && seg.speaker !== "[BREAK]") continue;
+      if (!sticky) {
+        if (speakerFilter && seg.speaker !== speakerFilter && seg.speaker !== "[BREAK]") continue;
+        if (showFlaggedOnly && !isFlaggedSeg(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
+        if (showChangedOnly && !isChanged(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
+        if (searchLower && !seg.text.toLowerCase().includes(searchLower) && seg.speaker !== "[BREAK]") continue;
+      }
       if (seg.speaker === "[BREAK]" && result.length > 0 && result[result.length - 1].segment.speaker === "[BREAK]") continue;
 
       result.push({ segment: seg, originalIndex: origIdx, displayIndex: idx });
@@ -118,7 +131,7 @@ export function useFilteredSegments(
 
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editedSegments, originalIndices, speakerFilter, showFlaggedOnly, showChangedOnly, searchLower, densityThreshold, maxDensityThreshold, dismissedFlags]);
+  }, [editedSegments, originalIndices, speakerFilter, showFlaggedOnly, showChangedOnly, searchLower, densityThreshold, maxDensityThreshold, dismissedFlags, recentlyEdited, customPatterns]);
 
   // Auto-disable filters when they produce no results
   useEffect(() => {
@@ -156,7 +169,7 @@ export function useFilteredSegments(
   const flaggedCount = useMemo(() => {
     return editedSegments.filter((seg, i) => isFlaggedSeg(seg, originalIndices[i])).length;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editedSegments, originalIndices, densityThreshold, maxDensityThreshold, dismissedFlags]);
+  }, [editedSegments, originalIndices, densityThreshold, maxDensityThreshold, dismissedFlags, customPatterns]);
 
   return { displaySegments, pageSegments, totalPages, flaggedCount };
 }

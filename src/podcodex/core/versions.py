@@ -443,7 +443,40 @@ def delete_version(base: Path, step: str, version_id: str) -> bool:
 
     if found:
         logger.info("Deleted version {} for step '{}'", version_id, step)
+        _refresh_status_after_delete(base, step)
     return found
+
+
+def _refresh_status_after_delete(base: Path, step: str) -> None:
+    """Clear pipeline_db status flags when no versions remain for a step."""
+    try:
+        db = _get_db(base)
+        stem = base.name
+        if db.list_versions(stem, step):
+            return
+
+        if step == "transcript":
+            for legacy in (
+                base.parent / f"{stem}.transcript.json",
+                base.parent / f"{stem}.transcript.raw.json",
+            ):
+                if legacy.exists():
+                    legacy.unlink()
+                    logger.info("Removed legacy transcript file {}", legacy.name)
+            db.mark(stem, transcribed=False)
+        elif step == "corrected":
+            db.mark(stem, corrected=False)
+        else:
+            row = db.get_episode(stem)
+            if row:
+                translations = list(row.get("translations") or [])
+                if step in translations:
+                    translations.remove(step)
+                    db.mark(stem, translations=translations)
+    except Exception:
+        logger.opt(exception=True).warning(
+            "Failed to refresh status after delete (step={})", step
+        )
 
 
 def _latest_content_hash(base: Path, step: str) -> str | None:

@@ -158,7 +158,6 @@ export default function CorrectPanel() {
           exportSource="corrected"
           exportFilename={episode.stem ? `${episode.stem}_corrected` : undefined}
           showDelete
-          showFlags={false}
           showSpeaker
           referenceSegments={transcriptSegments}
           referenceLabel="Input transcript"

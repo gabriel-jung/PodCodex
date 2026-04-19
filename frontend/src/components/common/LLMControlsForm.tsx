@@ -8,6 +8,7 @@ import { useCapabilities } from "@/hooks/useCapabilities";
 import FormGrid from "./FormGrid";
 import HelpLabel from "./HelpLabel";
 import Segmented from "./Segmented";
+import { NumberInput } from "@/components/ui/number-input";
 
 interface LLMControlsFormProps {
   episode: Episode;
@@ -149,10 +150,9 @@ export default function LLMControlsForm({
           : "Maximum audio duration per LLM request, in minutes. Larger batches are faster but risk exceeding the model's context window."} />
         {episodeMinutes ? (
           <div className="flex items-center gap-2">
-            <input
-              type="number"
+            <NumberInput
               value={batchCount}
-              onChange={(e) => setBatchCount(Number(e.target.value))}
+              onChange={setBatchCount}
               min={1}
               max={20}
               className="input w-16"
@@ -165,10 +165,9 @@ export default function LLMControlsForm({
           </div>
         ) : (
           <div className="flex items-center gap-1.5">
-            <input
-              type="number"
+            <NumberInput
               value={config.batchMinutes}
-              onChange={(e) => patch({ batchMinutes: Number(e.target.value) })}
+              onChange={(n) => patch({ batchMinutes: n })}
               min={1}
               step={5}
               className="input w-20"

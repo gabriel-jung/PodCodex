@@ -21,7 +21,7 @@ type EditorAction =
   | { type: "RESET"; segments: Segment[] }
   | { type: "UNDO" }
   | { type: "MERGE"; index: number; speaker?: string }
-  | { type: "SPLIT"; index: number; cursorPos: number };
+  | { type: "SPLIT"; index: number; cursorPos: number; explicitTime?: number };
 
 const MAX_HISTORY = 50;
 
@@ -48,9 +48,12 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
       } else {
         edits.set(action.index, { ...existing, [action.field]: action.value });
       }
-      // Text edits are frequent — don't push history for every keystroke.
-      // History is pushed for destructive actions (delete, insert, reset).
-      return { ...state, edits };
+      // Text edits are per-keystroke — don't push history (would flood).
+      // Speaker and timestamp changes are discrete commits — push history so undo works.
+      if (action.type === "SET_TEXT") {
+        return { ...state, edits };
+      }
+      return { ...state, history: pushHistory(state), edits };
     }
     case "DELETE": {
       const history = pushHistory(state);
@@ -127,9 +130,13 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
         : state.original[action.index];
       const textBefore = seg.text.slice(0, action.cursorPos).trimEnd();
       const textAfter = seg.text.slice(action.cursorPos).trimStart();
-      // Estimate split timestamp proportionally
-      const ratio = textBefore.length / Math.max(seg.text.length, 1);
-      const splitTime = Math.round((seg.start + (seg.end - seg.start) * ratio) * 10) / 10;
+      // Explicit timestamp (e.g. current playback position) overrides proportional estimate
+      const splitTime = action.explicitTime != null
+        ? Math.round(action.explicitTime * 10) / 10
+        : (() => {
+            const ratio = textBefore.length / Math.max(seg.text.length, 1);
+            return Math.round((seg.start + (seg.end - seg.start) * ratio) * 10) / 10;
+          })();
       // Update current segment
       const edits = new Map(state.edits);
       edits.set(action.index, { text: textBefore, end: splitTime });
@@ -178,7 +185,7 @@ export interface UseSegmentsReturn {
   mergeWithNext: (index: number, speaker?: string) => void;
   /** Returns the next non-deleted segment's data (for merge dialog). */
   getNextSegment: (index: number) => Segment | null;
-  splitAt: (index: number, cursorPos: number) => void;
+  splitAt: (index: number, cursorPos: number, explicitTime?: number) => void;
   reset: (segments: Segment[]) => void;
   undo: () => void;
 }
@@ -244,7 +251,8 @@ export function useSegments(
       const edit = state.edits.get(nextIdx);
       return edit ? { ...seg, ...edit } : seg;
     },
-    splitAt: (index, cursorPos) => dispatch({ type: "SPLIT", index, cursorPos }),
+    splitAt: (index, cursorPos, explicitTime) =>
+      dispatch({ type: "SPLIT", index, cursorPos, explicitTime }),
     reset: (segments) => dispatch({ type: "RESET", segments }),
     undo: () => dispatch({ type: "UNDO" }),
   };

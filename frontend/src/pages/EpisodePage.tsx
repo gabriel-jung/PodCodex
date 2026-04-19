@@ -362,6 +362,8 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
     queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
     queryClient.invalidateQueries({ queryKey: queryKeys.episodeCollections(audioPath, showName) });
     queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("transcribe", audioPath) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", audioPath) });
   }, [audioPath, showName, queryClient]);
 
   const deleteVersionMutation = useMutation({
@@ -490,7 +492,7 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
         )}
       </div>
 
-      {previewSegments && previewSegments.length > 0 && (
+      {hasTranscript && previewSegments && previewSegments.length > 0 && (
         <button
           onClick={() => onNavigateStep(previewStep)}
           className="w-full text-left rounded-lg bg-muted/50 px-4 py-3 space-y-2.5 hover:bg-muted/70 transition group"

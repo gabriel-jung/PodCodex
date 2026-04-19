@@ -21,7 +21,7 @@ from loguru import logger
 from podcodex.core._utils import (
     DEFAULT_BATCH_MINUTES,
     AudioPaths,
-    batch_segments_by_duration,
+    build_batched_manual_prompts,
     build_llm_prompt,
     format_segments,
     normalize_lang,
@@ -49,10 +49,13 @@ Your task: translation only.
 - Do not translate proper nouns (people, films, places)
 - Translate the full text — never truncate or summarize""",
         output="""\
-Output format:
-Return a JSON array with one entry per segment, containing only the index and translated text.
-Reply ONLY with valid JSON, no surrounding text, no markdown.
-Format: [{"index": 0, "text": "translated text..."}]""",
+Output format — CRITICAL RULES:
+1. Return a JSON array with EXACTLY the same number of elements as the input, in the SAME ORDER. Never merge, split, drop, add, or reorder segments.
+2. Each element is a plain object with a single `text` field — no index, no other fields.
+3. The Nth output element corresponds to the Nth input segment. Position is the only mapping.
+4. If a segment is empty, trivial, or untranslatable, copy the original text verbatim — never omit the entry.
+5. Reply ONLY with valid JSON. No surrounding text, no markdown fences, no commentary.
+6. Format: `[{"text": "..."}, {"text": "..."}, ...]`""",
         context=context,
     )
 
@@ -67,12 +70,15 @@ def build_manual_prompt(
     context: str = "",
     source_lang: str = "French",
     target_lang: str = "English",
+    start_index: int = 0,
 ) -> str:
     """Generate a prompt to paste into a LLM UI for manual translation."""
     prompt = _build_prompt(
         context=context, source_lang=source_lang, target_lang=target_lang
     )
-    segments_text = format_segments(segments, instruction="Translate")
+    segments_text = format_segments(
+        segments, instruction="Translate", start_index=start_index
+    )
     return f"{prompt}\n\n{segments_text}"
 
 
@@ -84,18 +90,17 @@ def build_manual_prompts_batched(
     target_lang: str = "English",
 ) -> list[tuple[list[dict], str]]:
     """Split segments into time-based batches and return one prompt per batch."""
-    return [
-        (
+    return build_batched_manual_prompts(
+        segments,
+        lambda batch, start: build_manual_prompt(
             batch,
-            build_manual_prompt(
-                batch,
-                context=context,
-                source_lang=source_lang,
-                target_lang=target_lang,
-            ),
-        )
-        for batch in batch_segments_by_duration(segments, batch_minutes)
-    ]
+            context=context,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            start_index=start,
+        ),
+        batch_minutes,
+    )
 
 
 # ──────────────────────────────────────────────

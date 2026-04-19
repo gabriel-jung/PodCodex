@@ -364,31 +364,64 @@ def group_by_speaker(segments: list[dict]) -> dict[str, list[dict]]:
     return by_speaker
 
 
+def build_batched_manual_prompts(
+    segments: list[dict],
+    build_prompt_fn,
+    batch_minutes: float = DEFAULT_BATCH_MINUTES,
+) -> list[tuple[list[dict], str]]:
+    """Split *segments* into batches and build one prompt per batch.
+
+    *build_prompt_fn* receives ``(batch, start_index)`` and returns the
+    prompt string. ``start_index`` is the absolute count of real segments
+    consumed by prior batches, so each batch's [N] markers are unique
+    across the whole transcript — concatenated LLM responses then keep
+    distinct positions.
+    """
+    batches = batch_segments_by_duration(segments, batch_minutes)
+    out: list[tuple[list[dict], str]] = []
+    offset = 0
+    for batch in batches:
+        out.append((batch, build_prompt_fn(batch, offset)))
+        _, real = _separate_breaks(batch)
+        offset += len(real)
+    return out
+
+
 def batch_segments_by_duration(
     segments: list[dict], batch_minutes: float = DEFAULT_BATCH_MINUTES
 ) -> list[list[dict]]:
     """Split segments into time-based batches.
+
+    Splits by absolute segment start timestamp against fixed cutoffs, so
+    the batch count tracks the audio's elapsed duration (not the sum of
+    per-segment durations, which can under-count silence and produce fewer
+    batches than the user requested).
 
     Args:
         segments      : transcript segments to batch
         batch_minutes : maximum duration per batch in minutes (default 15)
 
     Returns:
-        List of segment batches (each batch is a list of segment dicts).
+        List of non-empty segment batches (each batch is a list of segment dicts).
     """
+    if not segments:
+        return []
     max_seconds = batch_minutes * 60
+    if max_seconds <= 0:
+        return [list(segments)]
+
     batches: list[list[dict]] = []
     current: list[dict] = []
-    current_duration = 0.0
+    cutoff = max_seconds
 
     for seg in segments:
-        seg_duration = seg.get("end", 0) - seg.get("start", 0)
-        if current and current_duration + seg_duration > max_seconds:
-            batches.append(current)
-            current = []
-            current_duration = 0.0
+        start = float(seg.get("start", 0))
+        while start >= cutoff:
+            if current:
+                batches.append(current)
+                current = []
+            cutoff += max_seconds
         current.append(seg)
-        current_duration += seg_duration
 
     if current:
         batches.append(current)
@@ -838,17 +871,22 @@ def _reassemble_breaks(
     processed: list[dict],
 ) -> list[dict]:
     """Merge processed results back with [BREAK] segments in original order."""
+    real_set = set(real_indices)
     results: list[dict] = []
     proc_iter = iter(processed)
     for i, seg in enumerate(segments):
-        if i in real_indices:
+        if i in real_set:
             results.append(next(proc_iter))
         else:
             results.append(seg)
     return results
 
 
-def format_segments(segments: list[dict], instruction: str = "Process") -> str:
+def format_segments(
+    segments: list[dict],
+    instruction: str = "Process",
+    start_index: int = 0,
+) -> str:
     """Format segments as a numbered user message for the LLM.
 
     Produces the same ``[i] text`` format used by all three modes
@@ -857,26 +895,40 @@ def format_segments(segments: list[dict], instruction: str = "Process") -> str:
     Args:
         segments    : transcript segments (breaks are filtered out)
         instruction : verb for the closing instruction line
+        start_index : first absolute index for numbering (used by manual mode
+                      so concatenated batch responses keep unique indices)
     """
     _, real = _separate_breaks(segments)
-    lines = [f"[{i}] {seg['text']}" for i, seg in enumerate(real)]
-    lines.append(f"\n{instruction} all {len(real)} numbered segments above.")
+    n = len(real)
+    lines = [f"[{start_index + i}] {seg['text']}" for i, seg in enumerate(real)]
+    first = start_index
+    last = start_index + n - 1 if n > 0 else start_index
+    lines.append(
+        f"\n{instruction} all {n} segments above. "
+        f"Output MUST contain exactly {n} entries with indices {first}..{last}, "
+        "no gaps, no extras, no renumbering. Verify the count before responding."
+    )
     return "\n\n".join(lines)
 
 
 def parse_llm_response(raw: str) -> dict[int, dict]:
-    """Parse a raw LLM response string into a dict keyed by segment index.
+    """Parse a raw LLM response string into a dict keyed by segment position.
+
+    Keys are positional (0..N-1) — the LLM's own ``index`` field is treated
+    as advisory only. Position-based mapping is safer because callers verify
+    ``len(parsed) == len(input)`` before applying, so position equals the
+    intended target index regardless of any renumbering by the LLM.
 
     Strips ``<think>`` tags and markdown fences before parsing JSON.
 
     Returns:
-        ``{index: {"text": "...", ...}}`` dict.  Empty dict on parse failure.
+        ``{position: {"text": "...", ...}}`` dict.  Empty dict on parse failure.
     """
     raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
     raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
     try:
         parsed = json.loads(raw)
-        by_index = {item.get("index", i): item for i, item in enumerate(parsed)}
+        by_index = {i: item for i, item in enumerate(parsed)}
         logger.debug(f"Parsed {len(parsed)} items from LLM response")
         return by_index
     except Exception as e:
@@ -945,18 +997,24 @@ def call_and_parse(
     call_fn,
     instruction: str = "Process",
     min_length_ratio: float = 0.7,
+    start_index: int = 0,
 ) -> list[dict]:
     """Call the LLM for one batch and parse the response.
 
     Uses :func:`format_segments`, :func:`parse_llm_response`, and
     :func:`apply_corrections` — the same pipeline that manual mode uses.
     ``[BREAK]`` segments are passed through unchanged.
+
+    ``start_index`` shifts the displayed ``[N]`` markers in the prompt so
+    log lines and the LLM see absolute positions across batches.
     """
     _, real_segs = _separate_breaks(batch)
     if not real_segs:
         return list(batch)
 
-    user_content = format_segments(batch, instruction=instruction)
+    user_content = format_segments(
+        batch, instruction=instruction, start_index=start_index
+    )
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
@@ -965,6 +1023,17 @@ def call_and_parse(
     raw = call_fn(messages)
     logger.debug(f"LLM response: {len(raw)} chars")
     by_index = parse_llm_response(raw)
+
+    # LLM count drift detection: if the response has fewer items than the
+    # input batch, indices likely got renumbered, which would silently
+    # misalign corrections. Reject the whole batch and keep originals.
+    if by_index and len(by_index) != len(real_segs):
+        logger.warning(
+            f"LLM returned {len(by_index)} items for {len(real_segs)} segments — "
+            "rejecting batch to avoid index drift; keeping original text."
+        )
+        by_index = {}
+
     return apply_corrections(batch, by_index, min_length_ratio=min_length_ratio)
 
 
@@ -999,6 +1068,7 @@ def run_ollama(
     results = []
     batches = batch_segments_by_duration(segments, batch_minutes)
     n_batches = len(batches)
+    offset = 0
 
     for batch_num, batch in enumerate(batches, 1):
         logger.info(f"{label} batch {batch_num}/{n_batches} via Ollama ({model})")
@@ -1019,8 +1089,11 @@ def run_ollama(
                 call_fn,
                 instruction=instruction,
                 min_length_ratio=min_length_ratio,
+                start_index=offset,
             )
         )
+        _, real = _separate_breaks(batch)
+        offset += len(real)
         if on_batch:
             on_batch(batch_num, n_batches)
 
@@ -1083,6 +1156,7 @@ def run_api(
     results = []
     batches = batch_segments_by_duration(segments, batch_minutes)
     n_batches = len(batches)
+    offset = 0
 
     for batch_num, batch in enumerate(batches, 1):
         logger.info(f"{label} batch {batch_num}/{n_batches} via API ({model})")
@@ -1100,8 +1174,11 @@ def run_api(
                 call_fn,
                 instruction=instruction,
                 min_length_ratio=min_length_ratio,
+                start_index=offset,
             )
         )
+        _, real = _separate_breaks(batch)
+        offset += len(real)
         if on_batch:
             on_batch(batch_num, n_batches)
 
@@ -1113,12 +1190,13 @@ def validate_manual(
 ) -> list[dict]:
     """Merge LLM-returned corrections with original source segments.
 
-    Uses :func:`parse_llm_response` (via raw JSON) and
-    :func:`apply_corrections` — the same pipeline that ollama/api use.
-    ``[BREAK]`` segments are passed through unchanged.
+    Uses position-based mapping — corrections must be in the same order as
+    the (non-[BREAK]) source segments. The LLM-supplied ``index`` field, if
+    present, is ignored. Count must match exactly or the whole batch is
+    rejected and originals are kept.
 
     Args:
-        corrections       : list of {"index": i, "text": "corrected text"} from LLM
+        corrections       : list of {"text": "..."} entries from the LLM, in order
         original_segments : source segments (speaker, start, end, text, ...)
 
     Returns:
@@ -1137,10 +1215,13 @@ def validate_manual(
         logger.warning(
             f"Correction count mismatch: {len(corrections)} corrections "
             f"vs {len(real_segs)} segments (excluding "
-            f"{len(original_segments) - len(real_segs)} breaks)"
+            f"{len(original_segments) - len(real_segs)} breaks) — "
+            "rejecting to avoid index drift; keeping original text."
         )
-
-    by_index = {item.get("index", i): item for i, item in enumerate(corrections)}
+        by_index: dict[int, dict] = {}
+    else:
+        # Position-based mapping (LLM's index field is advisory only).
+        by_index = {i: item for i, item in enumerate(corrections)}
     results = apply_corrections(original_segments, by_index, min_length_ratio=0)
 
     logger.info(f"Manual corrections validated — {len(results)} segments")

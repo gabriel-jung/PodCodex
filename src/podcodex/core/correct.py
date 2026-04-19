@@ -20,7 +20,7 @@ from loguru import logger
 from podcodex.core._utils import (
     DEFAULT_BATCH_MINUTES,
     AudioPaths,
-    batch_segments_by_duration,
+    build_batched_manual_prompts,
     build_llm_prompt,
     format_segments,
     run_llm_pipeline,
@@ -86,11 +86,19 @@ Your task: transcript correction only — do NOT translate.
 - Do NOT correct style, hesitations, or natural repetitions
 - NEVER shorten, summarize or omit any part of the original text — every word matters""",
         output="""\
-Output format:
-Return a JSON array with EXACTLY the same number of elements as the input — never merge, split, or drop segments.
-Each output element must have the corrected text field for the corresponding input element.
-Reply ONLY with valid JSON, no surrounding text, no markdown.
-Format: [{"index": 0, "text": "..."}]  — include only index and text fields.""",
+Output format — CRITICAL RULES:
+1. Return a JSON array with EXACTLY the same number of elements as the input, in the SAME ORDER. Never merge, split, drop, add, or reorder segments.
+2. Each element is a plain object with a single `text` field — no index, no other fields.
+3. The Nth output element corresponds to the Nth input segment. Position is the only mapping.
+4. If a segment is empty, trivial, or you cannot improve it, copy the original text verbatim — never omit the entry.
+5. Reply ONLY with valid JSON. No surrounding text, no markdown fences, no commentary.
+6. Format: `[{"text": "..."}, {"text": "..."}, ...]`
+
+Example — input:
+  [5] euh ouais c est ca
+  [6] [music]
+output:
+  [{"text": "Euh, ouais, c'est ça."}, {"text": "[music]"}]""",
         context=context,
         context_extra=(
             "and must be used to fix phonetically similar but misspelled versions in the transcript "
@@ -110,6 +118,7 @@ def build_manual_prompt(
     source_lang: str = "French",
     engine: str = "whisper",
     engine_model: str | None = None,
+    start_index: int = 0,
 ) -> str:
     """Generate a prompt to paste into a LLM UI for manual correcting."""
     prompt = _build_prompt(
@@ -118,7 +127,9 @@ def build_manual_prompt(
         engine=engine,
         engine_model=engine_model,
     )
-    segments_text = format_segments(segments, instruction="Correct")
+    segments_text = format_segments(
+        segments, instruction="Correct", start_index=start_index
+    )
     return f"{prompt}\n\n{segments_text}"
 
 
@@ -131,19 +142,18 @@ def build_manual_prompts_batched(
     engine_model: str | None = None,
 ) -> list[tuple[list[dict], str]]:
     """Split segments into time-based batches and return one prompt per batch."""
-    return [
-        (
+    return build_batched_manual_prompts(
+        segments,
+        lambda batch, start: build_manual_prompt(
             batch,
-            build_manual_prompt(
-                batch,
-                context=context,
-                source_lang=source_lang,
-                engine=engine,
-                engine_model=engine_model,
-            ),
-        )
-        for batch in batch_segments_by_duration(segments, batch_minutes)
-    ]
+            context=context,
+            source_lang=source_lang,
+            engine=engine,
+            engine_model=engine_model,
+            start_index=start,
+        ),
+        batch_minutes,
+    )
 
 
 # ──────────────────────────────────────────────

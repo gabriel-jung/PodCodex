@@ -14,6 +14,7 @@ import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
 import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
+import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
 import { formatTime, versionOption, versionInfo, selectClass } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import { computeWordDiff } from "@/lib/diffUtils";
@@ -30,12 +31,14 @@ import {
   Trash2,
   Merge,
   Scissors,
+  ScissorsLineDashed,
   Search,
   X,
   Diff,
   Filter,
   AlertTriangle,
   Activity,
+  Timer,
 } from "lucide-react";
 
 // ── SVG icons for insert-before / insert-after ────────────────────────────────
@@ -185,12 +188,13 @@ interface SegmentViewRowProps {
   onInsertBefore?: () => void;
   onInsertAfter?: () => void;
   onMergeNext?: () => void;
-  onSplit?: (cursorPos: number) => void;
+  onSplit?: (cursorPos: number, explicitTime?: number) => void;
   referenceText?: string;
 }
 
 function SegmentViewRow({
   segment,
+  originalIndex,
   isActive,
   isFlagged,
   selected,
@@ -223,23 +227,23 @@ function SegmentViewRow({
 
   const getAudioTime = () => useAudioStore.getState().currentTime;
 
-  // Auto-resize textarea — recomputes on text change AND on width change
-  // (layout shifts: sidebar toggle, comparison column, window resize).
+  // Auto-resize textarea. Observe parent (not self — that loops with our height
+  // mutations) so column-shift (ref column appears) and window resize trigger recompute.
   useEffect(() => {
     const el = textRef.current;
-    if (!el) return;
-    let lastWidth = -1;
+    const parent = el?.parentElement;
+    if (!el || !parent) return;
     const recompute = () => {
-      const w = el.clientWidth;
-      if (w === lastWidth) return;
-      lastWidth = w;
       el.style.height = "0";
       el.style.height = el.scrollHeight + "px";
     };
-    recompute();
+    const raf = requestAnimationFrame(recompute);
     const ro = new ResizeObserver(recompute);
-    ro.observe(el);
-    return () => ro.disconnect();
+    ro.observe(parent);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
   }, [segment.text]);
 
   // Focus speaker input when entering edit mode
@@ -260,7 +264,7 @@ function SegmentViewRow({
   if (segment.speaker === "[BREAK]") {
     const gap = segment.end - segment.start;
     return (
-      <div className="py-2 flex items-center gap-2 text-muted-foreground/40 px-4">
+      <div className="py-2 flex items-center gap-2 text-muted-foreground/40 px-2">
         <div className="flex-1 border-t border-border" />
         <span className="text-2xs select-none">
           {gap > 0 ? `${gap.toFixed(0)}s pause` : "break"}
@@ -272,7 +276,7 @@ function SegmentViewRow({
 
   return (
     <div
-      className={`group py-1.5 px-4 rounded transition-colors ${
+      className={`group py-1.5 pl-1 pr-2 rounded transition-colors ${
         isPendingRemoval ? "opacity-50 line-through bg-destructive/5 border-l-2 border-l-destructive/50" :
         isActive ? "bg-accent/60" :
         isFlagged ? "border-l-2 border-l-warning" :
@@ -280,17 +284,25 @@ function SegmentViewRow({
         "hover:bg-accent/20"
       }`}
     >
-      {/* Main row: checkbox | timestamp | speaker | text */}
-      <div className="flex gap-3">
-        {/* Selection checkbox — revealed on hover or when any row is selected */}
-        <div className={`shrink-0 pt-1 transition-opacity ${selected ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}>
+      {/* Main row: [checkbox + segnum stacked] | timestamp | speaker | text */}
+      <div className="flex gap-2">
+        {/* Checkbox + segment number stacked */}
+        <div className="shrink-0 flex flex-col items-center pt-1 gap-0.5" style={{ width: "1.1rem" }}>
           <input
             type="checkbox"
             checked={selected}
             onChange={onToggleSelect}
-            className="w-3 h-3 accent-primary cursor-pointer"
             aria-label="Select segment"
+            className={`w-3 h-3 accent-primary cursor-pointer transition-opacity ${
+              selected ? "opacity-100" : "opacity-40 hover:opacity-100 group-hover:opacity-100"
+            }`}
           />
+          <div
+            className="font-mono text-muted-foreground/40 tabular-nums select-none"
+            style={{ fontSize: "0.55rem" }}
+          >
+            {originalIndex + 1}
+          </div>
         </div>
         {/* Timestamp — click to toggle editor */}
         <div className="shrink-0 pt-0.5">
@@ -308,7 +320,7 @@ function SegmentViewRow({
 
         {/* Speaker */}
         {showSpeaker && (
-          <div className="shrink-0 w-20 pt-0.5">
+          <div className="shrink-0 w-16 pt-0.5">
             {editingSpeaker ? (
               speakers.length > 0 ? (
                 <select
@@ -387,46 +399,54 @@ function SegmentViewRow({
 
       {/* Flag reason — always visible on flagged segments */}
       {isFlagged && flagReasonText && (
-        <div className="flex items-center gap-1 mt-0.5 text-warning text-2xs">
-          <AlertTriangle className="w-3 h-3" />
+        <div
+          className="flex items-center gap-1 mt-0.5 text-warning/80"
+          style={{ fontSize: "0.6rem" }}
+        >
+          <AlertTriangle className="w-2.5 h-2.5" />
           <span>{flagReasonText}</span>
           {onDismissFlag && (
             <button
               onClick={onDismissFlag}
-              className="hover:text-warning/70 transition ml-0.5"
+              className="hover:text-warning transition ml-0.5"
               title="Dismiss this flag"
             >
-              <X className="w-3 h-3" />
+              <X className="w-2.5 h-2.5" />
             </button>
           )}
         </div>
       )}
 
-      {/* Actions row (under timestamp+speaker, visible on hover) */}
-      <div className="flex items-center gap-0.5 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity" style={{ width: "fit-content" }}>
+      {/* Actions rail — always visible (muted), brighten on row hover */}
+      <div className="flex items-center gap-0.5 mt-1 opacity-30 group-hover:opacity-100 transition-opacity duration-150 w-fit">
         {audioPath && validTime && (
-          isActive && isPlaying ? (
-            <button
-              onClick={pauseAudio}
-              className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-secondary transition"
-              title="Pause"
-            >
-              <Pause className="w-3 h-3" />
-            </button>
-          ) : (
-            <button
-              onClick={handleSeek}
-              className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-secondary transition"
-              title="Play from here"
-            >
-              <Play className="w-3 h-3" />
-            </button>
-          )
+          <>
+            {isActive && isPlaying ? (
+              <button
+                onClick={pauseAudio}
+                className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
+                title="Pause"
+              >
+                <Pause className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <button
+                onClick={handleSeek}
+                className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
+                title="Play from here"
+              >
+                <Play className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {(onInsertBefore || onMergeNext || onSplit || onInsertAfter) && (
+              <span className="mx-1 h-3 w-px bg-border/60" aria-hidden />
+            )}
+          </>
         )}
         {onInsertBefore && (
           <button
             onClick={onInsertBefore}
-            className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-secondary transition"
+            className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
             title="Insert segment before"
           >
             <InsertBeforeIcon className="w-3.5 h-3.5" />
@@ -435,10 +455,10 @@ function SegmentViewRow({
         {onMergeNext && (
           <button
             onClick={onMergeNext}
-            className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-secondary transition"
+            className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
             title="Merge with next"
           >
-            <Merge className="w-3 h-3" />
+            <Merge className="w-3.5 h-3.5" />
           </button>
         )}
         {onSplit && (
@@ -447,29 +467,55 @@ function SegmentViewRow({
               const pos = textRef.current?.selectionStart ?? Math.floor(segment.text.length / 2);
               if (pos > 0 && pos < segment.text.length) onSplit(pos);
             }}
-            className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-secondary transition"
-            title="Split at cursor (or midpoint)"
+            className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
+            title="Split at text cursor (time proportional to character count)"
           >
-            <Scissors className="w-3 h-3" />
+            <Scissors className="w-3.5 h-3.5" />
+          </button>
+        )}
+        {onSplit && audioPath && validTime && (
+          <button
+            onClick={() => {
+              const t = useAudioStore.getState().currentTime;
+              if (t <= segment.start + 0.05 || t >= segment.end - 0.05) return;
+              const ratio = (t - segment.start) / (segment.end - segment.start);
+              const target = Math.round(ratio * segment.text.length);
+              // snap to nearest whitespace (prefer the closer side)
+              let pos = target;
+              for (let i = 0; i < segment.text.length; i++) {
+                const back = target - i;
+                const fwd = target + i;
+                if (back > 0 && segment.text[back - 1] === " ") { pos = back; break; }
+                if (fwd < segment.text.length && segment.text[fwd] === " ") { pos = fwd; break; }
+              }
+              if (pos > 0 && pos < segment.text.length) onSplit(pos, t);
+            }}
+            className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
+            title="Split at current playback time"
+          >
+            <ScissorsLineDashed className="w-3.5 h-3.5" />
           </button>
         )}
         {onInsertAfter && (
           <button
             onClick={onInsertAfter}
-            className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-secondary transition"
+            className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
             title="Insert segment after"
           >
             <InsertAfterIcon className="w-3.5 h-3.5" />
           </button>
         )}
         {showDelete && (
-          <button
-            onClick={onDelete}
-            className="text-muted-foreground hover:text-destructive p-0.5 rounded hover:bg-secondary transition"
-            title="Delete segment"
-          >
-            <Trash2 className="w-3 h-3" />
-          </button>
+          <>
+            <span className="mx-1 h-3 w-px bg-border/60" aria-hidden />
+            <button
+              onClick={onDelete}
+              className="text-muted-foreground hover:text-destructive p-1 rounded hover:bg-destructive/10 transition"
+              title="Delete segment"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </>
         )}
       </div>
 
@@ -487,10 +533,10 @@ function SegmentViewRow({
             />
             <button
               onClick={() => onTimestampChange("start", Math.round(getAudioTime() * 10) / 10)}
-              className="text-2xs text-muted-foreground hover:text-foreground bg-secondary rounded px-1 py-0.5 border border-border"
-              title="Set to current playback position"
+              className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
+              title="Set to current playback time"
             >
-              &larr; current time
+              <Timer className="w-3.5 h-3.5" />
             </button>
           </label>
           <label className="flex items-center gap-1">
@@ -504,10 +550,10 @@ function SegmentViewRow({
             />
             <button
               onClick={() => onTimestampChange("end", Math.round(getAudioTime() * 10) / 10)}
-              className="text-2xs text-muted-foreground hover:text-foreground bg-secondary rounded px-1 py-0.5 border border-border"
-              title="Set to current playback position"
+              className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
+              title="Set to current playback time"
             >
-              &larr; current time
+              <Timer className="w-3.5 h-3.5" />
             </button>
           </label>
         </div>
@@ -617,6 +663,15 @@ export default function TranscriptViewer({
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [expandedInfo, setExpandedInfo] = useState(false);
   const [showDensity, setShowDensity] = useState(false);
+  const [showFlagMenu, setShowFlagMenu] = useState(false);
+  const customPatterns = useFlagPatternsStore((s) => s.patterns);
+  const setFlagPatterns = useFlagPatternsStore((s) => s.setPatterns);
+  const [patternDraft, setPatternDraft] = useState(customPatterns.join("\n"));
+  // Re-sync draft from store when opening the popover, so external edits
+  // (e.g. from SettingsPage) are reflected — but never overwrite an in-progress draft.
+  useEffect(() => {
+    if (showFlagMenu) setPatternDraft(useFlagPatternsStore.getState().patterns.join("\n"));
+  }, [showFlagMenu]);
 
   const { data: versionSegments } = useQuery({
     queryKey: queryKeys.stepVersionSegments(editorKey, audioPath, selectedVersionId),
@@ -880,6 +935,11 @@ export default function TranscriptViewer({
 
   const bulkSpeaker = useCallback((speaker: string) => {
     for (const idx of selectedIndices) editor.updateSpeaker(idx, speaker);
+    setRecentlyEdited((prev) => {
+      const next = new Set(prev);
+      for (const idx of selectedIndices) next.add(idx);
+      return next;
+    });
     clearSelection();
   }, [selectedIndices, editor, clearSelection]);
 
@@ -900,21 +960,35 @@ export default function TranscriptViewer({
 
   const filters = useSegmentFiltering();
   const [dismissedFlags, setDismissedFlags] = useState<Set<number>>(() => new Set());
+  const [recentlyEdited, setRecentlyEdited] = useState<Set<number>>(() => new Set());
 
   const dismissFlag = (origIdx: number) => {
     setDismissedFlags((prev) => new Set(prev).add(origIdx));
   };
 
-  const isFlaggedSeg = (seg: Segment, origIdx?: number): boolean => {
-    if (origIdx != null && dismissedFlags.has(origIdx)) return false;
-    return flagReason(seg, filters.densityThreshold, filters.maxDensityThreshold) !== null;
-  };
+  const setAnchorOrigIdx = filters.setAnchorOrigIdx;
+  const markEdited = useCallback((origIdx: number) => {
+    setRecentlyEdited((prev) => {
+      if (prev.has(origIdx)) return prev;
+      const next = new Set(prev);
+      next.add(origIdx);
+      return next;
+    });
+    setAnchorOrigIdx(origIdx);
+  }, [setAnchorOrigIdx]);
+
+  // Clear recentlyEdited on any view change — fresh filter pass should not
+  // be subverted by stale sticky entries. With pageSize=All, page never
+  // changes, so we also depend on filter toggles to ensure a clear happens.
+  useEffect(() => {
+    setRecentlyEdited((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [filters.page, filters.showFlaggedOnly, filters.showChangedOnly, filters.speakerFilter, filters.searchQuery]);
 
   const { displaySegments, pageSegments, totalPages, flaggedCount } = useFilteredSegments(
     editor.editedSegments,
     editor.originalIndices,
     filters,
-    { dismissedFlags, isChanged },
+    { dismissedFlags, isChanged, recentlyEdited, customPatterns },
   );
 
   useEffect(() => {
@@ -1213,18 +1287,48 @@ export default function TranscriptViewer({
               </select>
             </div>
           )}
-          {/* Flagged badge */}
-          {showFlags && flaggedCount > 0 && (
-            <button
-              onClick={() => { filters.setShowFlaggedOnly(!filters.showFlaggedOnly); filters.setPage(0); }}
-              className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border transition ${
-                filters.showFlaggedOnly ? "border-warning/50 text-warning" : "border-border text-muted-foreground hover:text-foreground"
-              }`}
-              title="Show flagged only"
-            >
-              <AlertTriangle className="w-3 h-3" />
-              {flaggedCount}
-            </button>
+          {/* Flagged popover */}
+          {showFlags && (
+            <div className="relative">
+              <button
+                onClick={() => setShowFlagMenu(!showFlagMenu)}
+                className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border transition ${
+                  filters.showFlaggedOnly || showFlagMenu ? "border-warning/50 text-warning" : "border-border text-muted-foreground hover:text-foreground"
+                }`}
+                title="Flagged segments"
+              >
+                <AlertTriangle className="w-3 h-3" />
+                {flaggedCount}
+              </button>
+              {showFlagMenu && (
+                <div className="absolute left-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg p-2 space-y-2 w-60 text-xs">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={filters.showFlaggedOnly}
+                      onChange={() => { filters.setShowFlaggedOnly(!filters.showFlaggedOnly); filters.setPage(0); }}
+                      className="w-3 h-3 accent-warning"
+                    />
+                    <span>Show flagged only ({flaggedCount})</span>
+                  </label>
+                  <div className="space-y-1 pt-1.5 border-t border-border/50">
+                    <p className="text-muted-foreground">Custom patterns (one per line)</p>
+                    <textarea
+                      value={patternDraft}
+                      onChange={(e) => setPatternDraft(e.target.value)}
+                      onBlur={() => {
+                        const list = patternDraft.split("\n").map((p) => p.trim()).filter(Boolean);
+                        setFlagPatterns(list);
+                        setPatternDraft(list.join("\n"));
+                      }}
+                      rows={4}
+                      placeholder={"um\neuh"}
+                      className="w-full bg-secondary border border-border rounded px-1.5 py-1 outline-none focus:border-primary/50 font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           )}
           {/* Density popover (icon only) */}
           <div className="relative">
@@ -1345,14 +1449,18 @@ export default function TranscriptViewer({
           const editedIdx = origToEditedIdx.get(originalIndex) ?? originalIndex;
           const ref = getRef(editedIdx);
           const isBreak = segment.speaker === "[BREAK]";
+          const reason = showFlags
+            ? flagReason(segment, filters.densityThreshold, filters.maxDensityThreshold, customPatterns)
+            : null;
+          const flagged = reason !== null && !dismissedFlags.has(originalIndex);
           return (
             <div key={`${editorKey}-${originalIndex}`} data-orig-idx={originalIndex}>
               <SegmentViewRow
                 segment={segment}
                 originalIndex={originalIndex}
                 isActive={activeOrigIdx === originalIndex}
-                isFlagged={showFlags ? isFlaggedSeg(segment, originalIndex) : false}
-                flagReasonText={showFlags ? flagReason(segment, filters.densityThreshold, filters.maxDensityThreshold) : null}
+                isFlagged={flagged}
+                flagReasonText={flagged ? reason : null}
                 isChanged={isChanged(segment, originalIndex)}
                 isPendingRemoval={pendingRemovals.has(segment.speaker)}
                 selected={selectedIndices.has(originalIndex)}
@@ -1361,9 +1469,9 @@ export default function TranscriptViewer({
                 speakers={speakers}
                 showSpeaker={showSpeaker}
                 showDelete={showDelete}
-                onTextChange={(text) => editor.updateText(originalIndex, text)}
-                onSpeakerChange={(speaker) => editor.updateSpeaker(originalIndex, speaker)}
-                onTimestampChange={(field, value) => editor.updateTimestamp(originalIndex, field, value)}
+                onTextChange={(text) => { editor.updateText(originalIndex, text); markEdited(originalIndex); }}
+                onSpeakerChange={(speaker) => { editor.updateSpeaker(originalIndex, speaker); markEdited(originalIndex); }}
+                onTimestampChange={(field, value) => { editor.updateTimestamp(originalIndex, field, value); markEdited(originalIndex); }}
                 onDelete={() => editor.deleteSegment(originalIndex)}
                 onDismissFlag={showFlags ? () => dismissFlag(originalIndex) : undefined}
                 onInsertBefore={() =>
@@ -1383,7 +1491,7 @@ export default function TranscriptViewer({
                   })
                 }
                 onMergeNext={() => handleMerge(originalIndex, segment.speaker)}
-                onSplit={(cursorPos) => editor.splitAt(originalIndex, cursorPos)}
+                onSplit={(cursorPos, t) => editor.splitAt(originalIndex, cursorPos, t)}
                 referenceText={ref && !isBreak ? ref.text : undefined}
               />
             </div>
@@ -1392,7 +1500,7 @@ export default function TranscriptViewer({
       </div>
 
       {/* ── Pagination ── */}
-      {totalPages > 1 && (
+      {displaySegments.length > 10 && (
         <Pagination
           page={filters.page}
           totalPages={totalPages}

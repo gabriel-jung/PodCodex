@@ -174,6 +174,7 @@ class Retriever:
                 "start": turn.get("start", chunk.get("start", 0.0)),
                 "end": turn.get("end", chunk.get("end", 0.0)),
                 "speakers": [turn],
+                "_chunk_start": chunk.get("start", 0.0),
             }
         return chunk
 
