@@ -498,6 +498,7 @@ async def unified_episodes(
         st: dict,
         ep_files: list[str],
         removed: bool = False,
+        feed_order: int | None = None,
     ) -> dict:
         prov = _normalize_provenance(st.get("provenance", {}))
         seg_count = seg_counts.get(stem) if stem else None
@@ -523,6 +524,7 @@ async def unified_episodes(
             "translations": st.get("translations", []),
             "artwork_url": artwork_url,
             "removed": removed,
+            "feed_order": feed_order,
             "segment_count": seg_count,
             "files": ep_files,
             "provenance": prov,
@@ -555,6 +557,7 @@ async def unified_episodes(
                 st=st,
                 ep_files=episode_files.get(stem, []) if stem else [],
                 removed=r.removed,
+                feed_order=r.feed_order,
             )
         )
 

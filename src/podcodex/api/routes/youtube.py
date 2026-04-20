@@ -64,6 +64,11 @@ async def youtube_fetch(show_folder: str) -> list[dict]:
     if not episodes:
         raise HTTPException(502, "No videos found")
 
+    # yt-dlp returns videos newest-first; persist that position so the UI can
+    # sort sensibly even when pub_date is missing from flat extraction.
+    for idx, ep in enumerate(episodes):
+        ep.feed_order = idx
+
     # YouTube has no true episode numbers, so new videos stay unnumbered.
     # Legacy numbered entries (pre-fix) keep their number via ``_preserve_num``
     # so their on-disk ``{n}_slug`` stems still resolve.
@@ -198,6 +203,7 @@ async def youtube_download(
                     )
                     if cached_subs:
                         results[-1]["subs_cached"] = True
+                        invalidate_scan_cache(show_path)
                 except Exception as exc:
                     logger.warning("Subtitle download failed for {}: {}", stem, exc)
 
@@ -282,6 +288,10 @@ async def youtube_import_subs(
                     }
                 )
 
+            # Invalidate per-iteration so the episodes poll picks up new VTTs
+            # (and .no_subtitles markers) while the batch is still running.
+            invalidate_scan_cache(show_path)
+
             if consecutive_fails >= _CONSECUTIVE_FAIL_LIMIT:
                 remaining = total - i - 1
                 progress_cb(
@@ -291,8 +301,6 @@ async def youtube_import_subs(
                     f"Try again later with fewer episodes.",
                 )
                 break
-
-        invalidate_scan_cache(show_path)
         return {
             "imported": imported,
             "failed": failed,

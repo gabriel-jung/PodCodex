@@ -58,6 +58,7 @@ class RSSEpisodeOut(BaseModel):
     season_number: int | None = None
     artwork_url: str = ""
     removed: bool = False  # no longer present in the live feed
+    feed_order: int | None = None  # position in source feed (0 = newest)
     # local status (filled when matching against local episodes)
     local_stem: str | None = None
     downloaded: bool = False
@@ -86,6 +87,7 @@ class UnifiedEpisodeOut(BaseModel):
     )
     downloaded: bool = False
     removed: bool = False  # no longer present in the live feed
+    feed_order: int | None = None  # position in source feed (0 = newest)
     transcribed: bool = False
     corrected: bool = False
     indexed: bool = False

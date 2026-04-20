@@ -151,11 +151,30 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     if (filter === "translated") list = list.filter((e) => e.translations.length > 0);
     if (filter === "indexed") list = list.filter((e) => e.indexed);
     if (filter === "outdated") list = list.filter((e) => isOutdated(e));
-    // Sort
+    // Sort. Date sorts fall back to feed_order (source-feed position,
+    // 0 = newest) when pub_date is missing — important for YouTube where
+    // flat extraction often omits upload dates.
+    const pubTime = (e: Episode) => {
+      const t = e.pub_date ? new Date(e.pub_date).getTime() : NaN;
+      return isNaN(t) ? null : t;
+    };
+    const dateCmp = (a: Episode, b: Episode, dir: 1 | -1) => {
+      const ta = pubTime(a), tb = pubTime(b);
+      if (ta != null && tb != null) {
+        if (ta !== tb) return (ta - tb) * dir;
+      } else if (ta != null) {
+        return -1;  // undated sorts last regardless of direction
+      } else if (tb != null) {
+        return 1;
+      }
+      const oa = a.feed_order ?? Number.POSITIVE_INFINITY;
+      const ob = b.feed_order ?? Number.POSITIVE_INFINITY;
+      return dir === -1 ? oa - ob : ob - oa;
+    };
     list = [...list].sort((a, b) => {
       switch (sort) {
-        case "date_asc": return new Date(a.pub_date ?? 0).getTime() - new Date(b.pub_date ?? 0).getTime();
-        case "date_desc": return new Date(b.pub_date ?? 0).getTime() - new Date(a.pub_date ?? 0).getTime();
+        case "date_asc": return dateCmp(a, b, 1);
+        case "date_desc": return dateCmp(a, b, -1);
         case "title_asc": return a.title.localeCompare(b.title);
         case "title_desc": return b.title.localeCompare(a.title);
         case "duration_asc": return a.duration - b.duration;

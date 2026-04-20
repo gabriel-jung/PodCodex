@@ -51,6 +51,7 @@ export interface RSSEpisodeOut {
   season_number?: number | null;
   artwork_url?: string;
   removed?: boolean;
+  feed_order?: number | null;
   local_stem?: string | null;
   downloaded?: boolean;
 }
@@ -76,6 +77,7 @@ export interface UnifiedEpisodeOut {
   output_dir?: string | null;
   downloaded?: boolean;
   removed?: boolean;
+  feed_order?: number | null;
   transcribed?: boolean;
   corrected?: boolean;
   indexed?: boolean;

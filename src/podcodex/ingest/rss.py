@@ -37,6 +37,9 @@ class RSSEpisode:
     season_number: int | None = None  # from itunes:season tag only
     artwork_url: str = ""  # per-episode itunes:image
     removed: bool = False  # true when episode no longer appears in the live feed
+    # Position in the source feed (0 = newest). Used as a sort fallback when
+    # pub_date is missing (YouTube flat extraction often omits dates).
+    feed_order: int | None = None
 
 
 def slug_from_title(title: str) -> str:
