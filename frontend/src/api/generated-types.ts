@@ -22,6 +22,7 @@ export interface ShowMeta {
   speakers?: string[];
   artwork_url?: string;
   pipeline?: PipelineDefaultsSchema;
+  last_feed_update?: string | null;
 }
 
 export interface EpisodeOut {
@@ -49,6 +50,7 @@ export interface RSSEpisodeOut {
   episode_number?: number | null;
   season_number?: number | null;
   artwork_url?: string;
+  removed?: boolean;
   local_stem?: string | null;
   downloaded?: boolean;
 }
@@ -73,6 +75,7 @@ export interface UnifiedEpisodeOut {
   audio_path?: string | null;
   output_dir?: string | null;
   downloaded?: boolean;
+  removed?: boolean;
   transcribed?: boolean;
   corrected?: boolean;
   indexed?: boolean;

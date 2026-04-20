@@ -18,6 +18,7 @@ from podcodex.ingest.rss import (
     RSSEpisode,
     episode_stem,
     load_feed_cache,
+    merge_with_cache,
     save_episode_meta,
     save_feed_cache,
 )
@@ -63,24 +64,15 @@ async def youtube_fetch(show_folder: str) -> list[dict]:
     if not episodes:
         raise HTTPException(502, "No videos found")
 
-    # Merge with existing cache to preserve stable episode numbers
-    existing = load_feed_cache(path)
-    if existing:
-        old_by_guid = {ep.guid: ep for ep in existing}
-        merged: list[RSSEpisode] = []
-        for ep in episodes:
-            old = old_by_guid.pop(ep.guid, None)
-            if old is not None:
-                # Keep the stable episode_number from the existing cache
-                ep = RSSEpisode(**{**ep.__dict__, "episode_number": old.episode_number})
-            merged.append(ep)
-        # Assign numbers only to genuinely new episodes
-        max_num = max((e.episode_number or 0 for e in merged), default=0)
-        for ep in merged:
-            if ep.episode_number is None:
-                max_num += 1
-                ep.episode_number = max_num
-        episodes = merged
+    # YouTube has no true episode numbers, so new videos stay unnumbered.
+    # Legacy numbered entries (pre-fix) keep their number via ``_preserve_num``
+    # so their on-disk ``{n}_slug`` stems still resolve.
+    def _preserve_num(fresh: RSSEpisode, old: RSSEpisode) -> RSSEpisode:
+        if old.episode_number is None:
+            return fresh
+        return RSSEpisode(**{**fresh.__dict__, "episode_number": old.episode_number})
+
+    episodes = merge_with_cache(episodes, load_feed_cache(path), on_match=_preserve_num)
 
     save_feed_cache(path, episodes)
 
@@ -123,12 +115,13 @@ async def youtube_download(
     if cached is None:
         raise HTTPException(400, "No cached video list — fetch YouTube first")
 
-    targets = cached
     if req.video_ids:
         id_set = set(req.video_ids)
         targets = [ep for ep in cached if ep.guid in id_set]
         if not targets:
             raise HTTPException(404, "No matching videos found for the given IDs")
+    else:
+        targets = [ep for ep in cached if not ep.removed]
 
     def run_downloads(progress_cb, episodes=targets, show_path=path):
         """Download each episode, optionally importing subtitles."""
@@ -149,7 +142,7 @@ async def youtube_download(
                 progress_cb(i / total, "Cancelled")
                 break
 
-            stem = episode_stem(ep)
+            stem = episode_stem(ep, show_path)
             progress_cb(i / total, f"Downloading {i + 1}/{total}: {ep.title[:40]}")
 
             if is_downloaded(show_path, stem):
@@ -257,7 +250,7 @@ async def youtube_import_subs(
                 progress_cb(i / total, "Cancelled")
                 break
 
-            stem = episode_stem(ep)
+            stem = episode_stem(ep, show_path)
             progress_cb(i / total, f"Downloading subs {i + 1}/{total}: {ep.title[:40]}")
             episode_dir = show_path / stem
             episode_dir.mkdir(parents=True, exist_ok=True)

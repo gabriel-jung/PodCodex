@@ -13,6 +13,7 @@ import { queryKeys } from "@/api/queryKeys";
 import { artworkUrl } from "@/api/filesystem";
 import type { Episode } from "@/api/types";
 import { languageToISO, isOutdated } from "@/lib/utils";
+import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore } from "@/stores";
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useShowActions } from "@/hooks/useShowActions";
@@ -169,8 +170,23 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const showName = meta?.name || folder.replace(/\/+$/, "").split("/").pop() || "Show";
 
-  const downloadableSelected = filtered.filter((e) => selected.has(e.id) && !e.downloaded);
-  const subtitleableSelected = filtered.filter((e) => selected.has(e.id));
+  const confirmDeleteAudio = (ep: Episode) => {
+    if (!ep.audio_path) return;
+    const description = ep.removed
+      ? `This will remove the downloaded audio for "${ep.title}". This episode is no longer in the live feed, so re-downloading won't be possible.`
+      : `This will remove the downloaded audio for "${ep.title}". You can re-download it later from ${isYouTube ? "YouTube" : "RSS"}.`;
+    confirmDialog.open({
+      title: "Delete episode audio?",
+      description,
+      confirmLabel: "Delete",
+      variant: "destructive",
+      onConfirm: () => deleteMutation.mutate(ep.audio_path!),
+    });
+  };
+
+  const downloadableSelected = filtered.filter((e) => selected.has(e.id) && !e.downloaded && !e.removed);
+  const subtitleableSelected = filtered.filter((e) => selected.has(e.id) && !e.removed);
+  const missingSubsSelected = subtitleableSelected.filter((e) => !e.has_subtitles);
   const batchableSelected = filtered.filter((e) =>
     selected.has(e.id) && (e.downloaded || e.has_subtitles || (e.transcribed && e.output_dir)),
   );
@@ -293,9 +309,16 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
             disabled={refreshMutation.isPending}
             variant="outline"
             size="sm"
+            title={isYouTube ? "Refresh YouTube videos" : "Refresh RSS feed"}
           >
             <RefreshCw className={refreshMutation.isPending ? "animate-spin" : ""} />
-            {refreshMutation.isPending ? "Refreshing..." : isYouTube ? "Refresh YouTube" : "Refresh RSS"}
+            {refreshMutation.isPending ? (
+              "Refreshing..."
+            ) : meta?.last_feed_update ? (
+              <StaleUpdatedLabel timestamp={meta.last_feed_update} />
+            ) : (
+              isYouTube ? "Refresh YouTube" : "Refresh RSS"
+            )}
           </Button>
         }
       />
@@ -388,7 +411,13 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           onImportSubs={(lang) => {
             importSubsMutation.mutate({ ids: subtitleableSelected.map((e) => e.id), lang });
           }}
-          subsLabel={`Subtitles (${subtitleableSelected.length})`}
+          subsLabel={
+            missingSubsSelected.length > 0
+              ? `Subtitles (${missingSubsSelected.length})`
+              : subtitleableSelected.length > 0
+                ? `Re-import subtitles (${subtitleableSelected.length})`
+                : "Subtitles"
+          }
           subsEnabled={subtitleableSelected.length > 0}
           audioLabel={`Audio${downloadableSelected.length > 0 ? ` (${downloadableSelected.length})` : ""}`}
           showAudio={true}
@@ -437,13 +466,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                 onOpen={() => goEpisode(ep.stem || ep.id)}
                 onPlay={() => ep.audio_path && (setAudioMeta(ep.audio_path, { title: ep.title, artwork: ep.artwork_url || meta?.artwork_url, showName }), seekTo(ep.audio_path, 0))}
                 onDownload={() => downloadMutation.mutate({ guids: [ep.id] })}
-                onDelete={() => ep.audio_path && confirmDialog.open({
-                  title: "Delete episode audio?",
-                  description: `This will remove the downloaded audio for "${ep.title}". You can re-download it later from RSS.`,
-                  confirmLabel: "Delete",
-                  variant: "destructive",
-                  onConfirm: () => deleteMutation.mutate(ep.audio_path!),
-                })}
+                onDelete={() => confirmDeleteAudio(ep)}
                 onProcess={(step) => runStep(step, [ep])}
                 downloading={downloadMutation.isPending || !!downloadTaskId}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
@@ -462,13 +485,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                 onOpen={() => goEpisode(ep.stem || ep.id)}
                 onPlay={() => ep.audio_path && (setAudioMeta(ep.audio_path, { title: ep.title, artwork: ep.artwork_url || meta?.artwork_url, showName }), seekTo(ep.audio_path, 0))}
                 onDownload={() => downloadMutation.mutate({ guids: [ep.id] })}
-                onDelete={() => ep.audio_path && confirmDialog.open({
-                  title: "Delete episode audio?",
-                  description: `This will remove the downloaded audio for "${ep.title}". You can re-download it later from RSS.`,
-                  confirmLabel: "Delete",
-                  variant: "destructive",
-                  onConfirm: () => deleteMutation.mutate(ep.audio_path!),
-                })}
+                onDelete={() => confirmDeleteAudio(ep)}
                 onProcess={(step) => runStep(step, [ep])}
                 downloading={downloadMutation.isPending || !!downloadTaskId}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}

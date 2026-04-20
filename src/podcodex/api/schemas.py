@@ -26,6 +26,9 @@ class ShowMeta(BaseModel):
     speakers: list[str] = []
     artwork_url: str = ""
     pipeline: PipelineDefaultsSchema = PipelineDefaultsSchema()
+    last_feed_update: str | None = (
+        None  # ISO timestamp of last feed cache write (read-only)
+    )
 
 
 class EpisodeOut(BaseModel):
@@ -54,6 +57,7 @@ class RSSEpisodeOut(BaseModel):
     episode_number: int | None = None
     season_number: int | None = None
     artwork_url: str = ""
+    removed: bool = False  # no longer present in the live feed
     # local status (filled when matching against local episodes)
     local_stem: str | None = None
     downloaded: bool = False
@@ -81,6 +85,7 @@ class UnifiedEpisodeOut(BaseModel):
         None  # episode directory (always set when episode dir exists)
     )
     downloaded: bool = False
+    removed: bool = False  # no longer present in the live feed
     transcribed: bool = False
     corrected: bool = False
     indexed: bool = False

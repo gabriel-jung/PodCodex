@@ -49,7 +49,16 @@ export function timeAgo(date: string | number | null | undefined): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   if (days < 30) return `${days}d ago`;
-  return formatDate(dateStr);
+  return formatDate(typeof date === "string" ? date : new Date(date).toISOString());
+}
+
+/** True when a feed/cache timestamp is older than a day — used to colour
+ *  "Updated X ago" labels as stale. */
+export function isStale(date: string | number | null | undefined, thresholdMs = 86_400_000): boolean {
+  if (date == null || date === "") return false;
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return false;
+  return Date.now() - d.getTime() > thresholdMs;
 }
 
 /** Strip HTML tags and decode common entities. */

@@ -1,7 +1,7 @@
 import { artworkUrl } from "@/api/filesystem";
 import type { ShowSummary } from "@/api/types";
-import { timeAgo } from "@/lib/utils";
 import { SourceIcon } from "./SourceIcon";
+import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 
 export interface ShowCardProps {
   show: ShowSummary;
@@ -31,9 +31,7 @@ export default function ShowCard({ show, onClick, vertical }: ShowCardProps) {
           {show.episode_count != null && show.episode_count > 0 && (
             <p className="text-xs text-muted-foreground">{show.episode_count} episode{show.episode_count !== 1 && "s"}</p>
           )}
-          {show.last_rss_update && (
-            <p className="text-xs text-muted-foreground" title={show.last_rss_update}>Updated {timeAgo(show.last_rss_update)}</p>
-          )}
+          <StaleUpdatedLabel timestamp={show.last_rss_update} className="text-xs block" />
         </div>
       </button>
     );
@@ -57,9 +55,7 @@ export default function ShowCard({ show, onClick, vertical }: ShowCardProps) {
         {show.episode_count != null && show.episode_count > 0 && (
           <p className="text-xs text-muted-foreground">{show.episode_count} episode{show.episode_count !== 1 && "s"}</p>
         )}
-        {show.last_rss_update && (
-          <p className="text-xs text-muted-foreground" title={show.last_rss_update}>Updated {timeAgo(show.last_rss_update)}</p>
-        )}
+        <StaleUpdatedLabel timestamp={show.last_rss_update} className="text-xs block" />
       </div>
     </button>
   );

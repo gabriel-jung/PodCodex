@@ -207,7 +207,7 @@ def is_downloaded(show_folder: Path, stem: str) -> bool:
 
 def rss_episode_to_out(ep: RSSEpisode, show_folder: Path) -> dict:
     """Convert an RSSEpisode to an RSSEpisodeOut dict."""
-    stem = episode_stem(ep)
+    stem = episode_stem(ep, show_folder)
     return {
         **asdict(ep),
         "local_stem": stem,

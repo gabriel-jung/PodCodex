@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import type { Episode } from "@/api/types";
-import { Play, Download, MoreVertical } from "lucide-react";
+import { Play, Download, MoreVertical, Captions, CloudOff } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
 import { StatusChips } from "./StatusChips";
 import { PipelineBar } from "./PipelineBar";
@@ -88,12 +88,32 @@ export function EpisodeCard({ ep, onOpen, onPlay, onDownload, onDelete, onProces
           </EpisodeMenu>
         </div>
 
-        {/* Top-left: episode number */}
-        {ep.episode_number != null && (
-          <span className="absolute top-2 left-2 text-2xs bg-black/60 text-white px-1.5 py-0.5 rounded-md font-medium">
-            #{ep.episode_number}
-          </span>
-        )}
+        {/* Top-left: episode number + subtitle indicator */}
+        <div className="absolute top-2 left-2 flex gap-1 items-center">
+          {ep.episode_number != null && (
+            <span className="text-2xs bg-black/60 text-white px-1.5 py-0.5 rounded-md font-medium">
+              #{ep.episode_number}
+            </span>
+          )}
+          {ep.has_subtitles && (
+            <span
+              className="w-5 h-5 bg-black/60 text-white rounded-md flex items-center justify-center"
+              title="Subtitles cached"
+              aria-label="Subtitles cached"
+            >
+              <Captions className="w-3 h-3" />
+            </span>
+          )}
+          {ep.removed && (
+            <span
+              className="w-5 h-5 bg-black/60 text-white/70 rounded-md flex items-center justify-center"
+              title="No longer in the live feed — kept locally"
+              aria-label="No longer in feed"
+            >
+              <CloudOff className="w-3 h-3" />
+            </span>
+          )}
+        </div>
 
         {/* Now playing indicator */}
         {isPlaying && (
@@ -105,7 +125,7 @@ export function EpisodeCard({ ep, onOpen, onPlay, onDownload, onDelete, onProces
 
       {/* Text content */}
       <div className="p-3 space-y-1.5">
-        <p className="text-sm font-medium line-clamp-2 leading-snug">{ep.title}</p>
+        <p className={`text-sm font-medium line-clamp-2 leading-snug ${ep.removed ? "text-muted-foreground" : ""}`}>{ep.title}</p>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {ep.pub_date && <span>{formatDate(ep.pub_date)}</span>}
           {ep.duration > 0 && <span>{formatDuration(ep.duration)}</span>}

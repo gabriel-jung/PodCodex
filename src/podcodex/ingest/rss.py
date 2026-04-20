@@ -7,9 +7,11 @@ locally as ``.feed_cache.json`` in the show folder.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -34,6 +36,7 @@ class RSSEpisode:
     episode_number: int | None = None  # from itunes:episode tag only
     season_number: int | None = None  # from itunes:season tag only
     artwork_url: str = ""  # per-episode itunes:image
+    removed: bool = False  # true when episode no longer appears in the live feed
 
 
 def slug_from_title(title: str) -> str:
@@ -79,16 +82,40 @@ def _parse_int_tag(value: str) -> int | None:
         return None
 
 
-def episode_stem(rss_episode: RSSEpisode) -> str:
+def _guid_suffix(guid: str) -> str:
+    """Short filesystem-safe suffix derived from a GUID, for stem disambiguation.
+
+    YouTube video IDs (11 chars, ``[\\w-]{11}``) are used as-is. Anything else
+    (URL GUIDs from RSS, etc.) is hashed to 8 hex chars for stability.
+    """
+    if not guid:
+        return ""
+    if re.fullmatch(r"[\w-]{11}", guid):
+        return guid
+    return hashlib.sha1(guid.encode("utf-8")).hexdigest()[:8]
+
+
+def episode_stem(rss_episode: RSSEpisode, show_folder: Path | str | None = None) -> str:
     """Return the filesystem stem for an RSS episode.
 
-    Prefixed with the episode number when available (e.g. ``116_épisode_...``),
-    otherwise just the slug from the title.
+    - With an ``episode_number`` (RSS ``itunes:episode``, or a legacy-numbered
+      YouTube entry): ``"{N}_{slug}"``.
+    - Without a number: ``"{slug}_{guid_suffix}"`` to prevent title collisions
+      (two videos called "Episode Rerun" would otherwise share a stem).
+
+    When *show_folder* is provided and a legacy slug-only directory already
+    exists (episodes created before the guid suffix was introduced), the legacy
+    stem is returned so existing on-disk outputs keep resolving.
     """
     slug = slug_from_title(rss_episode.title)
     if rss_episode.episode_number is not None:
         return f"{rss_episode.episode_number}_{slug}"
-    return slug
+    if show_folder is not None:
+        legacy_dir = Path(show_folder) / slug
+        if legacy_dir.is_dir():
+            return slug
+    suffix = _guid_suffix(rss_episode.guid)
+    return f"{slug}_{suffix}" if suffix else slug
 
 
 def _audio_ext_from_url(url: str) -> str:
@@ -206,6 +233,38 @@ def load_feed_cache(show_folder: Path) -> list[RSSEpisode] | None:
         return None
     raw = json.loads(path.read_text(encoding="utf-8"))
     return [RSSEpisode(**ep) for ep in raw]
+
+
+def merge_with_cache(
+    fresh: list[RSSEpisode],
+    existing: list[RSSEpisode] | None,
+    on_match: Callable[[RSSEpisode, RSSEpisode], RSSEpisode] | None = None,
+) -> list[RSSEpisode]:
+    """Merge a fresh feed fetch with an existing cache.
+
+    Episodes still in *fresh* keep ``removed=False``. Entries in *existing*
+    that disappear from *fresh* are appended with ``removed=True`` so their
+    local outputs stay visible in the UI. When *on_match* is supplied, it is
+    called with ``(fresh_ep, cached_ep)`` for every GUID match and its return
+    value replaces ``fresh_ep`` — used e.g. to keep a legacy YouTube
+    ``episode_number``.
+    """
+    if not existing:
+        for ep in fresh:
+            ep.removed = False
+        return list(fresh)
+    old_by_guid = {ep.guid: ep for ep in existing}
+    merged: list[RSSEpisode] = []
+    for ep in fresh:
+        old = old_by_guid.pop(ep.guid, None)
+        if old is not None and on_match is not None:
+            ep = on_match(ep, old)
+        ep.removed = False
+        merged.append(ep)
+    for leftover in old_by_guid.values():
+        leftover.removed = True
+        merged.append(leftover)
+    return merged
 
 
 def save_feed_cache(show_folder: Path, episodes: list[RSSEpisode]) -> Path:
@@ -336,7 +395,7 @@ def download_audio(
         return None, None
 
     ext = _audio_ext_from_url(rss_episode.audio_url)
-    stem = episode_stem(rss_episode)
+    stem = episode_stem(rss_episode, show_folder)
     dest = Path(show_folder) / f"{stem}{ext}"
 
     # Always persist episode metadata (even if audio already downloaded)

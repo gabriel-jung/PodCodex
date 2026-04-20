@@ -522,14 +522,19 @@ def cache_youtube_subtitles(
             if dirty:
                 save_feed_cache(show_folder, cached)
 
+    no_subs_marker = episode_dir / ".no_subtitles"
     if not vtt_text:
-        # Mark episode as having no available subtitles
-        no_subs_marker = episode_dir / ".no_subtitles"
-        no_subs_marker.write_text(lang, encoding="utf-8")
+        # YouTube can transiently hide captions (rate-limits, regional blocks,
+        # temporary removals). Don't delete any existing VTT — it's still valid
+        # transcript input. Only plant the "no subs" marker when nothing is
+        # cached yet, so the UI can distinguish "never had subs" from
+        # "previously cached".
+        has_existing_vtt = any(episode_dir.glob(f"{stem}.subtitles.*.vtt"))
+        if not has_existing_vtt:
+            no_subs_marker.write_text(lang, encoding="utf-8")
         return False
 
     # Clear any previous no-subtitles marker
-    no_subs_marker = episode_dir / ".no_subtitles"
     if no_subs_marker.exists():
         no_subs_marker.unlink()
 
@@ -538,7 +543,3 @@ def cache_youtube_subtitles(
     vtt_path.write_text(vtt_text, encoding="utf-8")
     logger.info("Cached subtitles ({}) for {} → {}", lang, stem, vtt_path.name)
     return True
-
-
-# Back-compat alias
-import_youtube_transcript = cache_youtube_subtitles

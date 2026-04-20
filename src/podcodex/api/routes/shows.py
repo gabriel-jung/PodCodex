@@ -363,8 +363,16 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
     """Return metadata for a show folder."""
     path = require_show_folder(show_folder)
     meta = load_show_meta(path)
+    last_feed_update: str | None = None
+    try:
+        from datetime import datetime, timezone
+
+        mtime = (path / ".feed_cache.json").stat().st_mtime
+        last_feed_update = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+    except FileNotFoundError:
+        pass
     if meta is None:
-        return ShowMeta(name=path.name)
+        return ShowMeta(name=path.name, last_feed_update=last_feed_update)
     return ShowMeta(
         name=meta.name,
         rss_url=meta.rss_url,
@@ -380,6 +388,7 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
             llm_model=meta.pipeline.llm_model,
             target_lang=meta.pipeline.target_lang,
         ),
+        last_feed_update=last_feed_update,
     )
 
 
@@ -488,6 +497,7 @@ async def unified_episodes(
         artwork_url: str,
         st: dict,
         ep_files: list[str],
+        removed: bool = False,
     ) -> dict:
         prov = _normalize_provenance(st.get("provenance", {}))
         seg_count = seg_counts.get(stem) if stem else None
@@ -512,6 +522,7 @@ async def unified_episodes(
             "has_subtitles": any(f.endswith(".vtt") for f in ep_files),
             "translations": st.get("translations", []),
             "artwork_url": artwork_url,
+            "removed": removed,
             "segment_count": seg_count,
             "files": ep_files,
             "provenance": prov,
@@ -520,7 +531,7 @@ async def unified_episodes(
 
     # RSS episodes first (preserves feed order)
     for r in rss:
-        stem = episode_stem(r)
+        stem = episode_stem(r, path)
         if r.guid in seen_ids:
             continue
         seen_ids.add(r.guid)
@@ -543,6 +554,7 @@ async def unified_episodes(
                 artwork_url=r.artwork_url or "",
                 st=st,
                 ep_files=episode_files.get(stem, []) if stem else [],
+                removed=r.removed,
             )
         )
 

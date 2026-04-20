@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { Episode } from "@/api/types";
-import { Play, Download, MoreVertical } from "lucide-react";
+import { Play, Download, MoreVertical, Captions, CloudOff } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
 import { StatusChips } from "./StatusChips";
 import { EpisodeMenu, type PipelineStep } from "./EpisodeMenu";
@@ -39,14 +39,24 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
       )}
       <button
         onClick={onOpen}
-        className="flex-1 text-left text-sm truncate text-foreground hover:text-primary cursor-pointer"
+        className={`flex-1 text-left text-sm truncate hover:text-primary cursor-pointer flex items-center gap-1.5 ${ep.removed ? "text-muted-foreground" : "text-foreground"}`}
       >
-        {ep.title}
+        {ep.removed && (
+          <span title="No longer in the live feed — kept locally" className="shrink-0">
+            <CloudOff className="w-3 h-3 text-muted-foreground" />
+          </span>
+        )}
+        <span className="truncate">{ep.title}</span>
       </button>
       <StatusChips ep={ep} compact />
       <span className="text-xs text-muted-foreground w-20 text-right shrink-0">{formatDate(ep.pub_date)}</span>
       <span className="text-xs text-muted-foreground w-12 text-right shrink-0">{formatDuration(ep.duration)}</span>
-      <div className="w-20 flex justify-end gap-2.5 shrink-0">
+      <div className="w-24 flex justify-end gap-2.5 shrink-0">
+        {ep.has_subtitles && (
+          <span title="Subtitles cached" aria-label="Subtitles cached" className="text-muted-foreground/70">
+            <Captions className="w-3.5 h-3.5" />
+          </span>
+        )}
         {ep.audio_path ? (
           <button onClick={onPlay} title="Play" aria-label="Play" className={`transition ${isPlaying ? "text-success" : "text-muted-foreground hover:text-foreground"}`}>
             <Play className="w-3.5 h-3.5" />

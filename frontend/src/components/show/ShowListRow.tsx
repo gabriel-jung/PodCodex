@@ -1,7 +1,7 @@
 import { artworkUrl } from "@/api/filesystem";
 import type { ShowSummary } from "@/api/types";
-import { timeAgo } from "@/lib/utils";
 import { SourceIcon } from "./SourceIcon";
+import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 
 export interface ShowListRowProps {
   show: ShowSummary;
@@ -27,9 +27,7 @@ export default function ShowListRow({ show, onClick }: ShowListRowProps) {
         {show.episode_count != null && show.episode_count > 0 && (
           <span>{show.episode_count} ep{show.episode_count !== 1 && "s"}</span>
         )}
-        {show.last_rss_update && (
-          <span title={show.last_rss_update}>updated {timeAgo(show.last_rss_update)}</span>
-        )}
+        <StaleUpdatedLabel timestamp={show.last_rss_update} prefix="updated" />
       </div>
     </button>
   );

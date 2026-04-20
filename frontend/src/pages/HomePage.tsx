@@ -9,7 +9,7 @@ import {
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
-import { timeAgo } from "@/lib/utils";
+import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 import { useLayoutStore } from "@/stores";
 import type { ShowSummary } from "@/api/generated-types";
 import ShowCard from "@/components/show/ShowCard";
@@ -66,14 +66,15 @@ export default function HomePage() {
     return { sections: sects, rssShows: rss, ytShows: yt };
   }, [sorted, groupBy]);
 
-  // Oldest RSS update across all shows (to display in the button)
-  const oldestRssUpdate = useMemo(() =>
-    rssShows.reduce<string | null>((oldest, s) => {
+  // Oldest feed update across all shows with a feed (RSS or YouTube),
+  // so the refresh button reflects staleness of either source.
+  const oldestFeedUpdate = useMemo(() =>
+    [...rssShows, ...ytShows].reduce<string | null>((oldest, s) => {
       if (!s.last_rss_update) return oldest;
       if (!oldest) return s.last_rss_update;
       return s.last_rss_update < oldest ? s.last_rss_update : oldest;
     }, null),
-  [rssShows]);
+  [rssShows, ytShows]);
 
   const refreshAllMutation = useMutation({
     mutationFn: async () => {
@@ -122,14 +123,16 @@ export default function HomePage() {
                 disabled={refreshAllMutation.isPending}
                 variant="outline"
                 size="sm"
-                title="Refresh RSS feeds for all shows"
+                title="Refresh all feeds (RSS + YouTube)"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${refreshAllMutation.isPending ? "animate-spin" : ""}`} />
-                {refreshAllMutation.isPending
-                  ? "Refreshing..."
-                  : oldestRssUpdate
-                    ? `Updated ${timeAgo(oldestRssUpdate)}`
-                    : "Update feeds"}
+                {refreshAllMutation.isPending ? (
+                  "Refreshing..."
+                ) : oldestFeedUpdate ? (
+                  <StaleUpdatedLabel timestamp={oldestFeedUpdate} />
+                ) : (
+                  "Update feeds"
+                )}
               </Button>
             )}
             <Button onClick={() => setAddOpen(true)} size="sm"><Plus /> Add show</Button>

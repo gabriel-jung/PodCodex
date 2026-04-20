@@ -20,6 +20,7 @@ from podcodex.ingest.rss import (
     feed_artwork,
     fetch_feed,
     load_feed_cache,
+    merge_with_cache,
     save_feed_cache,
 )
 from podcodex.ingest.show import load_show_meta, save_show_meta
@@ -43,6 +44,9 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
     if not episodes:
         raise HTTPException(502, "Feed returned no episodes (parse error or empty)")
 
+    # Keep episodes pulled from the feed flagged ``removed=True`` rather than
+    # silently dropping them — their local outputs stay visible in the UI.
+    episodes = merge_with_cache(episodes, load_feed_cache(path))
     save_feed_cache(path, episodes)
 
     # Upgrade artwork if missing or low-res (e.g. old 60px iTunes thumbnails)
@@ -82,12 +86,13 @@ async def rss_download(
     if cached is None:
         raise HTTPException(400, "No cached feed — fetch RSS first")
 
-    targets = cached
     if guids:
         guid_set = set(guids)
         targets = [ep for ep in cached if ep.guid in guid_set]
         if not targets:
             raise HTTPException(404, "No matching episodes found for the given GUIDs")
+    else:
+        targets = [ep for ep in cached if not ep.removed]
 
     def run_downloads(progress_cb, episodes=targets, show_path=path, force_dl=force):
         """Download each episode in sequence, reporting progress via callback."""
@@ -118,7 +123,7 @@ async def rss_download(
                 progress_cb(i / total, f"Cancelled — {_summary()}")
                 break
 
-            stem = episode_stem(ep)
+            stem = episode_stem(ep, show_path)
             progress_cb(i / total, f"[{i + 1}/{total}] Downloading…")
 
             if not force_dl and is_downloaded(show_path, stem):

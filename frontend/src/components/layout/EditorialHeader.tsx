@@ -11,7 +11,7 @@ export interface Crumb {
 }
 
 export interface Stat {
-  value: string | number;
+  value: string | number | React.ReactNode;
   label?: string;
 }
 
