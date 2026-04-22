@@ -212,10 +212,10 @@ def read_parquet(path: Path) -> list[dict]:
 
 
 def write_parquet(path: Path, records: list[dict]) -> None:
-    """Write a list of dicts to a parquet file."""
+    """Write a list of dicts to a parquet file atomically."""
     import pandas as pd
 
-    pd.DataFrame(records).to_parquet(path, index=False)
+    atomic_write(path, lambda p: pd.DataFrame(records).to_parquet(p, index=False))
 
 
 def read_json(path: Path):
@@ -224,8 +224,8 @@ def read_json(path: Path):
 
 
 def write_json(path: Path, data) -> None:
-    """Write data as formatted JSON."""
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    """Write data as formatted JSON atomically."""
+    write_json_atomic(path, data)
 
 
 # ──────────────────────────────────────────────
@@ -260,29 +260,45 @@ def episode_display(chunk: dict) -> str:
     return chunk.get("episode_title") or humanize_stem(chunk.get("episode", ""))
 
 
-def write_json_atomic(path: Path, data, *, prefix: str = ".tmp_") -> None:
-    """Write ``data`` as formatted JSON atomically.
+def atomic_write(
+    path: Path,
+    writer_fn,
+    *,
+    prefix: str = ".tmp_",
+    suffix: str = "",
+) -> None:
+    """Write to ``path`` atomically via same-dir temp file + ``os.replace``.
 
-    Uses a same-directory temp file + ``os.replace`` so a crash mid-write
-    can never leave a half-written config visible to readers (this matters
-    for files other tools — Claude Desktop, the bot — may read concurrently).
+    ``writer_fn`` receives the temp Path and must fully write it. On any
+    exception the temp file is removed so the destination is never a
+    half-written or zero-filled stub visible to readers (cloud-sync
+    clients, other processes).
     """
     import os
     import tempfile
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=str(path.parent),
-        prefix=prefix,
-        suffix=".tmp",
-        delete=False,
-    ) as tmp:
-        json.dump(data, tmp, indent=2, ensure_ascii=False)
-        tmp.write("\n")
-        tmp_path = Path(tmp.name)
-    os.replace(tmp_path, path)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=suffix)
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        writer_fn(tmp_path)
+        os.replace(tmp_path, path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+
+def write_json_atomic(path: Path, data, *, prefix: str = ".tmp_") -> None:
+    """Write ``data`` as formatted JSON atomically."""
+
+    def _write(p: Path) -> None:
+        with p.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+
+    atomic_write(path, _write, prefix=prefix, suffix=".tmp")
 
 
 def wav_duration(path: Path) -> float:

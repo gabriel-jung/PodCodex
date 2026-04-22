@@ -99,10 +99,13 @@ def save_manifest(segments_dir: Path, manifest: dict) -> None:
         segments_dir: directory where ``manifest.json`` will be written.
         manifest: manifest dict containing model, language, and per-segment entries.
     """
-    manifest_path = segments_dir / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, default=str), encoding="utf-8"
-    )
+    from podcodex.core._utils import atomic_write
+
+    def _write(p: Path) -> None:
+        with p.open("w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, default=str)
+
+    atomic_write(segments_dir / "manifest.json", _write, suffix=".json")
 
 
 def segment_is_current(

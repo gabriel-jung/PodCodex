@@ -241,7 +241,6 @@ def save_version(
         segment_count=len(segments),
     )
 
-    # Write version file (parquet for intermediates, JSON for final outputs)
     sdir = _step_dir(base, step)
     sdir.mkdir(parents=True, exist_ok=True)
     if step in PARQUET_STEPS:
@@ -249,10 +248,9 @@ def save_version(
 
         write_parquet(sdir / f"{version_id}.parquet", segments)
     else:
-        seg_path = sdir / f"{version_id}.json"
-        seg_path.write_text(
-            json.dumps(segments, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        from podcodex.core._utils import write_json
+
+        write_json(sdir / f"{version_id}.json", segments)
 
     # Insert metadata into DB
     db = _get_db(base)
@@ -270,33 +268,51 @@ def save_version(
 def load_version(base: Path, step: str, version_id: str) -> list[dict]:
     """Load segments for a specific version.
 
+    Treats a missing file or unreadable payload (truncated, zero-filled
+    by an interrupted sync, parquet backend error, etc.) as "not found"
+    so callers fall back to older versions. The DB row is preserved —
+    unavailability may be transient.
+
     Raises:
-        FileNotFoundError: If the version file doesn't exist.
+        FileNotFoundError: file missing on disk, or payload unreadable.
     """
     seg_path = _version_path(base, step, version_id)
     if not seg_path.exists():
-        raise FileNotFoundError(f"Version {version_id} not found for step '{step}'")
-    if step in PARQUET_STEPS:
-        from podcodex.core._utils import read_parquet
+        raise FileNotFoundError(
+            f"Version {version_id} missing on disk for step '{step}'"
+        )
+    try:
+        if step in PARQUET_STEPS:
+            from podcodex.core._utils import read_parquet
 
-        return read_parquet(seg_path)
-    return json.loads(seg_path.read_text(encoding="utf-8"))
+            return read_parquet(seg_path)
+        return json.loads(seg_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise FileNotFoundError(
+            f"Version {version_id} unreadable for step '{step}': {e}"
+        ) from e
 
 
 def load_latest(base: Path, step: str) -> list[dict] | None:
-    """Load segments from the most recent version of a step.
+    """Load segments from the most recent usable version of a step.
 
-    Returns None if no version exists in the DB.
+    Walks versions newest-first and returns the first one that loads
+    cleanly. If the newest file is missing or corrupt (crash, cloud-sync
+    stub, user deleted it) the call falls through to the next-newest
+    instead of failing.
+
+    Returns None if no version exists or all versions are unreadable.
     """
     db = _get_db(base)
-    meta = db.get_latest_version(base.name, step)
-    if not meta:
+    versions = db.list_versions(base.name, step)
+    if not versions:
         return None
-    try:
-        return load_version(base, step, meta["id"])
-    except FileNotFoundError:
-        logger.warning("Version file missing for {}/{}", step, meta["id"])
-        return None
+    for meta in versions:
+        try:
+            return load_version(base, step, meta["id"])
+        except FileNotFoundError as e:
+            logger.warning("Skipping version {}/{}: {}", step, meta["id"], e)
+    return None
 
 
 def get_latest_provenance(base: Path, step: str) -> dict | None:

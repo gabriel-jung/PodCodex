@@ -50,9 +50,14 @@ def _load() -> AppConfig:
 
 
 def _save(cfg: AppConfig) -> None:
-    """Persist app config to disk as JSON."""
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(cfg.model_dump_json(indent=2), encoding="utf-8")
+    """Persist app config to disk as JSON (atomic write)."""
+    from podcodex.core._utils import atomic_write
+
+    atomic_write(
+        CONFIG_PATH,
+        lambda p: p.write_text(cfg.model_dump_json(indent=2), encoding="utf-8"),
+        suffix=".json",
+    )
 
 
 def _register_folder(cfg: AppConfig, folder_path: str) -> AppConfig:
