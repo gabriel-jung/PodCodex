@@ -87,6 +87,11 @@ from podcodex.rag.index_store import IndexStore, get_index_store
 from podcodex.rag.retriever import Retriever, get_retriever, merge_results
 from podcodex.rag.store import collection_name
 
+# Throttle for the per-call mtime check. Discord fires autocomplete on every
+# keystroke; without throttling, a 10-char query would walk the index dir 10
+# times. 2s is well below any realistic rate of out-of-process index changes.
+_MTIME_CHECK_INTERVAL = 2.0
+
 # ── Slash-command choices ─────────────────────
 
 _BOOL_CHOICES = [
@@ -139,6 +144,14 @@ class _AutocompleteCache:
 
     def is_stale(self) -> bool:
         return (time.monotonic() - self.timestamp) > self.ttl
+
+    def reset(self) -> None:
+        self.episodes.clear()
+        self.episode_titles.clear()
+        self.sources.clear()
+        self.speakers.clear()
+        self.col_info = None
+        self.timestamp = time.monotonic()
 
 
 # ── Config dataclasses ────────────────────────
@@ -280,6 +293,12 @@ class PodCodexBot(discord.Client):
         self._ac_cache = _AutocompleteCache(
             episodes={}, episode_titles={}, sources={}, speakers={}
         )
+
+        # Newest mtime seen across index-dir entries. Rising value means the
+        # on-disk index changed (rsync, password set via API, new show
+        # indexed) and bot state must be reloaded.
+        self._index_mtime_seen: float = 0.0
+        self._last_mtime_check: float = 0.0
 
         self._register_commands()
 
@@ -453,6 +472,28 @@ class PodCodexBot(discord.Client):
             or (info_map.get(col) or {}).get("show", "") in allowed
         ]
 
+    async def _refresh_if_stale(self) -> None:
+        """Detect external index changes and reload bot state.
+
+        Called at the top of every privileged handler so out-of-process
+        writes (rsync, desktop-app indexing, API password change) can't
+        leak ACL state. Filesystem checks are throttled to one sweep per
+        ``_MTIME_CHECK_INTERVAL`` so autocomplete bursts don't compound.
+        """
+        now = time.monotonic()
+        if now - self._last_mtime_check < _MTIME_CHECK_INTERVAL:
+            return
+        self._last_mtime_check = now
+        loop = asyncio.get_running_loop()
+        current = await loop.run_in_executor(None, self.local.index_mtime)
+        if current <= self._index_mtime_seen:
+            return
+        self._index_mtime_seen = current
+        await loop.run_in_executor(None, self.local.reconnect)
+        self._ac_cache.reset()
+        await loop.run_in_executor(None, self._reload_shows)
+        logger.info("Index refresh: external change detected, bot state reloaded.")
+
     # ── Lazy singletons ──────────────────────
 
     @property
@@ -480,6 +521,9 @@ class PodCodexBot(discord.Client):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: self.local)
         await loop.run_in_executor(None, self._reload_shows)
+        self._index_mtime_seen = await loop.run_in_executor(
+            None, self.local.index_mtime
+        )
         if self.config.dev_guild_id:
             guild = discord.Object(id=self.config.dev_guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -535,6 +579,7 @@ class PodCodexBot(discord.Client):
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
+        await self._refresh_if_stale()
         self._cache_clear_if_stale()
         settings = self._server_settings(interaction.guild_id)
         model = getattr(interaction.namespace, "model", "") or settings.model
@@ -557,14 +602,8 @@ class PodCodexBot(discord.Client):
         ][:25]
 
     def _cache_clear_if_stale(self) -> None:
-        cache = self._ac_cache
-        if cache.is_stale():
-            cache.episodes.clear()
-            cache.episode_titles.clear()
-            cache.sources.clear()
-            cache.speakers.clear()
-            cache.col_info = None
-            cache.timestamp = time.monotonic()
+        if self._ac_cache.is_stale():
+            self._ac_cache.reset()
 
     async def _cached_col_info(self) -> dict[str, dict]:
         """Return ``{collection: info}`` map, cached with the autocomplete TTL."""
@@ -627,6 +666,7 @@ class PodCodexBot(discord.Client):
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
+        await self._refresh_if_stale()
         self._cache_clear_if_stale()
         settings = self._server_settings(interaction.guild_id)
         model = getattr(interaction.namespace, "model", "") or settings.model
@@ -662,6 +702,7 @@ class PodCodexBot(discord.Client):
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
+        await self._refresh_if_stale()
         self._cache_clear_if_stale()
         settings = self._server_settings(interaction.guild_id)
         model = getattr(interaction.namespace, "model", "") or settings.model
@@ -733,6 +774,7 @@ class PodCodexBot(discord.Client):
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
+        await self._refresh_if_stale()
         self._cache_clear_if_stale()
         settings = self._server_settings(interaction.guild_id)
         model = getattr(interaction.namespace, "model", "") or settings.model
@@ -811,6 +853,7 @@ class PodCodexBot(discord.Client):
         ) -> None:
             if not await self._check_cooldown(interaction):
                 return
+            await self._refresh_if_stale()
             settings = self._effective_settings(interaction.guild_id)
             effective_source = source or settings.default_source or None
             shows = self._resolve_shows(settings, show)
@@ -866,6 +909,7 @@ class PodCodexBot(discord.Client):
         ) -> None:
             if not await self._check_cooldown(interaction):
                 return
+            await self._refresh_if_stale()
             settings = self._effective_settings(
                 interaction.guild_id, model, top_k, chunker
             )
@@ -999,6 +1043,7 @@ class PodCodexBot(discord.Client):
         ) -> None:
             if not await self._check_cooldown(interaction):
                 return
+            await self._refresh_if_stale()
             settings = self._server_settings(interaction.guild_id)
             shows = self._resolve_shows(settings, show)
 
@@ -1032,6 +1077,7 @@ class PodCodexBot(discord.Client):
         ) -> None:
             if not await self._check_cooldown(interaction):
                 return
+            await self._refresh_if_stale()
             settings = self._server_settings(interaction.guild_id)
             shows = self._resolve_shows(settings, show)
 
@@ -1178,6 +1224,15 @@ class PodCodexBot(discord.Client):
                 "an hour to appear in this server (Discord cache).",
                 ephemeral=True,
             )
+
+        # /admin-reload ───────────────────────
+        @self.tree.command(
+            name="admin-reload",
+            description="Reconnect to the index and reload show passwords (admin)",
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        async def admin_reload(interaction: discord.Interaction) -> None:
+            await self._handle_admin_reload(interaction)
 
         # /unlock ─────────────────────────────
         @self.tree.command(
@@ -1440,6 +1495,7 @@ class PodCodexBot(discord.Client):
         chunker: str = "",
     ) -> None:
         await interaction.response.defer()
+        await self._refresh_if_stale()
         settings = self._effective_settings(interaction.guild_id, model, top_k, chunker)
         effective_source = source or settings.default_source or None
 
@@ -1891,6 +1947,36 @@ class PodCodexBot(discord.Client):
             ephemeral=True,
         )
 
+    # ── /admin-reload handler ─────────────────
+
+    async def _handle_admin_reload(self, interaction: discord.Interaction) -> None:
+        """Force-refresh bot state against the current index on disk.
+
+        The auto-refresh in every privileged handler already picks up
+        external changes via mtime, but this gives admins an explicit
+        escape hatch if mtime detection is defeated (e.g. ``cp -p`` that
+        preserves timestamps, a network mount with coarse mtime, etc.).
+        """
+        await interaction.response.defer(ephemeral=True)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.local.reconnect)
+        self._ac_cache.reset()
+        await loop.run_in_executor(None, self._reload_shows)
+        self._index_mtime_seen = await loop.run_in_executor(
+            None, self.local.index_mtime
+        )
+        self._last_mtime_check = time.monotonic()
+        col_info = await loop.run_in_executor(None, self.local.get_all_collection_info)
+        shows = sorted(
+            {info.get("show", "") for info in col_info.values() if info.get("show")}
+        )
+        protected = len(self._shows)
+        await interaction.followup.send(
+            f"✅ Reloaded. {len(col_info)} collection(s), {len(shows)} show(s), "
+            f"{protected} password-protected.",
+            ephemeral=True,
+        )
+
     # ── /unlock + /lock handlers ────────────────
 
     async def _handle_unlock(
@@ -1899,7 +1985,10 @@ class PodCodexBot(discord.Client):
         password: str,
     ) -> None:
         # Refresh from disk so passwords set via the desktop app (while the
-        # bot is already running) are picked up without a restart.
+        # bot is already running) are picked up without a restart. The
+        # staleness check also reconnects LanceDB if the index was rsynced
+        # under the running process.
+        await self._refresh_if_stale()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._reload_shows)
 
@@ -2012,6 +2101,7 @@ class PodCodexBot(discord.Client):
         model: str | None,
     ) -> None:
         await interaction.response.defer()
+        await self._refresh_if_stale()
         settings = self._effective_settings(interaction.guild_id, model or "", 0)
         loop = asyncio.get_running_loop()
 
@@ -2081,6 +2171,7 @@ class PodCodexBot(discord.Client):
         model: str | None,
     ) -> None:
         await interaction.response.defer()
+        await self._refresh_if_stale()
         settings = self._effective_settings(interaction.guild_id, model or "", 0)
         loop = asyncio.get_running_loop()
 
@@ -2157,6 +2248,7 @@ class PodCodexBot(discord.Client):
         model: str | None,
     ) -> None:
         await interaction.response.defer()
+        await self._refresh_if_stale()
         settings = self._effective_settings(interaction.guild_id, model or "", 0)
         loop = asyncio.get_running_loop()
 

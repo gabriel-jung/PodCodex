@@ -315,6 +315,52 @@ class IndexStore:
         self._db = lancedb.connect(str(self._path))
         self._fts_ready: set[str] = set()
 
+    # ── External-change detection & reconnection ─────────────────────────
+    #
+    # The index directory can be replaced (rsync) or extended (desktop app
+    # adds a show, API sets a password) while the bot holds a live LanceDB
+    # connection. `index_mtime` lets callers cheaply detect such changes;
+    # `reconnect` rebuilds the connection so subsequent reads see the new
+    # data without a process restart.
+
+    def index_mtime(self) -> float:
+        """Return the newest mtime across top-level entries in the index dir.
+
+        A rising value means something changed on disk (new table, updated
+        transaction log, rsync). Callers use this as a staleness signal.
+        """
+        try:
+            entries = list(self._path.iterdir())
+        except OSError:
+            return 0.0
+        if not entries:
+            try:
+                return self._path.stat().st_mtime
+            except OSError:
+                return 0.0
+        latest = 0.0
+        for e in entries:
+            try:
+                m = e.stat().st_mtime
+            except OSError:
+                continue
+            if m > latest:
+                latest = m
+        return latest
+
+    def reconnect(self) -> None:
+        """Reopen the LanceDB connection so it observes on-disk changes.
+
+        Call after an rsync or any out-of-process write to the index dir.
+        Cached FTS-readiness is dropped because indices may have been
+        rebuilt externally.
+        """
+        import lancedb
+
+        self._db = lancedb.connect(str(self._path))
+        self._fts_ready.clear()
+        logger.info(f"IndexStore reconnected: {self._path}")
+
     # ── Internal: collections metadata table ─────────────────────────────
 
     def _table_names(self) -> list[str]:
