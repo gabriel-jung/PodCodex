@@ -28,6 +28,7 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
 }) {
   const navigate = useNavigate();
   const isHome = useRouterState({ select: (s) => s.location.pathname === "/" });
+  const hideBack = isHome && window.history.length <= 1;
   const expanded = useLayoutStore((s) => s.sidebarExpanded);
   const setExpanded = useLayoutStore((s) => s.setSidebarExpanded);
   const { theme, setTheme } = useTheme();
@@ -41,10 +42,12 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
     >
       <nav className="flex-1 py-2 flex flex-col overflow-y-auto">
         {/* Back + Parent + Home */}
-        <SidebarBtn icon={ArrowLeft} label="Back" expanded={expanded} onClick={() => {
-          if (window.history.length > 1) window.history.back();
-          else navigate({ to: "/" });
-        }} />
+        {!hideBack && (
+          <SidebarBtn icon={ArrowLeft} label="Back" expanded={expanded} onClick={() => {
+            if (window.history.length > 1) window.history.back();
+            else navigate({ to: "/" });
+          }} />
+        )}
         {parentLabel && onParent && (
           <SidebarBtn icon={Podcast} label={parentLabel} expanded={expanded} onClick={onParent} />
         )}

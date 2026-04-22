@@ -141,7 +141,7 @@ def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_
     seg_params = {"model": req.model_size}
     if req.language:
         seg_params["language"] = req.language
-    new_segments = not has_matching_version(p.base, "segments", seg_params)
+    new_segments = req.force or not has_matching_version(p.base, "segments", seg_params)
     if new_segments:
         did_work = True
         ep_progress(i, step_offset, sw, 0.0, "Transcribing...")
@@ -150,6 +150,7 @@ def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_
             model_size=req.model_size,
             language=req.language or None,
             batch_size=batch_size,
+            force=req.force,
         )
         if cancelled():
             return did_work
@@ -157,7 +158,7 @@ def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_
     # Sub-step 2: Diarize (pyannote)
     new_diarization = False
     if not cancelled() and req.diarize:
-        if not has_version(p.base, "diarization"):
+        if req.force or not has_version(p.base, "diarization"):
             new_diarization = True
             did_work = True
             ep_progress(i, step_offset, sw, 0.4, "Diarizing...")
@@ -165,6 +166,7 @@ def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_
                 audio_path,
                 hf_token=req.hf_token,
                 num_speakers=req.num_speakers,
+                force=req.force,
             )
             if cancelled():
                 return did_work
@@ -173,13 +175,14 @@ def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_
     # Re-run if segments or diarization changed (inputs are newer than output)
     if not cancelled() and req.diarize:
         if (
-            new_segments
+            req.force
+            or new_segments
             or new_diarization
             or not has_version(p.base, "diarized_segments")
         ):
             did_work = True
             ep_progress(i, step_offset, sw, 0.7, "Assigning speakers...")
-            assign_speakers(audio_path)
+            assign_speakers(audio_path, force=req.force)
             if cancelled():
                 return did_work
 
