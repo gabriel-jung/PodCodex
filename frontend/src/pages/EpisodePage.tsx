@@ -83,7 +83,8 @@ export default function EpisodePage({
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { seekTo, setAudioMeta } = useAudioStore();
+  const seekTo = useAudioStore((s) => s.seekTo);
+  const setAudioMeta = useAudioStore((s) => s.setAudioMeta);
   const [activeStep, setActiveStep] = useState<ActiveStep>("info");
   const [descExpanded, setDescExpanded] = useState(false);
 
@@ -332,7 +333,7 @@ function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, 
 function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError, onNavigateStep }: { episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string; onNavigateStep: (step: ActiveStep) => void }) {
   const audioPath = episode.audio_path;
   const hasTranscript = !!episode.transcribed;
-  const { seekTo } = useAudioStore();
+  const seekTo = useAudioStore((s) => s.seekTo);
   const [previewSource, setPreviewSource] = useState<string | null>(null);
   const queryClient = useQueryClient();
 

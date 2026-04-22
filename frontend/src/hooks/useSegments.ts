@@ -1,4 +1,4 @@
-import { useMemo, useReducer } from "react";
+import { useCallback, useMemo, useReducer, useRef } from "react";
 import type { Segment } from "@/api/types";
 
 type Snapshot = {
@@ -228,6 +228,59 @@ export function useSegments(
     return indices;
   }, [state.original, state.edits, state.deleted]);
 
+  // Keep fresh state accessible from stable callbacks (deleteFlagged needs
+  // the current flagged list, getNextSegment scans live state).
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const flaggedRef = useRef(flaggedIndices);
+  flaggedRef.current = flaggedIndices;
+
+  const updateText = useCallback((index: number, text: string) => {
+    dispatch({ type: "SET_TEXT", index, text });
+  }, []);
+  const updateSpeaker = useCallback((index: number, speaker: string) => {
+    dispatch({ type: "SET_SPEAKER", index, speaker });
+  }, []);
+  const updateTimestamp = useCallback(
+    (index: number, field: "start" | "end", value: number) => {
+      dispatch({ type: "SET_TIMESTAMP", index, field, value });
+    },
+    [],
+  );
+  const deleteSegment = useCallback((index: number) => {
+    dispatch({ type: "DELETE", index });
+  }, []);
+  const deleteFlagged = useCallback(() => {
+    dispatch({ type: "DELETE_FLAGGED", indices: flaggedRef.current });
+  }, []);
+  const insertAfter = useCallback((index: number, segment: Segment) => {
+    dispatch({ type: "INSERT", afterIndex: index, segment });
+  }, []);
+  const mergeWithNext = useCallback((index: number, speaker?: string) => {
+    dispatch({ type: "MERGE", index, speaker });
+  }, []);
+  const getNextSegment = useCallback((index: number): Segment | null => {
+    const s = stateRef.current;
+    let nextIdx = index + 1;
+    while (nextIdx < s.original.length && s.deleted.has(nextIdx)) nextIdx++;
+    if (nextIdx >= s.original.length) return null;
+    const seg = s.original[nextIdx];
+    const edit = s.edits.get(nextIdx);
+    return edit ? { ...seg, ...edit } : seg;
+  }, []);
+  const splitAt = useCallback(
+    (index: number, cursorPos: number, explicitTime?: number) => {
+      dispatch({ type: "SPLIT", index, cursorPos, explicitTime });
+    },
+    [],
+  );
+  const reset = useCallback((segments: Segment[]) => {
+    dispatch({ type: "RESET", segments });
+  }, []);
+  const undo = useCallback(() => {
+    dispatch({ type: "UNDO" });
+  }, []);
+
   return {
     editedSegments,
     originalIndices,
@@ -235,25 +288,16 @@ export function useSegments(
     deletedCount: state.deleted.size,
     canUndo: state.history.length > 0,
     flaggedIndices,
-    updateText: (index, text) => dispatch({ type: "SET_TEXT", index, text }),
-    updateSpeaker: (index, speaker) => dispatch({ type: "SET_SPEAKER", index, speaker }),
-    updateTimestamp: (index, field, value) =>
-      dispatch({ type: "SET_TIMESTAMP", index, field, value }),
-    deleteSegment: (index) => dispatch({ type: "DELETE", index }),
-    deleteFlagged: () => dispatch({ type: "DELETE_FLAGGED", indices: flaggedIndices }),
-    insertAfter: (index, segment) => dispatch({ type: "INSERT", afterIndex: index, segment }),
-    mergeWithNext: (index, speaker?) => dispatch({ type: "MERGE", index, speaker }),
-    getNextSegment: (index) => {
-      let nextIdx = index + 1;
-      while (nextIdx < state.original.length && state.deleted.has(nextIdx)) nextIdx++;
-      if (nextIdx >= state.original.length) return null;
-      const seg = state.original[nextIdx];
-      const edit = state.edits.get(nextIdx);
-      return edit ? { ...seg, ...edit } : seg;
-    },
-    splitAt: (index, cursorPos, explicitTime) =>
-      dispatch({ type: "SPLIT", index, cursorPos, explicitTime }),
-    reset: (segments) => dispatch({ type: "RESET", segments }),
-    undo: () => dispatch({ type: "UNDO" }),
+    updateText,
+    updateSpeaker,
+    updateTimestamp,
+    deleteSegment,
+    deleteFlagged,
+    insertAfter,
+    mergeWithNext,
+    getNextSegment,
+    splitAt,
+    reset,
+    undo,
   };
 }

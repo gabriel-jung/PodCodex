@@ -28,7 +28,8 @@ export default function SynthesizePanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const queryClient = useQueryClient();
-  const { seekTo, setAudioMeta } = useAudioStore();
+  const seekTo = useAudioStore((s) => s.seekTo);
+  const setAudioMeta = useAudioStore((s) => s.setAudioMeta);
 
   const [extractTaskId, setExtractTaskId] = useState<string | null>(null);
   const [generateTaskId, setGenerateTaskId] = useState<string | null>(null);

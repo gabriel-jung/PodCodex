@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Episode } from "@/api/types";
-import { isManualEdit } from "@/lib/stepStatus";
+import { isEdited } from "@/lib/stepStatus";
 import {
   Mic, Sparkles, Languages, AudioLines, Database,
 } from "lucide-react";
@@ -40,7 +40,16 @@ export interface PipelineStepDef {
  *  "partial" (blue, needs review), absent is `false` (gray). */
 function editedStatus(present: boolean, provenance: unknown): StepStatus {
   if (!present) return false;
-  return isManualEdit(provenance) ? "done" : "partial";
+  return isEdited(provenance) ? "done" : "partial";
+}
+
+function translateStatus(e: Episode): StepStatus {
+  if (e.translations.length === 0) return false;
+  if (e.translate_status === "outdated") return "partial";
+  // Prefer provenance of the currently-targeted lang (first translation as
+  // fallback) so partial ↔ done tracks whether that version was edited.
+  const lang = e.translations[0];
+  return isEdited(e.provenance?.[lang]) ? "done" : "partial";
 }
 
 export type PipelineStepKey = PipelineStepDef["key"];
@@ -100,10 +109,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     section: "bonus",
     headerBadge: false,
     component: () => <TranslatePanel />,
-    status: (e) => {
-      if (e.translate_status === "outdated") return "partial";
-      return e.translations.length > 0 ? "done" : false;
-    },
+    status: translateStatus,
     matchFiles: (e, f) =>
       f.includes(".translated.") ||
       e.translations.some((lang) => f.includes(`/${lang}/`) || f.includes(`.${lang}.`)),

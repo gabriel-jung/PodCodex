@@ -21,6 +21,8 @@ export interface FilterState {
   setShowFlaggedOnly: (b: boolean) => void;
   showChangedOnly: boolean;
   setShowChangedOnly: (b: boolean) => void;
+  showRemovedOnly: boolean;
+  setShowRemovedOnly: (b: boolean) => void;
   densityThreshold: number;
   setDensityThreshold: (n: number) => void;
   maxDensityThreshold: number;
@@ -67,6 +69,7 @@ export function useSegmentFiltering(): FilterState {
   const [speakerFilter, setSpeakerFilter] = useState("");
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
   const [showChangedOnly, setShowChangedOnly] = useState(false);
+  const [showRemovedOnly, setShowRemovedOnly] = useState(false);
   const [densityThreshold, setDensityThreshold] = useState(MIN_DENSITY);
   const [maxDensityThreshold, setMaxDensityThreshold] = useState(MAX_DENSITY);
   const [searchQuery, setSearchQuery] = useState("");
@@ -78,6 +81,7 @@ export function useSegmentFiltering(): FilterState {
     speakerFilter, setSpeakerFilter,
     showFlaggedOnly, setShowFlaggedOnly,
     showChangedOnly, setShowChangedOnly,
+    showRemovedOnly, setShowRemovedOnly,
     densityThreshold, setDensityThreshold,
     maxDensityThreshold, setMaxDensityThreshold,
     searchQuery, setSearchQuery,
@@ -94,14 +98,18 @@ export function useFilteredSegments(
     isChanged: (seg: Segment, origIdx: number) => boolean;
     recentlyEdited?: Set<number>;
     customPatterns?: string[];
+    isPendingRemoval?: (seg: Segment) => boolean;
   },
 ): FilteredResult {
-  const { speakerFilter, showFlaggedOnly, showChangedOnly, searchQuery, page, pageSize, densityThreshold, maxDensityThreshold } = filters;
-  const { dismissedFlags, isChanged, recentlyEdited, customPatterns = [] } = opts;
+  const { speakerFilter, showFlaggedOnly, showChangedOnly, showRemovedOnly, searchQuery, page, pageSize, densityThreshold, maxDensityThreshold } = filters;
+  const { dismissedFlags, isChanged, recentlyEdited, customPatterns = [], isPendingRemoval } = opts;
   const searchLower = searchQuery.toLowerCase().trim();
 
   const isFlaggedSeg = (seg: Segment, origIdx?: number): boolean => {
     if (origIdx != null && dismissedFlags.has(origIdx)) return false;
+    // Segments whose speaker is already marked for removal have been
+    // triaged — don't nag the user with them in the flagged review.
+    if (isPendingRemoval?.(seg)) return false;
     return flagReason(seg, densityThreshold, maxDensityThreshold, customPatterns) !== null;
   };
 
@@ -118,6 +126,7 @@ export function useFilteredSegments(
         if (speakerFilter && seg.speaker !== speakerFilter && seg.speaker !== "[BREAK]") continue;
         if (showFlaggedOnly && !isFlaggedSeg(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
         if (showChangedOnly && !isChanged(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
+        if (showRemovedOnly && !(isPendingRemoval?.(seg) ?? false) && seg.speaker !== "[BREAK]") continue;
         if (searchLower && !seg.text.toLowerCase().includes(searchLower) && seg.speaker !== "[BREAK]") continue;
       }
       if (seg.speaker === "[BREAK]" && result.length > 0 && result[result.length - 1].segment.speaker === "[BREAK]") continue;
@@ -131,7 +140,7 @@ export function useFilteredSegments(
 
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editedSegments, originalIndices, speakerFilter, showFlaggedOnly, showChangedOnly, searchLower, densityThreshold, maxDensityThreshold, dismissedFlags, recentlyEdited, customPatterns]);
+  }, [editedSegments, originalIndices, speakerFilter, showFlaggedOnly, showChangedOnly, showRemovedOnly, searchLower, densityThreshold, maxDensityThreshold, dismissedFlags, recentlyEdited, customPatterns, isPendingRemoval]);
 
   // Auto-disable filters when they produce no results
   useEffect(() => {
@@ -140,6 +149,9 @@ export function useFilteredSegments(
   useEffect(() => {
     if (showChangedOnly && displaySegments.length === 0) filters.setShowChangedOnly(false);
   }, [displaySegments.length, showChangedOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (showRemovedOnly && displaySegments.length === 0) filters.setShowRemovedOnly(false);
+  }, [displaySegments.length, showRemovedOnly]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalPages = Math.ceil(displaySegments.length / pageSize);
 
@@ -169,7 +181,7 @@ export function useFilteredSegments(
   const flaggedCount = useMemo(() => {
     return editedSegments.filter((seg, i) => isFlaggedSeg(seg, originalIndices[i])).length;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editedSegments, originalIndices, densityThreshold, maxDensityThreshold, dismissedFlags, customPatterns]);
+  }, [editedSegments, originalIndices, densityThreshold, maxDensityThreshold, dismissedFlags, customPatterns, isPendingRemoval]);
 
   return { displaySegments, pageSegments, totalPages, flaggedCount };
 }

@@ -23,7 +23,19 @@ function findActiveSegment(segments: AudioSegment[] | null, time: number): Audio
 }
 
 export default function AudioBar() {
-  const { audioPath, audioTitle, audioArtwork, audioShowName, audioFolder, audioStem, audioSegments, pendingSeek, consumeSeek, stopAudio } = useAudioStore();
+  // Narrow selectors so AudioBar only re-renders when a consumed field changes.
+  // Using the destructured `useAudioStore()` shape re-rendered on every audio
+  // tick (currentTime, isPlaying) because the returned object ref changes.
+  const audioPath = useAudioStore((s) => s.audioPath);
+  const audioTitle = useAudioStore((s) => s.audioTitle);
+  const audioArtwork = useAudioStore((s) => s.audioArtwork);
+  const audioShowName = useAudioStore((s) => s.audioShowName);
+  const audioFolder = useAudioStore((s) => s.audioFolder);
+  const audioStem = useAudioStore((s) => s.audioStem);
+  const audioSegments = useAudioStore((s) => s.audioSegments);
+  const pendingSeek = useAudioStore((s) => s.pendingSeek);
+  const consumeSeek = useAudioStore((s) => s.consumeSeek);
+  const stopAudio = useAudioStore((s) => s.stopAudio);
   const navigate = useNavigate();
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);

@@ -1,7 +1,7 @@
 import type { Episode } from "@/api/types";
-import { isManualEdit } from "@/lib/stepStatus";
+import { isEdited, type BackendStepStatus } from "@/lib/stepStatus";
 
-type StepStatus = "none" | "outdated" | "done";
+type StepStatus = "none" | "partial" | "outdated" | "done";
 
 const BORDER_MAP: Record<string, string> = {
   "bg-blue-500/15": "border-blue-500",
@@ -9,53 +9,60 @@ const BORDER_MAP: Record<string, string> = {
   "bg-teal-500/15": "border-teal-500",
 };
 
-/** A hand-edited version is "done" regardless of whether the current
- *  defaults have drifted — the user's own work wins over freshness. */
+/** Combine "freshness" status from backend (`raw | outdated | done`) with
+ *  provenance-derived "review" status:
+ *    - not present        → none
+ *    - present + outdated → outdated (dashed)
+ *    - present + edited   → done     (solid fill)
+ *    - present + raw only → partial  (outlined — awaiting review)
+ */
 function resolveStatus(
-  raw: StepStatus | undefined,
+  backendStatus: BackendStepStatus | string | undefined,
   present: boolean,
   provenance: unknown,
 ): StepStatus {
-  if (isManualEdit(provenance)) return "done";
-  return raw || (present ? "done" : "none");
+  if (!present) return "none";
+  if (backendStatus === "outdated") return "outdated";
+  return isEdited(provenance) ? "done" : "partial";
 }
 
 function Chip({ status, label, color, textColor, title }: { status: StepStatus; label: string; color: string; textColor: string; title: string }) {
   if (status === "none") return null;
   const borderColor = BORDER_MAP[color] ?? "border-border";
+  const base = "text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium";
   if (status === "outdated") {
     return (
-      <span
-        className={`text-2xs leading-none px-1.5 py-0.5 rounded-full border border-dashed font-medium ${borderColor} ${textColor}`}
-        title={`${title} (outdated)`}
-      >
+      <span className={`${base} border border-dashed ${borderColor} ${textColor}`} title={`${title} (outdated)`}>
+        {label}
+      </span>
+    );
+  }
+  if (status === "partial") {
+    return (
+      <span className={`${base} border ${borderColor} ${textColor}`} title={`${title} (raw — awaiting review)`}>
         {label}
       </span>
     );
   }
   return (
-    <span className={`text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium ${color} ${textColor}`} title={title}>
+    <span className={`${base} ${color} ${textColor}`} title={title}>
       {label}
     </span>
   );
 }
 
 export function StatusChips({ ep, compact }: { ep: Episode; compact?: boolean }) {
-  const translateStatus: StepStatus = ep.translations.length > 0
-    ? ((ep.translate_status as StepStatus) || "done")
-    : "none";
-
   return (
     <div className="flex gap-1 items-center flex-wrap">
       <Chip
-        status={resolveStatus(ep.transcribe_status as StepStatus, !!ep.transcribed, ep.provenance?.transcript)}
+        status={resolveStatus(ep.transcribe_status, !!ep.transcribed, ep.provenance?.transcript)}
         label={compact ? "T" : "Transcribed"}
         color="bg-blue-500/15"
         textColor="text-blue-500"
         title="Transcribed"
       />
       <Chip
-        status={resolveStatus(ep.correct_status as StepStatus, !!ep.corrected, ep.provenance?.corrected)}
+        status={resolveStatus(ep.correct_status, !!ep.corrected, ep.provenance?.corrected)}
         label={compact ? "AI" : "Corrected"}
         color="bg-purple-500/15"
         textColor="text-purple-500"
@@ -65,7 +72,7 @@ export function StatusChips({ ep, compact }: { ep: Episode; compact?: boolean })
         ep.translations.map((lang) => (
           <Chip
             key={lang}
-            status={translateStatus}
+            status={resolveStatus(ep.translate_status, true, ep.provenance?.[lang])}
             label={lang.toUpperCase()}
             color="bg-teal-500/15"
             textColor="text-teal-500"
@@ -74,7 +81,11 @@ export function StatusChips({ ep, compact }: { ep: Episode; compact?: boolean })
         ))
       ) : (
         <Chip
-          status={translateStatus}
+          status={resolveStatus(
+            ep.translate_status,
+            ep.translations.length > 0,
+            ep.provenance?.[ep.translations[0] ?? ""],
+          )}
           label="Translated"
           color="bg-teal-500/15"
           textColor="text-teal-500"
