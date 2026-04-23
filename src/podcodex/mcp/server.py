@@ -7,11 +7,13 @@ client LLM synthesises answers from the returned chunks, so no API key is
 required on the server side.
 
 Tools:
-    - ``list_shows``    — catalog of indexed shows.
-    - ``search``        — hybrid semantic + FTS search.
-    - ``exact``         — literal phrase match, returns every hit.
-    - ``get_context``   — expand a hit with its neighboring chunks.
-    - ``speaker_stats`` — aggregate chunk counts / airtime per speaker.
+    - ``list_shows``     — catalog of indexed shows.
+    - ``list_episodes``  — per-episode metadata with date/title filters.
+    - ``get_episode``    — metadata card for a single episode.
+    - ``search``         — hybrid semantic + FTS search.
+    - ``exact``          — literal phrase match, returns every hit.
+    - ``get_context``    — expand a hit with its neighboring chunks.
+    - ``speaker_stats``  — aggregate chunk counts / airtime per speaker.
 
 Environment:
     PODCODEX_INDEX — path to the LanceDB directory (defaults to
@@ -63,13 +65,34 @@ def _resolve_collections(show: str | None) -> list[str]:
     ]
 
 
+# Cache for ``list_shows`` date ranges. Keyed by (collection_name,
+# index_mtime) so a reindex invalidates it automatically. Keeps the
+# per-collection ``list_episodes_filtered`` scan out of the hot path of
+# repeat ``list_shows`` calls (Claude Desktop / browser tabs re-invoke
+# this on every discovery refresh). Capped: every write prunes stale
+# mtime entries for the same collection so a long-running process
+# doesn't accumulate tombstones.
+_SHOW_DATE_CACHE: dict[tuple[str, float], tuple[str, str] | None] = {}
+
+
+def _put_show_date_cache(key: tuple[str, float], value: tuple[str, str] | None) -> None:
+    """Store a date range, dropping older mtime entries for the same collection."""
+    collection, _ = key
+    stale = [k for k in _SHOW_DATE_CACHE if k[0] == collection and k != key]
+    for k in stale:
+        _SHOW_DATE_CACHE.pop(k, None)
+    _SHOW_DATE_CACHE[key] = value
+
+
 def _trim(chunk: dict) -> dict:
     """Compact chunk shape sent to MCP clients.
 
     ``episode_title`` is the human-readable label to cite (RSS title if
     the episode has one, otherwise a humanised form of the stem).
     ``episode`` remains the raw identifier needed for later ``get_context``
-    lookups.
+    lookups. ``pub_date`` carries the RSS publication date so clients can
+    answer date-scoped questions (``"épisodes de février 2026"``) without
+    an extra ``list_episodes`` round-trip.
     """
     out = {
         "show": chunk.get("show", ""),
@@ -81,6 +104,12 @@ def _trim(chunk: dict) -> dict:
         "speaker": chunk.get("dominant_speaker", ""),
         "text": chunk.get("text", ""),
     }
+    pub_date = chunk.get("pub_date") or ""
+    if pub_date:
+        out["pub_date"] = pub_date
+    ep_num = chunk.get("episode_number")
+    if ep_num is not None:
+        out["episode_number"] = int(ep_num)
     if "score" in chunk:
         out["score"] = float(chunk["score"])
     for flag in ("accent_match", "fuzzy_match"):
@@ -103,14 +132,135 @@ def list_shows() -> list[dict]:
     other tools.
 
     Returns:
-        A list of ``{"show": str, "episodes": int}`` entries. Empty if
-        no qualifying shows are indexed.
+        A list of ``{"show", "episodes", "first_pub_date", "last_pub_date"}``
+        entries (the date fields are omitted when no episode carries a
+        publication date). Empty if no qualifying shows are indexed.
     """
     store = get_index_store()
-    return [
-        {"show": meta.get("show", ""), "episodes": store.episode_count(name)}
-        for name, meta in _default_collections_meta()
-    ]
+    try:
+        mtime = store.index_mtime()
+    except Exception:
+        mtime = 0.0
+    out: list[dict] = []
+    for name, meta in _default_collections_meta():
+        show_name = meta.get("show", "")
+        entry: dict = {"show": show_name, "episodes": store.episode_count(name)}
+        key = (name, mtime)
+        if key in _SHOW_DATE_CACHE:
+            range_ = _SHOW_DATE_CACHE[key]
+        else:
+            try:
+                items = store.list_episodes_filtered(name)
+            except Exception:
+                items = []
+            dates = sorted(i.get("pub_date", "") for i in items if i.get("pub_date"))
+            range_ = (dates[0], dates[-1]) if dates else None
+            _put_show_date_cache(key, range_)
+        if range_ is not None:
+            entry["first_pub_date"], entry["last_pub_date"] = range_
+        out.append(entry)
+    return out
+
+
+@mcp.tool()
+def list_episodes(
+    show: str | None = None,
+    pub_date_min: str | None = None,
+    pub_date_max: str | None = None,
+    title_contains: str | None = None,
+) -> list[dict]:
+    """List episodes in the user's PodCodex index with optional filters.
+
+    Use this to browse what's indexed before running a ``search``, or
+    to answer questions like "what episodes came out last month?".
+    Each record carries enough metadata (title, date, duration,
+    speakers, description) to render a browse view without an extra
+    ``get_episode`` round-trip per stem.
+
+    Args:
+        show: Restrict to this show (case-insensitive). Omit to list
+            across every indexed show.
+        pub_date_min: Oldest publication date, inclusive (``YYYY-MM-DD``).
+        pub_date_max: Newest publication date, inclusive.
+        title_contains: Substring match on episode title or stem
+            (case-insensitive).
+
+    Returns:
+        Per-episode records, each ``{show, episode, episode_title,
+        pub_date, episode_number, chunk_count, duration, speakers,
+        description}``. ``speakers`` is a sorted list of the
+        dominant-speaker values that appear in any chunk of the episode;
+        ``description`` is the RSS description truncated at index time.
+        Sorted by episode identifier within a show.
+    """
+    collections = _resolve_collections(show)
+    if not collections:
+        return []
+    store = get_index_store()
+    meta_by_col = {name: meta for name, meta in _default_collections_meta()}
+    out: list[dict] = []
+    for col in collections:
+        items = store.list_episodes_filtered(
+            col,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
+            title_contains=title_contains,
+            with_detail=True,
+        )
+        show_name = meta_by_col.get(col, {}).get("show", "")
+        for item in items:
+            out.append(
+                {
+                    "show": show_name,
+                    "episode": item["episode"],
+                    "episode_title": episode_display(item),
+                    "pub_date": item.get("pub_date", ""),
+                    "episode_number": item.get("episode_number"),
+                    "chunk_count": int(item.get("chunk_count", 0)),
+                    "duration": float(item.get("duration", 0.0)),
+                    "speakers": list(item.get("speakers") or []),
+                    "description": item.get("description", ""),
+                }
+            )
+    return out
+
+
+@mcp.tool()
+def get_episode(show: str, episode: str) -> dict | None:
+    """Return metadata for a single episode in the user's PodCodex index.
+
+    Call this when the user asks for the description, pub date,
+    duration, speakers, or episode number of a specific episode —
+    cheaper and more direct than running a ``search`` for metadata.
+
+    Args:
+        show: Show name, as returned by ``list_shows`` or a prior
+            result's ``show`` field.
+        episode: Episode identifier (stem), e.g. from ``list_episodes``
+            or a prior result's ``episode`` field.
+
+    Returns:
+        ``{show, episode, episode_title, pub_date, episode_number,
+        description, source, chunk_count, duration, speakers}`` — or
+        ``None`` if the episode is not indexed.
+    """
+    col = collection_name(show, DEFAULT_MODEL, DEFAULT_CHUNKING)
+    store = get_index_store()
+    rec = store.get_episode(col, episode)
+    if rec is None:
+        return None
+    return {
+        "show": show,
+        "episode": rec["episode"],
+        "episode_title": episode_display(rec),
+        "pub_date": rec.get("pub_date", ""),
+        "episode_number": rec.get("episode_number"),
+        "description": rec.get("description", ""),
+        "source": rec.get("source", ""),
+        "chunk_count": int(rec.get("chunk_count", 0)),
+        "duration": float(rec.get("duration", 0.0)),
+        "speakers": list(rec.get("speakers", [])),
+    }
 
 
 @mcp.tool()
@@ -119,7 +269,10 @@ def search(
     show: str | None = None,
     top_k: int = TOP_K,
     episode: str | None = None,
+    episodes: list[str] | None = None,
     speaker: str | None = None,
+    pub_date_min: str | None = None,
+    pub_date_max: str | None = None,
 ) -> list[dict]:
     """Search the user's PodCodex podcast transcripts by meaning (hybrid dense + BM25).
 
@@ -151,14 +304,21 @@ def search(
         episode: Restrict to a single episode identifier (as returned in
             prior results' ``episode`` field). Omit to search all
             episodes.
+        episodes: Alternative to ``episode`` — restrict to a list of
+            episode identifiers (from prior results or ``list_episodes``).
+            Takes precedence over ``episode`` when both are given.
         speaker: Restrict to a single speaker (exact name match on
             ``dominant_speaker``).
+        pub_date_min: Oldest publication date to include, inclusive.
+            Accepts ``YYYY-MM-DD`` (RFC 2822 / ISO 8601 also parsed).
+        pub_date_max: Newest publication date to include, inclusive.
 
     Returns:
         Ranked chunks, each containing ``show``, ``episode``,
-        ``chunk_index``, ``start``, ``end``, ``speaker``, ``text``, and
-        ``score``. Pass a chunk's ``chunk_index`` to ``get_context`` to
-        read its surrounding scene.
+        ``episode_title``, ``chunk_index``, ``start``, ``end``, ``speaker``,
+        ``text``, ``score``, and — when present — ``pub_date`` (ISO 8601)
+        and ``episode_number``. Pass a chunk's ``chunk_index`` to
+        ``get_context`` to read its surrounding scene.
     """
     collections = _resolve_collections(show)
     if not collections:
@@ -176,9 +336,14 @@ def search(
                 top_k=top_k,
                 alpha=ALPHA,
                 episode=episode,
+                episodes=episodes,
                 speaker=speaker,
+                pub_date_min=pub_date_min,
+                pub_date_max=pub_date_max,
                 query_vector=qv,
             )
+        except ValueError:
+            raise
         except Exception:
             logger.exception(f"search: collection {col!r} failed; skipping")
             continue
@@ -193,7 +358,10 @@ def exact(
     query: str,
     show: str | None = None,
     episode: str | None = None,
+    episodes: list[str] | None = None,
     speaker: str | None = None,
+    pub_date_min: str | None = None,
+    pub_date_max: str | None = None,
 ) -> list[dict]:
     """Find every literal occurrence of a phrase in the user's PodCodex transcripts.
 
@@ -217,13 +385,21 @@ def exact(
         show: Restrict to this show (exact, case-insensitive name).
             Omit to search every indexed show.
         episode: Restrict to a single episode identifier.
+        episodes: Alternative to ``episode`` — restrict to a list of
+            episode identifiers.
         speaker: Restrict to a single ``dominant_speaker`` value.
+        pub_date_min: Oldest publication date to include, inclusive
+            (``YYYY-MM-DD``).
+        pub_date_max: Newest publication date to include, inclusive.
 
     Returns:
-        Every matching chunk, ordered by collection then position.
-        Matches that are not perfect string hits carry ``accent_match``
-        or ``fuzzy_match`` fields. No relevance ranking — results are
-        positional.
+        Every matching chunk, ordered by collection then position. Each
+        carries the same fields as ``search`` results (``show``,
+        ``episode``, ``episode_title``, ``chunk_index``, ``start``,
+        ``end``, ``speaker``, ``text``, and — when present — ``pub_date``
+        and ``episode_number``). Matches that are not perfect string hits
+        additionally carry ``accent_match`` or ``fuzzy_match`` flags. No
+        relevance ranking — results are positional.
     """
     collections = _resolve_collections(show)
     if not collections:
@@ -232,7 +408,17 @@ def exact(
     out: list[dict] = []
     for col in collections:
         try:
-            matches = ret.exact(query, col, episode=episode, speaker=speaker)
+            matches = ret.exact(
+                query,
+                col,
+                episode=episode,
+                episodes=episodes,
+                speaker=speaker,
+                pub_date_min=pub_date_min,
+                pub_date_max=pub_date_max,
+            )
+        except ValueError:
+            raise
         except Exception:
             logger.exception(f"exact: collection {col!r} failed; skipping")
             continue
@@ -273,8 +459,11 @@ def get_context(
 
     Returns:
         Chunks covering ``[chunk_index - window, chunk_index + window]``
-        inclusive, sorted by position. Empty list if the episode or
-        ``chunk_index`` is not found.
+        inclusive, sorted by position. Each chunk carries the same fields
+        as ``search`` results (``show``, ``episode``, ``episode_title``,
+        ``chunk_index``, ``start``, ``end``, ``speaker``, ``text``, and —
+        when present — ``pub_date`` and ``episode_number``). Empty list
+        if the episode or ``chunk_index`` is not found.
     """
     col = collection_name(show, DEFAULT_MODEL, DEFAULT_CHUNKING)
     chunks = get_index_store().get_chunk_window(

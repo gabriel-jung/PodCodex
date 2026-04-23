@@ -10,6 +10,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -24,6 +25,7 @@ from podcodex.api.routes import (
     batch,
     bot_access,
     config,
+    episodes as episodes_route,
     export,
     filesystem,
     health,
@@ -69,9 +71,46 @@ def _make_lifespan(mcp_http):
     return lifespan
 
 
+def _register_show_folder_resolver() -> None:
+    """Wire a show-name → folder resolver into the IndexStore.
+
+    Enables the ``episode_title`` backfill (``IndexStore._ensure_episode_title_backfill``)
+    to locate each episode's ``.episode_meta.json`` when healing chunks whose
+    RSS title never made it into the transcript meta.
+    """
+    try:
+        from podcodex.api.routes.config import _load as _load_cfg
+        from podcodex.ingest.show import load_show_meta
+        from podcodex.rag.index_store import IndexStore
+    except Exception:
+        logger.opt(exception=True).debug("show folder resolver: import failed")
+        return
+
+    def resolve(show_name: str):
+        try:
+            cfg = _load_cfg()
+        except Exception:
+            return None
+        target = (show_name or "").strip().lower()
+        if not target:
+            return None
+        for folder_path in cfg.show_folders:
+            child = Path(folder_path)
+            if not child.is_dir():
+                continue
+            meta = load_show_meta(child)
+            name = (meta.name if meta else None) or child.name
+            if name.strip().lower() == target:
+                return child
+        return None
+
+    IndexStore.set_show_folder_resolver(resolve)
+
+
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     mcp_http = _mcp.streamable_http_app() if _mcp is not None else None
+    _register_show_folder_resolver()
     app = FastAPI(
         title="PodCodex",
         version="0.1.0",
@@ -111,6 +150,7 @@ def create_app() -> FastAPI:
     app.include_router(synthesize.router, prefix="/api/synthesize", tags=["synthesize"])
     app.include_router(index.router, prefix="/api/index", tags=["index"])
     app.include_router(search.router, prefix="/api/search", tags=["search"])
+    app.include_router(episodes_route.router, prefix="/api/episodes", tags=["episodes"])
     app.include_router(ws.router, prefix="/api", tags=["ws"])
 
     app.include_router(batch.router, prefix="/api/batch", tags=["batch"])

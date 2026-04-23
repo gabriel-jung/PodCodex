@@ -83,7 +83,7 @@ from podcodex.rag.defaults import (
     MODELS,
     TOP_K,
 )
-from podcodex.rag.index_store import IndexStore, get_index_store
+from podcodex.rag.index_store import IndexStore, _normalize_pub_date, get_index_store
 from podcodex.rag.retriever import Retriever, get_retriever, merge_results
 from podcodex.rag.store import collection_name
 
@@ -260,6 +260,9 @@ def _result_embed(
     ts_label = fmt_timestamp(start, end, timed=timed)
     if ts_label:
         embed.add_field(name="Timestamp", value=ts_label, inline=True)
+    pub_date = (chunk.get("pub_date") or "").strip()
+    if pub_date:
+        embed.add_field(name="Published", value=pub_date[:10], inline=True)
     clamped = max(0.0, min(1.0, score))
     embed.add_field(
         name="Relevance", value=f"{score_bar(clamped)} {clamped:.0%}", inline=True
@@ -572,6 +575,27 @@ class PodCodexBot(discord.Client):
             seconds=settings.ask_cooldown_seconds,
         )
 
+    async def _reject_bad_date(
+        self,
+        interaction: discord.Interaction,
+        after: str,
+        before: str,
+    ) -> bool:
+        """Validate ``after``/``before`` from an advanced slash command.
+
+        Returns ``True`` when one of the dates is malformed and an
+        ephemeral error was sent — the caller should bail out. Returns
+        ``False`` when both are empty or valid.
+        """
+        for label, value in (("after", after), ("before", before)):
+            if value and not _normalize_pub_date(value):
+                await interaction.response.send_message(
+                    f"❌ Invalid `{label}` date: `{value}`. Use YYYY-MM-DD.",
+                    ephemeral=True,
+                )
+                return True
+        return False
+
     # ── Autocomplete ──────────────────────────
 
     async def _show_autocomplete(
@@ -836,45 +860,27 @@ class PodCodexBot(discord.Client):
             name="search",
             description="Search podcast transcripts (uses server defaults)",
         )
-        @app_commands.describe(
-            question="What are you looking for?",
-            show="Pick a show (searches all if empty)",
-            episode="Pick an episode",
-            speaker="Filter by speaker name",
-            source="Transcript version: corrected, transcript, or a language code",
-        )
+        @app_commands.describe(query="What are you looking for?")
         async def search(
             interaction: discord.Interaction,
-            question: str,
-            show: str = "",
-            episode: str = "",
-            speaker: str = "",
-            source: str = "",
+            query: str,
         ) -> None:
             if not await self._check_cooldown(interaction):
                 return
             await self._refresh_if_stale()
             settings = self._effective_settings(interaction.guild_id)
-            effective_source = source or settings.default_source or None
-            shows = self._resolve_shows(settings, show)
+            shows = self._resolve_shows(settings, "")
             label = f"α={ALPHA:.2f} • {MODELS[settings.model].label}"
             await self._run_search(
                 interaction,
-                question,
+                query,
                 shows,
                 settings,
                 ALPHA,
                 label,
-                source=effective_source,
-                episode=episode or None,
-                speaker=speaker or None,
+                source=settings.default_source or None,
                 compact=settings.compact,
             )
-
-        search.autocomplete("show")(self._show_autocomplete)
-        search.autocomplete("episode")(self._episode_autocomplete)
-        search.autocomplete("source")(self._source_autocomplete)
-        search.autocomplete("speaker")(self._speaker_autocomplete)
 
         # /search-advanced ────────────────────
         @self.tree.command(
@@ -882,11 +888,13 @@ class PodCodexBot(discord.Client):
             description="Search with full control over retrieval tuning",
         )
         @app_commands.describe(
-            question="What are you looking for?",
+            query="What are you looking for?",
             show="Pick a show (searches all if empty)",
             episode="Pick an episode",
             speaker="Filter by speaker name",
             source="Transcript version: corrected, transcript, or a language code",
+            after="Oldest publication date to include, YYYY-MM-DD (inclusive)",
+            before="Newest publication date to include, YYYY-MM-DD (inclusive)",
             alpha="0 = keywords only → 1 = meaning only (default 0.5)",
             model="Embedding model (leave empty for server default)",
             chunker="Chunking strategy (leave empty for server default)",
@@ -896,11 +904,13 @@ class PodCodexBot(discord.Client):
         @app_commands.choices(compact=_BOOL_CHOICES)
         async def search_advanced(
             interaction: discord.Interaction,
-            question: str,
+            query: str,
             show: str = "",
             episode: str = "",
             speaker: str = "",
             source: str = "",
+            after: str = "",
+            before: str = "",
             alpha: app_commands.Range[float, 0.0, 1.0] = ALPHA,
             model: str = "",
             chunker: str = "",
@@ -908,6 +918,8 @@ class PodCodexBot(discord.Client):
             compact: str = "",
         ) -> None:
             if not await self._check_cooldown(interaction):
+                return
+            if await self._reject_bad_date(interaction, after, before):
                 return
             await self._refresh_if_stale()
             settings = self._effective_settings(
@@ -919,7 +931,7 @@ class PodCodexBot(discord.Client):
             label = f"α={alpha:.2f} • {MODELS[settings.model].label}"
             await self._run_search(
                 interaction,
-                question,
+                query,
                 shows,
                 settings,
                 alpha,
@@ -927,6 +939,8 @@ class PodCodexBot(discord.Client):
                 source=effective_source,
                 episode=episode or None,
                 speaker=speaker or None,
+                pub_date_min=after or None,
+                pub_date_max=before or None,
                 compact=use_compact,
             )
 
@@ -1028,69 +1042,123 @@ class PodCodexBot(discord.Client):
             name="exact",
             description="Literal substring search — case-insensitive, like Ctrl+F",
         )
-        @app_commands.describe(
-            query="Text to find (not case-sensitive)",
-            show="Pick a show (searches all if empty)",
-            episode="Pick an episode",
-            speaker="Filter by speaker name",
-        )
+        @app_commands.describe(query="Text to find (not case-sensitive)")
         async def exact(
             interaction: discord.Interaction,
             query: str,
-            show: str = "",
-            episode: str = "",
-            speaker: str = "",
         ) -> None:
             if not await self._check_cooldown(interaction):
                 return
             await self._refresh_if_stale()
             settings = self._server_settings(interaction.guild_id)
-            shows = self._resolve_shows(settings, show)
+            shows = self._resolve_shows(settings, "")
+            await self._run_exact(interaction, query, shows)
 
+        # /exact-advanced ─────────────────────
+        @self.tree.command(
+            name="exact-advanced",
+            description="Literal substring search with source and date filters",
+        )
+        @app_commands.describe(
+            query="Text to find (not case-sensitive)",
+            show="Pick a show (searches all if empty)",
+            episode="Pick an episode",
+            speaker="Filter by speaker name",
+            source="Transcript version: corrected, transcript, or a language code",
+            after="Oldest publication date to include, YYYY-MM-DD (inclusive)",
+            before="Newest publication date to include, YYYY-MM-DD (inclusive)",
+        )
+        async def exact_advanced(
+            interaction: discord.Interaction,
+            query: str,
+            show: str = "",
+            episode: str = "",
+            speaker: str = "",
+            source: str = "",
+            after: str = "",
+            before: str = "",
+        ) -> None:
+            if not await self._check_cooldown(interaction):
+                return
+            if await self._reject_bad_date(interaction, after, before):
+                return
+            await self._refresh_if_stale()
+            settings = self._server_settings(interaction.guild_id)
+            effective_source = source or settings.default_source or None
+            shows = self._resolve_shows(settings, show)
             await self._run_exact(
                 interaction,
                 query,
                 shows,
+                source=effective_source,
                 episode=episode or None,
                 speaker=speaker or None,
+                pub_date_min=after or None,
+                pub_date_max=before or None,
             )
 
-        exact.autocomplete("show")(self._show_autocomplete)
-        exact.autocomplete("episode")(self._episode_autocomplete)
-        exact.autocomplete("speaker")(self._speaker_autocomplete)
+        exact_advanced.autocomplete("show")(self._show_autocomplete)
+        exact_advanced.autocomplete("episode")(self._episode_autocomplete)
+        exact_advanced.autocomplete("source")(self._source_autocomplete)
+        exact_advanced.autocomplete("speaker")(self._speaker_autocomplete)
 
         # /random ─────────────────────────────
         @self.tree.command(
             name="random",
             description="Pull a random quote from the transcripts",
         )
-        @app_commands.describe(
-            show="Pick a show (random from all if empty)",
-            episode="Pick an episode",
-            speaker="Filter by speaker name",
-        )
-        async def random_cmd(
-            interaction: discord.Interaction,
-            show: str = "",
-            episode: str = "",
-            speaker: str = "",
-        ) -> None:
+        async def random_cmd(interaction: discord.Interaction) -> None:
             if not await self._check_cooldown(interaction):
                 return
             await self._refresh_if_stale()
             settings = self._server_settings(interaction.guild_id)
-            shows = self._resolve_shows(settings, show)
+            shows = self._resolve_shows(settings, "")
+            await self._run_random(interaction, shows)
 
+        # /random-advanced ────────────────────
+        @self.tree.command(
+            name="random-advanced",
+            description="Pull a random quote with source and date filters",
+        )
+        @app_commands.describe(
+            show="Pick a show (random from all if empty)",
+            episode="Pick an episode",
+            speaker="Filter by speaker name",
+            source="Transcript version: corrected, transcript, or a language code",
+            after="Oldest publication date to include, YYYY-MM-DD (inclusive)",
+            before="Newest publication date to include, YYYY-MM-DD (inclusive)",
+        )
+        async def random_advanced(
+            interaction: discord.Interaction,
+            show: str = "",
+            episode: str = "",
+            speaker: str = "",
+            source: str = "",
+            after: str = "",
+            before: str = "",
+        ) -> None:
+            if not await self._check_cooldown(interaction):
+                return
+            if await self._reject_bad_date(interaction, after, before):
+                return
+            await self._refresh_if_stale()
+            settings = self._server_settings(interaction.guild_id)
+            effective_source = source or settings.default_source or None
+            shows = self._resolve_shows(settings, show)
             await self._run_random(
                 interaction,
                 shows,
+                source=effective_source,
                 episode=episode or None,
                 speaker=speaker or None,
+                pub_date_min=after or None,
+                pub_date_max=before or None,
             )
 
-        random_cmd.autocomplete("show")(self._show_autocomplete)
-        random_cmd.autocomplete("episode")(self._episode_autocomplete)
-        random_cmd.autocomplete("speaker")(self._speaker_autocomplete)
+        random_advanced.autocomplete("show")(self._show_autocomplete)
+        random_advanced.autocomplete("episode")(self._episode_autocomplete)
+        random_advanced.autocomplete("source")(self._source_autocomplete)
+        random_advanced.autocomplete("speaker")(self._speaker_autocomplete)
 
         # /stats ──────────────────────────────
         @self.tree.command(
@@ -1370,7 +1438,7 @@ class PodCodexBot(discord.Client):
     async def _run_search(
         self,
         interaction: discord.Interaction,
-        question: str,
+        query: str,
         shows: ResolvedShows,
         settings: ServerSettings,
         alpha: float,
@@ -1379,6 +1447,8 @@ class PodCodexBot(discord.Client):
         source: str | None = None,
         episode: str | None = None,
         speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
         compact: bool = False,
     ) -> None:
         await interaction.response.defer()
@@ -1388,17 +1458,22 @@ class PodCodexBot(discord.Client):
             results = await loop.run_in_executor(
                 None,
                 lambda: self._hybrid_search(
-                    question,
+                    query,
                     shows,
                     settings,
                     alpha,
                     source=source,
                     episode=episode,
                     speaker=speaker,
+                    pub_date_min=pub_date_min,
+                    pub_date_max=pub_date_max,
                 ),
             )
+        except ValueError as e:
+            await interaction.followup.send(f"❌ {e}", ephemeral=True)
+            return
         except Exception:
-            logger.exception(f"Search error: {question!r}")
+            logger.exception(f"Search error: {query!r}")
             await interaction.followup.send(
                 "❌ Search failed — please try again in a moment.",
                 ephemeral=True,
@@ -1410,18 +1485,18 @@ class PodCodexBot(discord.Client):
                 episode=episode, speaker=speaker, source=source
             )
             await interaction.followup.send(
-                f'No results for **"{question}"**{suffix}.\n'
+                f'No results for **"{query}"**{suffix}.\n'
                 "Try simpler wording, drop filters, or use `/exact` for literal matches.",
                 ephemeral=True,
             )
             return
 
         if compact:
-            embed = build_compact_embed(results, label, question=question)
+            embed = build_compact_embed(results, label, question=query)
             await interaction.followup.send(embed=embed)
         else:
             pages = [
-                _result_embed(chunk, rank, len(results), col, label, question=question)
+                _result_embed(chunk, rank, len(results), col, label, question=query)
                 for rank, (chunk, col) in enumerate(results, 1)
             ]
             view = PaginatedResultView(pages)
@@ -1429,7 +1504,7 @@ class PodCodexBot(discord.Client):
 
     def _hybrid_search(
         self,
-        question: str,
+        query: str,
         shows: ResolvedShows,
         settings: ServerSettings,
         alpha: float,
@@ -1437,6 +1512,8 @@ class PodCodexBot(discord.Client):
         source: str | None = None,
         episode: str | None = None,
         speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
     ) -> list[tuple[dict, str]]:
         """Run hybrid retrieval across collections and merge results."""
         model, chunker = settings.model, settings.chunker
@@ -1460,13 +1537,15 @@ class PodCodexBot(discord.Client):
         hits_by_col: dict[str, list[dict]] = {}
         for col in collections:
             hits = ret.retrieve(
-                question,
+                query,
                 col,
                 top_k=settings.top_k,
                 alpha=alpha,
                 source=source,
                 episode=episode,
                 speaker=speaker,
+                pub_date_min=pub_date_min,
+                pub_date_max=pub_date_max,
             )
             if hits:
                 hits_by_col[col] = hits
@@ -1632,6 +1711,8 @@ class PodCodexBot(discord.Client):
         source: str | None = None,
         episode: str | None = None,
         speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
     ) -> None:
         await interaction.response.defer()
         settings = self._server_settings(interaction.guild_id)
@@ -1672,6 +1753,8 @@ class PodCodexBot(discord.Client):
                         source=source,
                         episode=episode,
                         speaker=speaker,
+                        pub_date_min=pub_date_min,
+                        pub_date_max=pub_date_max,
                     ),
                 )
                 all_results.extend((hit, col) for hit in hits)
@@ -1740,6 +1823,8 @@ class PodCodexBot(discord.Client):
         source: str | None = None,
         episode: str | None = None,
         speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
     ) -> None:
         await interaction.response.defer()
         settings = self._server_settings(interaction.guild_id)
@@ -1775,7 +1860,12 @@ class PodCodexBot(discord.Client):
             chunk = await loop.run_in_executor(
                 None,
                 lambda: retriever.random(
-                    col, episode=episode, source=source, speaker=speaker
+                    col,
+                    episode=episode,
+                    source=source,
+                    speaker=speaker,
+                    pub_date_min=pub_date_min,
+                    pub_date_max=pub_date_max,
                 ),
             )
         except Exception:

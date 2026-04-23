@@ -271,8 +271,11 @@ export interface SearchRequest {
   top_k?: number;
   alpha?: number;
   episode?: string | null;
+  episodes?: string[] | null;
   speaker?: string | null;
   source?: string | null;
+  pub_date_min?: string | null;
+  pub_date_max?: string | null;
 }
 
 export interface SearchResultSchema {
@@ -293,7 +296,11 @@ export interface ExactRequest {
   chunking?: string;
   top_k?: number;
   episode?: string | null;
+  episodes?: string[] | null;
   speaker?: string | null;
+  source?: string | null;
+  pub_date_min?: string | null;
+  pub_date_max?: string | null;
 }
 
 export interface RandomRequest {
@@ -301,7 +308,32 @@ export interface RandomRequest {
   model?: string;
   chunking?: string;
   episode?: string | null;
+  episodes?: string[] | null;
   speaker?: string | null;
+  source?: string | null;
+  pub_date_min?: string | null;
+  pub_date_max?: string | null;
+}
+
+export interface EpisodeListItem {
+  episode: string;
+  episode_title?: string;
+  pub_date?: string;
+  episode_number?: number | null;
+  chunk_count?: number;
+  duration?: number;
+}
+
+export interface EpisodeMeta {
+  episode: string;
+  episode_title?: string;
+  pub_date?: string;
+  episode_number?: number | null;
+  description?: string;
+  source?: string;
+  chunk_count?: number;
+  duration?: number;
+  speakers?: string[];
 }
 
 export interface IndexRequest {

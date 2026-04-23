@@ -54,6 +54,12 @@ export const queryKeys = {
   // ── Index & search ─────────────────────────────────────
   searchConfig: () => ["search", "config"] as const,
   searchStats: (showName: string) => ["search", "stats", showName] as const,
+  indexedEpisodes: (showName: string, model: string, chunking: string) =>
+    ["search", "indexed-episodes", showName, model, chunking] as const,
+  indexedSpeakers: (showName: string, model: string, chunking: string) =>
+    ["search", "indexed-speakers", showName, model, chunking] as const,
+  indexedEpisode: (showName: string, stem: string, model: string, chunking: string) =>
+    ["search", "indexed-episode", showName, stem, model, chunking] as const,
 
   indexConfig: () => ["index", "config"] as const,
   indexStatus: (audioPath: AudioPath, showName: string) =>

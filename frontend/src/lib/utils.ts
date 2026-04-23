@@ -19,6 +19,30 @@ export function formatTime(seconds: number | undefined | null, showMs = true): s
   return showMs ? `${base}.${String(ms).padStart(2, "0")}` : base;
 }
 
+export interface DisplayTurn {
+  speaker: string;
+  text: string;
+  start: number;
+  end: number;
+}
+
+/** Collapse consecutive same-speaker turns into single display blocks. */
+export function mergeDisplayTurns(turns: DisplayTurn[]): DisplayTurn[] {
+  const out: DisplayTurn[] = [];
+  for (const t of turns) {
+    const text = (t.text || "").trim();
+    if (!text) continue;
+    const last = out[out.length - 1];
+    if (last && last.speaker === t.speaker) {
+      last.text += " " + text;
+      last.end = t.end;
+    } else {
+      out.push({ speaker: t.speaker, text, start: t.start, end: t.end });
+    }
+  }
+  return out;
+}
+
 /** Format seconds as a human-friendly duration like "1h 23m" or "45m". */
 export function formatDuration(seconds: number | undefined | null): string {
   if (!seconds || seconds <= 0) return "";

@@ -20,6 +20,7 @@ import unicodedata
 from collections import Counter
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
+from email.utils import parsedate_to_datetime
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -249,6 +250,7 @@ def _chunk_schema(dim: int) -> pa.Schema:
             pa.field("show", pa.string()),
             pa.field("episode", pa.string()),
             pa.field("source", pa.string()),
+            pa.field("pub_date", pa.string()),
             pa.field("dominant_speaker", pa.string()),
             pa.field("start", pa.float64()),
             pa.field("end", pa.float64()),
@@ -284,6 +286,7 @@ _RESERVED_META_KEYS = {
     "show",
     "episode",
     "source",
+    "pub_date",
     "dominant_speaker",
     "start",
     "end",
@@ -301,6 +304,16 @@ class IndexStore:
             via :func:`_resolve_default_index_path`.
     """
 
+    # Global resolver (set by the API/bot at startup) mapping a show name to
+    # its on-disk folder. Used by the ``episode_title`` backfill to heal
+    # chunks where the RSS title never made it into the transcript meta.
+    _show_folder_resolver: "callable | None" = None
+
+    @classmethod
+    def set_show_folder_resolver(cls, fn) -> None:
+        """Register a callable ``(show_name) -> Path | None`` for the backfill."""
+        cls._show_folder_resolver = fn
+
     def __init__(self, path: Path | str | None = None):
         import lancedb
 
@@ -314,6 +327,8 @@ class IndexStore:
         self._path.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self._path))
         self._fts_ready: set[str] = set()
+        self._pub_date_ready: set[str] = set()
+        self._episode_title_ready: set[str] = set()
 
     # ── External-change detection & reconnection ─────────────────────────
     #
@@ -359,6 +374,8 @@ class IndexStore:
 
         self._db = lancedb.connect(str(self._path))
         self._fts_ready.clear()
+        self._pub_date_ready.clear()
+        self._episode_title_ready.clear()
         logger.info(f"IndexStore reconnected: {self._path}")
 
     # ── Internal: collections metadata table ─────────────────────────────
@@ -379,7 +396,196 @@ class IndexStore:
         """Open an existing collection table; raise if missing."""
         if name not in self._table_names():
             raise KeyError(f"Collection '{name}' does not exist")
-        return self._db.open_table(name)
+        t = self._db.open_table(name)
+        self._ensure_pub_date_column(name, t)
+        self._ensure_episode_title_backfill(name, t)
+        return t
+
+    def _ensure_pub_date_column(self, collection: str, table) -> None:
+        """Add ``pub_date`` top-level column to pre-migration tables.
+
+        Older tables stored the RSS publication date only in the ``meta``
+        JSON blob. Range filters need a dedicated scalar column; this
+        helper adds it + backfills.
+
+        Skip decision uses a filesystem sentinel rather than the schema,
+        so a process that crashed after ``add_columns`` but before the
+        backfill finished retries on the next open.
+        """
+        if collection in self._pub_date_ready:
+            return
+        sentinel = self._path / f"{collection}.pub_date_col_v1"
+        if sentinel.exists():
+            self._pub_date_ready.add(collection)
+            return
+        try:
+            schema_names = set(table.schema.names)
+        except Exception:
+            schema_names = set()
+        if "pub_date" not in schema_names:
+            try:
+                table.add_columns({"pub_date": "CAST('' AS STRING)"})
+            except Exception:
+                logger.opt(exception=True).warning(
+                    f"Could not add pub_date column to '{collection}'"
+                )
+                return
+        try:
+            rows = (
+                table.search().select(["episode", "meta"]).limit(10_000_000).to_list()
+            )
+            per_ep: dict[str, str] = {}
+            for r in rows:
+                ep = r.get("episode")
+                if not ep or ep in per_ep:
+                    continue
+                try:
+                    meta = json.loads(r.get("meta") or "{}")
+                except Exception:
+                    continue
+                norm = _normalize_pub_date(
+                    meta.get("pub_date") or meta.get("rss_pub_date")
+                )
+                if norm:
+                    per_ep[ep] = norm
+            for ep, dt in per_ep.items():
+                table.update(
+                    where=f"episode = '{_escape(ep)}'",
+                    values={"pub_date": dt},
+                )
+            sentinel.touch()
+            logger.info(
+                f"pub_date column backfilled for '{collection}' "
+                f"({len(per_ep)} episodes)"
+            )
+        except Exception:
+            logger.opt(exception=True).warning(
+                f"pub_date backfill skipped for '{collection}'"
+            )
+        self._pub_date_ready.add(collection)
+
+    def _ensure_episode_title_backfill(self, collection: str, table) -> None:
+        """Backfill ``episode_title`` in chunk meta from ``.episode_meta.json``.
+
+        Some episodes were indexed before RSS metadata was merged into the
+        transcript (e.g. a corrupt or empty ``.episode_meta.json``), leaving
+        ``meta.episode_title`` unset. ``episode_display`` then falls back to a
+        humanised stem, which leaks a normalised slug into search results and
+        MCP replies. This one-shot pass walks the stems with a missing title,
+        reloads each episode's meta file (``load_episode_meta`` now self-heals
+        from the show-level feed cache), and promotes the title into every
+        chunk's JSON meta blob. Skip-gated by a filesystem sentinel — if the
+        resolver is not registered yet (bot/CLI contexts) we simply return.
+        """
+        if collection in self._episode_title_ready:
+            return
+        sentinel = self._path / f"{collection}.episode_title_v1"
+        if sentinel.exists():
+            self._episode_title_ready.add(collection)
+            return
+        resolver = type(self)._show_folder_resolver
+        if resolver is None:
+            return  # try again next time once the API has registered one
+
+        info = self.get_collection_info(collection)
+        show_name = (info or {}).get("show", "")
+        if not show_name:
+            return
+        show_folder = resolver(show_name)
+        if not show_folder:
+            return
+        try:
+            from podcodex.ingest.rss import (
+                episode_stem as rss_episode_stem,
+                load_feed_cache,
+            )
+        except Exception:
+            return
+
+        try:
+            row_count = int(table.count_rows())
+        except Exception:
+            row_count = -1
+        if row_count == 0:
+            # Nothing to heal; drop the sentinel so a freshly-indexed table
+            # isn't rescanned on every later open.
+            try:
+                sentinel.touch()
+            except OSError:
+                pass
+            self._episode_title_ready.add(collection)
+            return
+
+        try:
+            rows = (
+                table.search()
+                .select(["episode", "chunk_index", "meta"])
+                .limit(10_000_000)
+                .to_list()
+            )
+        except Exception:
+            logger.opt(exception=True).warning(
+                f"episode_title backfill scan skipped for '{collection}'"
+            )
+            return
+
+        # Group all chunks by stem in one pass so we can detect missing titles
+        # and rewrite meta blobs without a second full-table scan per stem.
+        chunks_by_stem: dict[str, list[tuple[int, dict]]] = {}
+        for r in rows:
+            ep = r.get("episode")
+            if not ep:
+                continue
+            try:
+                meta = json.loads(r.get("meta") or "{}")
+            except Exception:
+                meta = {}
+            chunks_by_stem.setdefault(ep, []).append(
+                (int(r.get("chunk_index", -1)), meta)
+            )
+
+        # Feed cache is the only authoritative fallback for a healed title —
+        # read it once here rather than once per stem inside the loop.
+        show_folder_path = Path(show_folder)
+        cached_eps = load_feed_cache(show_folder_path) or []
+        stem_to_title: dict[str, str] = {}
+        for ep in cached_eps:
+            try:
+                stem = rss_episode_stem(ep, show_folder_path)
+            except Exception:
+                continue
+            if ep.title and ep.title != stem:
+                stem_to_title[stem] = ep.title
+
+        healed = 0
+        for stem, chunks in chunks_by_stem.items():
+            if any(m.get("episode_title") for _, m in chunks):
+                continue
+            title = stem_to_title.get(stem)
+            if not title:
+                continue
+            for ci, meta in chunks:
+                meta["episode_title"] = title
+                try:
+                    table.update(
+                        where=(f"episode = '{_escape(stem)}' AND chunk_index = {ci}"),
+                        values={"meta": json.dumps(meta, ensure_ascii=False)},
+                    )
+                except Exception:
+                    logger.opt(exception=True).debug(
+                        f"episode_title update failed for {collection}/{stem}"
+                    )
+            healed += 1
+
+        try:
+            sentinel.touch()
+        except OSError:
+            pass
+        if healed:
+            logger.info(
+                f"episode_title backfilled for '{collection}' ({healed} episodes)"
+            )
+        self._episode_title_ready.add(collection)
 
     def _passwords_table(self):
         if _SHOW_PASSWORDS_TABLE in self._table_names():
@@ -645,6 +851,7 @@ class IndexStore:
                     "show": str(chunk.get("show", "")),
                     "episode": str(chunk.get("episode", episode)),
                     "source": str(chunk.get("source", "")),
+                    "pub_date": _normalize_pub_date(chunk.get("pub_date")) or "",
                     "dominant_speaker": str(speaker),
                     "start": float(chunk.get("start", 0.0)),
                     "end": float(chunk.get("end", 0.0)),
@@ -738,13 +945,21 @@ class IndexStore:
         return chunks[lo:hi]
 
     def load_all_chunks(
-        self, collection: str, episode: str | None = None
+        self,
+        collection: str,
+        episode: str | None = None,
+        *,
+        episodes: list[str] | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
     ) -> list[dict]:
         """Load all chunks (without vectors) in a collection.
 
         Args:
             collection: Collection name.
             episode: If set, restrict to this one episode.
+            episodes: Alternative to ``episode`` — restrict to a list of stems.
+            pub_date_min, pub_date_max: Inclusive date bounds (``YYYY-MM-DD``).
 
         Returns:
             List of chunk dicts ordered by ``(episode, chunk_index)``.
@@ -753,8 +968,14 @@ class IndexStore:
             return []
         t = self._table(collection)
         q = t.search()
-        if episode:
-            q = q.where(f"episode = '{_escape(episode)}'")
+        clause = _build_where(
+            episode=episode,
+            episodes=episodes,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
+        )
+        if clause:
+            q = q.where(clause)
         rows = (
             q.select(
                 [
@@ -785,8 +1006,11 @@ class IndexStore:
         top_k: int,
         *,
         episode: str | None = None,
+        episodes: list[str] | None = None,
         source: str | None = None,
         speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
     ) -> list[dict]:
         """ANN vector search with optional pre-filters.
 
@@ -795,6 +1019,8 @@ class IndexStore:
             query_vec: Query embedding (float32 1-D).
             top_k: Maximum results.
             episode, source, speaker: SQL-style equality filters.
+            episodes: Alternative to ``episode`` — restrict to a list.
+            pub_date_min, pub_date_max: Inclusive date bounds.
 
         Returns:
             List of chunk dicts with cosine ``score`` (``1 - distance``)
@@ -808,7 +1034,14 @@ class IndexStore:
             query_type="vector",
             vector_column_name="vector",
         )
-        clause = _build_where(episode=episode, source=source, speaker=speaker)
+        clause = _build_where(
+            episode=episode,
+            episodes=episodes,
+            source=source,
+            speaker=speaker,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
+        )
         if clause:
             q = q.where(clause)
         rows = q.limit(top_k).to_list()
@@ -825,8 +1058,11 @@ class IndexStore:
         top_k: int,
         *,
         episode: str | None = None,
+        episodes: list[str] | None = None,
         source: str | None = None,
         speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
         fuzziness: int = 0,
     ) -> list[dict]:
         """Full-text search (Tantivy, tokenized).
@@ -838,6 +1074,8 @@ class IndexStore:
             query: Free-text query.
             top_k: Maximum results.
             episode, source, speaker: SQL-style equality filters.
+            episodes: Alternative to ``episode`` — restrict to a list.
+            pub_date_min, pub_date_max: Inclusive date bounds.
             fuzziness: Levenshtein edit distance for fuzzy matching (0 = exact).
 
         Returns:
@@ -854,7 +1092,14 @@ class IndexStore:
         else:
             search_input = query
         q = t.search(search_input, query_type="fts")
-        clause = _build_where(episode=episode, source=source, speaker=speaker)
+        clause = _build_where(
+            episode=episode,
+            episodes=episodes,
+            source=source,
+            speaker=speaker,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
+        )
         if clause:
             q = q.where(clause)
         try:
@@ -872,8 +1117,11 @@ class IndexStore:
         query: str,
         *,
         episode: str | None = None,
+        episodes: list[str] | None = None,
         source: str | None = None,
         speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
         max_dist: int = 1,
     ) -> tuple[list[dict], list[dict], list[dict]]:
         """Three-tier phrase search: exact, accent variant, near-typo.
@@ -913,8 +1161,11 @@ class IndexStore:
                 token,
                 10_000,
                 episode=episode,
+                episodes=episodes,
                 source=source,
                 speaker=speaker,
+                pub_date_min=pub_date_min,
+                pub_date_max=pub_date_max,
                 fuzziness=2,
             )
             ft = fold_text(token)
@@ -925,8 +1176,11 @@ class IndexStore:
                     ft,
                     10_000,
                     episode=episode,
+                    episodes=episodes,
                     source=source,
                     speaker=speaker,
+                    pub_date_min=pub_date_min,
+                    pub_date_max=pub_date_max,
                     fuzziness=2,
                 ):
                     k = _chunk_key(h)
@@ -1145,54 +1399,174 @@ class IndexStore:
         )
 
     def get_episode_stats(self, collection: str) -> list[dict]:
-        """Return per-episode ``{episode, episode_title, chunk_count, duration, speakers}``."""
-        if not self.collection_exists(collection):
-            return []
-        rows = (
-            self._table(collection)
-            .search()
-            .select(["episode", "dominant_speaker", "end", "meta"])
-            .limit(1_000_000)
-            .to_list()
+        """Return per-episode metadata.
+
+        Each record:
+        ``{episode, episode_title, pub_date, episode_number, description,
+        source, chunk_count, duration, speakers}``.
+
+        ``pub_date`` comes from the top-level column (migrated from legacy
+        ``meta`` payloads on first open). ``description``,
+        ``episode_number`` and ``source`` are pulled from the first chunk
+        that carries them.
+        """
+        groups = self._aggregate_episodes(
+            collection,
+            with_speakers=True,
+            meta_fields=("episode_title", "episode_number", "description"),
         )
+        return [_episode_group_to_dict(ep, g) for ep, g in sorted(groups.items())]
+
+    def get_episode(self, collection: str, episode: str) -> dict | None:
+        """Return metadata for one episode, or ``None`` if not present.
+
+        Same shape as :meth:`get_episode_stats` entries. Filters by
+        episode at the query layer so single-episode lookups don't
+        scan the full table.
+        """
+        if not episode:
+            return None
+        groups = self._aggregate_episodes(
+            collection,
+            with_speakers=True,
+            meta_fields=("episode_title", "episode_number", "description"),
+            where=f"episode = '{_escape(episode)}'",
+        )
+        if episode not in groups:
+            return None
+        return _episode_group_to_dict(episode, groups[episode])
+
+    def list_episodes_filtered(
+        self,
+        collection: str,
+        *,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
+        title_contains: str | None = None,
+        with_detail: bool = False,
+    ) -> list[dict]:
+        """Return a per-episode list for browsing UIs.
+
+        Default record: ``{episode, episode_title, pub_date, episode_number,
+        chunk_count, duration}`` — lightweight for UI pickers.
+
+        ``with_detail=True`` additionally includes ``speakers`` (sorted list)
+        and ``description``, at the cost of reading more columns. Used by
+        callers that need a browseable catalogue without an extra
+        :meth:`get_episode` round-trip per stem (MCP ``list_episodes``).
+        """
+        clause = _build_where(pub_date_min=pub_date_min, pub_date_max=pub_date_max)
+        fields = (
+            ("episode_title", "episode_number", "description")
+            if with_detail
+            else (
+                "episode_title",
+                "episode_number",
+            )
+        )
+        groups = self._aggregate_episodes(
+            collection,
+            with_speakers=with_detail,
+            meta_fields=fields,
+            where=clause or None,
+        )
+        needle = (title_contains or "").strip().lower()
+        out: list[dict] = []
+        for ep in sorted(groups):
+            g = groups[ep]
+            if needle and needle not in f"{g['episode_title']} {ep}".lower():
+                continue
+            record: dict = {
+                "episode": ep,
+                "episode_title": g["episode_title"],
+                "pub_date": g["pub_date"],
+                "episode_number": g["episode_number"],
+                "chunk_count": g["chunk_count"],
+                "duration": g["duration"],
+            }
+            if with_detail:
+                speakers = g.get("speakers")
+                record["speakers"] = sorted(speakers) if speakers else []
+                record["description"] = g.get("description", "")
+            out.append(record)
+        return out
+
+    def _aggregate_episodes(
+        self,
+        collection: str,
+        *,
+        with_speakers: bool,
+        meta_fields: tuple[str, ...],
+        where: str | None = None,
+    ) -> dict[str, dict]:
+        """Scan a collection once, producing a per-episode accumulator dict.
+
+        Shared backbone of :meth:`get_episode_stats`, :meth:`get_episode`,
+        and :meth:`list_episodes_filtered`. Columns selected adapt to the
+        fields the caller needs; meta JSON is only parsed when at least
+        one requested ``meta_fields`` value is still missing.
+        """
+        if not self.collection_exists(collection):
+            return {}
+        cols = ["episode", "pub_date", "end", "meta"]
+        if with_speakers or "source" in meta_fields:
+            cols.append("source")
+        if with_speakers:
+            cols.append("dominant_speaker")
+        q = self._table(collection).search()
+        if where:
+            q = q.where(where)
+        rows = q.select(cols).limit(1_000_000).to_list()
+        defaults: dict = {
+            "chunk_count": 0,
+            "duration": 0.0,
+            "pub_date": "",
+            "source": "",
+        }
+        if with_speakers:
+            defaults["speakers"] = None  # set() inserted per-group below
+        for field in meta_fields:
+            defaults[field] = None if field == "episode_number" else ""
         groups: dict[str, dict] = {}
         for r in rows:
             ep = r.get("episode")
-            if ep is None:
+            if not ep:
                 continue
-            g = groups.setdefault(
-                ep,
-                {
-                    "chunk_count": 0,
-                    "duration": 0.0,
-                    "speakers": set(),
-                    "episode_title": "",
-                },
-            )
+            g = groups.get(ep)
+            if g is None:
+                g = {k: v for k, v in defaults.items()}
+                if with_speakers:
+                    g["speakers"] = set()
+                groups[ep] = g
             g["chunk_count"] += 1
             end = float(r.get("end") or 0.0)
             if end > g["duration"]:
                 g["duration"] = end
-            sp = r.get("dominant_speaker")
-            if sp:
-                g["speakers"].add(sp)
-            if not g["episode_title"]:
+            if with_speakers:
+                sp = r.get("dominant_speaker")
+                if sp:
+                    g["speakers"].add(sp)
+            for col in ("source", "pub_date"):
+                if col in g and not g[col] and r.get(col):
+                    g[col] = r[col]
+            missing = [
+                f
+                for f in meta_fields
+                if (g[f] is None if f == "episode_number" else not g[f])
+            ]
+            if missing:
                 try:
                     meta = json.loads(r.get("meta") or "{}")
                 except Exception:
                     meta = {}
-                if meta.get("episode_title"):
-                    g["episode_title"] = meta["episode_title"]
-        return [
-            {
-                "episode": ep,
-                "episode_title": g["episode_title"],
-                "chunk_count": g["chunk_count"],
-                "duration": g["duration"],
-                "speakers": sorted(g["speakers"]),
-            }
-            for ep, g in sorted(groups.items())
-        ]
+                for f in missing:
+                    v = meta.get(f)
+                    if f == "episode_number":
+                        if v is not None:
+                            g[f] = v
+                    elif v:
+                        g[f] = v
+        return groups
 
     def _distinct(self, collection: str, column: str) -> list[str]:
         """Return sorted distinct non-empty values of one column."""
@@ -1214,20 +1588,93 @@ def _escape(s: str) -> str:
     return s.replace("'", "''")
 
 
+def _episode_group_to_dict(episode: str, g: dict) -> dict:
+    """Shape a ``_aggregate_episodes`` group into the public dict."""
+    return {
+        "episode": episode,
+        "episode_title": g.get("episode_title", ""),
+        "pub_date": g.get("pub_date", ""),
+        "episode_number": g.get("episode_number"),
+        "description": g.get("description", ""),
+        "source": g.get("source", ""),
+        "chunk_count": g["chunk_count"],
+        "duration": g["duration"],
+        "speakers": sorted(g.get("speakers") or ()),
+    }
+
+
+_PUB_DATE_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+_PUB_DATE_COMPACT_RE = re.compile(r"^\d{8}$")
+
+
+def _normalize_pub_date(raw: Any) -> str | None:
+    """Normalize a publication date to ``YYYY-MM-DD``.
+
+    Accepts ISO 8601 (``2024-01-15``, ``2024-01-15T12:00:00Z``), RFC 2822
+    (``Mon, 15 Jan 2024 12:00:00 GMT``), and YouTube's compact
+    ``YYYYMMDD``. Returns ``None`` if *raw* is falsy or unparseable.
+    Idempotent on already-normalized input.
+    """
+    if not raw:
+        return None
+    if not isinstance(raw, str):
+        raw = str(raw)
+    s = raw.strip()
+    if not s:
+        return None
+    if _PUB_DATE_ISO_RE.match(s):
+        return s[:10]
+    if _PUB_DATE_COMPACT_RE.match(s):
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+    try:
+        dt = parsedate_to_datetime(s)
+    except (TypeError, ValueError):
+        dt = None
+    if dt is not None:
+        return dt.date().isoformat()
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return None
+
+
 def _build_where(
     *,
     episode: str | None = None,
+    episodes: list[str] | None = None,
     source: str | None = None,
     speaker: str | None = None,
+    pub_date_min: str | None = None,
+    pub_date_max: str | None = None,
 ) -> str:
-    """Build a LanceDB WHERE clause from equality filters."""
+    """Build a LanceDB WHERE clause from equality / range filters.
+
+    ``episodes`` (list) takes precedence over ``episode`` (scalar) when
+    both are given. Dates are normalized to ``YYYY-MM-DD``; invalid
+    inputs raise ``ValueError``.
+    """
     parts: list[str] = []
-    if episode:
+    if episodes:
+        cleaned = [e for e in episodes if e]
+        if cleaned:
+            quoted = ", ".join(f"'{_escape(e)}'" for e in cleaned)
+            parts.append(f"episode IN ({quoted})")
+    elif episode:
         parts.append(f"episode = '{_escape(episode)}'")
     if source:
         parts.append(f"source = '{_escape(source)}'")
     if speaker:
         parts.append(f"dominant_speaker = '{_escape(speaker)}'")
+    if pub_date_min:
+        norm = _normalize_pub_date(pub_date_min)
+        if not norm:
+            raise ValueError(f"Invalid pub_date_min: {pub_date_min!r}")
+        parts.append(f"pub_date >= '{norm}'")
+    if pub_date_max:
+        norm = _normalize_pub_date(pub_date_max)
+        if not norm:
+            raise ValueError(f"Invalid pub_date_max: {pub_date_max!r}")
+        parts.append(f"pub_date <= '{norm}'")
     return " AND ".join(parts)
 
 
@@ -1236,6 +1683,7 @@ _FILTER_COLUMNS = (
     "show",
     "episode",
     "source",
+    "pub_date",
     "dominant_speaker",
     "start",
     "end",

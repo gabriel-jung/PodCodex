@@ -69,7 +69,7 @@ export default function IndexPanel() {
     onSuccess: (data) => task.startTask(data.task_id),
   });
 
-  const { has: hasCap } = useCapabilities();
+  const { has: hasCap, isLoaded: capsLoaded } = useCapabilities();
   const hasRAG = hasCap("embeddings") && hasCap("torch");
 
   if (!episode) return null;
@@ -93,7 +93,7 @@ export default function IndexPanel() {
       title="Index"
       description="Build a search index so you can find specific moments by meaning, not just keywords."
       prerequisite={prereq}
-      blocker={!prereq && !hasRAG ? (
+      blocker={!prereq && capsLoaded && !hasRAG ? (
         <MissingDependency
           extra="rag"
           label="Search & indexing libraries"

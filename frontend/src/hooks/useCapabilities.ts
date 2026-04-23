@@ -26,6 +26,9 @@ export function useCapabilities() {
     capabilities: data?.capabilities ?? {},
     extras: data?.extras ?? {},
     has: (cap: string) => data?.capabilities?.[cap] ?? false,
+    // Gate MissingDependency renders on this — without it, `has()` returns false
+    // during the initial fetch and the blocker flashes for one paint.
+    isLoaded: data !== undefined,
     refetch,
   };
 }

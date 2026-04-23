@@ -229,13 +229,37 @@ def search_itunes(query: str, limit: int = 8) -> list[PodcastSearchResult]:
 # ── Feed cache ────────────────────────────────
 
 
+_feed_cache_memo: dict[str, tuple[float, list[RSSEpisode] | None]] = {}
+
+
 def load_feed_cache(show_folder: Path) -> list[RSSEpisode] | None:
-    """Load cached feed data from *show_folder*. Returns None if no cache exists."""
+    """Load cached feed data from *show_folder*. Returns None if no cache exists.
+
+    Result is memoised per ``(path, mtime)`` so hot paths that call this
+    once per episode directory (``load_episode_meta`` self-heal,
+    ``list_shows`` endpoint) don't re-parse the JSON on every call. Reads
+    at most once per write.
+    """
     path = Path(show_folder) / _FEED_CACHE
-    if not path.exists():
+    try:
+        mtime = path.stat().st_mtime
+    except FileNotFoundError:
+        _feed_cache_memo.pop(str(path), None)
         return None
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    return [RSSEpisode(**ep) for ep in raw]
+    except OSError:
+        return None
+    key = str(path)
+    cached = _feed_cache_memo.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _feed_cache_memo[key] = (mtime, None)
+        return None
+    episodes = [RSSEpisode(**ep) for ep in raw]
+    _feed_cache_memo[key] = (mtime, episodes)
+    return episodes
 
 
 def merge_with_cache(
@@ -301,16 +325,45 @@ def save_episode_meta(episode_dir: Path, rss_episode: RSSEpisode) -> Path:
 
 
 def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
-    """Load episode metadata from ``EPISODE_META_FILE``, or None if absent."""
-    path = Path(episode_dir) / EPISODE_META_FILE
-    if not path.exists():
-        return None
+    """Load episode metadata from ``EPISODE_META_FILE``, or None if absent.
+
+    When the file is empty or corrupt, fall back to the show-level
+    ``.feed_cache.json`` and match by stem. On successful recovery, rewrite
+    ``.episode_meta.json`` so subsequent loads are fast and the transcript-meta
+    path (used by the chunker to stamp ``episode_title``) picks up the title.
+    """
+    episode_dir = Path(episode_dir)
+    path = episode_dir / EPISODE_META_FILE
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        return RSSEpisode(**raw)
-    except (json.JSONDecodeError, TypeError, KeyError):
-        logger.warning(f"Corrupt episode meta: {path}")
+        text = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        text = ""
+    except OSError:
         return None
+    if text:
+        try:
+            return RSSEpisode(**json.loads(text))
+        except (json.JSONDecodeError, TypeError, KeyError):
+            logger.warning(
+                f"Corrupt episode meta: {path}; attempting recovery from feed cache"
+            )
+
+    show_folder = episode_dir.parent
+    cached = load_feed_cache(show_folder)
+    if not cached:
+        return None
+    stem = episode_dir.name
+    for ep in cached:
+        if episode_stem(ep, show_folder) == stem:
+            try:
+                save_episode_meta(episode_dir, ep)
+                logger.info(f"Recovered .episode_meta.json for {stem} from feed cache")
+            except OSError:
+                logger.opt(exception=True).warning(
+                    f"Could not rewrite recovered meta for {stem}"
+                )
+            return ep
+    return None
 
 
 # ── Context builder ───────────────────────────

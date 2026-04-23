@@ -11,6 +11,7 @@ import json
 from podcodex.core._utils import (
     batch_segments_by_duration,
     call_and_parse,
+    merge_display_turns,
     segments_to_srt,
     segments_to_text,
     segments_to_vtt,
@@ -231,3 +232,59 @@ def test_segments_to_vtt_format():
     assert out.startswith("WEBVTT")
     assert "00:00:00.000 --> 00:00:01.000" in out
     assert "<v Alice>Hi" in out
+
+
+# ──────────────────────────────────────────────
+# merge_display_turns
+# ──────────────────────────────────────────────
+
+
+def test_merge_display_turns_collapses_same_speaker_runs():
+    """Consecutive turns from the same speaker merge into a single block
+    with concatenated text and the last turn's ``end`` timestamp."""
+    turns = [
+        {"speaker": "Alice", "text": "Hello there.", "start": 0.0, "end": 1.0},
+        {"speaker": "Alice", "text": "How are you?", "start": 1.0, "end": 2.5},
+        {"speaker": "Bob", "text": "Good, you?", "start": 2.5, "end": 3.5},
+        {"speaker": "Bob", "text": "And yourself?", "start": 3.5, "end": 4.0},
+    ]
+    merged = merge_display_turns(turns)
+    assert len(merged) == 2
+    assert merged[0]["speaker"] == "Alice"
+    assert merged[0]["text"] == "Hello there. How are you?"
+    assert merged[0]["start"] == 0.0
+    assert merged[0]["end"] == 2.5
+    assert merged[1]["speaker"] == "Bob"
+    assert merged[1]["text"] == "Good, you? And yourself?"
+    assert merged[1]["end"] == 4.0
+
+
+def test_merge_display_turns_preserves_alternation():
+    """Alternating speakers produce one block per turn (no collapsing)."""
+    turns = [
+        {"speaker": "Alice", "text": "A1", "start": 0.0, "end": 1.0},
+        {"speaker": "Bob", "text": "B1", "start": 1.0, "end": 2.0},
+        {"speaker": "Alice", "text": "A2", "start": 2.0, "end": 3.0},
+    ]
+    merged = merge_display_turns(turns)
+    assert [(m["speaker"], m["text"]) for m in merged] == [
+        ("Alice", "A1"),
+        ("Bob", "B1"),
+        ("Alice", "A2"),
+    ]
+
+
+def test_merge_display_turns_skips_empty_and_unknown_speaker():
+    """Empty text is dropped; missing speaker labels default to ``Unknown``."""
+    turns = [
+        {"speaker": "Alice", "text": "   ", "start": 0.0, "end": 1.0},
+        {"speaker": "", "text": "ghost line", "start": 1.0, "end": 2.0},
+        {"speaker": None, "text": "another ghost", "start": 2.0, "end": 3.0},
+        {"speaker": "Alice", "text": "real line", "start": 3.0, "end": 4.0},
+    ]
+    merged = merge_display_turns(turns)
+    # Whitespace-only turn dropped; ghost turns collapse under "Unknown"; Alice
+    # closes as a separate block.
+    assert [m["speaker"] for m in merged] == ["Unknown", "Alice"]
+    assert merged[0]["text"] == "ghost line another ghost"
+    assert merged[1]["text"] == "real line"

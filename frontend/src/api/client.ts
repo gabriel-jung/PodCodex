@@ -29,6 +29,7 @@ export * from "./correct";
 export * from "./translate";
 export * from "./synthesize";
 export * from "./search";
+export * from "./episodes";
 export * from "./filesystem";
 export * from "./integrations";
 export * from "./mcpPrompts";

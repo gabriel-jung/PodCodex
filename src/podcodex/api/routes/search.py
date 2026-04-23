@@ -10,6 +10,7 @@ from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import AUDIO_EXTS, get_index_store
 from podcodex.core._utils import humanize_stem
+from podcodex.rag.index_store import _normalize_pub_date
 from podcodex.rag.retriever import get_retriever
 
 router = APIRouter()
@@ -80,8 +81,11 @@ class SearchRequest(BaseModel):
     top_k: int = 5
     alpha: float = 0.5
     episode: str | None = None
+    episodes: list[str] | None = None
     speaker: str | None = None
     source: str | None = None
+    pub_date_min: str | None = None
+    pub_date_max: str | None = None
 
     @field_validator("top_k")
     @classmethod
@@ -104,12 +108,14 @@ class SearchResult(BaseModel):
     text: str
     episode: str
     episode_stem: str = ""
+    episode_number: int | None = None
     audio_path: str = ""
     speaker: str
     start: float
     end: float
     score: float
     source: str
+    pub_date: str = ""
     speakers: list[dict] | None = None
     accent_match: bool = False
     fuzzy_match: bool = False
@@ -135,9 +141,14 @@ async def search_query(req: SearchRequest) -> list[dict]:
             top_k=req.top_k,
             alpha=req.alpha,
             episode=req.episode,
+            episodes=req.episodes,
             speaker=req.speaker,
             source=req.source,
+            pub_date_min=req.pub_date_min,
+            pub_date_max=req.pub_date_max,
         )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception:
         logger.opt(exception=True).warning("Search failed for collection {}", col)
         results = []
@@ -162,12 +173,16 @@ def _result_to_dict(
         "text": r.get("text", ""),
         "episode": title,
         "episode_stem": stem,
+        "episode_number": r.get("episode_number"),
         "audio_path": audio_path,
         "speaker": r.get("dominant_speaker", r.get("speaker", "")),
         "start": r.get("start", 0.0),
         "end": r.get("end", 0.0),
         "score": r.get("score", 0.0),
         "source": r.get("source", ""),
+        "pub_date": (
+            r.get("pub_date") or _normalize_pub_date(r.get("rss_pub_date")) or ""
+        ),
         "speakers": r.get("speakers"),
         "accent_match": bool(r.get("accent_match", False)),
         "fuzzy_match": bool(r.get("fuzzy_match", False)),
@@ -184,8 +199,11 @@ class ExactRequest(BaseModel):
     model: str = "bge-m3"
     chunking: str = "semantic"
     episode: str | None = None
+    episodes: list[str] | None = None
     speaker: str | None = None
     source: str | None = None
+    pub_date_min: str | None = None
+    pub_date_max: str | None = None
 
 
 @router.post("/exact", response_model=list[SearchResult])
@@ -195,13 +213,19 @@ async def exact_search(req: ExactRequest) -> list[dict]:
 
     col = collection_name(req.show, req.model, req.chunking)
     retriever = get_retriever(req.model)
-    hits = retriever.exact(
-        req.query,
-        col,
-        episode=req.episode,
-        speaker=req.speaker,
-        source=req.source,
-    )
+    try:
+        hits = retriever.exact(
+            req.query,
+            col,
+            episode=req.episode,
+            episodes=req.episodes,
+            speaker=req.speaker,
+            source=req.source,
+            pub_date_min=req.pub_date_min,
+            pub_date_max=req.pub_date_max,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     audio_lookup = _build_audio_lookup()
     return [_result_to_dict(h, audio_lookup) for h in hits]
 
@@ -214,8 +238,11 @@ class RandomRequest(BaseModel):
     model: str = "bge-m3"
     chunking: str = "semantic"
     episode: str | None = None
+    episodes: list[str] | None = None
     speaker: str | None = None
     source: str | None = None
+    pub_date_min: str | None = None
+    pub_date_max: str | None = None
 
 
 @router.post("/random", response_model=SearchResult | None)
@@ -225,12 +252,37 @@ async def random_quote(req: RandomRequest) -> dict | None:
 
     col = collection_name(req.show, req.model, req.chunking)
     retriever = get_retriever(req.model)
-    chunk = retriever.random(
-        col, episode=req.episode, speaker=req.speaker, source=req.source
-    )
+    try:
+        chunk = retriever.random(
+            col,
+            episode=req.episode,
+            episodes=req.episodes,
+            speaker=req.speaker,
+            source=req.source,
+            pub_date_min=req.pub_date_min,
+            pub_date_max=req.pub_date_max,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     if chunk is None:
         return None
     return _result_to_dict({**chunk, "score": 1.0}, _build_audio_lookup())
+
+
+# ── Distinct speakers ────────────────────────────────────
+
+
+@router.get("/speakers")
+async def list_indexed_speakers(
+    show: str,
+    model: str = "bge-m3",
+    chunking: str = "semantic",
+) -> list[str]:
+    """Distinct ``dominant_speaker`` values in a show's collection."""
+    from podcodex.rag.store import collection_name
+
+    col = collection_name(show, model, chunking)
+    return get_index_store().list_speakers(col)
 
 
 # ── Index stats ──────────────────────────────────────────

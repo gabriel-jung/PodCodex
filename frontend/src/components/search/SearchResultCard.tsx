@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { SearchResult } from "@/api/types";
 import { useAudioStore } from "@/stores";
-import { formatTime } from "@/lib/utils";
+import { formatDate, formatTime, mergeDisplayTurns } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import { highlightText } from "@/lib/highlight";
 import { Play } from "lucide-react";
@@ -11,6 +11,8 @@ interface ShowContext {
   name?: string;
   folder?: string;
   artwork?: string;
+  model?: string;
+  chunking?: string;
 }
 
 interface SearchResultCardProps {
@@ -51,12 +53,13 @@ export default function SearchResultCard({ result, show, query = "" }: SearchRes
     });
   };
 
-  const turns: { speaker: string; text: string }[] =
+  const rawTurns =
     result.speakers && result.speakers.length > 0
       ? result.speakers
       : result.speaker
-        ? [{ speaker: result.speaker, text: result.text }]
+        ? [{ speaker: result.speaker, text: result.text, start: result.start, end: result.end }]
         : [];
+  const turns = mergeDisplayTurns(rawTurns);
 
   return (
     <>
@@ -82,8 +85,14 @@ export default function SearchResultCard({ result, show, query = "" }: SearchRes
                 </span>
               )}
             </div>
-            <div className="font-mono text-muted-foreground">
-              {formatTime(result.start, false)} – {formatTime(result.end, false)}
+            <div className="font-mono text-muted-foreground flex items-center gap-2">
+              <span>{formatTime(result.start, false)} – {formatTime(result.end, false)}</span>
+              {result.pub_date && (
+                <>
+                  <span className="text-muted-foreground/40">·</span>
+                  <span className="font-sans">{formatDate(result.pub_date)}</span>
+                </>
+              )}
             </div>
           </div>
           <span className={`shrink-0 italic font-mono text-2xs tabular-nums ${scoreEmphasis}`}>
@@ -128,6 +137,10 @@ export default function SearchResultCard({ result, show, query = "" }: SearchRes
           start={result.start}
           end={result.end}
           episodeTitle={result.episode}
+          showName={show?.name}
+          episodeStem={result.episode_stem || undefined}
+          model={show?.model}
+          chunking={show?.chunking}
           onSeek={playAt}
         />
       )}

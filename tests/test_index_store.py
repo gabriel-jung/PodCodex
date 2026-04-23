@@ -311,3 +311,283 @@ def test_reopening_preserves_data(tmp_path):
     assert s2.collection_exists("c")
     assert s2.list_episodes("c") == ["e1"]
     assert s2.collection_chunk_count("c") == 2
+
+
+# ── _normalize_pub_date ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2024-01-15", "2024-01-15"),
+        ("2024-01-15T12:34:56Z", "2024-01-15"),
+        ("2024-01-15T12:34:56+02:00", "2024-01-15"),
+        ("Mon, 15 Jan 2024 12:00:00 GMT", "2024-01-15"),
+        ("Mon, 15 Jan 2024 12:00:00 +0200", "2024-01-15"),
+        ("20240115", "2024-01-15"),
+        ("", None),
+        (None, None),
+        ("not a date", None),
+        ("2024", None),
+    ],
+)
+def test_normalize_pub_date(raw, expected):
+    from podcodex.rag.index_store import _normalize_pub_date
+
+    assert _normalize_pub_date(raw) == expected
+
+
+def test_normalize_pub_date_idempotent():
+    from podcodex.rag.index_store import _normalize_pub_date
+
+    assert _normalize_pub_date(
+        _normalize_pub_date("Mon, 15 Jan 2024 12:00:00 GMT")
+    ) == ("2024-01-15")
+
+
+# ── pub_date column + migration ──────────────────────────────────────────
+
+
+def test_save_chunks_writes_normalized_pub_date(tmp_path):
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    chunk = {
+        "text": "t",
+        "start": 0.0,
+        "end": 1.0,
+        "episode": "ep1",
+        "show": "S",
+        "source": "transcript",
+        "dominant_speaker": "A",
+        "pub_date": "Mon, 15 Jan 2024 12:00:00 GMT",
+    }
+    s.save_chunks("c", "ep1", [chunk], _rng_embeddings(1))
+    rows = s._table("c").search().select(["pub_date"]).limit(5).to_list()
+    assert rows[0]["pub_date"] == "2024-01-15"
+
+
+# ── _build_where ─────────────────────────────────────────────────────────
+
+
+def test_build_where_empty():
+    from podcodex.rag.index_store import _build_where
+
+    assert _build_where() == ""
+
+
+def test_build_where_episode_equality():
+    from podcodex.rag.index_store import _build_where
+
+    assert _build_where(episode="ep1") == "episode = 'ep1'"
+
+
+def test_build_where_episodes_list_overrides_single():
+    from podcodex.rag.index_store import _build_where
+
+    assert (
+        _build_where(episode="ignored", episodes=["a", "b"]) == "episode IN ('a', 'b')"
+    )
+
+
+def test_build_where_episodes_empty_list_falls_through_to_single():
+    from podcodex.rag.index_store import _build_where
+
+    assert _build_where(episode="ep1", episodes=[]) == "episode = 'ep1'"
+
+
+def test_build_where_pub_date_range():
+    from podcodex.rag.index_store import _build_where
+
+    assert (
+        _build_where(
+            pub_date_min="2024-01-01", pub_date_max="Mon, 15 Jan 2024 12:00:00 GMT"
+        )
+        == "pub_date >= '2024-01-01' AND pub_date <= '2024-01-15'"
+    )
+
+
+def test_build_where_invalid_pub_date_min_raises():
+    from podcodex.rag.index_store import _build_where
+
+    with pytest.raises(ValueError, match="pub_date_min"):
+        _build_where(pub_date_min="not a date")
+
+
+def test_build_where_sql_injection_escaped():
+    from podcodex.rag.index_store import _build_where
+
+    w = _build_where(episode="o'brien", speaker="eve'--")
+    assert "o''brien" in w
+    assert "eve''--" in w
+
+
+def test_build_where_combined():
+    from podcodex.rag.index_store import _build_where
+
+    w = _build_where(
+        episodes=["ep1", "ep2"],
+        source="transcript",
+        speaker="A",
+        pub_date_min="2024-01-01",
+        pub_date_max="2024-12-31",
+    )
+    assert w == (
+        "episode IN ('ep1', 'ep2') AND source = 'transcript' AND "
+        "dominant_speaker = 'A' AND pub_date >= '2024-01-01' AND "
+        "pub_date <= '2024-12-31'"
+    )
+
+
+# ── get_episode / list_episodes_filtered ─────────────────────────────────
+
+
+def _seed_with_pub_dates(s: IndexStore):
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    eps = [
+        ("ep1", "2024-01-15", "First ep", 1, "desc one"),
+        ("ep2", "2024-03-10", "Second ep", 2, "desc two"),
+        ("ep3", "2024-06-20", "Third ep", 3, ""),
+    ]
+    for ep, pd, title, num, desc in eps:
+        chunk = {
+            "text": f"text {ep}",
+            "start": 0.0,
+            "end": 42.0,
+            "episode": ep,
+            "show": "S",
+            "source": "transcript",
+            "dominant_speaker": "Alice",
+            "pub_date": pd,
+            "episode_title": title,
+            "episode_number": num,
+        }
+        if desc:
+            chunk["description"] = desc
+        s.save_chunks("c", ep, [chunk], _rng_embeddings(1))
+
+
+def test_get_episode_returns_metadata(tmp_path):
+    s = _store(tmp_path)
+    _seed_with_pub_dates(s)
+    ep = s.get_episode("c", "ep2")
+    assert ep is not None
+    assert ep["episode"] == "ep2"
+    assert ep["pub_date"] == "2024-03-10"
+    assert ep["episode_title"] == "Second ep"
+    assert ep["episode_number"] == 2
+    assert ep["description"] == "desc two"
+    assert ep["source"] == "transcript"
+    assert ep["chunk_count"] == 1
+    assert ep["duration"] == pytest.approx(42.0)
+    assert ep["speakers"] == ["Alice"]
+
+
+def test_get_episode_missing_returns_none(tmp_path):
+    s = _store(tmp_path)
+    _seed_with_pub_dates(s)
+    assert s.get_episode("c", "nope") is None
+
+
+def test_list_episodes_filtered_by_date_range(tmp_path):
+    s = _store(tmp_path)
+    _seed_with_pub_dates(s)
+    res = s.list_episodes_filtered(
+        "c", pub_date_min="2024-02-01", pub_date_max="2024-05-01"
+    )
+    assert [r["episode"] for r in res] == ["ep2"]
+
+
+def test_list_episodes_filtered_by_title(tmp_path):
+    s = _store(tmp_path)
+    _seed_with_pub_dates(s)
+    res = s.list_episodes_filtered("c", title_contains="third")
+    assert [r["episode"] for r in res] == ["ep3"]
+
+
+def test_list_episodes_filtered_invalid_date_raises(tmp_path):
+    s = _store(tmp_path)
+    _seed_with_pub_dates(s)
+    with pytest.raises(ValueError, match="pub_date_min"):
+        s.list_episodes_filtered("c", pub_date_min="garbage")
+
+
+def test_pub_date_migration_backfills_from_meta(tmp_path):
+    """Opening a legacy table (no pub_date column) adds + backfills it."""
+    import json
+    import lancedb
+    import pyarrow as pa
+
+    db_path = tmp_path / "index"
+    db_path.mkdir(parents=True, exist_ok=True)
+    db = lancedb.connect(str(db_path))
+
+    legacy_schema = pa.schema(
+        [
+            pa.field("chunk_index", pa.int32()),
+            pa.field("show", pa.string()),
+            pa.field("episode", pa.string()),
+            pa.field("source", pa.string()),
+            pa.field("dominant_speaker", pa.string()),
+            pa.field("start", pa.float64()),
+            pa.field("end", pa.float64()),
+            pa.field("text", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), 8)),
+            pa.field("meta", pa.string()),
+        ]
+    )
+    t = db.create_table("c", schema=legacy_schema)
+    # Also seed the _collections sidecar so collection_exists() is happy.
+    from podcodex.rag.index_store import _COLLECTIONS_SCHEMA
+
+    coll = db.create_table("_collections", schema=_COLLECTIONS_SCHEMA)
+    coll.add(
+        [
+            {
+                "name": "c",
+                "show": "S",
+                "model": "m",
+                "chunker": "semantic",
+                "dim": 8,
+                "created_at": "",
+            }
+        ]
+    )
+    rng = np.random.default_rng(0).random((2, 8), dtype=np.float32)
+    t.add(
+        [
+            {
+                "chunk_index": 0,
+                "show": "S",
+                "episode": "ep1",
+                "source": "transcript",
+                "dominant_speaker": "A",
+                "start": 0.0,
+                "end": 1.0,
+                "text": "alpha",
+                "vector": rng[0].tolist(),
+                "meta": json.dumps({"pub_date": "Mon, 15 Jan 2024 12:00:00 GMT"}),
+            },
+            {
+                "chunk_index": 0,
+                "show": "S",
+                "episode": "ep2",
+                "source": "transcript",
+                "dominant_speaker": "B",
+                "start": 0.0,
+                "end": 1.0,
+                "text": "beta",
+                "vector": rng[1].tolist(),
+                "meta": json.dumps({"rss_pub_date": "2024-02-20T10:00:00Z"}),
+            },
+        ]
+    )
+
+    store = IndexStore(db_path)
+    # Triggering _table() via any read path runs the migration.
+    rows = (
+        store._table("c").search().select(["episode", "pub_date"]).limit(10).to_list()
+    )
+    by_ep = {r["episode"]: r["pub_date"] for r in rows}
+    assert by_ep["ep1"] == "2024-01-15"
+    assert by_ep["ep2"] == "2024-02-20"
+    assert (db_path / "c.pub_date_col_v1").exists()

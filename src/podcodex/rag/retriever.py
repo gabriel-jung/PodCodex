@@ -73,8 +73,11 @@ class Retriever:
         top_k: int = 5,
         alpha: float = 0.5,
         episode: str | None = None,
+        episodes: list[str] | None = None,
         source: str | None = None,
         speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
         query_vector: np.ndarray | None = None,
     ) -> list[dict]:
         """Return the top_k most relevant chunks for a query.
@@ -86,6 +89,8 @@ class Retriever:
             alpha: Blend between FTS (0.0) and dense (1.0). Out-of-range
                 values are clamped to ``[0, 1]``.
             episode, source, speaker: Optional equality filters.
+            episodes: Alternative to ``episode`` — restrict to a list of stems.
+            pub_date_min, pub_date_max: Inclusive date bounds (``YYYY-MM-DD``).
             query_vector: Precomputed query embedding. If provided, skips the
                 embedder call — lets callers that fan out over N collections
                 encode once.
@@ -95,12 +100,41 @@ class Retriever:
         """
         if alpha >= 1.0:
             return self._dense(
-                query, collection, top_k, episode, source, speaker, query_vector
+                query,
+                collection,
+                top_k,
+                episode,
+                episodes,
+                source,
+                speaker,
+                pub_date_min,
+                pub_date_max,
+                query_vector,
             )
         if alpha <= 0.0:
-            return self._fts(query, collection, top_k, episode, source, speaker)
+            return self._fts(
+                query,
+                collection,
+                top_k,
+                episode,
+                episodes,
+                source,
+                speaker,
+                pub_date_min,
+                pub_date_max,
+            )
         return self._weighted(
-            query, collection, top_k, alpha, episode, source, speaker, query_vector
+            query,
+            collection,
+            top_k,
+            alpha,
+            episode,
+            episodes,
+            source,
+            speaker,
+            pub_date_min,
+            pub_date_max,
+            query_vector,
         )
 
     def exact(
@@ -108,21 +142,58 @@ class Retriever:
         query: str,
         collection: str,
         episode: str | None = None,
+        episodes: list[str] | None = None,
         source: str | None = None,
         speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
     ) -> list[dict]:
         """Three-tier phrase search: exact (1.0), accent variant (0.8), near-typo (0.6).
 
         FTS ~2 pre-filter for speed; Python phrase checks for tier classification.
         Returns all matches — no top_k cap.
+
+        When ``speaker`` is set, the filter is applied at the *turn* level
+        rather than the chunk's ``dominant_speaker``: a chunk is kept only
+        if the target speaker has a turn that contains the matched phrase.
+        Fuzzy-tier matches are dropped in that mode (too approximate to
+        attribute to a single turn).
         """
+        # Don't narrow by dominant_speaker at the DB level — the turn-level
+        # filter below would miss chunks where the target speaker is not
+        # dominant but actually utters the phrase.
         exact, accent_only, fuzzy_only = self._local.search_literal(
             collection,
             query,
             episode=episode,
+            episodes=episodes,
             source=source,
-            speaker=speaker,
+            speaker=None,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
         )
+        if speaker:
+            from podcodex.rag.index_store import fold_text
+
+            q_lower = query.lower()
+            q_folded = fold_text(query)
+
+            def _keep(chunks: list[dict], needle: str, folded: bool) -> list[dict]:
+                out: list[dict] = []
+                for c in chunks:
+                    for t in c.get("speakers") or []:
+                        if t.get("speaker") != speaker:
+                            continue
+                        turn_text = t.get("text", "")
+                        hay = fold_text(turn_text) if folded else turn_text.lower()
+                        if needle in hay:
+                            out.append(c)
+                            break
+                return out
+
+            exact = _keep(exact, q_lower, folded=False)
+            accent_only = _keep(accent_only, q_folded, folded=True)
+            fuzzy_only = []
         return (
             exact
             + [{**c, "accent_match": True} for c in accent_only]
@@ -133,8 +204,11 @@ class Retriever:
         self,
         collection: str,
         episode: str | None = None,
+        episodes: list[str] | None = None,
         source: str | None = None,
         speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
     ) -> dict | None:
         """Return a single random chunk (with optional per-speaker refinement).
 
@@ -145,8 +219,16 @@ class Retriever:
         Args:
             collection: Collection name.
             episode, source, speaker: Optional equality filters.
+            episodes: Alternative to ``episode`` — restrict to a list of stems.
+            pub_date_min, pub_date_max: Inclusive date bounds (``YYYY-MM-DD``).
         """
-        chunks = self._local.load_all_chunks(collection, episode=episode)
+        chunks = self._local.load_all_chunks(
+            collection,
+            episode=episode,
+            episodes=episodes,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
+        )
         if source or speaker:
             chunks = [
                 c
@@ -186,8 +268,11 @@ class Retriever:
         collection: str,
         top_k: int,
         episode: str | None,
+        episodes: list[str] | None,
         source: str | None,
         speaker: str | None,
+        pub_date_min: str | None,
+        pub_date_max: str | None,
         query_vector: np.ndarray | None = None,
     ) -> list[dict]:
         qv = (
@@ -200,8 +285,11 @@ class Retriever:
             qv,
             top_k,
             episode=episode,
+            episodes=episodes,
             source=source,
             speaker=speaker,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
         )
         return [h for h in hits if h["score"] >= 0.01]
 
@@ -211,16 +299,22 @@ class Retriever:
         collection: str,
         top_k: int,
         episode: str | None,
+        episodes: list[str] | None,
         source: str | None,
         speaker: str | None,
+        pub_date_min: str | None,
+        pub_date_max: str | None,
     ) -> list[dict]:
         hits = self._local.search_fts(
             collection,
             query,
             top_k,
             episode=episode,
+            episodes=episodes,
             source=source,
             speaker=speaker,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
         )
         return _rank_normalize([h for h in hits if h["score"] > 1e-6])
 
@@ -231,16 +325,40 @@ class Retriever:
         top_k: int,
         alpha: float,
         episode: str | None,
+        episodes: list[str] | None,
         source: str | None,
         speaker: str | None,
+        pub_date_min: str | None,
+        pub_date_max: str | None,
         query_vector: np.ndarray | None = None,
     ) -> list[dict]:
         """Linear blend of rank-normalized dense and FTS scores."""
         k = top_k * 4
         dense_hits = _rank_normalize(
-            self._dense(query, collection, k, episode, source, speaker, query_vector)
+            self._dense(
+                query,
+                collection,
+                k,
+                episode,
+                episodes,
+                source,
+                speaker,
+                pub_date_min,
+                pub_date_max,
+                query_vector,
+            )
         )
-        fts_hits = self._fts(query, collection, k, episode, source, speaker)
+        fts_hits = self._fts(
+            query,
+            collection,
+            k,
+            episode,
+            episodes,
+            source,
+            speaker,
+            pub_date_min,
+            pub_date_max,
+        )
 
         combined: dict[str, float] = {}
         payloads: dict[str, dict] = {}

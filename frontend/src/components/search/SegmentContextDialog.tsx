@@ -5,9 +5,10 @@ import { getSegments as getTranscribeSegs } from "@/api/transcribe";
 import { getCorrectSegments } from "@/api/correct";
 import { getTranslateSegments } from "@/api/translate";
 import { queryKeys } from "@/api/queryKeys";
-import { formatTime, errorMessage } from "@/lib/utils";
+import { formatDate, formatDuration, formatTime, errorMessage } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import { useAudioStore } from "@/stores";
+import { getIndexedEpisode } from "@/api/episodes";
 import {
   Dialog,
   DialogContent,
@@ -28,6 +29,13 @@ interface Props {
   start?: number;
   end?: number;
   episodeTitle: string;
+  /** Show name + episode stem enable the episode-meta lookup that adds date/
+   *  duration/speakers to the dialog subtitle. Model+chunking disambiguate
+   *  multi-collection indices. */
+  showName?: string;
+  episodeStem?: string;
+  model?: string;
+  chunking?: string;
   onSeek: (time: number) => void;
   /** When provided, shows an "Open editor" button in the header. */
   onOpenEditor?: () => void;
@@ -47,6 +55,10 @@ export default function SegmentContextDialog({
   start,
   end,
   episodeTitle,
+  showName,
+  episodeStem,
+  model,
+  chunking,
   onSeek,
   onOpenEditor,
 }: Props) {
@@ -64,6 +76,19 @@ export default function SegmentContextDialog({
     enabled: open && !!audioPath,
     staleTime: 30_000,
   });
+
+  // Require model+chunking on the key so two open dialogs on the same show/stem
+  // but different collections don't share a cache entry and surface wrong meta.
+  const { data: episodeMeta } = useQuery({
+    queryKey: queryKeys.indexedEpisode(showName ?? "", episodeStem ?? "", model ?? "", chunking ?? ""),
+    queryFn: () => getIndexedEpisode(showName!, episodeStem!, { model, chunking }),
+    enabled: open && !!showName && !!episodeStem && !!model && !!chunking,
+    staleTime: 5 * 60_000,
+  });
+  const metaDate = episodeMeta?.pub_date ? formatDate(episodeMeta.pub_date) : "";
+  const metaDuration = episodeMeta?.duration ? formatDuration(episodeMeta.duration) : "";
+  const metaNumber = episodeMeta?.episode_number != null ? `#${episodeMeta.episode_number}` : "";
+  const metaSpeakers = episodeMeta?.speakers ?? [];
 
   const { matchIndices, firstMatchIdx } = useMemo(() => {
     const set = new Set<number>();
@@ -143,17 +168,30 @@ export default function SegmentContextDialog({
               </Button>
             )}
           </div>
-          <DialogDescription className="flex items-center gap-2 text-xs">
+          <DialogDescription className="flex items-center gap-2 text-xs flex-wrap">
             <span className="italic">{source}</span>
-            {start != null && end != null && (
-              <>
-                <span className="text-muted-foreground/40">·</span>
-                <span className="font-mono tabular-nums">
-                  {formatTime(start, false)} – {formatTime(end, false)}
+            {[metaDate, metaDuration, metaNumber]
+              .filter(Boolean)
+              .map((value, i) => (
+                <span key={i} className="flex items-center gap-2">
+                  <span className="text-muted-foreground/40">·</span>
+                  <span>{value}</span>
                 </span>
-              </>
-            )}
+              ))}
           </DialogDescription>
+          {metaSpeakers.length > 0 && (
+            <div className="flex flex-wrap gap-1 pt-0.5">
+              {metaSpeakers.map((sp) => (
+                <span
+                  key={sp}
+                  className="rounded-sm bg-muted/60 px-1.5 py-0.5 text-2xs"
+                  style={{ color: speakerColor(sp) }}
+                >
+                  {sp}
+                </span>
+              ))}
+            </div>
+          )}
         </DialogHeader>
 
         <div ref={scrollContainerRef} className="flex-1 overflow-y-auto -mx-6 px-6">

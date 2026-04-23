@@ -172,6 +172,50 @@ def test_dense_search_speaker_filter(tmp_path):
     assert all(r.get("dominant_speaker") == "Alice" for r in results)
 
 
+def test_dense_search_episodes_list_filter(tmp_path):
+    """episodes=[...] restricts to the given stems."""
+    local, col = _seed_index(tmp_path, {"ep1": 2, "ep2": 2, "ep3": 2})
+    retriever, _, _ = _make_retriever(tmp_path, local=local, col=col)
+    results = retriever.retrieve("q", col, top_k=10, alpha=1.0, episodes=["ep1", "ep3"])
+    eps = {r.get("episode") for r in results}
+    assert eps <= {"ep1", "ep3"}
+    assert eps  # non-empty
+
+
+def test_dense_search_pub_date_range_filter(tmp_path):
+    """pub_date_min/max restricts by date."""
+    local = IndexStore(tmp_path / "index")
+    col = "test__bge-m3__semantic"
+    local.ensure_collection(
+        col, show="test", model="bge-m3", chunker="semantic", dim=DIM
+    )
+    rng = np.random.default_rng(0)
+    for ep, pd in [("ep1", "2024-01-15"), ("ep2", "2024-03-10"), ("ep3", "2024-06-01")]:
+        chunks = [
+            {
+                "episode": ep,
+                "show": "test",
+                "start": 0.0,
+                "end": 1.0,
+                "dominant_speaker": "A",
+                "source": "corrected",
+                "text": f"chunk {ep}",
+                "pub_date": pd,
+            }
+        ]
+        local.save_chunks(col, ep, chunks, rng.random((1, DIM)).astype(np.float32))
+    retriever, _, _ = _make_retriever(tmp_path, local=local, col=col)
+    results = retriever.retrieve(
+        "q",
+        col,
+        top_k=10,
+        alpha=1.0,
+        pub_date_min="2024-02-01",
+        pub_date_max="2024-04-30",
+    )
+    assert {r.get("episode") for r in results} == {"ep2"}
+
+
 # ── exact / random ────────────────────────────────────────────────────────
 
 
@@ -185,6 +229,69 @@ def test_exact_returns_token_match(tmp_path):
 def test_exact_no_match(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
     assert retriever.exact("xyznonexistent", col) == []
+
+
+def test_exact_speaker_filter_is_turn_level(tmp_path):
+    """speaker=X on /exact keeps chunks where X utters the phrase, not just
+    chunks dominated by X."""
+    local = IndexStore(tmp_path / "index")
+    col = "test__bge-m3__semantic"
+    local.ensure_collection(
+        col, show="test", model="bge-m3", chunker="semantic", dim=DIM
+    )
+    rng = np.random.default_rng(0)
+    # Alice dominates, Bob says "neural networks" in a turn.
+    chunk1 = {
+        "episode": "ep1",
+        "show": "test",
+        "start": 0.0,
+        "end": 10.0,
+        "dominant_speaker": "Alice",
+        "source": "corrected",
+        "text": "alice talks a lot. bob mentions neural networks briefly.",
+        "speakers": [
+            {
+                "speaker": "Alice",
+                "text": "alice talks a lot.",
+                "start": 0.0,
+                "end": 6.0,
+            },
+            {
+                "speaker": "Bob",
+                "text": "bob mentions neural networks briefly.",
+                "start": 6.0,
+                "end": 10.0,
+            },
+        ],
+    }
+    # Alice dominates, only Alice speaks — no "neural networks".
+    chunk2 = {
+        "episode": "ep2",
+        "show": "test",
+        "start": 0.0,
+        "end": 5.0,
+        "dominant_speaker": "Alice",
+        "source": "corrected",
+        "text": "alice only here.",
+        "speakers": [
+            {"speaker": "Alice", "text": "alice only here.", "start": 0.0, "end": 5.0},
+        ],
+    }
+    local.save_chunks(col, "ep1", [chunk1], rng.random((1, DIM)).astype(np.float32))
+    local.save_chunks(col, "ep2", [chunk2], rng.random((1, DIM)).astype(np.float32))
+    retriever, _, _ = _make_retriever(tmp_path, local=local, col=col)
+
+    # Turn-level: Bob is the speaker, he utters the phrase → one hit.
+    hits = retriever.exact("neural networks", col, speaker="Bob")
+    assert {h["episode"] for h in hits} == {"ep1"}
+
+    # Without speaker filter: chunk with the phrase matches regardless.
+    hits = retriever.exact("neural networks", col)
+    assert {h["episode"] for h in hits} == {"ep1"}
+
+    # Alice doesn't utter the phrase → no hits, even though she dominates ep1.
+    hits = retriever.exact("neural networks", col, speaker="Alice")
+    assert hits == []
 
 
 def test_random_returns_chunk(tmp_path):

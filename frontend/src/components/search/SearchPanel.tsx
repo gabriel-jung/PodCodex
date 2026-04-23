@@ -2,12 +2,13 @@ import { useState, useMemo, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { SearchResult } from "@/api/types";
 import { useEpisodeStore, useSearchStore } from "@/stores";
-import { getSearchConfig, getIndexStats, searchQuery, exactSearch, randomQuote } from "@/api/client";
+import { getSearchConfig, getIndexStats, listIndexedSpeakers, searchQuery, exactSearch, randomQuote } from "@/api/client";
+import { listIndexedEpisodes } from "@/api/episodes";
 import { artworkUrl } from "@/api/filesystem";
 import { queryKeys } from "@/api/queryKeys";
 import { errorMessage, getShowName } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Settings2, Shuffle } from "lucide-react";
+import { ArrowDownNarrowWide, ArrowUpNarrowWide, Settings2, Shuffle } from "lucide-react";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import MissingDependency from "@/components/common/MissingDependency";
 import SearchResultCard from "./SearchResultCard";
@@ -49,7 +50,13 @@ export default function SearchPanel(props: SearchPanelProps) {
   const [topK, setTopK] = useState(isShowScope ? 10 : 5);
   const [alpha, setAlpha] = useState(0.5);
   const [source, setSource] = useState<string>("");
+  const [speaker, setSpeaker] = useState<string>("");
   const [scopeAll, setScopeAll] = useState(false);
+  const [pubDateMin, setPubDateMin] = useState<string>("");
+  const [pubDateMax, setPubDateMax] = useState<string>("");
+  const [selectedEpisodes, setSelectedEpisodes] = useState<string[]>([]);
+  const [episodeSort, setEpisodeSort] = useState<"date" | "title" | "number">("date");
+  const [episodeSortDir, setEpisodeSortDir] = useState<"asc" | "desc">("desc");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [submittedQuery, setSubmittedQuery] = useState("");
   const [searchMs, setSearchMs] = useState<number | null>(null);
@@ -79,6 +86,40 @@ export default function SearchPanel(props: SearchPanelProps) {
     [stats],
   );
 
+  const { data: indexedEpisodes = [] } = useQuery({
+    queryKey: queryKeys.indexedEpisodes(showName, model, chunking),
+    queryFn: () => listIndexedEpisodes({ show: showName, model, chunking }),
+    enabled: !!showName && isShowScope,
+  });
+
+  const sortedEpisodes = useMemo(() => {
+    const arr = [...indexedEpisodes];
+    const dir = episodeSortDir === "asc" ? 1 : -1;
+    if (episodeSort === "date") {
+      arr.sort((a, b) => ((a.pub_date ?? "").localeCompare(b.pub_date ?? "")) * dir);
+    } else if (episodeSort === "title") {
+      arr.sort(
+        (a, b) =>
+          (a.episode_title || a.episode).localeCompare(b.episode_title || b.episode) *
+          dir,
+      );
+    } else {
+      arr.sort(
+        (a, b) => ((a.episode_number ?? Infinity) - (b.episode_number ?? Infinity)) * dir,
+      );
+    }
+    return arr;
+  }, [indexedEpisodes, episodeSort, episodeSortDir]);
+
+  const allEpisodesSelected =
+    sortedEpisodes.length > 0 && selectedEpisodes.length === sortedEpisodes.length;
+
+  const { data: indexedSpeakers = [] } = useQuery({
+    queryKey: queryKeys.indexedSpeakers(showName, model, chunking),
+    queryFn: () => listIndexedSpeakers(showName, { model, chunking }),
+    enabled: !!showName,
+  });
+
   useEffect(() => {
     if (availableModels.length > 0 && !availableModels.includes(model)) {
       setModel(availableModels[0]);
@@ -90,6 +131,21 @@ export default function SearchPanel(props: SearchPanelProps) {
     }
   }, [availableChunkings, chunking]);
 
+  const scopeFilters = useMemo(() => {
+    const f: Record<string, unknown> = {};
+    if (!isShowScope && !scopeAll) {
+      f.episode = episode?.stem || undefined;
+    } else if (isShowScope && selectedEpisodes.length === 1) {
+      f.episode = selectedEpisodes[0];
+    } else if (isShowScope && selectedEpisodes.length > 1) {
+      f.episodes = selectedEpisodes;
+    }
+    if (speaker) f.speaker = speaker;
+    if (pubDateMin) f.pub_date_min = pubDateMin;
+    if (pubDateMax) f.pub_date_max = pubDateMax;
+    return f;
+  }, [isShowScope, scopeAll, episode?.stem, selectedEpisodes, speaker, pubDateMin, pubDateMax]);
+
   const searchMutation = useMutation({
     mutationFn: () => {
       const t0 = performance.now();
@@ -99,7 +155,7 @@ export default function SearchPanel(props: SearchPanelProps) {
         model,
         chunking,
         source: source || null,
-        ...(!isShowScope && !scopeAll ? { episode: episode?.stem || undefined } : {}),
+        ...scopeFilters,
       };
       const req = mode === "exact"
         ? exactSearch(base)
@@ -117,7 +173,7 @@ export default function SearchPanel(props: SearchPanelProps) {
         model,
         chunking,
         source: source || null,
-        ...(!isShowScope && !scopeAll ? { episode: episode?.stem || undefined } : {}),
+        ...scopeFilters,
       }).then((data) => { setSearchMs(performance.now() - t0); return data; });
     },
     onSuccess: (data) => setResults(data ? [data] : []),
@@ -146,7 +202,7 @@ export default function SearchPanel(props: SearchPanelProps) {
   const error = searchMutation.error || randomMutation.error;
   const hasResults = searchMutation.isSuccess || randomMutation.isSuccess;
 
-  const { has: hasCap } = useCapabilities();
+  const { has: hasCap, isLoaded: capsLoaded } = useCapabilities();
   const hasRAG = hasCap("embeddings") && hasCap("torch");
 
   // Prerequisite checks
@@ -183,7 +239,12 @@ export default function SearchPanel(props: SearchPanelProps) {
         </div>
       )}
 
-      {!hasRAG ? (
+      {!capsLoaded ? (
+        // Neutral placeholder while the capabilities query is still in flight;
+        // renders nothing rather than the MissingDependency blocker, which
+        // would otherwise flash on first open before the fetch resolves.
+        <div className="flex-1" />
+      ) : !hasRAG ? (
         <div className={`${isShowScope ? "p-12" : "p-6"}`}>
           <MissingDependency
             extra="rag"
@@ -253,7 +314,149 @@ export default function SearchPanel(props: SearchPanelProps) {
             </button>
           </div>
 
-          {/* Advanced settings — single inline strip */}
+          {/* Filters — always visible (dates, speaker, episode picker) */}
+          <div className="flex items-center gap-3 text-xs flex-wrap">
+            <label className="flex items-center gap-1 text-muted-foreground">
+              <span>after</span>
+              <input
+                type="date"
+                value={pubDateMin}
+                onChange={(e) => setPubDateMin(e.target.value)}
+                className="bg-transparent border-0 p-0 text-foreground focus:outline-none focus:underline"
+              />
+            </label>
+
+            <label className="flex items-center gap-1 text-muted-foreground">
+              <span>before</span>
+              <input
+                type="date"
+                value={pubDateMax}
+                onChange={(e) => setPubDateMax(e.target.value)}
+                className="bg-transparent border-0 p-0 text-foreground focus:outline-none focus:underline"
+              />
+            </label>
+
+            {indexedSpeakers.length > 1 && (
+              <>
+                <span className="text-muted-foreground/40">·</span>
+                <select
+                  value={speaker}
+                  onChange={(e) => setSpeaker(e.target.value)}
+                  title="Filter by speaker"
+                  className="bg-transparent border-0 p-0 text-foreground hover:underline focus:outline-none cursor-pointer"
+                >
+                  <option value="">all speakers</option>
+                  {indexedSpeakers.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </>
+            )}
+
+            {isShowScope && indexedEpisodes.length > 1 && (
+              <>
+                <span className="text-muted-foreground/40">·</span>
+                <details className="relative">
+                  <summary className="cursor-pointer text-foreground hover:underline list-none">
+                    {selectedEpisodes.length === 0
+                      ? "all episodes"
+                      : selectedEpisodes.length === 1
+                        ? "1 episode"
+                        : `${selectedEpisodes.length} episodes`}
+                  </summary>
+                  <div className="absolute z-10 mt-1 max-h-64 overflow-y-auto bg-popover border border-border rounded-md p-2 min-w-64 space-y-1 shadow-md">
+                    <div className="flex items-center justify-between gap-2 pb-1 border-b border-border/60 sticky top-0 bg-popover">
+                      <div className="flex items-center gap-1">
+                        <select
+                          value={episodeSort}
+                          onChange={(e) => setEpisodeSort(e.target.value as "date" | "title" | "number")}
+                          className="bg-transparent border-0 p-0 text-2xs text-muted-foreground focus:outline-none cursor-pointer"
+                          title="Sort episodes"
+                        >
+                          <option value="date">sort: date</option>
+                          <option value="title">sort: title</option>
+                          <option value="number">sort: number</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEpisodeSortDir(episodeSortDir === "asc" ? "desc" : "asc")
+                          }
+                          className="text-muted-foreground hover:text-foreground transition"
+                          title={
+                            episodeSortDir === "asc"
+                              ? "Ascending — click for descending"
+                              : "Descending — click for ascending"
+                          }
+                        >
+                          {episodeSortDir === "asc" ? (
+                            <ArrowUpNarrowWide className="w-3 h-3" />
+                          ) : (
+                            <ArrowDownNarrowWide className="w-3 h-3" />
+                          )}
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSelectedEpisodes(
+                              allEpisodesSelected
+                                ? []
+                                : sortedEpisodes.map((ep) => ep.episode),
+                            )
+                          }
+                          className="text-2xs text-muted-foreground hover:underline"
+                        >
+                          {allEpisodesSelected
+                            ? "deselect all"
+                            : `select all (${sortedEpisodes.length})`}
+                        </button>
+                        {selectedEpisodes.length > 0 && !allEpisodesSelected && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedEpisodes([])}
+                            className="text-2xs text-muted-foreground hover:underline"
+                          >
+                            clear
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {sortedEpisodes.map((ep) => (
+                      <label
+                        key={ep.episode}
+                        className="flex items-center gap-1.5 cursor-pointer text-xs"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedEpisodes.includes(ep.episode)}
+                          onChange={(e) =>
+                            setSelectedEpisodes((cur) =>
+                              e.target.checked
+                                ? [...cur, ep.episode]
+                                : cur.filter((s) => s !== ep.episode),
+                            )
+                          }
+                          className="accent-primary"
+                        />
+                        <span className="truncate">
+                          {ep.episode_title || ep.episode}
+                        </span>
+                        {ep.pub_date && (
+                          <span className="text-2xs text-muted-foreground ml-auto">
+                            {ep.pub_date}
+                          </span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                </details>
+              </>
+            )}
+          </div>
+
+          {/* Advanced — ML knobs (model, chunking, source, top_k, alpha) */}
           {showAdvanced && config && (
             <div className="flex items-center gap-3 text-xs flex-wrap pl-3 border-l-2 border-border/60">
               <select
@@ -376,7 +579,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                   <SearchResultCard
                     key={i}
                     result={r}
-                    show={{ name: showName, folder: showFolder, artwork: showArtwork }}
+                    show={{ name: showName, folder: showFolder, artwork: showArtwork, model, chunking }}
                     query={submittedQuery}
                   />
                 ))}

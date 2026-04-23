@@ -87,35 +87,30 @@ def highlight(text: str, query: str) -> str:
 def speaker_lines(chunk: dict, query: str = "") -> str:
     """Format chunk text with per-turn speaker labels when available.
 
-    Consecutive turns from the same speaker only render the speaker label
-    on the first line — subsequent turns keep just their timestamp and
-    text. When the speaker changes, the label is re-emitted. This avoids
-    the visual noise of seeing ``UNKNOWN`` repeated for every turn in
-    single-speaker (or undiarized) chunks.
+    Consecutive same-speaker turns are merged into a single block via
+    :func:`merge_display_turns`, so readers see one speaker label and
+    one paragraph per contiguous run.
 
     If the chunk carries a ``match_text`` (from /exact's accent/fuzzy tiers),
     highlight that exact substring so the user sees which span matched.
     Otherwise fall back to highlighting the raw query.
     """
+    from podcodex.core._utils import merge_display_turns
+
     turns: list[dict] = chunk.get("speakers") or []
     mark = chunk.get("match_text") or query
     if not turns:
         text = chunk.get("text", "")
         return highlight(text, mark) if mark else text
+    merged = merge_display_turns(turns)
     lines = []
-    prev_spk: str | None = None
-    for t in turns:
+    for t in merged:
         spk = t.get("speaker", "Unknown")
         start = t.get("start", 0)
         ts_part = f"({fmt_time(start)})" if start else ""
         text = highlight(t.get("text", ""), mark) if mark else t.get("text", "")
-        if spk != prev_spk:
-            sep = " " if ts_part else ""
-            lines.append(f"**{spk}**{sep}{ts_part}: {text}")
-            prev_spk = spk
-        else:
-            prefix = f"{ts_part} " if ts_part else ""
-            lines.append(f"{prefix}{text}")
+        sep = " " if ts_part else ""
+        lines.append(f"**{spk}**{sep}{ts_part}: {text}")
     return "\n".join(lines)
 
 

@@ -150,12 +150,14 @@ export interface SearchResult {
   text: string;
   episode: string;
   episode_stem: string;
+  episode_number: number | null;
   audio_path: string;
   speaker: string;
   start: number;
   end: number;
   score: number;
   source: string;
+  pub_date: string;
   speakers: { speaker: string; text: string; start: number; end: number }[] | null;
   accent_match: boolean;
   fuzzy_match: boolean;

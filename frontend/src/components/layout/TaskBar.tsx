@@ -28,16 +28,8 @@ function DownloadStrip() {
   const { downloadTaskId, downloadFolder, setDownloadTask } = useTaskStore();
   const progress = useProgress(downloadTaskId);
   const queryClient = useQueryClient();
-
-  // Auto-dismiss if task ID is set but neither WS nor API polling returns progress.
-  // 12s gives the 5s poll interval time to fire and hydrate before we give up.
-  useEffect(() => {
-    if (!downloadTaskId || progress) return;
-    const timer = setTimeout(() => setDownloadTask(null), 12_000);
-    return () => clearTimeout(timer);
-  }, [downloadTaskId, progress, setDownloadTask]);
-
-  if (!downloadTaskId) return null;
+  const didInvalidateRef = useRef(false);
+  const [showFailed, setShowFailed] = useState(false);
 
   const pct = progress ? Math.round(progress.progress * 100) : 0;
   const msg = progress?.message || "Starting...";
@@ -60,8 +52,15 @@ function DownloadStrip() {
     setDownloadTask(null);
   };
 
+  // Auto-dismiss if task ID is set but neither WS nor API polling returns progress.
+  // 12s gives the 5s poll interval time to fire and hydrate before we give up.
+  useEffect(() => {
+    if (!downloadTaskId || progress) return;
+    const timer = setTimeout(() => setDownloadTask(null), 12_000);
+    return () => clearTimeout(timer);
+  }, [downloadTaskId, progress, setDownloadTask]);
+
   // Invalidate episode list when download completes
-  const didInvalidateRef = useRef(false);
   useEffect(() => {
     if (isFinished && downloadFolder && !didInvalidateRef.current) {
       didInvalidateRef.current = true;
@@ -74,12 +73,13 @@ function DownloadStrip() {
   useEffect(() => {
     if (!isFinished) return;
     const delay = hasFailures ? 30_000 : 2_000;
-    const t = setTimeout(dismiss, delay);
+    const t = setTimeout(() => setDownloadTask(null), delay);
     return () => clearTimeout(t);
-  }, [isFinished, hasFailures]);
+  }, [isFinished, hasFailures, setDownloadTask]);
+
+  if (!downloadTaskId) return null;
 
   const failedResults = results.filter(r => r.status === "failed" || r.status === "no_subtitles" || r.status === "error");
-  const [showFailed, setShowFailed] = useState(false);
 
   return (
     <div>
@@ -256,23 +256,9 @@ function BatchStrip() {
   const [showLog, setShowLog] = useState(false);
   const [showResult, setShowResult] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
-
-  // Auto-dismiss if task ID is set but neither WS nor API polling returns progress.
-  // 12s gives the 5s poll interval time to fire and hydrate before we give up.
-  useEffect(() => {
-    if (!batchTaskId || progress) return;
-    const timer = setTimeout(() => setBatchTask(null), 12_000);
-    return () => clearTimeout(timer);
-  }, [batchTaskId, progress, setBatchTask]);
+  const savedRef = useRef<string | null>(null);
 
   const log = progress?.log ?? [];
-
-  // Auto-scroll log
-  useEffect(() => {
-    if (showLog) logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [log.length, showLog]);
-
-  if (!batchTaskId) return null;
 
   const pct = progress ? Math.round(progress.progress * 100) : 0;
   const msg = progress?.message || "Starting...";
@@ -296,6 +282,24 @@ function BatchStrip() {
     }
   };
 
+  const episodeStatuses = useMemo(
+    () => deriveEpisodeStatuses(batchEpisodes, progress),
+    [batchEpisodes, progress?.status, progress?.message, progress?.result],
+  );
+
+  // Auto-dismiss if task ID is set but neither WS nor API polling returns progress.
+  // 12s gives the 5s poll interval time to fire and hydrate before we give up.
+  useEffect(() => {
+    if (!batchTaskId || progress) return;
+    const timer = setTimeout(() => setBatchTask(null), 12_000);
+    return () => clearTimeout(timer);
+  }, [batchTaskId, progress, setBatchTask]);
+
+  // Auto-scroll log
+  useEffect(() => {
+    if (showLog) logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [log.length, showLog]);
+
   // Auto-dismiss after completion (30s to give time to review)
   useEffect(() => {
     if (!isFinished) return;
@@ -303,12 +307,6 @@ function BatchStrip() {
     return () => clearTimeout(t);
   }, [isFinished, batchFolder]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const episodeStatuses = useMemo(
-    () => deriveEpisodeStatuses(batchEpisodes, progress),
-    [batchEpisodes, progress?.status, progress?.message, progress?.result],
-  );
-
-  const savedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isFinished || savedRef.current === batchTaskId || !batchTaskId || !batchFolder || !batchStep || batchEpisodes.length === 0) return;
     savedRef.current = batchTaskId;
@@ -327,6 +325,8 @@ function BatchStrip() {
       status: isDone ? "completed" : isFailed ? "failed" : "cancelled",
     });
   }, [isFinished, isDone, isFailed, batchTaskId, batchFolder, batchStep, batchEpisodes, episodeStatuses, queryClient]);
+
+  if (!batchTaskId) return null;
 
   const stepLabel = batchStep ? capitalize(batchStep) : "Batch";
 

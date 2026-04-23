@@ -119,13 +119,27 @@ export const randomQuote = (req: {
   model?: string;
   chunking?: string;
   episode?: string | null;
+  episodes?: string[] | null;
   speaker?: string | null;
+  source?: string | null;
+  pub_date_min?: string | null;
+  pub_date_max?: string | null;
 }) =>
   json<SearchResult | null>("/api/search/random", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
+
+export const listIndexedSpeakers = (
+  show: string,
+  opts: { model?: string; chunking?: string } = {},
+) => {
+  const qs = new URLSearchParams({ show });
+  if (opts.model) qs.set("model", opts.model);
+  if (opts.chunking) qs.set("chunking", opts.chunking);
+  return json<string[]>(`/api/search/speakers?${qs}`);
+};
 
 export const getIndexStats = (show: string = "") =>
   json<{

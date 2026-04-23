@@ -750,6 +750,35 @@ def vtt_to_segments(vtt_text: str) -> list[dict]:
     return _merge_parsed_cues(cues)
 
 
+def merge_display_turns(turns: list[dict]) -> list[dict]:
+    """Collapse consecutive same-speaker turns for search-result display.
+
+    One speaker label / one text block per contiguous speaker run —
+    unlike :func:`merge_consecutive_segments`, there are no gap caps,
+    duration caps, or break sentinels. Intended for rendering a single
+    search-result chunk where readers just want a clean paragraph per
+    speaker.
+    """
+    out: list[dict] = []
+    for t in turns:
+        speaker = t.get("speaker") or "Unknown"
+        text = (t.get("text") or "").strip()
+        if not text:
+            continue
+        if out and out[-1]["speaker"] == speaker:
+            out[-1]["text"] += " " + text
+            if t.get("end") is not None:
+                out[-1]["end"] = t["end"]
+        else:
+            entry: dict = {"speaker": speaker, "text": text}
+            if t.get("start") is not None:
+                entry["start"] = t["start"]
+            if t.get("end") is not None:
+                entry["end"] = t["end"]
+            out.append(entry)
+    return out
+
+
 def merge_consecutive_segments(
     segments: list[dict],
     max_gap: float = DEFAULT_MAX_GAP,

@@ -69,15 +69,28 @@ async def youtube_fetch(show_folder: str) -> list[dict]:
     for idx, ep in enumerate(episodes):
         ep.feed_order = idx
 
-    # YouTube has no true episode numbers, so new videos stay unnumbered.
-    # Legacy numbered entries (pre-fix) keep their number via ``_preserve_num``
-    # so their on-disk ``{n}_slug`` stems still resolve.
-    def _preserve_num(fresh: RSSEpisode, old: RSSEpisode) -> RSSEpisode:
-        if old.episode_number is None:
-            return fresh
-        return RSSEpisode(**{**fresh.__dict__, "episode_number": old.episode_number})
+    # YouTube flat extraction often omits upload_date/duration/description, and
+    # legacy numbered entries (pre-fix) need their episode_number kept so their
+    # on-disk ``{n}_slug`` stems still resolve. Per-video subtitle import
+    # (``cache_youtube_subtitles``) backfills those fields into the cache;
+    # fall back to the cached value whenever the fresh record has nothing.
+    def _preserve_enriched(fresh: RSSEpisode, old: RSSEpisode) -> RSSEpisode:
+        merged = RSSEpisode(**fresh.__dict__)
+        if old.episode_number is not None:
+            merged.episode_number = old.episode_number
+        if not merged.pub_date and old.pub_date:
+            merged.pub_date = old.pub_date
+        if not merged.duration and old.duration:
+            merged.duration = old.duration
+        if not merged.description and old.description:
+            merged.description = old.description
+        if not merged.artwork_url and old.artwork_url:
+            merged.artwork_url = old.artwork_url
+        return merged
 
-    episodes = merge_with_cache(episodes, load_feed_cache(path), on_match=_preserve_num)
+    episodes = merge_with_cache(
+        episodes, load_feed_cache(path), on_match=_preserve_enriched
+    )
 
     save_feed_cache(path, episodes)
 

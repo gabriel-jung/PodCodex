@@ -50,9 +50,15 @@ def _reset_caches(tmp_path, monkeypatch):
     monkeypatch.setenv("PODCODEX_INDEX", str(tmp_path / "index"))
     rag_index_store.get_index_store.cache_clear()
     rag_retriever.get_retriever.cache_clear()
+    # Pristine class-level resolver + list_shows date cache for each test so
+    # one test's setup can't leak into another.
+    IndexStore._show_folder_resolver = None
+    mcp_server._SHOW_DATE_CACHE.clear()
     yield
     rag_index_store.get_index_store.cache_clear()
     rag_retriever.get_retriever.cache_clear()
+    IndexStore._show_folder_resolver = None
+    mcp_server._SHOW_DATE_CACHE.clear()
 
 
 def test_list_shows_returns_indexed_shows():
@@ -183,3 +189,189 @@ def test_exact_returns_literal_matches():
     # No top_k cap — substring "chunk" matches every chunk
     broad = mcp_server.exact(query="chunk")
     assert len(broad) == 6
+
+
+# ──────────────────────────────────────────────
+# list_episodes / get_episode / search filters
+# ──────────────────────────────────────────────
+
+
+def _seed_multi_episode(store: IndexStore) -> str:
+    """Add three dated episodes on top of the autouse fixture's ``ep1``.
+
+    Returns the collection name so tests can re-use it.
+    """
+    col = collection_name("My Show", "bge-m3", "semantic")
+    rng = np.random.default_rng(1)
+    dated = [
+        ("ep-jan", "2024-01-15", "Episode one: January deep dive", 101),
+        ("ep-mar", "2024-03-10", "Episode two: March special", 102),
+        ("ep-jun", "2024-06-01", "Episode three: June finale", 103),
+    ]
+    for stem, pd, title, number in dated:
+        chunks = [
+            {
+                "text": f"content for {stem}",
+                "episode": stem,
+                "show": "My Show",
+                "source": "transcript",
+                "dominant_speaker": "host",
+                "start": 0.0,
+                "end": 10.0,
+                "pub_date": pd,
+                "episode_title": title,
+                "episode_number": number,
+                "description": f"desc for {stem}",
+            }
+        ]
+        store.save_chunks(col, stem, chunks, rng.random((1, DIM), dtype=np.float32))
+    return col
+
+
+def test_list_episodes_returns_all_when_no_filter():
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    out = mcp_server.list_episodes()
+    stems = {e["episode"] for e in out}
+    assert stems == {"ep1", "ep-jan", "ep-mar", "ep-jun"}
+    expected_keys = {
+        "show",
+        "episode",
+        "episode_title",
+        "pub_date",
+        "episode_number",
+        "chunk_count",
+        "duration",
+        "speakers",
+        "description",
+    }
+    for entry in out:
+        assert expected_keys <= entry.keys()
+    # Dated entries carry real speakers + description from the seed chunks.
+    by_stem = {e["episode"]: e for e in out}
+    assert by_stem["ep-mar"]["speakers"] == ["host"]
+    assert by_stem["ep-mar"]["description"] == "desc for ep-mar"
+
+
+def test_list_episodes_restricts_to_show_case_insensitive():
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    # Matching show yields rows
+    assert mcp_server.list_episodes(show="my show")
+    # Unknown show yields empty list (not an error)
+    assert mcp_server.list_episodes(show="nope") == []
+
+
+def test_list_episodes_filters_by_pub_date_range():
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    out = mcp_server.list_episodes(pub_date_min="2024-02-01", pub_date_max="2024-04-30")
+    stems = {e["episode"] for e in out}
+    assert stems == {"ep-mar"}
+
+
+def test_list_episodes_filters_by_title_contains_case_insensitive():
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    out = mcp_server.list_episodes(title_contains="MARCH")
+    assert [e["episode"] for e in out] == ["ep-mar"]
+
+
+def test_get_episode_returns_full_metadata():
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    rec = mcp_server.get_episode(show="My Show", episode="ep-mar")
+    assert rec is not None
+    assert rec["episode"] == "ep-mar"
+    assert rec["episode_title"] == "Episode two: March special"
+    assert rec["pub_date"] == "2024-03-10"
+    assert rec["episode_number"] == 102
+    assert rec["description"] == "desc for ep-mar"
+    assert rec["duration"] == 10.0
+    assert "host" in rec["speakers"]
+
+
+def test_get_episode_unknown_stem_returns_none():
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    assert mcp_server.get_episode(show="My Show", episode="no-such") is None
+
+
+def _stub_retriever_encoder(monkeypatch):
+    """Replace the shared retriever's ``encode_query`` with an 8-dim zero vector
+    so MCP ``search`` can run against the test fixture without pulling the
+    live 1024-dim BGE-M3 weights."""
+    retriever = rag_retriever.get_retriever()
+    monkeypatch.setattr(
+        retriever,
+        "encode_query",
+        lambda _q: np.zeros(DIM, dtype=np.float32),
+    )
+
+
+def test_exact_restricts_to_episodes_list():
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    results = mcp_server.exact(query="content", episodes=["ep-jan", "ep-jun"])
+    stems = {r["episode"] for r in results}
+    assert stems and stems <= {"ep-jan", "ep-jun"}
+
+
+def test_exact_respects_pub_date_range():
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    results = mcp_server.exact(
+        query="content",
+        pub_date_min="2024-02-01",
+        pub_date_max="2024-04-30",
+    )
+    stems = {r["episode"] for r in results}
+    assert stems == {"ep-mar"}
+
+
+def test_exact_chunks_carry_pub_date():
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    results = mcp_server.exact(query="content", episodes=["ep-jun"])
+    assert results and all(r.get("pub_date") == "2024-06-01" for r in results)
+
+
+def test_list_shows_adds_date_range_when_available():
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    shows = mcp_server.list_shows()
+    # Single indexed show; fixture's ep1 has no date, but ep-jan/ep-mar/ep-jun do
+    entry = shows[0]
+    assert entry["show"] == "My Show"
+    assert entry["first_pub_date"] == "2024-01-15"
+    assert entry["last_pub_date"] == "2024-06-01"
+
+
+def test_search_restricts_to_episodes_list(monkeypatch):
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    _stub_retriever_encoder(monkeypatch)
+    results = mcp_server.search(query="content", episodes=["ep-jan", "ep-jun"])
+    stems = {r["episode"] for r in results}
+    assert stems and stems <= {"ep-jan", "ep-jun"}
+
+
+def test_search_respects_pub_date_range(monkeypatch):
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    _stub_retriever_encoder(monkeypatch)
+    results = mcp_server.search(
+        query="content",
+        pub_date_min="2024-02-01",
+        pub_date_max="2024-04-30",
+    )
+    stems = {r["episode"] for r in results}
+    assert stems == {"ep-mar"}
+
+
+def test_search_chunks_carry_pub_date(monkeypatch):
+    store = rag_index_store.get_index_store()
+    _seed_multi_episode(store)
+    _stub_retriever_encoder(monkeypatch)
+    results = mcp_server.search(query="content", episodes=["ep-jun"])
+    assert results and all(r.get("pub_date") == "2024-06-01" for r in results)

@@ -18,6 +18,7 @@ from typing import NamedTuple
 from loguru import logger
 
 from podcodex.ingest.rss import clean_description
+from podcodex.rag.index_store import _normalize_pub_date
 from podcodex.rag.defaults import CHUNKER_MODEL
 
 
@@ -43,8 +44,9 @@ def _meta_fields(transcript: dict) -> tuple[str, str, str, dict]:
     rss_title = meta.get("rss_title", "")
     if rss_title and rss_title != episode:
         extras["episode_title"] = rss_title
-    if meta.get("rss_pub_date"):
-        extras["pub_date"] = meta["rss_pub_date"]
+    pub_date = _normalize_pub_date(meta.get("rss_pub_date"))
+    if pub_date:
+        extras["pub_date"] = pub_date
     if meta.get("episode_number") is not None:
         extras["episode_number"] = meta["episode_number"]
     rss_description = meta.get("rss_description", "")
