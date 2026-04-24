@@ -104,7 +104,10 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const { downloadMutation, importSubsMutation, isYouTube } = useShowActions(folder, meta);
 
   const refreshMutation = useMutation({
-    mutationFn: () => (isYouTube ? refreshYouTube(folder) : refreshRSS(folder)),
+    mutationFn: async () => {
+      if (isYouTube) await refreshYouTube(folder);
+      else await refreshRSS(folder);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(folder) });
       queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
@@ -227,6 +230,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const missingSubsSelected = selectionDerived.missingSubs;
   const batchableSelected = selectionDerived.batchable;
   const allSelectableSelected = selectionDerived.allSelected;
+  // eslint-disable-next-line react-hooks/refs
   batchableSelectedRef.current = batchableSelected;
 
   // React Query returns a new mutation *object* every render but the `mutate`
@@ -250,6 +254,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   }, [isYouTube, deleteMutate]);
 
   const filteredRef = useRef(filtered);
+  // eslint-disable-next-line react-hooks/refs
   filteredRef.current = filtered;
 
   const toggleSelect = useCallback((id: string, idx: number, shiftKey: boolean) => {

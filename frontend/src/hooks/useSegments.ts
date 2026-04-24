@@ -147,6 +147,7 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
         text: textAfter,
         start: splitTime,
         end: seg.end,
+        flagged: false,
       };
       const newOriginal = [
         ...state.original.slice(0, insertAt),
@@ -231,8 +232,10 @@ export function useSegments(
   // Keep fresh state accessible from stable callbacks (deleteFlagged needs
   // the current flagged list, getNextSegment scans live state).
   const stateRef = useRef(state);
-  stateRef.current = state;
   const flaggedRef = useRef(flaggedIndices);
+  // eslint-disable-next-line react-hooks/refs
+  stateRef.current = state;
+  // eslint-disable-next-line react-hooks/refs
   flaggedRef.current = flaggedIndices;
 
   const updateText = useCallback((index: number, text: string) => {

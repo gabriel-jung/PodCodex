@@ -102,11 +102,6 @@ export function StatusChips({ ep, compact }: { ep: Episode; compact?: boolean })
           {compact ? "I" : "Indexed"}
         </span>
       )}
-      {ep.no_subtitles && !ep.transcribed && (
-        <span className="text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium bg-muted text-muted-foreground" title="No subtitles available on YouTube">
-          {compact ? "—" : "No subs"}
-        </span>
-      )}
     </div>
   );
 }

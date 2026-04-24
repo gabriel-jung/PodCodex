@@ -28,5 +28,5 @@ export function filterVersionsForStep(
   step: PipelineInputStep,
 ): VersionEntry[] {
   const valid = INPUT_STEP_SETS[step];
-  return valid.size > 0 ? versions.filter((v) => valid.has(v.step)) : versions;
+  return valid.size > 0 ? versions.filter((v) => !!v.step && valid.has(v.step)) : versions;
 }

@@ -8,10 +8,10 @@
 
 // In Tauri production builds the frontend is served from tauri:// and needs
 // an absolute URL to reach FastAPI. In dev (Vite) the proxy handles it.
+import { isTauri } from "@/platform";
+
 export const BASE =
-  (window as any).__TAURI__ && import.meta.env.PROD
-    ? "http://127.0.0.1:18811"
-    : "";
+  isTauri() && import.meta.env.PROD ? "http://127.0.0.1:18811" : "";
 
 export async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${url}`, init);

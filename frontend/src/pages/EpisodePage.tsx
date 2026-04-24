@@ -24,6 +24,7 @@ import DropOverlay from "@/components/common/DropOverlay";
 import EditorialHeader from "@/components/layout/EditorialHeader";
 import AppSidebar from "@/components/layout/AppSidebar";
 import type { Episode, ShowMeta, VersionEntry } from "@/api/types";
+import { standaloneEpisode } from "@/lib/standaloneEpisode";
 import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import PanelLoading from "@/components/common/PanelLoading";
@@ -59,15 +60,22 @@ import {
 import OutputGroup from "@/components/episode/OutputGroup";
 import VersionRow from "@/components/episode/VersionRow";
 
+type SidebarItem = {
+  key: ActiveStep;
+  label: string;
+  icon: typeof Info;
+  status: StepStatus;
+};
+
 function buildSidebarSections(episode: Episode) {
-  const meta = [
-    { key: "info" as const, label: "Info", icon: Info, status: false as StepStatus },
-    { key: "search" as const, label: "Search", icon: Search, status: false as StepStatus },
+  const meta: SidebarItem[] = [
+    { key: "info", label: "Info", icon: Info, status: false as StepStatus },
+    { key: "search", label: "Search", icon: Search, status: false as StepStatus },
   ];
-  const core: typeof meta = [];
-  const bonus: typeof meta = [];
+  const core: SidebarItem[] = [];
+  const bonus: SidebarItem[] = [];
   for (const s of PIPELINE_STEPS) {
-    const item = { key: s.key as ActiveStep, label: s.label, icon: s.icon, status: s.status(episode) };
+    const item: SidebarItem = { key: s.key as ActiveStep, label: s.label, icon: s.icon, status: s.status(episode) };
     if (s.section === "core") core.push(item);
     else bonus.push(item);
   }
@@ -95,13 +103,13 @@ export default function EpisodePage({
   const pipelineDefaults = usePipelineDefaults();
 
   const { data: meta } = useQuery({
-    queryKey: queryKeys.showMeta(folder),
+    queryKey: queryKeys.showMeta(folder ?? ""),
     queryFn: () => getShowMeta(folder!),
     enabled: !!folder,
   });
 
   const { data: episodes } = useQuery({
-    queryKey: queryKeys.episodes(folder, pipelineDefaults),
+    queryKey: queryKeys.episodes(folder ?? "", pipelineDefaults),
     queryFn: () => getEpisodes(folder!, pipelineDefaults),
     placeholderData: keepPreviousData,
     enabled: !!folder,
@@ -110,29 +118,12 @@ export default function EpisodePage({
 
   const { downloadMutation: episodeDownloadMutation, importSubsMutation, isYouTube } = useShowActions(folder ?? "", meta, { withSubs: false });
 
-  const episode = isStandalone
-    ? {
-        id: audioFilePath,
-        title: audioFilePath.split("/").pop()?.replace(/\.[^.]+$/, "") || "Audio",
-        stem: audioFilePath.split("/").pop()?.replace(/\.[^.]+$/, "") || null,
-        pub_date: null,
-        description: "",
-        audio_url: null,
-        duration: 0,
-        episode_number: null,
-        audio_path: audioFilePath,
-        downloaded: true,
-        transcribed: false,
-        corrected: false,
-        indexed: false,
-        synthesized: false,
-        translations: [] as string[],
-        artwork_url: "",
-      }
+  const episode: Episode | undefined = audioFilePath
+    ? standaloneEpisode(audioFilePath)
     : episodes?.find((e) => e.stem === stem || e.id === stem);
 
 
-  const artwork = episode?.artwork_url || (meta?.artwork_url ? artworkUrl(folder) : "");
+  const artwork = episode?.artwork_url || (meta?.artwork_url && folder ? artworkUrl(folder) : "");
 
   useEffect(() => {
     if (!episode?.audio_path) return;
@@ -163,9 +154,9 @@ export default function EpisodePage({
         await uploadTranscript(audioPath, files[0]);
         // Invalidate step-scoped segment queries for every editor step (the
         // previous `["segments"]` prefix never matched `[editorKey, "segments", ...]`).
-        queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("transcribe", episode?.audio_path) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", episode?.audio_path) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.transcribeSegments(episode?.audio_path) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("transcribe", audioPath) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", audioPath) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.transcribeSegments(audioPath) });
         queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
         setActiveStep("transcribe");
       } catch (e) {

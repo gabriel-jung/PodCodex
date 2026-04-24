@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { HelpCircle } from "lucide-react";
 
 interface HelpLabelProps {
@@ -10,13 +10,17 @@ interface HelpLabelProps {
 
 export default function HelpLabel({ label, help }: HelpLabelProps) {
   const [show, setShow] = useState(false);
+  const [style, setStyle] = useState<React.CSSProperties | undefined>(undefined);
   const btnRef = useRef<HTMLButtonElement>(null);
 
-  const getStyle = (): React.CSSProperties | undefined => {
-    if (!show || !btnRef.current) return undefined;
+  useLayoutEffect(() => {
+    if (!show || !btnRef.current) {
+      setStyle(undefined);
+      return;
+    }
     const rect = btnRef.current.getBoundingClientRect();
-    return { position: "fixed", left: rect.left, top: rect.bottom + 4, zIndex: 50 };
-  };
+    setStyle({ position: "fixed", left: rect.left, top: rect.bottom + 4, zIndex: 50 });
+  }, [show]);
 
   return (
     <label className="text-muted-foreground flex items-center gap-1">
@@ -34,7 +38,7 @@ export default function HelpLabel({ label, help }: HelpLabelProps) {
             <HelpCircle className="w-3 h-3" />
           </button>
           {show && (
-            <div style={getStyle()} className="bg-popover text-popover-foreground text-xs rounded-md border border-border shadow-lg px-2.5 py-1.5 max-w-sm whitespace-normal">
+            <div style={style} className="bg-popover text-popover-foreground text-xs rounded-md border border-border shadow-lg px-2.5 py-1.5 max-w-sm whitespace-normal">
               {help}
             </div>
           )}

@@ -113,15 +113,15 @@ export default function SynthesizePanel() {
   }, [transcriptSegments, fromSec, toSec, speakerOverrides]);
 
   const { data: voiceSamples, refetch: refetchVoiceSamples } = useQuery({
-    queryKey: queryKeys.synthesizeVoices(episode.audio_path),
-    queryFn: () => getVoiceSamples(episode.audio_path!),
-    enabled: !!episode.audio_path && !!status?.voice_samples_extracted,
+    queryKey: queryKeys.synthesizeVoices(episode?.audio_path),
+    queryFn: () => getVoiceSamples(episode!.audio_path!),
+    enabled: !!episode?.audio_path && !!status?.voice_samples_extracted,
   });
 
   const { data: generatedSegments } = useQuery({
-    queryKey: queryKeys.synthesizeGenerated(episode.audio_path),
-    queryFn: () => getGeneratedSegments(episode.audio_path!),
-    enabled: !!episode.audio_path && !!status?.tts_segments_generated,
+    queryKey: queryKeys.synthesizeGenerated(episode?.audio_path),
+    queryFn: () => getGeneratedSegments(episode!.audio_path!),
+    enabled: !!episode?.audio_path && !!status?.tts_segments_generated,
   });
 
   const refreshQueries = useCallback(() => {

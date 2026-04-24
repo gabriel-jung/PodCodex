@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { installExtra, getExtras } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
@@ -27,6 +27,15 @@ export default function MissingDependency({ extra, label, description }: Missing
     onSuccess: (data) => setTaskId(data.task_id),
   });
 
+  const handleComplete = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    setTaskId(null);
+    setDone(true);
+    queryClient.invalidateQueries({ queryKey: queryKeys.capabilities() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.health() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.pipelineConfig() });
+  }, [queryClient]);
+
   // Poll capabilities every 5s while installing, as a fallback if WebSocket misses the completion
   useEffect(() => {
     if (!taskId) return;
@@ -46,16 +55,7 @@ export default function MissingDependency({ extra, label, description }: Missing
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [taskId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleComplete = () => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    setTaskId(null);
-    setDone(true);
-    queryClient.invalidateQueries({ queryKey: queryKeys.capabilities() });
-    queryClient.invalidateQueries({ queryKey: queryKeys.health() });
-    queryClient.invalidateQueries({ queryKey: queryKeys.pipelineConfig() });
-  };
+  }, [taskId, extra, handleComplete]);
 
   if (done) {
     return (

@@ -21,6 +21,7 @@ export function usePipelineTask(
 
   // Keep a stable ref to onComplete so handleComplete doesn't change identity
   const onCompleteRef = useRef(opts?.onComplete);
+  // eslint-disable-next-line react-hooks/refs
   onCompleteRef.current = opts?.onComplete;
 
   const clearActive = useCallback(() => {

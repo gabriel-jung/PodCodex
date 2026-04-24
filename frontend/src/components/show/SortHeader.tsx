@@ -1,13 +1,13 @@
 import { ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
 
-export default function SortHeader({
+export default function SortHeader<T extends string>({
   col, label, current, dir, onSort, className = "",
 }: {
-  col: string;
+  col: T;
   label: string;
   current: string;
   dir: "asc" | "desc";
-  onSort: (col: any) => void;
+  onSort: (col: T) => void;
   className?: string;
 }) {
   const active = current === col;

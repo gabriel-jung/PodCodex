@@ -23,7 +23,7 @@ import {
   usePipelineConfigStore,
 } from "@/stores/pipelineConfigStore";
 import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
-import { selectClass, inputWidth } from "@/lib/utils";
+import { selectClass } from "@/lib/utils";
 
 type SettingsTab = "general" | "pipeline" | "credentials" | "integrations" | "plugins" | "cache";
 const SETTINGS_SECTIONS = [

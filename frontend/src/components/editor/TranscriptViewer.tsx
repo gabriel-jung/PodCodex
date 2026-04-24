@@ -1047,6 +1047,7 @@ export default function TranscriptViewer({
       text: "",
       start: seg.start,
       end: seg.start,
+      flagged: false,
     });
   }, [editorInsertAfter]);
   const handleRowInsertAfter = useCallback((idx: number, seg: Segment) => {
@@ -1055,6 +1056,7 @@ export default function TranscriptViewer({
       text: "",
       start: seg.end,
       end: seg.end,
+      flagged: false,
     });
   }, [editorInsertAfter]);
   const handleRowSplit = useCallback(

@@ -98,8 +98,9 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     },
   });
 
-  const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const isDirtyRef = useRef(isDirty);
+  // eslint-disable-next-line react-hooks/refs
   isDirtyRef.current = isDirty;
   const autoSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);

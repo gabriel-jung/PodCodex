@@ -20,7 +20,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
   const [showLog, setShowLog] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
   const [stale, setStale] = useState(false);
-  const lastUpdateRef = useRef(Date.now());
+  const lastUpdateRef = useRef<number>(0);
 
   useEffect(() => {
     if (progress?.status === "completed" && !completeCalled.current) {

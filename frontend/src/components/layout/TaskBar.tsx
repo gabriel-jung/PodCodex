@@ -284,7 +284,7 @@ function BatchStrip() {
 
   const episodeStatuses = useMemo(
     () => deriveEpisodeStatuses(batchEpisodes, progress),
-    [batchEpisodes, progress?.status, progress?.message, progress?.result],
+    [batchEpisodes, progress],
   );
 
   // Auto-dismiss if task ID is set but neither WS nor API polling returns progress.

@@ -73,10 +73,14 @@ export default function AudioBar() {
       ? (showSegment ? "Hide segment text" : "Show current segment text")
       : "Load transcript";
 
-  // Save position to localStorage periodically while playing
+  // Save position to localStorage periodically while playing.
+  // Direct-assign is the idiomatic "latest value" ref pattern; an effect here
+  // would introduce a post-paint window where the ref holds stale values.
   const currentTimeRef = useRef(currentTime);
-  currentTimeRef.current = currentTime;
   const durationRef = useRef(duration);
+  // eslint-disable-next-line react-hooks/refs
+  currentTimeRef.current = currentTime;
+  // eslint-disable-next-line react-hooks/refs
   durationRef.current = duration;
 
   useEffect(() => {

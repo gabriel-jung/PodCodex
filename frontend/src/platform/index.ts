@@ -2,3 +2,4 @@
 
 export type { Platform, PlatformFS, PlatformWindow, PlatformLifecycle } from "./types";
 export { PlatformProvider, usePlatform } from "./PlatformContext";
+export { isTauri } from "./isTauri";

@@ -1,6 +1,6 @@
 /** Global command palette — Cmd+K / Ctrl+K to open. */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import {
@@ -113,20 +113,24 @@ export default function CommandPalette() {
 
   const transcriptLoading = canSearchTranscripts && transcriptQueries.some((q) => q.isFetching);
 
+  const handleOpenChange = useCallback((next: boolean) => {
+    setOpen(next);
+    if (!next) setQuery("");
+  }, []);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        setOpen((prev) => !prev);
+        setOpen((prev) => {
+          if (prev) setQuery("");
+          return !prev;
+        });
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
-
-  useEffect(() => {
-    if (!open) setQuery("");
-  }, [open]);
 
   const seekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
@@ -149,11 +153,11 @@ export default function CommandPalette() {
 
   const run = (fn: () => void) => {
     fn();
-    setOpen(false);
+    handleOpenChange(false);
   };
 
   return (
-    <CommandDialog open={open} onOpenChange={setOpen}>
+    <CommandDialog open={open} onOpenChange={handleOpenChange}>
       <CommandInput
         placeholder="Search shows, episodes, transcripts…"
         value={query}

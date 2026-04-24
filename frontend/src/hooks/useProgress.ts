@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getTaskStatus } from "@/api/client";
+import { isTauri } from "@/platform";
 
 export interface TaskProgress {
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -29,7 +30,7 @@ class ProgressManager {
   connect(): void {
     if (this.ws && this.ws.readyState <= WebSocket.OPEN) return;
 
-    const isTauriProd = (window as any).__TAURI__ && import.meta.env.PROD;
+    const isTauriProd = isTauri() && import.meta.env.PROD;
     const url = isTauriProd
       ? "ws://127.0.0.1:18811/api/ws"
       : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/api/ws`;

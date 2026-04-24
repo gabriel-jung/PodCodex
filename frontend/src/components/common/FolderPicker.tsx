@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { listDirectory, createDirectory } from "@/api/client";
 import type { DirEntry, DirListing, FileEntry } from "@/api/types";
 import { Button } from "@/components/ui/button";
@@ -61,21 +61,31 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
     }
   };
 
-  const refresh = (path: string) => {
-    setLoading(true);
-    listDirectory(path, mode === "file")
-      .then((data) => {
-        setListing(data);
-        setPathInput(data.path);
-      })
-      .catch(() => setListing(null))
-      .finally(() => setLoading(false));
-  };
+  const refresh = useCallback(
+    (path: string) => {
+      let cancelled = false;
+      setLoading(true);
+      listDirectory(path, mode === "file")
+        .then((data) => {
+          if (cancelled) return;
+          setListing(data);
+          setPathInput(data.path);
+        })
+        .catch(() => {
+          if (!cancelled) setListing(null);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+      return () => { cancelled = true; };
+    },
+    [mode],
+  );
 
   useEffect(() => {
     if (!open) return;
-    refresh(currentPath);
-  }, [currentPath, open, mode]);
+    return refresh(currentPath);
+  }, [currentPath, open, refresh]);
 
   useEffect(() => {
     if (editingPath) pathInputRef.current?.select();
