@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   refreshRSS,
   refreshYouTube,
@@ -44,10 +44,26 @@ type ViewMode = "list" | "card";
 type StatusFilter = "all" | "ready" | "transcribed" | "corrected" | "translated" | "indexed" | "outdated";
 type SortKey = "date_desc" | "date_asc" | "title_asc" | "title_desc" | "duration_desc" | "duration_asc" | "number_desc" | "number_asc";
 
+const SIDEBAR_SECTIONS: SidebarSection[] = [
+  {
+    items: [
+      { key: "episodes", label: "Episodes", icon: Podcast },
+      { key: "search", label: "Search", icon: Search },
+      { key: "speakers", label: "Speakers", icon: Users },
+      { key: "settings", label: "Show settings", icon: SlidersHorizontal },
+    ],
+  },
+];
+
+// `.virtual` suffix signals to the batch API that the episode has no audio on
+// disk but does have an output_dir to resume from (subtitle-only imports).
+function batchPath(e: Episode): string | null {
+  return e.audio_path ?? (e.output_dir ? e.output_dir.replace(/\/+$/, "") + ".virtual" : null);
+}
+
 export default function ShowPage({ folder, initialTab }: { folder: string; initialTab?: string }) {
   const navigate = useNavigate();
-  const seekTo = useAudioStore((s) => s.seekTo);
-  const setAudioMeta = useAudioStore((s) => s.setAudioMeta);
+  const storePlayEpisode = useAudioStore((s) => s.playEpisode);
   const audioPath = useAudioStore((s) => s.audioPath);
   const minDurationMinutes = useEpisodeStore((s) => s.minDurationMinutes);
   const maxDurationMinutes = useEpisodeStore((s) => s.maxDurationMinutes);
@@ -100,15 +116,9 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(folder) }),
   });
 
-  const batchMutationEpisodesRef = useRef({ episodes: [] as { title: string; stem: string }[], step: "" });
+  const batchableSelectedRef = useRef<Episode[]>([]);
   const batchMutation = useMutation({
-    mutationFn: (args: Parameters<typeof startBatch>[0]) => {
-      batchMutationEpisodesRef.current.episodes = batchableSelected.map((e) => ({ title: e.title, stem: e.stem || e.id }));
-      return startBatch(args);
-    },
-    onSuccess: (data) => {
-      setBatchTask(data.task_id, folder, batchMutationEpisodesRef.current.episodes, batchMutationEpisodesRef.current.step);
-    },
+    mutationFn: (args: Parameters<typeof startBatch>[0]) => startBatch(args),
   });
 
   const all = episodes ?? [];
@@ -189,7 +199,43 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const showName = meta?.name || folder.replace(/\/+$/, "").split("/").pop() || "Show";
 
-  const confirmDeleteAudio = (ep: Episode) => {
+  // Single pass over `filtered` to derive selection-gated subsets.
+  // Replaces five separate .filter() walks.
+  const selectionDerived = useMemo(() => {
+    const downloadable: Episode[] = [];
+    const subtitleable: Episode[] = [];
+    const missingSubs: Episode[] = [];
+    const batchable: Episode[] = [];
+    let allSelected = filtered.length > 0;
+    for (const e of filtered) {
+      const isSel = selected.has(e.id);
+      if (!isSel) { allSelected = false; continue; }
+      if (!e.removed) {
+        subtitleable.push(e);
+        if (!e.has_subtitles) missingSubs.push(e);
+        if (!e.downloaded) downloadable.push(e);
+      }
+      if (e.downloaded || e.has_subtitles || (e.transcribed && e.output_dir)) {
+        batchable.push(e);
+      }
+    }
+    return { downloadable, subtitleable, missingSubs, batchable, allSelected };
+  }, [filtered, selected]);
+
+  const downloadableSelected = selectionDerived.downloadable;
+  const subtitleableSelected = selectionDerived.subtitleable;
+  const missingSubsSelected = selectionDerived.missingSubs;
+  const batchableSelected = selectionDerived.batchable;
+  const allSelectableSelected = selectionDerived.allSelected;
+  batchableSelectedRef.current = batchableSelected;
+
+  // React Query returns a new mutation *object* every render but the `mutate`
+  // function itself is referentially stable — depending on it (not the parent
+  // object) keeps our useCallback identity stable across renders.
+  const deleteMutate = deleteMutation.mutate;
+  const downloadMutate = downloadMutation.mutate;
+
+  const confirmDeleteAudio = useCallback((ep: Episode) => {
     if (!ep.audio_path) return;
     const description = ep.removed
       ? `This will remove the downloaded audio for "${ep.title}". This episode is no longer in the live feed, so re-downloading won't be possible.`
@@ -199,25 +245,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       description,
       confirmLabel: "Delete",
       variant: "destructive",
-      onConfirm: () => deleteMutation.mutate(ep.audio_path!),
+      onConfirm: () => deleteMutate(ep.audio_path!),
     });
-  };
+  }, [isYouTube, deleteMutate]);
 
-  const downloadableSelected = filtered.filter((e) => selected.has(e.id) && !e.downloaded && !e.removed);
-  const subtitleableSelected = filtered.filter((e) => selected.has(e.id) && !e.removed);
-  const missingSubsSelected = subtitleableSelected.filter((e) => !e.has_subtitles);
-  const batchableSelected = filtered.filter((e) =>
-    selected.has(e.id) && (e.downloaded || e.has_subtitles || (e.transcribed && e.output_dir)),
-  );
+  const filteredRef = useRef(filtered);
+  filteredRef.current = filtered;
 
-  /** Get a batch-usable path: real audio_path, or synthetic path from output_dir. */
-  const batchPath = (e: Episode): string | null =>
-    e.audio_path ?? (e.output_dir ? e.output_dir.replace(/\/+$/, "") + ".virtual" : null);
-
-  const selectableEpisodes = filtered;
-  const allSelectableSelected = selectableEpisodes.length > 0 && selectableEpisodes.every((e) => selected.has(e.id));
-
-  const toggleSelect = (id: string, idx: number, shiftKey: boolean) => {
+  const toggleSelect = useCallback((id: string, idx: number, shiftKey: boolean) => {
     const lastIdx = lastShiftClickIndex.current;
     lastShiftClickIndex.current = idx;
     setSelected((prev) => {
@@ -225,17 +260,22 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       if (shiftKey && lastIdx != null) {
         const from = Math.min(lastIdx, idx);
         const to = Math.max(lastIdx, idx);
-        for (let i = from; i <= to; i++) next.add(filtered[i].id);
+        const list = filteredRef.current;
+        for (let i = from; i <= to; i++) next.add(list[i].id);
       } else {
         if (next.has(id)) next.delete(id); else next.add(id);
       }
       return next;
     });
-  };
+  }, []);
 
-  const toggleSelectAll = () => {
-    setSelected(allSelectableSelected ? new Set() : new Set(selectableEpisodes.map((e) => e.id)));
-  };
+  const toggleSelectAll = useCallback(() => {
+    setSelected((prev) => {
+      const list = filteredRef.current;
+      const all = list.length > 0 && list.every((e) => prev.has(e.id));
+      return all ? new Set() : new Set(list.map((e) => e.id));
+    });
+  }, []);
 
   const toggleSort = (col: "date" | "title" | "duration" | "number") => {
     const pairs: Record<string, [SortKey, SortKey]> = {
@@ -251,28 +291,19 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const sortCol = sort.replace(/_(?:asc|desc)$/, "");
   const sortDir = sort.endsWith("_asc") ? "asc" : "desc";
 
-  const goEpisode = (stem: string) =>
-    navigate({ to: "/show/$folder/episode/$stem", params: { folder: encodeURIComponent(folder), stem: encodeURIComponent(stem) } });
+  const goEpisode = useCallback((stem: string) =>
+    navigate({ to: "/show/$folder/episode/$stem", params: { folder: encodeURIComponent(folder), stem: encodeURIComponent(stem) } }),
+  [navigate, folder]);
 
   const indexModel = usePipelineConfigStore((s) => s.indexModel);
 
-  const sidebarSections: SidebarSection[] = [
-    {
-      items: [
-        { key: "episodes", label: "Episodes", icon: Podcast },
-        { key: "search", label: "Search", icon: Search },
-        { key: "speakers", label: "Speakers", icon: Users },
-        { key: "settings", label: "Show settings", icon: SlidersHorizontal },
-      ],
-    },
-  ];
-
-  const runStep = (step: "transcribe" | "correct" | "translate" | "index", filteredEpisodes?: Episode[], _sourceVersionIds?: Record<string, string>, transcribeSource?: string, force?: boolean) => {
-    const source = filteredEpisodes || batchableSelected;
+  const batchMutate = batchMutation.mutate;
+  const runStep = useCallback((step: "transcribe" | "correct" | "translate" | "index", filteredEpisodes?: Episode[], _sourceVersionIds?: Record<string, string>, transcribeSource?: string, force?: boolean) => {
+    const source = filteredEpisodes || batchableSelectedRef.current;
     const audioPaths = source.map(batchPath).filter(Boolean) as string[];
     if (audioPaths.length === 0) return;
-    batchMutationEpisodesRef.current.step = step;
-    batchMutation.mutate({
+    const episodes = source.map((e) => ({ title: e.title, stem: e.stem || e.id }));
+    batchMutate({
       show_folder: folder,
       audio_paths: audioPaths,
       transcribe: step === "transcribe",
@@ -301,8 +332,31 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       show_name: meta?.name || "",
       index_model_keys: step === "index" ? [indexModel] : undefined,
       force,
+    }, {
+      onSuccess: (data) => setBatchTask(data.task_id, folder, episodes, step),
     });
-  };
+  }, [batchMutate, folder, tc, llm, engine, targetLang, meta?.name, meta?.language, indexModel, setBatchTask]);
+
+  const playEpisode = useCallback((ep: Episode) => {
+    if (!ep.audio_path) return;
+    storePlayEpisode(ep.audio_path, 0, {
+      title: ep.title,
+      artwork: ep.artwork_url || meta?.artwork_url,
+      showName,
+      folder,
+      stem: ep.stem || ep.id,
+    });
+  }, [storePlayEpisode, meta?.artwork_url, showName, folder]);
+
+  const downloadEpisode = useCallback((id: string) => {
+    downloadMutate({ guids: [id] });
+  }, [downloadMutate]);
+
+  const processEpisode = useCallback((step: "transcribe" | "correct" | "translate" | "index", ep: Episode) => {
+    runStep(step, [ep]);
+  }, [runStep]);
+
+  const rowDownloading = downloadMutation.isPending || !!downloadTaskId;
 
 
   return (
@@ -344,7 +398,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
       <div className="flex-1 flex overflow-hidden">
       <AppSidebar
-        pageSections={sidebarSections}
+        pageSections={SIDEBAR_SECTIONS}
         activeItem={tab}
         onItemClick={(key) => setTab(key as ShowTab)}
       />
@@ -375,7 +429,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         <FilterDropdown />
         <div className="flex-1" />
         {view === "card" && (
-          <input type="range" min={1} max={5} value={cardSize} onChange={(e) => setCardSize(Number(e.target.value))} className="w-16 accent-primary" />
+          <input type="range" min={2} max={8} value={cardSize} onChange={(e) => setCardSize(Number(e.target.value))} className="w-20 accent-primary" />
         )}
         <div className="flex border border-border rounded overflow-hidden">
           <button onClick={() => setView("list")} className={`px-1.5 py-1 transition ${view === "list" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`} title="List view">
@@ -414,16 +468,16 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           isYouTube={isYouTube}
           showLanguage={meta?.language || ""}
           onDownload={() => {
-            const allSelected = filtered.filter((e) => selected.has(e.id));
+            const selectedFiltered = filtered.filter((e) => selected.has(e.id));
             if (downloadableSelected.length > 0) {
-              downloadMutation.mutate({ guids: downloadableSelected.map((e) => e.id) });
-            } else if (allSelected.length > 0) {
-              const alreadyCount = allSelected.length;
+              downloadMutate({ guids: downloadableSelected.map((e) => e.id) });
+            } else if (selectedFiltered.length > 0) {
+              const alreadyCount = selectedFiltered.length;
               confirmDialog.open({
                 title: "Re-download?",
                 description: `${alreadyCount} selected episode${alreadyCount !== 1 ? "s are" : " is"} already downloaded. This will re-download and overwrite the existing files.`,
                 confirmLabel: "Re-download",
-                onConfirm: () => downloadMutation.mutate({ guids: allSelected.map((e) => e.id), force: true }),
+                onConfirm: () => downloadMutate({ guids: selectedFiltered.map((e) => e.id), force: true }),
               });
             }
           }}
@@ -480,14 +534,15 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
               <EpisodeRow
                 key={ep.id}
                 ep={ep}
+                index={i}
                 selected={selected.has(ep.id)}
-                onToggle={(shiftKey) => toggleSelect(ep.id, i, shiftKey)}
-                onOpen={() => goEpisode(ep.stem || ep.id)}
-                onPlay={() => ep.audio_path && (setAudioMeta(ep.audio_path, { title: ep.title, artwork: ep.artwork_url || meta?.artwork_url, showName }), seekTo(ep.audio_path, 0))}
-                onDownload={() => downloadMutation.mutate({ guids: [ep.id] })}
-                onDelete={() => confirmDeleteAudio(ep)}
-                onProcess={(step) => runStep(step, [ep])}
-                downloading={downloadMutation.isPending || !!downloadTaskId}
+                onToggle={toggleSelect}
+                onOpen={goEpisode}
+                onPlay={playEpisode}
+                onDownload={downloadEpisode}
+                onDelete={confirmDeleteAudio}
+                onProcess={processEpisode}
+                downloading={rowDownloading}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
               />
             ))}
@@ -501,12 +556,12 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
               <EpisodeCard
                 key={ep.id}
                 ep={ep}
-                onOpen={() => goEpisode(ep.stem || ep.id)}
-                onPlay={() => ep.audio_path && (setAudioMeta(ep.audio_path, { title: ep.title, artwork: ep.artwork_url || meta?.artwork_url, showName }), seekTo(ep.audio_path, 0))}
-                onDownload={() => downloadMutation.mutate({ guids: [ep.id] })}
-                onDelete={() => confirmDeleteAudio(ep)}
-                onProcess={(step) => runStep(step, [ep])}
-                downloading={downloadMutation.isPending || !!downloadTaskId}
+                onOpen={goEpisode}
+                onPlay={playEpisode}
+                onDownload={downloadEpisode}
+                onDelete={confirmDeleteAudio}
+                onProcess={processEpisode}
+                downloading={rowDownloading}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
               />
             ))}

@@ -1,81 +1,52 @@
 # Roadmap
 
-## Completed
+Forward-looking plan only. For the list of shipped features, see the README's *What it does* and *Features* sections; for per-change history, see [CHANGELOG.md](CHANGELOG.md).
 
-**Core architecture** - Zustand stores, platform abstraction (web + Tauri), FastAPI backend with WebSocket progress
+## v0.1.0 release blockers
 
-**UI/UX** - WaveSurfer waveform, segment editor, audio player with per-episode speed, episode filtering (duration/title), list + card views, model cache management, VRAM monitoring, export (text/SRT/VTT/ZIP)
+Everything outside this list is post-1.0. Tag when all items are ✅.
 
-**Tauri integration (dev mode)** - backend sidecar, health-check, window state persistence, CORS
+- [ ] Clean TypeScript + ESLint baseline (~190 strict-TS, ~40 lint errors) → flip CI to blocking
+- [ ] README screenshots + 30 s demo GIF
+- [ ] Manual smoke pass on Linux native and Windows (see [deploy/SMOKE.md](deploy/SMOKE.md))
+- [ ] Distribution bundles — PyInstaller sidecar + `make build` producing `.app` / `.deb` / `.exe`. WhisperX + Torch bundling is the hard part.
 
-**Batch pipeline** - multi-episode operations with per-step config dialogs, global task bar with per-episode logs, show speakers panel, move/rename folder, pipeline config store, duration-based LLM batching, task cancellation + result summaries
+## Next (post-1.0)
 
-**Search & bot** - RAG module (LanceDB hybrid retrieval: vector ANN + Tantivy FTS), CLI (`vectorize / query / list / delete`), Discord bot slash commands (`/search`, `/ask` LLM-synthesized answers, `/exact`, `/random`, `/stats`, `/episodes`, `/setup`), multi-show cross-collection search, password-gated show access (`/unlock`, `/lock`, `/changepassword`), simple/advanced command split, `deploy/BOT.md` install guide (uv + Docker paths)
+### Phase M — Speaker auto-mapping
 
-**Ingest** - RSS feed parsing, episode download, folder scanning, transcript import
+Auto-generate `speaker_map.json` for new episodes via voice embeddings.
 
-**Generation versioning** - `.versions/{step}/` per episode archives every pipeline output with provenance (model, params, manual edit flag, content hash), History dropdown in editor toolbar, API endpoints per step
+- Show-level speaker registry (name, language, avatar, voice samples, synthesis config)
+- Cross-episode identity: same speaker recognized across a show
+- Voice embeddings via Resemblyzer or pyannote SpeakerEmbedding
+- Reference DB built from manually-labeled episodes; cosine similarity + confidence threshold
+- Bootstrapping: a handful of labeled episodes seed the registry for fixed-cast podcasts
 
-**YouTube support** - channel/playlist import via yt-dlp, audio download with rate-limit backoff, subtitle import as transcripts (rolling VTT dedup), artwork auto-refresh from channel avatar, batch processing subtitle-only episodes
+### Phase N — Onboarding polish
 
-**Pipeline DB & provenance** - per-show SQLite (`pipeline.db`) for episode status tracking, provenance-based step comparison (none/outdated/done), app-level + show-level pipeline defaults with merge logic, `unified_episodes` endpoint merging RSS + local episodes with computed status
+The wizard + home empty-state already ship. Remaining polish:
 
-**Frontend cleanup** - shared `SourceIcon`, `useShowActions` hook, `isOutdated` utility, `FilterDropdown` reading store directly, `filterCounts` memoization, removed redundant prefetches
+- Hardware auto-detection (GPU / CPU / VRAM) to pick the default Whisper preset
+- ShowPage empty-state CTA that guides into the pipeline preset flow
+- Replay wizard from Settings for users who dismissed it
 
-**Backend cleanup** - deduplicated episode serializers (`rss_episode_to_out`), version CRUD route factory (`_versions.py`), shared `build_index_transcript` helper, unified `ManualPromptsRequest`/`ApplyManualRequest` models, consistent `build_provenance()` usage, removed dead code branches
+### Phase O — Developer experience
 
----
+- Auto-generate TS types from Pydantic to prevent API drift
+- Service registry for LLM providers (typed objects, no growing conditionals)
+- Transcription engine abstraction — decouple `core/transcribe.py` from WhisperX to allow Voxtral, Whisper.cpp, or cloud ASR
 
-## Next Up
+## Parallel tracks
 
-### Phase M: Speaker Entity + Auto-Mapping
+Can happen alongside any phase, usually driven by specific requests.
 
-**Goal**: auto-generate `speaker_map.json` for new episodes without manual intervention.
-
-- Show-level speaker registry: name, language, avatar, voice samples, synthesis config
-- Cross-episode identity - same speaker recognized across all episodes of a show
-- Voice embedding computation (Resemblyzer or pyannote SpeakerEmbedding)
-- Reference database built from manually-labeled episodes
-- Cosine similarity matching with confidence threshold
-- Bootstrapping: a few labeled episodes build the reference DB - one-time cost for fixed-cast podcasts
-
-### Phase N: Simple Mode
-
-**Goal**: "I have audio, give me searchable knowledge" - zero-config end-to-end pipeline for non-technical users.
-
-- Hardware auto-detection (GPU/CPU, VRAM) to pick optimal Whisper model and settings
-- One-click flow: drop audio → transcribe → export → index
-- Searchable transcripts ready to query with no manual configuration
-- Optional opt-in to advanced steps (diarization, correct, translate, synthesis)
-
-### Phase O: Developer Experience
-
-- **Auto-generate TS types from Pydantic** - prevent API type drift
-- **Service registry for LLM providers** - typed provider objects instead of growing conditionals in LLMControls
-- **Command palette (cmdk)** - quick navigation to episodes, pipeline steps, shows
-- **Drag-and-drop file import** - Tauri file drop events to add episodes
-
-### Phase P: Standalone Distribution
-
-PyInstaller sidecar to bundle the Python backend. `make build` produces shareable `.app`/`.deb`/`.exe`.
-
----
-
-## Parallel: Discord Bot Improvements
-
-Can happen alongside any phase.
-
-- Conversation context (thread-based or stateful per-user)
-
----
+- Discord bot — conversation context (thread-based or per-user stateful)
+- PoToken for YouTube — Rust sidecar to bypass bot detection without cookies
+- Export / import — `podcodex export {show} → {show}.podcodex` bundling SQLite + versions + LanceDB tables; import merges or re-embeds on model mismatch
 
 ## Future
 
-### Timeline Editor
+### Timeline editor
 
-**Goal**: multi-track assembly with jingle/music reinsertion for final episode production.
-
-- Drag-and-drop segment reordering
-- Insert jingles, intros, outros, music beds
-- Per-segment volume/fade controls
-- Export assembled episode as single audio file
+Multi-track assembly with jingle / music reinsertion for final episode production: drag-to-reorder segments, insert intros / outros / music beds, per-segment volume + fade, export a single audio file.

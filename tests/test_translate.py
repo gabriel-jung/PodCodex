@@ -14,11 +14,13 @@ def test_build_manual_prompt_contains_segments_and_context():
     assert "French podcast" in prompt
 
 
-def test_build_manual_prompt_asks_for_index_and_text():
-    """Translate prompt asks the LLM to return index and translated text."""
+def test_build_manual_prompt_asks_for_positional_text_output():
+    """Translate prompt requests position-mapped output with a single `text` field."""
     segments = [
         {"speaker": "Alice", "start": 0.0, "end": 10.0, "text": "Bonjour"},
     ]
     prompt = build_manual_prompt(segments)
-    assert '"index"' in prompt
     assert '"text"' in prompt
+    # Position-based mapping — the LLM must not renumber or add an index field.
+    assert "no index" in prompt
+    assert "SAME ORDER" in prompt

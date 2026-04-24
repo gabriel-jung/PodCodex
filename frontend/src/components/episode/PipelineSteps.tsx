@@ -4,18 +4,18 @@
  * Extracted to keep EpisodePage focused on layout and data fetching.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Episode } from "@/api/types";
 import { isEdited } from "@/lib/stepStatus";
 import {
   Mic, Sparkles, Languages, AudioLines, Database,
 } from "lucide-react";
 
-import TranscribePanel from "@/components/transcribe/TranscribePanel";
-import CorrectPanel from "@/components/correct/CorrectPanel";
-import TranslatePanel from "@/components/translate/TranslatePanel";
-import SynthesizePanel from "@/components/synthesize/SynthesizePanel";
-import IndexPanel from "@/components/index/IndexPanel";
+const TranscribePanel = lazy(() => import("@/components/transcribe/TranscribePanel"));
+const CorrectPanel = lazy(() => import("@/components/correct/CorrectPanel"));
+const TranslatePanel = lazy(() => import("@/components/translate/TranslatePanel"));
+const SynthesizePanel = lazy(() => import("@/components/synthesize/SynthesizePanel"));
+const IndexPanel = lazy(() => import("@/components/index/IndexPanel"));
 
 // ── Types ────────────────────────────────────────────────────────────────
 

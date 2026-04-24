@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { artworkUrl } from "@/api/filesystem";
 import type { ShowSummary } from "@/api/types";
 import { SourceIcon } from "./SourceIcon";
@@ -5,13 +6,13 @@ import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 
 export interface ShowListRowProps {
   show: ShowSummary;
-  onClick: () => void;
+  onClick: (path: string) => void;
 }
 
-export default function ShowListRow({ show, onClick }: ShowListRowProps) {
+function ShowListRowInner({ show, onClick }: ShowListRowProps) {
   return (
     <button
-      onClick={onClick}
+      onClick={() => onClick(show.path)}
       className="w-full text-left px-4 py-3 flex items-center gap-4 hover:bg-accent/50 transition border-b border-border last:border-0"
     >
       {show.artwork_url ? (
@@ -32,3 +33,6 @@ export default function ShowListRow({ show, onClick }: ShowListRowProps) {
     </button>
   );
 }
+
+const ShowListRow = memo(ShowListRowInner);
+export default ShowListRow;

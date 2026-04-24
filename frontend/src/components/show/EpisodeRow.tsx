@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { memo, useRef } from "react";
 import type { Episode } from "@/api/types";
 import { Play, Download, MoreVertical, Captions, CloudOff } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
@@ -7,20 +7,20 @@ import { EpisodeMenu, type PipelineStep } from "./EpisodeMenu";
 
 export interface EpisodeRowProps {
   ep: Episode;
+  index: number;
   selected: boolean;
-  onToggle: (shiftKey: boolean) => void;
-  onOpen: () => void;
-  onPlay: () => void;
-  onDownload?: () => void;
-  onDelete: () => void;
-  onProcess?: (step: PipelineStep) => void;
+  onToggle: (id: string, index: number, shiftKey: boolean) => void;
+  onOpen: (stem: string) => void;
+  onPlay: (ep: Episode) => void;
+  onDownload?: (id: string) => void;
+  onDelete: (ep: Episode) => void;
+  onProcess?: (step: PipelineStep, ep: Episode) => void;
   downloading?: boolean;
   isPlaying: boolean;
 }
 
-export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload, onDelete, onProcess, downloading, isPlaying }: EpisodeRowProps) {
+function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDownload, onDelete, onProcess, downloading, isPlaying }: EpisodeRowProps) {
   const shiftRef = useRef(false);
-  const [menuOpen, setMenuOpen] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
 
   const onContextMenu = (e: React.MouseEvent) => {
@@ -28,9 +28,15 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
     menuTriggerRef.current?.click();
   };
 
+  const handleOpen = () => onOpen(ep.stem || ep.id);
+  const handlePlay = () => onPlay(ep);
+  const handleDownload = onDownload ? () => onDownload(ep.id) : undefined;
+  const handleDelete = () => onDelete(ep);
+  const handleProcess = onProcess ? (step: PipelineStep) => onProcess(step, ep) : undefined;
+
   return (
     <div onContextMenu={onContextMenu} className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
-      <input type="checkbox" checked={selected} onMouseDown={(e) => { shiftRef.current = e.shiftKey; }} onChange={() => onToggle(shiftRef.current)} className="accent-primary cursor-pointer shrink-0" />
+      <input type="checkbox" checked={selected} onMouseDown={(e) => { shiftRef.current = e.shiftKey; }} onChange={() => onToggle(ep.id, index, shiftRef.current)} className="accent-primary cursor-pointer shrink-0" />
       {ep.artwork_url && (
         <img src={ep.artwork_url} alt={ep.title} className="w-8 h-6 object-cover rounded shrink-0" loading="lazy" />
       )}
@@ -38,7 +44,7 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
         <span className="text-xs text-muted-foreground w-8 text-right shrink-0">#{ep.episode_number}</span>
       )}
       <button
-        onClick={onOpen}
+        onClick={handleOpen}
         className={`flex-1 text-left text-sm truncate hover:text-primary cursor-pointer flex items-center gap-1.5 ${ep.removed ? "text-muted-foreground" : "text-foreground"}`}
       >
         {ep.removed && (
@@ -58,25 +64,25 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
           </span>
         )}
         {ep.audio_path ? (
-          <button onClick={onPlay} title="Play" aria-label="Play" className={`transition ${isPlaying ? "text-success" : "text-muted-foreground hover:text-foreground"}`}>
+          <button onClick={handlePlay} title="Play" aria-label="Play" className={`transition ${isPlaying ? "text-success" : "text-muted-foreground hover:text-foreground"}`}>
             <Play className="w-3.5 h-3.5" />
           </button>
-        ) : onDownload && (
-          <button onClick={onDownload} disabled={downloading} title="Download audio" aria-label="Download audio" className="text-muted-foreground hover:text-foreground transition disabled:opacity-50">
+        ) : handleDownload && (
+          <button onClick={handleDownload} disabled={downloading} title="Download audio" aria-label="Download audio" className="text-muted-foreground hover:text-foreground transition disabled:opacity-50">
             <Download className="w-3.5 h-3.5" />
           </button>
         )}
         <EpisodeMenu
           ep={ep}
-          onOpen={onOpen}
-          onPlay={ep.audio_path ? onPlay : undefined}
-          onDownload={onDownload}
-          onDelete={onDelete}
-          onProcess={onProcess}
+          onOpen={handleOpen}
+          onPlay={ep.audio_path ? handlePlay : undefined}
+          onDownload={handleDownload}
+          onDelete={handleDelete}
+          onProcess={handleProcess}
         >
           <button
             ref={menuTriggerRef}
-            onClick={(e) => { e.stopPropagation(); setMenuOpen(!menuOpen); }}
+            onClick={(e) => e.stopPropagation()}
             className="text-muted-foreground hover:text-foreground transition opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
             title="More actions"
             aria-label="More actions"
@@ -88,3 +94,5 @@ export function EpisodeRow({ ep, selected, onToggle, onOpen, onPlay, onDownload,
     </div>
   );
 }
+
+export const EpisodeRow = memo(EpisodeRowInner);

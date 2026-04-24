@@ -38,9 +38,15 @@ export default function SearchPanel(props: SearchPanelProps) {
   const showName = isShowScope ? props.showName : getShowName(storeShowMeta, storeEpisode?.audio_path ?? null);
   const episode = isShowScope ? undefined : storeEpisode;
   const showFolder = isShowScope ? props.folder : (storeFolder ?? undefined);
-  const showArtwork = isShowScope
-    ? props.artwork
-    : (storeShowMeta?.artwork_url ? artworkUrl(storeFolder ?? "") : undefined);
+  // Memoize: artworkUrl() is not referentially stable, would break SearchResultCard memo.
+  const propsArtwork = isShowScope ? props.artwork : undefined;
+  const hasStoreArtwork = !!storeShowMeta?.artwork_url;
+  const showArtwork = useMemo(
+    () => isShowScope
+      ? propsArtwork
+      : (hasStoreArtwork ? artworkUrl(storeFolder ?? "") : undefined),
+    [isShowScope, propsArtwork, hasStoreArtwork, storeFolder],
+  );
 
   const { lastQuery, addToHistory, setLastQuery } = useSearchStore();
   const [query, setQuery] = useState(lastQuery);
@@ -113,6 +119,7 @@ export default function SearchPanel(props: SearchPanelProps) {
 
   const allEpisodesSelected =
     sortedEpisodes.length > 0 && selectedEpisodes.length === sortedEpisodes.length;
+  const selectedEpisodeSet = useMemo(() => new Set(selectedEpisodes), [selectedEpisodes]);
 
   const { data: indexedSpeakers = [] } = useQuery({
     queryKey: queryKeys.indexedSpeakers(showName, model, chunking),
@@ -190,12 +197,22 @@ export default function SearchPanel(props: SearchPanelProps) {
   };
 
   const tiers = useMemo(() => {
-    const exact = results.filter((r) => !r.accent_match && !r.fuzzy_match);
-    const accent = results.filter((r) => r.accent_match);
-    const fuzzy = results.filter((r) => r.fuzzy_match);
+    const exact: SearchResult[] = [];
+    const accent: SearchResult[] = [];
+    const fuzzy: SearchResult[] = [];
+    for (const r of results) {
+      if (r.fuzzy_match) fuzzy.push(r);
+      else if (r.accent_match) accent.push(r);
+      else exact.push(r);
+    }
     const displayed = mode === "exact" ? [...exact, ...accent, ...fuzzy] : results;
     return { exact, accent, fuzzy, displayed };
   }, [results, mode]);
+
+  const showContext = useMemo(
+    () => ({ name: showName, folder: showFolder, artwork: showArtwork, model, chunking }),
+    [showName, showFolder, showArtwork, model, chunking],
+  );
 
   const isPending = searchMutation.isPending || randomMutation.isPending;
   const isError = searchMutation.isError || randomMutation.isError;
@@ -364,8 +381,8 @@ export default function SearchPanel(props: SearchPanelProps) {
                         ? "1 episode"
                         : `${selectedEpisodes.length} episodes`}
                   </summary>
-                  <div className="absolute z-10 mt-1 max-h-64 overflow-y-auto bg-popover border border-border rounded-md p-2 min-w-64 space-y-1 shadow-md">
-                    <div className="flex items-center justify-between gap-2 pb-1 border-b border-border/60 sticky top-0 bg-popover">
+                  <div className="absolute z-10 mt-1 max-h-64 overflow-y-auto bg-popover border border-border rounded-md min-w-64 shadow-md">
+                    <div className="flex items-center justify-between gap-2 px-2 pt-2 pb-1 border-b border-border/60 sticky top-0 bg-popover z-10">
                       <div className="flex items-center gap-1">
                         <select
                           value={episodeSort}
@@ -423,6 +440,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                         )}
                       </div>
                     </div>
+                    <div className="p-2 space-y-1">
                     {sortedEpisodes.map((ep) => (
                       <label
                         key={ep.episode}
@@ -430,7 +448,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                       >
                         <input
                           type="checkbox"
-                          checked={selectedEpisodes.includes(ep.episode)}
+                          checked={selectedEpisodeSet.has(ep.episode)}
                           onChange={(e) =>
                             setSelectedEpisodes((cur) =>
                               e.target.checked
@@ -450,6 +468,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                         )}
                       </label>
                     ))}
+                    </div>
                   </div>
                 </details>
               </>
@@ -575,11 +594,11 @@ export default function SearchPanel(props: SearchPanelProps) {
                     <>{`Found ${results.length} result${results.length !== 1 ? "s" : ""}`}{timingLabel ? ` in ${timingLabel}.` : "."}</>
                   )}
                 </div>
-                {displayed.map((r, i) => (
+                {displayed.map((r) => (
                   <SearchResultCard
-                    key={i}
+                    key={`${r.episode_stem}-${r.start}-${r.end}`}
                     result={r}
-                    show={{ name: showName, folder: showFolder, artwork: showArtwork, model, chunking }}
+                    show={showContext}
                     query={submittedQuery}
                   />
                 ))}

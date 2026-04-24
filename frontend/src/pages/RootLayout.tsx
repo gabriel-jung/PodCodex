@@ -1,6 +1,8 @@
+import { Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet } from "@tanstack/react-router";
 import { getHealth } from "@/api/client";
+import PanelLoading from "@/components/common/PanelLoading";
 import { queryKeys } from "@/api/queryKeys";
 import AudioBar from "@/components/layout/AudioBar";
 import TaskBar from "@/components/layout/TaskBar";
@@ -48,7 +50,9 @@ export default function RootLayout() {
     <PlatformProvider>
       <div className="flex flex-col h-screen overflow-hidden bg-background text-foreground">
         <main className="flex-1 overflow-hidden">
-          <Outlet />
+          <Suspense fallback={<PanelLoading />}>
+            <Outlet />
+          </Suspense>
         </main>
         <TaskBar />
         <AudioBar />

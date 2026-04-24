@@ -92,5 +92,5 @@ ALPHA = 0.5
 TOP_K = 5
 
 # Context expansion: number of neighboring chunks fetched around each hit
-# when building a "scene" (bot /ask synthesis, MCP get_context tool).
+# when building a "scene" (MCP get_context tool).
 CONTEXT_WINDOW = 3

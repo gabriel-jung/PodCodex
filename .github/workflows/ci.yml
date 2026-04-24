@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg (soundfile / audio test fixtures)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libsndfile1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: latest
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Sync dependencies (dev + desktop + bot + mcp + rag + youtube)
+        # Skip the `pipeline` extra (whisperx + torch + pyannote) — ~3 GB and
+        # not needed for the pure-Python tests. Re-add if pipeline-level
+        # integration tests land.
+        run: uv sync --extra dev --extra desktop --extra bot --extra mcp --extra rag --extra youtube
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  frontend:
+    name: Frontend (tsc + eslint)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Baseline: the frontend currently has ~190 strict-TS errors and ~40
+      # ESLint errors accumulated before CI existed. Both steps run for
+      # visibility but do not fail the job yet. Flip `continue-on-error: false`
+      # once the baselines are clean.
+      - name: Typecheck (non-blocking)
+        continue-on-error: true
+        run: npx tsc -b
+
+      - name: Lint (non-blocking)
+        continue-on-error: true
+        run: npm run lint
+
+  tauri:
+    name: Tauri (cargo check)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux Tauri deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Cargo check
+        run: cargo check --all-targets

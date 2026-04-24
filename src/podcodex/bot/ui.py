@@ -191,31 +191,6 @@ class NoExpandView(discord.ui.View):
         super().__init__(timeout=300)
 
 
-# ──────────────────────────────────────────────
-# /ask sources reveal UI
-# ──────────────────────────────────────────────
-
-
-class SourcesView(discord.ui.View):
-    """Attaches a 'Show sources' button to a /ask answer embed.
-
-    Clicking reveals an ephemeral paginated view of the retrieved chunks.
-    """
-
-    def __init__(self, pages: list[tuple[discord.Embed, discord.ui.View]]) -> None:
-        super().__init__(timeout=300)
-        self._pages = pages
-
-    @discord.ui.button(label="Show sources ↗", style=discord.ButtonStyle.secondary)
-    async def show_sources(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        view = PaginatedResultView(self._pages)
-        await interaction.response.send_message(
-            embed=view.current_embed, view=view, ephemeral=True
-        )
-
-
 _MARKDOWN_STRIP = re.compile(r"[*_`~]+")
 
 

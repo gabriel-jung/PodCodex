@@ -17,7 +17,8 @@ import {
   usePipelineConfigStore,
 } from "@/stores/pipelineConfigStore";
 import { Button } from "@/components/ui/button";
-import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Copy, Check } from "lucide-react";
+import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Copy, Check, Settings as SettingsIcon } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
 import { languageToISO, errorMessage, selectClass, cn, versionLabel, versionOption, stepTag, SUB_LANGUAGES } from "@/lib/utils";
 import { INPUT_STEPS, filterVersionsForStep, type PipelineInputStep } from "@/lib/pipelineInputs";
 import PresetCards from "@/components/common/PresetCards";
@@ -160,20 +161,27 @@ const STEPS = [
 
 export { STEPS };
 
-/** Toggle button with radio-style indicator. */
-function ToggleButton({ checked, onClick, title, children }: {
-  checked: boolean; onClick: () => void; title?: string; children: React.ReactNode;
+/** Toggle button with radio-style indicator and optional description. */
+function ToggleButton({ checked, onClick, title, children, description }: {
+  checked: boolean;
+  onClick: () => void;
+  title?: string;
+  children: React.ReactNode;
+  description?: React.ReactNode;
 }) {
   return (
     <button
       onClick={onClick}
       title={title}
-      className={`w-full flex items-center gap-2 text-sm px-3 py-1.5 rounded-md border transition ${
-        checked ? "border-primary bg-accent font-medium" : "border-border hover:border-primary/50"
+      className={`w-full flex items-start gap-2.5 text-left text-sm px-3 py-2 rounded-md border transition ${
+        checked ? "border-primary bg-accent" : "border-border hover:border-primary/50"
       }`}
     >
-      <div className={`w-3.5 h-3.5 rounded-full border-2 transition ${checked ? "border-primary bg-primary" : "border-muted-foreground"}`} />
-      {children}
+      <div className={`w-3.5 h-3.5 mt-0.5 rounded-full border-2 transition shrink-0 ${checked ? "border-primary bg-primary" : "border-muted-foreground"}`} />
+      <div className="flex-1 min-w-0">
+        <div className={checked ? "font-medium" : ""}>{children}</div>
+        {description && <div className="text-xs text-muted-foreground mt-0.5 font-normal">{description}</div>}
+      </div>
     </button>
   );
 }
@@ -188,6 +196,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { tc, setTc, llm, setLLM, targetLang, setTargetLang } = usePipelineConfig();
   const { whisperModels, detectedKeys: detected, apiProviders, getProviderInfo } = useLLMProviders();
   const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
@@ -898,32 +907,42 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                       </div>
                     </div>
 
-                    <ToggleButton checked={tc.clean} onClick={() => setTc({ clean: !tc.clean })} title="Removes hallucinated segments using character density filters (< 2 or > 75 chars/s)">
-                      Clean transcript
-                    </ToggleButton>
-
-                    {!isCpu && (
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-3">
-                          <SectionHeader>Speaker identification</SectionHeader>
-                          <label className="flex items-center gap-1.5 cursor-pointer text-xs text-muted-foreground">
-                            <input
-                              type="checkbox"
-                              checked={tc.diarize}
-                              onChange={(e) => setTc({ diarize: e.target.checked })}
-                              className="accent-primary"
-                            />
-                            Enabled
-                          </label>
-                        </div>
-                        {tc.diarize && !detected.hf_token && (
-                          <div className="space-y-1.5">
-                            <HelpLabel label="HF token" help="HuggingFace access token, needed to download the speaker detection model. Get one free at huggingface.co/settings/tokens." />
-                            <input type="password" value={tc.hfToken} onChange={(e) => setTc({ hfToken: e.target.value })} placeholder="hf_..." className={inputFieldClass} />
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    <div className="space-y-2">
+                      <SectionHeader>Options</SectionHeader>
+                      <ToggleButton
+                        checked={tc.clean}
+                        onClick={() => setTc({ clean: !tc.clean })}
+                        title="Removes hallucinated segments using character density filters (< 2 or > 75 chars/s)"
+                        description="Drop hallucinated or unnaturally dense segments"
+                      >
+                        Clean transcript
+                      </ToggleButton>
+                      {!isCpu && (
+                        <>
+                          <ToggleButton
+                            checked={tc.diarize}
+                            onClick={() => setTc({ diarize: !tc.diarize })}
+                            title="Label who speaks in each segment using pyannote diarization"
+                            description="Label who speaks in each segment"
+                          >
+                            Speaker identification
+                          </ToggleButton>
+                          {tc.diarize && !(detected.hf_token || tc.hfToken) && (
+                            <div className="pl-6 text-xs text-muted-foreground flex items-center gap-1.5">
+                              <span>HuggingFace token needed.</span>
+                              <button
+                                type="button"
+                                onClick={() => navigate({ to: "/settings", search: { tab: "credentials" }, hash: "HF_TOKEN" })}
+                                className="inline-flex items-center gap-1 text-primary hover:underline font-medium"
+                              >
+                                <SettingsIcon className="w-3 h-3" />
+                                Set it up in Credentials
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
 
                     <div className="space-y-1.5">
                       <HelpLabel label="Batch size" help="Advanced — leave as is unless you run out of GPU memory. Number of audio chunks processed in parallel on the GPU. Lower it if transcription crashes with out-of-memory errors." />

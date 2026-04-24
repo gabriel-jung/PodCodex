@@ -2606,7 +2606,6 @@ dependencies = [
 [package.optional-dependencies]
 bot = [
     { name = "discord-py" },
-    { name = "openai" },
 ]
 desktop = [
     { name = "fastapi" },
@@ -2664,7 +2663,6 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2.0" },
     { name = "numpy", marker = "extra == 'rag'", specifier = ">=1.26" },
     { name = "ollama", marker = "extra == 'pipeline'", specifier = ">=0.6.1" },
-    { name = "openai", marker = "extra == 'bot'", specifier = ">=2.23.0" },
     { name = "openai", marker = "extra == 'pipeline'", specifier = ">=2.23.0" },
     { name = "pandas", marker = "extra == 'pipeline'", specifier = ">=2.0.0" },
     { name = "pyannote-audio", marker = "extra == 'pipeline'", specifier = ">=4.0.4" },

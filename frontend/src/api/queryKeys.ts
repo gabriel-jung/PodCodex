@@ -16,6 +16,7 @@ export const queryKeys = {
   health: () => ["health"] as const,
   config: () => ["config"] as const,
   pipelineConfig: () => ["pipeline-config"] as const,
+  secrets: () => ["config", "secrets"] as const,
   capabilities: () => ["system", "extras"] as const,
   models: () => ["models"] as const,
 

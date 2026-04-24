@@ -7,7 +7,6 @@ Two install paths — pick whichever fits your setup:
 
 After either path, see:
 
-- [Configuring `/ask`](#configuring-ask-llm-synthesis) — LLM synthesis
 - [Access control](#access-control-passwords) — optional; only if you host multiple shows and want each Discord server to see a different one
 - [Transferring the index](#transferring-the-index) — only if the bot runs on a different machine than the desktop app
 
@@ -87,11 +86,6 @@ The bot's `load_dotenv` searches from the current working directory upward — t
 ```bash
 cat > .env <<'EOF'
 DISCORD_TOKEN=your-bot-token
-
-# Optional — for /ask (LLM synthesis). Set only one.
-# OPENAI_API_KEY=sk-...
-# MISTRAL_API_KEY=...
-# ANTHROPIC_API_KEY=...
 
 # Optional — only if you want to point the bot at an index that is neither
 # at ~/.local/share/podcodex/index nor at ./deploy/index / ./index.
@@ -185,35 +179,6 @@ Notes:
 
 ---
 
-## Configuring `/ask` (LLM synthesis)
-
-`/ask` requires two things:
-
-1. An API key for your chosen provider, set in the bot's environment file (`.env` at repo root for uv, `deploy/.env` for Docker):
-
-   ```dotenv
-   OPENAI_API_KEY=sk-...
-   # or MISTRAL_API_KEY=..., or ANTHROPIC_API_KEY=...
-   ```
-
-2. A per-server configuration in Discord (admin only):
-
-   ```text
-   /setup ask_provider:openai ask_model:gpt-4o-mini
-   /setup ask_provider:mistral
-   /setup ask_provider:anthropic ask_model:claude-haiku-4-5-20251001
-   ```
-
-API keys are env-var only — never persisted to `server_config.json`.
-
-Adjust the per-user cooldown (default 30s):
-
-```text
-/setup ask_cooldown:60
-```
-
----
-
 ## Access control (passwords)
 
 **Optional — skip this section entirely unless you need it.** By default every indexed show is visible to every Discord server the bot is in. That's the right setup for a personal bot, or when one bot serves one audience.
@@ -298,13 +263,12 @@ The full directory is the unit of transfer. Per-show selective sync is technical
 | Command                              | Who      | Description                                      |
 | ------------------------------------ | -------- | ------------------------------------------------ |
 | `/search question [show] [...]`      | Everyone | Hybrid keyword + semantic search                 |
-| `/ask question [show] [...]`         | Everyone | LLM-synthesized answer from transcript passages  |
 | `/exact query [show] [...]`          | Everyone | Literal substring match (+ accent variants, 1-edit typos) |
 | `/random [show] [...]`               | Everyone | Random quote                                     |
 | `/stats [show]`                      | Everyone | Index overview                                   |
 | `/episodes show`                     | Everyone | List episodes for a show                         |
 | `/help`                              | Everyone | Show available commands                          |
-| `/setup [model] [top_k] [ask_*] …`   | Admin    | Configure server defaults                        |
+| `/setup [model] [top_k] …`           | Admin    | Configure server defaults                        |
 | `/unlock password`                   | Admin    | Unlock a show (password identifies the show)     |
 | `/lock show`                         | Admin    | Remove a show from this server                   |
 | `/changepassword show`               | Admin    | Rotate password for an unlocked show             |
@@ -316,6 +280,5 @@ The full directory is the unit of transfer. Per-show selective sync is technical
 
 | Setup              | RAM     | Notes                                   |
 | ------------------ | ------- | --------------------------------------- |
-| Bot only (no /ask) | ~2.5 GB | BGE-M3 for query embedding              |
-| Bot + /ask         | ~2.5 GB | LLM call is external API, no extra RAM  |
+| Bot                | ~2.5 GB | BGE-M3 for query embedding              |
 | Many shows (20+)   | ~3 GB   | LanceDB scales well; RAM stays flat     |

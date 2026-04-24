@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   getConfig,
   listShows,
@@ -89,8 +89,9 @@ export default function HomePage() {
     },
   });
 
-  const goToShow = (folder: string) =>
-    navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } });
+  const goToShow = useCallback((folder: string) =>
+    navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } }),
+  [navigate]);
 
   const { isHovering } = useTauriFileDrop({
     accept: AUDIO_EXTS,
@@ -195,13 +196,13 @@ export default function HomePage() {
                     style={{ gridTemplateColumns: `repeat(${cardSize}, minmax(0, 1fr))` }}
                   >
                     {section.shows.map((show) => (
-                      <ShowCard key={show.path} show={show} onClick={() => goToShow(show.path)} vertical={cardSize >= 5} />
+                      <ShowCard key={show.path} show={show} onClick={goToShow} vertical={cardSize >= 5} />
                     ))}
                   </div>
                 ) : (
                   <div className="border border-border rounded-lg overflow-hidden">
                     {section.shows.map((show) => (
-                      <ShowListRow key={show.path} show={show} onClick={() => goToShow(show.path)} />
+                      <ShowListRow key={show.path} show={show} onClick={goToShow} />
                     ))}
                   </div>
                 )}

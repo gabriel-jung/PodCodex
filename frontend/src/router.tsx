@@ -1,16 +1,26 @@
+import { lazy } from "react";
 import {
   createRouter,
   createRoute,
   createRootRoute,
 } from "@tanstack/react-router";
 import RootLayout from "./pages/RootLayout";
-import HomePage from "./pages/HomePage";
-import ShowPage from "./pages/ShowPage";
-import EpisodePage from "./pages/EpisodePage";
-import SettingsPage from "./pages/SettingsPage";
+
+const HomePage = lazy(() => import("./pages/HomePage"));
+const ShowPage = lazy(() => import("./pages/ShowPage"));
+const EpisodePage = lazy(() => import("./pages/EpisodePage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 
 const rootRoute = createRootRoute({
   component: RootLayout,
+  notFoundComponent: function NotFound() {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
+        <p className="text-lg font-medium text-foreground">Page not found</p>
+        <a href="/" className="text-primary hover:underline text-sm">Go home</a>
+      </div>
+    );
+  },
 });
 
 const homeRoute = createRoute({
@@ -62,20 +72,7 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
-const notFoundRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "*",
-  component: function NotFound() {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
-        <p className="text-lg font-medium text-foreground">Page not found</p>
-        <a href="/" className="text-primary hover:underline text-sm">Go home</a>
-      </div>
-    );
-  },
-});
-
-const routeTree = rootRoute.addChildren([homeRoute, showRoute, episodeRoute, fileRoute, settingsRoute, notFoundRoute]);
+const routeTree = rootRoute.addChildren([homeRoute, showRoute, episodeRoute, fileRoute, settingsRoute]);
 
 export const router = createRouter({ routeTree });
 

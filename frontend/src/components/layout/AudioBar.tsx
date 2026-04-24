@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { useMutation } from "@tanstack/react-query";
 import { useAudioStore } from "@/stores";
 import type { AudioSegment } from "@/stores";
 import { audioFileUrl } from "@/api/client";
+import { getBestSegments, toAudioSegments } from "@/api/segments";
 import { Button } from "@/components/ui/button";
-import { Play, Pause, X, Volume2, VolumeX, MessageSquareText } from "lucide-react";
+import { Play, Pause, X, Volume2, VolumeX, MessageSquareText, Loader2 } from "lucide-react";
 import { formatTime } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 
@@ -33,9 +35,18 @@ export default function AudioBar() {
   const audioFolder = useAudioStore((s) => s.audioFolder);
   const audioStem = useAudioStore((s) => s.audioStem);
   const audioSegments = useAudioStore((s) => s.audioSegments);
+  const setAudioSegments = useAudioStore((s) => s.setAudioSegments);
   const pendingSeek = useAudioStore((s) => s.pendingSeek);
   const consumeSeek = useAudioStore((s) => s.consumeSeek);
   const stopAudio = useAudioStore((s) => s.stopAudio);
+
+  const loadSegmentsMutation = useMutation({
+    mutationFn: getBestSegments,
+    onSuccess: (data, path) => {
+      setAudioSegments(path, toAudioSegments(data));
+      setShowSegment(true);
+    },
+  });
   const navigate = useNavigate();
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -54,6 +65,13 @@ export default function AudioBar() {
   const [showSegment, setShowSegment] = useState(false);
   const [hoverTime, setHoverTime] = useState<{ time: number; pct: number } | null>(null);
   const activeSeg = useMemo(() => findActiveSegment(audioSegments, currentTime), [audioSegments, currentTime]);
+
+  const segmentLoading = loadSegmentsMutation.isPending;
+  const segmentButtonTitle = segmentLoading
+    ? "Loading transcript…"
+    : audioSegments
+      ? (showSegment ? "Hide segment text" : "Show current segment text")
+      : "Load transcript";
 
   // Save position to localStorage periodically while playing
   const currentTimeRef = useRef(currentTime);
@@ -298,21 +316,30 @@ export default function AudioBar() {
           </div>
         </div>
 
-        {/* Segment text toggle — matches pill styling so it reads as a real control */}
-        {audioSegments && (
-          <button
-            onClick={() => setShowSegment(!showSegment)}
-            className={`shrink-0 h-7 w-7 flex items-center justify-center rounded-full transition ${
-              showSegment
-                ? "bg-primary/15 text-primary hover:bg-primary/20"
-                : "bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/60"
-            }`}
-            title={showSegment ? "Hide segment text" : "Show current segment text"}
-            aria-label={showSegment ? "Hide segment text" : "Show segment text"}
-          >
+        {/* Lazy-loads transcript on first click; won't re-fetch once in store */}
+        <button
+          onClick={() => {
+            if (audioSegments) {
+              setShowSegment(!showSegment);
+            } else if (audioPath && !segmentLoading) {
+              loadSegmentsMutation.mutate(audioPath);
+            }
+          }}
+          disabled={segmentLoading}
+          className={`shrink-0 h-7 w-7 flex items-center justify-center rounded-full transition ${
+            showSegment && audioSegments
+              ? "bg-primary/15 text-primary hover:bg-primary/20"
+              : "bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/60"
+          } disabled:opacity-60`}
+          title={segmentButtonTitle}
+          aria-label="Segment text"
+        >
+          {segmentLoading ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
             <MessageSquareText className="w-3.5 h-3.5" />
-          </button>
-        )}
+          )}
+        </button>
 
         {/* Close */}
         <Button onClick={stopAudio} variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground" aria-label="Close player">

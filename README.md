@@ -4,7 +4,7 @@
 
 Turn audio into a searchable knowledge base. Ingest podcasts, YouTube channels, lectures, or interviews — anything with speech — and build a structured, multilingual library you can query by meaning.
 
-PodCodex is a **local-first desktop app** that transcribes, diarizes, corrects, translates, and indexes your audio into an embedded LanceDB vector store. A bundled **Discord bot** lets anyone search the library with slash commands.
+PodCodex is a **local-first desktop app** that transcribes, diarizes, corrects, translates, and indexes your audio into an embedded LanceDB vector store. A bundled **Discord bot** lets anyone search the library with slash commands, and an **MCP server** exposes the same retrieval to Claude Desktop / Claude Code.
 
 ---
 
@@ -29,6 +29,7 @@ All steps share a segment editor (inline editing, speaker mapping, timestamp sna
 - Per-show pipeline defaults (Whisper model, LLM provider, translation target, …)
 - Batch download with shift-select, rate-limit backoff for YouTube
 - Auto-refresh artwork, feed metadata, and speaker registry
+- Removed-from-feed flag: keeps local copies of episodes that disappear from the live RSS/YouTube source
 
 ### Pipeline
 
@@ -40,18 +41,25 @@ All steps share a segment editor (inline editing, speaker mapping, timestamp sna
 
 ### Editing & playback
 
-- Shared segment editor: inline edit, speaker dropdown, timestamp snap to playback position
+- Shared segment editor (virtualized, scales to 10k+ segments): inline edit, speaker dropdown, timestamp snap, split-at-time, tail-merge
 - Flagged-segment detection (unknown speakers, low density), pagination, filters
 - Global audio player persists across pages — WaveSurfer waveform, per-episode speed, drag-to-seek
+- Inline "now playing" segment overlay on the audio bar; transcript editor syncs once on open, with a manual re-sync button (no auto-follow during edits)
 - Word-level diff view between original and corrected segments
-- Version history per step with full provenance (model, params, timestamp, content hash)
+- Version history per step with full provenance (model, params, timestamp, content hash); atomic writes for config, manifest, and versions
 
 ### Search
 
 - Semantic (BGE-M3 hybrid or E5), exact, or random across indexed segments
-- Episode / speaker / source filters
+- Show / episode / speaker / source / pub-date filters, unified across frontend, Discord bot, and MCP
 - Per-episode search panel and show-wide search tab
+- Command palette (Cmd+K) searches transcripts across every indexed show
 - Export transcripts as text, SRT, VTT, or ZIP archive
+
+### Integrations
+
+- **Discord bot** — `/search`, `/exact`, `/random`, `/speakers`, `/stats`, `/episodes`; simple/advanced command split; password-gated per-server show access
+- **MCP server** — expose `search`, `exact`, `list_shows`, `get_context` to Claude Desktop (one-toggle setup from Settings) or Claude Code via stdio/HTTP
 
 ## Tech stack
 
@@ -123,12 +131,15 @@ Search your transcripts from Discord with slash commands.
 | Command     | Description                                             |
 |-------------|---------------------------------------------------------|
 | `/search`   | Semantic / hybrid search by meaning                     |
-| `/ask`      | Retrieval-augmented Q&A (synthesized answer + sources)  |
-| `/exact`    | Literal substring match (like Ctrl+F)                   |
+| `/exact`    | Literal substring match (like Ctrl+F), accent-aware, 1-edit fuzzy tier |
 | `/random`   | Random quote, with show/episode/speaker/source filters  |
+| `/speakers` | List speakers for a show with episode counts            |
 | `/stats`    | Index overview (shows, episodes, duration)              |
 | `/episodes` | List episodes for a show                                |
+| `/unlock` · `/lock` · `/changepassword` | Per-server show access control (admin) |
 | `/setup`    | Per-server defaults (admin)                             |
+
+`/search` and `/exact` each have an `-advanced` variant exposing alpha / model / chunker / top_k — keeps the default surface clean.
 
 Run locally:
 
@@ -138,6 +149,18 @@ DISCORD_TOKEN=... uv run podcodex-bot
 ```
 
 Full install guide (uv and Docker paths, token setup, access control, VPS deploy): see [`deploy/BOT.md`](deploy/BOT.md).
+
+---
+
+## Claude Desktop / MCP
+
+An MCP server exposes your index to Claude Desktop (or any MCP-capable client) so Claude can search your transcripts directly during a conversation. The server does retrieval only — the client LLM reads the chunks and synthesizes the answer.
+
+Fastest path: **Settings → Claude Desktop → Enable Claude Desktop integration** in the desktop app. PodCodex writes the `claude_desktop_config.json` entry, resolves the absolute path to the bundled `podcodex-mcp` stdio binary, and handles WSL (Linux binary wrapped via `wsl.exe` for Windows Claude Desktop) automatically.
+
+Tools exposed: `search`, `exact`, `list_shows`, `get_context` — plus editable slash prompts (`/brief`, `/speaker`, `/quote`, `/compare`, `/timeline`).
+
+Full guide (manual stdio config, Claude Code registration, prompts, troubleshooting): see [`deploy/MCP.md`](deploy/MCP.md).
 
 ---
 
@@ -167,13 +190,15 @@ Full install guide (uv and Docker paths, token setup, access control, VPS deploy
 - **Core** (`src/podcodex/core/`) — transcribe, correct, translate, synthesize, versioning, per-show pipeline DB.
   - `run_llm_pipeline()` — single LLM dispatch function shared by correct and translate.
 - **RAG** (`src/podcodex/rag/`) — chunking, embedding, LanceDB index store, hybrid retrieval (vector ANN + BM25 FTS).
+- **Bot** (`src/podcodex/bot/`) — Discord slash commands over the shared retriever, password-gated show access.
+- **MCP** (`src/podcodex/mcp/`) — stdio + HTTP MCP server exposing `search` / `exact` / `list_shows` / `get_context` plus user-editable prompts.
 - **Tauri** (`src-tauri/`) — thin Rust shell, auto-spawns backend, native file dialogs.
 
 Every pipeline save (transcribe, correct, translate, manual edit) is archived as a **version** under `.versions/{step}/` with full provenance (model, params, content hash). Episode status is tracked in a per-show `pipeline.db` SQLite. All embeddings live in a single LanceDB index (`~/.local/share/podcodex/index` by default). Collection names follow `{show}__{model}__{chunker}`.
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md). Next up: semi-automatic speaker mapping via voice embeddings, then a zero-config "simple mode" for non-technical users, then standalone `.app`/`.deb`/`.exe` distribution.
+See [ROADMAP.md](ROADMAP.md). Next up: semi-automatic speaker mapping via voice embeddings, then standalone `.app`/`.deb`/`.exe` distribution.
 
 ## Notes
 

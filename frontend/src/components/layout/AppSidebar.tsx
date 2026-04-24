@@ -28,7 +28,8 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
 }) {
   const navigate = useNavigate();
   const isHome = useRouterState({ select: (s) => s.location.pathname === "/" });
-  const hideBack = isHome && window.history.length <= 1;
+  const historyIndex = useRouterState({ select: (s) => s.location.state.__TSR_index ?? 0 });
+  const hideBack = historyIndex === 0;
   const expanded = useLayoutStore((s) => s.sidebarExpanded);
   const setExpanded = useLayoutStore((s) => s.setSidebarExpanded);
   const { theme, setTheme } = useTheme();
@@ -44,7 +45,7 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
         {/* Back + Parent + Home */}
         {!hideBack && (
           <SidebarBtn icon={ArrowLeft} label="Back" expanded={expanded} onClick={() => {
-            if (window.history.length > 1) window.history.back();
+            if (historyIndex > 0) window.history.back();
             else navigate({ to: "/" });
           }} />
         )}

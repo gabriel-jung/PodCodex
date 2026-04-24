@@ -914,8 +914,8 @@ class IndexStore:
         """Return chunks around a center chunk_index, ordered by position.
 
         Used to expand a retrieved hit with its neighbors so callers
-        (Discord ``/ask``, MCP ``get_context``) get enough surrounding
-        dialogue for grounded answers.
+        (MCP ``get_context``) get enough surrounding dialogue for
+        grounded answers.
 
         Args:
             collection: Collection name.

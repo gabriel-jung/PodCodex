@@ -32,7 +32,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const [youtubeUrl, setYoutubeUrl] = useState(meta.youtube_url ?? "");
   const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
   const [pipeModelSize, setPipeModelSize] = useState(meta.pipeline?.model_size ?? "");
-  const [pipeDiarize, setPipeDiarize] = useState(meta.pipeline?.diarize ?? true);
+  const [pipeDiarize, setPipeDiarize] = useState(meta.pipeline?.diarize ?? false);
   const [pipeLlmMode, setPipeLlmMode] = useState(meta.pipeline?.llm_mode ?? "");
   const [pipeLlmProvider, setPipeLlmProvider] = useState(meta.pipeline?.llm_provider ?? "");
   const [pipeLlmModel, setPipeLlmModel] = useState(meta.pipeline?.llm_model ?? "");
@@ -54,7 +54,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     setYoutubeUrl(meta.youtube_url ?? "");
     setArtworkUrl(meta.artwork_url);
     setPipeModelSize(meta.pipeline?.model_size ?? "");
-    setPipeDiarize(meta.pipeline?.diarize ?? true);
+    setPipeDiarize(meta.pipeline?.diarize ?? false);
     setPipeLlmMode(meta.pipeline?.llm_mode ?? "");
     setPipeLlmProvider(meta.pipeline?.llm_provider ?? "");
     setPipeLlmModel(meta.pipeline?.llm_model ?? "");
@@ -68,7 +68,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     youtubeUrl !== (meta.youtube_url ?? "") ||
     artworkUrl !== meta.artwork_url ||
     pipeModelSize !== (meta.pipeline?.model_size ?? "") ||
-    pipeDiarize !== (meta.pipeline?.diarize ?? true) ||
+    pipeDiarize !== (meta.pipeline?.diarize ?? false) ||
     pipeLlmMode !== (meta.pipeline?.llm_mode ?? "") ||
     pipeLlmProvider !== (meta.pipeline?.llm_provider ?? "") ||
     pipeLlmModel !== (meta.pipeline?.llm_model ?? "") ||

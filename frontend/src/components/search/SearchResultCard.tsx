@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { SearchResult } from "@/api/types";
 import { useAudioStore } from "@/stores";
 import { formatDate, formatTime, mergeDisplayTurns } from "@/lib/utils";
@@ -21,7 +21,7 @@ interface SearchResultCardProps {
   query?: string;
 }
 
-export default function SearchResultCard({ result, show, query = "" }: SearchResultCardProps) {
+function SearchResultCardInner({ result, show, query = "" }: SearchResultCardProps) {
   const playEpisode = useAudioStore((s) => s.playEpisode);
   const [contextOpen, setContextOpen] = useState(false);
 
@@ -147,3 +147,6 @@ export default function SearchResultCard({ result, show, query = "" }: SearchRes
     </>
   );
 }
+
+const SearchResultCard = memo(SearchResultCardInner);
+export default SearchResultCard;

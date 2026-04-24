@@ -40,6 +40,7 @@ import {
   AlertTriangle,
   Activity,
   Timer,
+  Locate,
 } from "lucide-react";
 
 // ── SVG icons for insert-before / insert-after ────────────────────────────────
@@ -1128,13 +1129,30 @@ export default function TranscriptViewer({
     return () => clearInterval(interval);
   }, [isPlayingThisFile]);
 
-  // Auto-scroll to active segment via the virtualizer (the row may be
-  // outside the mounted window, so DOM querySelector won't find it).
+  // Scroll to active segment ONCE on first resolve (so the editor opens
+  // aligned to where the audio is), then never auto-follow — that would
+  // yank the view out from under the user mid-edit. Manual re-sync via
+  // the "jump to now playing" button.
+  const didInitialSyncRef = useRef(false);
+  const prevAudioPathRef = useRef(audioPath);
+  if (prevAudioPathRef.current !== audioPath) {
+    prevAudioPathRef.current = audioPath;
+    didInitialSyncRef.current = false;
+  }
   useEffect(() => {
+    if (activeOrigIdx == null || didInitialSyncRef.current) return;
+    const idx = pageSegments.findIndex((p) => p.originalIndex === activeOrigIdx);
+    if (idx >= 0) {
+      rowVirtualizer.scrollToIndex(idx, { align: "center", behavior: "auto" });
+      didInitialSyncRef.current = true;
+    }
+  }, [activeOrigIdx, pageSegments, rowVirtualizer]);
+
+  const jumpToActive = () => {
     if (activeOrigIdx == null) return;
     const idx = pageSegments.findIndex((p) => p.originalIndex === activeOrigIdx);
-    if (idx >= 0) rowVirtualizer.scrollToIndex(idx, { align: "auto", behavior: "smooth" });
-  }, [activeOrigIdx, pageSegments, rowVirtualizer]);
+    if (idx >= 0) rowVirtualizer.scrollToIndex(idx, { align: "center", behavior: "smooth" });
+  };
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
 
@@ -1478,6 +1496,19 @@ export default function TranscriptViewer({
             </button>
           )}
           <div className="flex-1" />
+          {/* manual re-sync — auto-follow would disrupt editing */}
+          {isPlayingThisFile && activeOrigIdx != null && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs h-7"
+              onClick={jumpToActive}
+              title="Jump to now-playing segment"
+            >
+              <Locate className="w-3 h-3 mr-1" />
+              Now playing
+            </Button>
+          )}
           {/* Right: undo, export, save */}
           {editor.canUndo && (
             <Button

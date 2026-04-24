@@ -26,7 +26,6 @@ dependencies = [
 [project.optional-dependencies]
 bot = [
     "discord.py>=2.5.0",
-    "openai>=2.23.0",    # /ask synthesis
 ]
 mcp = [
     "mcp>=1.2.0",        # stdio server for Claude Desktop / Claude Code
@@ -65,6 +64,7 @@ pipeline = [
 podcodex-bot = "podcodex.bot.bot:main"
 podcodex-api = "podcodex.api.app:main"
 podcodex-mcp = "podcodex.mcp.server:main"
+podcodex-reindex = "podcodex.rag.reindex:main"
 
 [project.urls]
 Homepage = "https://github.com/gabriel-jung/podcodex"

@@ -56,11 +56,12 @@ def test_call_and_parse_bad_json_keeps_original():
     assert result[0]["text"] == "Bonjour le monde"
 
 
-def test_call_and_parse_missing_index_keeps_original():
+def test_call_and_parse_count_mismatch_rejects_whole_batch():
+    """LLM returning fewer items than the batch = index-drift risk; reject everything."""
     batch = make_segments("Premier", "Deuxieme")
     response = json.dumps([{"index": 0, "text": "First"}])
     result = call_and_parse(batch, "sys", make_call_fn(response), min_length_ratio=0)
-    assert result[0]["text"] == "First"
+    assert result[0]["text"] == "Premier"
     assert result[1]["text"] == "Deuxieme"
 
 
@@ -117,7 +118,7 @@ def test_call_and_parse_skips_break_segments():
         calls.append(messages)
         # [BREAK] must not appear in the user message
         assert "[BREAK]" not in messages[1]["content"]
-        assert "2 numbered segments" in messages[1]["content"]
+        assert "all 2 segments" in messages[1]["content"]
         return response
 
     result = call_and_parse(batch, "sys", tracking, min_length_ratio=0)

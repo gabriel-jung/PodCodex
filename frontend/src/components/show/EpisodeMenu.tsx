@@ -1,5 +1,6 @@
 /** Context menu for an episode row/card — Play, Download, Process (per-step), Delete. */
 
+import { memo } from "react";
 import { MoreVertical, Play, Download, Trash2, Sparkles, FileText, Languages, Database, ExternalLink } from "lucide-react";
 import type { Episode } from "@/api/types";
 import {
@@ -33,7 +34,7 @@ const STEP_LABELS: Record<PipelineStep, { icon: typeof Sparkles; label: string }
   index: { icon: Database, label: "Index" },
 };
 
-export function EpisodeMenu({ ep, onOpen, onPlay, onDownload, onDelete, onProcess, children }: EpisodeMenuProps) {
+function EpisodeMenuInner({ ep, onOpen, onPlay, onDownload, onDelete, onProcess, children }: EpisodeMenuProps) {
   const canProcess = !!onProcess && (ep.downloaded || ep.has_subtitles || (ep.transcribed && ep.output_dir));
   const canPlay = !!onPlay && !!ep.audio_path;
   const canDownload = !!onDownload && !ep.downloaded;
@@ -96,3 +97,5 @@ export function EpisodeMenu({ ep, onOpen, onPlay, onDownload, onDelete, onProces
     </DropdownMenu>
   );
 }
+
+export const EpisodeMenu = memo(EpisodeMenuInner);

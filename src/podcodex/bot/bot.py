@@ -6,6 +6,7 @@ Entrypoint:
                  [--index PATH] [--server-config FILE] [--dev-guild ID]
     podcodex-bot --manage-passwords [--index PATH]
 
+
 Slash commands (user-facing):
     /search   question [show] [episode] [speaker] [alpha] [model] [top_k] [source] [compact]
               Hybrid search: alpha blends keyword (0) ↔ semantic (1).
@@ -49,7 +50,6 @@ import random
 import secrets
 import sys
 import time
-from collections import defaultdict
 from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
@@ -71,13 +71,10 @@ from podcodex.bot.formatting import (
     speaker_lines,
     truncate_description,
 )
-from podcodex.bot.synthesis import synthesize_answer
-from podcodex.bot.ui import ExpandView, NoExpandView, PaginatedResultView, SourcesView
-from podcodex.core.constants import LLM_PROVIDERS
+from podcodex.bot.ui import ExpandView, NoExpandView, PaginatedResultView
 from podcodex.rag.defaults import (
     ALPHA,
     CHUNKING_STRATEGIES,
-    CONTEXT_WINDOW,
     DEFAULT_CHUNKING,
     DEFAULT_MODEL,
     MODELS,
@@ -176,12 +173,6 @@ class BotConfig:
     merge_strategy: str = "roundrobin"
     cooldown_seconds: float = 5.0
     dev_guild_id: int | None = None
-    # /ask LLM config — defaults for all servers
-    ask_provider: str = ""
-    ask_model: str = ""
-    ask_api_url: str = ""
-    ask_api_key: str | None = None
-    ask_cooldown_seconds: float = 30.0
 
 
 @dataclass
@@ -194,11 +185,6 @@ class ServerSettings:
     allowed_shows: list[str] = field(default_factory=list)
     default_source: str = ""
     compact: bool = False
-    # /ask LLM config (API key never stored — read from env at call time)
-    ask_provider: str = ""
-    ask_model: str = ""
-    ask_api_url: str = ""
-    ask_cooldown_seconds: float = 30.0
 
 
 def _verify_password(password: str, stored_hash: str) -> bool:
@@ -284,7 +270,6 @@ class PodCodexBot(discord.Client):
         self.server_config_path = server_config_path
         self.tree = app_commands.CommandTree(self)
         self._cooldown = CooldownManager(seconds=config.cooldown_seconds)
-        self._ask_cooldown = CooldownManager(seconds=config.ask_cooldown_seconds)
 
         # Shows loaded from IndexStore — {lower(name): ShowEntry}
         # Populated in setup_hook once the index is open; refreshable via /admin.
@@ -349,10 +334,6 @@ class PodCodexBot(discord.Client):
             model=self.config.model,
             chunker=self.config.chunker,
             top_k=self.config.top_k,
-            ask_provider=self.config.ask_provider,
-            ask_model=self.config.ask_model,
-            ask_api_url=self.config.ask_api_url,
-            ask_cooldown_seconds=self.config.ask_cooldown_seconds,
         )
 
     def _effective_settings(
@@ -371,10 +352,6 @@ class PodCodexBot(discord.Client):
             allowed_shows=base.allowed_shows,
             default_source=base.default_source,
             compact=base.compact,
-            ask_provider=base.ask_provider,
-            ask_model=base.ask_model,
-            ask_api_url=base.ask_api_url,
-            ask_cooldown_seconds=base.ask_cooldown_seconds,
         )
 
     # ── Access control helpers ────────────────
@@ -565,15 +542,6 @@ class PodCodexBot(discord.Client):
 
     async def _check_cooldown(self, interaction: discord.Interaction) -> bool:
         return await self._check_cooldown_for(interaction, self._cooldown, "searching")
-
-    async def _check_ask_cooldown(self, interaction: discord.Interaction) -> bool:
-        settings = self._server_settings(interaction.guild_id)
-        return await self._check_cooldown_for(
-            interaction,
-            self._ask_cooldown,
-            "asking",
-            seconds=settings.ask_cooldown_seconds,
-        )
 
     async def _reject_bad_date(
         self,
@@ -951,92 +919,6 @@ class PodCodexBot(discord.Client):
         search_advanced.autocomplete("model")(self._model_autocomplete)
         search_advanced.autocomplete("chunker")(self._chunker_autocomplete)
 
-        # /ask ────────────────────────────────
-        @self.tree.command(
-            name="ask",
-            description="Ask a question — synthesized answer from transcript passages",
-        )
-        @app_commands.describe(
-            question="What do you want to know?",
-            show="Pick a show (searches all if empty)",
-            episode="Pick an episode",
-            speaker="Filter by speaker name",
-            source="Transcript version: corrected, transcript, or a language code",
-        )
-        async def ask(
-            interaction: discord.Interaction,
-            question: str,
-            show: str = "",
-            episode: str = "",
-            speaker: str = "",
-            source: str = "",
-        ) -> None:
-            if not await self._check_ask_cooldown(interaction):
-                return
-            await self._handle_ask(
-                interaction,
-                question,
-                show=show or None,
-                episode=episode or None,
-                speaker=speaker or None,
-                source=source or None,
-            )
-
-        ask.autocomplete("show")(self._show_autocomplete)
-        ask.autocomplete("episode")(self._episode_autocomplete)
-        ask.autocomplete("source")(self._source_autocomplete)
-        ask.autocomplete("speaker")(self._speaker_autocomplete)
-
-        # /ask-advanced ───────────────────────
-        @self.tree.command(
-            name="ask-advanced",
-            description="Ask with full control over retrieval tuning",
-        )
-        @app_commands.describe(
-            question="What do you want to know?",
-            show="Pick a show (searches all if empty)",
-            episode="Pick an episode",
-            speaker="Filter by speaker name",
-            source="Transcript version: corrected, transcript, or a language code",
-            alpha="0 = keywords only → 1 = meaning only (default 0.5)",
-            model="Embedding model (leave empty for server default)",
-            chunker="Chunking strategy (leave empty for server default)",
-            top_k="How many passages to retrieve (leave empty for server default)",
-        )
-        async def ask_advanced(
-            interaction: discord.Interaction,
-            question: str,
-            show: str = "",
-            episode: str = "",
-            speaker: str = "",
-            source: str = "",
-            alpha: app_commands.Range[float, 0.0, 1.0] = ALPHA,
-            model: str = "",
-            chunker: str = "",
-            top_k: app_commands.Range[int, 1, 25] = 0,
-        ) -> None:
-            if not await self._check_ask_cooldown(interaction):
-                return
-            await self._handle_ask(
-                interaction,
-                question,
-                show=show or None,
-                episode=episode or None,
-                speaker=speaker or None,
-                alpha=alpha,
-                top_k=top_k,
-                source=source or None,
-                model=model,
-                chunker=chunker,
-            )
-
-        ask_advanced.autocomplete("show")(self._show_autocomplete)
-        ask_advanced.autocomplete("episode")(self._episode_autocomplete)
-        ask_advanced.autocomplete("source")(self._source_autocomplete)
-        ask_advanced.autocomplete("speaker")(self._speaker_autocomplete)
-        ask_advanced.autocomplete("model")(self._model_autocomplete)
-        ask_advanced.autocomplete("chunker")(self._chunker_autocomplete)
-
         # /exact ──────────────────────────────
         @self.tree.command(
             name="exact",
@@ -1232,10 +1114,6 @@ class PodCodexBot(discord.Client):
             show_clear="Remove all default shows (search everything)",
             default_source="Default source to search: corrected, transcript, etc.",
             compact="Use compact results by default",
-            ask_provider="LLM provider for /ask (openai, mistral, anthropic, custom)",
-            ask_model="LLM model name for /ask (leave empty for provider default)",
-            ask_api_url="API base URL for /ask (required for 'custom' provider)",
-            ask_cooldown="Per-user cooldown for /ask in seconds (default 30)",
         )
         @app_commands.choices(
             show_clear=_BOOL_CHOICES,
@@ -1251,10 +1129,6 @@ class PodCodexBot(discord.Client):
             show_clear: str = "",
             default_source: str = "",
             compact: str = "",
-            ask_provider: str = "",
-            ask_model: str = "",
-            ask_api_url: str = "",
-            ask_cooldown: app_commands.Range[float, 1.0, 300.0] = 0.0,
         ) -> None:
             await self._handle_setup(
                 interaction,
@@ -1266,10 +1140,6 @@ class PodCodexBot(discord.Client):
                 show_clear=show_clear == "true",
                 default_source=default_source,
                 compact=compact,
-                ask_provider=ask_provider,
-                ask_model=ask_model,
-                ask_api_url=ask_api_url,
-                ask_cooldown=ask_cooldown or None,
             )
 
         setup.autocomplete("show_add")(self._show_autocomplete)
@@ -1363,19 +1233,6 @@ class PodCodexBot(discord.Client):
                 value=(
                     "Find relevant passages using a mix of keyword and semantic search.\n"
                     "`alpha` controls the blend: 0 = keywords only, 1 = meaning only (default 0.5)."
-                ),
-                inline=False,
-            )
-            ask_settings = self._server_settings(interaction.guild_id)
-            ask_configured = bool(ask_settings.ask_provider or ask_settings.ask_model)
-            ask_status = (
-                "" if ask_configured else " *(LLM not configured — admin: use /setup)*"
-            )
-            embed.add_field(
-                name="/ask `question`",
-                value=(
-                    f"Ask a question and get a synthesized answer grounded in the transcripts.{ask_status}\n"
-                    "Attaches a **Show sources** button to reveal the retrieved passages."
                 ),
                 inline=False,
             )
@@ -1556,149 +1413,6 @@ class PodCodexBot(discord.Client):
             strategy=self.config.merge_strategy,
         )
         return [r for r in merged if r[0].get("score", 0) > 0.05]
-
-    # ── /ask handler ─────────────────────────
-
-    async def _handle_ask(
-        self,
-        interaction: discord.Interaction,
-        question: str,
-        *,
-        show: str | None = None,
-        episode: str | None = None,
-        speaker: str | None = None,
-        alpha: float = ALPHA,
-        top_k: int = 0,
-        source: str | None = None,
-        model: str = "",
-        chunker: str = "",
-    ) -> None:
-        await interaction.response.defer()
-        await self._refresh_if_stale()
-        settings = self._effective_settings(interaction.guild_id, model, top_k, chunker)
-        effective_source = source or settings.default_source or None
-
-        # Validate LLM configured
-        if not (settings.ask_provider or settings.ask_model):
-            await interaction.followup.send(
-                "❌ /ask is not configured for this server.\n"
-                "An admin must set `ask_provider` and `ask_model` via `/setup`.",
-                ephemeral=True,
-            )
-            return
-
-        shows = self._resolve_shows(settings, show or "")
-        loop = asyncio.get_running_loop()
-
-        try:
-            results = await loop.run_in_executor(
-                None,
-                lambda: self._hybrid_search(
-                    question,
-                    shows,
-                    settings,
-                    alpha,
-                    source=effective_source,
-                    episode=episode,
-                    speaker=speaker,
-                ),
-            )
-        except Exception:
-            logger.exception(f"ask: retrieval error for {question!r}")
-            await interaction.followup.send(
-                "❌ Retrieval failed. Please try again later.", ephemeral=True
-            )
-            return
-
-        if not results:
-            await interaction.followup.send(
-                "No relevant passages found.", ephemeral=True
-            )
-            return
-
-        # Group hits by (collection, episode) so each episode is loaded once,
-        # then slice windows around each hit in memory. Avoids N full-episode
-        # scans when multiple hits come from the same episode.
-        groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
-        for chunk, col in results:
-            groups[(col, chunk.get("episode", ""))].append(chunk)
-
-        expanded: list[dict] = []
-        seen: set[tuple[str, str, int]] = set()
-        for (col, ep), hits in groups.items():
-            ep_chunks = await loop.run_in_executor(
-                None, self.local.load_chunks_no_embeddings, col, ep
-            )
-            by_idx = {c.get("chunk_index"): i for i, c in enumerate(ep_chunks)}
-            for hit in hits:
-                ci = hit.get("chunk_index")
-                center = by_idx.get(ci, -1) if ci is not None else -1
-                if center < 0:
-                    window = [hit]
-                else:
-                    lo = max(0, center - CONTEXT_WINDOW)
-                    hi = min(len(ep_chunks), center + CONTEXT_WINDOW + 1)
-                    window = ep_chunks[lo:hi]
-                for w in window:
-                    wci = w.get("chunk_index")
-                    key = (col, w.get("episode", ""), wci if wci is not None else -1)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    expanded.append(w)
-
-        try:
-            answer = await loop.run_in_executor(
-                None,
-                lambda: synthesize_answer(
-                    question,
-                    expanded,
-                    provider=settings.ask_provider,
-                    model=settings.ask_model,
-                    api_base_url=settings.ask_api_url,
-                    api_key=self.config.ask_api_key,
-                ),
-            )
-        except ValueError as exc:
-            logger.warning(f"ask: config error — {exc}")
-            provider = settings.ask_provider or "unset"
-            env_var = (
-                LLM_PROVIDERS.get(settings.ask_provider, {}).get("env_var", "")
-                or "the provider's API key env var"
-            )
-            await interaction.followup.send(
-                "❌ `/ask` is not fully configured on this server.\n"
-                f"Provider `{provider}` is missing its API key. "
-                f"An admin needs to set `{env_var}` on the bot host.",
-                ephemeral=True,
-            )
-            return
-        except Exception:
-            logger.exception(f"ask: synthesis error for {question!r}")
-            await interaction.followup.send(
-                "❌ The LLM provider failed to answer. Try again in a moment.",
-                ephemeral=True,
-            )
-            return
-
-        label = f"α={alpha:.2f} • {MODELS[settings.model].label}"
-        source_pages = [
-            _result_embed(chunk, rank, len(results), col, label, question=question)
-            for rank, (chunk, col) in enumerate(results, 1)
-        ]
-
-        provider_label = settings.ask_provider or settings.ask_model or "LLM"
-        embed = discord.Embed(
-            description=truncate_description(answer),
-            color=discord.Color.gold(),
-        )
-        embed.set_author(name=f'❓ "{question}"')
-        embed.set_footer(
-            text=f"{len(results)} source{'s' if len(results) != 1 else ''} · {provider_label}"
-        )
-
-        view = SourcesView(source_pages)
-        await interaction.followup.send(embed=embed, view=view)
 
     # ── /exact handler ────────────────────────
 
@@ -1930,10 +1644,6 @@ class PodCodexBot(discord.Client):
         show_clear: bool = False,
         default_source: str = "",
         compact: str = "",
-        ask_provider: str = "",
-        ask_model: str = "",
-        ask_api_url: str = "",
-        ask_cooldown: float | None = None,
     ) -> None:
         guild_id = interaction.guild_id
         current = self._server_settings(guild_id)
@@ -1956,10 +1666,6 @@ class PodCodexBot(discord.Client):
                 show_clear,
                 default_source,
                 compact,
-                ask_provider,
-                ask_model,
-                ask_api_url,
-                ask_cooldown,
             ]
         )
         if not has_change:
@@ -1973,9 +1679,6 @@ class PodCodexBot(discord.Client):
                     ", ".join(f"`{s}`" for s in current.allowed_shows)
                     or "*(all public)*"
                 )
-            ask_status = (
-                current.ask_provider or current.ask_model or "*(not configured)*"
-            )
             await interaction.response.send_message(
                 f"**Current settings**\n"
                 f"Model: `{current.model}`\n"
@@ -1984,10 +1687,7 @@ class PodCodexBot(discord.Client):
                 f"Shows: {shows_str}\n"
                 f"Default source: `{current.default_source or '(any)'}`\n"
                 f"Compact: `{current.compact}`\n"
-                f"Merge: `{self.config.merge_strategy}`\n"
-                f"Ask provider: `{ask_status}`\n"
-                f"Ask model: `{current.ask_model or '(provider default)'}`\n"
-                f"Ask cooldown: `{current.ask_cooldown_seconds:.0f}s`",
+                f"Merge: `{self.config.merge_strategy}`",
                 ephemeral=True,
             )
             return
@@ -2008,12 +1708,6 @@ class PodCodexBot(discord.Client):
             allowed_shows=new_shows,
             default_source=default_source if default_source else current.default_source,
             compact=compact == "true" if compact else current.compact,
-            ask_provider=ask_provider or current.ask_provider,
-            ask_model=ask_model or current.ask_model,
-            ask_api_url=ask_api_url or current.ask_api_url,
-            ask_cooldown_seconds=ask_cooldown
-            if ask_cooldown
-            else current.ask_cooldown_seconds,
         )
         self._server_cfg[guild_id] = updated
         self._save_server_config()
@@ -2022,7 +1716,6 @@ class PodCodexBot(discord.Client):
         shows_str = (
             ", ".join(f"`{s}`" for s in updated.allowed_shows) or "*(all public)*"
         )
-        ask_status = updated.ask_provider or updated.ask_model or "*(not configured)*"
         await interaction.response.send_message(
             f"✅ Settings updated\n"
             f"Model: `{updated.model}`\n"
@@ -2030,10 +1723,7 @@ class PodCodexBot(discord.Client):
             f"Top-k: `{updated.top_k}`\n"
             f"Shows: {shows_str}\n"
             f"Default source: `{updated.default_source or '(any)'}`\n"
-            f"Compact: `{updated.compact}`\n"
-            f"Ask provider: `{ask_status}`\n"
-            f"Ask model: `{updated.ask_model or '(provider default)'}`\n"
-            f"Ask cooldown: `{updated.ask_cooldown_seconds:.0f}s`",
+            f"Compact: `{updated.compact}`",
             ephemeral=True,
         )
 
@@ -2538,26 +2228,6 @@ def main() -> None:
         "--dev-guild", default=None, type=int, help="Guild ID for instant dev sync"
     )
     parser.add_argument(
-        "--ask-provider",
-        default="",
-        help="LLM provider for /ask: openai, mistral, anthropic, custom",
-    )
-    parser.add_argument("--ask-model", default="", help="LLM model name for /ask")
-    parser.add_argument(
-        "--ask-api-url", default="", help="API base URL for /ask (custom provider)"
-    )
-    parser.add_argument(
-        "--ask-api-key",
-        default=None,
-        help="API key for /ask (overrides env variable)",
-    )
-    parser.add_argument(
-        "--ask-cooldown",
-        default=30.0,
-        type=float,
-        help="Per-user cooldown for /ask in seconds (default 30)",
-    )
-    parser.add_argument(
         "--manage-passwords",
         action="store_true",
         help="Interactively manage show passwords in the index and exit",
@@ -2580,11 +2250,6 @@ def main() -> None:
         merge_strategy=args.merge_strategy,
         cooldown_seconds=args.cooldown,
         dev_guild_id=args.dev_guild,
-        ask_provider=args.ask_provider,
-        ask_model=args.ask_model,
-        ask_api_url=args.ask_api_url,
-        ask_api_key=args.ask_api_key,
-        ask_cooldown_seconds=args.ask_cooldown,
     )
 
     bot = PodCodexBot(config, server_config_path=Path(args.server_config))

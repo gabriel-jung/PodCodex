@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { artworkUrl } from "@/api/filesystem";
 import type { ShowSummary } from "@/api/types";
 import { SourceIcon } from "./SourceIcon";
@@ -5,15 +6,16 @@ import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 
 export interface ShowCardProps {
   show: ShowSummary;
-  onClick: () => void;
+  onClick: (path: string) => void;
   vertical?: boolean;
 }
 
-export default function ShowCard({ show, onClick, vertical }: ShowCardProps) {
+function ShowCardInner({ show, onClick, vertical }: ShowCardProps) {
+  const handleClick = () => onClick(show.path);
   if (vertical) {
     return (
       <button
-        onClick={onClick}
+        onClick={handleClick}
         className="text-left rounded-xl bg-card border border-border hover:border-muted-foreground/30 transition group overflow-hidden"
       >
         <div className="p-3 pb-0">
@@ -39,7 +41,7 @@ export default function ShowCard({ show, onClick, vertical }: ShowCardProps) {
 
   return (
     <button
-      onClick={onClick}
+      onClick={handleClick}
       className="text-left p-3 rounded-xl bg-card border border-border hover:border-muted-foreground/30 transition group flex items-center gap-3"
     >
       {show.artwork_url ? (
@@ -60,3 +62,6 @@ export default function ShowCard({ show, onClick, vertical }: ShowCardProps) {
     </button>
   );
 }
+
+const ShowCard = memo(ShowCardInner);
+export default ShowCard;

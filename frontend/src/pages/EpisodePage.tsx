@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { getEpisodes, getShowMeta, exportZipUrl, openFolder } from "@/api/client";
 import { audioFileUrl } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
@@ -26,8 +26,10 @@ import AppSidebar from "@/components/layout/AppSidebar";
 import type { Episode, ShowMeta, VersionEntry } from "@/api/types";
 import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
 import { Button } from "@/components/ui/button";
-import SearchPanel from "@/components/search/SearchPanel";
-import SegmentContextDialog from "@/components/search/SegmentContextDialog";
+import PanelLoading from "@/components/common/PanelLoading";
+
+const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
+const SegmentContextDialog = lazy(() => import("@/components/search/SegmentContextDialog"));
 import { formatDuration, formatDate, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import {
@@ -282,18 +284,20 @@ export default function EpisodePage({
             </div>
           )}
           <div className="flex-1 overflow-y-auto">
-            <StepContent
-              step={activeStep}
-              episode={episode}
-              folder={folder}
-              meta={meta}
-              isYouTube={isYouTube}
-              onDownloadAudio={() => episodeDownloadMutation.mutate({ guids: [episode.id] })}
-              onImportSubs={(lang) => importSubsMutation.mutate({ ids: [episode?.id ?? ""], lang })}
-              downloadDisabled={episodeDownloadMutation.isPending || importSubsMutation.isPending || !!downloadTaskId}
-              downloadError={episodeDownloadMutation.isError ? errorMessage(episodeDownloadMutation.error) : importSubsMutation.isError ? errorMessage(importSubsMutation.error) : undefined}
-              onNavigateStep={setActiveStep}
-            />
+            <Suspense fallback={<PanelLoading />}>
+              <StepContent
+                step={activeStep}
+                episode={episode}
+                folder={folder}
+                meta={meta}
+                isYouTube={isYouTube}
+                onDownloadAudio={() => episodeDownloadMutation.mutate({ guids: [episode.id] })}
+                onImportSubs={(lang) => importSubsMutation.mutate({ ids: [episode?.id ?? ""], lang })}
+                downloadDisabled={episodeDownloadMutation.isPending || importSubsMutation.isPending || !!downloadTaskId}
+                downloadError={episodeDownloadMutation.isError ? errorMessage(episodeDownloadMutation.error) : importSubsMutation.isError ? errorMessage(importSubsMutation.error) : undefined}
+                onNavigateStep={setActiveStep}
+              />
+            </Suspense>
           </div>
         </div>
       </div>
@@ -547,6 +551,7 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
       </div>
 
       {audioPath && previewSource && (
+        <Suspense fallback={null}>
         <SegmentContextDialog
           open={true}
           onOpenChange={(open) => { if (!open) setPreviewSource(null); }}
@@ -561,6 +566,7 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
             else onNavigateStep("translate");
           }}
         />
+        </Suspense>
       )}
     </div>
   );
