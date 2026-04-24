@@ -97,7 +97,12 @@ export interface PipelineConfigState {
   transcribePreset: string;
   applyTranscribePreset: (key: keyof typeof TRANSCRIBE_PRESETS) => void;
   llmPreset: string;
-  applyLLMPreset: (key: keyof typeof LLM_PRESETS) => void;
+  /** Set to true once the user explicitly chooses an LLM preset so the
+   *  auto-default (switch to "cloud" when an API key is detected) stops. */
+  llmPresetTouched: boolean;
+  /** Apply an LLM preset. Pass `provider` for cloud/API to pre-fill the
+   *  selected provider (used by the auto-upgrade path). */
+  applyLLMPreset: (key: keyof typeof LLM_PRESETS, provider?: string) => void;
   indexPreset: string;
   applyIndexPreset: (key: keyof typeof INDEX_PRESETS) => void;
 }
@@ -108,7 +113,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
       transcribe: {
         modelSize: "large-v3-turbo",
         batchSize: 16,
-        diarize: true,
+        diarize: false,
         clean: false,
         hfToken: "",
         numSpeakers: "",
@@ -131,7 +136,14 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         apiBaseUrl: "",
         apiKey: "",
       },
-      setLLM: (patch) => set((s) => ({ llm: { ...s.llm, ...patch }, llmPreset: "" })),
+      setLLM: (patch) =>
+        set((s) => ({
+          llm: { ...s.llm, ...patch },
+          // Only invalidate the preset when the field a preset controls (mode)
+          // actually changes — tweaking sourceLang/context/etc. must not
+          // clobber the user's preset selection.
+          llmPreset: "mode" in patch ? "" : s.llmPreset,
+        })),
 
       engine: "",
       setEngine: (engine) => set({ engine }),
@@ -151,10 +163,16 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
             : s;
         }),
       llmPreset: "manual",
-      applyLLMPreset: (key) =>
+      llmPresetTouched: false,
+      applyLLMPreset: (key, provider) =>
         set((s) => {
           const p = LLM_PRESETS[key];
-          return p ? { llm: { ...s.llm, mode: p.mode }, llmPreset: key } : s;
+          if (!p) return s;
+          return {
+            llm: { ...s.llm, mode: p.mode, ...(provider ? { provider } : {}) },
+            llmPreset: key,
+            llmPresetTouched: true,
+          };
         }),
       indexPreset: "balanced",
       applyIndexPreset: (key) =>
@@ -165,7 +183,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
     }),
     {
       name: "podcodex-pipeline-config",
-      version: 1,
+      version: 2,
       migrate(persisted: unknown, fromVersion: number) {
         const s = persisted as Record<string, unknown>;
         if (fromVersion < 1) {
@@ -177,7 +195,16 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
           if (!s.indexPreset) s.indexPreset = "";
           if (!s.indexModel) s.indexModel = "bge-m3";
         }
-        return s as PipelineConfigState;
+        if (fromVersion < 2) {
+          // Anyone with a persisted v1 record opened the app under the
+          // previous UI, so treat them as having touched the setting —
+          // auto-upgrading their LLM config silently on next load would be
+          // surprising. Fresh installs never hit this branch; their initial
+          // state (`llmPresetTouched: false`) opts them into auto-upgrade.
+          const preset = (s.llmPreset as string | undefined) || "";
+          s.llmPresetTouched = preset !== "";
+        }
+        return s as unknown as PipelineConfigState;
       },
       // Don't persist secrets
       partialize: (s) => ({
@@ -188,6 +215,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         indexModel: s.indexModel,
         transcribePreset: s.transcribePreset,
         llmPreset: s.llmPreset,
+        llmPresetTouched: s.llmPresetTouched,
         indexPreset: s.indexPreset,
       }),
     },

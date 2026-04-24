@@ -14,7 +14,7 @@ export function usePipelineTask(
   opts?: { onComplete?: () => void },
 ) {
   const queryClient = useQueryClient();
-  const [resumedTaskId, setResumedTaskId] = useActiveTask(audioPath);
+  const [resumedTaskId, setResumedTaskId] = useActiveTask(audioPath, stepKey);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const activeTaskId = taskId || resumedTaskId;

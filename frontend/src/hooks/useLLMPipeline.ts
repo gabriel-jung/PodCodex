@@ -9,11 +9,19 @@ import type { LLMConfig, LLMPresetKey } from "@/stores/pipelineConfigStore";
 import type { Episode, ShowMeta, Segment } from "@/api/types";
 import { usePipelineConfigStore } from "@/stores";
 import { useCapabilities } from "@/hooks/useCapabilities";
+import { useLLMProviders } from "@/hooks/useLLMProviders";
+
+// Priority order for auto-selecting the cloud provider when multiple API keys
+// are present. Mirrors SECRET_KEYS in src/podcodex/api/routes/config.py.
+const _AUTO_PROVIDERS = ["openai", "anthropic", "mistral"] as const;
 
 /**
  * Shared LLM configuration state for pipeline panels (correct, translate).
  * Reads from and writes to the persisted pipeline config store.
  * Initialises sourceLang and context from show/episode metadata on first use.
+ * Also promotes the preset from "manual" to "cloud" the first time the app
+ * is opened with an API key configured — keeps manual as the out-of-the-box
+ * default, but respects the user's credentials when present.
  */
 export function useLLMConfig(
   episode: Episode | null | undefined,
@@ -21,6 +29,9 @@ export function useLLMConfig(
 ): [LLMConfig, (patch: LLMConfig | ((prev: LLMConfig) => LLMConfig)) => void] {
   const llm = usePipelineConfigStore((s) => s.llm);
   const setLLM = usePipelineConfigStore((s) => s.setLLM);
+  const llmPresetTouched = usePipelineConfigStore((s) => s.llmPresetTouched);
+  const applyLLMPreset = usePipelineConfigStore((s) => s.applyLLMPreset);
+  const { detectedKeys } = useLLMProviders();
 
   // Sync sourceLang and context when the episode or show changes
   const episodeId = episode?.id;
@@ -33,6 +44,16 @@ export function useLLMConfig(
     if (ctx) patches.context = ctx;
     if (Object.keys(patches).length > 0) setLLM(patches);
   }, [episodeId, showName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // One-shot: when the user has never chosen a preset but credentials exist,
+  // switch to cloud with the highest-priority detected provider. Runs once
+  // because applyLLMPreset flips `llmPresetTouched` to true.
+  useEffect(() => {
+    if (llmPresetTouched) return;
+    const detected = detectedKeys || {};
+    const provider = _AUTO_PROVIDERS.find((p) => detected[p]);
+    if (provider) applyLLMPreset("cloud", provider);
+  }, [llmPresetTouched, detectedKeys, applyLLMPreset]);
 
   const setter = useCallback(
     (valOrFn: LLMConfig | ((prev: LLMConfig) => LLMConfig)) => {

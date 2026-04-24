@@ -45,6 +45,12 @@ from podcodex.api.routes import (
 )
 
 load_dotenv()
+# User-scoped secrets file — survives packaged installs and overrides repo .env.
+from podcodex.core.app_paths import secrets_env_path as _secrets_env_path  # noqa: E402
+
+_secrets_env = _secrets_env_path()
+if _secrets_env.exists():
+    load_dotenv(_secrets_env, override=True)
 
 
 # ── Optional MCP (desktop extra) ────────────────────────────────────────
@@ -111,6 +117,15 @@ def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     mcp_http = _mcp.streamable_http_app() if _mcp is not None else None
     _register_show_folder_resolver()
+
+    # Clean up atomic-write temp orphans left by any prior hard-crash.
+    try:
+        from podcodex.core.recovery import run_startup_recovery
+
+        run_startup_recovery()
+    except Exception:
+        logger.opt(exception=True).debug("startup recovery failed")
+
     app = FastAPI(
         title="PodCodex",
         version="0.1.0",
