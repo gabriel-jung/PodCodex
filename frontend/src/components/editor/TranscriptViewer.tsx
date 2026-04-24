@@ -596,6 +596,11 @@ export interface TranscriptViewerProps {
   referenceLabel?: string;
   // Source label fallback when no versions
   sourceLabel?: string;
+  /** Fires whenever the set of row-checkbox-selected segments changes.
+   *  Emits the edited segments (post-rename, post-edit) corresponding to the
+   *  currently checked rows, excluding [BREAK] markers. Callers use this to
+   *  drive downstream scope filters (e.g. synthesis). */
+  onSelectionChange?: (selected: Segment[]) => void;
 }
 
 /** Native <select> that sizes to its currently-selected label, not to its
@@ -650,6 +655,7 @@ export default function TranscriptViewer({
   referenceSegments,
   referenceLabel = "Original",
   sourceLabel,
+  onSelectionChange,
 }: TranscriptViewerProps) {
   const queryClient = useQueryClient();
 
@@ -943,6 +949,30 @@ export default function TranscriptViewer({
   }, []);
 
   const clearSelection = useCallback(() => setSelectedIndices(new Set()), []);
+
+  // Emit selection changes — downstream consumers (e.g. synthesis scope
+  // filter) work on the edited segment payloads, not raw indices, so their
+  // state survives version switches and pagination. Signature guard keeps
+  // per-keystroke edits from re-emitting when the selection hasn't changed.
+  const editedSegments = editor.editedSegments;
+  const lastSelectionSigRef = useRef<string>("");
+  useEffect(() => {
+    if (!onSelectionChange) return;
+    const out: Segment[] = [];
+    const sigParts: string[] = [];
+    for (const origIdx of selectedIndices) {
+      const editedPos = origToEditedIdx.get(origIdx);
+      if (editedPos == null) continue;
+      const seg = editedSegments[editedPos];
+      if (!seg || seg.speaker === "[BREAK]") continue;
+      out.push(seg);
+      sigParts.push(`${seg.speaker}:${seg.start}:${seg.end}`);
+    }
+    const sig = sigParts.join("|");
+    if (sig === lastSelectionSigRef.current) return;
+    lastSelectionSigRef.current = sig;
+    onSelectionChange(out);
+  }, [selectedIndices, origToEditedIdx, editedSegments, onSelectionChange]);
 
   const bulkDelete = useCallback(() => {
     // Delete in reverse order so indices stay valid

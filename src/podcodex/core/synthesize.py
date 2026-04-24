@@ -446,8 +446,17 @@ def load_tts_model(model_size: str = "1.7B"):
     Returns:
         Loaded Qwen3TTSModel instance
     """
+    import contextlib
+    import io
+
     import torch
-    from qwen_tts import Qwen3TTSModel
+
+    # qwen_tts.core.tokenizer_25hz.vq.whisper_encoder prints a multi-line
+    # "flash-attn is not installed" banner at import time. It is harmless
+    # (the encoder falls back to plain PyTorch attention) and we pin
+    # attn_implementation=sdpa below to avoid the flash path entirely.
+    with contextlib.redirect_stdout(io.StringIO()):
+        from qwen_tts import Qwen3TTSModel
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     logger.info(f"Loading Qwen3-TTS {model_size} on {device}…")
@@ -457,6 +466,7 @@ def load_tts_model(model_size: str = "1.7B"):
         f"Qwen/Qwen3-TTS-12Hz-{model_size}-Base",
         device_map=device,
         dtype=torch.bfloat16,
+        attn_implementation="sdpa",
         cache_dir=str(get_hf_cache_dir()),
     )
     logger.success(f"Qwen3-TTS {model_size} loaded")

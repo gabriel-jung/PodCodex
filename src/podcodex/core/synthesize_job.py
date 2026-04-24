@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 
 def run_extract(
     *,
@@ -53,11 +55,13 @@ def run_generate(
     audio_path: str,
     output_dir: str | None,
     source_lang: str,
+    source_version_id: str | None,
     model_size: str,
     language: str,
     max_chunk_duration: float,
     force: bool,
     only_speakers: list[str] | None,
+    keep_segment_keys: list[str] | None,
 ) -> dict[str, Any]:
     """Incremental TTS generation guided by a manifest."""
     from podcodex.core._utils import (
@@ -66,6 +70,7 @@ def run_generate(
         check_vram,
         free_vram,
         normalize_lang,
+        seg_key,
     )
     from podcodex.core.constants import TTS_VRAM_MB
     from podcodex.core.synthesize import (
@@ -79,14 +84,41 @@ def run_generate(
         save_manifest,
         segment_is_current,
     )
-    from podcodex.core.versions import load_latest as _load_latest
+    from podcodex.core.versions import (
+        list_all_versions,
+        load_latest as _load_latest,
+        load_version,
+    )
     from podcodex.api.routes._helpers import load_best_source
 
     progress_cb(0.0, "Loading source segments...")
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    segments = None
-    if source_lang:
+    segments: list[dict] | None = None
+    if source_version_id:
+        # User pinned a specific version via the source picker. Look up its
+        # step (transcript / corrected / <lang>) and load it directly so
+        # re-running against a non-latest version stays reproducible.
+        meta = next(
+            (v for v in list_all_versions(p.base) if v.get("id") == source_version_id),
+            None,
+        )
+        if meta and meta.get("step"):
+            try:
+                segments = load_version(p.base, meta["step"], source_version_id)
+            except FileNotFoundError as exc:
+                logger.warning(
+                    "Pinned source version {} unreadable ({}), falling back",
+                    source_version_id,
+                    exc,
+                )
+                segments = None
+        else:
+            logger.warning(
+                "Pinned source version {} not found in DB, falling back",
+                source_version_id,
+            )
+    if segments is None and source_lang:
         segments = _load_latest(p.base, normalize_lang(source_lang))
     if not segments:
         try:
@@ -95,6 +127,14 @@ def run_generate(
             pass
     if not segments:
         raise ValueError("No source segments found")
+
+    # UI scope filter — drop every segment the user unchecked in the source
+    # picker. Uses the shared seg_key helper so keys agree with the frontend.
+    if keep_segment_keys is not None:
+        wanted = set(keep_segment_keys)
+        segments = [seg for seg in segments if seg_key(seg) in wanted]
+        if not segments:
+            raise ValueError("Selection dropped every segment, nothing to synthesize")
 
     progress_cb(0.05, "Loading voice samples...")
     from podcodex.core._utils import real_speakers

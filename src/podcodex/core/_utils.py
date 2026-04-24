@@ -364,6 +364,21 @@ def check_vram(label: str = "model", min_mb: int = 512) -> None:
 # ──────────────────────────────────────────────
 
 
+def seg_key(seg: dict) -> str:
+    """Canonical segment identity shared with the frontend.
+
+    Mirrors ``frontend/src/lib/segKey.ts::segKey`` byte-for-byte.
+    Timestamps are rounded to integer milliseconds so the key is stable
+    across Python / JS float stringification: JS ``(1).toString()`` yields
+    ``"1"`` while Python ``f"{1.0}"`` yields ``"1.0"``, and the mismatch
+    would silently drop segments on integer-second boundaries.
+    """
+    speaker = seg.get("speaker") or ""
+    start = seg.get("start") or 0
+    end = seg.get("end") or 0
+    return f"{speaker}:{round(start * 1000)}:{round(end * 1000)}"
+
+
 def real_speakers(segments: list[dict]) -> list[str]:
     """Return the sorted set of real speaker labels in ``segments``.
 

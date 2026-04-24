@@ -89,11 +89,11 @@ export default function PipelinePanel({
               {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
               <span className="font-medium">{rerunLabel}</span>
             </button>
-          ) : (
+          ) : settingsLabel ? (
             <div className="px-4 pt-2 pb-1">
-              <span className="text-xs font-medium text-muted-foreground">{settingsLabel || `${title} settings`}</span>
+              <span className="text-xs font-medium text-muted-foreground">{settingsLabel}</span>
             </div>
-          )}
+          ) : null}
 
           {expanded && controls}
         </div>

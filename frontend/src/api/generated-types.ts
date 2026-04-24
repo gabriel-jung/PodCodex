@@ -373,9 +373,11 @@ export interface GenerateRequest {
   model_size?: string;
   language?: string;
   source_lang?: string | null;
+  source_version_id?: string | null;
   max_chunk_duration?: number;
   force?: boolean;
   only_speakers?: string[] | null;
+  keep_segment_keys?: string[] | null;
 }
 
 export interface AssembleRequest {

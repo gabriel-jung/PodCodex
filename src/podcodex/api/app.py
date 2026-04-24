@@ -197,6 +197,7 @@ def main() -> None:
         host="127.0.0.1",
         port=_API_PORT,
         reload=False,
+        log_config=None,
     )
 
 

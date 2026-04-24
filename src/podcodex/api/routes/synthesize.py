@@ -217,9 +217,14 @@ class GenerateRequest(BaseModel):
     model_size: str = "1.7B"
     language: str = "English"
     source_lang: str | None = None
+    source_version_id: str | None = None
     max_chunk_duration: float = 20.0
     force: bool = False
     only_speakers: list[str] | None = None
+    # Stable keys "<speaker>:<start>:<end>" of segments the UI kept checked.
+    # When provided, generation is restricted to these; everything else is
+    # dropped from the output. None = keep everything.
+    keep_segment_keys: list[str] | None = None
 
     @field_validator("max_chunk_duration")
     @classmethod
@@ -247,11 +252,13 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
             "audio_path": req.audio_path,
             "output_dir": req.output_dir,
             "source_lang": req.source_lang or "",
+            "source_version_id": req.source_version_id,
             "model_size": req.model_size,
             "language": req.language,
             "max_chunk_duration": req.max_chunk_duration,
             "force": req.force,
             "only_speakers": req.only_speakers,
+            "keep_segment_keys": req.keep_segment_keys,
         },
         req=req,
     )

@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment } from "@/api/types";
 import { useEpisodeStore, useAudioStore } from "@/stores";
@@ -11,8 +11,6 @@ import {
   getGeneratedSegments,
   assembleEpisode,
   getPipelineConfig,
-  getSegments,
-  getCorrectSegments,
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -20,7 +18,9 @@ import { useCapabilities } from "@/hooks/useCapabilities";
 import MissingDependency from "@/components/common/MissingDependency";
 import ProgressBar from "@/components/editor/ProgressBar";
 import PipelinePanel from "@/components/common/PipelinePanel";
-import VoiceExtractionSection, { segKey } from "./VoiceExtractionSection";
+import { segKey } from "@/lib/segKey";
+import SourceSegmentPicker, { type ResolvedSource } from "./SourceSegmentPicker";
+import VoiceExtractionSection from "./VoiceExtractionSection";
 import TTSGenerationSection from "./TTSGenerationSection";
 import AssemblySection from "./AssemblySection";
 
@@ -35,16 +35,29 @@ export default function SynthesizePanel() {
   const [generateTaskId, setGenerateTaskId] = useState<string | null>(null);
   const [language, setLanguage] = useState(showMeta?.language || "English");
   const [modelSize, setModelSize] = useState("1.7B");
-  const [sourceLang, setSourceLang] = useState("");
   const [maxChunkDuration, setMaxChunkDuration] = useState(20);
+  const [force, setForce] = useState(false);
+  const [onlySpeakers, setOnlySpeakers] = useState<string[]>([]);
   const [assembleStrategy, setAssembleStrategy] = useState("original_timing");
+  const [silenceDuration, setSilenceDuration] = useState(0.5);
   const [expanded, setExpanded] = useState(!episode?.synthesized);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [expandedSeg, setExpandedSeg] = useState<string | null>(null);
   const [showCount, setShowCount] = useState<Record<string, number>>({});
-  const [timeFrom, setTimeFrom] = useState("");
-  const [timeTo, setTimeTo] = useState("");
   const [speakerOverrides, setSpeakerOverrides] = useState<Record<string, string>>({});
+
+  // Source picker: null == "latest valid version". Resolved step/lang
+  // come back via onResolvedSourceChange so the generate request knows
+  // exactly what to send.
+  const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
+  const [resolvedSource, setResolvedSource] = useState<ResolvedSource>({
+    step: "transcript",
+    lang: "",
+    sourceLang: undefined,
+    sourceVersionId: null,
+  });
+  const [sourceSelection, setSourceSelection] = useState<Set<string>>(() => new Set());
+  const [sourceSegments, setSourceSegments] = useState<Segment[]>([]);
 
   const { data: pipelineConfig } = useQuery({
     queryKey: queryKeys.pipelineConfig(),
@@ -58,59 +71,35 @@ export default function SynthesizePanel() {
     enabled: !!episode?.audio_path,
   });
 
-  // Load transcript segments for speaker browsing
-  const { data: transcriptSegments } = useQuery({
-    queryKey: queryKeys.synthSourceSegments(episode?.audio_path),
-    queryFn: async () => {
-      if (!episode?.audio_path) return [];
-      try {
-        if (episode.corrected) return await getCorrectSegments(episode.audio_path);
-      } catch { /* fall through */ }
-      return getSegments(episode.audio_path);
-    },
-    enabled: !!episode?.audio_path && !!episode?.transcribed,
-  });
-
-  /** Parse "mm:ss" or "hh:mm:ss" or plain seconds to seconds. */
-  const parseTime = (v: string): number | null => {
-    if (!v.trim()) return null;
-    const parts = v.trim().split(":").map(Number);
-    if (parts.some(isNaN)) return null;
-    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    if (parts.length === 2) return parts[0] * 60 + parts[1];
-    return parts[0];
-  };
-
-  const fromSec = parseTime(timeFrom);
-  const toSec = parseTime(timeTo);
-
-  // All speakers (for reassignment dropdown)
+  // All speakers that appear in the currently loaded source version.
   const allSpeakers = useMemo(() => {
-    if (!transcriptSegments) return [];
     const set = new Set<string>();
-    for (const seg of transcriptSegments) {
+    for (const seg of sourceSegments) {
       const sp = seg.speaker || "";
       if (sp && sp !== "[BREAK]" && sp !== "UNKNOWN" && sp !== "UNK") set.add(sp);
     }
     return [...set].sort();
-  }, [transcriptSegments]);
+  }, [sourceSegments]);
 
-  // Group segments by speaker (excluding breaks/unknown), applying time range + overrides
+  // Effective working set: only segments the user kept checked in the
+  // source picker. Unchecked rows are dropped from voice sampling AND
+  // from the generated output.
+  const workingSegments = useMemo(
+    () => sourceSegments.filter((seg) => sourceSelection.has(segKey(seg))),
+    [sourceSegments, sourceSelection],
+  );
+
+  // Group the working set by OUTPUT speaker (after applying reassignments).
   const segmentsBySpeaker = useMemo(() => {
-    if (!transcriptSegments) return {};
     const grouped: Record<string, Segment[]> = {};
-    for (const seg of transcriptSegments) {
+    for (const seg of workingSegments) {
       const sp = seg.speaker || "";
       if (!sp || sp === "[BREAK]" || sp === "UNKNOWN" || sp === "UNK") continue;
-      // Time range filter
-      if (fromSec != null && seg.end < fromSec) continue;
-      if (toSec != null && seg.start > toSec) continue;
-      // Apply speaker override for display grouping
       const effectiveSpeaker = speakerOverrides[segKey(seg)] || sp;
       (grouped[effectiveSpeaker] ??= []).push(seg);
     }
     return grouped;
-  }, [transcriptSegments, fromSec, toSec, speakerOverrides]);
+  }, [workingSegments, speakerOverrides]);
 
   const { data: voiceSamples, refetch: refetchVoiceSamples } = useQuery({
     queryKey: queryKeys.synthesizeVoices(episode?.audio_path),
@@ -132,7 +121,7 @@ export default function SynthesizePanel() {
 
   const extractMutation = useMutation({
     mutationFn: () => {
-      const selections = (transcriptSegments || [])
+      const selections = workingSegments
         .filter((seg) => selected.has(segKey(seg)))
         .map((seg) => ({
           speaker: speakerOverrides[segKey(seg)] || seg.speaker || "",
@@ -163,8 +152,12 @@ export default function SynthesizePanel() {
         audio_path: episode!.audio_path!,
         model_size: modelSize,
         language,
-        source_lang: sourceLang || undefined,
+        source_lang: resolvedSource.sourceLang,
+        source_version_id: resolvedSource.sourceVersionId ?? undefined,
         max_chunk_duration: maxChunkDuration,
+        force,
+        only_speakers: onlySpeakers.length > 0 ? onlySpeakers : undefined,
+        keep_segment_keys: Array.from(sourceSelection),
       }),
     onSuccess: (data) => setGenerateTaskId(data.task_id),
   });
@@ -174,6 +167,7 @@ export default function SynthesizePanel() {
       assembleEpisode({
         audio_path: episode!.audio_path!,
         strategy: assembleStrategy,
+        silence_duration: silenceDuration,
       }),
     onSuccess: () => {
       refreshQueries();
@@ -204,10 +198,17 @@ export default function SynthesizePanel() {
 
   const isRunning = !!extractTaskId || !!generateTaskId;
 
+  const sourceSummary =
+    resolvedSource.step === "translate"
+      ? `${resolvedSource.lang} translation`
+      : resolvedSource.step === "corrected"
+        ? "corrected transcript"
+        : "raw transcript";
+
   return (
     <PipelinePanel
       title="Synthesize"
-      description="Re-create the episode with cloned voices: extract voice samples, generate speech for each segment, then assemble the final audio."
+      description="Re-create the episode with cloned voices."
       prerequisite={prereq}
       blocker={!prereq && !hasTTS ? (
         <MissingDependency
@@ -220,13 +221,24 @@ export default function SynthesizePanel() {
       expanded={expanded && !isRunning}
       onToggle={() => setExpanded(!expanded)}
       rerunLabel="Re-run synthesis"
-      settingsLabel="Synthesis pipeline"
       taskId={null}
       onRetry={handleRetry}
       onDismiss={handleDismiss}
       emptyMessage="Synthesis pipeline not yet run for this episode."
       controls={!isRunning ? (
         <div className="px-4 pb-3 space-y-4">
+          <SourceSegmentPicker
+            audioPath={episode.audio_path!}
+            episode={episode}
+            sourceVersionId={sourceVersionId}
+            setSourceVersionId={setSourceVersionId}
+            onResolvedSourceChange={setResolvedSource}
+            onSegmentsChange={setSourceSegments}
+            selectedKeys={sourceSelection}
+            setSelectedKeys={setSourceSelection}
+            seekTo={seekTo}
+          />
+
           <VoiceExtractionSection
             segmentsBySpeaker={segmentsBySpeaker}
             allSpeakers={allSpeakers}
@@ -236,10 +248,6 @@ export default function SynthesizePanel() {
             setExpandedSeg={setExpandedSeg}
             showCount={showCount}
             setShowCount={setShowCount}
-            timeFrom={timeFrom}
-            setTimeFrom={setTimeFrom}
-            timeTo={timeTo}
-            setTimeTo={setTimeTo}
             speakerOverrides={speakerOverrides}
             setSpeakerOverrides={setSpeakerOverrides}
             extractMutation={extractMutation}
@@ -255,11 +263,14 @@ export default function SynthesizePanel() {
             setLanguage={setLanguage}
             modelSize={modelSize}
             setModelSize={setModelSize}
-            sourceLang={sourceLang}
-            setSourceLang={setSourceLang}
             maxChunkDuration={maxChunkDuration}
             setMaxChunkDuration={setMaxChunkDuration}
-            translations={episode.translations}
+            force={force}
+            setForce={setForce}
+            onlySpeakers={onlySpeakers}
+            setOnlySpeakers={setOnlySpeakers}
+            allSpeakers={allSpeakers}
+            sourceSummary={sourceSummary}
             pipelineConfig={pipelineConfig}
             status={status}
             generatedSegments={generatedSegments}
@@ -269,6 +280,8 @@ export default function SynthesizePanel() {
           <AssemblySection
             assembleStrategy={assembleStrategy}
             setAssembleStrategy={setAssembleStrategy}
+            silenceDuration={silenceDuration}
+            setSilenceDuration={setSilenceDuration}
             pipelineConfig={pipelineConfig}
             status={status}
             assembleMutation={assembleMutation}
