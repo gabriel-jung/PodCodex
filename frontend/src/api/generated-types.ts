@@ -6,22 +6,22 @@
 
 
 export interface PipelineDefaultsSchema {
-  model_size?: string;
-  diarize?: boolean;
-  llm_mode?: string;
-  llm_provider?: string;
-  llm_model?: string;
-  target_lang?: string;
+  model_size: string;
+  diarize?: boolean | null;
+  llm_mode: string;
+  llm_provider: string;
+  llm_model: string;
+  target_lang: string;
 }
 
 export interface ShowMeta {
   name: string;
-  rss_url?: string;
-  youtube_url?: string;
-  language?: string;
-  speakers?: string[];
-  artwork_url?: string;
-  pipeline?: PipelineDefaultsSchema;
+  rss_url: string;
+  youtube_url: string;
+  language: string;
+  speakers: string[];
+  artwork_url: string;
+  pipeline: PipelineDefaultsSchema;
   last_feed_update?: string | null;
 }
 
@@ -44,24 +44,24 @@ export interface RSSEpisodeOut {
   guid: string;
   title: string;
   pub_date: string;
-  description?: string;
-  audio_url?: string;
-  duration?: number;
+  description: string;
+  audio_url: string;
+  duration: number;
   episode_number?: number | null;
   season_number?: number | null;
-  artwork_url?: string;
-  removed?: boolean;
+  artwork_url: string;
+  removed: boolean;
   feed_order?: number | null;
   local_stem?: string | null;
-  downloaded?: boolean;
+  downloaded: boolean;
 }
 
 export interface Segment {
-  speaker?: string;
-  text?: string;
-  start?: number;
-  end?: number;
-  flagged?: boolean;
+  speaker: string;
+  text: string;
+  start: number;
+  end: number;
+  flagged: boolean;
 }
 
 export interface UnifiedEpisodeOut {
@@ -69,28 +69,28 @@ export interface UnifiedEpisodeOut {
   title: string;
   stem?: string | null;
   pub_date?: string | null;
-  description?: string;
+  description: string;
   audio_url?: string | null;
-  duration?: number;
+  duration: number;
   episode_number?: number | null;
   audio_path?: string | null;
   output_dir?: string | null;
-  downloaded?: boolean;
-  removed?: boolean;
+  downloaded: boolean;
+  removed: boolean;
   feed_order?: number | null;
-  transcribed?: boolean;
-  corrected?: boolean;
-  indexed?: boolean;
-  synthesized?: boolean;
-  has_subtitles?: boolean;
-  translations?: string[];
-  artwork_url?: string;
-  provenance?: Record<string, unknown>;
+  transcribed: boolean;
+  corrected: boolean;
+  indexed: boolean;
+  synthesized: boolean;
+  has_subtitles: boolean;
+  translations: string[];
+  artwork_url: string;
+  provenance: Record<string, unknown>;
   segment_count?: number | null;
-  files?: string[];
-  transcribe_status?: string;
-  correct_status?: string;
-  translate_status?: string;
+  files: string[];
+  transcribe_status: string;
+  correct_status: string;
+  translate_status: string;
 }
 
 export interface CreateFromRSSRequest {
@@ -132,17 +132,17 @@ export interface TaskResponse {
 }
 
 export interface AppConfig {
-  show_folders?: string[];
-  default_save_path?: string;
+  show_folders: string[];
+  default_save_path: string;
 }
 
 export interface ShowSummary {
   name: string;
   path: string;
-  episode_count?: number;
-  has_rss?: boolean;
-  has_youtube?: boolean;
-  artwork_url?: string;
+  episode_count: number;
+  has_rss: boolean;
+  has_youtube: boolean;
+  artwork_url: string;
   last_rss_update?: string | null;
 }
 
@@ -156,13 +156,14 @@ export interface TranscribeRequest {
   output_dir?: string | null;
   model_size?: string;
   language?: string;
-  batch_size?: number;
+  batch_size?: number | null;
   force?: boolean;
   diarize?: boolean;
   hf_token?: string | null;
   num_speakers?: number | null;
   show?: string;
   episode?: string;
+  clean?: boolean;
 }
 
 export interface CorrectRequest {
@@ -174,30 +175,47 @@ export interface CorrectRequest {
   context?: string;
   source_lang?: string;
   batch_minutes?: number;
-  engine?: string;
   api_base_url?: string;
   api_key?: string | null;
   source_version_id?: string | null;
 }
 
-export interface CorrectSkipRequest {
-  audio_path: string;
-  output_dir?: string | null;
-}
-
 export interface CorrectManualPromptsRequest {
-  audio_path: string;
+  audio_path?: string | null;
   output_dir?: string | null;
   context?: string;
   source_lang?: string;
+  target_lang?: string;
   batch_minutes?: number;
-  engine?: string;
+  source_version_id?: string | null;
 }
 
 export interface CorrectApplyManualRequest {
-  audio_path: string;
+  audio_path?: string | null;
   output_dir?: string | null;
   corrections: Record<string, unknown>[];
+  lang?: string;
+}
+
+export interface EpisodeListItem {
+  episode: string;
+  episode_title: string;
+  pub_date: string;
+  episode_number?: number | null;
+  chunk_count: number;
+  duration: number;
+}
+
+export interface EpisodeMeta {
+  episode: string;
+  episode_title: string;
+  pub_date: string;
+  episode_number?: number | null;
+  description: string;
+  source: string;
+  chunk_count: number;
+  duration: number;
+  speakers: string[];
 }
 
 export interface TranslateRequest {
@@ -208,27 +226,28 @@ export interface TranslateRequest {
   model?: string;
   context?: string;
   source_lang?: string;
-  target_lang?: string;
   batch_minutes?: number;
   api_base_url?: string;
   api_key?: string | null;
   source_version_id?: string | null;
+  target_lang?: string;
 }
 
 export interface TranslateManualPromptsRequest {
-  audio_path: string;
+  audio_path?: string | null;
   output_dir?: string | null;
   context?: string;
   source_lang?: string;
   target_lang?: string;
   batch_minutes?: number;
+  source_version_id?: string | null;
 }
 
 export interface TranslateApplyManualRequest {
-  audio_path: string;
+  audio_path?: string | null;
   output_dir?: string | null;
-  lang?: string;
   corrections: Record<string, unknown>[];
+  lang?: string;
 }
 
 export interface BatchRequest {
@@ -240,13 +259,13 @@ export interface BatchRequest {
   index?: boolean;
   model_size?: string;
   language?: string;
-  batch_size?: number;
+  batch_size?: number | null;
   diarize?: boolean;
   clean?: boolean;
-  transcribe_source?: string;
-  sub_lang?: string;
   hf_token?: string | null;
   num_speakers?: number | null;
+  transcribe_source?: string;
+  sub_lang?: string;
   llm_mode?: string;
   llm_provider?: string | null;
   llm_model?: string;
@@ -257,10 +276,10 @@ export interface BatchRequest {
   target_lang?: string;
   llm_batch_minutes?: number;
   engine?: string;
+  force?: boolean;
   show_name?: string;
   index_model_keys?: string[];
   index_chunkings?: string[];
-  force?: boolean;
 }
 
 export interface SearchRequest {
@@ -281,12 +300,19 @@ export interface SearchRequest {
 export interface SearchResultSchema {
   text: string;
   episode: string;
+  episode_stem: string;
+  episode_number?: number | null;
+  audio_path: string;
   speaker: string;
   start: number;
   end: number;
   score: number;
   source: string;
+  pub_date: string;
   speakers?: Record<string, unknown>[] | null;
+  accent_match: boolean;
+  fuzzy_match: boolean;
+  match_text?: string | null;
 }
 
 export interface ExactRequest {
@@ -294,7 +320,6 @@ export interface ExactRequest {
   show: string;
   model?: string;
   chunking?: string;
-  top_k?: number;
   episode?: string | null;
   episodes?: string[] | null;
   speaker?: string | null;
@@ -313,27 +338,6 @@ export interface RandomRequest {
   source?: string | null;
   pub_date_min?: string | null;
   pub_date_max?: string | null;
-}
-
-export interface EpisodeListItem {
-  episode: string;
-  episode_title?: string;
-  pub_date?: string;
-  episode_number?: number | null;
-  chunk_count?: number;
-  duration?: number;
-}
-
-export interface EpisodeMeta {
-  episode: string;
-  episode_title?: string;
-  pub_date?: string;
-  episode_number?: number | null;
-  description?: string;
-  source?: string;
-  chunk_count?: number;
-  duration?: number;
-  speakers?: string[];
 }
 
 export interface IndexRequest {

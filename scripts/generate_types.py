@@ -47,7 +47,10 @@ from podcodex.api.routes._helpers import (  # noqa: E402
     LLMRequest as CorrectRequest,
     ManualPromptsRequest as CorrectManualPromptsRequest,
 )
-from podcodex.api.routes.correct import SkipRequest as CorrectSkipRequest  # noqa: E402
+from podcodex.api.routes.episodes import (  # noqa: E402
+    EpisodeListItem,
+    EpisodeMeta,
+)
 from podcodex.api.routes.search import (  # noqa: E402
     ExactRequest,
     RandomRequest,
@@ -95,10 +98,11 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, ShowSummary),
     (None, MoveShowRequest),
     (None, TranscribeRequest),
-    (None, CorrectRequest),
-    ("CorrectSkipRequest", CorrectSkipRequest),
+    ("CorrectRequest", CorrectRequest),
     ("CorrectManualPromptsRequest", CorrectManualPromptsRequest),
     ("CorrectApplyManualRequest", CorrectApplyManualRequest),
+    (None, EpisodeListItem),
+    (None, EpisodeMeta),
     (None, TranslateRequest),
     ("TranslateManualPromptsRequest", TranslateManualPromptsRequest),
     ("TranslateApplyManualRequest", TranslateApplyManualRequest),
@@ -181,17 +185,40 @@ def _schema_to_ts(schema: dict[str, Any], defs: dict[str, Any]) -> str:
     return "unknown"
 
 
+def _allows_null(schema: dict[str, Any]) -> bool:
+    """True if this JSON schema permits a null value."""
+    if schema.get("type") == "null":
+        return True
+    for variant in schema.get("anyOf", []):
+        if variant.get("type") == "null":
+            return True
+    return False
+
+
 def _model_to_ts(name: str, model: type[BaseModel]) -> str:
-    """Convert a Pydantic model to a TypeScript interface string."""
+    """Convert a Pydantic model to a TypeScript interface string.
+
+    Response models (anything not ending in ``Request``) emit a field as
+    required when it has a non-null default: FastAPI always serializes
+    such fields, so downstream TS should not have to narrow them.
+
+    Request models keep defaulted fields optional — callers are allowed
+    to omit them and let the server fill the default.
+    """
     schema = model.model_json_schema()
     defs = schema.get("$defs", {})
     properties = schema.get("properties", {})
     required = set(schema.get("required", []))
+    is_input = name.endswith("Request")
 
     lines = [f"export interface {name} {{"]
     for prop_name, prop_schema in properties.items():
         ts_type = _schema_to_ts(prop_schema, defs)
-        optional = "" if prop_name in required else "?"
+        promote = (
+            not is_input and "default" in prop_schema and not _allows_null(prop_schema)
+        )
+        is_required = prop_name in required or promote
+        optional = "" if is_required else "?"
         lines.append(f"  {prop_name}{optional}: {ts_type};")
     lines.append("}")
     return "\n".join(lines)
