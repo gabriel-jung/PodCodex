@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import load_best_source, submit_task
+from podcodex.api.routes._helpers import load_best_source, submit_subprocess_task
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import AudioPaths, SAMPLE_RATE
 
@@ -58,33 +57,19 @@ class ExtractVoicesRequest(BaseModel):
 async def extract_voices(req: ExtractVoicesRequest) -> TaskResponse:
     """Extract voice samples for cloning as a background task."""
 
-    def run_extract(progress_cb, req_data):
-        """Load transcript and extract speaker voice samples."""
-        from podcodex.core.synthesize import extract_voice_samples
-        from podcodex.core.transcribe import load_transcript
-
-        progress_cb(0.0, "Loading transcript...")
-        segments = load_transcript(req_data.audio_path, output_dir=req_data.output_dir)
-        if not segments:
-            raise ValueError("No transcript found — transcribe first")
-
-        progress_cb(0.1, "Extracting voice samples...")
-        samples = extract_voice_samples(
-            req_data.audio_path,
-            segments,
-            output_dir=req_data.output_dir,
-            min_duration=req_data.min_duration,
-            max_duration=req_data.max_duration,
-            top_k=req_data.top_k,
-        )
-
-        total = sum(len(v) for v in samples.values())
-        return {
-            "speakers": len(samples),
-            "total_samples": total,
-        }
-
-    return submit_task("extract_voices", req.audio_path, run_extract, req)
+    return submit_subprocess_task(
+        "extract_voices",
+        req.audio_path,
+        entry_path="podcodex.core.synthesize_job:run_extract",
+        kwargs={
+            "audio_path": req.audio_path,
+            "output_dir": req.output_dir,
+            "min_duration": req.min_duration,
+            "max_duration": req.max_duration,
+            "top_k": req.top_k,
+        },
+        req=req,
+    )
 
 
 class ExtractSelectedRequest(BaseModel):
@@ -198,16 +183,14 @@ async def get_voice_samples(
     output_dir: str | None = Query(None),
 ) -> dict[str, list[dict]]:
     """Load extracted voice samples from disk."""
+    from podcodex.core._utils import real_speakers
     from podcodex.core.synthesize import load_voice_samples
     from podcodex.core.transcribe import load_transcript
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    # Get speakers from transcript
     segments = load_transcript(audio_path, output_dir=output_dir) or []
-    speakers = sorted(
-        {s.get("speaker", "") for s in segments} - {"", "[BREAK]", "UNKNOWN", "UNK"}
-    )
+    speakers = real_speakers(segments)
 
     samples = load_voice_samples(str(p.base.parent), speakers)
 
@@ -256,182 +239,22 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
     regenerate everything, or ``only_speakers`` to target specific speakers.
     """
 
-    def run_generate(progress_cb, req_data):
-        """Load source segments, run incremental TTS generation, and save a manifest."""
-        from podcodex.core._utils import free_vram
-        from podcodex.core.synthesize import (
-            _sample_key,
-            _text_hash,
-            build_clone_prompts,
-            generate_segment,
-            load_manifest,
-            load_tts_model,
-            load_voice_samples,
-            save_manifest,
-            segment_is_current,
-        )
-
-        progress_cb(0.0, "Loading source segments...")
-        # Try to load translation matching the target language
-        from podcodex.core.versions import load_latest as _load_latest
-
-        p = AudioPaths.from_audio(req_data.audio_path, output_dir=req_data.output_dir)
-        segments = None
-        if req_data.source_lang:
-            from podcodex.core._utils import normalize_lang
-
-            segments = _load_latest(p.base, normalize_lang(req_data.source_lang))
-
-        if not segments:
-            try:
-                segments = load_best_source(req_data.audio_path, req_data.output_dir)
-            except ValueError:
-                pass
-        if not segments:
-            raise ValueError("No source segments found")
-
-        progress_cb(0.05, "Loading voice samples...")
-        speakers = sorted(
-            {s.get("speaker", "") for s in segments} - {"", "[BREAK]", "UNKNOWN", "UNK"}
-        )
-        voice_samples = load_voice_samples(str(p.base.parent), speakers)
-        if not voice_samples:
-            raise ValueError("No voice samples found — extract voices first")
-
-        segments_dir = p.tts_segments_dir
-        force = req_data.force
-        only_speakers = req_data.only_speakers
-
-        # Load manifest for incremental generation
-        manifest = (
-            load_manifest(segments_dir)
-            if not force
-            else {"model": None, "language": None, "segments": {}}
-        )
-
-        # First pass: figure out which segments actually need generation
-        to_generate: list[
-            tuple[int, dict, Path, str]
-        ] = []  # (index, seg, path, sample_name)
-        generated = []
-        reused = 0
-        total = len(segments)
-
-        for i, seg in enumerate(segments):
-            speaker = seg.get("speaker", "UNK")
-            text = seg.get("text", "").strip()
-            if speaker == "[BREAK]" or not text:
-                continue
-
-            filename = f"{i:04d}_{speaker}.wav"
-            output_path = segments_dir / filename
-            sample_name = _sample_key(voice_samples, speaker)
-
-            # Skip if only regenerating specific speakers
-            if only_speakers and speaker not in only_speakers:
-                if output_path.exists():
-                    generated.append(
-                        (
-                            i,
-                            {
-                                **seg,
-                                "audio_file": str(output_path),
-                                "sample_rate": SAMPLE_RATE,
-                            },
-                        )
-                    )
-                continue
-
-            # Check manifest — reuse if segment is still valid
-            if (
-                not force
-                and output_path.exists()
-                and segment_is_current(
-                    manifest,
-                    filename,
-                    text,
-                    speaker,
-                    sample_name,
-                    req_data.model_size,
-                    req_data.language,
-                )
-            ):
-                generated.append(
-                    (
-                        i,
-                        {
-                            **seg,
-                            "audio_file": str(output_path),
-                            "sample_rate": SAMPLE_RATE,
-                        },
-                    )
-                )
-                reused += 1
-                continue
-
-            to_generate.append((i, seg, output_path, sample_name))
-
-        # If everything is cached, skip model loading entirely
-        if not to_generate:
-            manifest["model"] = req_data.model_size
-            manifest["language"] = req_data.language
-            save_manifest(segments_dir, manifest)
-            progress_cb(1.0, "All segments up to date")
-            # result_segs = [s for _, s in sorted(generated)]
-            return {"count": 0, "reused": reused, "skipped": total - len(generated)}
-
-        progress_cb(
-            0.1, f"Loading TTS model ({len(to_generate)} segments to generate)..."
-        )
-        from podcodex.core._utils import check_vram
-        from podcodex.core.constants import TTS_VRAM_MB
-
-        check_vram(
-            f"TTS ({req_data.model_size})",
-            TTS_VRAM_MB.get(req_data.model_size, 4000),
-        )
-        model = load_tts_model(model_size=req_data.model_size)
-        clone_prompts = build_clone_prompts(model, voice_samples)
-
-        # Second pass: generate only stale/missing segments
-        for i, seg, output_path, sample_name in to_generate:
-            speaker = seg.get("speaker", "UNK")
-            text = seg.get("text", "").strip()
-            filename = output_path.name
-
-            frac = 0.1 + 0.85 * (i / total)
-            progress_cb(frac, f"Segment {i + 1}/{total} ({speaker})")
-
-            result = generate_segment(
-                model,
-                seg,
-                clone_prompts,
-                output_path,
-                language=req_data.language,
-                max_chunk_duration=req_data.max_chunk_duration,
-            )
-            if result:
-                generated.append((i, result))
-                manifest["segments"][filename] = {
-                    "speaker": speaker,
-                    "voice_sample": sample_name,
-                    "text_hash": _text_hash(text),
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                }
-
-        # Save manifest
-        manifest["model"] = req_data.model_size
-        manifest["language"] = req_data.language
-        save_manifest(segments_dir, manifest)
-
-        progress_cb(0.98, "Releasing GPU memory...")
-        del model
-        free_vram()
-
-        new_count = len(to_generate)
-        return {"count": new_count, "reused": reused, "skipped": total - len(generated)}
-
-    return submit_task("generate_tts", req.audio_path, run_generate, req)
+    return submit_subprocess_task(
+        "generate_tts",
+        req.audio_path,
+        entry_path="podcodex.core.synthesize_job:run_generate",
+        kwargs={
+            "audio_path": req.audio_path,
+            "output_dir": req.output_dir,
+            "source_lang": req.source_lang or "",
+            "model_size": req.model_size,
+            "language": req.language,
+            "max_chunk_duration": req.max_chunk_duration,
+            "force": req.force,
+            "only_speakers": req.only_speakers,
+        },
+        req=req,
+    )
 
 
 # ── Generated segments (load from disk) ─────────────────

@@ -10,7 +10,7 @@ from pydantic import BaseModel, field_validator
 from podcodex.api.routes._helpers import (
     build_edit_provenance,
     build_provenance,
-    submit_task,
+    submit_subprocess_task,
     transcribe_prov_params,
 )
 from podcodex.api.schemas import Segment, TaskResponse
@@ -280,69 +280,29 @@ class TranscribeRequest(BaseModel):
 
 @router.post("/start", response_model=TaskResponse)
 async def start_transcribe(req: TranscribeRequest) -> TaskResponse:
-    """Start the transcription pipeline as a background task."""
+    """Start the transcription pipeline as a background task.
 
-    def run_transcribe(progress_cb, req_data):
-        from podcodex.core.transcribe import (
-            assign_speakers,
-            diarize_file,
-            export_transcript,
-            transcribe_file,
-        )
+    Heavy work (WhisperX, pyannote) runs in a spawned subprocess so the
+    FastAPI event loop stays responsive to other requests.
+    """
 
-        from podcodex.core._utils import default_batch_size
-
-        batch_size = req_data.batch_size or default_batch_size()
-        progress_cb(0.0, f"Transcribing audio (batch_size={batch_size})...")
-        transcribe_file(
-            req_data.audio_path,
-            model_size=req_data.model_size,
-            language=req_data.language or None,
-            batch_size=batch_size,
-            force=req_data.force,
-            output_dir=req_data.output_dir,
-        )
-
-        if req_data.diarize:
-            progress_cb(0.25, "Diarizing speakers...")
-            diarize_file(
-                req_data.audio_path,
-                hf_token=req_data.hf_token,
-                num_speakers=req_data.num_speakers,
-                force=req_data.force,
-                output_dir=req_data.output_dir,
-            )
-
-            progress_cb(0.5, "Assigning speakers...")
-            assign_speakers(
-                req_data.audio_path,
-                force=req_data.force,
-                output_dir=req_data.output_dir,
-            )
-
-        progress_cb(0.75, "Exporting transcript...")
-        provenance = build_provenance(
-            "transcript",
-            model=req_data.model_size,
-            params=transcribe_prov_params(
-                req_data.diarize,
-                source="whisper",
-                model=req_data.model_size,
-                language=req_data.language or None,
-                batch_size=req_data.batch_size,
-                num_speakers=req_data.num_speakers,
-                clean=req_data.clean,
-            ),
-        )
-        segments = export_transcript(
-            req_data.audio_path,
-            output_dir=req_data.output_dir,
-            show=req_data.show,
-            episode=req_data.episode,
-            diarized=req_data.diarize,
-            clean=req_data.clean,
-            provenance=provenance,
-        )
-        return {"count": len(segments)}
-
-    return submit_task("transcribe", req.audio_path, run_transcribe, req)
+    return submit_subprocess_task(
+        "transcribe",
+        req.audio_path,
+        entry_path="podcodex.core.transcribe_job:run",
+        kwargs={
+            "audio_path": req.audio_path,
+            "output_dir": req.output_dir,
+            "model_size": req.model_size,
+            "language": req.language,
+            "batch_size": req.batch_size,
+            "force": req.force,
+            "diarize": req.diarize,
+            "hf_token": req.hf_token,
+            "num_speakers": req.num_speakers,
+            "show": req.show,
+            "episode": req.episode,
+            "clean": req.clean,
+        },
+        req=req,
+    )

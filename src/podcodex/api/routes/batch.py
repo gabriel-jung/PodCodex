@@ -108,115 +108,36 @@ async def start_batch(req: BatchRequest) -> TaskResponse:
 
 
 def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_offset):
-    """Run transcribe sub-steps. Returns True if work was done.
+    """Run transcribe sub-steps in a spawned subprocess.
 
-    Each sub-step checks the version DB for matching params to decide
-    whether to skip.
+    Sub-step version-match skipping + cooperative cancel live in the child.
+    Returns True if work was done.
     """
-    from podcodex.core.transcribe import (
-        assign_speakers,
-        diarize_file,
-        export_transcript,
-        transcribe_file,
-    )
-    from podcodex.core.versions import has_matching_version, has_version
-
-    from podcodex.core._utils import default_batch_size
-
     sw = _STEP_WEIGHTS["transcribe"]
-    did_work = False
-    batch_size = req.batch_size or default_batch_size()
+    from podcodex.api.subprocess_runner import run_in_subprocess
 
-    # Check if a matching final transcript already exists (skip everything)
-    transcript_params = {
-        "model": req.model_size,
-        "diarize": req.diarize,
-    }
-    if req.language:
-        transcript_params["language"] = req.language
-    if not req.force and has_matching_version(p.base, "transcript", transcript_params):
-        return False
+    def on_prog(frac: float, msg: str) -> None:
+        ep_progress(i, step_offset, sw, frac, msg)
 
-    # Sub-step 1: Transcribe (WhisperX)
-    seg_params = {"model": req.model_size}
-    if req.language:
-        seg_params["language"] = req.language
-    new_segments = req.force or not has_matching_version(p.base, "segments", seg_params)
-    if new_segments:
-        did_work = True
-        ep_progress(i, step_offset, sw, 0.0, "Transcribing...")
-        transcribe_file(
-            audio_path,
-            model_size=req.model_size,
-            language=req.language or None,
-            batch_size=batch_size,
-            force=req.force,
-        )
-        if cancelled():
-            return did_work
-
-    # Sub-step 2: Diarize (pyannote)
-    new_diarization = False
-    if not cancelled() and req.diarize:
-        if req.force or not has_version(p.base, "diarization"):
-            new_diarization = True
-            did_work = True
-            ep_progress(i, step_offset, sw, 0.4, "Diarizing...")
-            diarize_file(
-                audio_path,
-                hf_token=req.hf_token,
-                num_speakers=req.num_speakers,
-                force=req.force,
-            )
-            if cancelled():
-                return did_work
-
-    # Sub-step 3: Assign speakers
-    # Re-run if segments or diarization changed (inputs are newer than output)
-    if not cancelled() and req.diarize:
-        if (
-            req.force
-            or new_segments
-            or new_diarization
-            or not has_version(p.base, "diarized_segments")
-        ):
-            did_work = True
-            ep_progress(i, step_offset, sw, 0.7, "Assigning speakers...")
-            assign_speakers(audio_path, force=req.force)
-            if cancelled():
-                return did_work
-
-    # Sub-step 4: Export final transcript
-    if not cancelled():
-        did_work = True
-        ep_progress(i, step_offset, sw, 0.9, "Exporting transcript...")
-
-        # When diarizing, export both a plain (non-diarized) and a diarized
-        # transcript so downstream steps can pick whichever they need.
-        variants = [False, True] if req.diarize else [False]
-        for diarized_flag in variants:
-            provenance = build_provenance(
-                "transcript",
-                model=req.model_size,
-                params=transcribe_prov_params(
-                    diarized_flag,
-                    model=req.model_size,
-                    language=req.language or None,
-                    batch_size=batch_size,
-                    num_speakers=req.num_speakers,
-                    clean=req.clean,
-                ),
-            )
-            export_transcript(
-                audio_path,
-                show=req.show_name,
-                episode=stem,
-                diarized=diarized_flag,
-                clean=req.clean,
-                provenance=provenance,
-            )
-
-    return did_work
+    result = run_in_subprocess(
+        entry_path="podcodex.core.transcribe_job:run_for_batch",
+        kwargs={
+            "audio_path": audio_path,
+            "stem": stem,
+            "show_name": req.show_name,
+            "model_size": req.model_size,
+            "language": req.language,
+            "batch_size": req.batch_size,
+            "diarize": req.diarize,
+            "hf_token": req.hf_token,
+            "num_speakers": req.num_speakers,
+            "clean": req.clean,
+            "force": req.force,
+        },
+        on_progress=on_prog,
+        cancel_event=getattr(cancelled, "cancel_event", None),
+    )
+    return bool(result.get("did_work"))
 
 
 def _batch_transcribe_from_subs(
@@ -372,57 +293,32 @@ def _batch_llm_step(
 
 
 def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offset):
-    """Run index step. Returns True if work was done."""
+    """Run index step in a spawned subprocess. Returns True if work was done."""
     sw = _STEP_WEIGHTS["index"]
-    marker = p.base.parent / ".rag_indexed"
+    from podcodex.api.subprocess_runner import run_in_subprocess
 
-    from podcodex.api.routes._helpers import build_index_transcript, get_index_store
-    from podcodex.rag.indexing import vectorize_batch
-    from podcodex.rag.store import collection_name
+    def on_prog(frac: float, msg: str) -> None:
+        ep_progress(i, step_offset, sw, frac, msg)
 
-    local = get_index_store()
-
-    if not req.force:
-        wanted = [(m, c) for m in req.index_model_keys for c in req.index_chunkings]
-        if wanted and all(
-            local.episode_is_indexed(collection_name(req.show_name, m, c), stem)
-            for m, c in wanted
-        ):
-            return False
-
-    ep_progress(i, step_offset, sw, 0.0, "Indexing...")
-
-    transcript = build_index_transcript(audio_path, req.show_name, stem)
-    if not transcript.get("segments"):
-        return False
-    upserted = vectorize_batch(
-        transcript,
-        req.show_name,
-        stem,
-        req.index_model_keys,
-        req.index_chunkings,
-        local,
-        overwrite=req.force,
-    )
-
-    if upserted == 0:
-        logger.warning("Index produced 0 chunks for {} — not marking as indexed", stem)
-        return False
-
-    marker.touch()
-
-    from podcodex.core.pipeline_db import mark_step
-
-    provenance = build_provenance(
-        "indexed",
-        model=(req.index_model_keys or ["bge-m3"])[0],
-        audio_path=audio_path,
-        params={
+    result = run_in_subprocess(
+        entry_path="podcodex.rag.index_job:run_for_batch",
+        kwargs={
+            "audio_path": audio_path,
+            "stem": stem,
+            "show_name": req.show_name,
             "model_keys": req.index_model_keys,
             "chunkings": req.index_chunkings,
+            "force": req.force,
         },
+        on_progress=on_prog,
+        cancel_event=getattr(cancelled, "cancel_event", None),
     )
-    mark_step(p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance})
+
+    if result.get("skipped"):
+        return False
+    if not result.get("indexed"):
+        logger.warning("Index produced 0 chunks for {} — not marking as indexed", stem)
+        return False
     return True
 
 
@@ -445,6 +341,9 @@ def _run_batch(progress_cb, req: BatchRequest):
 
     def _cancelled() -> bool:
         return bool(cancel and cancel.is_set())
+
+    # Expose the raw event so subprocess-based step helpers can propagate cancel.
+    _cancelled.cancel_event = cancel  # type: ignore[attr-defined]
 
     def ep_progress(
         ep_idx: int, step_offset: float, step_weight: float, frac: float, msg: str

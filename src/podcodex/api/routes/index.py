@@ -6,7 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import get_index_store, submit_task
+from podcodex.api.routes._helpers import get_index_store, submit_subprocess_task
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import AudioPaths
 
@@ -283,105 +283,27 @@ class IndexRequest(BaseModel):
 
 @router.post("/start", response_model=TaskResponse)
 async def start_index(req: IndexRequest) -> TaskResponse:
-    """Vectorize an episode into the IndexStore as a background task."""
+    """Vectorize an episode into the IndexStore as a background task.
 
-    def run_index(progress_cb, req_data):
-        """Execute the full vectorization pipeline for one episode.
+    The heavy work (embedding encode, LanceDB writes) runs in a spawned
+    subprocess so the FastAPI event loop stays responsive.
+    """
 
-        Args:
-            progress_cb: Callable(fraction, message) used to broadcast progress
-                over WebSocket to the frontend.
-            req_data: IndexRequest instance carrying all vectorization parameters.
-
-        Returns:
-            Dict with ``chunks_upserted`` (int) and ``source`` (str) keys.
-        """
-        from podcodex.api.routes._helpers import build_index_transcript
-        from podcodex.core.versions import load_version
-        from podcodex.rag.indexing import vectorize_batch
-
-        p = AudioPaths.from_audio(req_data.audio_path, output_dir=req_data.output_dir)
-        episode = p.audio_path.stem
-
-        progress_cb(0.0, "Resolving source...")
-
-        # If a specific version is requested, load directly from version store
-        if req_data.version_id and req_data.source != "auto":
-            step = req_data.source
-            segments = load_version(p.base, step, req_data.version_id)
-            transcript = build_index_transcript(
-                req_data.audio_path,
-                req_data.show,
-                episode,
-                segments=segments,
-                output_dir=req_data.output_dir,
-            )
-        else:
-            transcript = build_index_transcript(
-                req_data.audio_path,
-                req_data.show,
-                episode,
-                source=req_data.source,
-                output_dir=req_data.output_dir,
-            )
-
-        source_label = transcript["meta"].get("source", "auto")
-
-        local = get_index_store()
-        progress_cb(0.05, "Starting vectorization...")
-
-        def on_progress(step, total, label):
-            """Forward per-batch progress to the task progress callback."""
-            frac = 0.05 + 0.9 * (step / max(total, 1))
-            progress_cb(frac, f"{label} ({step + 1}/{total})")
-
-        total_upserted = vectorize_batch(
-            transcript,
-            req_data.show,
-            episode,
-            req_data.model_keys,
-            req_data.chunkings,
-            local,
-            chunk_size=req_data.chunk_size,
-            threshold=req_data.threshold,
-            overwrite=req_data.overwrite,
-            on_progress=on_progress,
-        )
-
-        if total_upserted == 0:
-            raise ValueError(
-                f"Indexing produced 0 chunks for '{episode}'. "
-                "The transcript may be too short or have unsupported format."
-            )
-
-        # Touch marker file for status detection
-        marker = p.base.parent / ".rag_indexed"
-        marker.touch()
-
-        from podcodex.api.routes._helpers import build_provenance
-        from podcodex.core.pipeline_db import mark_step
-
-        provenance = build_provenance(
-            "indexed",
-            model=(req_data.model_keys or ["bge-m3"])[0],
-            audio_path=req_data.audio_path,
-            output_dir=req_data.output_dir,
-            params={
-                "source": source_label,
-                "model_keys": req_data.model_keys,
-                "chunkings": req_data.chunkings,
-                "chunk_size": req_data.chunk_size,
-                "threshold": req_data.threshold,
-                "overwrite": req_data.overwrite,
-            },
-        )
-        mark_step(
-            p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance}
-        )
-
-        return {
-            "chunks_upserted": total_upserted,
-            "source": source_label,
-        }
-
-    return submit_task("index", req.audio_path, run_index, req)
+    return submit_subprocess_task(
+        "index",
+        req.audio_path,
+        entry_path="podcodex.rag.index_job:run",
+        kwargs={
+            "audio_path": req.audio_path,
+            "output_dir": req.output_dir,
+            "show": req.show,
+            "source": req.source,
+            "version_id": req.version_id,
+            "model_keys": req.model_keys,
+            "chunkings": req.chunkings,
+            "chunk_size": req.chunk_size,
+            "threshold": req.threshold,
+            "overwrite": req.overwrite,
+        },
+        req=req,
+    )

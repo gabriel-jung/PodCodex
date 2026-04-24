@@ -244,6 +244,33 @@ def submit_task(step: str, audio_path: str, fn, *args) -> TaskResponse:
     return TaskResponse(task_id=info.task_id)
 
 
+def submit_subprocess_task(
+    step: str,
+    audio_path: str,
+    entry_path: str,
+    kwargs: dict,
+    req,
+) -> TaskResponse:
+    """Submit a background task whose work runs in a spawned subprocess.
+
+    Centralises the boilerplate that would otherwise be copy-pasted in every
+    route handler that delegates to ``subprocess_runner``: builds the inner
+    closure, extracts the cancel_event attached by the task manager, and
+    forwards the progress callback.
+    """
+    from podcodex.api.subprocess_runner import run_in_subprocess
+
+    def _run(progress_cb, _req):
+        return run_in_subprocess(
+            entry_path=entry_path,
+            kwargs=kwargs,
+            on_progress=progress_cb,
+            cancel_event=getattr(progress_cb, "cancel_event", None),
+        )
+
+    return submit_task(step, audio_path, _run, req)
+
+
 # Extend the core set with empty string (relevant for flagging UI segments).
 _UNKNOWN_SPEAKERS = UNKNOWN_SPEAKERS | {""}
 

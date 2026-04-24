@@ -364,6 +364,17 @@ def check_vram(label: str = "model", min_mb: int = 512) -> None:
 # ──────────────────────────────────────────────
 
 
+def real_speakers(segments: list[dict]) -> list[str]:
+    """Return the sorted set of real speaker labels in ``segments``.
+
+    Drops ``[BREAK]``, empty-string placeholders, and any diarization
+    placeholders in :data:`UNKNOWN_SPEAKERS`. Single source of truth for
+    "which speakers count" across synthesis / voice-sample extraction.
+    """
+    skip = UNKNOWN_SPEAKERS | {BREAK_SPEAKER, ""}
+    return sorted({s.get("speaker", "") for s in segments} - skip)
+
+
 def group_by_speaker(segments: list[dict]) -> dict[str, list[dict]]:
     """Group segments by speaker label.
 
