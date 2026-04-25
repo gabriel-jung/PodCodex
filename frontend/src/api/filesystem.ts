@@ -1,8 +1,19 @@
 import type { DirListing } from "./types";
 import { BASE, json } from "./client";
 
-export const listDirectory = (path: string, showFiles = false) =>
-  json<DirListing>(`/api/fs/list?path=${encodeURIComponent(path)}&show_files=${showFiles}`);
+export const listDirectory = (
+  path: string,
+  showFiles = false,
+  extensions?: string[],
+) => {
+  const ext =
+    extensions && extensions.length > 0
+      ? `&extensions=${encodeURIComponent(extensions.join(","))}`
+      : "";
+  return json<DirListing>(
+    `/api/fs/list?path=${encodeURIComponent(path)}&show_files=${showFiles}${ext}`,
+  );
+};
 
 export const createDirectory = (path: string, name: string) =>
   json<{ path: string | null; error: string | null }>(

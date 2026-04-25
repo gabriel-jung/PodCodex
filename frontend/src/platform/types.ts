@@ -5,6 +5,14 @@ export interface PlatformFS {
   openFolderDialog(): Promise<string | null>;
   /** Open a native file picker dialog. Returns path or null if cancelled. */
   openFileDialog(extensions?: string[]): Promise<string | null>;
+  /**
+   * Open a native save-file dialog. Returns the chosen destination path or
+   * null if the user cancelled.
+   */
+  saveFileDialog(opts?: {
+    defaultPath?: string;
+    extensions?: string[];
+  }): Promise<string | null>;
 }
 
 export interface PlatformWindow {

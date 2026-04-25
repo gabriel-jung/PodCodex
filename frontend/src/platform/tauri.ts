@@ -1,6 +1,6 @@
 /** Tauri (native desktop) platform implementation. */
 
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Platform } from "./types";
 
@@ -17,6 +17,15 @@ export const tauriPlatform: Platform = {
           : undefined,
       });
       return typeof result === "string" ? result : null;
+    },
+    saveFileDialog: async (opts) => {
+      const result = await save({
+        defaultPath: opts?.defaultPath,
+        filters: opts?.extensions
+          ? [{ name: "Files", extensions: opts.extensions }]
+          : undefined,
+      });
+      return result ?? null;
     },
   },
   window: {

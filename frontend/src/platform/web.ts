@@ -6,6 +6,7 @@ export const webPlatform: Platform = {
   fs: {
     openFolderDialog: async () => null,
     openFileDialog: async () => null,
+    saveFileDialog: async () => null,
   },
   window: {
     setTitle: (title) => { document.title = title; },

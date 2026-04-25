@@ -77,6 +77,20 @@ from podcodex.api.routes.translate import (  # noqa: E402
     ManualPromptsRequest as TranslateManualPromptsRequest,
     TranslateRequest,
 )
+from podcodex.api.routes.bundle import (  # noqa: E402
+    ExportIndexRequest,
+    ExportShowRequest,
+    ImportRequest,
+    PreviewRequest,
+)
+from podcodex.bundle.manifest import (  # noqa: E402
+    ArchivePreview,
+    CollectionEntry,
+    ExportResult,
+    ImportResult,
+    Manifest,
+    ShowEntry,
+)
 
 # (name_override, model_class) — name_override=None uses the class name.
 MODELS: list[tuple[str | None, type[BaseModel]]] = [
@@ -118,6 +132,17 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, AssembleRequest),
     (None, YouTubeDownloadRequest),
     (None, YouTubeSubsRequest),
+    # bundle
+    (None, CollectionEntry),
+    (None, ShowEntry),
+    (None, Manifest),
+    (None, ArchivePreview),
+    (None, ExportResult),
+    (None, ImportResult),
+    (None, ExportShowRequest),
+    (None, ExportIndexRequest),
+    (None, PreviewRequest),
+    (None, ImportRequest),
 ]
 
 # ── JSON Schema → TypeScript converter ──────────────────────────────────────
@@ -157,6 +182,11 @@ def _schema_to_ts(schema: dict[str, Any], defs: dict[str, Any]) -> str:
             ts += " | null"
         return ts
 
+    # Inline literal/enum (e.g. `Literal["a", "b"]`) — must precede the
+    # primitive-type check or `type: "string"` would shadow the values.
+    if "enum" in schema:
+        return " | ".join(json.dumps(v) for v in schema["enum"])
+
     schema_type = schema.get("type")
 
     if schema_type in _PRIMITIVE_MAP:
@@ -173,10 +203,6 @@ def _schema_to_ts(schema: dict[str, Any], defs: dict[str, Any]) -> str:
             val_type = _schema_to_ts(additional, defs)
             return f"Record<string, {val_type}>"
         return "Record<string, unknown>"
-
-    # Enum
-    if "enum" in schema:
-        return " | ".join(json.dumps(v) for v in schema["enum"])
 
     # const
     if "const" in schema:
@@ -243,10 +269,33 @@ HEADER = """\
 """
 
 
+def _collect_enum_defs(model: type[BaseModel]) -> dict[str, list[str]]:
+    """Return ``{enum_name: [values]}`` for string-enum ``$defs`` on the model."""
+    schema = model.model_json_schema()
+    out: dict[str, list[str]] = {}
+    for name, sub in schema.get("$defs", {}).items():
+        if sub.get("type") == "string" and isinstance(sub.get("enum"), list):
+            out[name] = list(sub["enum"])
+    return out
+
+
 def main() -> None:
     """Generate TypeScript interfaces and write to the output file."""
     blocks: list[str] = [HEADER]
     seen_names: set[str] = set()
+
+    # Pass 1: gather string enums referenced via $ref so they get a type alias.
+    enums: dict[str, list[str]] = {}
+    for _name_override, model in MODELS:
+        for ename, values in _collect_enum_defs(model).items():
+            if ename not in enums:
+                enums[ename] = values
+    for ename in sorted(enums):
+        if ename in seen_names:
+            continue
+        seen_names.add(ename)
+        union = " | ".join(json.dumps(v) for v in enums[ename])
+        blocks.append(f"export type {ename} = {union};")
 
     for name_override, model in MODELS:
         name = name_override or model.__name__

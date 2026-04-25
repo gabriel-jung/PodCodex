@@ -12,6 +12,7 @@ import { errorMessage, inputWidth, selectClass } from "@/lib/utils";
 import FolderLocationFields from "@/components/common/FolderLocationFields";
 import PipelineSettings from "./PipelineSettings";
 import ShowAccessSection from "./ShowAccessSection";
+import BundleExportSection from "./BundleExportSection";
 import { StatusDot } from "@/components/ui/status-dot";
 import { AdvancedFieldset } from "@/components/ui/advanced-fieldset";
 import { FolderOpen, Trash2 } from "lucide-react";
@@ -373,6 +374,8 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       {/* ── Discord bot access ── */}
       <ShowAccessSection show={meta.name} />
 
+      {/* ── Sharing ── */}
+      <BundleExportSection folder={folder} showName={meta.name} />
 
       {/* ── Danger Zone ── */}
       <SettingSection title="Danger Zone" description="Irreversible actions.">

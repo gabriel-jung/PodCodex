@@ -330,6 +330,11 @@ class IndexStore:
         self._pub_date_ready: set[str] = set()
         self._episode_title_ready: set[str] = set()
 
+    @property
+    def path(self) -> Path:
+        """Filesystem root of the LanceDB index directory."""
+        return self._path
+
     # ── External-change detection & reconnection ─────────────────────────
     #
     # The index directory can be replaced (rsync) or extended (desktop app
@@ -710,6 +715,12 @@ class IndexStore:
             for r in rows
             if r.get("name")
         }
+
+    def count_rows(self, collection: str) -> int:
+        """Total chunk count for a collection. 0 if the collection is empty/unknown."""
+        if not self.collection_exists(collection):
+            return 0
+        return int(self._table(collection).count_rows())
 
     # ── Episode-level ────────────────────────────────────────────────────
 

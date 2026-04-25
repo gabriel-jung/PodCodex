@@ -79,6 +79,13 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
     )
 
 
+def show_display(folder: Path) -> str:
+    """Human-readable show name: ``show.toml.name`` if present, else folder basename."""
+    folder = Path(folder)
+    meta = load_show_meta(folder)
+    return (meta.name if meta else None) or folder.name
+
+
 def _toml_string(s: str) -> str:
     """Escape a string for TOML double-quoted format."""
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")

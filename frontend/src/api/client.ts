@@ -35,3 +35,4 @@ export * from "./integrations";
 export * from "./mcpPrompts";
 export * from "./botAccess";
 export * from "./config";
+export * from "./bundle";

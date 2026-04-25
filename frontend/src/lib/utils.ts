@@ -132,6 +132,14 @@ export function capitalize(s: string): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 
+/** POSIX-style parent directory of a path. Returns "/" for top-level paths. */
+export function parentPath(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  const idx = trimmed.lastIndexOf("/");
+  if (idx <= 0) return "/";
+  return trimmed.slice(0, idx);
+}
+
 /** Extract error message from a mutation error, with safe casting. */
 export function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;

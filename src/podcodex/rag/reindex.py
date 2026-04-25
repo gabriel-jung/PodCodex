@@ -16,45 +16,15 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 from loguru import logger
 
+from podcodex.cli.resolve import resolve_show_folder
 from podcodex.ingest.folder import scan_folder
-from podcodex.ingest.show import load_show_meta
 from podcodex.rag.defaults import DEFAULT_CHUNKING, DEFAULT_MODEL
 from podcodex.rag.index_store import get_index_store
 from podcodex.rag.store import collection_name
-
-
-def _resolve_show_folder(arg: str) -> tuple[Path, str]:
-    """Return (absolute folder path, show display name) for a CLI argument.
-
-    Accepts either a filesystem path or a show name registered in the app
-    config. Raises SystemExit with a helpful message on failure.
-    """
-    candidate = Path(arg).expanduser()
-    if candidate.is_dir():
-        meta = load_show_meta(candidate)
-        name = (meta.name if meta else None) or candidate.name
-        return candidate.resolve(), name
-
-    # Treat as show name — look up in app config.
-    from podcodex.api.routes.config import _load as _load_cfg
-
-    cfg = _load_cfg()
-    target = arg.strip().lower()
-    for folder_path in cfg.show_folders:
-        child = Path(folder_path)
-        if not child.is_dir():
-            continue
-        meta = load_show_meta(child)
-        name = (meta.name if meta else None) or child.name
-        if name.strip().lower() == target:
-            return child.resolve(), name
-
-    sys.exit(f"Show not found: {arg!r}. Pass a folder path or a registered show name.")
 
 
 def _reindex_show(
@@ -176,7 +146,7 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    folder, name = _resolve_show_folder(args.show)
+    folder, name = resolve_show_folder(args.show)
 
     if args.list:
         _list_collections(name)

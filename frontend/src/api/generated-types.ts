@@ -5,6 +5,8 @@
 
 
 
+export type Mode = "full" | "index-only";
+
 export interface PipelineDefaultsSchema {
   model_size: string;
   diarize?: boolean | null;
@@ -396,4 +398,74 @@ export interface YouTubeDownloadRequest {
 export interface YouTubeSubsRequest {
   video_ids: string[];
   lang?: string;
+}
+
+export interface CollectionEntry {
+  name: string;
+  model: string;
+  chunker: string;
+  dim: number;
+  rows: number;
+}
+
+export interface ShowEntry {
+  name: string;
+  folder: string;
+  audio_included: boolean;
+  collections: CollectionEntry[];
+}
+
+export interface Manifest {
+  schema_version: number;
+  mode: Mode;
+  podcodex_version: string;
+  exported_at: string;
+  shows: ShowEntry[];
+}
+
+export interface ArchivePreview {
+  archive_path: string;
+  manifest: Manifest;
+  size_bytes: number;
+  embedder_warnings: string[];
+}
+
+export interface ExportResult {
+  output_path: string;
+  size_bytes: number;
+  mode: Mode;
+  shows_exported: number;
+  collections_exported: number;
+  audio_included: boolean;
+}
+
+export interface ImportResult {
+  shows_dir: string;
+  mode: Mode;
+  shows_imported: string[];
+  collections_imported: string[];
+  conflicts_resolved: Record<string, string>;
+}
+
+export interface ExportShowRequest {
+  show_folder: string;
+  output_path: string;
+  with_audio?: boolean;
+  index_only?: boolean;
+}
+
+export interface ExportIndexRequest {
+  show_folders: string[];
+  output_path: string;
+}
+
+export interface PreviewRequest {
+  archive_path: string;
+}
+
+export interface ImportRequest {
+  archive_path: string;
+  shows_dir?: string | null;
+  name?: string | null;
+  on_conflict?: "auto" | "rename" | "replace" | "abort";
 }

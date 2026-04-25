@@ -65,6 +65,8 @@ podcodex-bot = "podcodex.bot.bot:main"
 podcodex-api = "podcodex.api.app:main"
 podcodex-mcp = "podcodex.mcp.server:main"
 podcodex-reindex = "podcodex.rag.reindex:main"
+podcodex-export = "podcodex.cli.export:main"
+podcodex-import = "podcodex.cli.import_show:main"
 
 [project.urls]
 Homepage = "https://github.com/gabriel-jung/podcodex"

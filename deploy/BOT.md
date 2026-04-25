@@ -256,6 +256,25 @@ Safe to run while the bot is running — LanceDB is read-only on the bot side.
 
 The full directory is the unit of transfer. Per-show selective sync is technically possible (rsync include/exclude on the `{show}__*.lance` tables), but `_collections.lance` and `_show_passwords.lance` are global registries — partial syncs leave them inconsistent. Transfer the whole directory.
 
+### Alternative: bundle archive (selective, atomic)
+
+When you don't have rsync access (no SSH symmetry, restricted firewall, web upload, USB) or want to deploy a *subset* of shows, use the `.podcodex` bundle format:
+
+```bash
+# Indexing machine — pick specific shows or use --all for parity with rsync
+podcodex-export "Show A" "Show B" --index-only -o shows-index.podcodex
+# or every show:
+podcodex-export --all --index-only -o shows-index.podcodex
+
+# Transfer (any path: scp, web, S3)
+scp shows-index.podcodex user@host:/tmp/
+
+# Bot host — replaces existing collections atomically
+podcodex-import /tmp/shows-index.podcodex --on-conflict replace
+```
+
+Bundle format records each collection's embedding model + chunker in a manifest so the importer can warn if a model isn't installed. rsync stays the canonical option for "ship everything, fast updates" — bundle wins on selective deploy and atomic transfer without SSH.
+
 ---
 
 ## Command reference

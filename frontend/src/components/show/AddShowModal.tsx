@@ -8,7 +8,8 @@ import { errorMessage, SUB_LANGUAGES } from "@/lib/utils";
 import FolderLocationFields from "@/components/common/FolderLocationFields";
 import FolderPicker from "@/components/common/FolderPicker";
 import MissingDependency from "@/components/common/MissingDependency";
-import { PlaySquare, Search, Rss, FolderOpen, Loader2 } from "lucide-react";
+import BundleImportPanel from "./BundleImportPanel";
+import { PlaySquare, Search, Rss, FolderOpen, Loader2, Package } from "lucide-react";
 
 export interface AddShowModalProps {
   defaultSavePath: string;
@@ -17,7 +18,7 @@ export interface AddShowModalProps {
   onOpenFile?: (path: string) => void;
 }
 
-type SourceMode = "podcast" | "local" | "youtube";
+type SourceMode = "podcast" | "local" | "youtube" | "import";
 
 export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOpenFile }: AddShowModalProps) {
   const [step, setStep] = useState<"search" | "location">("search");
@@ -120,6 +121,12 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                   onClick={() => switchMode("youtube")}
                 >
                   <PlaySquare className="h-3.5 w-3.5" /> YouTube
+                </button>
+                <button
+                  className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "import" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={() => switchMode("import")}
+                >
+                  <Package className="h-3.5 w-3.5" /> Import
                 </button>
               </div>
 
@@ -230,6 +237,19 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                     <p className="text-destructive text-xs">{errorMessage(importMutation.error)}</p>
                   )}
                 </>
+              )}
+
+              {sourceMode === "import" && (
+                <BundleImportPanel
+                  onImported={(showsDir, finalFolder) => {
+                    if (finalFolder && showsDir) {
+                      onCreated(`${showsDir.replace(/\/+$/, "")}/${finalFolder}`);
+                    } else {
+                      // Index-only import: nothing to navigate to.
+                      onClose();
+                    }
+                  }}
+                />
               )}
 
               {sourceMode === "youtube" && (

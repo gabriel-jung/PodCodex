@@ -24,6 +24,7 @@ from podcodex.api.routes import (
     audio,
     batch,
     bot_access,
+    bundle,
     config,
     episodes as episodes_route,
     export,
@@ -171,6 +172,7 @@ def create_app() -> FastAPI:
     app.include_router(batch.router, prefix="/api/batch", tags=["batch"])
     app.include_router(models.router, prefix="/api/models", tags=["models"])
     app.include_router(export.router, prefix="/api/export", tags=["export"])
+    app.include_router(bundle.router, prefix="/api/bundle", tags=["bundle"])
     app.include_router(
         integrations.router, prefix="/api/integrations", tags=["integrations"]
     )

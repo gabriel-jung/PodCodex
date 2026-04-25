@@ -12,6 +12,7 @@ import {
 import AppSidebar from "@/components/layout/AppSidebar";
 import PageHeader from "@/components/layout/PageHeader";
 import IntegrationsPanel from "@/components/settings/IntegrationsPanel";
+import BundleExportPanel from "@/components/settings/BundleExportPanel";
 import { useEffect, useState } from "react";
 import { useTheme } from "@/hooks/useTheme";
 import { SHORTCUTS, Kbd } from "@/components/ShortcutsHelp";
@@ -95,7 +96,12 @@ export default function SettingsPage() {
             {tab === "credentials" && <CredentialsPanel />}
             {tab === "integrations" && <IntegrationsPanel />}
             {tab === "plugins" && <PluginsPanel />}
-            {tab === "cache" && <ModelCachePanel />}
+            {tab === "cache" && (
+              <>
+                <ModelCachePanel />
+                <BundleExportPanel />
+              </>
+            )}
           </div>
         </div>
       </div>

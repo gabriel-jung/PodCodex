@@ -20,10 +20,23 @@ _DELETABLE_EXTS = {".vtt", ".srt", ".json", ".txt", ".info.json"}
 async def list_directory(
     path: str = Query(default="~", description="Directory to list"),
     show_files: bool = Query(
-        default=False, description="Include audio files in listing"
+        default=False, description="Include matching files in listing"
+    ),
+    extensions: str = Query(
+        default="",
+        description="Comma-separated extensions to include when show_files=true (e.g. 'podcodex'). "
+        "Empty = audio files only (default).",
     ),
 ) -> dict:
-    """List subdirectories (and optionally audio files) in the given path."""
+    """List subdirectories (and optionally files) in the given path."""
+    if extensions.strip():
+        ext_filter = {
+            f".{e.strip().lstrip('.').lower()}"
+            for e in extensions.split(",")
+            if e.strip()
+        }
+    else:
+        ext_filter = AUDIO_EXTS
     target = Path(path).expanduser().resolve()
     if not target.is_dir():
         return {
@@ -71,7 +84,7 @@ async def list_directory(
                         "has_audio": has_audio,
                     }
                 )
-            elif show_files and item.is_file() and item.suffix.lower() in AUDIO_EXTS:
+            elif show_files and item.is_file() and item.suffix.lower() in ext_filter:
                 files.append(
                     {
                         "name": item.name,

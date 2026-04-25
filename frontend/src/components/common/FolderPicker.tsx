@@ -10,21 +10,49 @@ interface FolderPickerProps {
   onSelect: (path: string) => void;
   initialPath?: string;
   mode?: "folder" | "file";
+  /**
+   * File extensions (without dot) to surface in ``mode="file"``. Defaults to
+   * audio extensions when omitted.
+   */
+  extensions?: string[];
   title?: string;
   description?: string;
 }
 
-const QUICK_ACCESS = [
+const QUICK_ACCESS_BASE = [
   { label: "Home", path: "~", icon: Home },
+];
+const QUICK_ACCESS_OPTIONAL = [
   { label: "Drive C", path: "/mnt/c", icon: HardDrive },
   { label: "Drive D", path: "/mnt/d", icon: HardDrive },
 ];
 
-export default function FolderPicker({ open, onClose, onSelect, initialPath, mode = "folder", title, description }: FolderPickerProps) {
+export default function FolderPicker({ open, onClose, onSelect, initialPath, mode = "folder", extensions, title, description }: FolderPickerProps) {
   const [currentPath, setCurrentPath] = useState(initialPath || "~");
   const [listing, setListing] = useState<DirListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [editingPath, setEditingPath] = useState(false);
+  const [quickAccess, setQuickAccess] = useState(QUICK_ACCESS_BASE);
+
+  // Probe optional Quick Access entries (e.g. WSL drives) once and only show
+  // those that actually resolve on the host.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      QUICK_ACCESS_OPTIONAL.map((item) =>
+        listDirectory(item.path)
+          .then((data) => (data.error ? null : item))
+          .catch(() => null),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      const extras = results.filter((r): r is typeof QUICK_ACCESS_OPTIONAL[number] => r !== null);
+      if (extras.length > 0) setQuickAccess([...QUICK_ACCESS_BASE, ...extras]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [pathInput, setPathInput] = useState("");
   const [newFolderName, setNewFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -65,7 +93,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
     (path: string) => {
       let cancelled = false;
       setLoading(true);
-      listDirectory(path, mode === "file")
+      listDirectory(path, mode === "file", extensions)
         .then((data) => {
           if (cancelled) return;
           setListing(data);
@@ -79,7 +107,10 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
         });
       return () => { cancelled = true; };
     },
-    [mode],
+    // ``extensions`` is rebuilt every render by callers; stringify so the
+    // callback is stable when the contents are unchanged.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mode, (extensions ?? []).join(",")],
   );
 
   useEffect(() => {
@@ -205,7 +236,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
           {/* Sidebar */}
           <div className="w-40 border-r border-border py-2 flex flex-col shrink-0">
             <span className="text-xs text-muted-foreground px-3 mb-1">Quick access</span>
-            {QUICK_ACCESS.map((item) => (
+            {quickAccess.map((item) => (
               <button
                 key={item.path}
                 onClick={() => navigateTo(item.path)}
