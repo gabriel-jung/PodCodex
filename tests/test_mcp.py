@@ -136,6 +136,47 @@ def test_trim_falls_back_to_humanized_stem():
     assert trimmed["episode_title"] == "My great topic"
 
 
+def test_trim_emits_speakers_array_and_drops_text_when_diarised():
+    trimmed = mcp_server._trim(
+        {
+            "show": "S",
+            "episode": "ep1",
+            "chunk_index": 2,
+            "start": 10.0,
+            "end": 30.0,
+            "dominant_speaker": "Alice",
+            "text": "hi there yo",
+            "speakers": [
+                {"speaker": "Alice", "start": 10.0, "end": 15.0, "text": "hi"},
+                {"speaker": "Alice", "start": 15.0, "end": 20.0, "text": "there"},
+                {"speaker": "Bob", "start": 20.0, "end": 30.0, "text": "yo"},
+            ],
+        }
+    )
+    assert "text" not in trimmed
+    assert trimmed["speaker"] == "Alice"
+    assert trimmed["speakers"] == [
+        {"speaker": "Alice", "start": 10.0, "end": 20.0, "text": "hi there"},
+        {"speaker": "Bob", "start": 20.0, "end": 30.0, "text": "yo"},
+    ]
+
+
+def test_trim_keeps_text_when_no_speakers():
+    trimmed = mcp_server._trim(
+        {
+            "show": "S",
+            "episode": "e",
+            "chunk_index": 0,
+            "start": 0.0,
+            "end": 1.0,
+            "dominant_speaker": "",
+            "text": "single blob",
+        }
+    )
+    assert trimmed["text"] == "single blob"
+    assert "speakers" not in trimmed
+
+
 def test_trim_omits_score_when_absent():
     trimmed = mcp_server._trim(
         {

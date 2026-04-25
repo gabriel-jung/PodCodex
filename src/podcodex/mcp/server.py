@@ -26,7 +26,7 @@ from __future__ import annotations
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
-from podcodex.core._utils import episode_display
+from podcodex.core._utils import episode_display, merge_display_turns
 from podcodex.rag.defaults import (
     ALPHA,
     CONTEXT_WINDOW,
@@ -93,8 +93,14 @@ def _trim(chunk: dict) -> dict:
     lookups. ``pub_date`` carries the RSS publication date so clients can
     answer date-scoped questions (``"épisodes de février 2026"``) without
     an extra ``list_episodes`` round-trip.
+
+    When the chunk carries per-turn ``speakers`` (semantic chunking on a
+    diarised transcript), emit the turn list and omit the redundant
+    flat ``text`` blob — the LLM can cite the right speaker per quote
+    instead of guessing from the chunk-level ``dominant_speaker``.
+    Consecutive same-speaker turns are merged for compactness.
     """
-    out = {
+    out: dict = {
         "show": chunk.get("show", ""),
         "episode": chunk.get("episode", ""),
         "episode_title": episode_display(chunk),
@@ -102,8 +108,20 @@ def _trim(chunk: dict) -> dict:
         "start": float(chunk.get("start", 0.0)),
         "end": float(chunk.get("end", 0.0)),
         "speaker": chunk.get("dominant_speaker", ""),
-        "text": chunk.get("text", ""),
     }
+    turns = merge_display_turns(chunk.get("speakers") or [])
+    if turns:
+        out["speakers"] = [
+            {
+                "speaker": t.get("speaker", "Unknown"),
+                "start": float(t["start"]) if t.get("start") is not None else 0.0,
+                "end": float(t["end"]) if t.get("end") is not None else 0.0,
+                "text": t.get("text", ""),
+            }
+            for t in turns
+        ]
+    else:
+        out["text"] = chunk.get("text", "")
     pub_date = chunk.get("pub_date") or ""
     if pub_date:
         out["pub_date"] = pub_date
@@ -286,11 +304,14 @@ def search(
 
     **Cite every fact drawn from the results.** Attribute each claim
     inline as ``[Show • Episode @ MM:SS]`` using the ``show``,
-    ``episode``, and ``start`` fields of the chunk it came from. Never
-    blend in outside information without labeling it ``(outside the
-    transcripts)``. Mark inferences or synthesis as ``(inference)``.
-    Users rely on podcodex answers to reflect what their transcripts
-    actually say — unlabeled outside knowledge breaks that contract.
+    ``episode``, and ``start`` fields of the chunk it came from. When a
+    chunk carries a ``speakers`` array, cite the *turn's* speaker and
+    ``start`` — not the chunk-level ``speaker`` (that field is only the
+    chunk's dominant voice and may not own the quote). Never blend in
+    outside information without labeling it ``(outside the transcripts)``.
+    Mark inferences or synthesis as ``(inference)``. Users rely on
+    podcodex answers to reflect what their transcripts actually say —
+    unlabeled outside knowledge breaks that contract.
 
     Args:
         query: Natural-language query. Works in any language the
@@ -315,10 +336,14 @@ def search(
 
     Returns:
         Ranked chunks, each containing ``show``, ``episode``,
-        ``episode_title``, ``chunk_index``, ``start``, ``end``, ``speaker``,
-        ``text``, ``score``, and — when present — ``pub_date`` (ISO 8601)
-        and ``episode_number``. Pass a chunk's ``chunk_index`` to
-        ``get_context`` to read its surrounding scene.
+        ``episode_title``, ``chunk_index``, ``start``, ``end``, ``speaker``
+        (chunk-level dominant), ``score``, and — when present —
+        ``pub_date`` (ISO 8601) and ``episode_number``. Diarised chunks
+        carry a ``speakers`` array of ``{speaker, start, end, text}``
+        turns (consecutive same-speaker turns merged); cite from these
+        for accurate attribution. Untimed or single-speaker chunks
+        instead carry a flat ``text`` field. Pass a chunk's
+        ``chunk_index`` to ``get_context`` to read its surrounding scene.
     """
     collections = _resolve_collections(show)
     if not collections:
@@ -396,10 +421,12 @@ def exact(
         Every matching chunk, ordered by collection then position. Each
         carries the same fields as ``search`` results (``show``,
         ``episode``, ``episode_title``, ``chunk_index``, ``start``,
-        ``end``, ``speaker``, ``text``, and — when present — ``pub_date``
-        and ``episode_number``). Matches that are not perfect string hits
-        additionally carry ``accent_match`` or ``fuzzy_match`` flags. No
-        relevance ranking — results are positional.
+        ``end``, ``speaker``, plus a per-turn ``speakers`` array on
+        diarised chunks or a flat ``text`` on untimed/single-speaker
+        chunks, and — when present — ``pub_date`` and ``episode_number``).
+        Matches that are not perfect string hits additionally carry
+        ``accent_match`` or ``fuzzy_match`` flags. No relevance ranking —
+        results are positional.
     """
     collections = _resolve_collections(show)
     if not collections:
@@ -461,9 +488,11 @@ def get_context(
         Chunks covering ``[chunk_index - window, chunk_index + window]``
         inclusive, sorted by position. Each chunk carries the same fields
         as ``search`` results (``show``, ``episode``, ``episode_title``,
-        ``chunk_index``, ``start``, ``end``, ``speaker``, ``text``, and —
-        when present — ``pub_date`` and ``episode_number``). Empty list
-        if the episode or ``chunk_index`` is not found.
+        ``chunk_index``, ``start``, ``end``, ``speaker``, plus a per-turn
+        ``speakers`` array on diarised chunks or a flat ``text`` on
+        untimed/single-speaker chunks, and — when present — ``pub_date``
+        and ``episode_number``). Empty list if the episode or
+        ``chunk_index`` is not found.
     """
     col = collection_name(show, DEFAULT_MODEL, DEFAULT_CHUNKING)
     chunks = get_index_store().get_chunk_window(
