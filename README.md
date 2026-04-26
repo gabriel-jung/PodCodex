@@ -97,6 +97,45 @@ make dev-no-tauri
 
 For a native window (requires Rust + GTK/WebKit on Linux), run `make dev` instead. See [Makefile](Makefile) for all targets.
 
+### Build a standalone .app / .dmg / .deb / .exe
+
+The desktop build freezes the Python backend with PyInstaller into a single
+sidecar binary, fetches static `ffmpeg` + `yt-dlp`, then asks Tauri to bundle
+everything into a native installer. macOS arm64 verified; Linux `.deb` /
+`.AppImage` and Windows `.msi` / `.exe` documented but not yet smoke-tested.
+
+```bash
+make setup-pyinstaller    # one-time — adds PyInstaller to .venv
+make bundle               # ~5 min — freezes backend, fetches sidecars,
+                          # builds frontend, runs cargo tauri build
+```
+
+`make bundle` chains `bundle-server` → `bundle-natives` → `npm run build` →
+`cargo tauri build`. Use the individual `make bundle-*` targets when
+iterating on a single layer. Clean rebuild: `make clean && make bundle`.
+
+macOS outputs:
+`src-tauri/target/release/bundle/macos/PodCodex.app` (~497 MB) and
+`src-tauri/target/release/bundle/dmg/PodCodex_<version>_<arch>.dmg`
+(~459 MB). ML weights download on first use to
+`~/Library/Application Support/com.podcodex.desktop/models/`.
+
+Full per-OS guide (macOS, Linux native, WSL2, Windows native + signing,
+notarization, troubleshooting): see [`deploy/BUILD.md`](deploy/BUILD.md).
+
+| Target               | What it does                                                  |
+|----------------------|---------------------------------------------------------------|
+| `make setup`         | Install Python + frontend deps                                |
+| `make dev`           | FastAPI + Vite + Tauri (hot reload)                           |
+| `make dev-no-tauri`  | FastAPI + Vite only (browser at localhost:5173)               |
+| `make bundle-server` | PyInstaller-freeze the backend                                |
+| `make bundle-natives`| Download ffmpeg + yt-dlp                                      |
+| `make bundle`        | Full standalone .app/.dmg                                     |
+| `make bundle-sign`   | Sign + notarize (needs `APPLE_SIGNING_IDENTITY` + notary kc)  |
+| `make clean`         | Remove build artifacts                                        |
+| `make types`         | Regenerate frontend TS types from Pydantic                    |
+| `make test`          | Run Python tests                                              |
+
 ### Extras
 
 | Extra      | Installs                                           | Needed for                           |

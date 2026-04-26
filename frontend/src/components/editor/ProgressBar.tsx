@@ -11,15 +11,23 @@ interface ProgressBarProps {
   onCancel?: () => void;
 }
 
-/** Seconds without a WebSocket update before showing the "stuck" hint. */
-const STALE_THRESHOLD = 30;
+// SLOW: alive-indicator only. STUCK: probably hung — offer Retry.
+const SLOW_THRESHOLD = 30;
+const STUCK_THRESHOLD = 600;
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
 
 export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, onCancel }: ProgressBarProps) {
   const progress = useProgress(taskId);
   const completeCalled = useRef(false);
   const [showLog, setShowLog] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
-  const [stale, setStale] = useState(false);
+  const [staleElapsed, setStaleElapsed] = useState(0);
   const lastUpdateRef = useRef<number>(0);
 
   useEffect(() => {
@@ -32,25 +40,24 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
   useEffect(() => {
     completeCalled.current = false;
     setShowLog(false);
-    setStale(false);
+    setStaleElapsed(0);
     lastUpdateRef.current = Date.now();
   }, [taskId]);
 
-  // Track last update time and detect stale state
+  // Reset stale clock whenever any progress field changes
   useEffect(() => {
     if (progress) {
       lastUpdateRef.current = Date.now();
-      setStale(false);
+      setStaleElapsed(0);
     }
   }, [progress?.progress, progress?.message, progress?.log?.length]);
 
   useEffect(() => {
     if (!taskId || progress?.status === "completed" || progress?.status === "failed") return;
     const interval = setInterval(() => {
-      if (Date.now() - lastUpdateRef.current > STALE_THRESHOLD * 1000) {
-        setStale(true);
-      }
-    }, 5000);
+      const sinceUpdate = Math.floor((Date.now() - lastUpdateRef.current) / 1000);
+      setStaleElapsed((prev) => (prev === sinceUpdate ? prev : sinceUpdate));
+    }, 1000);
     return () => clearInterval(interval);
   }, [taskId, progress?.status]);
 
@@ -69,7 +76,11 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
   const isDone = progress?.status === "completed";
   const isCancelled = progress?.status === "cancelled";
   const isRunning = !isDone && !isFailed && !isCancelled;
-  const showRetry = isFailed || stale;
+  const isSlow = isRunning && staleElapsed > SLOW_THRESHOLD;
+  const isStuck = isRunning && staleElapsed > STUCK_THRESHOLD;
+  // Stuck offers Retry so a hung batch (e.g. one frozen yt-dlp item among 200)
+  // can recover without losing finished work; merely slow does not.
+  const showRetry = isFailed || isStuck;
 
   return (
     <div className="p-4 space-y-3">
@@ -78,9 +89,15 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground truncate mr-2">{currentMsg}</span>
           <div className="flex items-center gap-2 shrink-0">
-            {stale && isRunning && (
-              <span className="text-xs text-warning">No updates</span>
-            )}
+            {isStuck ? (
+              <span className="text-xs text-warning">
+                No updates for {formatElapsed(staleElapsed)} — may be stuck
+              </span>
+            ) : isSlow ? (
+              <span className="text-xs text-muted-foreground italic">
+                Still working… {formatElapsed(staleElapsed)}
+              </span>
+            ) : null}
             <span className="text-muted-foreground">{pct}%</span>
             {onCancel && isRunning && (
               <Button onClick={onCancel} variant="ghost" size="sm" className="text-xs h-6 px-1.5">
@@ -94,13 +111,22 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
             )}
           </div>
         </div>
-        <div className="h-2 rounded-full bg-muted overflow-hidden">
+        <div className="h-2 rounded-full bg-muted overflow-hidden relative">
           <div
             className={`h-full rounded-full transition-all duration-300 ${
-              isFailed ? "bg-destructive" : stale ? "bg-warning" : isDone ? "bg-success" : "bg-primary"
+              isFailed
+                ? "bg-destructive"
+                : isStuck
+                  ? "bg-warning"
+                  : isDone
+                    ? "bg-success"
+                    : "bg-primary"
             }`}
             style={{ width: `${pct}%` }}
           />
+          {isSlow && !isStuck && (
+            <div className="absolute inset-y-0 h-full w-1/3 bg-primary/40 animate-progress-sweep rounded-full" />
+          )}
         </div>
       </div>
 

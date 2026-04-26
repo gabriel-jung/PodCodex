@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- torch / numba require JIT for some backends. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- PyTorch allocates executable memory pages without signing them
+         (libtorch_cpu.so generates dispatch trampolines at runtime). -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- PyInstaller bundles many .so files; the loader rejects them under
+         hardened runtime unless library validation is disabled. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- The Rust shell sets HF_HOME / TORCH_HOME / FFMPEG_BINARY env vars
+         before spawning the sidecar. Hardened runtime strips DYLD_* and other
+         env vars unless this is granted. -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!-- Network access for HuggingFace model downloads, OpenAI / DashScope /
+         Ollama API calls, RSS / YouTube fetches. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- User-selected files (audio inputs, .podcodex bundle export/import). -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- App data directory writes (models, episode store, pipeline.db). -->
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+</dict>
+</plist>

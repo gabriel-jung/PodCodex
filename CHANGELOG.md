@@ -10,6 +10,10 @@ follows [Semantic Versioning](https://semver.org/). Dates are ISO 8601.
 - Discord bot `/ask` and `/ask-advanced` commands, plus the `synthesis` module and all `ask_*` config fields (CLI, `BotConfig`, `ServerSettings`, `/setup` params). LLM-synthesized answers are not yet ready for release — surface to be revisited after prompt-isolation and grounding guarantees are in place. `openai` dependency dropped from the `bot` extra. Pre-existing `ask_*` entries in `server_config.json` are ignored at load time (no migration needed).
 
 ### Added
+- macOS standalone `.app` / `.dmg` build via PyInstaller-frozen FastAPI sidecar (`make bundle`). Single-file `podcodex-server` onefile binary (~420 MB), bundled `ffmpeg` + `yt-dlp` static binaries, ML caches relocated under `~/Library/Application Support/com.podcodex.desktop/models/`. Cold start 10-30 s while PyInstaller extracts; warm <1 s. Phased boot UI in `RootLayout` keeps the user informed during first launch.
+- Sign + notarize wrapper at `scripts/sign_and_notarize.sh` (Developer ID + notarytool keychain profile). Resigns nested PyInstaller `.so` / `.dylib` defensively before stapling.
+- Tauri shell (`src-tauri/src/lib.rs`) auto-spawns the bundled sidecar, polls `/api/health` before revealing the window, kills the child on `RunEvent::Exit`. `PODCODEX_SKIP_BACKEND_SPAWN=1` keeps `make dev` working with an external uvicorn.
+- Two-tier stale UX in `ProgressBar` (`SLOW=30s` indeterminate sweep, `STUCK=600s` warning + Retry) so opaque ML steps and hung batch items get distinct treatment.
 - User-scoped secrets store at `~/.config/podcodex/secrets.env` (mode 0600). Managed from **Settings → Credentials** for `HF_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `DISCORD_TOKEN`. Backend loads it after repo `.env` (overrides dev values) and reloads live on save.
 - `GET` / `PUT /api/config/secrets` routes with atomic writes and per-value source reporting (`file` / `env` / `none`).
 - Settings page routing: `?tab=<name>` picks the initial panel; `#<anchor>` scrolls to it.

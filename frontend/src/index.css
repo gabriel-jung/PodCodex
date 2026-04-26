@@ -134,3 +134,12 @@
 .complete-flash {
   animation: complete-flash 0.85s ease-out;
 }
+
+@keyframes progress-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+.animate-progress-sweep {
+  animation: progress-sweep 1.6s ease-in-out infinite;
+}

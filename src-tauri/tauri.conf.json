@@ -2,14 +2,16 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PodCodex",
   "version": "0.1.0",
-  "identifier": "com.podcodex.app",
+  "identifier": "com.podcodex.desktop",
   "build": {
     "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "",
-    "beforeBuildCommand": "npm run build --prefix ../frontend"
+    "beforeBuildCommand": "npm run build --prefix frontend"
   },
   "app": {
+    "macOSPrivateApi": true,
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "PodCodex",
@@ -19,7 +21,7 @@
         "minHeight": 520,
         "resizable": true,
         "fullscreen": false,
-        "visible": false
+        "visible": true
       }
     ],
     "security": {
@@ -29,12 +31,46 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/podcodex-server",
+      "binaries/ffmpeg",
+      "binaries/yt-dlp"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": "Entitlements.plist"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1",
+          "librsvg2-2",
+          "libsndfile1"
+        ]
+      },
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    },
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      },
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    },
+    "category": "Productivity",
+    "shortDescription": "Transcribe, translate, and search your podcasts.",
+    "longDescription": "Local-first desktop app that ingests podcasts, YouTube channels, lectures, or interviews; transcribes with WhisperX + pyannote diarization; corrects and translates via LLM; and indexes everything into a LanceDB vector store for semantic search."
   }
 }

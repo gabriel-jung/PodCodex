@@ -10,18 +10,20 @@
 #
 #   Ubuntu/Debian (WSL2 included):
 #     sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
-#       libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config
+#       libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config \
+#       libsndfile1 libfuse2          # libfuse2 only needed for AppImage build
 #
 #   Fedora:
 #     sudo dnf install webkit2gtk4.1-devel gtk3-devel \
-#       libappindicator-gtk3-devel librsvg2-devel openssl-devel pkg-config
+#       libappindicator-gtk3-devel librsvg2-devel openssl-devel pkg-config \
+#       libsndfile fuse-libs
 #
 # Quick start:
 #   make setup   # one-time: install all deps
 #   make dev     # start FastAPI + Vite + Tauri (hot-reload)
 #   make build   # production .app / .exe bundle
 
-.PHONY: setup setup-python setup-frontend dev dev-api dev-frontend dev-tauri build clean
+.PHONY: setup setup-python setup-frontend setup-pyinstaller dev dev-api dev-frontend dev-tauri dev-sidecar build bundle bundle-server bundle-natives bundle-sign bundle-sign-only clean
 
 # ── Setup ────────────────────────────────────────────────
 
@@ -53,8 +55,11 @@ dev-api:  ## Start FastAPI backend (port 18811, auto-reload)
 dev-frontend:  ## Start Vite dev server (port 5173)
 	cd frontend && npm run dev
 
-dev-tauri:  ## Start Tauri webview (connects to Vite dev server)
+dev-tauri: dev-sidecar  ## Start Tauri webview (connects to Vite dev server)
 	cd src-tauri && PODCODEX_SKIP_BACKEND_SPAWN=1 . $$HOME/.cargo/env && cargo tauri dev
+
+dev-sidecar:  ## Drop a placeholder sidecar binary so cargo tauri dev compiles
+	.venv/bin/python scripts/setup_dev_sidecar.py
 
 dev-no-tauri:  ## Start just API + Vite (use browser at localhost:5173)
 	@trap 'kill 0' EXIT; \
@@ -64,15 +69,33 @@ dev-no-tauri:  ## Start just API + Vite (use browser at localhost:5173)
 
 # ── Production Build ─────────────────────────────────────
 
-build:  ## Build production .app / .exe
+setup-pyinstaller:  ## Install PyInstaller into the dev venv
+	uv pip install pyinstaller --python .venv/bin/python
+
+bundle-server: setup-pyinstaller  ## Freeze the Python backend as a sidecar binary
+	.venv/bin/python packaging/build_server.py
+
+bundle-natives:  ## Download ffmpeg + yt-dlp static binaries for the host
+	.venv/bin/python scripts/fetch_native_binaries.py
+
+bundle: bundle-server bundle-natives  ## Full standalone .app/.exe (frontend + sidecars + Tauri)
 	cd frontend && npm run build
 	cd src-tauri && . $$HOME/.cargo/env && cargo tauri build
+
+bundle-sign:  ## Sign + notarize the macOS bundle (requires APPLE_SIGNING_IDENTITY)
+	scripts/sign_and_notarize.sh
+
+bundle-sign-only:  ## Sign without notarizing (faster iteration)
+	scripts/sign_and_notarize.sh --no-notary
+
+build: bundle  ## Alias for `bundle` — unsigned .app / .dmg with bundled backend
 
 # ── Utilities ────────────────────────────────────────────
 
 clean:  ## Remove build artifacts
 	rm -rf frontend/dist frontend/node_modules/.vite
-	rm -rf src-tauri/target
+	rm -rf src-tauri/target src-tauri/binaries
+	rm -rf packaging/dist packaging/build_work
 
 test:  ## Run Python tests
 	.venv/bin/python -m pytest tests/ -x -q

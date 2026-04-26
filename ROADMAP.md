@@ -10,6 +10,11 @@ Everything outside this list is post-1.0. Tag when all items are ✅.
 - [ ] README screenshots + 30 s demo GIF
 - [ ] Manual smoke pass on Linux native and Windows (see [deploy/SMOKE.md](deploy/SMOKE.md))
 - [ ] Distribution bundles — PyInstaller sidecar + `make build` producing `.app` / `.deb` / `.exe`. WhisperX + Torch bundling is the hard part.
+  - [x] macOS `.app` + `.dmg` (arm64) — `make bundle` ships ~497 MB .app / ~459 MB DMG. End-to-end transcription verified on macOS 26.4.1.
+  - [ ] Linux `.deb` + AppImage
+  - [ ] Windows `.exe` (NSIS / MSI)
+  - [ ] Sign + notarize CI step (mac done locally via `scripts/sign_and_notarize.sh`; needs to move to GitHub Actions with secrets)
+  - [ ] LGPL ffmpeg build (current bundled ffmpeg is GPL — fine for personal use, blocks redistribution under MIT)
 
 ## Next (post-1.0)
 

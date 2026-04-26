@@ -115,7 +115,7 @@ OPENAI_API_KEY
 # ============================================================================
 # Claude Code (personal local settings only)
 # ============================================================================
-.claude/settings.local.json
+.claude/
 
 # ============================================================================
 # OS
@@ -147,6 +147,20 @@ frontend/dist/
 # Tauri / Rust
 # ============================================================================
 src-tauri/target/
+
+# Bundled sidecar binaries — produced by `make bundle-server` and
+# `make bundle-natives`. Each is 30-500 MB; never commit.
+src-tauri/binaries/
+
+# Apple notary submission zip
+src-tauri/target/release/bundle/macos/*.zip
+
+# ============================================================================
+# PyInstaller bundling (packaging/)
+# ============================================================================
+# Intermediate work tree — contains absolute host paths in TOC files.
+packaging/build_work/
+packaging/dist/
 
 # ============================================================================
 # Package management
