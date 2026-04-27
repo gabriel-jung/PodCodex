@@ -45,11 +45,21 @@ if getattr(sys, "frozen", False) and os.environ.get("PODCODEX_DATA_DIR"):
             backtrace=True,
             diagnose=False,  # don't include local vars in tracebacks (size + privacy)
         )
+        # Patch raw sys.stdout/stderr if missing (Windows --noconsole spawn
+        # children get None for both). Any library that calls sys.stdout.write
+        # directly — torch.hub progress, tqdm, faster-whisper — would crash
+        # with AttributeError otherwise. Route to the same file as loguru;
+        # interleaving is fine for diagnostic output.
+        if sys.stdout is None or sys.stderr is None:
+            _stdio_fp = open(_log_path, "a", buffering=1, encoding="utf-8")
+            if sys.stdout is None:
+                sys.stdout = _stdio_fp
+            if sys.stderr is None:
+                sys.stderr = _stdio_fp
         logger.info(
-            "sidecar logging started — pid={}, frozen=True, data_dir={}, stderr={}",
+            "sidecar logging started — pid={}, frozen=True, data_dir={}",
             os.getpid(),
             os.environ["PODCODEX_DATA_DIR"],
-            "None" if sys.stderr is None else "fd",
         )
     except Exception as exc:  # noqa: BLE001 — must never crash app startup
         # Last-resort: write a single line to a fallback path so we have *some*
