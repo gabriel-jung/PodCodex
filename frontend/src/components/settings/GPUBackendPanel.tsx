@@ -16,6 +16,10 @@ const POLL_INTERVAL_MS = 1000;
 export default function GPUBackendPanel() {
   const qc = useQueryClient();
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  // Persisted error message for the most recent download attempt. Stays
+  // visible after task completion (or mutation rejection) so the user
+  // sees what went wrong even if the failure is fast.
+  const [lastError, setLastError] = useState<string | null>(null);
 
   const { data: status, isLoading, refetch } = useQuery({
     queryKey: queryKeys.gpuStatus(),
@@ -32,6 +36,12 @@ export default function GPUBackendPanel() {
   useEffect(() => {
     if (!task) return;
     if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") {
+      if (task.status === "failed") {
+        const msg = task.error ?? "Download failed";
+        setLastError(msg);
+        // eslint-disable-next-line no-console
+        console.error("GPU download task failed:", task);
+      }
       setActiveTaskId(null);
       qc.invalidateQueries({ queryKey: queryKeys.gpuStatus() });
     }
@@ -39,7 +49,14 @@ export default function GPUBackendPanel() {
 
   const downloadMut = useMutation({
     mutationFn: () => downloadGPUBackend(),
+    onMutate: () => setLastError(null),
     onSuccess: (resp) => setActiveTaskId(resp.task_id),
+    onError: (err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      setLastError(msg);
+      // eslint-disable-next-line no-console
+      console.error("GPU download POST failed:", err);
+    },
   });
   const activateMut = useMutation({
     mutationFn: activateGPUBackend,
@@ -66,10 +83,12 @@ export default function GPUBackendPanel() {
   }
 
   const downloading = !!activeTaskId && task?.status === "running";
+  // lastError survives task completion + mutation reset; the live error
+  // sources take precedence while they're set.
   const downloadError =
-    downloadMut.error ? (downloadMut.error as Error).message :
-    task?.status === "failed" ? task.error ?? "Download failed" :
-    null;
+    (downloadMut.error ? (downloadMut.error as Error).message : null) ??
+    (task?.status === "failed" ? task.error ?? "Download failed" : null) ??
+    lastError;
 
   return (
     <section className="space-y-6">
@@ -206,7 +225,12 @@ function ActionBlock({
             on toolkit upgrades.
           </p>
           <Button onClick={onDownload} disabled={mutating} className="mt-2">
-            <Download className="w-4 h-4 mr-2" /> Download
+            {mutating ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4 mr-2" />
+            )}
+            {mutating ? "Starting…" : "Download"}
           </Button>
         </div>
       )}

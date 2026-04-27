@@ -465,20 +465,25 @@ def uninstall() -> None:
 # (``.github/workflows/release.yml``) uploads ``cuda-libs.json`` alongside
 # the MSI/DMG to the matching release tag. Override with the env var when
 # building from a fork or hosting GPU artifacts elsewhere.
-_DEFAULT_RELEASES_BASE = "https://github.com/gabriel-jung/PodCodex/releases/download"
+# GitHub "latest release" redirect. Resolves to the most recent non-draft
+# release tag — works for stable (v0.1.0) and pre-release (v0.1.0-rc.1)
+# tags as long as the draft has been published. Pinning to v{__version__}
+# would 404 during rc-tag iteration where pyproject says 0.1.0 but the
+# release is at v0.1.0-rc.1. The manifest's own torch_compat field is the
+# version guard for ABI mismatches, not the URL.
+_DEFAULT_LATEST_MANIFEST_URL = (
+    "https://github.com/gabriel-jung/PodCodex/releases/latest/download/cuda-libs.json"
+)
 
 
 def default_manifest_url() -> str:
     """Manifest URL the GPU download button hits when no override is set.
 
-    Derived from the running app version so each release of the app pulls
-    the cuda-libs manifest published with that release. Overridden by
-    ``PODCODEX_GPU_MANIFEST_URL`` when set.
+    Override with ``PODCODEX_GPU_MANIFEST_URL`` for forks or to point at a
+    specific (non-latest) release.
     """
     override = os.environ.get("PODCODEX_GPU_MANIFEST_URL", "").strip()
-    if override:
-        return override
-    return f"{_DEFAULT_RELEASES_BASE}/v{_app_version()}/cuda-libs.json"
+    return override or _DEFAULT_LATEST_MANIFEST_URL
 
 
 # Back-compat alias — older route handlers reference the old name.
