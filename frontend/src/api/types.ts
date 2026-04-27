@@ -40,6 +40,10 @@ export type {
 export interface HealthResponse {
   status: string;
   capabilities: Record<string, boolean>;
+  /** "bundle" when running as the frozen PyInstaller sidecar; "dev" when
+   *  uvicorn is running from a venv. Frontend uses this to hide tabs
+   *  (e.g. Plugins) whose actions only make sense with a venv. */
+  mode: "bundle" | "dev";
 }
 
 export interface ExtraInfo {

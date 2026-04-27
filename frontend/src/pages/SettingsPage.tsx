@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getModels, deleteModel, getExtras, installExtra, removeExtra, getSecretsStatus, updateSecrets } from "@/api/client";
+import { getModels, deleteModel, getExtras, installExtra, removeExtra, getSecretsStatus, updateSecrets, getHealth } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import type { ExtraInfo } from "@/api/types";
 import type { SecretStatus } from "@/api/config";
@@ -28,19 +28,20 @@ import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
 import { selectClass } from "@/lib/utils";
 
 type SettingsTab = "general" | "pipeline" | "credentials" | "integrations" | "plugins" | "gpu" | "cache";
-const SETTINGS_SECTIONS = [
-  {
-    items: [
-      { key: "general", label: "General", icon: Palette },
-      { key: "pipeline", label: "Pipeline", icon: Sparkles },
-      { key: "credentials", label: "Credentials", icon: KeyRound },
-      { key: "integrations", label: "Integrations", icon: Plug },
-      { key: "plugins", label: "Plugins", icon: Puzzle },
-      { key: "gpu", label: "GPU acceleration", icon: Zap },
-      { key: "cache", label: "Model cache", icon: HardDrive },
-    ],
-  },
-];
+
+// Plugins panel runs `uv sync --extra X` to install Python extras — only
+// meaningful when a venv exists (dev mode). The bundled sidecar has its
+// extras compiled into the PyInstaller bundle and there's nothing to install
+// or remove at runtime. We hide the tab in bundle mode.
+const ALL_SECTIONS = [
+  { key: "general", label: "General", icon: Palette },
+  { key: "pipeline", label: "Pipeline", icon: Sparkles },
+  { key: "credentials", label: "Credentials", icon: KeyRound },
+  { key: "integrations", label: "Integrations", icon: Plug },
+  { key: "plugins", label: "Plugins", icon: Puzzle, devOnly: true },
+  { key: "gpu", label: "GPU acceleration", icon: Zap },
+  { key: "cache", label: "Model cache", icon: HardDrive },
+] as const;
 
 const VALID_TABS: readonly SettingsTab[] = ["general", "pipeline", "credentials", "integrations", "plugins", "gpu", "cache"];
 
@@ -52,6 +53,17 @@ function readInitialTab(): SettingsTab {
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>(readInitialTab);
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health(),
+    queryFn: getHealth,
+    staleTime: Infinity,
+  });
+  const isBundleMode = health?.mode === "bundle";
+  const sections = [
+    {
+      items: ALL_SECTIONS.filter((s) => !(isBundleMode && "devOnly" in s && s.devOnly)),
+    },
+  ];
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -82,7 +94,7 @@ export default function SettingsPage() {
       <PageHeader title="Settings" />
       <div className="flex-1 flex overflow-hidden">
         <AppSidebar
-          pageSections={SETTINGS_SECTIONS}
+          pageSections={sections}
           activeItem={tab}
           onItemClick={(k) => selectTab(k as SettingsTab)}
         />
