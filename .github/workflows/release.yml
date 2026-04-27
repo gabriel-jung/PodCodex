@@ -50,7 +50,7 @@ jobs:
         run: make setup-frontend
 
       - name: Build CPU sidecar
-        run: make bundle-server
+        run: .venv/bin/python packaging/build_server.py --clean
 
       - name: Fetch native sidecars (ffmpeg, yt-dlp)
         run: make bundle-natives
@@ -101,9 +101,10 @@ jobs:
           npm install
 
       # CPU build first — produces src-tauri/binaries/podcodex-server-<triple>.exe
-      # consumed by tauri-action below.
+      # consumed by tauri-action below. --clean wipes packaging/build_work so
+      # PyInstaller can't reuse anything from a prior step.
       - name: Build CPU sidecar
-        run: .venv/Scripts/python.exe packaging/build_server.py
+        run: .venv/Scripts/python.exe packaging/build_server.py --clean
 
       - name: Fetch native sidecars (ffmpeg, yt-dlp)
         run: .venv/Scripts/python.exe scripts/fetch_native_binaries.py
