@@ -173,9 +173,9 @@ function SpeakerBlock({
 
   return (
     <div className="text-sm border border-border/60 rounded-md p-2.5 bg-secondary/20">
-      <div className="flex items-center gap-2 mb-2 flex-wrap">
-        <span className="font-medium">{speaker}</span>
-        <span className="text-muted-foreground text-xs">
+      <div className="flex items-center gap-2 mb-2 min-w-0">
+        <span className="font-medium shrink-0">{speaker}</span>
+        <span className="text-muted-foreground text-xs flex-1 min-w-0 truncate">
           {segments.length === 0
             ? "no segments"
             : `${segments.length} segment${segments.length !== 1 ? "s" : ""}`}
@@ -183,7 +183,7 @@ function SpeakerBlock({
           {samples.length > 0 && ` · ${samples.length} sample${samples.length !== 1 ? "s" : ""} extracted`}
         </span>
         <label
-          className="ml-auto flex items-center gap-1 cursor-pointer text-xs text-muted-foreground hover:text-foreground transition"
+          className="shrink-0 flex items-center gap-1 cursor-pointer text-xs text-muted-foreground hover:text-foreground transition"
           title={`Upload audio for ${speaker}`}
         >
           <Upload className="w-3 h-3" />
