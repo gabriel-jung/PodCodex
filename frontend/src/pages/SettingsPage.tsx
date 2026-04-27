@@ -694,7 +694,7 @@ const SECRET_LABELS: Record<string, { label: string; hint: React.ReactNode; used
         <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer" className="underline hover:text-foreground">huggingface.co/settings/tokens</a>
         {". "}
         Then accept the terms for{" "}
-        <a href="https://huggingface.co/pyannote/speaker-diarization-3.1" target="_blank" rel="noreferrer" className="underline hover:text-foreground">pyannote/speaker-diarization-3.1</a>.
+        <a href="https://huggingface.co/pyannote/speaker-diarization-community-1" target="_blank" rel="noreferrer" className="underline hover:text-foreground">pyannote/speaker-diarization-community-1</a>.
       </>
     ),
     usedFor: "Speaker diarization (transcribe step)",

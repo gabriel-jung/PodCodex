@@ -162,7 +162,7 @@ DISCORD_TOKEN=your_bot_token      # Discord bot
 PODCODEX_INDEX=/path/to/index     # optional override of LanceDB location
 ```
 
-`HF_TOKEN` requires accepting the terms for [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) and [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0).
+`HF_TOKEN` requires accepting the terms for [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1).
 
 ---
 
