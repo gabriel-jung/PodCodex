@@ -69,9 +69,10 @@ One-time setup:
 # Generate the keypair (writes ~/.tauri/podcodex.key + ~/.tauri/podcodex.key.pub)
 cargo tauri signer generate -w ~/.tauri/podcodex.key
 
-# Copy the printed public key into src-tauri/tauri.conf.json
-#   plugins.updater.pubkey = "<paste here>"
-# Then flip plugins.updater.active to true.
+# In src-tauri/tauri.conf.json:
+#   bundle.createUpdaterArtifacts = "v1Compatible"      (currently absent)
+#   plugins.updater.active        = true                 (currently false)
+#   plugins.updater.pubkey        = "<paste public key>" (currently REPLACE_ME)
 
 # Add the private key + password to GitHub repo secrets:
 #   TAURI_SIGNING_PRIVATE_KEY          (contents of ~/.tauri/podcodex.key)

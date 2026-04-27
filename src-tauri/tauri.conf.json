@@ -30,7 +30,6 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": "v1Compatible",
     "targets": ["dmg", "msi"],
     "externalBin": [
       "binaries/podcodex-server",
