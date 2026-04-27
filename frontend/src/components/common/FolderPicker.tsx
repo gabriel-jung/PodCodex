@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useRef } from "react";
-import { listDirectory, createDirectory } from "@/api/client";
+import { listDirectory, createDirectory, listDrives } from "@/api/client";
 import type { DirEntry, DirListing, FileEntry } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Folder, FolderPlus, Music, ChevronLeft, ChevronRight, ArrowUp, Home, HardDrive, X } from "lucide-react";
@@ -22,33 +22,29 @@ interface FolderPickerProps {
 const QUICK_ACCESS_BASE = [
   { label: "Home", path: "~", icon: Home },
 ];
-const QUICK_ACCESS_OPTIONAL = [
-  { label: "Drive C", path: "/mnt/c", icon: HardDrive },
-  { label: "Drive D", path: "/mnt/d", icon: HardDrive },
-];
 
 export default function FolderPicker({ open, onClose, onSelect, initialPath, mode = "folder", extensions, title, description }: FolderPickerProps) {
   const [currentPath, setCurrentPath] = useState(initialPath || "~");
   const [listing, setListing] = useState<DirListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [editingPath, setEditingPath] = useState(false);
-  const [quickAccess, setQuickAccess] = useState(QUICK_ACCESS_BASE);
+  const [quickAccess, setQuickAccess] = useState<{ label: string; path: string; icon: typeof Home }[]>(QUICK_ACCESS_BASE);
 
-  // Probe optional Quick Access entries (e.g. WSL drives) once and only show
-  // those that actually resolve on the host.
+  // Backend enumerates drives based on host OS — Windows letters, macOS
+  // /Volumes/*, Linux /mnt/<letter> (incl. WSL bridges) + /media/<user>.
+  // Replaces a previously-hardcoded WSL-only list that didn't surface
+  // anything on native Windows or macOS installs.
   useEffect(() => {
     let cancelled = false;
-    Promise.all(
-      QUICK_ACCESS_OPTIONAL.map((item) =>
-        listDirectory(item.path)
-          .then((data) => (data.error ? null : item))
-          .catch(() => null),
-      ),
-    ).then((results) => {
-      if (cancelled) return;
-      const extras = results.filter((r): r is typeof QUICK_ACCESS_OPTIONAL[number] => r !== null);
-      if (extras.length > 0) setQuickAccess([...QUICK_ACCESS_BASE, ...extras]);
-    });
+    listDrives()
+      .then(({ drives }) => {
+        if (cancelled || drives.length === 0) return;
+        setQuickAccess([
+          ...QUICK_ACCESS_BASE,
+          ...drives.map((d) => ({ ...d, icon: HardDrive })),
+        ]);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };

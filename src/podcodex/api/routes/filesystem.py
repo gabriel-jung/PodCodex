@@ -156,6 +156,71 @@ async def delete_file(
     return {"status": "deleted", "path": str(p)}
 
 
+@router.get("/drives")
+async def list_drives() -> dict:
+    """Enumerate filesystem roots for the FolderPicker's quick-access list.
+
+    Returns whatever's appropriate for the host OS:
+      - Windows native: probe A:..Z:, return present drive letters.
+      - Linux (incl. WSL2): WSL drive bridges under /mnt/<letter> if any,
+        plus /media/<user>/<vol> mounts.
+      - macOS: entries under /Volumes (one per mounted volume).
+    """
+    drives: list[dict] = []
+    system = platform.system()
+
+    if system == "Windows":
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            root = Path(f"{letter}:\\")
+            if root.exists():
+                drives.append({"label": f"Drive {letter}", "path": str(root)})
+    elif system == "Darwin":
+        volumes = Path("/Volumes")
+        if volumes.is_dir():
+            for v in sorted(volumes.iterdir()):
+                if v.is_dir():
+                    drives.append({"label": v.name, "path": str(v)})
+    else:
+        # Linux + WSL2. /mnt/* covers WSL2 drive bridges (any letter
+        # 'c'-'z') plus arbitrary non-letter mounts (/mnt/data, /mnt/nas).
+        # /media/<user>/<vol> is the typical udisks/GVfs automount location
+        # on systemd desktops. /run/media/<user>/<vol> is the modern variant
+        # on Fedora-derived distros.
+        # WSL2 ships internal-only mounts at /mnt/wsl and /mnt/wslg
+        # (WSL plumbing + WSLg X-server runtime); skip those so the
+        # quick-access list stays user-meaningful.
+        _MNT_SKIP = {"wsl", "wslg"}
+        mnt = Path("/mnt")
+        if mnt.is_dir():
+            try:
+                for entry in sorted(mnt.iterdir()):
+                    if not entry.is_dir():
+                        continue
+                    if entry.name in _MNT_SKIP:
+                        continue
+                    if len(entry.name) == 1 and entry.name.isalpha():
+                        label = f"Drive {entry.name.upper()}"
+                    else:
+                        label = entry.name
+                    drives.append({"label": label, "path": str(entry)})
+            except PermissionError:
+                pass
+        for media_root in (Path("/media"), Path("/run/media")):
+            if not media_root.is_dir():
+                continue
+            try:
+                for user_dir in sorted(media_root.iterdir()):
+                    if not user_dir.is_dir():
+                        continue
+                    for vol in sorted(user_dir.iterdir()):
+                        if vol.is_dir():
+                            drives.append({"label": vol.name, "path": str(vol)})
+            except PermissionError:
+                pass
+
+    return {"drives": drives}
+
+
 @router.post("/open")
 async def open_folder(
     path: str = Query(..., description="Folder to open in the OS file manager"),

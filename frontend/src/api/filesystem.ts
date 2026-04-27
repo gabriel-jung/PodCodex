@@ -27,6 +27,14 @@ export const openFolder = (path: string) =>
     { method: "POST" },
   );
 
+export interface DriveInfo {
+  label: string;
+  path: string;
+}
+
+export const listDrives = () =>
+  json<{ drives: DriveInfo[] }>("/api/fs/drives");
+
 /** Delete a non-audio auxiliary file (subtitles, JSON exports, etc). */
 export const deleteFile = (path: string) =>
   json<{ status: string; path: string }>(
