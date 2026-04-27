@@ -2,10 +2,50 @@
 
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
 from loguru import logger
+
+
+def _disable_hf_hub_symlinks_on_windows() -> None:
+    """Force ``huggingface_hub`` to copy files instead of creating symlinks.
+
+    HF Hub's default cache structure relies on ``os.symlink`` (snapshot →
+    blob). On Windows this requires the ``SeCreateSymbolicLinkPrivilege``
+    privilege, granted by Developer Mode or admin elevation. Worse, even
+    when symlinks are created, ctranslate2's C++ ``fopen`` on the
+    ``model.bin`` symlink fails with 'Unable to open file'.
+
+    Patch ``_create_symlink`` (called from ``_hf_hub_download_to_cache_dir``)
+    to always copy. Loses dedup across model versions but produces regular
+    files every library can open without elevated privileges.
+
+    Linux/macOS: symlinks work fine, this is a no-op.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        from huggingface_hub import file_download as _hf_file_download
+    except Exception:  # noqa: BLE001 — never crash app startup on this
+        return
+
+    def _copy_instead_of_symlink(src, dst, new_blob: bool = False) -> None:
+        try:
+            if os.path.exists(dst):
+                os.remove(dst)
+        except OSError:
+            pass
+        # If src is itself a symlink (rare in HF cache, but defensive), follow it
+        # so we copy the actual content, not a chain of links.
+        real_src = os.path.realpath(src)
+        shutil.copy(real_src, dst)
+
+    _hf_file_download._create_symlink = _copy_instead_of_symlink
+
+
+_disable_hf_hub_symlinks_on_windows()
 
 _LOG_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | "
