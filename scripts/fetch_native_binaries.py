@@ -179,18 +179,32 @@ def main() -> int:
     SIDECAR_DIR.mkdir(parents=True, exist_ok=True)
     triples = list(FFMPEG_SOURCES.keys()) if args.all else [host_target_triple()]
 
+    failures: list[str] = []
     for t in triples:
         if not args.yt_dlp_only:
             try:
                 fetch_ffmpeg(t)
             except Exception as e:
-                print(f"  FAIL ffmpeg/{t}: {e}")
+                msg = f"ffmpeg/{t}: {e}"
+                print(f"  FAIL {msg}")
+                failures.append(msg)
         if not args.ffmpeg_only:
             try:
                 fetch_ytdlp(t)
             except Exception as e:
-                print(f"  FAIL yt-dlp/{t}: {e}")
+                msg = f"yt-dlp/{t}: {e}"
+                print(f"  FAIL {msg}")
+                failures.append(msg)
 
+    # In single-host mode, both binaries are required for `cargo tauri build`
+    # to find them via externalBin — tolerate-and-skip would just defer the
+    # failure to the Tauri build step where it's harder to diagnose.
+    # In --all mode, partial success is fine (cross-arch fetches are best-effort).
+    if failures and not args.all:
+        print(f"\nFailed to fetch {len(failures)} required binary(s):", file=sys.stderr)
+        for m in failures:
+            print(f"  - {m}", file=sys.stderr)
+        return 1
     return 0
 
 

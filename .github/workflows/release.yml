@@ -108,6 +108,23 @@ jobs:
       - name: Fetch native sidecars (ffmpeg, yt-dlp)
         run: .venv/Scripts/python.exe scripts/fetch_native_binaries.py
 
+      - name: Verify externalBin sidecars are present
+        run: |
+          $expected = @(
+            "src-tauri\binaries\podcodex-server-x86_64-pc-windows-msvc.exe",
+            "src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe",
+            "src-tauri\binaries\yt-dlp-x86_64-pc-windows-msvc.exe"
+          )
+          $missing = @()
+          foreach ($p in $expected) {
+            if (-not (Test-Path $p)) { $missing += $p }
+            else { Write-Host "✓ $p ($((Get-Item $p).Length) bytes)" }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Error "Missing externalBin files: $($missing -join ', ')"
+            exit 1
+          }
+
       - uses: tauri-apps/tauri-action@v0.6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
