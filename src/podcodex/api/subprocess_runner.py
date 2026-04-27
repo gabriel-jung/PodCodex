@@ -35,6 +35,32 @@ _CTX = mp.get_context("spawn")
 _HARD_TIMEOUT_SEC = 4 * 60 * 60
 
 
+def _early_child_log(message: str) -> None:
+    """Append a line to the persistent server.log without going through
+    loguru / podcodex.
+
+    On Windows --noconsole frozen builds, the spawned child has no usable
+    stdio. If anything dies before podcodex/__init__.py runs in the child
+    (DLL load failure during multiprocessing.spawn bootstrap, missing
+    msvcrt, etc.), no traceback ever reaches the parent's IPC queue. This
+    raw-write fallback lets us see at least *that* the child entered
+    Python code and how far it got.
+    """
+    try:
+        from pathlib import Path
+
+        data_dir = os.environ.get("PODCODEX_DATA_DIR")
+        if not data_dir:
+            return
+        log_dir = Path(data_dir) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / "server.log", "a", encoding="utf-8") as f:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"{ts} | CHILD    | [pid {os.getpid()}] {message}\n")
+    except Exception:
+        pass  # best-effort; never raise
+
+
 def _child_entry(
     entry_path: str,
     kwargs: dict[str, Any],
@@ -43,14 +69,20 @@ def _child_entry(
     cancel_ev: Any,
 ) -> None:
     """Import and invoke the entry function inside the spawned child."""
+    _early_child_log(f"_child_entry start, entry={entry_path}")
+
     import importlib
 
     mod_name, fn_name = entry_path.split(":")
     try:
+        _early_child_log(f"importing {mod_name}")
         mod = importlib.import_module(mod_name)
         fn = getattr(mod, fn_name)
+        _early_child_log(f"resolved {fn_name} on {mod_name}")
     except Exception as exc:
-        result_q.put(("err", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
+        tb = traceback.format_exc()
+        _early_child_log(f"import failed: {exc!r}\n{tb}")
+        result_q.put(("err", f"{type(exc).__name__}: {exc}", tb))
         return
 
     def progress_cb(frac: float, message: str) -> None:
@@ -63,10 +95,14 @@ def _child_entry(
         return bool(cancel_ev.is_set())
 
     try:
+        _early_child_log("invoking entry function")
         result = fn(progress_cb=progress_cb, cancelled=cancelled, **kwargs)
+        _early_child_log("entry function returned ok")
         result_q.put(("ok", result))
     except BaseException as exc:
-        result_q.put(("err", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
+        tb = traceback.format_exc()
+        _early_child_log(f"entry function raised: {exc!r}\n{tb}")
+        result_q.put(("err", f"{type(exc).__name__}: {exc}", tb))
 
 
 def run_in_subprocess(
