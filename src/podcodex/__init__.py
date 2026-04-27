@@ -13,11 +13,21 @@ _LOG_FORMAT = (
 )
 
 logger.remove()
-logger.add(sys.stderr, format=_LOG_FORMAT, level="INFO")
+
+# sys.stderr is None on Windows --noconsole frozen builds, particularly in
+# multiprocessing spawn children — the GUI subsystem has no stderr handle.
+# loguru's logger.add(None) raises TypeError, which would kill the child
+# during the import_module(podcodex...) chain in subprocess_runner._child_entry
+# *before* any of our error handling runs. Guard so the import never raises;
+# the file sink below picks up where stderr can't.
+if sys.stderr is not None:
+    try:
+        logger.add(sys.stderr, format=_LOG_FORMAT, level="INFO")
+    except Exception:  # noqa: BLE001 — log setup must never crash import
+        pass
 
 # In the bundled sidecar (PyInstaller --onefile/--onedir), sys.stderr is
-# unreliable on Windows --noconsole builds (no real console = NUL-backed
-# stream). Add a file sink directly when the Tauri shell has provided
+# unreliable. Add a file sink directly when the Tauri shell has provided
 # PODCODEX_DATA_DIR so the user can actually see what happened. The dev
 # path (uvicorn from .venv) doesn't have PODCODEX_DATA_DIR set so this
 # is a no-op there; tty stderr stays the only sink.
@@ -36,9 +46,10 @@ if getattr(sys, "frozen", False) and os.environ.get("PODCODEX_DATA_DIR"):
             diagnose=False,  # don't include local vars in tracebacks (size + privacy)
         )
         logger.info(
-            "sidecar logging started — pid={}, frozen=True, data_dir={}",
+            "sidecar logging started — pid={}, frozen=True, data_dir={}, stderr={}",
             os.getpid(),
             os.environ["PODCODEX_DATA_DIR"],
+            "None" if sys.stderr is None else "fd",
         )
     except Exception as exc:  # noqa: BLE001 — must never crash app startup
         # Last-resort: write a single line to a fallback path so we have *some*
