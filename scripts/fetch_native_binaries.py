@@ -139,7 +139,7 @@ def fetch_ffmpeg(triple: str) -> None:
         print(f"  ! no ffmpeg source for {triple}, skipping")
         return
     url, hint = FFMPEG_SOURCES[triple]
-    print(f"ffmpeg → {triple}")
+    print(f"ffmpeg -> {triple}")
     payload = download(url)
     binary = extract_ffmpeg(payload, url, hint)
 
@@ -156,7 +156,7 @@ def fetch_ytdlp(triple: str) -> None:
         print(f"  ! no yt-dlp source for {triple}, skipping")
         return
     url = YTDLP_SOURCES[triple]
-    print(f"yt-dlp → {triple}")
+    print(f"yt-dlp -> {triple}")
     payload = download(url)
 
     ext = ".exe" if is_windows(triple) else ""
