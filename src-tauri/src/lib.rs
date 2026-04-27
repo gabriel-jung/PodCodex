@@ -132,7 +132,10 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         // the launcher and the sidecar agree on the install location.
         .env("PODCODEX_APP_DATA_DIR", &data_dir)
         .env("PODCODEX_API_PORT", API_PORT.to_string())
-        .env("HF_HOME", &hf_home)
+        // HF_HUB_CACHE is the canonical env var huggingface_hub respects for
+        // its model cache. We don't set HF_HOME — that would tell HF Hub to
+        // also look in <HF_HOME>/hub/, splitting the cache across two layouts
+        // depending on which library entry-point downloaded.
         .env("HF_HUB_CACHE", hf_home.join("hub"))
         .env("TORCH_HOME", &torch_home)
         .env("TRANSFORMERS_CACHE", hf_home.join("transformers"))
