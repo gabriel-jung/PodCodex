@@ -142,7 +142,24 @@ def main() -> None:
     )
 
 
+def _handle_version_flag() -> None:
+    """Probe support for the launcher's version-mismatch check.
+
+    The Tauri shell calls ``<binary> --version`` to verify the installed GPU
+    sidecar matches the running app version (see lib.rs spawn_backend_if_needed).
+    Handled here, before any heavy imports or stdio redirection, so the check
+    is cheap (~150 ms on the GPU --onedir bundle) and lands on the original
+    stdout the launcher is reading.
+    """
+    if "--version" in sys.argv[1:]:
+        from podcodex import __version__
+
+        print(f"podcodex-server {__version__}")
+        sys.exit(0)
+
+
 if __name__ == "__main__":
+    _handle_version_flag()
     # PyInstaller frozen entry — sys.frozen is set when bundled.
     if getattr(sys, "frozen", False):
         # Multiprocessing support for PyInstaller bundles (torch DataLoader, etc.)

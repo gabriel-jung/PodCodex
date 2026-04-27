@@ -36,3 +36,4 @@ export * from "./mcpPrompts";
 export * from "./botAccess";
 export * from "./config";
 export * from "./bundle";
+export * from "./gpu";

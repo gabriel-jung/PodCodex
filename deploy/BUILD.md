@@ -1,23 +1,28 @@
 # Building standalone bundles
 
-How to produce a distributable PodCodex `.app` / `.dmg` / `.deb` /
-`.AppImage` / `.exe` from a clean checkout. Pick the section that matches
-your host OS — each path is self-contained.
+How to produce a distributable PodCodex `.dmg` (macOS) or `.msi`
+(Windows) from a clean checkout. Linux is not shipped — see [Linux](#linux-build-from-source)
+below.
 
 > **Status:** macOS arm64 verified end-to-end (~497 MB `.app`, ~459 MB DMG).
-> Linux + Windows paths are documented but not yet smoke-tested. Expect
-> minor gaps; report what breaks.
+> Windows path is documented but not yet smoke-tested. Expect minor gaps;
+> report what breaks.
 
-The flow is the same on every host:
+The flow is the same on every shipped target:
 
 1. **Freeze the Python backend** with PyInstaller → single
-   `podcodex-server` binary (~420 MB).
+   `podcodex-server` binary (~420 MB, CPU-only).
 2. **Fetch native sidecars** (`ffmpeg`, `yt-dlp`) for the host triple.
 3. **Build the frontend** (`npm run build`).
 4. **Bundle with Tauri** (`cargo tauri build`) → native installer.
 
 `make bundle` chains all four. Use the individual `make bundle-*` targets
 when iterating on a single layer.
+
+> **GPU acceleration:** the shipped installer is CPU-only. On NVIDIA
+> hosts the app offers an in-app CUDA backend download (~2.4 GB) —
+> see [Phase M](../ROADMAP.md#phase-m--standalone-distribution-v010).
+> `make bundle` produces only the CPU sidecar.
 
 ---
 
@@ -51,6 +56,31 @@ make bundle-sign-only     # sign without notarizing (fast iteration)
 Without signing, Gatekeeper blocks first launch — users must
 right-click → Open to bypass.
 
+### Auto-update keypair (release infrastructure)
+
+The Tauri updater (configured in `src-tauri/tauri.conf.json` under
+`plugins.updater`) needs an ed25519 keypair to sign update artifacts.
+The CI release workflow uses `tauri-apps/tauri-action` which automatically
+emits `latest.json` (the updater manifest) when the signing secrets are set.
+
+One-time setup:
+
+```bash
+# Generate the keypair (writes ~/.tauri/podcodex.key + ~/.tauri/podcodex.key.pub)
+cargo tauri signer generate -w ~/.tauri/podcodex.key
+
+# Copy the printed public key into src-tauri/tauri.conf.json
+#   plugins.updater.pubkey = "<paste here>"
+# Then flip plugins.updater.active to true.
+
+# Add the private key + password to GitHub repo secrets:
+#   TAURI_SIGNING_PRIVATE_KEY          (contents of ~/.tauri/podcodex.key)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD (password you set during generate)
+```
+
+Until the secrets are configured, releases ship without `latest.json` —
+the desktop app still installs and works, it just can't auto-update.
+
 ### macOS gotchas
 
 - WhisperX runs CPU-only on Apple Silicon (no MPS support upstream).
@@ -62,77 +92,27 @@ right-click → Open to bypass.
 
 ---
 
-## Linux (Ubuntu 22.04 / 24.04 native)
+## Linux (build from source)
+
+PodCodex doesn't ship a Linux installer. Linux users run from source:
 
 ```bash
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
-                 libayatana-appindicator3-dev librsvg2-dev libssl-dev \
-                 pkg-config libsndfile1 libfuse2
+# Install Linux dev prereqs from the Makefile header (apt or dnf).
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install tauri-cli --version "^2"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 git clone https://github.com/gabriel-jung/podcodex && cd podcodex
 make setup
-make setup-pyinstaller
-make bundle               # produces .deb + .AppImage
+make dev                  # FastAPI + Vite + Tauri, hot-reload
 ```
 
-Outputs:
-
-- `src-tauri/target/release/bundle/deb/podcodex_<version>_amd64.deb`
-- `src-tauri/target/release/bundle/appimage/podcodex_<version>_amd64.AppImage`
-
-### Linux gotchas
-
-- `libfuse2` is only needed if you want the `.AppImage`. Skip if you only
-  ship the `.deb`.
-- Older glibc (Ubuntu <22.04, Debian <12) breaks PyInstaller's
-  manylinux2014 wheels for torch / ctranslate2.
-- The `.deb` declares dependencies on
-  `libwebkit2gtk-4.1-0`, `libgtk-3-0`, `libayatana-appindicator3-1`,
-  `librsvg2-2`, `libsndfile1`. End users get them auto-installed by
-  `apt install ./podcodex_*.deb`.
+WSL2 is fine for development (uses WSLg on Windows 11). It cannot
+produce the Windows `.msi` — build that on a Windows host directly.
 
 ---
 
-## WSL2 (Ubuntu inside Windows)
-
-WSL2 builds **Linux artifacts** (`.deb` / `.AppImage`), not Windows
-`.exe`. To produce a Windows `.exe`, build on a real Windows host (see
-below) — WSL cannot cross-compile Tauri to MSVC.
-
-```bash
-# Inside WSL Ubuntu 22.04+
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
-                 libayatana-appindicator3-dev librsvg2-dev libssl-dev \
-                 pkg-config libsndfile1 libfuse2
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-cargo install tauri-cli --version "^2"
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-git clone https://github.com/gabriel-jung/podcodex && cd podcodex
-make setup
-make setup-pyinstaller
-make bundle
-```
-
-### WSL2 gotchas
-
-- The Tauri webview window renders through **WSLg** (Windows 11 only).
-  On Windows 10 hosts, no native window — use `make dev-no-tauri` and
-  open the browser at `http://localhost:5173`.
-- Don't run from `/mnt/c/...` — fs translation slows PyInstaller 5-10×
-  and breaks some symlinks. Clone into the WSL home directory.
-- The produced `.deb` / `.AppImage` are Linux ELF binaries; copy them to
-  a Linux host or run them inside WSL itself for testing.
-- WSL networking quirks: if `/api/health` doesn't reach the sidecar from
-  the webview, check that `127.0.0.1:18811` is reachable inside WSL
-  (`curl http://127.0.0.1:18811/api/health`).
-
----
-
-## Windows 11 native (.exe / .msi)
+## Windows 11 native (.msi)
 
 ```powershell
 # Install prereqs (winget)
@@ -147,13 +127,12 @@ git clone https://github.com/gabriel-jung/podcodex
 cd podcodex
 make setup
 make setup-pyinstaller
-make bundle               # produces .msi + .exe (NSIS)
+make bundle               # produces .msi
 ```
 
 Outputs:
 
 - `src-tauri\target\release\bundle\msi\PodCodex_<version>_x64_en-US.msi`
-- `src-tauri\target\release\bundle\nsis\PodCodex_<version>_x64-setup.exe`
 
 ### Windows gotchas
 
@@ -190,8 +169,8 @@ Iterating on a single layer is faster:
 After `make bundle`, smoke-test the produced bundle:
 
 1. Move the dev checkout out of the way (or run on a different account).
-2. Launch the bundle from its installed location (e.g. open the `.app`,
-   `dpkg -i` the `.deb`, install the `.msi`).
+2. Launch the bundle from its installed location (open the `.app` or
+   install the `.msi`).
 3. Confirm the splash phase messages appear during cold start (10-30 s
    on first launch each session).
 4. Step through the [`deploy/SMOKE.md`](SMOKE.md) checklist.
@@ -200,14 +179,13 @@ If `/api/health` never returns and the splash stays on "Almost ready,
 hang tight…" past ~60 s, run from a terminal to surface stderr:
 
 - macOS: `PodCodex.app/Contents/MacOS/podcodex-app 2>&1 | head -50`
-- Linux: `./podcodex-app 2>&1 | head -50`
+- Windows: launch from PowerShell — `& "C:\Program Files\PodCodex\PodCodex.exe"`
 
 The bundled sidecar logs to `<app_data>/logs/server.log`:
 
 | OS      | `<app_data>` path                                        |
 |---------|----------------------------------------------------------|
 | macOS   | `~/Library/Application Support/com.podcodex.desktop/`    |
-| Linux   | `~/.local/share/com.podcodex.desktop/`                   |
 | Windows | `%APPDATA%\com.podcodex.desktop\`                        |
 
 ---

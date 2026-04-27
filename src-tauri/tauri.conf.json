@@ -30,7 +30,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "createUpdaterArtifacts": "v1Compatible",
+    "targets": ["dmg", "msi"],
     "externalBin": [
       "binaries/podcodex-server",
       "binaries/ffmpeg",
@@ -47,30 +48,22 @@
       "minimumSystemVersion": "11.0",
       "entitlements": "Entitlements.plist"
     },
-    "linux": {
-      "deb": {
-        "depends": [
-          "libwebkit2gtk-4.1-0",
-          "libgtk-3-0",
-          "libayatana-appindicator3-1",
-          "librsvg2-2",
-          "libsndfile1"
-        ]
-      },
-      "appimage": {
-        "bundleMediaFramework": true
-      }
-    },
     "windows": {
       "wix": {
         "language": "en-US"
-      },
-      "nsis": {
-        "installMode": "perMachine"
       }
     },
     "category": "Productivity",
     "shortDescription": "Transcribe, translate, and search your podcasts.",
     "longDescription": "Local-first desktop app that ingests podcasts, YouTube channels, lectures, or interviews; transcribes with WhisperX + pyannote diarization; corrects and translates via LLM; and indexes everything into a LanceDB vector store for semantic search."
+  },
+  "plugins": {
+    "updater": {
+      "active": false,
+      "pubkey": "REPLACE_ME",
+      "endpoints": [
+        "https://github.com/gabriel-jung/PodCodex/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

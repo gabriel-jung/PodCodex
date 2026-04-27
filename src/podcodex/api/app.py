@@ -29,6 +29,7 @@ from podcodex.api.routes import (
     episodes as episodes_route,
     export,
     filesystem,
+    gpu,
     health,
     index,
     integrations,
@@ -173,6 +174,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router, prefix="/api/models", tags=["models"])
     app.include_router(export.router, prefix="/api/export", tags=["export"])
     app.include_router(bundle.router, prefix="/api/bundle", tags=["bundle"])
+    app.include_router(gpu.router, prefix="/api/gpu", tags=["gpu"])
     app.include_router(
         integrations.router, prefix="/api/integrations", tags=["integrations"]
     )

@@ -19,6 +19,7 @@ export const queryKeys = {
   secrets: () => ["config", "secrets"] as const,
   capabilities: () => ["system", "extras"] as const,
   models: () => ["models"] as const,
+  gpuStatus: () => ["gpu", "status"] as const,
 
   // ── Shows & episodes ───────────────────────────────────
   shows: () => ["shows"] as const,

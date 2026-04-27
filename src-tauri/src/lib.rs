@@ -14,6 +14,15 @@ const HEALTH_TIMEOUT_SECS: u64 = 180;
 /// alongside the host exe.
 const SERVER_SIDECAR: &str = "podcodex-server";
 
+/// Optional GPU sidecar — installed at runtime into <app_data>/backends/gpu/
+/// when the user opts in via Settings. See ``packaging/package_gpu.py`` for
+/// the archive layout and ``src/podcodex/api/gpu_backend.py`` for the
+/// download/extract logic.
+const GPU_BACKEND_SUBDIR: &str = "backends/gpu";
+const GPU_SIDECAR_NAME: &str = "podcodex-server-gpu";
+const GPU_ACTIVATED_MARKER: &str = "activated";
+const GPU_MANIFEST_FILE: &str = "cuda-libs.json";
+
 struct BackendProcess(Mutex<Option<Child>>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -69,27 +78,59 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         return Ok(());
     }
 
-    let server_exe = locate_sidecar(SERVER_SIDECAR).ok_or_else(|| {
-        format!(
-            "Cannot find {SERVER_SIDECAR} sidecar next to host binary. \
-             Did `packaging/build_server.py` run before `cargo tauri build`?"
-        )
-    })?;
-
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("cannot resolve app_data_dir: {e}"))?;
     std::fs::create_dir_all(&data_dir)?;
 
+    // Prefer the user-installed GPU sidecar if present, activated, and
+    // version-matched; fall back to the bundled CPU sidecar otherwise. The
+    // two paths are interchangeable from FastAPI's perspective — both expose
+    // the same /api/* surface — but the GPU build has CUDA torch + cuDNN
+    // bundled for hardware-accelerated transcription.
+    let app_version = app.config().version.clone().unwrap_or_default();
+    let (server_exe, gpu_install_dir, backend_label) =
+        match locate_gpu_sidecar(&data_dir, &app_version) {
+            Some((binary, install_dir)) => (binary, Some(install_dir), "GPU"),
+            None => {
+                let cpu = locate_sidecar(SERVER_SIDECAR).ok_or_else(|| {
+                    format!(
+                        "Cannot find {SERVER_SIDECAR} sidecar next to host binary. \
+                         Did `packaging/build_server.py` run before `cargo tauri build`?"
+                    )
+                })?;
+                (cpu, None, "CPU")
+            }
+        };
+
     let models_dir = data_dir.join("models");
     let hf_home = models_dir.join("huggingface");
     let torch_home = models_dir.join("torch");
 
-    log::info!("Spawning backend: {:?}  (data_dir={:?})", server_exe, data_dir);
+    log::info!(
+        "Spawning {} backend: {:?}  (data_dir={:?})",
+        backend_label,
+        server_exe,
+        data_dir
+    );
 
     let mut cmd = Command::new(&server_exe);
+    // PyInstaller --onedir (used by the GPU build) resolves _internal/ and
+    // the bundled NVIDIA libs relative to cwd. Without setting current_dir,
+    // the binary may fail to find its support files. CPU --onefile uses
+    // _MEIPASS for all resolution and doesn't care about cwd, so we leave
+    // it inherited from the Tauri parent in that case.
+    if let Some(ref dir) = gpu_install_dir {
+        cmd.current_dir(dir);
+    }
     cmd.env("PODCODEX_DATA_DIR", &data_dir)
+        // PODCODEX_APP_DATA_DIR is read by podcodex.core.app_paths.data_dir()
+        // and disambiguates which dir the GPU backend service installs into.
+        // Without it, OS conventions are used (~/Library/Application Support/...
+        // on macOS, %APPDATA%\... on Windows, etc.) — matching is needed so
+        // the launcher and the sidecar agree on the install location.
+        .env("PODCODEX_APP_DATA_DIR", &data_dir)
         .env("PODCODEX_API_PORT", API_PORT.to_string())
         .env("HF_HOME", &hf_home)
         .env("HF_HUB_CACHE", hf_home.join("hub"))
@@ -141,6 +182,90 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         .replace(child);
 
     Ok(())
+}
+
+/// Look for an installed + activated GPU sidecar at
+/// ``<data_dir>/backends/gpu/podcodex-server-gpu``. Returns ``None`` (fall
+/// back to CPU) on any of:
+///   - activation marker missing
+///   - manifest missing (broken/interrupted install)
+///   - binary not present
+///   - binary's reported version != ``app_version`` (ABI/contract drift
+///     after an app update without a matching GPU re-download)
+///
+/// On success returns ``(binary_path, install_dir)`` so the caller can set
+/// cwd correctly — PyInstaller --onedir needs cwd at the install root.
+fn locate_gpu_sidecar(
+    data_dir: &std::path::Path,
+    app_version: &str,
+) -> Option<(PathBuf, PathBuf)> {
+    let install_dir = data_dir.join(GPU_BACKEND_SUBDIR);
+    if !install_dir.join(GPU_ACTIVATED_MARKER).is_file() {
+        return None;
+    }
+    if !install_dir.join(GPU_MANIFEST_FILE).is_file() {
+        log::warn!(
+            "GPU activated marker present but manifest missing — \
+             ignoring activation, falling back to CPU"
+        );
+        return None;
+    }
+    let binary = {
+        let bare = install_dir.join(GPU_SIDECAR_NAME);
+        let exe = install_dir.join(format!("{GPU_SIDECAR_NAME}.exe"));
+        if bare.is_file() {
+            bare
+        } else if exe.is_file() {
+            exe
+        } else {
+            log::warn!(
+                "GPU activated but sidecar binary not found at {:?}",
+                install_dir
+            );
+            return None;
+        }
+    };
+
+    match probe_sidecar_version(&binary, &install_dir) {
+        Some(v) if v == app_version => Some((binary, install_dir)),
+        Some(v) => {
+            log::warn!(
+                "GPU sidecar version {v} != app version {app_version}, \
+                 falling back to CPU until user re-downloads"
+            );
+            None
+        }
+        None => {
+            log::warn!(
+                "Could not read GPU sidecar version, falling back to CPU"
+            );
+            None
+        }
+    }
+}
+
+/// Run ``<binary> --version`` (with ``cwd`` set to the install dir so
+/// PyInstaller --onedir can find its support files) and return the trailing
+/// version token from the output, e.g. ``"0.1.0"``.
+fn probe_sidecar_version(
+    binary: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Option<String> {
+    let output = Command::new(binary)
+        .arg("--version")
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    // Output format: "podcodex-server X.Y.Z\n"
+    stdout
+        .trim()
+        .split_whitespace()
+        .last()
+        .map(|w| w.to_string())
 }
 
 /// Find a Tauri externalBin sidecar by short name. Bundled .app: bare

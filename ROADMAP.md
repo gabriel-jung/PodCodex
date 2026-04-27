@@ -8,17 +8,14 @@ Everything outside this list is post-1.0. Tag when all items are ✅.
 
 - [ ] Clean TypeScript + ESLint baseline (~190 strict-TS, ~40 lint errors) → flip CI to blocking
 - [ ] README screenshots + 30 s demo GIF
-- [ ] Manual smoke pass on Linux native and Windows (see [deploy/SMOKE.md](deploy/SMOKE.md))
-- [ ] Distribution bundles — PyInstaller sidecar + `make build` producing `.app` / `.deb` / `.exe`. WhisperX + Torch bundling is the hard part.
-  - [x] macOS `.app` + `.dmg` (arm64) — `make bundle` ships ~497 MB .app / ~459 MB DMG. End-to-end transcription verified on macOS 26.4.1.
-  - [ ] Linux `.deb` + AppImage
-  - [ ] Windows `.exe` (NSIS / MSI)
-  - [ ] Sign + notarize CI step (mac done locally via `scripts/sign_and_notarize.sh`; needs to move to GitHub Actions with secrets)
-  - [ ] LGPL ffmpeg build (current bundled ffmpeg is GPL — fine for personal use, blocks redistribution under MIT)
+- [ ] Manual smoke pass on Windows (see [deploy/SMOKE.md](deploy/SMOKE.md))
+- [ ] Distribution bundles — see [Phase M](#phase-m--standalone-distribution-v010). macOS `.dmg` done; Windows `.msi` + optional CUDA backend pending.
+- [ ] Sign + notarize CI step (mac done locally via `scripts/sign_and_notarize.sh`; needs to move to GitHub Actions with secrets)
+- [ ] LGPL ffmpeg build (current bundled ffmpeg is GPL — fine for personal use, blocks redistribution under MIT)
 
-## Next (post-1.0)
+## Phases
 
-### Phase M — Speaker auto-mapping
+### Phase L — Speaker auto-mapping
 
 Auto-generate `speaker_map.json` for new episodes via voice embeddings.
 
@@ -27,6 +24,18 @@ Auto-generate `speaker_map.json` for new episodes via voice embeddings.
 - Voice embeddings via Resemblyzer or pyannote SpeakerEmbedding
 - Reference DB built from manually-labeled episodes; cosine similarity + confidence threshold
 - Bootstrapping: a handful of labeled episodes seed the registry for fixed-cast podcasts
+
+### Phase M — Standalone distribution (v0.1.0)
+
+VoiceBox-style: small CPU sidecar in the installer (`.dmg` for macOS, `.msi` for Windows) plus an optional CUDA backend downloaded at runtime (~2.4 GB total, ~300 MB server-core + ~2 GB cuda-libs) when an NVIDIA GPU is detected. Linux is build-from-source via `make dev`, no shipped artifact — the matrix of GPU vendors, distros, and glibc versions makes a single redistributable `.deb` impractical.
+
+- M.1 — Drop Linux/AppImage/rpm bundle targets; commit OpenSSL spec fix (done in working tree)
+- M.2 — Two-binary build in `packaging/build_server.py`: CPU `--onefile` (default) + GPU `--onedir` (`--gpu` flag). Auto-swap to `torch+cpu` wheel for the CPU bundle on hosts where the venv has GPU torch, restore after
+- M.3 — `packaging/package_gpu.py`: split GPU `--onedir` into server-core (~300 MB, app-versioned) + cuda-libs (~2 GB, torch-major-pinned) + `cuda-libs.json` manifest with sha256
+- M.4 — Backend service: NVIDIA detection, `GET /api/gpu/status`, `POST /api/gpu/download`, `POST /api/gpu/activate`; integrate with existing TaskInfo system
+- M.5 — Tauri Rust: spawn GPU sidecar from app data dir when activated, else bundled CPU sidecar; Tauri updater config + GitHub releases endpoint
+- M.6 — Frontend Settings page (CPU-only / CUDA backend status, download UX, progress)
+- M.7 — CI: macos-latest builds DMG; windows-latest builds CPU MSI + GPU archives, uploads to release
 
 ### Phase N — Onboarding polish
 

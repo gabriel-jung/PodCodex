@@ -161,6 +161,13 @@ src-tauri/target/release/bundle/macos/*.zip
 # Intermediate work tree — contains absolute host paths in TOC files.
 packaging/build_work/
 packaging/dist/
+# PyInstaller auto-generates this on every CLI invocation of build_server.py;
+# it's a derived artifact, not a source file.
+packaging/podcodex-server.spec
+packaging/podcodex-server-gpu.spec
+# Local output of `make package-gpu` / `make bundle-gpu` — produced by CI
+# and uploaded to GitHub releases, never committed.
+packaging/release-assets/
 
 # ============================================================================
 # Package management

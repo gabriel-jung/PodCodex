@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/button";
 import {
   Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2,
   Sun, Moon, Monitor, Keyboard, Palette, Mic, Sparkles, Database, Languages, Plug,
-  KeyRound, Eye, EyeOff, Check,
+  KeyRound, Eye, EyeOff, Check, Zap,
 } from "lucide-react";
 import AppSidebar from "@/components/layout/AppSidebar";
 import PageHeader from "@/components/layout/PageHeader";
 import IntegrationsPanel from "@/components/settings/IntegrationsPanel";
 import BundleExportPanel from "@/components/settings/BundleExportPanel";
+import GPUBackendPanel from "@/components/settings/GPUBackendPanel";
 import { useEffect, useState } from "react";
 import { useTheme } from "@/hooks/useTheme";
 import { SHORTCUTS, Kbd } from "@/components/ShortcutsHelp";
@@ -26,7 +27,7 @@ import {
 import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
 import { selectClass } from "@/lib/utils";
 
-type SettingsTab = "general" | "pipeline" | "credentials" | "integrations" | "plugins" | "cache";
+type SettingsTab = "general" | "pipeline" | "credentials" | "integrations" | "plugins" | "gpu" | "cache";
 const SETTINGS_SECTIONS = [
   {
     items: [
@@ -35,12 +36,13 @@ const SETTINGS_SECTIONS = [
       { key: "credentials", label: "Credentials", icon: KeyRound },
       { key: "integrations", label: "Integrations", icon: Plug },
       { key: "plugins", label: "Plugins", icon: Puzzle },
+      { key: "gpu", label: "GPU acceleration", icon: Zap },
       { key: "cache", label: "Model cache", icon: HardDrive },
     ],
   },
 ];
 
-const VALID_TABS: readonly SettingsTab[] = ["general", "pipeline", "credentials", "integrations", "plugins", "cache"];
+const VALID_TABS: readonly SettingsTab[] = ["general", "pipeline", "credentials", "integrations", "plugins", "gpu", "cache"];
 
 function readInitialTab(): SettingsTab {
   if (typeof window === "undefined") return "general";
@@ -96,6 +98,7 @@ export default function SettingsPage() {
             {tab === "credentials" && <CredentialsPanel />}
             {tab === "integrations" && <IntegrationsPanel />}
             {tab === "plugins" && <PluginsPanel />}
+            {tab === "gpu" && <GPUBackendPanel />}
             {tab === "cache" && (
               <>
                 <ModelCachePanel />

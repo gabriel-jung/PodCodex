@@ -97,12 +97,12 @@ make dev-no-tauri
 
 For a native window (requires Rust + GTK/WebKit on Linux), run `make dev` instead. See [Makefile](Makefile) for all targets.
 
-### Build a standalone .app / .dmg / .deb / .exe
+### Build a standalone .dmg / .msi
 
 The desktop build freezes the Python backend with PyInstaller into a single
 sidecar binary, fetches static `ffmpeg` + `yt-dlp`, then asks Tauri to bundle
-everything into a native installer. macOS arm64 verified; Linux `.deb` /
-`.AppImage` and Windows `.msi` / `.exe` documented but not yet smoke-tested.
+everything into a native installer (macOS DMG, Windows MSI). Linux runs from
+source via `make dev`. macOS arm64 verified; Windows not yet smoke-tested.
 
 ```bash
 make setup-pyinstaller    # one-time — adds PyInstaller to .venv
@@ -120,8 +120,11 @@ macOS outputs:
 (~459 MB). ML weights download on first use to
 `~/Library/Application Support/com.podcodex.desktop/models/`.
 
-Full per-OS guide (macOS, Linux native, WSL2, Windows native + signing,
-notarization, troubleshooting): see [`deploy/BUILD.md`](deploy/BUILD.md).
+Shipped installer is CPU-only; an optional CUDA backend is downloaded
+in-app on NVIDIA hosts — see [Phase M](ROADMAP.md#phase-m--standalone-distribution-v010).
+
+Full per-OS guide (macOS, Windows native + signing, notarization,
+troubleshooting): see [`deploy/BUILD.md`](deploy/BUILD.md).
 
 | Target               | What it does                                                  |
 |----------------------|---------------------------------------------------------------|
@@ -237,7 +240,7 @@ Every pipeline save (transcribe, correct, translate, manual edit) is archived as
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md). Next up: semi-automatic speaker mapping via voice embeddings, then standalone `.app`/`.deb`/`.exe` distribution.
+See [ROADMAP.md](ROADMAP.md). Next up: semi-automatic speaker mapping via voice embeddings, then standalone `.dmg` / `.msi` distribution.
 
 ## Notes
 
