@@ -143,7 +143,7 @@ function StepSources() {
 function StepPipeline() {
   const steps = [
     { icon: Mic, label: "Transcribe", detail: "WhisperX + diarization" },
-    { icon: Wand2, label: "Polish & translate", detail: "Your LLM of choice" },
+    { icon: Wand2, label: "Polish & translate", detail: "With your LLM of choice" },
     { icon: Search, label: "Index & search", detail: "Across every episode" },
   ];
   return (

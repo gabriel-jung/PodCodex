@@ -325,6 +325,14 @@ def build_pyinstaller_args(*, gpu: bool, clean: bool) -> list[str]:
     ]
     if clean:
         args.append("--clean")
+    if is_windows():
+        # Build the sidecar with GUI subsystem on Windows so spawning it from
+        # the Tauri shell doesn't pop a cmd.exe window. stdout/stderr pipes
+        # still work — Tauri captures them from Rust's piped stdio handles
+        # regardless of subsystem. macOS/Linux spawn semantics don't show a
+        # console for child processes by default, so we keep console there
+        # for terminal debugging.
+        args.append("--noconsole")
 
     for mod in HIDDEN_IMPORTS:
         args.extend(["--hidden-import", mod])
