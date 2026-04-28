@@ -100,6 +100,16 @@ def _child_entry(
     """Import and invoke the entry function inside the spawned child."""
     _early_child_log(f"_child_entry start, entry={entry_path}")
 
+    # Spawn re-execs the frozen binary and bypasses server.py:main(), so the
+    # parent's bootstrap (transformers doc patch, HF symlink, Windows console)
+    # never runs in the child. Apply patches here before any heavy import.
+    try:
+        from podcodex.bootstrap import bootstrap_for_subprocess_child
+
+        bootstrap_for_subprocess_child()
+    except Exception as exc:  # noqa: BLE001
+        _early_child_log(f"bootstrap_for_subprocess_child failed: {exc!r}")
+
     import importlib
 
     mod_name, fn_name = entry_path.split(":")

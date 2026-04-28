@@ -77,6 +77,25 @@ def bootstrap_for_dev() -> None:
     _install_stdlib_intercept()
 
 
+def bootstrap_for_subprocess_child() -> None:
+    """For ``multiprocessing.spawn``'d children of the bundled sidecar.
+
+    The child re-execs the frozen binary and goes straight from
+    ``server.py:freeze_support`` into ``spawn_main`` → user entry
+    function — it never reaches ``main()`` and so never runs
+    ``bootstrap_for_bundled_sidecar``. Without this, the child loads
+    transformers / FlagEmbedding without the doc patch and crashes
+    on ``inspect.getsource`` while *defining* model classes.
+
+    Installs only the patches; logging is handled by
+    ``subprocess_runner._install_log_forwarder``, which forwards the
+    child's loguru output to the parent over an IPC queue. Adding a
+    file sink here would race the parent's ``enqueue=True`` sink for
+    the same ``server.log``.
+    """
+    _install_all_patches()
+
+
 # ── Patches ─────────────────────────────────────────────────────────────
 
 
@@ -84,6 +103,7 @@ def _install_all_patches() -> None:
     _install_hf_symlink_patch()
     _install_subprocess_console_patch()
     _install_transformers_doc_patch()
+    _install_transformers_torch_check_patch()
 
 
 def _install_hf_symlink_patch() -> None:
@@ -137,6 +157,49 @@ def _install_subprocess_console_patch() -> None:
         return original_init(self, *args, **kwargs)
 
     subprocess.Popen.__init__ = patched_init
+
+
+def _install_transformers_torch_check_patch() -> None:
+    """Make transformers' torch version gate work in a PyInstaller bundle.
+
+    ``transformers.utils.import_utils.is_torch_greater_or_equal`` calls
+    ``_is_package_available("torch")``, which calls
+    ``importlib.metadata.version("torch")``. In ``--onefile`` bundles this
+    can raise ``PackageNotFoundError`` even though torch is loaded and
+    runnable — ``--copy-metadata torch`` doesn't always make the dist-info
+    findable from the unpacked _MEIPASS layout. The fallback in transformers
+    only sets ``package_exists=True`` when the version contains "dev", so
+    a stable 2.8.0 build is reported as missing → version checks return
+    False → ``masking_utils`` raises ``or_mask_function ... torch>=2.6``
+    inside the Pplx and BGE-M3 embedders.
+
+    Override the check to read ``torch.__version__`` directly, which is
+    always set on the imported module regardless of metadata.
+
+    Must run before ``transformers.masking_utils`` is imported, since that
+    module caches ``_is_torch_greater_or_equal_than_2_6`` at module load.
+    """
+    try:
+        from packaging import version as _v
+        from transformers.utils import import_utils as _iu
+
+        def _patched(library_version: str, accept_dev: bool = False) -> bool:
+            try:
+                import torch as _torch  # local to avoid eager import at bootstrap
+
+                raw = getattr(_torch, "__version__", None)
+                if not raw:
+                    return False
+                # ``2.8.0+cpu`` / ``2.8.0+cu128`` parse fine, but compare oddly
+                # against ``2.6``; use the base version which strips the local tag.
+                base = _v.parse(raw).base_version
+                return _v.parse(base) >= _v.parse(library_version)
+            except Exception:  # noqa: BLE001
+                return False
+
+        _iu.is_torch_greater_or_equal = _patched
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _install_transformers_doc_patch() -> None:
