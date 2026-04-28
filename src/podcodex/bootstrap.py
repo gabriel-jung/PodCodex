@@ -177,22 +177,23 @@ def _install_subprocess_console_patch() -> None:
 def _install_transformers_torch_check_patch() -> None:
     """Make transformers' torch version gate work in a PyInstaller bundle.
 
-    ``transformers.utils.import_utils.is_torch_greater_or_equal`` calls
-    ``_is_package_available("torch")``, which calls
-    ``importlib.metadata.version("torch")``. In ``--onefile`` bundles this
-    can raise ``PackageNotFoundError`` even though torch is loaded and
-    runnable — ``--copy-metadata torch`` doesn't always make the dist-info
-    findable from the unpacked _MEIPASS layout. The fallback in transformers
-    only sets ``package_exists=True`` when the version contains "dev", so
-    a stable 2.8.0 build is reported as missing → version checks return
-    False → ``masking_utils`` raises ``or_mask_function ... torch>=2.6``
-    inside the Pplx and BGE-M3 embedders.
+    ``--copy-metadata torch`` doesn't always make the dist-info findable
+    from _MEIPASS, so ``importlib.metadata.version("torch")`` raises and
+    transformers' ``is_torch_greater_or_equal`` returns False for a
+    perfectly working 2.8 build. That cascades into ``masking_utils``
+    picking ``sdpa_mask_older_torch`` (vmap-based), which crashes Pplx's
+    ``or_masks`` mask function (``RuntimeError: vmap`` on CPU,
+    ``device-side assert`` on CUDA).
 
-    Override the check to read ``torch.__version__`` directly, which is
-    always set on the imported module regardless of metadata.
-
-    Must run before ``transformers.masking_utils`` is imported, since that
-    module caches ``_is_torch_greater_or_equal_than_2_6`` at module load.
+    Three layers of defense, all cheap:
+      1. Replace ``is_torch_greater_or_equal`` to read ``torch.__version__``
+         directly — covers other transformers call sites we haven't hit yet.
+      2. Force-load ``masking_utils`` and overwrite its cached bools, in
+         case it imported before our function patch lands.
+      3. Rebind ``sdpa_mask`` and the ``AttentionMaskInterface`` registry —
+         dispatch happens by reference at call time and was sealed at
+         module import (lines 472 + 624 of masking_utils.py), so flipping
+         the bool is not enough.
     """
     try:
         from packaging import version as _v
@@ -200,66 +201,45 @@ def _install_transformers_torch_check_patch() -> None:
 
         def _patched(library_version: str, accept_dev: bool = False) -> bool:
             try:
-                import torch as _torch  # local to avoid eager import at bootstrap
-
-                raw = getattr(_torch, "__version__", None)
-                if not raw:
-                    return False
-                # ``2.8.0+cpu`` / ``2.8.0+cu128`` parse fine, but compare oddly
-                # against ``2.6``; use the base version which strips the local tag.
-                base = _v.parse(raw).base_version
+                import torch
+                base = _v.parse(getattr(torch, "__version__", "0.0")).base_version
                 return _v.parse(base) >= _v.parse(library_version)
             except Exception:  # noqa: BLE001
                 return False
 
         _iu.is_torch_greater_or_equal = _patched
 
-        # Belt + suspenders: in some bundle import orderings, ``masking_utils``
-        # latches its module-level ``_is_torch_greater_or_equal_than_*`` bools
-        # before our function-replacement is visible. Force-load the module
-        # now (so its cached bools are computed *with* our patched function)
-        # AND directly write the bools — covers both "load happens after our
-        # patch" and "load already happened" cases.
-        try:
-            import torch as _torch
-            import transformers.masking_utils as _mu
+        import torch
+        import transformers.masking_utils as _mu
 
-            base = _v.parse(getattr(_torch, "__version__", "0.0")).base_version
-            for attr, threshold in (
-                ("_is_torch_greater_or_equal_than_2_5", "2.5"),
-                ("_is_torch_greater_or_equal_than_2_6", "2.6"),
-            ):
-                if hasattr(_mu, attr):
-                    setattr(_mu, attr, _v.parse(base) >= _v.parse(threshold))
+        # ``2.8.0+cpu`` / ``2.8.0+cu128`` parse fine, but compare oddly
+        # against ``2.6``; the base version strips the local tag.
+        base = _v.parse(getattr(torch, "__version__", "0.0")).base_version
+        for attr, threshold in (
+            ("_is_torch_greater_or_equal_than_2_5", "2.5"),
+            ("_is_torch_greater_or_equal_than_2_6", "2.6"),
+        ):
+            if hasattr(_mu, attr):
+                setattr(_mu, attr, _v.parse(base) >= _v.parse(threshold))
 
-            # The bools above only gate fresh evaluations; ``sdpa_mask`` and
-            # ``AttentionMaskInterface._global_mapping["sdpa"]`` were both
-            # bound at module-import time (lines 472 and 624 of masking_utils)
-            # and pin the function by reference. If masking_utils loaded with
-            # the bool=False (e.g. metadata bug racing this patch), the
-            # registry is stuck on the vmap-based ``sdpa_mask_older_torch``,
-            # which crashes on Pplx's ``or_masks`` mask function. Rebind the
-            # registry directly to the recent variant.
-            ge_26 = _v.parse(base) >= _v.parse("2.6")
-            rebind = "skipped"
-            if ge_26 and hasattr(_mu, "sdpa_mask_recent_torch"):
-                _mu.sdpa_mask = _mu.sdpa_mask_recent_torch
-                if hasattr(_mu, "AttentionMaskInterface"):
-                    _mu.AttentionMaskInterface._global_mapping["sdpa"] = (
-                        _mu.sdpa_mask_recent_torch
-                    )
-                rebind = "recent"
-            logger.info(
-                "transformers torch-check patch applied "
-                "(torch={}, ge_2_6={}, sdpa_rebind={})",
-                base,
-                getattr(_mu, "_is_torch_greater_or_equal_than_2_6", "?"),
-                rebind,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("transformers masking_utils override failed: {!r}", exc)
+        rebind = "skipped"
+        if _v.parse(base) >= _v.parse("2.6") and hasattr(_mu, "sdpa_mask_recent_torch"):
+            _mu.sdpa_mask = _mu.sdpa_mask_recent_torch
+            if hasattr(_mu, "AttentionMaskInterface"):
+                _mu.AttentionMaskInterface._global_mapping["sdpa"] = (
+                    _mu.sdpa_mask_recent_torch
+                )
+            rebind = "recent"
+
+        logger.info(
+            "transformers torch-check patch applied "
+            "(torch={}, ge_2_6={}, sdpa_rebind={})",
+            base,
+            getattr(_mu, "_is_torch_greater_or_equal_than_2_6", "?"),
+            rebind,
+        )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("transformers torch-check patch install failed: {!r}", exc)
+        logger.warning("transformers torch-check patch failed: {!r}", exc)
 
 
 def _install_transformers_doc_patch() -> None:
