@@ -91,24 +91,33 @@ _LOG_FORMAT = (
 
 logger.remove()
 
-# sys.stderr is None on Windows --noconsole frozen builds, particularly in
-# multiprocessing spawn children — the GUI subsystem has no stderr handle.
-# loguru's logger.add(None) raises TypeError, which would kill the child
-# during the import_module(podcodex...) chain in subprocess_runner._child_entry
-# *before* any of our error handling runs. Guard so the import never raises;
-# the file sink below picks up where stderr can't.
-if sys.stderr is not None:
+# Pick exactly ONE primary sink for this process:
+#
+#   MCP stdio mode (--mcp from Claude Desktop) → stderr only.
+#       Stdout is the JSON-RPC channel — must stay clean. Claude Desktop
+#       captures stderr and shows it in its log viewer, so a file sink
+#       would just duplicate that.
+#
+#   Bundled sidecar (Tauri spawn, frozen + PODCODEX_DATA_DIR) → file only.
+#       server.py has already redirected sys.stderr to logs/server.log
+#       before this import, so an stderr sink would write every record
+#       to that same file twice.
+#
+#   Dev (uvicorn from .venv)                                   → stderr only.
+_is_mcp_mode = bool(os.environ.get("PODCODEX_MCP_MODE"))
+_use_file_sink = bool(
+    not _is_mcp_mode
+    and getattr(sys, "frozen", False)
+    and os.environ.get("PODCODEX_DATA_DIR")
+)
+
+if not _use_file_sink and sys.stderr is not None:
     try:
         logger.add(sys.stderr, format=_LOG_FORMAT, level="INFO")
     except Exception:  # noqa: BLE001 — log setup must never crash import
         pass
 
-# In the bundled sidecar (PyInstaller --onefile/--onedir), sys.stderr is
-# unreliable. Add a file sink directly when the Tauri shell has provided
-# PODCODEX_DATA_DIR so the user can actually see what happened. The dev
-# path (uvicorn from .venv) doesn't have PODCODEX_DATA_DIR set so this
-# is a no-op there; tty stderr stays the only sink.
-if getattr(sys, "frozen", False) and os.environ.get("PODCODEX_DATA_DIR"):
+if _use_file_sink:
     try:
         _log_path = Path(os.environ["PODCODEX_DATA_DIR"]) / "logs" / "server.log"
         _log_path.parent.mkdir(parents=True, exist_ok=True)

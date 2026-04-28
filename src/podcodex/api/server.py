@@ -158,6 +158,66 @@ def _handle_version_flag() -> None:
         sys.exit(0)
 
 
+def _default_data_dir() -> str | None:
+    """Resolve the platform-native app data dir without importing podcodex.
+
+    Inline copy of ``podcodex.core.app_paths.data_dir()`` so the env vars
+    set by ``_handle_mcp_flag`` land before the first podcodex import (which
+    triggers ``__init__.py``'s logging setup).
+    """
+    bundle_id = "com.podcodex.desktop"
+    if sys.platform == "darwin":
+        return str(Path.home() / "Library" / "Application Support" / bundle_id)
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        return str(Path(appdata) / bundle_id) if appdata else None
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return str(base / bundle_id)
+
+
+def _handle_mcp_flag() -> None:
+    """Run the MCP stdio server instead of uvicorn.
+
+    Invoked when Claude Desktop spawns ``podcodex-server.exe --mcp`` as a
+    child process. JSON-RPC flows over the child's real stdin/stdout, so we
+    must NOT call ``_redirect_stdio_to_logfile`` here — FastMCP's stdio
+    transport reads/writes those pipes directly. Logs go to stderr, which
+    Claude Desktop captures and surfaces in its log viewer.
+
+    Sets ``PODCODEX_MCP_MODE`` so ``podcodex/__init__.py`` skips the file
+    sink and the stdout/stderr-None patching path. Auto-resolves
+    ``PODCODEX_DATA_DIR`` so the MCP process shares the GUI app's
+    ``models/`` and LanceDB index.
+    """
+    if "--mcp" not in sys.argv[1:]:
+        return
+
+    os.environ["PODCODEX_MCP_MODE"] = "1"
+    if not os.environ.get("PODCODEX_DATA_DIR"):
+        resolved = _default_data_dir()
+        if resolved:
+            os.environ["PODCODEX_DATA_DIR"] = resolved
+    if os.environ.get("PODCODEX_DATA_DIR") and not os.environ.get(
+        "PODCODEX_APP_DATA_DIR"
+    ):
+        os.environ["PODCODEX_APP_DATA_DIR"] = os.environ["PODCODEX_DATA_DIR"]
+    # Anything writing to stdout corrupts JSON-RPC. tqdm/HF progress bars
+    # are the usual offenders during model load — silence them. Libraries
+    # that ignore the env still go to stdout, but cached embedder loads
+    # don't trigger downloads, so this covers the common path.
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+
+    _wire_ml_caches()
+    _wire_native_binaries()
+
+    from podcodex.mcp.server import main as mcp_main
+
+    mcp_main()
+    sys.exit(0)
+
+
 if __name__ == "__main__":
     _handle_version_flag()
     # PyInstaller frozen entry — sys.frozen is set when bundled.
@@ -166,4 +226,5 @@ if __name__ == "__main__":
         from multiprocessing import freeze_support
 
         freeze_support()
+    _handle_mcp_flag()
     main()

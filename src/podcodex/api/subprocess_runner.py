@@ -61,6 +61,35 @@ def _early_child_log(message: str) -> None:
         pass  # best-effort; never raise
 
 
+def _install_log_forwarder(prog_q: Any) -> None:
+    """Forward this child's loguru output back to the parent via prog_q.
+
+    The child runs in a separate process; loguru sinks the parent registers
+    don't see anything emitted here, so the in-app per-task log expander
+    only ever showed progress-callback messages — none of the rich
+    transcribe/diarize/polish output. Pushing each line onto prog_q with
+    a "log" tag lets the parent attach those lines to ``info.log`` and
+    broadcast them over the task WebSocket.
+
+    Drops on a full queue rather than blocking: the parent's progress
+    poller drains prog_q every 250ms, so steady-state pressure is low,
+    but a model-load burst could overflow the 512-slot bound. Losing a
+    handful of UI log lines is preferable to stalling the child.
+    """
+    try:
+        from loguru import logger as _logger
+
+        def sink(message: Any) -> None:
+            try:
+                prog_q.put_nowait(("log", str(message).rstrip()))
+            except Exception:
+                pass
+
+        _logger.add(sink, level="INFO", format="{name}: {message}")
+    except Exception:
+        pass
+
+
 def _child_entry(
     entry_path: str,
     kwargs: dict[str, Any],
@@ -84,6 +113,11 @@ def _child_entry(
         _early_child_log(f"import failed: {exc!r}\n{tb}")
         result_q.put(("err", f"{type(exc).__name__}: {exc}", tb))
         return
+
+    # Install the log forwarder *after* importing the entry module so
+    # podcodex/__init__.py has finished registering its own sinks first;
+    # adding ours mid-init could race that setup.
+    _install_log_forwarder(prog_q)
 
     def progress_cb(frac: float, message: str) -> None:
         try:
@@ -109,14 +143,17 @@ def run_in_subprocess(
     entry_path: str,
     kwargs: dict[str, Any],
     on_progress: Callable[[float, str], None] | None = None,
+    on_log: Callable[[str], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> Any:
     """Run ``entry_path(progress_cb, cancelled, **kwargs)`` in a spawned child.
 
     Blocks the caller thread until the child exits or cancellation is
     honored. Progress messages from the child are forwarded to
-    ``on_progress``. A set ``cancel_event`` is relayed to the child; if the
-    child does not exit within 10 s of the signal it is terminated.
+    ``on_progress``; loguru log lines emitted by the child are forwarded
+    to ``on_log`` (see ``_install_log_forwarder``). A set ``cancel_event``
+    is relayed to the child; if the child does not exit within 10 s of
+    the signal it is terminated.
     """
     # Cap progress queue so a chatty child cannot grow RSS unboundedly if
     # the parent stalls; the child's progress_cb already swallows Full.
@@ -155,21 +192,37 @@ def run_in_subprocess(
                     break
                 continue
 
-            if msg and msg[0] == "progress" and on_progress is not None:
+            if not msg:
+                continue
+            kind = msg[0]
+            if kind == "progress" and on_progress is not None:
                 try:
                     on_progress(msg[1], msg[2])
                 except Exception:
                     logger.opt(exception=True).warning("on_progress raised")
+            elif kind == "log" and on_log is not None:
+                try:
+                    on_log(msg[1])
+                except Exception:
+                    pass
 
-        # Drain any progress events the child enqueued just before exit.
+        # Drain any progress / log events the child enqueued just before exit.
         while True:
             try:
                 msg = prog_q.get_nowait()
             except _queue.Empty:
                 break
-            if msg and msg[0] == "progress" and on_progress is not None:
+            if not msg:
+                continue
+            kind = msg[0]
+            if kind == "progress" and on_progress is not None:
                 try:
                     on_progress(msg[1], msg[2])
+                except Exception:
+                    pass
+            elif kind == "log" and on_log is not None:
+                try:
+                    on_log(msg[1])
                 except Exception:
                     pass
 

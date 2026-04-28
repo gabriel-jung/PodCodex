@@ -135,6 +135,7 @@ def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_
             "force": req.force,
         },
         on_progress=on_prog,
+        on_log=getattr(cancelled, "log_cb", None),
         cancel_event=getattr(cancelled, "cancel_event", None),
     )
     return bool(result.get("did_work"))
@@ -311,6 +312,7 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
             "force": req.force,
         },
         on_progress=on_prog,
+        on_log=getattr(cancelled, "log_cb", None),
         cancel_event=getattr(cancelled, "cancel_event", None),
     )
 
@@ -344,6 +346,9 @@ def _run_batch(progress_cb, req: BatchRequest):
 
     # Expose the raw event so subprocess-based step helpers can propagate cancel.
     _cancelled.cancel_event = cancel  # type: ignore[attr-defined]
+    # Forward the parent task's log_cb (set by tasks.py) so the per-episode
+    # transcribe/diarize/index sub-runs feed the in-app log expander.
+    _cancelled.log_cb = getattr(progress_cb, "log_cb", None)  # type: ignore[attr-defined]
 
     def ep_progress(
         ep_idx: int, step_offset: float, step_weight: float, frac: float, msg: str

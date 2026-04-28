@@ -195,6 +195,25 @@ class TaskManager:
 
         progress_cb.cancel_event = info.cancel_event  # type: ignore[attr-defined]
 
+        # log_cb: opt-in forwarder for child-subprocess loguru lines so the
+        # in-app expander shows live transcribe/diarize/polish output rather
+        # than only progress milestones. subprocess_runner pushes lines over
+        # the same IPC queue; this callback appends to the task's log buffer
+        # and triggers a throttled WS broadcast (≤1/sec — matches the
+        # parent-process _TaskLogHandler / _add_loguru_sink throttle).
+        _last_log_broadcast = {"t": 0.0}
+
+        def log_cb(line: str) -> None:
+            if not line:
+                return
+            info.add_log(line)
+            now = time.monotonic()
+            if now - _last_log_broadcast["t"] >= 1.0:
+                _last_log_broadcast["t"] = now
+                self._broadcast_sync(task_id)
+
+        progress_cb.log_cb = log_cb  # type: ignore[attr-defined]
+
         def run() -> None:
             info.status = "running"
             self._broadcast_sync(task_id)

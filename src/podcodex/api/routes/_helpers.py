@@ -265,6 +265,7 @@ def submit_subprocess_task(
             entry_path=entry_path,
             kwargs=kwargs,
             on_progress=progress_cb,
+            on_log=getattr(progress_cb, "log_cb", None),
             cancel_event=getattr(progress_cb, "cancel_event", None),
         )
 
