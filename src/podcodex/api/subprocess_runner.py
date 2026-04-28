@@ -106,9 +106,15 @@ def _child_entry(
     try:
         from podcodex.bootstrap import bootstrap_for_subprocess_child
 
+        _early_child_log("running bootstrap_for_subprocess_child")
         bootstrap_for_subprocess_child()
+        _early_child_log("bootstrap_for_subprocess_child returned ok")
     except Exception as exc:  # noqa: BLE001
-        _early_child_log(f"bootstrap_for_subprocess_child failed: {exc!r}")
+        import traceback as _tb
+
+        _early_child_log(
+            f"bootstrap_for_subprocess_child failed: {exc!r}\n{_tb.format_exc()}"
+        )
 
     import importlib
 

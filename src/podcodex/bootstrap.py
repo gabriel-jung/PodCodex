@@ -100,10 +100,19 @@ def bootstrap_for_subprocess_child() -> None:
 
 
 def _install_all_patches() -> None:
+    """Apply every monkey-patch we install at startup.
+
+    Each ``_install_*`` helper is responsible for logging its own outcome
+    (``logger.info`` on apply / skip, ``logger.warning`` on failure).
+    Subprocess children rely on these logs to confirm bootstrap actually
+    ran — silent failure is what hid the rc.9 torch-check bug.
+    """
+    logger.info("bootstrap: installing platform patches (pid={})", os.getpid())
     _install_hf_symlink_patch()
     _install_subprocess_console_patch()
     _install_transformers_doc_patch()
     _install_transformers_torch_check_patch()
+    logger.info("bootstrap: all patches installed")
 
 
 def _install_hf_symlink_patch() -> None:
@@ -117,10 +126,12 @@ def _install_hf_symlink_patch() -> None:
     open the result.
     """
     if sys.platform != "win32":
+        logger.debug("hf-symlink patch: skipped (not win32)")
         return
     try:
         from huggingface_hub import file_download as _hf_file_download
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("hf-symlink patch: huggingface_hub import failed: {!r}", exc)
         return
 
     def _copy_instead_of_symlink(src, dst, new_blob: bool = False) -> None:
@@ -133,6 +144,7 @@ def _install_hf_symlink_patch() -> None:
         shutil.copy(real_src, dst)
 
     _hf_file_download._create_symlink = _copy_instead_of_symlink
+    logger.info("hf-symlink patch: applied")
 
 
 def _install_subprocess_console_patch() -> None:
@@ -143,10 +155,12 @@ def _install_subprocess_console_patch() -> None:
     in a GUI-subsystem app. No-op on macOS/Linux.
     """
     if sys.platform != "win32":
+        logger.debug("subprocess-console patch: skipped (not win32)")
         return
     import subprocess
 
     if not hasattr(subprocess, "CREATE_NO_WINDOW"):
+        logger.warning("subprocess-console patch: CREATE_NO_WINDOW unavailable")
         return
     original_init = subprocess.Popen.__init__
 
@@ -157,6 +171,7 @@ def _install_subprocess_console_patch() -> None:
         return original_init(self, *args, **kwargs)
 
     subprocess.Popen.__init__ = patched_init
+    logger.info("subprocess-console patch: applied")
 
 
 def _install_transformers_torch_check_patch() -> None:
@@ -198,8 +213,33 @@ def _install_transformers_torch_check_patch() -> None:
                 return False
 
         _iu.is_torch_greater_or_equal = _patched
-    except Exception:  # noqa: BLE001
-        pass
+
+        # Belt + suspenders: in some bundle import orderings, ``masking_utils``
+        # latches its module-level ``_is_torch_greater_or_equal_than_*`` bools
+        # before our function-replacement is visible. Force-load the module
+        # now (so its cached bools are computed *with* our patched function)
+        # AND directly write the bools — covers both "load happens after our
+        # patch" and "load already happened" cases.
+        try:
+            import torch as _torch
+            import transformers.masking_utils as _mu
+
+            base = _v.parse(getattr(_torch, "__version__", "0.0")).base_version
+            for attr, threshold in (
+                ("_is_torch_greater_or_equal_than_2_5", "2.5"),
+                ("_is_torch_greater_or_equal_than_2_6", "2.6"),
+            ):
+                if hasattr(_mu, attr):
+                    setattr(_mu, attr, _v.parse(base) >= _v.parse(threshold))
+            logger.info(
+                "transformers torch-check patch applied (torch={}, ge_2_6={})",
+                base,
+                getattr(_mu, "_is_torch_greater_or_equal_than_2_6", "?"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("transformers masking_utils override failed: {!r}", exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("transformers torch-check patch install failed: {!r}", exc)
 
 
 def _install_transformers_doc_patch() -> None:
@@ -224,8 +264,9 @@ def _install_transformers_doc_patch() -> None:
                 return 0
 
         _doc.get_docstring_indentation_level = _safe_get_indent
-    except Exception:  # noqa: BLE001
-        pass
+        logger.info("transformers doc patch: applied")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("transformers doc patch failed: {!r}", exc)
 
 
 # ── Logging ─────────────────────────────────────────────────────────────
