@@ -100,6 +100,7 @@ HIDDEN_IMPORTS = [
 ]
 
 COPY_METADATA = [
+    "podcodex",
     "torch",
     "transformers",
     "huggingface-hub",

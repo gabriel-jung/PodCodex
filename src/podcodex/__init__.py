@@ -183,4 +183,9 @@ for _name in (
     _lg.handlers = [_InterceptHandler()]
     _lg.propagate = False
 
-__version__ = "0.1.0"
+try:
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+    __version__ = _pkg_version("podcodex")
+except PackageNotFoundError:  # editable install before metadata is registered
+    __version__ = "0.0.0+unknown"
