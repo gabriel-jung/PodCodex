@@ -2,6 +2,7 @@ import { usePipelineConfig } from "@/hooks/usePipelineConfig";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { AdvancedFieldset } from "@/components/ui/advanced-fieldset";
+import { NullableNumberInput } from "@/components/ui/number-input";
 import { languageToISO, selectClass, inputWidth } from "@/lib/utils";
 
 interface PipelineSettingsProps {
@@ -96,8 +97,14 @@ export default function PipelineSettings({ language }: PipelineSettingsProps) {
         legend="Advanced"
         description="Batch sizes, custom endpoints, and extra context. Most users leave these alone."
       >
-        <SettingRow label="Batch size" help="GPU batch size for transcription. Larger = faster, more VRAM.">
-          <input type="number" value={tc.batchSize} onChange={(e) => setTc({ batchSize: Number(e.target.value) })} min={1} className={`input ${inputWidth.numeric}`} />
+        <SettingRow label="Batch size" help="GPU batch size for transcription. Leave empty to auto-detect from VRAM (8 for ≤10 GB, 16 above). Lower if you hit out-of-memory; raise on big GPUs for more speed.">
+          <NullableNumberInput
+            value={tc.batchSize}
+            onChange={(batchSize) => setTc({ batchSize })}
+            placeholder="Auto"
+            min={1}
+            className={`input ${inputWidth.numeric}`}
+          />
         </SettingRow>
         {llm.mode === "api" && (
           <SettingRow label="Endpoint" help="Custom API base URL. Empty = provider default.">

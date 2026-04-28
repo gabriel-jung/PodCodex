@@ -84,6 +84,41 @@ def _hide_windows_console_flashes() -> None:
 _hide_windows_console_flashes()
 
 
+def _patch_transformers_inspect_getsource() -> None:
+    """Make transformers' docstring decorator survive a no-source bundle.
+
+    ``transformers.utils.doc.get_docstring_indentation_level`` calls
+    ``inspect.getsource(func)`` while *defining* a model class (the
+    ``@add_start_docstrings_to_model_forward`` decorator runs at import).
+    PyInstaller bundles ship ``.pyc`` files but no ``.py`` source, so
+    ``inspect.getsource`` raises ``OSError: could not get source code``
+    and the entire model module fails to import.
+
+    This bites us via FlagEmbedding's reranker tree (transitively pulled
+    in by ``bge-m3`` embeddings) and would also hit the regular API
+    server the first time anyone runs a search. Returning 0 is safe —
+    the decorator only uses it to re-indent the docstring, and we never
+    read those docstrings at runtime.
+    """
+    try:
+        from transformers.utils import doc as _doc
+
+        _orig = _doc.get_docstring_indentation_level
+
+        def _safe_get_indent(func):
+            try:
+                return _orig(func)
+            except OSError:
+                return 0
+
+        _doc.get_docstring_indentation_level = _safe_get_indent
+    except Exception:  # noqa: BLE001 — never crash app startup on this
+        pass
+
+
+_patch_transformers_inspect_getsource()
+
+
 _LOG_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | "
     "<level>{message}</level>"

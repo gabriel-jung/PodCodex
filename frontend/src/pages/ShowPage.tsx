@@ -317,7 +317,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       index: step === "index",
       model_size: tc.modelSize,
       language: tc.language || languageToISO(meta?.language || ""),
-      batch_size: tc.batchSize,
+      batch_size: tc.batchSize ?? undefined,
       diarize: tc.diarize,
       clean: tc.clean,
       hf_token: tc.hfToken || undefined,

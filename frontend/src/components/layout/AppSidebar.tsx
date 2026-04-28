@@ -29,7 +29,6 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
   const navigate = useNavigate();
   const isHome = useRouterState({ select: (s) => s.location.pathname === "/" });
   const historyIndex = useRouterState({ select: (s) => s.location.state.__TSR_index ?? 0 });
-  const hideBack = historyIndex === 0;
   const expanded = useLayoutStore((s) => s.sidebarExpanded);
   const setExpanded = useLayoutStore((s) => s.setSidebarExpanded);
   const { theme, setTheme } = useTheme();
@@ -42,8 +41,8 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
       }`}
     >
       <nav className="flex-1 py-2 flex flex-col overflow-y-auto">
-        {/* Back + Parent + Home */}
-        {!hideBack && (
+        {/* Back + Parent + Home — fall back to Home when there's no real history. */}
+        {!isHome && (
           <SidebarBtn icon={ArrowLeft} label="Back" expanded={expanded} onClick={() => {
             if (historyIndex > 0) window.history.back();
             else navigate({ to: "/" });

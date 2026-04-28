@@ -17,6 +17,7 @@ import GPUBackendPanel from "@/components/settings/GPUBackendPanel";
 import { useEffect, useState } from "react";
 import { useTheme } from "@/hooks/useTheme";
 import { SHORTCUTS, Kbd } from "@/components/ShortcutsHelp";
+import { NullableNumberInput } from "@/components/ui/number-input";
 import PresetCards from "@/components/common/PresetCards";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
 import {
@@ -308,6 +309,20 @@ function PipelineDefaultsPanel() {
             </span>
           </label>
         </div>
+        <label className="block">
+          <span className="text-xs text-muted-foreground">Batch size</span>
+          <NullableNumberInput
+            value={transcribe.batchSize}
+            onChange={(batchSize) => setTranscribe({ batchSize })}
+            placeholder="Auto"
+            min={1}
+            className="input mt-1 w-24"
+          />
+          <span className="block text-xs text-muted-foreground mt-1">
+            Empty = auto-detect from VRAM (8 for ≤10&nbsp;GB, 16 above). Lower
+            if WhisperX runs out of memory; raise on a big GPU for more speed.
+          </span>
+        </label>
       </section>
 
       <section className="space-y-3">

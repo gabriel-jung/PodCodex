@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getEpisodes, getShowMeta, exportZipUrl, openFolder } from "@/api/client";
 import { audioFileUrl } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
@@ -117,6 +117,18 @@ export default function EpisodePage({
   });
 
   const { downloadMutation: episodeDownloadMutation, importSubsMutation, isYouTube } = useShowActions(folder ?? "", meta, { withSubs: false });
+
+  // TaskBar invalidates ["episodes", folder] on completion, but in
+  // practice the panel sometimes still shows stale audio_path. Force a
+  // second refetch when downloadTaskId clears so the blocker swaps to
+  // the live transcribe form without a manual reload.
+  const prevDownloadTaskId = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevDownloadTaskId.current && !downloadTaskId && folder) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(folder) });
+    }
+    prevDownloadTaskId.current = downloadTaskId;
+  }, [downloadTaskId, folder, queryClient]);
 
   const episode: Episode | undefined = audioFilePath
     ? standaloneEpisode(audioFilePath)

@@ -1,6 +1,8 @@
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
+import { useEpisodeStore, useAudioPath, usePipelineConfigStore, useTaskStore } from "@/stores";
+import { useShowActions } from "@/hooks/useShowActions";
+import { EmptyState } from "@/components/ui/empty-state";
 import { TRANSCRIBE_PRESETS, CPU_MODELS, GPU_MODELS, CPU_LABELS, GPU_LABELS } from "@/stores/pipelineConfigStore";
 import {
   deleteTranscribeVersion,
@@ -15,7 +17,7 @@ import {
 } from "@/api/client";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { Button } from "@/components/ui/button";
-import { FileText, Upload } from "lucide-react";
+import { FileAudio, FileText, Upload } from "lucide-react";
 import { errorMessage, languageToISO, selectClass, SUB_LANGUAGES } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useCapabilities } from "@/hooks/useCapabilities";
@@ -40,6 +42,9 @@ export default function TranscribePanel() {
   const hasWhisperX = hasCap("whisperx");
   const task = usePipelineTask(audioPath, "transcribe");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { downloadMutation: episodeDownloadMutation } = useShowActions(folder ?? "", showMeta ?? undefined, { withSubs: false });
+  const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
+  const downloadDisabled = episodeDownloadMutation.isPending || !!downloadTaskId;
 
   const { whisperModels: whisperModelsMap, detectedKeys } = useLLMProviders();
   const hfTokenDetected = !!detectedKeys.hf_token;
@@ -87,6 +92,17 @@ export default function TranscribePanel() {
   const [transcribeSource, setTranscribeSource] = useState<"audio" | "subtitles" | "upload">(
     hasRealAudio ? "audio" : hasSubs ? "subtitles" : "upload",
   );
+  // Auto-switch to "audio" when it becomes available, unless the user
+  // has already picked something else.
+  const userPickedSourceRef = useRef(false);
+  const pickSource = (v: "audio" | "subtitles" | "upload") => {
+    userPickedSourceRef.current = true;
+    setTranscribeSource(v);
+  };
+  useEffect(() => {
+    if (userPickedSourceRef.current) return;
+    setTranscribeSource(hasRealAudio ? "audio" : hasSubs ? "subtitles" : "upload");
+  }, [hasRealAudio, hasSubs]);
 
   // Per-episode cleanup mode — defaults to Manual because the user is about
   // to open the editor and can delete junk by hand. Auto runs the density
@@ -122,7 +138,7 @@ export default function TranscribePanel() {
         audio_path: audioPath!,
         model_size: tc.modelSize,
         language: effectiveLang || undefined,
-        batch_size: tc.batchSize,
+        batch_size: tc.batchSize ?? undefined,
         force: episode!.transcribed,
         // CPU mode forces diarize off regardless of stored preference —
         // pyannote needs a GPU in practice, and the UI column is hidden.
@@ -139,11 +155,43 @@ export default function TranscribePanel() {
   if (!episode) return null;
   const expanded = task.expanded || !episode.transcribed;
 
+  const emptyStateProps = downloadDisabled
+    ? {
+        title: "Downloading audio…",
+        description: "The audio is downloading — this view will refresh when it's ready.",
+      }
+    : {
+        title: "No audio file yet",
+        description:
+          "Download the audio file to transcribe it, or upload an existing transcript (JSON, SRT, VTT).",
+        action: {
+          label: "Download audio",
+          onClick: () => episodeDownloadMutation.mutate({ guids: [episode.id] }),
+        },
+        secondaryAction: {
+          label: "Upload transcript",
+          onClick: () => fileInputRef.current?.click(),
+        },
+      };
+
   return (
     <PipelinePanel
       title="Transcribe"
       description="Transcribe audio or import subtitles."
-      prerequisite={!audioPath ? "Download the audio file or import subtitles first." : undefined}
+      blocker={
+        !audioPath ? (
+          <>
+            <EmptyState icon={FileAudio} {...emptyStateProps} />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,.srt,.vtt"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+          </>
+        ) : undefined
+      }
       done={episode.transcribed}
       expanded={expanded}
       onToggle={() => task.setExpanded(!expanded)}
@@ -160,7 +208,7 @@ export default function TranscribePanel() {
             <HelpLabel label="Source" />
             <Segmented
               value={transcribeSource}
-              onChange={setTranscribeSource}
+              onChange={pickSource}
               options={[
                 ["audio", "Audio", hasRealAudio ? "Transcribe the audio file" : "No audio file available", hasRealAudio],
                 ...(hasSubs ? [["subtitles", "Subtitles", "Reimport a .vtt/.srt already in the episode folder"] as const] : []),

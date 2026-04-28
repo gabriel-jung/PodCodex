@@ -18,7 +18,10 @@ export interface LLMConfig {
 
 export interface TranscribeConfig {
   modelSize: string;
-  batchSize: number;
+  /** Whisper batch size. ``null`` means "auto" — the backend's
+   *  ``default_batch_size()`` returns 8 for ≤10 GB VRAM, 16 above.
+   *  Sending a concrete number overrides that auto-detection. */
+  batchSize: number | null;
   diarize: boolean;
   clean: boolean;
   hfToken: string;
@@ -112,7 +115,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
     (set) => ({
       transcribe: {
         modelSize: "large-v3-turbo",
-        batchSize: 16,
+        batchSize: null,
         diarize: false,
         clean: false,
         hfToken: "",
@@ -183,7 +186,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
     }),
     {
       name: "podcodex-pipeline-config",
-      version: 2,
+      version: 3,
       migrate(persisted: unknown, fromVersion: number) {
         const s = persisted as Record<string, unknown>;
         if (fromVersion < 1) {
@@ -203,6 +206,12 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
           // state (`llmPresetTouched: false`) opts them into auto-upgrade.
           const preset = (s.llmPreset as string | undefined) || "";
           s.llmPresetTouched = preset !== "";
+        }
+        if (fromVersion < 3) {
+          // Old default of 16 was hardcoded and bypassed the backend's
+          // VRAM-based auto-detect; flip it to null so it actually runs.
+          const tc = s.transcribe as Record<string, unknown> | undefined;
+          if (tc && tc.batchSize === 16) tc.batchSize = null;
         }
         return s as unknown as PipelineConfigState;
       },

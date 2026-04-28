@@ -944,16 +944,6 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                       )}
                     </div>
 
-                    <div className="space-y-1.5">
-                      <HelpLabel label="Batch size" help="Advanced — leave as is unless you run out of GPU memory. Number of audio chunks processed in parallel on the GPU. Lower it if transcription crashes with out-of-memory errors." />
-                      <input
-                        type="number"
-                        value={tc.batchSize}
-                        onChange={(e) => setTc({ batchSize: Number(e.target.value) })}
-                        min={1}
-                        className="input w-20"
-                      />
-                    </div>
                   </>
                 );
               })()}
