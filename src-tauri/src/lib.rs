@@ -26,6 +26,15 @@ const GPU_MANIFEST_FILE: &str = "cuda-libs.json";
 
 struct BackendProcess(Mutex<Option<GroupChild>>);
 
+/// Restart the app. Invoked from the frontend after activate/deactivate of
+/// the GPU sidecar — sidecar selection happens once in spawn_backend_if_needed
+/// at startup, so a restart is the only way to switch backends.
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    log::info!("restart_app invoked from frontend");
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -33,6 +42,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .invoke_handler(tauri::generate_handler![restart_app])
         .setup(|app| {
             // Init log plugin in both debug and release. Backend draining
             // threads use log::info! / log::warn! and we want those visible

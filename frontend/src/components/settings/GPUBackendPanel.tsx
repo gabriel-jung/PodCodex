@@ -13,6 +13,17 @@ import { Button } from "@/components/ui/button";
 
 const POLL_INTERVAL_MS = 1000;
 
+// Sidecar selection happens once at app launch (lib.rs::spawn_backend_if_needed),
+// so flipping the activated marker has no effect on the running CPU sidecar.
+// Auto-restart through the Tauri restart_app command after activate/deactivate
+// so the user sees the change without a manual relaunch.
+async function restartApp(): Promise<void> {
+  const w = window as unknown as { __TAURI__?: unknown };
+  if (!w.__TAURI__) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("restart_app");
+}
+
 export default function GPUBackendPanel() {
   const qc = useQueryClient();
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
@@ -60,11 +71,11 @@ export default function GPUBackendPanel() {
   });
   const activateMut = useMutation({
     mutationFn: activateGPUBackend,
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.gpuStatus() }),
+    onSuccess: () => { void restartApp(); },
   });
   const deactivateMut = useMutation({
     mutationFn: deactivateGPUBackend,
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.gpuStatus() }),
+    onSuccess: () => { void restartApp(); },
   });
   const uninstallMut = useMutation({
     mutationFn: uninstallGPUBackend,
@@ -288,7 +299,7 @@ function ActionBlock({
       {installed && !activated && (
         <div className="flex items-center gap-2">
           <Button onClick={onActivate} disabled={mutating}>
-            <Power className="w-4 h-4 mr-2" /> Activate (restart required)
+            <Power className="w-4 h-4 mr-2" /> Activate
           </Button>
           <Button variant="ghost" onClick={onUninstall} disabled={mutating}>
             <Trash2 className="w-4 h-4 mr-2" /> Uninstall
