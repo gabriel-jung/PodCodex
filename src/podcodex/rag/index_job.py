@@ -17,6 +17,23 @@ def _mark_indexed(episode_dir: Path) -> None:
     (episode_dir / ".rag_indexed").touch()
 
 
+def _autodetect_device() -> str:
+    """Pick the best torch device for embedding.
+
+    The GPU sidecar bundles CUDA torch; the CPU sidecar bundles CPU torch.
+    Falls back to "cpu" if torch is missing or CUDA isn't usable, so the
+    same code path works in both bundles plus dev.
+    """
+    try:
+        import torch as _torch
+
+        if _torch.cuda.is_available():
+            return "cuda"
+    except Exception:  # noqa: BLE001
+        pass
+    return "cpu"
+
+
 def run(
     *,
     progress_cb: Callable[[float, str], None],
@@ -66,6 +83,8 @@ def run(
         frac = 0.05 + 0.9 * (step / max(total, 1))
         progress_cb(frac, f"{label} ({step + 1}/{total})")
 
+    device = _autodetect_device()
+
     total_upserted = vectorize_batch(
         transcript,
         show,
@@ -76,6 +95,7 @@ def run(
         chunk_size=chunk_size,
         threshold=threshold,
         overwrite=overwrite,
+        device=device,
         on_progress=on_prog,
     )
 
@@ -160,6 +180,7 @@ def run_for_batch(
         chunkings,
         local,
         overwrite=force,
+        device=_autodetect_device(),
         on_progress=on_prog,
     )
 
