@@ -315,6 +315,37 @@ def _extract_tar_gz(archive: Path, dest: Path, label: str, progress_cb, frac: fl
         tar.extractall(dest, filter="data")  # filter=data avoids tar exploits
 
 
+def _purge_stale_dist_info(install_dir: Path) -> None:
+    """Remove orphan ``podcodex-*.dist-info/`` directories before re-extracting
+    server-core.
+
+    PyInstaller --copy-metadata bakes ``_internal/podcodex-X.Y.Z.dist-info/``
+    into the bundle, with the *version* embedded in the directory name. A
+    plain tar.extractall over an existing install lays down the new
+    dist-info alongside the old one — both survive, since they have
+    different names. ``importlib.metadata.version("podcodex")`` then
+    iterates ``_internal`` and returns whichever it finds first (in
+    practice, the alphabetically earlier — i.e. older — version), so
+    ``podcodex-server --version`` keeps reporting the pre-update value
+    and the Settings UI loops on "out of date".
+
+    Sweep them out before the new tar lands. Other dist-info dirs (torch,
+    transformers, …) don't have the same effect — none of those package
+    versions are read back through ``--version`` — so we limit the
+    cleanup to the one that actually breaks UX.
+    """
+    internal = install_dir / "_internal"
+    if not internal.is_dir():
+        return
+    for entry in internal.glob("podcodex-*.dist-info"):
+        if entry.is_dir():
+            try:
+                shutil.rmtree(entry)
+                logger.info("Removed stale podcodex dist-info: {}", entry.name)
+            except OSError as exc:  # noqa: PERF203 — log per-entry errors
+                logger.warning("Could not remove {}: {!r}", entry, exc)
+
+
 def _resolve_artifact_url(manifest_url: str, archive_name: str) -> str:
     """Resolve an archive name relative to the manifest URL.
 
@@ -437,6 +468,7 @@ def download_and_install(
                 logger.warning("server-core.tar.gz.sha256 not published; skipping integrity check")
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("Install cancelled before extraction")
+            _purge_stale_dist_info(install_dir)
             _extract_tar_gz(server_tar, install_dir, "server core", progress_cb, server_band[1])
 
         if needs_libs:
