@@ -31,6 +31,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -47,6 +48,19 @@ from podcodex.core.app_paths import data_dir, running_in_bundle
 
 class DevModeError(RuntimeError):
     """Raised when an install/activate operation is attempted in dev mode."""
+
+
+# CI publishes GPU archives for Windows only. Linux is buildable from
+# source via ``make dev`` but no MSI/release flow exists yet, so a manifest
+# fetch on Linux would resolve to Windows binaries that wouldn't run.
+# macOS uses Metal/MPS via the bundled CPU sidecar's torch — no separate
+# CUDA install is meaningful there.
+_GPU_SUPPORTED_PLATFORMS = ("win32",)
+
+
+def gpu_supported_on_platform() -> bool:
+    """Whether the GPU backend installer can produce a working install on this OS."""
+    return sys.platform in _GPU_SUPPORTED_PLATFORMS
 
 
 @dataclass(frozen=True)
@@ -187,6 +201,22 @@ def _app_version() -> str:
     return __version__
 
 
+def _needs_update() -> bool:
+    """True when GPU is installed but the server-core version trails the app.
+
+    This is the silent-regression path: user updates the MSI, the
+    ``<data_dir>/backends/gpu/`` install survives but its
+    ``podcodex-server-gpu --version`` reports the OLD app version. The
+    Tauri shell falls back to the bundled CPU sidecar without telling
+    anyone — transcription quietly becomes 10× slower until the user
+    notices and re-downloads.
+    """
+    installed = installed_server_core_version()
+    if installed is None:
+        return False
+    return installed != _app_version()
+
+
 def status() -> dict[str, Any]:
     """Synchronous status report — safe to call from any context, dev or bundle."""
     gpu = detect_nvidia_gpu()
@@ -202,6 +232,8 @@ def status() -> dict[str, Any]:
         "app_version": _app_version(),
         "activated": is_gpu_activated(),
         "install_dir": str(gpu_install_dir()),
+        "platform_supported": gpu_supported_on_platform(),
+        "needs_update": _needs_update(),
     }
 
 
@@ -214,6 +246,16 @@ def _ensure_bundle_mode() -> None:
             "GPU backend management is only available in the packaged desktop "
             "app. In dev mode, the pipeline uses whatever torch is installed "
             "in your venv directly."
+        )
+
+
+def _ensure_platform_supported() -> None:
+    if not gpu_supported_on_platform():
+        raise RuntimeError(
+            f"GPU backend is not available on {sys.platform}. "
+            "Only Windows is currently supported. macOS uses the bundled "
+            "CPU sidecar (with Apple's MPS via torch); Linux users build "
+            "from source via `make dev`."
         )
 
 
@@ -317,6 +359,7 @@ def download_and_install(
     a ``cancel_event`` attribute set by ``TaskInfo``.
     """
     _ensure_bundle_mode()
+    _ensure_platform_supported()
     if not manifest_url:
         raise ValueError("Manifest URL is empty — set PODCODEX_GPU_MANIFEST_URL or pass via API.")
 

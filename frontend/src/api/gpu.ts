@@ -15,6 +15,11 @@ export interface GPUStatus {
   app_version: string;
   activated: boolean;
   install_dir: string;
+  /** Whether this OS can install the GPU backend (Windows-only today). */
+  platform_supported: boolean;
+  /** True when an install exists but its server-core version trails the app —
+   *  the Tauri shell has silently fallen back to the bundled CPU sidecar. */
+  needs_update: boolean;
 }
 
 export const getGPUStatus = () => json<GPUStatus>("/api/gpu/status");

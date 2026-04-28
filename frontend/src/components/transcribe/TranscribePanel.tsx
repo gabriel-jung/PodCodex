@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore, useTaskStore } from "@/stores";
 import { useShowActions } from "@/hooks/useShowActions";
 import { EmptyState } from "@/components/ui/empty-state";
+import { getGPUStatus } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
+import { AlertCircle } from "lucide-react";
 import { TRANSCRIBE_PRESETS, CPU_MODELS, GPU_MODELS, CPU_LABELS, GPU_LABELS } from "@/stores/pipelineConfigStore";
 import {
   deleteTranscribeVersion,
@@ -45,6 +49,21 @@ export default function TranscribePanel() {
   const { downloadMutation: episodeDownloadMutation } = useShowActions(folder ?? "", showMeta ?? undefined, { withSubs: false });
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
   const downloadDisabled = episodeDownloadMutation.isPending || !!downloadTaskId;
+  const navigate = useNavigate();
+
+  // GPU staleness check — when the user updated the app but didn't re-download
+  // the GPU backend, the Tauri shell silently fell back to CPU. Surface that
+  // inline so the user knows why transcription will be slow before they kick
+  // it off, with a one-click jump to Settings → GPU.
+  const { data: gpuStatus } = useQuery({
+    queryKey: queryKeys.gpuStatus(),
+    queryFn: getGPUStatus,
+    staleTime: 60_000,
+  });
+  const gpuOutOfDate =
+    !!gpuStatus?.activated &&
+    !!gpuStatus?.needs_update &&
+    !!gpuStatus?.platform_supported;
 
   const { whisperModels: whisperModelsMap, detectedKeys } = useLLMProviders();
   const hfTokenDetected = !!detectedKeys.hf_token;
@@ -204,6 +223,26 @@ export default function TranscribePanel() {
       emptyMessage="No transcript yet."
       controls={
         <div className="px-4 pt-3 pb-4 space-y-4">
+          {gpuOutOfDate && (
+            <div className="rounded-md border border-warning/40 bg-warning/5 p-2.5 text-2xs text-muted-foreground flex items-start gap-2">
+              <AlertCircle className="w-3.5 h-3.5 text-warning shrink-0 mt-0.5" />
+              <span className="flex-1">
+                Hardware acceleration is unavailable — your GPU backend (
+                <code className="font-mono">{gpuStatus?.installed_server_version ?? "?"}</code>
+                ) is out of date for app{" "}
+                <code className="font-mono">{gpuStatus?.app_version}</code>.
+                Transcription will run on CPU.{" "}
+                <button
+                  type="button"
+                  onClick={() => navigate({ to: "/settings", search: { tab: "gpu" } })}
+                  className="underline hover:text-foreground"
+                >
+                  Update in Settings
+                </button>
+                .
+              </span>
+            </div>
+          )}
           <FormGrid>
             <HelpLabel label="Source" />
             <Segmented

@@ -101,6 +101,16 @@ export default function GPUBackendPanel() {
 
       <StatusCard status={status} />
 
+      {status.mode === "bundle" && status.needs_update && (
+        <UpdateAvailableBanner
+          installedVersion={status.installed_server_version}
+          appVersion={status.app_version}
+          downloading={downloading}
+          onUpdate={() => downloadMut.mutate()}
+          mutating={downloadMut.isPending}
+        />
+      )}
+
       {status.mode === "dev" && <DevModeBanner />}
 
       {status.mode === "bundle" && (
@@ -172,6 +182,46 @@ function DevModeBanner() {
         on this machine that&apos;s the GPU build, so the pipeline already
         runs on your GPU.
       </p>
+    </div>
+  );
+}
+
+function UpdateAvailableBanner({
+  installedVersion,
+  appVersion,
+  downloading,
+  onUpdate,
+  mutating,
+}: {
+  installedVersion: string | null;
+  appVersion: string;
+  downloading: boolean;
+  onUpdate: () => void;
+  mutating: boolean;
+}) {
+  return (
+    <div className="rounded-lg border border-warning/40 bg-warning/5 p-4 text-sm space-y-2">
+      <div className="flex items-center gap-2 font-medium text-warning">
+        <AlertCircle className="w-4 h-4" />
+        GPU backend out of date
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Your installed GPU backend is at version{" "}
+        <code className="font-mono text-2xs">{installedVersion ?? "unknown"}</code>{" "}
+        but the app is at{" "}
+        <code className="font-mono text-2xs">{appVersion}</code>. Hardware
+        acceleration is currently disabled — the app fell back to the CPU
+        sidecar. Re-download to restore GPU acceleration; only the small
+        server-core archive is fetched if the CUDA libs already match.
+      </p>
+      <Button onClick={onUpdate} disabled={downloading || mutating} size="sm">
+        {downloading || mutating ? (
+          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+        ) : (
+          <Download className="w-4 h-4 mr-2" />
+        )}
+        {downloading ? "Updating…" : "Update GPU backend"}
+      </Button>
     </div>
   );
 }
