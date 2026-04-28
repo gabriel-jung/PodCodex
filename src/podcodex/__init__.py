@@ -47,6 +47,43 @@ def _disable_hf_hub_symlinks_on_windows() -> None:
 
 _disable_hf_hub_symlinks_on_windows()
 
+
+def _hide_windows_console_flashes() -> None:
+    """Suppress brief cmd.exe flashes from subprocess.Popen on Windows.
+
+    Many libraries we depend on shell out to console-subsystem binaries
+    (whisperx -> ffmpeg, faster-whisper, nvidia-smi probes, uv pip).
+    Without ``CREATE_NO_WINDOW`` each call flashes a console window for a
+    fraction of a second — visible and ugly in a GUI-subsystem app.
+
+    Patch ``subprocess.Popen.__init__`` to OR ``CREATE_NO_WINDOW`` into
+    whatever the caller passed for ``creationflags``. Safe everywhere:
+    GUI-subsystem children (explorer.exe, our own --noconsole sidecar)
+    aren't affected by the flag because they don't allocate consoles
+    anyway. Caller-supplied flags are preserved bitwise.
+
+    No-op on macOS/Linux (no Windows console concept).
+    """
+    if sys.platform != "win32":
+        return
+    import subprocess
+
+    if not hasattr(subprocess, "CREATE_NO_WINDOW"):
+        return  # very old Python — skip silently
+    original_init = subprocess.Popen.__init__
+
+    def patched_init(self, *args, **kwargs):
+        kwargs["creationflags"] = (
+            kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+        )
+        return original_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = patched_init
+
+
+_hide_windows_console_flashes()
+
+
 _LOG_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | "
     "<level>{message}</level>"
