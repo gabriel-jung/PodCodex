@@ -31,7 +31,7 @@ def data_dir() -> Path:
     """Return the user-scoped app data directory, creating it if needed.
 
     Resolution order:
-        1. ``$PODCODEX_APP_DATA_DIR`` if set (Tauri shell injects this).
+        1. ``$PODCODEX_DATA_DIR`` if set (Tauri shell injects this).
         2. ``$XDG_DATA_HOME/<bundle-id>`` on Linux.
         3. ``~/Library/Application Support/<bundle-id>`` on macOS.
         4. ``%APPDATA%\\<bundle-id>`` on Windows.
@@ -41,7 +41,7 @@ def data_dir() -> Path:
     (`backends/gpu/`) and by Tauri for log output. Matches the path table
     in `deploy/BUILD.md`.
     """
-    override = os.environ.get("PODCODEX_APP_DATA_DIR")
+    override = os.environ.get("PODCODEX_DATA_DIR")
     if override:
         base = Path(override)
     elif sys.platform == "darwin":

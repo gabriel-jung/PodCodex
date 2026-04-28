@@ -3,7 +3,9 @@
 Runs uvicorn with the FastAPI app object directly (no string import path,
 so the frozen binary doesn't need importlib magic). Sets ML cache env
 vars from ``PODCODEX_DATA_DIR`` *before* any torch/transformers import,
-which the route modules pull in transitively.
+which the route modules pull in transitively. Then calls
+``bootstrap_for_bundled_sidecar`` to install platform monkey-patches and
+configure loguru.
 
 This module is intentionally a no-op for the standard dev workflow:
 
@@ -125,7 +127,14 @@ def main() -> None:
     _redirect_stdio_to_logfile()
     _wire_native_binaries()
 
-    # Imports happen after env wiring so torch/transformers see the right caches.
+    # bootstrap installs platform monkey-patches and configures loguru.
+    # Must run before importing app (which transitively imports torch,
+    # transformers, FlagEmbedding — any of which can trip on the patches'
+    # absence).
+    from podcodex.bootstrap import bootstrap_for_bundled_sidecar
+
+    bootstrap_for_bundled_sidecar()
+
     import uvicorn
 
     from podcodex.api.app import app
@@ -158,50 +167,29 @@ def _handle_version_flag() -> None:
         sys.exit(0)
 
 
-def _default_data_dir() -> str | None:
-    """Resolve the platform-native app data dir without importing podcodex.
-
-    Inline copy of ``podcodex.core.app_paths.data_dir()`` so the env vars
-    set by ``_handle_mcp_flag`` land before the first podcodex import (which
-    triggers ``__init__.py``'s logging setup).
-    """
-    bundle_id = "com.podcodex.desktop"
-    if sys.platform == "darwin":
-        return str(Path.home() / "Library" / "Application Support" / bundle_id)
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA")
-        return str(Path(appdata) / bundle_id) if appdata else None
-    xdg = os.environ.get("XDG_DATA_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return str(base / bundle_id)
-
-
 def _handle_mcp_flag() -> None:
     """Run the MCP stdio server instead of uvicorn.
 
-    Invoked when Claude Desktop spawns ``podcodex-server.exe --mcp`` as a
-    child process. JSON-RPC flows over the child's real stdin/stdout, so we
-    must NOT call ``_redirect_stdio_to_logfile`` here — FastMCP's stdio
-    transport reads/writes those pipes directly. Logs go to stderr, which
-    Claude Desktop captures and surfaces in its log viewer.
+    Invoked when Claude Desktop spawns ``podcodex-server.exe --mcp``.
+    JSON-RPC flows over the child's real stdin/stdout, so we deliberately
+    do NOT call ``_redirect_stdio_to_logfile`` — FastMCP's stdio transport
+    reads/writes those pipes directly. Logs go to stderr, captured by
+    Claude Desktop and surfaced in its log viewer.
 
-    Sets ``PODCODEX_MCP_MODE`` so ``podcodex/__init__.py`` skips the file
-    sink and the stdout/stderr-None patching path. Auto-resolves
-    ``PODCODEX_DATA_DIR`` so the MCP process shares the GUI app's
-    ``models/`` and LanceDB index.
+    Auto-resolves ``PODCODEX_DATA_DIR`` so the MCP process shares the
+    GUI app's ``models/`` and LanceDB index.
     """
     if "--mcp" not in sys.argv[1:]:
         return
 
-    os.environ["PODCODEX_MCP_MODE"] = "1"
     if not os.environ.get("PODCODEX_DATA_DIR"):
-        resolved = _default_data_dir()
-        if resolved:
-            os.environ["PODCODEX_DATA_DIR"] = resolved
-    if os.environ.get("PODCODEX_DATA_DIR") and not os.environ.get(
-        "PODCODEX_APP_DATA_DIR"
-    ):
-        os.environ["PODCODEX_APP_DATA_DIR"] = os.environ["PODCODEX_DATA_DIR"]
+        # app_paths.data_dir() resolves to the platform-native appdata
+        # location matching what Tauri's app_data_dir() picks. Importing
+        # it triggers podcodex/__init__.py, which is now passive — no
+        # side effects, so this is safe to do before bootstrap runs.
+        from podcodex.core.app_paths import data_dir
+
+        os.environ["PODCODEX_DATA_DIR"] = str(data_dir())
     # Anything writing to stdout corrupts JSON-RPC. tqdm/HF progress bars
     # are the usual offenders during model load — silence them. Libraries
     # that ignore the env still go to stdout, but cached embedder loads
@@ -211,6 +199,10 @@ def _handle_mcp_flag() -> None:
 
     _wire_ml_caches()
     _wire_native_binaries()
+
+    from podcodex.bootstrap import bootstrap_for_mcp_stdio
+
+    bootstrap_for_mcp_stdio()
 
     from podcodex.mcp.server import main as mcp_main
 

@@ -530,7 +530,18 @@ def speaker_stats(show: str | None = None) -> list[dict]:
 
 
 def main() -> None:
-    """Run the MCP server over stdio."""
+    """Run the MCP server over stdio.
+
+    Used both by the dev ``podcodex-mcp`` console-script and by the
+    bundled binary's ``--mcp`` flag. The bundled path goes through
+    ``podcodex.api.server._handle_mcp_flag`` which has already wired
+    caches and called ``bootstrap_for_mcp_stdio``; the dev path has
+    not, so bootstrap here is idempotent for the bundled case (loguru
+    sinks are reset before re-adding) and necessary for the dev case.
+    """
+    from podcodex.bootstrap import bootstrap_for_mcp_stdio
+
+    bootstrap_for_mcp_stdio()
     logger.info("podcodex-mcp starting (stdio)")
     # Force embedder load now so a broken install / missing weights surface at
     # startup rather than on the first tool call.

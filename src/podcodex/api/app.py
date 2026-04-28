@@ -196,6 +196,9 @@ app.state.api_port = _API_PORT
 
 def main() -> None:
     """Entry point for ``podcodex-api`` script."""
+    from podcodex.bootstrap import bootstrap_for_dev
+
+    bootstrap_for_dev()
     uvicorn.run(
         "podcodex.api.app:app",
         host="127.0.0.1",

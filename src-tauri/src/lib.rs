@@ -125,12 +125,6 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         cmd.current_dir(dir);
     }
     cmd.env("PODCODEX_DATA_DIR", &data_dir)
-        // PODCODEX_APP_DATA_DIR is read by podcodex.core.app_paths.data_dir()
-        // and disambiguates which dir the GPU backend service installs into.
-        // Without it, OS conventions are used (~/Library/Application Support/...
-        // on macOS, %APPDATA%\... on Windows, etc.) — matching is needed so
-        // the launcher and the sidecar agree on the install location.
-        .env("PODCODEX_APP_DATA_DIR", &data_dir)
         .env("PODCODEX_API_PORT", API_PORT.to_string())
         // HF_HUB_CACHE is the canonical env var huggingface_hub respects for
         // its model cache. We don't set HF_HOME — that would tell HF Hub to

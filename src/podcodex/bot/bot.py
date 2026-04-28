@@ -2199,8 +2199,9 @@ def _manage_passwords_cli(index_path: str | None) -> None:
 
 
 def main() -> None:
-    logger.remove()
-    logger.add(sys.stderr, level="DEBUG")
+    from podcodex.bootstrap import bootstrap_for_dev
+
+    bootstrap_for_dev()
 
     from dotenv import find_dotenv, load_dotenv
 
