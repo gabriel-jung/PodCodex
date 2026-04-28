@@ -16,9 +16,11 @@ Tools:
     - ``speaker_stats``  — aggregate chunk counts / airtime per speaker.
 
 Environment:
-    PODCODEX_INDEX — path to the LanceDB directory (defaults to
-                     ``~/.local/share/podcodex/index``). Shared with the
-                     desktop app and Discord bot.
+    PODCODEX_INDEX — path to the LanceDB directory. Default is
+                     ``<data_dir>/index`` (alongside models and logs);
+                     a legacy ``~/.local/share/podcodex/index`` is read
+                     if it has data, for backwards compat. Shared with
+                     the desktop app and Discord bot.
 """
 
 from __future__ import annotations

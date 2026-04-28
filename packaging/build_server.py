@@ -264,7 +264,9 @@ def _pip_install_torch(index_url: str) -> None:
             "uv",
             "pip",
             "install",
-            "torch",
+            # Pin floor to match pyproject.toml so the CPU swap can't regress
+            # below the version transformers' or_mask_function path needs.
+            "torch>=2.6",
             "torchvision",
             "torchaudio",
             "--index-url",

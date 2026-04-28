@@ -207,8 +207,20 @@ def _approx_substring(
     return (best_d, prev_start[end], end)
 
 
-_HOME_INDEX_PATH: Path = Path.home() / ".local" / "share" / "podcodex" / "index"
+# Legacy XDG-style location (Linux convention). Kept as a fallback so users
+# who indexed under older PodCodex versions don't lose their data — but new
+# installs land under ``app_paths.data_dir() / "index"`` alongside models,
+# logs, and the GPU backend.
+_LEGACY_HOME_INDEX_PATH: Path = (
+    Path.home() / ".local" / "share" / "podcodex" / "index"
+)
 _REPO_FALLBACKS: tuple[Path, ...] = (Path("deploy") / "index", Path("index"))
+
+
+def _canonical_index_path() -> Path:
+    from podcodex.core.app_paths import data_dir
+
+    return data_dir() / "index"
 
 
 def _dir_has_data(path: Path) -> bool:
@@ -223,23 +235,30 @@ def _resolve_default_index_path() -> tuple[Path, str]:
     """Pick the default index path when no explicit one is passed.
 
     Resolution order:
-      1. ``PODCODEX_INDEX`` env var (explicit override)
-      2. ``~/.local/share/podcodex/index`` if populated (desktop app default)
-      3. ``./deploy/index`` or ``./index`` (repo-local fallback, if populated)
-      4. ``~/.local/share/podcodex/index`` (created empty)
+      1. ``PODCODEX_INDEX`` env var (explicit override).
+      2. ``<data_dir>/index`` if populated — canonical new location, lives
+         under the same app-data root as models/logs/GPU backend.
+      3. ``~/.local/share/podcodex/index`` if populated — legacy path from
+         pre-Phase-M installs. Returned as-is so we don't move data behind
+         the user's back; they can migrate when they want.
+      4. ``./deploy/index`` or ``./index`` (repo-local fallback, if populated).
+      5. ``<data_dir>/index`` (created empty).
 
     Returns ``(path, reason)`` for logging.
     """
     override = os.environ.get("PODCODEX_INDEX", "").strip()
     if override:
         return Path(override), "PODCODEX_INDEX env"
-    if _dir_has_data(_HOME_INDEX_PATH):
-        return _HOME_INDEX_PATH, "home default"
+    canonical = _canonical_index_path()
+    if _dir_has_data(canonical):
+        return canonical, "data dir"
+    if _dir_has_data(_LEGACY_HOME_INDEX_PATH):
+        return _LEGACY_HOME_INDEX_PATH, "legacy ~/.local/share fallback"
     for candidate in _REPO_FALLBACKS:
         resolved = candidate.resolve()
         if _dir_has_data(resolved):
             return resolved, f"repo-local fallback ({candidate})"
-    return _HOME_INDEX_PATH, "home default (new, empty)"
+    return canonical, "data dir (new, empty)"
 
 
 def _chunk_schema(dim: int) -> pa.Schema:
@@ -1727,8 +1746,9 @@ def _row_to_chunk(row: dict) -> dict:
 def get_index_store() -> IndexStore:
     """Process-wide cached IndexStore using the default path resolution.
 
-    Respects ``PODCODEX_INDEX`` env var, then ``~/.local/share/podcodex/index``,
-    then repo-local fallbacks. Callers that need a different path should
-    instantiate ``IndexStore(custom_path)`` directly.
+    Path resolution lives in ``_resolve_default_index_path`` — env var,
+    canonical ``<data_dir>/index``, legacy XDG fallback, repo-local. Callers
+    that need a different path should instantiate ``IndexStore(custom_path)``
+    directly.
     """
     return IndexStore()
