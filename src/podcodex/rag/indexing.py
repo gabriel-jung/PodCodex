@@ -136,11 +136,13 @@ def vectorize_batch(
         on_progress : callback ``(step, total, label)`` for UI progress updates.
 
     Returns:
-        Total number of chunks upserted across all combinations.
+        Total number of chunks present in the index across all combinations
+        — counts both newly upserted and cache-hit chunks. 0 only when
+        nothing landed in any collection (every combination failed).
     """
     total = len(model_keys) * len(chunkings)
     step = 0
-    total_upserted = 0
+    total_processed = 0
 
     for chunking in chunkings:
         chunks_for_strategy: list[dict] | None = None
@@ -164,7 +166,12 @@ def vectorize_batch(
                     overwrite=overwrite,
                     device=device,
                 )
-                total_upserted += n
+                # Count cache hits (n == 0 with chunks present) as processed,
+                # so index_job can distinguish "all cached" from "real 0".
+                if n > 0:
+                    total_processed += n
+                elif chunks_for_strategy:
+                    total_processed += len(chunks_for_strategy)
             except ValueError as e:
                 logger.warning(str(e))
                 step += len(model_keys) - model_keys.index(model_key)
@@ -174,4 +181,4 @@ def vectorize_batch(
 
             step += 1
 
-    return total_upserted
+    return total_processed
