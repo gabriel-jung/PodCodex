@@ -1,9 +1,17 @@
 """Integrations — toggles that expose PodCodex to external desktop apps.
 
 Currently just Claude Desktop. The toggle writes (or removes) a stdio
-``mcpServers.podcodex`` entry pointing at ``.venv/bin/podcodex-mcp`` in
-``claude_desktop_config.json`` and preserves every other key. Claude
-Desktop spawns the binary as a subprocess on startup.
+``mcpServers.podcodex`` entry in ``claude_desktop_config.json`` and
+preserves every other key. The entry shape depends on whether we're in
+a bundled install or a dev checkout:
+
+  Bundled (frozen):  ``podcodex-server[.exe] --mcp`` — the MSI/DMG ships
+                     a single binary that doubles as the FastAPI sidecar
+                     and the MCP stdio host.
+  Dev (.venv):       ``podcodex-mcp[.exe]`` — the dedicated console-script.
+  WSL:               ``wsl.exe -d <distro> -e <linux podcodex-mcp>`` —
+                     Claude Desktop runs on Windows; the binary is in
+                     the WSL filesystem.
 
 (The API backend also mounts an HTTP MCP endpoint at ``/mcp`` for
 Claude Code and other MCP clients that support HTTP transport. Claude
@@ -158,12 +166,14 @@ def _read_config(path: Path) -> dict:
 
 
 def _podcodex_mcp_path() -> str:
-    """Resolve the ``podcodex-mcp`` stdio binary's absolute path.
+    """Resolve the ``podcodex-mcp`` stdio binary's absolute path (dev path).
 
     Tries PATH first (covers `make dev` where the venv is on PATH), then
-    falls back to the directory of the running Python interpreter — that
-    is the venv's ``bin``/``Scripts`` folder when the API itself runs
-    inside it, which is the common case.
+    falls back to the directory of the running Python interpreter — the
+    venv's ``bin``/``Scripts`` folder when the API runs inside it.
+
+    Not used in bundled mode: the MSI/DMG ships ``podcodex-server`` and
+    invokes its ``--mcp`` flag instead — see ``_bundled_server_path``.
     """
     found = shutil.which(_BIN_NAME)
     if found:
@@ -171,6 +181,11 @@ def _podcodex_mcp_path() -> str:
     suffix = ".exe" if platform.system() == "Windows" else ""
     fallback = Path(sys.executable).parent / f"{_BIN_NAME}{suffix}"
     return str(fallback.resolve())
+
+
+def _bundled_server_path() -> str:
+    """Path to the bundled ``podcodex-server`` exe — the ``--mcp`` host."""
+    return str(Path(sys.executable).resolve())
 
 
 def _entry() -> dict:
@@ -182,12 +197,17 @@ def _entry() -> dict:
     spawn it as a subprocess (the HTTP endpoint on the API backend is
     for other clients like Claude Code).
 
-    Under WSL the stdio binary is Linux-ELF and unreachable to a
-    Windows-hosted Claude Desktop, so we wrap it with ``wsl.exe`` and
-    pin the distro when ``WSL_DISTRO_NAME`` is known. Claude spawns
-    ``wsl.exe``, which in turn launches the Linux binary inside the
-    correct distro.
+    Bundled installs use ``podcodex-server --mcp`` because the MSI ships
+    a single binary that switches modes by flag; dev installs use the
+    dedicated ``podcodex-mcp`` console-script. Under WSL the binary is
+    Linux-ELF and unreachable to a Windows-hosted Claude Desktop, so we
+    wrap it with ``wsl.exe`` and pin the distro when ``WSL_DISTRO_NAME``
+    is known.
     """
+    from podcodex.core.app_paths import running_in_bundle
+
+    if running_in_bundle():
+        return {"command": _bundled_server_path(), "args": ["--mcp"]}
     if _is_wsl():
         args: list[str] = []
         distro = os.environ.get("WSL_DISTRO_NAME")
@@ -199,19 +219,32 @@ def _entry() -> dict:
 
 
 def _is_enabled(cfg: dict) -> bool:
-    """True if the config has a podcodex stdio entry pointing at our binary.
+    """True iff the config has a podcodex entry that matches a known shape.
 
-    Accepts both the direct-binary shape (macOS/Linux/Windows) and the
-    ``wsl.exe``-wrapped shape written when the API runs inside WSL.
+    Three accepted shapes:
+      - Bundled: ``{command: ".../podcodex-server[.exe]", args: ["--mcp"]}``
+      - Dev:     ``{command: ".../podcodex-mcp[.exe]"}``
+      - WSL:     ``{command: "wsl.exe", args: [..., ".../podcodex-mcp"]}``
+
+    Stale entries from older PodCodex versions (bundled install pointing
+    at non-existent ``podcodex-mcp.exe``) are NOT recognized — the UI
+    will show "Disabled" so a single click of Enable rewrites the entry
+    in the correct shape.
     """
     entry = (cfg.get("mcpServers") or {}).get(_SERVER_KEY)
     if not isinstance(entry, dict):
         return False
     command = str(entry.get("command", ""))
+    args = entry.get("args") or []
+
+    server_command_match = command.endswith("podcodex-server") or command.endswith(
+        "podcodex-server.exe"
+    )
+    if server_command_match and any(a == "--mcp" for a in args if isinstance(a, str)):
+        return True
     if command.endswith(_BIN_NAME) or command.endswith(f"{_BIN_NAME}.exe"):
         return True
     if command == _WSL_LAUNCHER or command.endswith(f"\\{_WSL_LAUNCHER}"):
-        args = entry.get("args") or []
         return any(isinstance(a, str) and a.endswith(_BIN_NAME) for a in args)
     return False
 
@@ -229,6 +262,8 @@ class ClaudeDesktopStatus(BaseModel):
 
 
 def _status(request: Request) -> ClaudeDesktopStatus:
+    from podcodex.core.app_paths import running_in_bundle
+
     config_path = _claude_config_path()
     mcp_available = bool(getattr(request.app.state, "mcp_available", False))
     try:
@@ -237,10 +272,14 @@ def _status(request: Request) -> ClaudeDesktopStatus:
         # Report status without failing the GET — surface the parse error to UI.
         logger.warning(f"integrations: config parse error: {exc.detail}")
         cfg = {}
+    if running_in_bundle():
+        command_path = f"{_bundled_server_path()} --mcp"
+    else:
+        command_path = _podcodex_mcp_path()
     return ClaudeDesktopStatus(
         enabled=_is_enabled(cfg) if mcp_available else False,
         config_path=str(config_path),
-        command_path=_podcodex_mcp_path(),
+        command_path=command_path,
         claude_desktop_installed=_claude_installed(config_path),
         mcp_available=mcp_available,
         needs_restart_hint=(
