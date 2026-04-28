@@ -231,10 +231,30 @@ def _install_transformers_torch_check_patch() -> None:
             ):
                 if hasattr(_mu, attr):
                     setattr(_mu, attr, _v.parse(base) >= _v.parse(threshold))
+
+            # The bools above only gate fresh evaluations; ``sdpa_mask`` and
+            # ``AttentionMaskInterface._global_mapping["sdpa"]`` were both
+            # bound at module-import time (lines 472 and 624 of masking_utils)
+            # and pin the function by reference. If masking_utils loaded with
+            # the bool=False (e.g. metadata bug racing this patch), the
+            # registry is stuck on the vmap-based ``sdpa_mask_older_torch``,
+            # which crashes on Pplx's ``or_masks`` mask function. Rebind the
+            # registry directly to the recent variant.
+            ge_26 = _v.parse(base) >= _v.parse("2.6")
+            rebind = "skipped"
+            if ge_26 and hasattr(_mu, "sdpa_mask_recent_torch"):
+                _mu.sdpa_mask = _mu.sdpa_mask_recent_torch
+                if hasattr(_mu, "AttentionMaskInterface"):
+                    _mu.AttentionMaskInterface._global_mapping["sdpa"] = (
+                        _mu.sdpa_mask_recent_torch
+                    )
+                rebind = "recent"
             logger.info(
-                "transformers torch-check patch applied (torch={}, ge_2_6={})",
+                "transformers torch-check patch applied "
+                "(torch={}, ge_2_6={}, sdpa_rebind={})",
                 base,
                 getattr(_mu, "_is_torch_greater_or_equal_than_2_6", "?"),
+                rebind,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("transformers masking_utils override failed: {!r}", exc)
