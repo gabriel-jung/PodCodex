@@ -1,8 +1,9 @@
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
+use command_group::{CommandGroup, GroupChild};
 use tauri::{Manager, RunEvent};
 
 const API_PORT: u16 = 18811;
@@ -23,7 +24,7 @@ const GPU_SIDECAR_NAME: &str = "podcodex-server-gpu";
 const GPU_ACTIVATED_MARKER: &str = "activated";
 const GPU_MANIFEST_FILE: &str = "cuda-libs.json";
 
-struct BackendProcess(Mutex<Option<Child>>);
+struct BackendProcess(Mutex<Option<GroupChild>>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -58,9 +59,11 @@ pub fn run() {
                 let state = app_handle.state::<BackendProcess>();
                 let child = state.0.lock().unwrap().take();
                 if let Some(mut child) = child {
-                    log::info!("Killing backend sidecar (pid={})", child.id());
+                    // GroupChild::kill terminates the entire job/process group,
+                    // so multiprocessing workers die with the parent.
+                    log::info!("Killing backend process group (pid={})", child.id());
                     if let Err(e) = child.kill() {
-                        log::error!("Failed to kill backend sidecar: {e}");
+                        log::error!("Failed to kill backend process group: {e}");
                     }
                 }
             }
@@ -89,7 +92,11 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
     // two paths are interchangeable from FastAPI's perspective — both expose
     // the same /api/* surface — but the GPU build has CUDA torch + cuDNN
     // bundled for hardware-accelerated transcription.
-    let app_version = app.config().version.clone().unwrap_or_default();
+    //
+    // Read from package_info (Cargo.toml-baked) rather than config (tauri.conf.json),
+    // because we deliberately omit `version` from tauri.conf.json so it derives from
+    // Cargo.toml — config().version is None at runtime in that setup.
+    let app_version = app.package_info().version.to_string();
     let (server_exe, gpu_install_dir, backend_label) =
         match locate_gpu_sidecar(&data_dir, &app_version) {
             Some((binary, install_dir)) => (binary, Some(install_dir), "GPU"),
@@ -150,21 +157,26 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         cmd.env("YT_DLP_BINARY", ytdlp);
     }
 
+    // group_spawn wraps the child in a Windows Job Object (with
+    // KILL_ON_JOB_CLOSE) or a Unix process group. Without this, multiprocessing
+    // workers (torch DataLoader, whisperx, pyannote) survive parent kill on
+    // app exit and accumulate as orphaned podcodex-server.exe processes.
     let mut child = cmd
-        .spawn()
+        .group_spawn()
         .map_err(|e| format!("backend spawn failed: {e}"))?;
 
     // Drain stdout/stderr on plain OS threads so we don't depend on a Tokio
     // reactor (Tauri's setup hook runs sync, before the runtime exists; using
     // tokio::process here panics with "no reactor running").
-    if let Some(stdout) = child.stdout.take() {
+    let inner = child.inner();
+    if let Some(stdout) = inner.stdout.take() {
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 log::info!("[backend] {}", line);
             }
         });
     }
-    if let Some(stderr) = child.stderr.take() {
+    if let Some(stderr) = inner.stderr.take() {
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 log::warn!("[backend] {}", line);
