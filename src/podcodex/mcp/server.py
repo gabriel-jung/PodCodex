@@ -17,10 +17,8 @@ Tools:
 
 Environment:
     PODCODEX_INDEX — path to the LanceDB directory. Default is
-                     ``<data_dir>/index`` (alongside models and logs);
-                     a legacy ``~/.local/share/podcodex/index`` is read
-                     if it has data, for backwards compat. Shared with
-                     the desktop app and Discord bot.
+                     ``<data_dir>/index`` (alongside models and logs).
+                     Shared with the desktop app and Discord bot.
 """
 
 from __future__ import annotations

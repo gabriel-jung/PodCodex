@@ -79,18 +79,12 @@ def run_startup_recovery() -> None:
             if p.is_dir():
                 roots.append(p)
 
-    # Also sweep the LanceDB index dir(s). Two candidates: the canonical
-    # location under <data_dir>/index (where new installs land) and the
-    # legacy ~/.local/share/podcodex/index path (where pre-Phase-M installs
-    # still live until the user migrates).
+    # Also sweep the LanceDB index dir under <data_dir>/index.
     from podcodex.core.app_paths import data_dir
 
-    for candidate in (
-        data_dir() / "index",
-        Path.home() / ".local" / "share" / "podcodex" / "index",
-    ):
-        if candidate.is_dir() and candidate not in roots:
-            roots.append(candidate)
+    candidate = data_dir() / "index"
+    if candidate.is_dir() and candidate not in roots:
+        roots.append(candidate)
     env_index = os.environ.get("PODCODEX_INDEX")
     if env_index:
         p = Path(env_index)

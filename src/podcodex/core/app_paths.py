@@ -14,7 +14,18 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
+# OS-level bundle identifier for the desktop app (Tauri code-signing,
+# URI handlers, etc.) — kept at reverse-DNS form, defined in
+# src-tauri/tauri.conf.json. Distinct from the data-dir folder name
+# below, which is just a directory label.
 APP_BUNDLE_ID = "com.podcodex.desktop"
+
+# Directory name used under each platform's app-data root. Mirrors
+# config_dir()'s use of ``podcodex`` so config and data are symmetric,
+# and matches what the bot/CLI/MCP server expect when sharing the index.
+# Tauri's Rust shell builds the same path manually before injecting it
+# via PODCODEX_DATA_DIR — keep the two in sync.
+APP_DATA_DIRNAME = "podcodex"
 
 
 @lru_cache(maxsize=1)
@@ -32,10 +43,10 @@ def data_dir() -> Path:
 
     Resolution order:
         1. ``$PODCODEX_DATA_DIR`` if set (Tauri shell injects this).
-        2. ``$XDG_DATA_HOME/<bundle-id>`` on Linux.
-        3. ``~/Library/Application Support/<bundle-id>`` on macOS.
-        4. ``%APPDATA%\\<bundle-id>`` on Windows.
-        5. ``~/.local/share/<bundle-id>`` as final fallback.
+        2. ``$XDG_DATA_HOME/podcodex`` on Linux.
+        3. ``~/Library/Application Support/podcodex`` on macOS.
+        4. ``%APPDATA%\\podcodex`` on Windows.
+        5. ``~/.local/share/podcodex`` as final fallback.
 
     Used by the GPU backend service for the optional CUDA install
     (`backends/gpu/`) and by Tauri for log output. Matches the path table
@@ -45,16 +56,18 @@ def data_dir() -> Path:
     if override:
         base = Path(override)
     elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support" / APP_BUNDLE_ID
+        base = Path.home() / "Library" / "Application Support" / APP_DATA_DIRNAME
     elif sys.platform == "win32":
         appdata = os.environ.get("APPDATA")
-        base = Path(appdata) / APP_BUNDLE_ID if appdata else Path.home() / APP_BUNDLE_ID
+        base = (
+            Path(appdata) / APP_DATA_DIRNAME if appdata else Path.home() / APP_DATA_DIRNAME
+        )
     else:
         xdg = os.environ.get("XDG_DATA_HOME")
         base = (
-            Path(xdg) / APP_BUNDLE_ID
+            Path(xdg) / APP_DATA_DIRNAME
             if xdg
-            else Path.home() / ".local" / "share" / APP_BUNDLE_ID
+            else Path.home() / ".local" / "share" / APP_DATA_DIRNAME
         )
     base.mkdir(parents=True, exist_ok=True)
     return base

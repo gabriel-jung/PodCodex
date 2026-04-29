@@ -9,6 +9,51 @@ use tauri::{Manager, RunEvent};
 const API_PORT: u16 = 18811;
 const HEALTH_TIMEOUT_SECS: u64 = 180;
 
+/// Directory name under each platform's app-data root. Mirrors
+/// ``APP_DATA_DIRNAME`` in src/podcodex/core/app_paths.py — the Rust
+/// shell injects this path via ``PODCODEX_DATA_DIR`` and the Python
+/// sidecar must compute the same path when run standalone (dev mode,
+/// bot, MCP), so they have to stay in sync.
+const APP_DATA_DIRNAME: &str = "podcodex";
+
+/// Compute the platform-native app-data root joined with
+/// ``APP_DATA_DIRNAME``. Deliberately bypasses Tauri's ``app_data_dir``
+/// (which uses the reverse-DNS bundle identifier) so config/data folders
+/// share the same simple name across the desktop app, dev mode, and the
+/// bot/CLI/MCP entry points.
+fn compute_data_dir() -> Result<PathBuf, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME").ok_or("HOME not set")?;
+        Ok(PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join(APP_DATA_DIRNAME))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let base: PathBuf = match std::env::var_os("APPDATA") {
+            Some(v) => PathBuf::from(v),
+            None => {
+                let home = std::env::var_os("USERPROFILE").ok_or("USERPROFILE not set")?;
+                PathBuf::from(home)
+            }
+        };
+        Ok(base.join(APP_DATA_DIRNAME))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let base = match std::env::var_os("XDG_DATA_HOME") {
+            Some(v) => PathBuf::from(v),
+            None => {
+                let home = std::env::var_os("HOME").ok_or("HOME not set")?;
+                PathBuf::from(home).join(".local").join("share")
+            }
+        };
+        Ok(base.join(APP_DATA_DIRNAME))
+    }
+}
+
 /// Tauri externalBin sidecar basename. Project tree carries
 /// ``src-tauri/binaries/podcodex-server-<triple>``; the bundler strips the
 /// triple suffix when copying into the .app, leaving a bare ``podcodex-server``
@@ -91,10 +136,7 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         return Ok(());
     }
 
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("cannot resolve app_data_dir: {e}"))?;
+    let data_dir = compute_data_dir()?;
     std::fs::create_dir_all(&data_dir)?;
 
     // Prefer the user-installed GPU sidecar if present, activated, and

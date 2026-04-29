@@ -21,10 +21,10 @@ def get_cache_dir() -> Path:
     """Return (and create) the PodCodex model cache directory.
 
     The bundled sidecar inherits ``PODCODEX_DATA_DIR`` from the Tauri
-    shell pointing at the OS-native app data dir
-    (``%APPDATA%\\com.podcodex.desktop`` on Windows). Without this fall-
-    through, models would land under ``~/.podcodex/`` even though Tauri
-    set ``HF_HOME`` to ``<data_dir>/models/huggingface`` — split-brain
+    shell pointing at the OS-native app data dir (e.g.
+    ``%APPDATA%\\podcodex`` on Windows). Without this fall-through,
+    models would land under ``~/.podcodex/`` even though Tauri set
+    ``HF_HOME`` to ``<data_dir>/models/huggingface`` — split-brain
     cache where HF Hub and our code disagree on where models live.
     """
     explicit = os.environ.get("PODCODEX_CACHE_DIR", "").strip()

@@ -207,13 +207,6 @@ def _approx_substring(
     return (best_d, prev_start[end], end)
 
 
-# Legacy XDG-style location (Linux convention). Kept as a fallback so users
-# who indexed under older PodCodex versions don't lose their data — but new
-# installs land under ``app_paths.data_dir() / "index"`` alongside models,
-# logs, and the GPU backend.
-_LEGACY_HOME_INDEX_PATH: Path = (
-    Path.home() / ".local" / "share" / "podcodex" / "index"
-)
 _REPO_FALLBACKS: tuple[Path, ...] = (Path("deploy") / "index", Path("index"))
 
 
@@ -236,13 +229,10 @@ def _resolve_default_index_path() -> tuple[Path, str]:
 
     Resolution order:
       1. ``PODCODEX_INDEX`` env var (explicit override).
-      2. ``<data_dir>/index`` if populated — canonical new location, lives
+      2. ``<data_dir>/index`` if populated — canonical location, lives
          under the same app-data root as models/logs/GPU backend.
-      3. ``~/.local/share/podcodex/index`` if populated — legacy path from
-         pre-Phase-M installs. Returned as-is so we don't move data behind
-         the user's back; they can migrate when they want.
-      4. ``./deploy/index`` or ``./index`` (repo-local fallback, if populated).
-      5. ``<data_dir>/index`` (created empty).
+      3. ``./deploy/index`` or ``./index`` (repo-local fallback, if populated).
+      4. ``<data_dir>/index`` (created empty).
 
     Returns ``(path, reason)`` for logging.
     """
@@ -252,8 +242,6 @@ def _resolve_default_index_path() -> tuple[Path, str]:
     canonical = _canonical_index_path()
     if _dir_has_data(canonical):
         return canonical, "data dir"
-    if _dir_has_data(_LEGACY_HOME_INDEX_PATH):
-        return _LEGACY_HOME_INDEX_PATH, "legacy ~/.local/share fallback"
     for candidate in _REPO_FALLBACKS:
         resolved = candidate.resolve()
         if _dir_has_data(resolved):

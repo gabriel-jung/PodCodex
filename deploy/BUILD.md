@@ -186,8 +186,8 @@ The bundled sidecar logs to `<app_data>/logs/server.log`:
 
 | OS      | `<app_data>` path                                        |
 |---------|----------------------------------------------------------|
-| macOS   | `~/Library/Application Support/com.podcodex.desktop/`    |
-| Windows | `%APPDATA%\com.podcodex.desktop\`                        |
+| macOS   | `~/Library/Application Support/podcodex/`    |
+| Windows | `%APPDATA%\podcodex\`                        |
 
 ---
 

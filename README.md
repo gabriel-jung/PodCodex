@@ -118,7 +118,7 @@ macOS outputs:
 `src-tauri/target/release/bundle/macos/PodCodex.app` (~497 MB) and
 `src-tauri/target/release/bundle/dmg/PodCodex_<version>_<arch>.dmg`
 (~459 MB). ML weights download on first use to
-`~/Library/Application Support/com.podcodex.desktop/models/`.
+`~/Library/Application Support/podcodex/models/`.
 
 Shipped installer is CPU-only; an optional CUDA backend is downloaded
 in-app on NVIDIA hosts — see [Phase M](ROADMAP.md#phase-m--standalone-distribution-v010).
@@ -236,7 +236,7 @@ Full guide (manual stdio config, Claude Code registration, prompts, troubleshoot
 - **MCP** (`src/podcodex/mcp/`) — stdio + HTTP MCP server exposing `search` / `exact` / `list_shows` / `get_context` plus user-editable prompts.
 - **Tauri** (`src-tauri/`) — thin Rust shell, auto-spawns backend, native file dialogs.
 
-Every pipeline save (transcribe, correct, translate, manual edit) is archived as a **version** under `.versions/{step}/` with full provenance (model, params, content hash). Episode status is tracked in a per-show `pipeline.db` SQLite. All embeddings live in a single LanceDB index (`~/.local/share/podcodex/index` by default). Collection names follow `{show}__{model}__{chunker}`.
+Every pipeline save (transcribe, correct, translate, manual edit) is archived as a **version** under `.versions/{step}/` with full provenance (model, params, content hash). Episode status is tracked in a per-show `pipeline.db` SQLite. All embeddings live in a single LanceDB index under the platform's app-data directory (`<data_dir>/index`; e.g. `~/.local/share/podcodex/index` on Linux, `%APPDATA%\podcodex\index` on Windows). Collection names follow `{show}__{model}__{chunker}`.
 
 ## Roadmap
 

@@ -2216,7 +2216,7 @@ def main() -> None:
     parser.add_argument(
         "--index",
         default=None,
-        help="Path to LanceDB index directory (default: ~/.local/share/podcodex/index)",
+        help="Path to LanceDB index directory (default: <data_dir>/index)",
     )
     parser.add_argument(
         "--merge-strategy", default="roundrobin", choices=["roundrobin", "score"]
