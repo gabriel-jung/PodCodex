@@ -52,6 +52,19 @@ def _wire_ml_caches() -> None:
         "SENTENCE_TRANSFORMERS_HOME", str(models_dir / "sentence-transformers")
     )
 
+    # Cap HF Hub network calls so a flaky uplink (VPN, captive portal,
+    # huggingface.co outage) can't stall a cached-model load past 10s. The
+    # default urllib3 read-timeout is unset, so a half-broken TCP can hang
+    # the whole pipeline at startup.
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "10")
+
+    # Hard offline opt-in: when the user knows every model is cached, this
+    # bypasses the etag round-trip entirely. Maps to both HF Hub and the
+    # transformers-side flag because the two libraries gate on different vars.
+    if os.environ.get("PODCODEX_HF_OFFLINE", "").strip() in {"1", "true", "yes"}:
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 
 def _redirect_stdio_to_logfile() -> None:
     """Replace stdout/stderr with a log file when running frozen.
