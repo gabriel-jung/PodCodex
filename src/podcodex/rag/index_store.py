@@ -1101,11 +1101,17 @@ class IndexStore:
         if not self.collection_exists(collection):
             return []
         t = self._table(collection)
+        # ``metric="cosine"`` matters for unnormalized embedders (Perplexity's
+        # context model emits int8-quantized unnormalized vectors with
+        # norms ~500). LanceDB's default is L2, which would rank by
+        # magnitude rather than direction and break similarity. For
+        # pre-normalized embedders (E5, BGE) cosine and L2 produce
+        # identical rankings, so this is safe for everyone.
         q = t.search(
             query_vec.astype(np.float32).tolist(),
             query_type="vector",
             vector_column_name="vector",
-        )
+        ).metric("cosine")
         clause = _build_where(
             episode=episode,
             episodes=episodes,
@@ -1119,6 +1125,8 @@ class IndexStore:
         rows = q.limit(top_k).to_list()
         out: list[dict] = []
         for r in rows:
+            # LanceDB cosine distance is 1 - cosine_sim, so 1 - distance is
+            # the cosine similarity in [0, 1] (assuming non-negative dot).
             score = max(0.0, 1.0 - float(r.get("_distance", 1.0)))
             out.append({**_row_to_chunk(r), "score": score})
         return out
