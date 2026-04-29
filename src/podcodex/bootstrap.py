@@ -56,6 +56,7 @@ def bootstrap_for_bundled_sidecar() -> None:
     _install_all_patches()
     _setup_loguru_file_sink()
     _install_stdlib_intercept()
+    _log_hf_cache_state()
 
 
 def bootstrap_for_mcp_stdio() -> None:
@@ -355,6 +356,16 @@ def _setup_loguru_stderr_sink() -> None:
         logger.add(sys.stderr, format=_LOG_FORMAT, level="INFO")
     except Exception:  # noqa: BLE001
         pass
+
+
+def _log_hf_cache_state() -> None:
+    """Log the HuggingFace cache contents at startup for diagnostics."""
+    try:
+        from podcodex.core._hf_logging import log_cached_models
+
+        log_cached_models()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("hf-cache state log failed: {!r}", exc)
 
 
 def _install_stdlib_intercept() -> None:
