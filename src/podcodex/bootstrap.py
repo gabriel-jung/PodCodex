@@ -185,7 +185,7 @@ def _install_transformers_torch_check_patch() -> None:
     ``or_masks`` mask function (``RuntimeError: vmap`` on CPU,
     ``device-side assert`` on CUDA).
 
-    Three layers of defense, all cheap:
+    Four layers of defense, all cheap:
       1. Replace ``is_torch_greater_or_equal`` to read ``torch.__version__``
          directly — covers other transformers call sites we haven't hit yet.
       2. Force-load ``masking_utils`` and overwrite its cached bools, in
@@ -194,6 +194,12 @@ def _install_transformers_torch_check_patch() -> None:
          dispatch happens by reference at call time and was sealed at
          module import (lines 472 + 624 of masking_utils.py), so flipping
          the bool is not enough.
+      4. Inject ``TransformGetItemToIndex`` into ``masking_utils``'s
+         namespace. The module imports it conditionally at line 39-40,
+         guarded by the same broken ``_is_torch_greater_or_equal_than_2_6``
+         flag — when the gate misfired at import time the symbol was
+         never bound, and ``sdpa_mask_recent_torch``'s body resolves it
+         via free-variable lookup, raising ``NameError`` at call time.
     """
     try:
         from packaging import version as _v
@@ -223,6 +229,7 @@ def _install_transformers_torch_check_patch() -> None:
                 setattr(_mu, attr, _v.parse(base) >= _v.parse(threshold))
 
         rebind = "skipped"
+        tgi_inject = "skipped"
         if _v.parse(base) >= _v.parse("2.6") and hasattr(_mu, "sdpa_mask_recent_torch"):
             _mu.sdpa_mask = _mu.sdpa_mask_recent_torch
             if hasattr(_mu, "AttentionMaskInterface"):
@@ -230,13 +237,25 @@ def _install_transformers_torch_check_patch() -> None:
                     _mu.sdpa_mask_recent_torch
                 )
             rebind = "recent"
+            if not hasattr(_mu, "TransformGetItemToIndex"):
+                try:
+                    from torch._dynamo._trace_wrapped_higher_order_op import (
+                        TransformGetItemToIndex as _TGI,
+                    )
+                    _mu.TransformGetItemToIndex = _TGI
+                    tgi_inject = "ok"
+                except Exception as exc:  # noqa: BLE001
+                    tgi_inject = f"failed: {exc!r}"
+            else:
+                tgi_inject = "already-present"
 
         logger.info(
             "transformers torch-check patch applied "
-            "(torch={}, ge_2_6={}, sdpa_rebind={})",
+            "(torch={}, ge_2_6={}, sdpa_rebind={}, tgi_inject={})",
             base,
             getattr(_mu, "_is_torch_greater_or_equal_than_2_6", "?"),
             rebind,
+            tgi_inject,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("transformers torch-check patch failed: {!r}", exc)
