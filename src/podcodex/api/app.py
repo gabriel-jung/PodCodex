@@ -9,6 +9,9 @@ import os
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+import asyncio
+import signal
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -65,16 +68,60 @@ else:
     _mcp_import_error = None
 
 
+async def _watch_parent(parent_pid: int) -> None:
+    """Self-terminate when the Tauri shell dies abruptly.
+
+    The Rust shell injects ``PODCODEX_PARENT_PID`` and normally kills the
+    sidecar process group on ``RunEvent::Exit``. That callback doesn't fire
+    on SIGKILL / Force Quit / panic, so this poll is the fallback: every
+    2s, check the parent still exists; on disappearance, raise SIGTERM at
+    ourselves so uvicorn runs lifespan teardown.
+
+    Windows already gets KILL_ON_JOB_CLOSE via ``command_group``, so the
+    Rust shell skips setting the env on that platform path if desired —
+    this watcher is a no-op when the var is unset.
+    """
+    while True:
+        await asyncio.sleep(2.0)
+        try:
+            os.kill(parent_pid, 0)
+        except ProcessLookupError:
+            logger.warning(f"parent process {parent_pid} gone, shutting down sidecar")
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+        except PermissionError:
+            # Process exists but is owned by someone else — still alive.
+            pass
+
+
 def _make_lifespan(mcp_http):
     """Nest the mounted MCP sub-app's lifespan under FastAPI's."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        if mcp_http is not None:
-            async with mcp_http.router.lifespan_context(app):
+        watcher_task: asyncio.Task | None = None
+        parent_pid_raw = os.environ.get("PODCODEX_PARENT_PID", "").strip()
+        if parent_pid_raw and sys.platform != "win32":
+            try:
+                parent_pid = int(parent_pid_raw)
+            except ValueError:
+                parent_pid = 0
+            if parent_pid > 0:
+                watcher_task = asyncio.create_task(_watch_parent(parent_pid))
+
+        try:
+            if mcp_http is not None:
+                async with mcp_http.router.lifespan_context(app):
+                    yield
+            else:
                 yield
-        else:
-            yield
+        finally:
+            if watcher_task is not None:
+                watcher_task.cancel()
+                try:
+                    await watcher_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     return lifespan
 

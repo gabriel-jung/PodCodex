@@ -200,6 +200,11 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
     }
     cmd.env("PODCODEX_DATA_DIR", &data_dir)
         .env("PODCODEX_API_PORT", API_PORT.to_string())
+        // Sidecar polls this PID and self-terminates if the shell dies
+        // without firing RunEvent::Exit (Force Quit, panic, SIGKILL).
+        // Job Object kill on Windows already covers that case, so this
+        // is the macOS/Linux escape hatch.
+        .env("PODCODEX_PARENT_PID", std::process::id().to_string())
         // HF_HUB_CACHE is the canonical env var huggingface_hub respects for
         // its model cache. We don't set HF_HOME — that would tell HF Hub to
         // also look in <HF_HOME>/hub/, splitting the cache across two layouts
