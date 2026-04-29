@@ -31,6 +31,7 @@ import PanelLoading from "@/components/common/PanelLoading";
 
 const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
 const SegmentContextDialog = lazy(() => import("@/components/search/SegmentContextDialog"));
+const IndexInspectorModal = lazy(() => import("@/components/index/IndexInspectorModal"));
 import { formatDuration, formatDate, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import {
@@ -342,6 +343,7 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
   const hasTranscript = !!episode.transcribed;
   const seekTo = useAudioStore((s) => s.seekTo);
   const [previewSource, setPreviewSource] = useState<string | null>(null);
+  const [inspectTarget, setInspectTarget] = useState<{ model: string; chunking: string } | null>(null);
   const queryClient = useQueryClient();
 
   const { data: speakerMap } = useQuery({
@@ -499,6 +501,7 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
             indexed={!!episode.indexed}
             entries={indexEntries ?? []}
             onOpen={() => onNavigateStep("index")}
+            onInspect={(model, chunking) => setInspectTarget({ model, chunking })}
             onDelete={(collection) => deleteCollectionMutation.mutate(collection)}
           />
         )}
@@ -569,6 +572,19 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
             else onNavigateStep("translate");
           }}
         />
+        </Suspense>
+      )}
+
+      {audioPath && inspectTarget && (
+        <Suspense fallback={null}>
+          <IndexInspectorModal
+            open={true}
+            onClose={() => setInspectTarget(null)}
+            audioPath={audioPath}
+            show={meta?.name ?? ""}
+            model={inspectTarget.model}
+            chunking={inspectTarget.chunking}
+          />
         </Suspense>
       )}
     </div>
@@ -824,11 +840,13 @@ function IndexGroup({
   indexed,
   entries,
   onOpen,
+  onInspect,
   onDelete,
 }: {
   indexed: boolean;
   entries: EpisodeCollection[];
   onOpen: () => void;
+  onInspect: (model: string, chunking: string) => void;
   onDelete: (collection: string) => void;
 }) {
   if (!indexed || entries.length === 0) {
@@ -858,7 +876,12 @@ function IndexGroup({
       defaultOpen={entries.length <= 3}
     >
       {entries.map((e) => (
-        <IndexRow key={e.collection} entry={e} onDelete={() => onDelete(e.collection)} />
+        <IndexRow
+          key={e.collection}
+          entry={e}
+          onInspect={() => onInspect(e.model, e.chunker)}
+          onDelete={() => onDelete(e.collection)}
+        />
       ))}
     </OutputGroup>
   );
@@ -866,9 +889,11 @@ function IndexGroup({
 
 function IndexRow({
   entry,
+  onInspect,
   onDelete,
 }: {
   entry: EpisodeCollection;
+  onInspect: () => void;
   onDelete: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -891,14 +916,19 @@ function IndexRow({
   return (
     <div className="px-4 py-2 flex items-center gap-2 group/row hover:bg-accent/40 transition border-l-2 border-transparent">
       <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-blue-500" />
-      <span className="flex-1 truncate text-xs">
+      <button
+        type="button"
+        onClick={onInspect}
+        className="flex-1 truncate text-xs text-left hover:underline cursor-pointer"
+        title="Inspect chunks and vectors"
+      >
         <span className="text-foreground">
           {entry.model} · {entry.chunker}
         </span>
         {entry.source && (
           <span className="text-muted-foreground"> · from {entry.source}</span>
         )}
-      </span>
+      </button>
       <span className="shrink-0 font-mono text-2xs text-muted-foreground/60 tabular-nums">
         {entry.chunk_count} chunks
       </span>
