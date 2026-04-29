@@ -62,12 +62,12 @@ MODELS: dict[str, ModelSpec] = {
         description="Context-aware, slow on CPU",
         hf_query_model="perplexity-ai/pplx-embed-v1-0.6B",
     ),
-    "pplx-1.7B": ModelSpec(
-        label="Perplexity 1.7B",
-        hf_model="perplexity-ai/pplx-embed-context-v1-1.7B",
-        dim=1024,
+    "pplx-4B": ModelSpec(
+        label="Perplexity 4B",
+        hf_model="perplexity-ai/pplx-embed-context-v1-4B",
+        dim=2560,
         description="Context-aware, GPU strongly recommended",
-        hf_query_model="perplexity-ai/pplx-embed-v1-1.7B",
+        hf_query_model="perplexity-ai/pplx-embed-v1-4B",
     ),
 }
 

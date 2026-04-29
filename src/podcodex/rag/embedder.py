@@ -45,7 +45,7 @@ class PplxEmbedder:
         """Initialize the Perplexity embedder, loading both context and query models.
 
         Args:
-            model_key: Registry key (``"pplx-0.6B"`` or ``"pplx-1.7B"``).
+            model_key: Registry key (``"pplx-0.6B"`` or ``"pplx-4B"``).
             device: Torch device string (e.g. ``"cpu"``, ``"cuda"``, ``"mps"``).
         """
         from transformers import AutoModel
@@ -310,7 +310,7 @@ def get_embedder(
             embedder = BGEEmbedder(device=device)
         elif model_key in ("e5-small", "e5-large"):
             embedder = E5Embedder(model_key=model_key, device=device)
-        elif model_key in ("pplx-0.6B", "pplx-1.7B"):
+        elif model_key in ("pplx-0.6B", "pplx-4B"):
             embedder = PplxEmbedder(model_key=model_key, device=device)
         else:
             raise ValueError(f"No embedder class registered for '{model_key}'")
