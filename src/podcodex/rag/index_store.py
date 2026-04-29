@@ -922,6 +922,60 @@ class IndexStore:
         out.sort(key=lambda c: c.get("chunk_index", 0))
         return out
 
+    def load_chunks_with_vector_stats(
+        self, collection: str, episode: str
+    ) -> list[dict]:
+        """Return chunks for an episode with per-vector health stats attached.
+
+        Powers the index inspector. Loads the vector column, computes
+        L2 norm, zero-fraction, min/max per chunk, then drops the raw
+        vector before returning so the response stays small.
+        """
+        if not self.collection_exists(collection):
+            return []
+        t = self._table(collection)
+        rows = (
+            t.search()
+            .where(f"episode = '{_escape(episode)}'")
+            .select(
+                [
+                    "chunk_index",
+                    "show",
+                    "episode",
+                    "source",
+                    "dominant_speaker",
+                    "start",
+                    "end",
+                    "text",
+                    "vector",
+                    "meta",
+                ]
+            )
+            .limit(100_000)
+            .to_list()
+        )
+        out: list[dict] = []
+        for r in rows:
+            v = np.asarray(r.get("vector") or [], dtype=np.float32)
+            chunk = _row_to_chunk(r)
+            if v.size:
+                chunk["vector_norm"] = float(np.linalg.norm(v))
+                chunk["vector_zero_frac"] = float((v == 0.0).mean())
+                chunk["vector_min"] = float(v.min())
+                chunk["vector_max"] = float(v.max())
+                chunk["vector_mean"] = float(v.mean())
+                chunk["vector_std"] = float(v.std())
+            else:
+                chunk["vector_norm"] = 0.0
+                chunk["vector_zero_frac"] = 1.0
+                chunk["vector_min"] = 0.0
+                chunk["vector_max"] = 0.0
+                chunk["vector_mean"] = 0.0
+                chunk["vector_std"] = 0.0
+            out.append(chunk)
+        out.sort(key=lambda c: c.get("chunk_index", 0))
+        return out
+
     def get_chunk_window(
         self,
         collection: str,

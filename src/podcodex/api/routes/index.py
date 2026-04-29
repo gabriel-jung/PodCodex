@@ -249,6 +249,60 @@ async def delete_episode_from_index(
     return {"status": "deleted", "still_indexed": still_indexed}
 
 
+# ── Inspect (read chunks + vector stats) ────────────────
+
+
+@router.get("/inspect")
+async def inspect_index(
+    audio_path: str = Query(...),
+    show: str = Query(...),
+    model: str = Query(...),
+    chunking: str = Query(...),
+    output_dir: str | None = Query(None),
+) -> dict:
+    """Return chunks + per-chunk vector health stats for one (model, chunking).
+
+    Powers the index inspector modal: lets the user read which text /
+    speaker turns landed in each chunk and confirm the embedding vectors
+    aren't dead (norm ≈ 0) or collapsed (mostly zeros).
+    """
+    from podcodex.rag.store import collection_name
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    episode = p.audio_path.stem
+    col = collection_name(show, model, chunking)
+
+    local = get_index_store()
+    chunks = local.load_chunks_with_vector_stats(col, episode)
+    info = local.get_collection_info(col) or {}
+
+    # Some embedders (pplx in particular) have ~2-3% zeros as natural
+    # sparsity, not a problem. Only flag chunks with substantially more.
+    ZERO_WARN_THRESHOLD = 0.10
+    norms = [c["vector_norm"] for c in chunks]
+    summary = {
+        "dim": int(info.get("dim", 0)),
+        "n_chunks": len(chunks),
+        "n_dead_chunks": sum(1 for n in norms if n < 1e-3),
+        "n_collapsed_chunks": sum(
+            1 for c in chunks if c.get("vector_zero_frac", 0.0) > 0.5
+        ),
+        "n_with_zeros": sum(
+            1 for c in chunks
+            if c.get("vector_zero_frac", 0.0) > ZERO_WARN_THRESHOLD
+        ),
+        "zero_warn_threshold": ZERO_WARN_THRESHOLD,
+    }
+    return {
+        "collection": col,
+        "model": model,
+        "chunking": chunking,
+        "episode": episode,
+        "summary": summary,
+        "chunks": chunks,
+    }
+
+
 # ── Vectorize (background task) ──────────────────────────
 
 
