@@ -72,6 +72,12 @@ export const queryKeys = {
   /** Collections this episode currently lives in (one row per entry). */
   episodeCollections: (audioPath: AudioPath, showName: string) =>
     ["index", "episode-collections", audioPath, showName] as const,
+  indexInspect: (
+    audioPath: AudioPath,
+    showName: string,
+    model: string,
+    chunking: string,
+  ) => ["index", "inspect", audioPath, showName, model, chunking] as const,
 
   // ── Integrations & MCP ────────────────────────────────
   claudeDesktop: () => ["integrations", "claude-desktop"] as const,

@@ -84,6 +84,57 @@ export const deleteEpisodeCollection = (
   );
 };
 
+export interface InspectChunkSpeakerTurn {
+  speaker: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface InspectChunk {
+  chunk_index: number;
+  start: number;
+  end: number;
+  dominant_speaker: string;
+  text: string;
+  source: string;
+  speakers?: InspectChunkSpeakerTurn[];
+  vector_norm: number;
+  vector_zero_frac: number;
+  vector_min: number;
+  vector_max: number;
+  vector_mean: number;
+  vector_std: number;
+}
+
+export interface InspectSummary {
+  dim: number;
+  n_chunks: number;
+  n_dead_chunks: number;
+  n_collapsed_chunks: number;
+  n_with_zeros: number;
+  zero_warn_threshold: number;
+}
+
+export interface InspectResponse {
+  collection: string;
+  model: string;
+  chunking: string;
+  episode: string;
+  summary: InspectSummary;
+  chunks: InspectChunk[];
+}
+
+export const getIndexInspect = (
+  audioPath: string,
+  show: string,
+  model: string,
+  chunking: string,
+) => {
+  const params = new URLSearchParams({ audio_path: audioPath, show, model, chunking });
+  return json<InspectResponse>(`/api/index/inspect?${params}`);
+};
+
 export const startIndex = (req: IndexRequest) =>
   json<TaskResponse>("/api/index/start", {
     method: "POST",
