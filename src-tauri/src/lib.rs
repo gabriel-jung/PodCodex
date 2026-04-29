@@ -74,9 +74,24 @@ struct BackendProcess(Mutex<Option<GroupChild>>);
 /// Restart the app. Invoked from the frontend after activate/deactivate of
 /// the GPU sidecar — sidecar selection happens once in spawn_backend_if_needed
 /// at startup, so a restart is the only way to switch backends.
+///
+/// ``app.restart()`` does **not** fire the ``RunEvent::Exit`` callback we
+/// registered in ``run()`` — it bypasses the run loop and exits via
+/// ``std::process::exit``. So we kill the backend group explicitly here,
+/// before the relaunch, otherwise the old sidecar lingers (holding port
+/// 18811 and any in-flight multiprocessing workers) and the new instance
+/// can't get a working backend until the user kills the orphans manually.
 #[tauri::command]
 fn restart_app(app: tauri::AppHandle) {
     log::info!("restart_app invoked from frontend");
+    let child = app.state::<BackendProcess>().0.lock().unwrap().take();
+    if let Some(mut child) = child {
+        log::info!("Killing backend process group before restart (pid={})", child.id());
+        if let Err(e) = child.kill() {
+            log::error!("Failed to kill backend process group on restart: {e}");
+        }
+        let _ = child.wait();
+    }
     app.restart();
 }
 
