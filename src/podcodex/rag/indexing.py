@@ -7,6 +7,7 @@ result into the global :class:`IndexStore` LanceDB index.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 
 from loguru import logger
@@ -101,15 +102,38 @@ def vectorize_episode(
         local.delete_episode(col, episode)
 
     if chunks is None:
+        n_segs = len(transcript.get("segments", []))
+        logger.info(
+            f"Chunking '{episode}' with strategy '{chunking}' "
+            f"({n_segs} segments, chunk_size={chunk_size}, threshold={threshold})"
+        )
+        t0 = time.perf_counter()
         chunks = _chunk_transcript(transcript, chunking, chunk_size, threshold)
+        logger.info(
+            f"Chunked '{episode}': {len(chunks)} chunks in {time.perf_counter() - t0:.1f}s"
+        )
     if not chunks:
         raise ValueError(f"No chunks produced for strategy '{chunking}'")
 
     embedder = get_embedder(model_key, device=device)
+    logger.info(
+        f"Embedding {len(chunks)} chunks for '{episode}' "
+        f"with '{model_key}' on {device} → '{col}'"
+    )
+    t0 = time.perf_counter()
     embeddings = embedder.encode_passages(chunks)
-    local.save_chunks(col, episode, chunks, embeddings)
+    logger.info(
+        f"Embedded {len(chunks)} chunks for '{episode}' "
+        f"in {time.perf_counter() - t0:.1f}s"
+    )
 
-    logger.success(f"Vectorized {len(chunks)} chunks into '{col}'")
+    logger.info(f"Upserting {len(chunks)} chunks into '{col}'")
+    t0 = time.perf_counter()
+    local.save_chunks(col, episode, chunks, embeddings)
+    logger.success(
+        f"Vectorized {len(chunks)} chunks into '{col}' "
+        f"(upsert {time.perf_counter() - t0:.1f}s)"
+    )
     return chunks, len(chunks)
 
 

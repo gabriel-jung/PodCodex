@@ -16,6 +16,7 @@ Factory:
 from __future__ import annotations
 
 import threading
+import time
 
 import numpy as np
 from loguru import logger
@@ -83,7 +84,16 @@ class PplxEmbedder:
         result = np.empty((len(chunks), self._dim), dtype=np.float32)
         for episode, indices in episode_indices.items():
             texts = [chunks[i]["text"] for i in indices]
+            logger.info(
+                f"PplxEmbedder: encoding {len(texts)} passages "
+                f"with full-episode context for '{episode}' (single forward pass)"
+            )
+            t0 = time.perf_counter()
             episode_embs = self._ctx_model.encode([texts])[0]  # (n_chunks, dim)
+            logger.info(
+                f"PplxEmbedder: forward pass for '{episode}' done in "
+                f"{time.perf_counter() - t0:.1f}s"
+            )
             for pos, idx in enumerate(indices):
                 result[idx] = episode_embs[pos].astype(np.float32)
 
@@ -152,13 +162,17 @@ class E5Embedder:
             L2-normalized float32 array of shape ``(n, dim)``.
         """
         texts = ["passage: " + c["text"] for c in chunks]
+        t0 = time.perf_counter()
         embs = self._model.encode(
             texts,
             batch_size=self._batch_size,
             normalize_embeddings=True,
             show_progress_bar=len(texts) > 100,
         )
-        logger.info(f"E5Embedder: encoded {len(chunks)} passages")
+        logger.info(
+            f"E5Embedder: encoded {len(chunks)} passages "
+            f"(batch_size={self._batch_size}) in {time.perf_counter() - t0:.1f}s"
+        )
         return np.array(embs, dtype=np.float32)
 
     def encode_query(self, query: str) -> np.ndarray:
@@ -221,10 +235,14 @@ class BGEEmbedder:
             Float32 array of shape ``(n, 1024)``.
         """
         texts = [c["text"] for c in chunks]
+        t0 = time.perf_counter()
         output = self._model.encode(
             texts, batch_size=self._batch_size, max_length=512, **self._ENCODE_OPTS
         )
-        logger.info(f"BGEEmbedder: encoded {len(chunks)} passages")
+        logger.info(
+            f"BGEEmbedder: encoded {len(chunks)} passages "
+            f"(batch_size={self._batch_size}) in {time.perf_counter() - t0:.1f}s"
+        )
         return np.array(output["dense_vecs"], dtype=np.float32)
 
     def encode_query(self, query: str) -> np.ndarray:
