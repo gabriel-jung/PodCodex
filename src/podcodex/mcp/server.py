@@ -543,9 +543,9 @@ def main() -> None:
 
     bootstrap_for_mcp_stdio()
     logger.info("podcodex-mcp starting (stdio)")
-    # Force embedder load now so a broken install / missing weights surface at
-    # startup rather than on the first tool call.
-    get_retriever().embedder
+    # Embedder loads lazily on first tool call — Claude Desktop's
+    # initialize handshake has a 60s timeout that we'd otherwise blow on
+    # cold-starts of the PyInstaller --onefile bundle.
     mcp.run()
 
 
