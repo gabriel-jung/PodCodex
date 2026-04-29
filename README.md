@@ -97,6 +97,22 @@ make dev-no-tauri
 
 For a native window (requires Rust + GTK/WebKit on Linux), run `make dev` instead. See [Makefile](Makefile) for all targets.
 
+### Installing a pre-built release
+
+Grab the latest `.dmg` (macOS) or `.msi` (Windows) from the [Releases](https://github.com/gabriel-jung/podcodex/releases) page.
+
+**macOS — first-launch quarantine.** The DMG is not yet code-signed or notarized, so Gatekeeper marks the copied app as quarantined and refuses to open it with:
+
+> "PodCodex.app" is damaged and can't be opened. You should move it to the Bin.
+
+The app is not actually damaged. After dragging it into `/Applications`, strip the quarantine attribute once:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/PodCodex.app
+```
+
+Then open it normally. This is a one-off — subsequent launches don't need it. Signing + notarization is on the roadmap.
+
 ### Build a standalone .dmg / .msi
 
 The desktop build freezes the Python backend with PyInstaller into a single
