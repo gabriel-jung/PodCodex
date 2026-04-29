@@ -14,9 +14,11 @@ import { Button } from "@/components/ui/button";
 const POLL_INTERVAL_MS = 1000;
 
 // Sidecar selection happens once at app launch (lib.rs::spawn_backend_if_needed),
-// so flipping the activated marker has no effect on the running CPU sidecar.
-// Auto-restart through the Tauri restart_app command after activate/deactivate
-// so the user sees the change without a manual relaunch.
+// so flipping the activated marker — or replacing the binary under an already-
+// activated marker — has no effect on the running sidecar. Auto-restart through
+// the Tauri restart_app command after activate/deactivate, and after a download
+// that completes while activated (the update flow), so the user sees the change
+// without a manual relaunch.
 async function restartApp(): Promise<void> {
   const w = window as unknown as { __TAURI__?: unknown };
   if (!w.__TAURI__) return;
@@ -55,8 +57,17 @@ export default function GPUBackendPanel() {
       }
       setActiveTaskId(null);
       qc.invalidateQueries({ queryKey: queryKeys.gpuStatus() });
+      // Update path: a download that completed while the backend is already
+      // activated means we replaced the binary under a running sidecar.
+      // The sidecar selection at app startup picked CPU (the version was
+      // mismatched then), so re-evaluating requires a restart. Fresh-install
+      // path doesn't enter here — activated is false until the user clicks
+      // Activate, which has its own restart.
+      if (task.status === "completed" && status?.activated) {
+        void restartApp();
+      }
     }
-  }, [task, qc]);
+  }, [task, qc, status?.activated]);
 
   const downloadMut = useMutation({
     mutationFn: () => downloadGPUBackend(),
