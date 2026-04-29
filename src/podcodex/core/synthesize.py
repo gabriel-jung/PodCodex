@@ -28,6 +28,7 @@ import numpy as np
 import soundfile as sf
 from loguru import logger
 
+from podcodex.core._ffmpeg import ffmpeg_exe
 from podcodex.core._utils import (
     SAMPLE_RATE,
     UNKNOWN_SPEAKERS,
@@ -268,7 +269,7 @@ def _extract_clip(audio_path: Path, seg: dict, output_path: Path) -> dict:
     """
     subprocess.run(
         [
-            "ffmpeg",
+            ffmpeg_exe(),
             "-y",
             "-i",
             str(audio_path),

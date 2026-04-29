@@ -32,7 +32,6 @@
     "targets": ["dmg", "msi"],
     "externalBin": [
       "binaries/podcodex-server",
-      "binaries/ffmpeg",
       "binaries/yt-dlp"
     ],
     "icon": [

@@ -52,7 +52,7 @@ jobs:
       - name: Build CPU sidecar
         run: .venv/bin/python packaging/build_server.py --clean
 
-      - name: Fetch native sidecars (ffmpeg, yt-dlp)
+      - name: Fetch native sidecar (yt-dlp)
         run: make bundle-natives
 
       - uses: tauri-apps/tauri-action@v0.6
@@ -106,14 +106,13 @@ jobs:
       - name: Build CPU sidecar
         run: .venv/Scripts/python.exe packaging/build_server.py --clean
 
-      - name: Fetch native sidecars (ffmpeg, yt-dlp)
+      - name: Fetch native sidecar (yt-dlp)
         run: .venv/Scripts/python.exe scripts/fetch_native_binaries.py
 
       - name: Verify externalBin sidecars are present
         run: |
           $expected = @(
             "src-tauri\binaries\podcodex-server-x86_64-pc-windows-msvc.exe",
-            "src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe",
             "src-tauri\binaries\yt-dlp-x86_64-pc-windows-msvc.exe"
           )
           $missing = @()

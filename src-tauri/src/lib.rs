@@ -215,10 +215,9 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
 
-    if let Some(ffmpeg) = locate_sidecar("ffmpeg") {
-        log::info!("Bundled ffmpeg: {:?}", ffmpeg);
-        cmd.env("FFMPEG_BINARY", ffmpeg);
-    }
+    // ffmpeg is sourced from imageio-ffmpeg's vendored binary inside the
+    // PyInstaller bundle — no sidecar needed. yt-dlp stays as a sidecar so
+    // we can hot-swap it between releases for bot-detection fixes.
     if let Some(ytdlp) = locate_sidecar("yt-dlp") {
         log::info!("Bundled yt-dlp: {:?}", ytdlp);
         cmd.env("YT_DLP_BINARY", ytdlp);

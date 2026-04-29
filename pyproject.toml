@@ -52,6 +52,7 @@ youtube = [
 ]
 pipeline = [
     "accelerate>=1.12.0",
+    "imageio-ffmpeg>=0.5",
     "ollama>=0.6.1",
     "openai>=2.23.0",
     "pandas>=2.0.0",

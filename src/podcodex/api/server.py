@@ -93,22 +93,20 @@ def _redirect_stdio_to_logfile() -> None:
 
 
 def _wire_native_binaries() -> None:
-    """Expose bundled ffmpeg / yt-dlp paths to libraries that shell out.
+    """Expose ffmpeg + yt-dlp on PATH for libraries that shell out.
 
-    The Rust shell resolves the absolute paths from the Tauri externalBin
-    layout and passes them via env. ``IMAGEIO_FFMPEG_EXE`` is honoured by
-    imageio-ffmpeg (whisperx, librosa); yt-dlp lives at ``YT_DLP_BINARY``
-    and is invoked by subprocess instead of the bundled Python lib so it
-    can be hot-swapped between releases.
-
-    Both binaries' parent directories are also prepended to ``PATH`` so any
-    library that resolves them via shutil.which keeps working.
+    ffmpeg comes from imageio-ffmpeg's vendored binary — prepending its
+    parent dir to PATH lets whisperx and faster-whisper find it via the
+    bare ``"ffmpeg"`` command they hard-code. yt-dlp's path is passed
+    by the Tauri shell as ``YT_DLP_BINARY`` so we can hot-swap it
+    between app releases without rebuilding the sidecar.
     """
     extra_path: list[str] = []
 
-    ffmpeg = os.environ.get("FFMPEG_BINARY")
-    if ffmpeg and Path(ffmpeg).exists():
-        os.environ.setdefault("IMAGEIO_FFMPEG_EXE", ffmpeg)
+    from podcodex.core._ffmpeg import ffmpeg_exe
+
+    ffmpeg = ffmpeg_exe()
+    if ffmpeg != "ffmpeg" and Path(ffmpeg).exists():
         extra_path.append(str(Path(ffmpeg).parent))
 
     ytdlp = os.environ.get("YT_DLP_BINARY")

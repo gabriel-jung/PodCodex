@@ -13,11 +13,6 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "ffmpeg",
-          "sidecar": true,
-          "args": true
-        },
-        {
           "name": "yt-dlp",
           "sidecar": true,
           "args": true

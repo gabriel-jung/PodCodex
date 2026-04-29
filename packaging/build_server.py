@@ -82,6 +82,7 @@ HIDDEN_IMPORTS = [
     "librosa",
     "numba",
     "llvmlite",
+    "imageio_ffmpeg",
     # API + integrations
     "fastapi",
     "uvicorn",
@@ -128,6 +129,11 @@ COLLECT_ALL = [
     "numba",
     "llvmlite",
     "soundfile",
+    # imageio_ffmpeg ships its static ffmpeg binary inside the wheel under
+    # imageio_ffmpeg/binaries/ — collect_all picks it up alongside the .py
+    # files. Without this PyInstaller would freeze the Python module but
+    # the binary lookup would fail at runtime.
+    "imageio_ffmpeg",
     "yt_dlp",
     # jsonschema's rfc3987_syntax dep ships a .lark grammar file consumed at
     # import time; collect_all picks up the data file alongside the module.
