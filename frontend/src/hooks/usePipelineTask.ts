@@ -35,6 +35,13 @@ export function usePipelineTask(
     // Unified versions endpoint feeds cross-step input-version selectors
     // (e.g. Translate can read both corrected and transcript versions).
     queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
+    // Indexing populates LanceDB — search panel reads its own ["search", …]
+    // namespace (stats, indexed-episodes, …), so the ["index", …] sweep above
+    // doesn't reach it. Without this, the SearchPanel keeps showing
+    // "No indexed episodes yet" until the user manually reloads.
+    if (stepKey === "index") {
+      queryClient.invalidateQueries({ queryKey: ["search"] });
+    }
   }, [queryClient, stepKey, audioPath]);
 
   const handleComplete = useCallback(() => {
