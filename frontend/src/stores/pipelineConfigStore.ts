@@ -59,7 +59,7 @@ export function modeToPreset(mode: LLMConfig["mode"]): LLMPresetKey {
 export const INDEX_PRESETS = {
   fast: { label: "Fast", desc: "Small model, ideal for light CPU", model: "e5-small" },
   balanced: { label: "Balanced", desc: "Good quality, works on CPU", model: "bge-m3" },
-  gpu: { label: "GPU", desc: "Context-aware, very slow on CPU", model: "pplx" },
+  gpu: { label: "GPU", desc: "Context-aware, very slow on CPU", model: "pplx-0.6B" },
 } as const;
 
 export type IndexPresetKey = keyof typeof INDEX_PRESETS;

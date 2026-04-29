@@ -27,44 +27,44 @@ from podcodex.rag.defaults import MODELS
 # PplxEmbedder
 # ──────────────────────────────────────────────
 
-_PPLX_SPEC = MODELS["pplx"]
-
 
 class PplxEmbedder:
     """
-    Context-aware embedder using Perplexity's pplx-embed-context-v1-0.6B.
+    Context-aware embedder using Perplexity's pplx-embed-context-v1 family.
 
     Passages are encoded with full episode context: all chunks from the same
     episode are passed together so each embedding is influenced by its neighbors.
-    Query encoding uses the separate pplx-embed-v1-0.6B query model.
+    Query encoding uses the separate pplx-embed-v1 query model.
 
     Dense vectors (dim from MODELS registry). Unnormalized — the retriever
     normalizes at cache-build time for cosine similarity.
     """
 
-    def __init__(self, device: str = "cpu"):
+    def __init__(self, model_key: str = "pplx-0.6B", device: str = "cpu"):
         """Initialize the Perplexity embedder, loading both context and query models.
 
         Args:
+            model_key: Registry key (``"pplx-0.6B"`` or ``"pplx-1.7B"``).
             device: Torch device string (e.g. ``"cpu"``, ``"cuda"``, ``"mps"``).
         """
         from transformers import AutoModel
         from sentence_transformers import SentenceTransformer
 
-        logger.info(f"Loading PplxEmbedder ({_PPLX_SPEC.hf_model}) on {device}")
+        spec = MODELS[model_key]
+        logger.info(f"Loading PplxEmbedder ({spec.hf_model}) on {device}")
         from podcodex.core.cache import get_hf_cache_dir
 
         cache_dir = str(get_hf_cache_dir())
         self._ctx_model = AutoModel.from_pretrained(
-            _PPLX_SPEC.hf_model, trust_remote_code=True, cache_dir=cache_dir
+            spec.hf_model, trust_remote_code=True, cache_dir=cache_dir
         ).to(device)
         self._query_model = SentenceTransformer(
-            _PPLX_SPEC.hf_query_model,
+            spec.hf_query_model,
             trust_remote_code=True,
             device=device,
             cache_folder=cache_dir,
         )
-        self._dim = _PPLX_SPEC.dim
+        self._dim = spec.dim
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
         """
@@ -292,8 +292,8 @@ def get_embedder(
             embedder = BGEEmbedder(device=device)
         elif model_key in ("e5-small", "e5-large"):
             embedder = E5Embedder(model_key=model_key, device=device)
-        elif model_key == "pplx":
-            embedder = PplxEmbedder(device=device)
+        elif model_key in ("pplx-0.6B", "pplx-1.7B"):
+            embedder = PplxEmbedder(model_key=model_key, device=device)
         else:
             raise ValueError(f"No embedder class registered for '{model_key}'")
 
