@@ -201,7 +201,7 @@ def _app_version() -> str:
     return __version__
 
 
-def _needs_update() -> bool:
+def _needs_update(installed_server_version: str | None) -> bool:
     """True when GPU is installed but the server-core version trails the app.
 
     This is the silent-regression path: user updates the MSI, the
@@ -211,16 +211,19 @@ def _needs_update() -> bool:
     anyone — transcription quietly becomes 10× slower until the user
     notices and re-downloads.
     """
-    installed = installed_server_core_version()
-    if installed is None:
+    if installed_server_version is None:
         return False
-    return installed != _app_version()
+    return installed_server_version != _app_version()
 
 
 def status() -> dict[str, Any]:
     """Synchronous status report — safe to call from any context, dev or bundle."""
     gpu = detect_nvidia_gpu()
     manifest = installed_manifest()
+    # Probing the GPU sidecar's --version spawns a PyInstaller'd Python and
+    # is the slowest part of this call (~2-4s on Windows). Compute once and
+    # reuse for the needs_update check below.
+    server_version = installed_server_core_version()
     return {
         "mode": "bundle" if running_in_bundle() else "dev",
         "current_backend": current_torch_backend(),
@@ -228,12 +231,12 @@ def status() -> dict[str, Any]:
         "gpu_name": gpu.name if gpu else None,
         "vram_mb": gpu.vram_mb if gpu else None,
         "installed_version": manifest.get("version") if manifest else None,
-        "installed_server_version": installed_server_core_version(),
+        "installed_server_version": server_version,
         "app_version": _app_version(),
         "activated": is_gpu_activated(),
         "install_dir": str(gpu_install_dir()),
         "platform_supported": gpu_supported_on_platform(),
-        "needs_update": _needs_update(),
+        "needs_update": _needs_update(server_version),
     }
 
 

@@ -572,7 +572,9 @@ def export_transcript(
     # Always save raw transcript
     raw_prov = _make_prov(_build_meta(resolved))
     save_version(p.base, "transcript", resolved, raw_prov)
-    logger.success(f"Export done — {len(resolved)} segments")
+    logger.success(
+        f"Export done ({'diarized' if diarized else 'raw'}) — {len(resolved)} segments"
+    )
 
     # If clean, also save a filtered version
     if clean:
