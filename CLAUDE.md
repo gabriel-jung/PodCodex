@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Stack pointers in `README.md`. System wiring in `ARCHITECTURE.md`. Build/deploy in `deploy/*.md`. Frontend design rules in `DESIGN.md` (read before writing UI). Makefile is dev entry — read `make help`.
+Stack pointers in `README.md`. System wiring in `ARCHITECTURE.md`. Human contributor workflow in `CONTRIBUTING.md`. Build/deploy in `deploy/*.md`. Frontend design rules in `DESIGN.md` (read before writing UI). Makefile is dev entry — read `make help`.
 
 ## Terminology
 
@@ -28,3 +28,4 @@ Don't add `version` back to `tauri.conf.json` or hardcode `__version__` in `src/
 - **`HF_TOKEN` required** for `pyannote/speaker-diarization-community-1`. Missing → transcription hangs silently at the diarization step.
 - **PyInstaller config single source:** `packaging/build_server.py`. ~100 hidden imports + COPY_METADATA hardcoded. CPU builds swap torch to CPU wheel (-1.5 GB); GPU builds install `cu128` JIT and skip the swap.
 - **Frontend TS/eslint non-blocking in CI** (~190 TS + ~40 eslint baseline). Don't enable strict without a planned cleanup PR.
+- **Type sync:** after editing any Pydantic model in `src/podcodex/api/`, run `make types` to regen `frontend/src/api/types.ts`. The file is checked in; never hand-edit.

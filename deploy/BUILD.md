@@ -12,7 +12,7 @@ The flow is the same on every shipped target:
 
 1. **Freeze the Python backend** with PyInstaller → single
    `podcodex-server` binary (~420 MB, CPU-only).
-2. **Fetch native sidecars** (`ffmpeg`, `yt-dlp`) for the host triple.
+2. **Fetch the `yt-dlp` static binary** for the host triple (ffmpeg ships via `imageio-ffmpeg`).
 3. **Build the frontend** (`npm run build`).
 4. **Bundle with Tauri** (`cargo tauri build`) → native installer.
 
@@ -161,7 +161,7 @@ Iterating on a single layer is faster:
 | Frontend (TS / CSS) | `cd frontend && npm run build && cd src-tauri && cargo tauri build` |
 | Rust shell only     | `cd src-tauri && cargo tauri build`           |
 | Python backend      | `make bundle-server && cd src-tauri && cargo tauri build` |
-| ffmpeg / yt-dlp     | `make bundle-natives`                         |
+| yt-dlp              | `make bundle-natives`                         |
 
 ---
 
