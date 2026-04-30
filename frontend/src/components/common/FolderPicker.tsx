@@ -187,11 +187,11 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
   const displayTitle = title || (mode === "file" ? "Choose a file" : "Choose a folder");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-card border border-border rounded-xl w-[700px] max-h-[80vh] flex flex-col shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="bg-card border border-border rounded-lg w-[700px] h-[70vh] flex flex-col shadow-lg">
         {/* Header */}
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <h3 className="font-semibold text-sm">{displayTitle}</h3>
+          <h3 className="text-lg font-semibold">{displayTitle}</h3>
           {description && (
             <span className="text-xs text-muted-foreground ml-3 mr-auto">{description}</span>
           )}
@@ -234,7 +234,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
             ) : (
               <button
                 onClick={() => setEditingPath(true)}
-                className="flex items-center gap-0.5 w-full text-left text-sm px-2 py-1
+                className="flex items-center gap-0.5 w-full text-left text-xs px-2 py-1
                            rounded hover:bg-accent transition overflow-x-auto"
               >
                 {breadcrumbs.map((crumb, i) => (
@@ -261,7 +261,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
               <button
                 key={item.path}
                 onClick={() => navigateTo(item.path)}
-                className={`flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent transition text-left
+                className={`flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition text-left
                   ${listing?.path?.startsWith(item.path === "~" ? "" : item.path) ? "bg-accent text-foreground" : "text-muted-foreground"}`}
               >
                 <item.icon className="w-3.5 h-3.5" />
@@ -366,7 +366,7 @@ function DirRow({
 }) {
   return (
     <div
-      className="w-full text-left px-4 py-1.5 text-sm hover:bg-accent
+      className="w-full text-left px-4 py-1.5 text-xs hover:bg-accent
                  transition flex items-center gap-2 group"
     >
       <Folder className={`w-4 h-4 shrink-0 ${dir.is_show ? "text-primary" : dir.has_audio ? "text-warning" : "text-muted-foreground"}`} />
@@ -412,7 +412,7 @@ function FileRow({
   return (
     <button
       onClick={onSelect}
-      className="w-full text-left px-4 py-1.5 text-sm hover:bg-accent
+      className="w-full text-left px-4 py-1.5 text-xs hover:bg-accent
                  transition flex items-center gap-2"
     >
       <Music className="w-4 h-4 shrink-0 text-success" />

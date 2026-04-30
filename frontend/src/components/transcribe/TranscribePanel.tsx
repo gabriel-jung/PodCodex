@@ -224,8 +224,8 @@ export default function TranscribePanel() {
       controls={
         <div className="px-4 pt-3 pb-4 space-y-4">
           {gpuOutOfDate && (
-            <div className="rounded-md border border-warning/40 bg-warning/5 p-2.5 text-2xs text-muted-foreground flex items-start gap-2">
-              <AlertCircle className="w-3.5 h-3.5 text-warning shrink-0 mt-0.5" />
+            <div className="rounded-md border border-warning/40 bg-warning/5 p-2.5 text-xs text-muted-foreground flex items-start gap-2">
+              <AlertCircle className="w-3 h-3 text-warning shrink-0 mt-0.5" />
               <span className="flex-1">
                 Hardware acceleration is unavailable — your GPU backend (
                 <code className="font-mono">{gpuStatus?.installed_server_version ?? "?"}</code>

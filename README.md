@@ -252,7 +252,7 @@ Full guide (manual stdio config, Claude Code registration, prompts, troubleshoot
 - **MCP** (`src/podcodex/mcp/`) — stdio + HTTP MCP server exposing `search` / `exact` / `list_shows` / `get_context` plus user-editable prompts.
 - **Tauri** (`src-tauri/`) — thin Rust shell, auto-spawns backend, native file dialogs.
 
-Every pipeline save (transcribe, correct, translate, manual edit) is archived as a **version** under `.versions/{step}/` with full provenance (model, params, content hash). Episode status is tracked in a per-show `pipeline.db` SQLite. All embeddings live in a single LanceDB index under the platform's app-data directory (`<data_dir>/index`; e.g. `~/.local/share/podcodex/index` on Linux, `%APPDATA%\podcodex\index` on Windows). Collection names follow `{show}__{model}__{chunker}`.
+Every pipeline save (transcribe, correct, translate, manual edit) is archived as a **version** under `.versions/{step}/` with full provenance (model, params, content hash). Episode status is tracked in a per-show `pipeline.db` SQLite. All embeddings live in a single LanceDB index under the platform's app-data directory (`<data_dir>/index`; e.g. `~/Library/Application Support/podcodex/index` on macOS, `%APPDATA%\podcodex\index` on Windows, `~/.local/share/podcodex/index` on Linux). Collection names follow `{show}__{model}__{chunker}`.
 
 ## Roadmap
 

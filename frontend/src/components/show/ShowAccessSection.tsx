@@ -176,7 +176,7 @@ function AccessChip({
   if (!access) return null;
   if (access.is_protected) {
     return (
-      <span className="inline-flex items-center text-xs border rounded-full px-2 py-0.5 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30">
+      <span className="inline-flex items-center text-xs border rounded-full px-2 py-0.5 bg-success/15 text-success border-success/30">
         Password protected
       </span>
     );

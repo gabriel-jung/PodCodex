@@ -4,8 +4,8 @@ export type StatusState = "ok" | "busy" | "warn" | "err" | "idle";
 
 const CLASS_MAP: Record<StatusState, string> = {
   ok: "bg-success",
-  busy: "bg-blue-500 animate-pulse",
-  warn: "bg-amber-500",
+  busy: "bg-info animate-pulse",
+  warn: "bg-warning",
   err: "bg-destructive",
   idle: "bg-muted-foreground/40",
 };

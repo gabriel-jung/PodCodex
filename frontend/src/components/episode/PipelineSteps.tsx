@@ -151,7 +151,7 @@ export function PipelineRow({ label, status, detail, subtitle, provenance, files
   return (
     <div>
       <div className="flex items-center gap-3 text-sm">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${status === "done" ? "bg-success" : status === "partial" ? "bg-blue-500" : "bg-muted-foreground/30"}`} />
+        <span className={`w-2 h-2 rounded-full shrink-0 ${status === "done" ? "bg-success" : status === "partial" ? "bg-info" : "bg-muted-foreground/30"}`} />
         <span className="flex flex-col">
           <span className="flex items-center gap-2">
             <LabelTag
@@ -229,7 +229,7 @@ export function PipelineStatus({ episode }: { episode: Episode }) {
             key={s.key}
             className={`text-2xs px-1.5 py-0.5 rounded-full ${
               status === "partial"
-                ? "bg-blue-500/15 text-blue-500"
+                ? "bg-info/15 text-info"
                 : "bg-success/15 text-success"
             } ${isFlashing ? "complete-flash" : ""}`}
           >

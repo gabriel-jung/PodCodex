@@ -152,9 +152,9 @@ function DiffView({ original, current }: { original: string; current: string }) 
           <span
             className={
               part.type === "removed"
-                ? "bg-red-500/20 text-red-400 line-through"
+                ? "bg-destructive/20 text-destructive line-through"
                 : part.type === "added"
-                  ? "bg-green-500/20 text-green-400"
+                  ? "bg-success/20 text-success"
                   : "text-muted-foreground/70"
             }
           >
@@ -407,10 +407,7 @@ const SegmentViewRow = memo(function SegmentViewRow({
 
       {/* Flag reason — always visible on flagged segments */}
       {isFlagged && flagReasonText && (
-        <div
-          className="flex items-center gap-1 mt-0.5 text-warning/80"
-          style={{ fontSize: "0.6rem" }}
-        >
+        <div className="flex items-center gap-1 mt-0.5 text-2xs leading-none text-warning/80">
           <AlertTriangle className="w-2.5 h-2.5" />
           <span>{flagReasonText}</span>
           {onDismissFlag && (
@@ -1506,7 +1503,7 @@ export default function TranscriptViewer({
             <button
               onClick={() => { filters.setShowChangedOnly(!filters.showChangedOnly); filters.setPage(0); }}
               className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border transition ${
-                filters.showChangedOnly ? "border-blue-500/50 text-blue-400" : "border-border text-muted-foreground hover:text-foreground"
+                filters.showChangedOnly ? "border-info/50 text-info" : "border-border text-muted-foreground hover:text-foreground"
               }`}
               title="Show changed only"
             >

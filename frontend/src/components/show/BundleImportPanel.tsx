@@ -128,7 +128,7 @@ export default function BundleImportPanel({ onImported }: Props) {
 
           {preview.embedder_warnings.length > 0 && (
             <div className="flex items-start gap-1.5 text-xs text-warning">
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
               <ul className="list-none space-y-0.5">
                 {preview.embedder_warnings.map((w, i) => (
                   <li key={i}>{w}</li>

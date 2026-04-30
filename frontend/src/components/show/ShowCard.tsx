@@ -16,7 +16,7 @@ function ShowCardInner({ show, onClick, vertical }: ShowCardProps) {
     return (
       <button
         onClick={handleClick}
-        className="text-left rounded-xl bg-card border border-border hover:border-muted-foreground/30 transition group overflow-hidden"
+        className="text-left rounded-lg bg-card border border-border hover:border-muted-foreground/30 transition group overflow-hidden"
       >
         <div className="p-3 pb-0">
           {show.artwork_url ? (
@@ -42,7 +42,7 @@ function ShowCardInner({ show, onClick, vertical }: ShowCardProps) {
   return (
     <button
       onClick={handleClick}
-      className="text-left p-3 rounded-xl bg-card border border-border hover:border-muted-foreground/30 transition group flex items-center gap-3"
+      className="text-left p-3 rounded-lg bg-card border border-border hover:border-muted-foreground/30 transition group flex items-center gap-3"
     >
       {show.artwork_url ? (
         <img src={artworkUrl(show.path)} alt={show.name} className="h-12 w-auto max-w-24 rounded-lg shrink-0 object-contain" />

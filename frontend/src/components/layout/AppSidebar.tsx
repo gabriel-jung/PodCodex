@@ -71,7 +71,7 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
                 <Icon className="w-5 h-5 shrink-0" />
                 {expanded && <span className="truncate">{label}</span>}
                 {status && (
-                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${expanded ? "ml-auto" : ""} ${status === "partial" ? "bg-blue-500" : "bg-success"}`} />
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${expanded ? "ml-auto" : ""} ${status === "partial" ? "bg-info" : "bg-success"}`} />
                 )}
               </button>
             ))}

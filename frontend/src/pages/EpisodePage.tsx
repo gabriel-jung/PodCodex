@@ -915,7 +915,7 @@ function IndexRow({
 
   return (
     <div className="px-4 py-2 flex items-center gap-2 group/row hover:bg-accent/40 transition border-l-2 border-transparent">
-      <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-blue-500" />
+      <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-info" />
       <button
         type="button"
         onClick={onInspect}

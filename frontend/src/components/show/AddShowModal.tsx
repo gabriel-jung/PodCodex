@@ -14,13 +14,22 @@ import { PlaySquare, Search, Rss, FolderOpen, Loader2, Package } from "lucide-re
 export interface AddShowModalProps {
   defaultSavePath: string;
   onClose: () => void;
+  /** Show created via RSS/YouTube fetch — caller typically navigates to it. */
   onCreated: (folder: string) => void;
+  /** Existing show registered (local folder or bundle restore) — caller typically stays put. */
+  onImported?: (folder: string) => void;
   onOpenFile?: (path: string) => void;
 }
 
 type SourceMode = "podcast" | "youtube" | "local" | "bundle";
 
-export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOpenFile }: AddShowModalProps) {
+const STEP_HEIGHT: Record<"search" | "location", string> = {
+  search: "h-[340px]",
+  location: "h-[440px]",
+};
+
+export default function AddShowModal({ defaultSavePath, onClose, onCreated, onImported, onOpenFile }: AddShowModalProps) {
+  const handleImported = onImported ?? onCreated;
   const [step, setStep] = useState<"search" | "location">("search");
   const [sourceMode, setSourceMode] = useState<SourceMode>("podcast");
   const [searchQuery, setSearchQuery] = useState("");
@@ -84,17 +93,17 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
 
   const importMutation = useMutation({
     mutationFn: (path: string) => registerShow(path),
-    onSuccess: (_, path) => onCreated(path),
+    onSuccess: (_, path) => handleImported(path),
   });
 
   const handleLocalImport = (path: string) => importMutation.mutate(path);
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-        <div className="bg-card border border-border rounded-xl p-6 max-w-lg w-full shadow-2xl max-h-[80vh] flex flex-col">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div className={`bg-card border border-border rounded-lg p-6 max-w-lg w-full shadow-lg max-h-[85vh] flex flex-col ${STEP_HEIGHT[step]}`}>
           <div className="flex items-center justify-between mb-1">
-            <h3 className="font-medium">
+            <h3 className="text-lg font-semibold">
               {step === "search" ? "Add a show" : "Save location"}
             </h3>
             <Button onClick={onClose} variant="ghost" size="sm">x</Button>
@@ -126,7 +135,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                   className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "bundle" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
                   onClick={() => switchMode("bundle")}
                 >
-                  <Package className="h-3.5 w-3.5" /> Bundle
+                  <Package className="h-3.5 w-3.5" /> Podcodex
                 </button>
               </div>
 
@@ -243,7 +252,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                 <BundleImportPanel
                   onImported={(showsDir, finalFolder) => {
                     if (finalFolder && showsDir) {
-                      onCreated(`${showsDir.replace(/\/+$/, "")}/${finalFolder}`);
+                      handleImported(`${showsDir.replace(/\/+$/, "")}/${finalFolder}`);
                     } else {
                       // Index-only import: nothing to navigate to.
                       onClose();
@@ -292,7 +301,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
           )}
 
           {step === "location" && (
-            <div className="space-y-4">
+            <div className="space-y-4 overflow-y-auto">
               {createMutation.isPending ? (
                 <div className="flex flex-col items-center gap-3 py-6">
                   <Loader2 className="w-8 h-8 animate-spin text-primary" />

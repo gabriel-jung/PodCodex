@@ -182,12 +182,13 @@ hang tight…" past ~60 s, run from a terminal to surface stderr:
 - macOS: `PodCodex.app/Contents/MacOS/podcodex-app 2>&1 | head -50`
 - Windows: launch from PowerShell — `& "C:\Program Files\PodCodex\PodCodex.exe"`
 
-The bundled sidecar logs to `<app_data>/logs/server.log`:
+The bundled sidecar logs to `<data_dir>/logs/server.log`:
 
-| OS      | `<app_data>` path                                        |
+| OS      | `<data_dir>` path                                        |
 |---------|----------------------------------------------------------|
-| macOS   | `~/Library/Application Support/podcodex/`    |
-| Windows | `%APPDATA%\podcodex\`                        |
+| macOS   | `~/Library/Application Support/podcodex/`                |
+| Windows | `%APPDATA%\podcodex\`                                    |
+| Linux   | `~/.local/share/podcodex/`                               |
 
 ---
 

@@ -465,8 +465,8 @@ export default function SpeakerStrip({
         )}
 
         {unnamedCount > 0 && (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-2xs text-warning/80 shrink-0 ml-auto">
-            <AlertTriangle className="w-3 h-3" />
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-2xs leading-none text-warning/80 shrink-0 ml-auto">
+            <AlertTriangle className="w-2.5 h-2.5" />
             {unnamedCount} unnamed
           </span>
         )}

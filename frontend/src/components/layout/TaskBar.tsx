@@ -201,15 +201,15 @@ function BatchResultSummary({ result, onDismiss }: { result: BatchResult; onDism
         <div className="px-5 py-4 space-y-2">
           <div className="grid grid-cols-3 gap-3 text-center">
             <div>
-              <p className="text-2xl font-bold text-success">{result.completed}</p>
+              <p className="text-2xl font-semibold text-success">{result.completed}</p>
               <p className="text-xs text-muted-foreground">Completed</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-muted-foreground">{result.skipped}</p>
+              <p className="text-2xl font-semibold text-muted-foreground">{result.skipped}</p>
               <p className="text-xs text-muted-foreground">Skipped</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-destructive">{result.failed}</p>
+              <p className="text-2xl font-semibold text-destructive">{result.failed}</p>
               <p className="text-xs text-muted-foreground">Failed</p>
             </div>
           </div>
@@ -434,7 +434,7 @@ function BatchStrip() {
               Logs ({log.length})
             </button>
             {showLog && (
-              <pre className="mt-1.5 p-2 bg-black/40 rounded text-[0.55rem] leading-normal text-muted-foreground max-h-80 overflow-auto font-mono">
+              <pre className="mt-1.5 p-2 bg-muted rounded text-3xs leading-normal text-muted-foreground max-h-80 overflow-auto font-mono">
                 {log.map((line, i) => (
                   <div key={i}>{line}</div>
                 ))}

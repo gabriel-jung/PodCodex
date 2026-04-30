@@ -120,7 +120,7 @@ export default function ClaudeDesktopPanel() {
       </SettingSection>
 
       {status?.mcp_available === false && (
-        <p className="text-xs text-amber-600 dark:text-amber-400">
+        <p className="text-xs text-warning">
           The MCP extra is not installed on the backend. Run
           {" "}<code className="px-1 py-0.5 rounded bg-muted">uv sync --extra desktop</code>
           {" "}and restart PodCodex.
@@ -426,9 +426,9 @@ function Chip({
 }) {
   const map = {
     green:
-      "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
+      "bg-success/15 text-success border-success/30",
     amber:
-      "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
+      "bg-warning/15 text-warning border-warning/30",
     muted: "bg-muted text-muted-foreground border-border",
   } as const;
   return (
@@ -480,7 +480,7 @@ function CopyField({ value }: { value: string }) {
 
 function RestartBanner({ hint }: { hint?: string }) {
   return (
-    <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+    <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
       <RefreshCcw size={14} className="mt-0.5 shrink-0" />
       <span>{hint ?? "Restart Claude Desktop to apply this change."}</span>
     </div>

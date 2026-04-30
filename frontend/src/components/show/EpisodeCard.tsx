@@ -38,7 +38,7 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, onProcess,
 
   return (
     <div
-      className="group relative bg-card border border-border rounded-xl overflow-hidden hover:border-muted-foreground/30 transition cursor-pointer"
+      className="group relative bg-card border border-border rounded-lg overflow-hidden hover:border-muted-foreground/30 transition cursor-pointer"
       onClick={handleOpen}
       onContextMenu={onContextMenu}
     >
