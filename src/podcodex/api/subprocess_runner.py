@@ -67,7 +67,7 @@ def _install_log_forwarder(prog_q: Any) -> None:
     The child runs in a separate process; loguru sinks the parent registers
     don't see anything emitted here, so the in-app per-task log expander
     only ever showed progress-callback messages — none of the rich
-    transcribe/diarize/polish output. Pushing each line onto prog_q with
+    transcribe/diarize/correct output. Pushing each line onto prog_q with
     a "log" tag lets the parent attach those lines to ``info.log`` and
     broadcast them over the task WebSocket.
 

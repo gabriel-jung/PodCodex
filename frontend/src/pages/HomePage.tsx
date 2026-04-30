@@ -234,6 +234,10 @@ export default function HomePage() {
               setAddOpen(false);
               goToShow(folder);
             }}
+            onImported={(_folder) => {
+              queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+              setAddOpen(false);
+            }}
             onOpenFile={(path) => {
               setAddOpen(false);
               navigate({ to: "/file/$path", params: { path: encodeURIComponent(path) } });

@@ -196,7 +196,7 @@ class TaskManager:
         progress_cb.cancel_event = info.cancel_event  # type: ignore[attr-defined]
 
         # log_cb: opt-in forwarder for child-subprocess loguru lines so the
-        # in-app expander shows live transcribe/diarize/polish output rather
+        # in-app expander shows live transcribe/diarize/correct output rather
         # than only progress milestones. subprocess_runner pushes lines over
         # the same IPC queue; this callback appends to the task's log buffer
         # and triggers a throttled WS broadcast (≤1/sec — matches the

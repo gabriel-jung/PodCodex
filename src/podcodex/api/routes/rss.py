@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 
 from podcodex.api.routes._helpers import (
     is_downloaded,
@@ -42,6 +43,16 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
 
     episodes = fetch_feed(rss_url)
     if not episodes:
+        # Transient failures (DNS, captive portal, feedparser bozo) shouldn't
+        # block the show page when we already have a cache to serve.
+        cached = load_feed_cache(path)
+        if cached:
+            logger.warning(
+                "fetch_feed returned no episodes for {}; serving cache ({} episodes)",
+                rss_url,
+                len(cached),
+            )
+            return [rss_episode_to_out(ep, path) for ep in cached]
         raise HTTPException(502, "Feed returned no episodes (parse error or empty)")
 
     # Keep episodes pulled from the feed flagged ``removed=True`` rather than
