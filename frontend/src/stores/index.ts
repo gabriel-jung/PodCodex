@@ -8,4 +8,4 @@ export type { TranscribeConfig } from "./pipelineConfigStore";
 export { useTaskStore, type BatchEpisode } from "./taskStore";
 export { useBatchHistoryStore, type BatchHistoryEntry } from "./batchHistoryStore";
 export { useOnboardingStore } from "./onboardingStore";
-export { useLayoutStore, type ShowGroupBy } from "./layoutStore";
+export { useLayoutStore } from "./layoutStore";

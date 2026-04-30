@@ -11,7 +11,7 @@ import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
 import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 import { useLayoutStore } from "@/stores";
-import type { ShowSummary } from "@/api/generated-types";
+import type { ShowSummary } from "@/api/types";
 import ShowCard from "@/components/show/ShowCard";
 import ShowListRow from "@/components/show/ShowListRow";
 import AddShowModal from "@/components/show/AddShowModal";

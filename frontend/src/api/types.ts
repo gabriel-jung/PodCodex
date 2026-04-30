@@ -14,7 +14,6 @@ export type {
   CreateFromRSSResponse,
   CreateFromYouTubeRequest,
   CreateFromYouTubeResponse,
-  EpisodeOut,
   ExtractVoicesRequest,
   GenerateRequest,
   IndexRequest,

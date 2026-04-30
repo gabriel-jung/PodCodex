@@ -48,7 +48,7 @@ export default function SearchPanel(props: SearchPanelProps) {
     [isShowScope, propsArtwork, hasStoreArtwork, storeFolder],
   );
 
-  const { lastQuery, addToHistory, setLastQuery } = useSearchStore();
+  const { lastQuery, setLastQuery } = useSearchStore();
   const [query, setQuery] = useState(lastQuery);
   const [mode, setMode] = useState<SearchMode>("semantic");
   const [model, setModel] = useState("bge-m3");
@@ -190,7 +190,6 @@ export default function SearchPanel(props: SearchPanelProps) {
     e.preventDefault();
     if (query.trim()) {
       setLastQuery(query);
-      addToHistory(query);
       setSubmittedQuery(query);
       searchMutation.mutate();
     }

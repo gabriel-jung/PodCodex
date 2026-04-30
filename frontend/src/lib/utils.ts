@@ -222,11 +222,11 @@ const STEP_LABELS: Record<string, string> = {
 /** True when a version should be labelled "edited" in the UI — covers both
  *  user hand-edits (`manual_edit`) and processed-but-not-raw outputs such as
  *  clean exports or applied manual-LLM passes (`type === "validated"`).
- *  Use this helper everywhere the UI shows an edited marker, so the check
- *  never drifts between surfaces. */
-export function isEdited(v: { type?: string; manual_edit?: boolean } | null | undefined): boolean {
-  if (!v) return false;
-  return v.type === "validated" || v.manual_edit === true;
+ *  Accepts ``unknown`` so callers passing untyped provenance entries
+ *  (StatusChips, PipelineSteps) can use the same predicate. */
+export function isEdited(v: unknown): boolean {
+  const p = v as { manual_edit?: unknown; type?: unknown } | null | undefined;
+  return p?.manual_edit === true || p?.type === "validated";
 }
 
 /** Format a version's step as a display tag, e.g. "transcript", "translated · fr". */

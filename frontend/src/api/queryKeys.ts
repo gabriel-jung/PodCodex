@@ -46,8 +46,6 @@ export const queryKeys = {
   synthesizeAll: () => ["synthesize"] as const,
   synthesizeStatus: (audioPath: AudioPath) =>
     ["synthesize", "status", audioPath] as const,
-  synthSourceSegments: (audioPath: AudioPath) =>
-    ["synth-source-segments", audioPath] as const,
   synthesizeVoices: (audioPath: AudioPath) =>
     ["synthesize", "voices", audioPath] as const,
   synthesizeGenerated: (audioPath: AudioPath) =>

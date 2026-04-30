@@ -48,7 +48,6 @@ import json
 import os
 import random
 import secrets
-import sys
 import time
 from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
@@ -451,6 +450,32 @@ class PodCodexBot(discord.Client):
             if (info_map.get(col) or {}).get("show", "") not in self._locked_show_names
             or (info_map.get(col) or {}).get("show", "") in allowed
         ]
+
+    def _resolve_collections(
+        self,
+        shows: ResolvedShows,
+        settings: ServerSettings,
+        col_info: dict[str, dict],
+    ) -> list[str]:
+        """Collections to query for ``/search``, ``/exact``, ``/random``.
+
+        ``is_locked`` short-circuits to ``[]`` so no preview leaks; specific
+        shows missing from the index are skipped (downstream retriever errors).
+        """
+        if shows.is_specific:
+            return [
+                collection_name(s, settings.model, settings.chunker)
+                for s in shows.shows
+                if collection_name(s, settings.model, settings.chunker) in col_info
+            ]
+        if shows.is_locked:
+            return []
+        collections = [
+            name
+            for name, info in col_info.items()
+            if info["model"] == settings.model and info["chunker"] == settings.chunker
+        ]
+        return self._filter_collections(collections, settings, col_info)
 
     async def _refresh_if_stale(self) -> None:
         """Detect external index changes and reload bot state.
@@ -1374,18 +1399,8 @@ class PodCodexBot(discord.Client):
     ) -> list[tuple[dict, str]]:
         """Run hybrid retrieval across collections and merge results."""
         model, chunker = settings.model, settings.chunker
-        if shows.is_specific:
-            collections = [collection_name(s, model, chunker) for s in shows.shows]
-        elif shows.is_locked:
-            collections = []
-        else:
-            col_info = self.local.get_all_collection_info()
-            collections = [
-                name
-                for name, info in col_info.items()
-                if info["model"] == model and info["chunker"] == chunker
-            ]
-            collections = self._filter_collections(collections, settings, col_info)
+        col_info = self.local.get_all_collection_info()
+        collections = self._resolve_collections(shows, settings, col_info)
         if not collections:
             logger.warning(f"No collections for model={model!r} chunker={chunker!r}")
             return []
@@ -1434,22 +1449,7 @@ class PodCodexBot(discord.Client):
 
         try:
             col_info = await self._cached_col_info()
-            if shows.is_specific:
-                collections = [
-                    collection_name(s, settings.model, settings.chunker)
-                    for s in shows.shows
-                    if collection_name(s, settings.model, settings.chunker) in col_info
-                ]
-            elif shows.is_locked:
-                collections = []
-            else:
-                collections = [
-                    name
-                    for name, info in col_info.items()
-                    if info["model"] == settings.model
-                    and info["chunker"] == settings.chunker
-                ]
-                collections = self._filter_collections(collections, settings, col_info)
+            collections = self._resolve_collections(shows, settings, col_info)
             if not collections:
                 await interaction.followup.send(
                     self._empty_collections_message(col_info, settings, shows),
@@ -1546,22 +1546,7 @@ class PodCodexBot(discord.Client):
 
         try:
             col_info = await self._cached_col_info()
-            if shows.is_specific:
-                collections = [
-                    collection_name(s, settings.model, settings.chunker)
-                    for s in shows.shows
-                    if collection_name(s, settings.model, settings.chunker) in col_info
-                ]
-            elif shows.is_locked:
-                collections = []
-            else:
-                collections = [
-                    name
-                    for name, info in col_info.items()
-                    if info["model"] == settings.model
-                    and info["chunker"] == settings.chunker
-                ]
-                collections = self._filter_collections(collections, settings, col_info)
+            collections = self._resolve_collections(shows, settings, col_info)
             if not collections:
                 await interaction.followup.send(
                     self._empty_collections_message(col_info, settings, shows),

@@ -3,7 +3,7 @@ import type { BatchEpisode } from "@/stores/taskStore";
 
 export type EpStatus = "pending" | "running" | "done" | "failed";
 
-export interface EpisodeStatus {
+interface EpisodeStatus {
   title: string;
   stem: string;
   status: EpStatus;

@@ -24,23 +24,6 @@ export const getIndexStatus = (audioPath: string, show: string) =>
     `/api/index/status?audio_path=${encodeURIComponent(audioPath)}&show=${encodeURIComponent(show)}`,
   );
 
-export interface IndexSource {
-  key: string;
-  label: string;
-  detail: string;
-  exists: boolean;
-}
-
-/** Fetch versions for a pipeline step (transcript, corrected, or translation lang). */
-export const getStepVersions = (audioPath: string, stepKey: string) => {
-  const ap = encodeURIComponent(audioPath);
-  let url: string;
-  if (stepKey === "transcript") url = `/api/transcribe/versions?audio_path=${ap}`;
-  else if (stepKey === "corrected") url = `/api/correct/versions?audio_path=${ap}`;
-  else url = `/api/translate/versions?audio_path=${ap}&lang=${encodeURIComponent(stepKey)}`;
-  return json<VersionEntry[]>(url);
-};
-
 /** Fetch all versions across all steps for an episode (newest first). */
 export const getAllVersions = (audioPath?: string | null, outputDir?: string | null) => {
   const params = new URLSearchParams();
@@ -48,11 +31,6 @@ export const getAllVersions = (audioPath?: string | null, outputDir?: string | n
   if (outputDir) params.set("output_dir", outputDir);
   return json<VersionEntry[]>(`/api/shows/versions?${params}`);
 };
-
-export const getIndexSources = (audioPath: string) =>
-  json<IndexSource[]>(
-    `/api/index/sources?audio_path=${encodeURIComponent(audioPath)}`,
-  );
 
 export interface EpisodeCollection {
   collection: string;

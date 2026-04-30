@@ -424,31 +424,24 @@ class TaskManager:
 
 def _add_loguru_sink(
     info: TaskInfo, manager: "TaskManager", thread_id: int | None = None
-) -> int | None:
+) -> int:
     """Add a loguru sink that feeds into a task's log buffer."""
-    try:
-        from loguru import logger as loguru_logger
+    _last_broadcast: dict[str, float] = {"t": 0.0}
 
-        _last_broadcast: dict[str, float] = {"t": 0.0}
+    def sink(message: Any) -> None:
+        text = str(message).rstrip()
+        if not text:
+            return
+        info.add_log(text)
+        now = time.monotonic()
+        if now - _last_broadcast["t"] >= 1.0:
+            _last_broadcast["t"] = now
+            manager._broadcast_sync(info.task_id)
 
-        def sink(message: Any) -> None:
-            text = str(message).rstrip()
-            if not text:
-                return
-            info.add_log(text)
-            now = time.monotonic()
-            if now - _last_broadcast["t"] >= 1.0:
-                _last_broadcast["t"] = now
-                manager._broadcast_sync(info.task_id)
-
-        filter_fn = (
-            (lambda r: r["thread"].id == thread_id) if thread_id is not None else None
-        )
-        return loguru_logger.add(
-            sink, level="INFO", format="{name}: {message}", filter=filter_fn
-        )
-    except ImportError:
-        return None
+    filter_fn = (
+        (lambda r: r["thread"].id == thread_id) if thread_id is not None else None
+    )
+    return logger.add(sink, level="INFO", format="{name}: {message}", filter=filter_fn)
 
 
 def _remove_loguru_sink(sink_id: int | None) -> None:
@@ -456,9 +449,7 @@ def _remove_loguru_sink(sink_id: int | None) -> None:
     if sink_id is None:
         return
     try:
-        from loguru import logger as loguru_logger
-
-        loguru_logger.remove(sink_id)
+        logger.remove(sink_id)
     except Exception:
         pass
 
