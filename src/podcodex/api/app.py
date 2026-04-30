@@ -19,8 +19,9 @@ from dotenv import load_dotenv
 
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from podcodex.api.routes import (
@@ -162,6 +163,14 @@ def _register_show_folder_resolver() -> None:
     IndexStore.set_show_folder_resolver(resolve)
 
 
+# Frontend's `json()` and direct fetch sites must send this header on
+# state-changing requests; the middleware below enforces it.
+CSRF_HEADER = "X-PodCodex"
+CSRF_VALUE = "1"
+_CSRF_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_CSRF_EXEMPT_PREFIXES = ("/mcp",)
+
+
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     mcp_http = _mcp.streamable_http_app() if _mcp is not None else None
@@ -200,6 +209,20 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Custom header forces a CORS preflight that the origin allowlist rejects,
+    # so a drive-by <form> on a malicious page can't reach mutating endpoints.
+    @app.middleware("http")
+    async def _csrf_guard(request: Request, call_next):
+        if request.method in _CSRF_METHODS and not request.url.path.startswith(
+            _CSRF_EXEMPT_PREFIXES
+        ):
+            if request.headers.get(CSRF_HEADER.lower()) != CSRF_VALUE:
+                return JSONResponse(
+                    {"detail": "CSRF token missing"},
+                    status_code=403,
+                )
+        return await call_next(request)
 
     app.include_router(health.router, prefix="/api", tags=["system"])
     app.include_router(config.router, prefix="/api", tags=["config"])

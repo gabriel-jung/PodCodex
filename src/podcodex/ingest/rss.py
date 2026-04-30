@@ -23,6 +23,18 @@ _FEED_CACHE = ".feed_cache.json"
 EPISODE_META_FILE = ".episode_meta.json"
 
 
+def _require_http_scheme(url: str, what: str = "URL") -> None:
+    """Reject non-HTTP(S) URLs to prevent SSRF and local-file reads.
+
+    Both ``feedparser.parse`` and ``httpx.stream`` accept ``file://`` and
+    other schemes that let a hostile feed read arbitrary local files or
+    pivot to internal IPs (cloud-metadata 169.254.169.254, etc.).
+    """
+    scheme = urlparse(url).scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError(f"{what} must use http/https, got: {scheme!r}")
+
+
 @dataclass
 class RSSEpisode:
     """Metadata for a single podcast episode from an RSS feed."""
@@ -143,6 +155,7 @@ def _extract_audio_url(entry) -> str:
 
 def feed_artwork(url: str) -> str:
     """Extract the channel-level artwork URL from an RSS feed."""
+    _require_http_scheme(url, "Feed URL")
     feed = feedparser.parse(url)
     # itunes:image is the most reliable source
     img = feed.feed.get("image", {})
@@ -150,9 +163,8 @@ def feed_artwork(url: str) -> str:
     return itunes_img.get("href", "") or img.get("href", "")
 
 
-def fetch_feed(url: str) -> list[RSSEpisode]:
-    """Fetch and parse an RSS feed. Returns episodes in feed order."""
-    feed = feedparser.parse(url)
+def _episodes_from_parsed(feed) -> list[RSSEpisode]:
+    """Convert a feedparser-parsed feed into ``RSSEpisode`` records."""
     if feed.bozo and not feed.entries:
         logger.warning(f"Feed parse error: {feed.bozo_exception}")
         return []
@@ -182,6 +194,17 @@ def fetch_feed(url: str) -> list[RSSEpisode]:
         )
 
     return episodes
+
+
+def parse_feed_content(content: str) -> list[RSSEpisode]:
+    """Parse raw RSS XML content. For tests and offline cache rebuilds."""
+    return _episodes_from_parsed(feedparser.parse(content))
+
+
+def fetch_feed(url: str) -> list[RSSEpisode]:
+    """Fetch and parse an RSS feed. Returns episodes in feed order."""
+    _require_http_scheme(url, "Feed URL")
+    return _episodes_from_parsed(feedparser.parse(url))
 
 
 # ── iTunes / Apple Podcasts search ────────────
@@ -449,6 +472,11 @@ def download_audio(
     """
     if not rss_episode.audio_url:
         return None, None
+
+    try:
+        _require_http_scheme(rss_episode.audio_url, "Audio URL")
+    except ValueError as exc:
+        return None, str(exc)
 
     ext = _audio_ext_from_url(rss_episode.audio_url)
     stem = episode_stem(rss_episode, show_folder)

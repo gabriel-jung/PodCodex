@@ -4,9 +4,9 @@ from podcodex.ingest.rss import (
     RSSEpisode,
     _parse_duration,
     build_episode_context,
-    fetch_feed,
     load_episode_meta,
     load_feed_cache,
+    parse_feed_content,
     save_episode_meta,
     save_feed_cache,
     slug_from_title,
@@ -151,10 +151,7 @@ _SAMPLE_RSS = """\
 
 
 def test_fetch_feed_from_local_xml(tmp_path):
-    feed_file = tmp_path / "feed.xml"
-    feed_file.write_text(_SAMPLE_RSS, encoding="utf-8")
-
-    episodes = fetch_feed(str(feed_file))
+    episodes = parse_feed_content(_SAMPLE_RSS)
 
     assert len(episodes) == 2
     ep1 = episodes[0]

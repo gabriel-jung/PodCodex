@@ -8,16 +8,6 @@
   "permissions": [
     "core:default",
     "shell:default",
-    "dialog:default",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "name": "yt-dlp",
-          "sidecar": true,
-          "args": true
-        }
-      ]
-    }
+    "dialog:default"
   ]
 }

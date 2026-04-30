@@ -29,7 +29,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
 
     app = create_app()
-    return TestClient(app)
+    return TestClient(app, headers={"X-PodCodex": "1"})
 
 
 # ──────────────────────────────────────────────

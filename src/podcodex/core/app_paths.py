@@ -30,10 +30,20 @@ APP_DATA_DIRNAME = "podcodex"
 
 @lru_cache(maxsize=1)
 def config_dir() -> Path:
-    """Return the user-scoped config directory, creating it if needed."""
+    """Return the user-scoped config directory, creating it if needed.
+
+    Mode is restricted to 0700 so secrets.env (also 0600) is not exposed
+    to other local users via directory listings. Best-effort on Windows
+    where POSIX modes have no effect.
+    """
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) / "podcodex" if xdg else Path.home() / ".config" / "podcodex"
     base.mkdir(parents=True, exist_ok=True)
+    if sys.platform != "win32":
+        try:
+            base.chmod(0o700)
+        except OSError:
+            pass
     return base
 
 
@@ -60,7 +70,9 @@ def data_dir() -> Path:
     elif sys.platform == "win32":
         appdata = os.environ.get("APPDATA")
         base = (
-            Path(appdata) / APP_DATA_DIRNAME if appdata else Path.home() / APP_DATA_DIRNAME
+            Path(appdata) / APP_DATA_DIRNAME
+            if appdata
+            else Path.home() / APP_DATA_DIRNAME
         )
     else:
         xdg = os.environ.get("XDG_DATA_HOME")

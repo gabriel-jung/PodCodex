@@ -13,13 +13,26 @@ import { isTauri } from "@/platform";
 export const BASE =
   isTauri() && import.meta.env.PROD ? "http://127.0.0.1:18811" : "";
 
-export async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, init);
+// Custom CSRF header forces a CORS preflight that rejects cross-origin pages.
+// Mirrors `CSRF_HEADER`/`CSRF_VALUE` in src/podcodex/api/app.py.
+export const CSRF_HEADER = "X-PodCodex";
+export const CSRF_VALUE = "1";
+
+/** Fetch with the CSRF header already set. Use for non-JSON responses or
+ *  FormData uploads where `json()` doesn't fit. Throws on `!res.ok`. */
+export async function rawFetch(url: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  headers.set(CSRF_HEADER, CSRF_VALUE);
+  const res = await fetch(`${BASE}${url}`, { ...init, headers });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${res.status}: ${body}`);
   }
-  return res.json();
+  return res;
+}
+
+export async function json<T>(url: string, init?: RequestInit): Promise<T> {
+  return (await rawFetch(url, init)).json();
 }
 
 export * from "./health";

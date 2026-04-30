@@ -30,7 +30,7 @@ def _redirect_config(tmp_path: Path, monkeypatch):
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app)
+    return TestClient(app, headers={"X-PodCodex": "1"})
 
 
 def _read(path: Path) -> dict:

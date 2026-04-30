@@ -54,7 +54,7 @@ def _isolated_store(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    return TestClient(app, headers={"X-PodCodex": "1"})
 
 
 # ── List ────────────────────────────────────────────────────────────────

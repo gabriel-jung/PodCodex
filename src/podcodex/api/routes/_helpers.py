@@ -200,6 +200,19 @@ def require_show_folder(show_folder: str) -> Path:
     return path
 
 
+def resolve_inside_show_root(path: str) -> Path:
+    """Defend ``?path=`` query params against arbitrary-file read/delete by
+    requiring the resolved path to live under a registered show folder."""
+    from podcodex.api.routes.config import _load as _load_cfg
+
+    p = Path(path).expanduser().resolve()
+    cfg = _load_cfg()
+    roots = [Path(f).resolve() for f in cfg.show_folders]
+    if not any(p == r or p.is_relative_to(r) for r in roots):
+        raise HTTPException(403, "Path is not inside a registered show folder")
+    return p
+
+
 def is_downloaded(show_folder: Path, stem: str) -> bool:
     """Check if an audio file with the given stem exists in the show folder."""
     return any((show_folder / f"{stem}{ext}").exists() for ext in AUDIO_EXTS)
@@ -218,7 +231,9 @@ def rss_episode_to_out(ep: RSSEpisode, show_folder: Path) -> dict:
 # ── Task submission ─────────────────────────────
 
 
-_GPU_STEPS = frozenset({"transcribe", "index", "batch"})
+_GPU_STEPS = frozenset(
+    {"transcribe", "index", "batch", "generate_tts", "extract_voices"}
+)
 
 
 def submit_task(step: str, audio_path: str, fn, *args) -> TaskResponse:

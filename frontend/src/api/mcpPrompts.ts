@@ -1,4 +1,4 @@
-import { BASE, json } from "./client";
+import { json, rawFetch } from "./client";
 
 export type SlotType = "string" | "enum" | "int" | "bool";
 
@@ -59,13 +59,7 @@ export const updateMcpPrompt = (id: string, payload: McpPromptUpdate) =>
   });
 
 export async function deleteMcpPrompt(id: string): Promise<void> {
-  const res = await fetch(
-    `${BASE}/api/mcp/prompts/${encodeURIComponent(id)}`,
-    { method: "DELETE" },
-  );
-  if (!res.ok) {
-    throw new Error(`${res.status}: ${await res.text()}`);
-  }
+  await rawFetch(`/api/mcp/prompts/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export const toggleMcpPrompt = (id: string) =>

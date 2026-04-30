@@ -1,5 +1,5 @@
 import type { Segment, TaskResponse, TranscribeRequest } from "./types";
-import { BASE, json } from "./client";
+import { json, rawFetch } from "./client";
 import { createVersionApi } from "./versions";
 
 const api = createVersionApi("transcribe");
@@ -48,13 +48,9 @@ export const startTranscribe = (req: TranscribeRequest) =>
 export async function uploadTranscript(audioPath: string, file: File, outputDir?: string): Promise<{ status: string; count: number }> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${BASE}/api/transcribe/upload?${qs(audioPath, outputDir)}`, {
+  const res = await rawFetch(`/api/transcribe/upload?${qs(audioPath, outputDir)}`, {
     method: "POST",
     body: form,
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`${res.status}: ${body}`);
-  }
   return res.json();
 }
