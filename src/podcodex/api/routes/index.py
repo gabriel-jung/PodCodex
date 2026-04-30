@@ -148,13 +148,14 @@ async def index_status(
     for model_key in MODELS:
         for chunking in CHUNKING_STRATEGIES:
             col = collection_name(show, model_key, chunking)
-            indexed = local.episode_is_indexed(col, episode)
-            count = local.episode_chunk_count(col, episode) if indexed else 0
+            # chunk_count > 0 already implies indexed; the separate
+            # episode_is_indexed query was a redundant round-trip.
+            count = local.episode_chunk_count(col, episode)
             combinations.append(
                 {
                     "model": model_key,
                     "chunking": chunking,
-                    "indexed": indexed,
+                    "indexed": count > 0,
                     "chunk_count": count,
                 }
             )
@@ -203,8 +204,8 @@ async def episode_collections(
     local = get_index_store()
     out: list[dict] = []
     for col_name in local.list_collections(show=show):
-        count = local.episode_chunk_count(col_name, episode)
-        if not count:
+        summary = local.episode_collection_summary(col_name, episode)
+        if not summary:
             continue
         info = local.get_collection_info(col_name) or {}
         out.append(
@@ -212,8 +213,8 @@ async def episode_collections(
                 "collection": col_name,
                 "model": info.get("model", ""),
                 "chunker": info.get("chunker", ""),
-                "source": local.episode_source(col_name, episode),
-                "chunk_count": count,
+                "source": summary["source"],
+                "chunk_count": summary["chunk_count"],
             }
         )
     return out
@@ -288,8 +289,7 @@ async def inspect_index(
             1 for c in chunks if c.get("vector_zero_frac", 0.0) > 0.5
         ),
         "n_with_zeros": sum(
-            1 for c in chunks
-            if c.get("vector_zero_frac", 0.0) > ZERO_WARN_THRESHOLD
+            1 for c in chunks if c.get("vector_zero_frac", 0.0) > ZERO_WARN_THRESHOLD
         ),
         "zero_warn_threshold": ZERO_WARN_THRESHOLD,
     }

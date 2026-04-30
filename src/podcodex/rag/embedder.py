@@ -226,9 +226,7 @@ class BGEEmbedder:
         get_hf_cache_dir()  # ensure HF_HOME is set before BGEM3 downloads
         devices = [device] if device else None
         with timed_load(f"BGEEmbedder {self.MODEL} on {device}"):
-            self._model = BGEM3FlagModel(
-                self.MODEL, use_fp16=use_fp16, devices=devices
-            )
+            self._model = BGEM3FlagModel(self.MODEL, use_fp16=use_fp16, devices=devices)
         self._batch_size = batch_size
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
@@ -299,14 +297,20 @@ def get_embedder(
     Raises:
         ValueError: if model_key is not in the registry.
     """
-    # Fast path — no lock needed for cache hits (dict reads are GIL-atomic)
-    if model_key in _embedder_cache:
-        return _embedder_cache[model_key]
+    # Cache key includes device — same model on cpu vs cuda are different
+    # objects with different parameter tensors; collapsing them silently
+    # gave the wrong-device embedder to the second caller.
+    cache_key = f"{model_key}|{device}"
+
+    # Single .get() avoids the contains/index race against clear_embedder_cache
+    cached = _embedder_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     with _embedder_lock:
-        # Re-check under lock to prevent duplicate construction
-        if model_key in _embedder_cache:
-            return _embedder_cache[model_key]
+        cached = _embedder_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         if model_key not in MODELS:
             valid = ", ".join(MODELS.keys())
@@ -321,5 +325,5 @@ def get_embedder(
         else:
             raise ValueError(f"No embedder class registered for '{model_key}'")
 
-        _embedder_cache[model_key] = embedder
+        _embedder_cache[cache_key] = embedder
         return embedder

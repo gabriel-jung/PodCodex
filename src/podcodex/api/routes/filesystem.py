@@ -112,14 +112,26 @@ async def list_directory(
                 continue
             if stat.S_ISDIR(st.st_mode):
                 is_show = (item / SHOW_META_FILENAME).exists()
+                # scandir + first-match so folders with thousands of episodes
+                # don't pay a full iterdir on every parent listing.
+                has_audio = False
                 try:
-                    has_audio = any(
-                        f.suffix.lower() in AUDIO_EXTS
-                        for f in item.iterdir()
-                        if f.is_file()
-                    )
-                except PermissionError:
-                    has_audio = False
+                    with os.scandir(item) as it:
+                        for child in it:
+                            try:
+                                name = child.name
+                                dot = name.rfind(".")
+                                if dot < 0:
+                                    continue
+                                if name[dot:].lower() in AUDIO_EXTS and child.is_file(
+                                    follow_symlinks=False
+                                ):
+                                    has_audio = True
+                                    break
+                            except OSError:
+                                continue
+                except (PermissionError, OSError):
+                    pass
                 dirs.append(
                     {
                         "name": item.name,

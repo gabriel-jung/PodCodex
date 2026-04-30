@@ -292,6 +292,29 @@ class PipelineDB:
         ).fetchone()
         return self._version_to_dict(row) if row else None
 
+    def latest_versions_for_steps(
+        self, steps: list[str]
+    ) -> dict[tuple[str, str], dict]:
+        """Bulk: latest version per ``(stem, step)`` via one window-function query."""
+        if not steps:
+            return {}
+        placeholders = ", ".join("?" for _ in steps)
+        rows = self._conn.execute(
+            f"""SELECT * FROM (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY stem, step ORDER BY timestamp DESC) AS rn
+                    FROM versions
+                    WHERE step IN ({placeholders})
+                )
+               WHERE rn = 1""",
+            steps,
+        ).fetchall()
+        out: dict[tuple[str, str], dict] = {}
+        for r in rows:
+            d = self._version_to_dict(r)
+            out[(d["stem"], d["step"])] = d
+        return out
+
     def list_all_versions(self, stem: str) -> list[dict]:
         """List all versions across all steps for an episode (newest first)."""
         rows = self._conn.execute(

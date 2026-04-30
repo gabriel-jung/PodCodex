@@ -44,21 +44,38 @@ class AppConfig(BaseModel):
     default_save_path: str = ""  # suggested location for new shows
 
 
+# Hit on every search/list_shows; mtime-keyed so writes auto-invalidate.
+_LOAD_CACHE: tuple[float, AppConfig] | None = None
+
+
 def _load() -> AppConfig:
     """Load app config from disk, migrating legacy formats if needed."""
-    if CONFIG_PATH.exists():
-        try:
-            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            # Migrate from old podcast_dir format
-            if "podcast_dir" in data and "show_folders" not in data:
-                data["show_folders"] = []
-                data["default_save_path"] = data.pop("podcast_dir", "")
-            return AppConfig(**data)
-        except (json.JSONDecodeError, OSError):
-            logger.opt(exception=True).warning(
-                "Failed to load config from {}, using defaults", CONFIG_PATH
-            )
-    return AppConfig()
+    global _LOAD_CACHE
+    try:
+        mtime = CONFIG_PATH.stat().st_mtime
+    except FileNotFoundError:
+        return AppConfig()
+    except OSError:
+        mtime = -1.0
+
+    if _LOAD_CACHE is not None and _LOAD_CACHE[0] == mtime:
+        return _LOAD_CACHE[1]
+
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        # Migrate from old podcast_dir format
+        if "podcast_dir" in data and "show_folders" not in data:
+            data["show_folders"] = []
+            data["default_save_path"] = data.pop("podcast_dir", "")
+        cfg = AppConfig(**data)
+    except (json.JSONDecodeError, OSError):
+        logger.opt(exception=True).warning(
+            "Failed to load config from {}, using defaults", CONFIG_PATH
+        )
+        return AppConfig()
+
+    _LOAD_CACHE = (mtime, cfg)
+    return cfg
 
 
 def _save(cfg: AppConfig) -> None:
@@ -70,6 +87,8 @@ def _save(cfg: AppConfig) -> None:
         lambda p: p.write_text(cfg.model_dump_json(indent=2), encoding="utf-8"),
         suffix=".json",
     )
+    global _LOAD_CACHE
+    _LOAD_CACHE = None  # invalidate; next _load() picks up new mtime
 
 
 def _register_folder(cfg: AppConfig, folder_path: str) -> AppConfig:
@@ -257,7 +276,9 @@ class PodcastSearchResultOut(BaseModel):
 @router.get("/podcasts/search", response_model=list[PodcastSearchResultOut])
 async def search_podcasts(q: str, limit: int = 8) -> list[PodcastSearchResultOut]:
     """Search Apple Podcasts / iTunes for a podcast by name."""
+    import asyncio
+
     if not q.strip():
         return []
-    results = search_itunes(q.strip(), limit=limit)
+    results = await asyncio.to_thread(search_itunes, q.strip(), limit)
     return [PodcastSearchResultOut(**r.__dict__) for r in results]

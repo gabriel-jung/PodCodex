@@ -16,26 +16,49 @@ from podcodex.rag.retriever import get_retriever
 router = APIRouter()
 
 
-def _build_audio_lookup() -> dict[str, dict[str, str]]:
-    """Per-request map: show name → {episode_stem: audio_path_str}.
+# Cache key combines folder mtime + show.toml mtime so that renaming a show
+# (which only touches show.toml) invalidates the cached display name.
+_AUDIO_LOOKUP_CACHE: dict[str, tuple[tuple[float, float], str, dict[str, str]]] = {}
 
-    Each show folder is scanned once (one ``iterdir``) rather than probing
-    every ``AUDIO_EXTS`` extension per search hit.
-    """
+
+def _build_audio_lookup() -> dict[str, dict[str, str]]:
+    """Per-request map: show name → {episode_stem: audio_path_str}."""
     from podcodex.api.routes.config import _load
-    from podcodex.ingest.show import load_show_meta
+    from podcodex.ingest.show import SHOW_META_FILENAME, load_show_meta
+
+    cfg = _load()
+    active_folders = set(cfg.show_folders)
+    # Drop entries for folders no longer in config (folder unregistered).
+    for stale in [k for k in _AUDIO_LOOKUP_CACHE if k not in active_folders]:
+        _AUDIO_LOOKUP_CACHE.pop(stale, None)
 
     out: dict[str, dict[str, str]] = {}
-    for folder_path in _load().show_folders:
+    for folder_path in cfg.show_folders:
         p = Path(folder_path)
+        try:
+            folder_m = p.stat().st_mtime
+        except (FileNotFoundError, NotADirectoryError):
+            continue
         if not p.is_dir():
             continue
+        try:
+            meta_m = (p / SHOW_META_FILENAME).stat().st_mtime
+        except (FileNotFoundError, OSError):
+            meta_m = 0.0
+        key = (folder_m, meta_m)
+
+        cached = _AUDIO_LOOKUP_CACHE.get(folder_path)
+        if cached is not None and cached[0] == key:
+            out[cached[1]] = cached[2]
+            continue
+
         meta = load_show_meta(p)
         name = (meta.name if meta else None) or p.name
         stems: dict[str, str] = {}
         for f in p.iterdir():
             if f.is_file() and f.suffix.lower() in AUDIO_EXTS:
                 stems[f.stem] = str(f)
+        _AUDIO_LOOKUP_CACHE[folder_path] = (key, name, stems)
         out[name] = stems
     return out
 
@@ -299,21 +322,19 @@ async def index_stats(show: str = "") -> dict:
     total_chunks = 0
     for col in collections:
         info = local.get_collection_info(col)
-        ep_count = len(local.list_episodes(col))
-        chunk_count = local.collection_chunk_count(col)
-        sources = local.list_sources(col)
+        summary = local.collection_summary(col)
         stats.append(
             {
                 "collection": col,
                 "model": info["model"] if info else "",
                 "chunking": info["chunker"] if info else "",
-                "episodes": ep_count,
-                "chunks": chunk_count,
-                "sources": sources,
+                "episodes": summary["episodes"],
+                "chunks": summary["chunks"],
+                "sources": summary["sources"],
             }
         )
-        total_episodes += ep_count
-        total_chunks += chunk_count
+        total_episodes += summary["episodes"]
+        total_chunks += summary["chunks"]
     return {
         "collections": stats,
         "total_episodes": total_episodes,

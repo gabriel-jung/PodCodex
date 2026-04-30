@@ -734,8 +734,10 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
 
 
 def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
+    from concurrent.futures import ThreadPoolExecutor
+
     from podcodex.core._utils import BREAK_SPEAKER, UNKNOWN_SPEAKERS, group_by_speaker
-    from podcodex.core.versions import load_latest
+    from podcodex.core.versions import load_version
 
     db = get_pipeline_db(path)
     if db.episode_count() == 0:
@@ -751,11 +753,29 @@ def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
     episodes_scanned = 0
     episodes_with_transcripts = 0
 
-    for ep in db.all_episodes():
-        stem = ep["stem"]
-        episodes_scanned += 1
-        base = path / stem / stem
-        segments = load_latest(base, "corrected") or load_latest(base, "transcript")
+    # Single bulk DB query for the latest version per (stem, step). Replaces
+    # 2*N ``list_versions`` round-trips that scaled badly with N episodes.
+    episodes = db.all_episodes()
+    latest_by_step = db.latest_versions_for_steps(["corrected", "transcript"])
+
+    def _load_segments(stem: str) -> tuple[str, list[dict] | None]:
+        for step in ("corrected", "transcript"):
+            v = latest_by_step.get((stem, step))
+            if not v:
+                continue
+            try:
+                return stem, load_version(path / stem / stem, step, v["id"])
+            except FileNotFoundError:
+                continue
+        return stem, None
+
+    # JSON reads parallelize well — they're disk-bound, not CPU-bound.
+    stems = [ep["stem"] for ep in episodes]
+    episodes_scanned = len(stems)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        loaded = list(pool.map(_load_segments, stems))
+
+    for stem, segments in loaded:
         if not segments:
             continue
         episodes_with_transcripts += 1

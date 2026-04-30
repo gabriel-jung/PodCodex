@@ -773,6 +773,21 @@ class IndexStore:
         )
         return str(rows[0].get("source", "")) if rows else ""
 
+    def episode_collection_summary(self, collection: str, episode: str) -> dict | None:
+        """``(chunk_count, source)`` for an episode in a collection, or ``None``."""
+        if not self.collection_exists(collection):
+            return None
+        t = self._table(collection)
+        where = f"episode = '{_escape(episode)}'"
+        count = int(t.count_rows(filter=where))
+        if not count:
+            return None
+        rows = t.search().where(where).select(["source"]).limit(1).to_list()
+        return {
+            "chunk_count": count,
+            "source": str(rows[0].get("source", "")) if rows else "",
+        }
+
     def delete_episode(self, collection: str, episode: str) -> None:
         """Delete every chunk for an episode in a collection.
 
@@ -1390,6 +1405,20 @@ class IndexStore:
     def list_sources(self, collection: str) -> list[str]:
         """Return sorted distinct ``source`` values in a collection."""
         return self._distinct(collection, "source")
+
+    def collection_summary(self, collection: str) -> dict:
+        """Single-scan ``{episodes, chunks, sources}`` for ``/api/search/stats``."""
+        if not self.collection_exists(collection):
+            return {"episodes": 0, "chunks": 0, "sources": []}
+        t = self._table(collection)
+        rows = t.search().select(["episode", "source"]).limit(1_000_000).to_list()
+        episodes = {r["episode"] for r in rows if r.get("episode")}
+        sources = sorted({r["source"] for r in rows if r.get("source")})
+        return {
+            "episodes": len(episodes),
+            "chunks": len(rows),
+            "sources": sources,
+        }
 
     def list_speakers(self, collection: str) -> list[str]:
         """Return sorted distinct ``dominant_speaker`` values in a collection."""
