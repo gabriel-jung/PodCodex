@@ -18,7 +18,7 @@ export interface AddShowModalProps {
   onOpenFile?: (path: string) => void;
 }
 
-type SourceMode = "podcast" | "local" | "youtube" | "import";
+type SourceMode = "podcast" | "youtube" | "local" | "bundle";
 
 export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOpenFile }: AddShowModalProps) {
   const [step, setStep] = useState<"search" | "location">("search");
@@ -102,7 +102,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
 
           {step === "search" && (
             <div className="flex flex-col gap-4 overflow-hidden">
-              {/* Source mode toggle: Podcast | Local | YouTube */}
+              {/* Source mode toggle: Podcast | YouTube | Local | Bundle */}
               <div className="flex gap-1 bg-muted rounded-lg p-1">
                 <button
                   className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "podcast" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
@@ -111,22 +111,22 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                   <Rss className="h-3.5 w-3.5" /> Podcast
                 </button>
                 <button
-                  className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "local" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
-                  onClick={() => switchMode("local")}
-                >
-                  <FolderOpen className="h-3.5 w-3.5" /> Local
-                </button>
-                <button
                   className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "youtube" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
                   onClick={() => switchMode("youtube")}
                 >
                   <PlaySquare className="h-3.5 w-3.5" /> YouTube
                 </button>
                 <button
-                  className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "import" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
-                  onClick={() => switchMode("import")}
+                  className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "local" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={() => switchMode("local")}
                 >
-                  <Package className="h-3.5 w-3.5" /> Import
+                  <FolderOpen className="h-3.5 w-3.5" /> Local
+                </button>
+                <button
+                  className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "bundle" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={() => switchMode("bundle")}
+                >
+                  <Package className="h-3.5 w-3.5" /> Bundle
                 </button>
               </div>
 
@@ -208,7 +208,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
               {sourceMode === "local" && (
                 <>
                   <p className="text-xs text-muted-foreground">
-                    Browse to a folder of existing episodes or to a single audio file.
+                    Pick an existing folder of episodes (creates a show) or a single audio file (one-off transcription).
                   </p>
 
                   <div className="flex flex-col gap-3">
@@ -217,7 +217,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                       variant="outline"
                       className="justify-start gap-2"
                     >
-                      <FolderOpen className="w-4 h-4" /> Browse for a folder…
+                      <FolderOpen className="w-4 h-4" /> Existing folder…
                     </Button>
                     {onOpenFile && (
                       <Button
@@ -225,7 +225,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                         variant="outline"
                         className="justify-start gap-2"
                       >
-                        <Search className="w-4 h-4" /> Browse for an audio file…
+                        <Search className="w-4 h-4" /> Single audio file…
                       </Button>
                     )}
                   </div>
@@ -239,7 +239,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                 </>
               )}
 
-              {sourceMode === "import" && (
+              {sourceMode === "bundle" && (
                 <BundleImportPanel
                   onImported={(showsDir, finalFolder) => {
                     if (finalFolder && showsDir) {
@@ -370,7 +370,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
       {localPickerOpen === "folder" && (
         <FolderPicker
           open
-          title="Browse for a show folder"
+          title="Choose a show folder"
           description="Select a folder that already contains podcast episodes or transcripts."
           onClose={() => setLocalPickerOpen(null)}
           onSelect={(p) => { setLocalPickerOpen(null); handleLocalImport(p); }}
@@ -382,7 +382,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
         <FolderPicker
           open
           mode="file"
-          title="Browse for an audio file"
+          title="Choose an audio file"
           description="Select a single audio file to transcribe and process."
           onClose={() => setLocalPickerOpen(null)}
           onSelect={(p) => { setLocalPickerOpen(null); onOpenFile(p); }}

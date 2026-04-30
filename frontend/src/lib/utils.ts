@@ -111,6 +111,19 @@ export function getShowName(showMeta: ShowMeta | null | undefined, audioPath: st
   return parts[parts.length - 2] || parts[parts.length - 1] || "";
 }
 
+/** Split a path into parent dir and last segment, preserving the original separator. Handles Windows (\) and POSIX (/). */
+export function splitPath(path: string): { parent: string; basename: string; sep: "/" | "\\" } {
+  const sep: "/" | "\\" = path.includes("\\") ? "\\" : "/";
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  const basename = parts.pop() ?? "";
+  let parent = parts.join(sep);
+  if (sep === "/" && path.startsWith("/")) parent = "/" + parent;
+  // Windows drive root: parent ends up as bare `C:`, but callers joining
+  // with sep would produce `C:foo` (working-dir-relative on Windows).
+  if (sep === "\\" && /^[A-Za-z]:$/.test(parent)) parent += "\\";
+  return { parent: parent || (sep === "/" ? "/" : ""), basename: basename || path, sep };
+}
+
 /** True if any pipeline step is outdated (transcribe, correct, or translate). */
 export function isOutdated(ep: { transcribe_status?: string; correct_status?: string; translate_status?: string }): boolean {
   return ep.transcribe_status === "outdated" || ep.correct_status === "outdated" || ep.translate_status === "outdated";
@@ -132,12 +145,9 @@ export function capitalize(s: string): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 
-/** POSIX-style parent directory of a path. Returns "/" for top-level paths. */
+/** Parent directory of a path. Handles Windows (\) and POSIX (/). Returns "/" or "" for top-level. */
 export function parentPath(path: string): string {
-  const trimmed = path.replace(/\/+$/, "");
-  const idx = trimmed.lastIndexOf("/");
-  if (idx <= 0) return "/";
-  return trimmed.slice(0, idx);
+  return splitPath(path.replace(/[\\/]+$/, "")).parent;
 }
 
 /** Extract error message from a mutation error, with safe casting. */

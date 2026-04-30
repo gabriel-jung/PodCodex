@@ -79,10 +79,10 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
         ))}
       </nav>
 
-      {/* Bottom: Settings + Theme */}
+      {/* Bottom: Theme + Settings */}
       <div className="flex flex-col border-t border-border py-1">
-        <SidebarBtn icon={Settings} label="Settings" expanded={expanded} onClick={() => navigate({ to: "/settings" })} />
         <SidebarBtn icon={SunMoon} label={`Theme: ${theme}`} expanded={expanded} onClick={() => setTheme(nextTheme)} />
+        <SidebarBtn icon={Settings} label="Settings" expanded={expanded} onClick={() => navigate({ to: "/settings" })} />
       </div>
 
       {/* Expand toggle */}

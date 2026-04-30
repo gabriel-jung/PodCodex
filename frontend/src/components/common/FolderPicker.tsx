@@ -23,8 +23,26 @@ const QUICK_ACCESS_BASE = [
   { label: "Home", path: "~", icon: Home },
 ];
 
+const LAST_PATH_KEY = "podcodex.lastBrowsePath";
+
+const readLastPath = (): string | null => {
+  try {
+    return localStorage.getItem(LAST_PATH_KEY);
+  } catch {
+    return null;
+  }
+};
+
+const writeLastPath = (path: string): void => {
+  try {
+    localStorage.setItem(LAST_PATH_KEY, path);
+  } catch {
+    /* localStorage unavailable — ignore */
+  }
+};
+
 export default function FolderPicker({ open, onClose, onSelect, initialPath, mode = "folder", extensions, title, description }: FolderPickerProps) {
-  const [currentPath, setCurrentPath] = useState(initialPath || "~");
+  const [currentPath, setCurrentPath] = useState(() => readLastPath() || initialPath || "~");
   const [listing, setListing] = useState<DirListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [editingPath, setEditingPath] = useState(false);
@@ -127,11 +145,14 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
     }
   };
 
+  const commitSelect = (selected: string) => {
+    if (listing?.path) writeLastPath(listing.path);
+    onSelect(selected);
+    onClose();
+  };
+
   const handleSelect = () => {
-    if (listing) {
-      onSelect(listing.path);
-      onClose();
-    }
+    if (listing) commitSelect(listing.path);
   };
 
   const handleCreateFolder = async () => {
@@ -147,19 +168,23 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
     }
   };
 
-  // Build breadcrumb segments from the resolved path.
+  // Build breadcrumb segments from the resolved path. Handles Windows (\) and POSIX (/).
   const breadcrumbs = (() => {
     const p = listing?.path || "";
     if (!p) return [];
-    const parts = p.split("/").filter(Boolean);
-    const crumbs: { label: string; path: string }[] = [{ label: "/", path: "/" }];
+    const isWindows = p.includes("\\") || /^[a-zA-Z]:/.test(p);
+    const sep = isWindows ? "\\" : "/";
+    const parts = p.split(/[\\/]+/).filter(Boolean);
+    const root = isWindows ? "" : "/";
+    const crumbs: { label: string; path: string }[] = isWindows ? [] : [{ label: "/", path: "/" }];
     for (let i = 0; i < parts.length; i++) {
-      crumbs.push({ label: parts[i], path: "/" + parts.slice(0, i + 1).join("/") });
+      const joined = parts.slice(0, i + 1).join(sep);
+      crumbs.push({ label: parts[i], path: isWindows ? joined : root + joined });
     }
     return crumbs;
   })();
 
-  const displayTitle = title || (mode === "file" ? "Browse for an audio file" : "Browse for a folder");
+  const displayTitle = title || (mode === "file" ? "Choose a file" : "Choose a folder");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -262,7 +287,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
                     key={dir.path}
                     dir={dir}
                     onNavigate={() => navigateTo(dir.path)}
-                    onSelect={mode === "folder" ? () => { onSelect(dir.path); onClose(); } : undefined}
+                    onSelect={mode === "folder" ? () => commitSelect(dir.path) : undefined}
                   />
                 ))}
 
@@ -270,7 +295,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
                   <FileRow
                     key={file.path}
                     file={file}
-                    onSelect={() => { onSelect(file.path); onClose(); }}
+                    onSelect={() => commitSelect(file.path)}
                   />
                 ))}
 

@@ -8,7 +8,7 @@ import { useEpisodeStore } from "@/stores";
 import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
-import { errorMessage, inputWidth, selectClass } from "@/lib/utils";
+import { errorMessage, inputWidth, selectClass, splitPath } from "@/lib/utils";
 import FolderLocationFields from "@/components/common/FolderLocationFields";
 import PipelineSettings from "./PipelineSettings";
 import ShowAccessSection from "./ShowAccessSection";
@@ -40,12 +40,11 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const [pipeTargetLang, setPipeTargetLang] = useState(meta.pipeline?.target_lang ?? "");
 
   // ── Move folder ──
-  const folderBasename = folder.split("/").filter(Boolean).pop() || folder;
-  const folderParentDefault = folder.slice(0, folder.length - folderBasename.length).replace(/\/+$/, "") || "/";
+  const { parent: folderParentDefault, basename: folderBasename, sep: pathSep } = splitPath(folder);
   const moveFilesRef = useRef(true);
   const [folderName, setFolderName] = useState(folderBasename);
   const [parentPath, setParentPath] = useState(folderParentDefault);
-  const destPath = `${parentPath.replace(/\/+$/, "")}/${folderName}`;
+  const destPath = `${parentPath.replace(/[\\/]+$/, "")}${pathSep}${folderName}`;
   const hasChanges = destPath !== folder;
 
   useEffect(() => {

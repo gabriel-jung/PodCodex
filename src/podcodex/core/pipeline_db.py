@@ -202,6 +202,27 @@ class PipelineDB:
             self._conn.execute(sql, vals_full)
             self._conn.commit()
 
+    def mark_indexed_bulk(self, updates: dict[str, bool]) -> None:
+        """Set the ``indexed`` flag for many stems in a single transaction.
+
+        Used by the per-show LanceDB reconciliation path where dozens to
+        hundreds of rows may need correcting at once; one commit per row
+        would block the FastAPI event loop on the SQLite write lock.
+        """
+        if not updates:
+            return
+        now = time.time()
+        rows = [(stem, int(v), now, int(v), now) for stem, v in updates.items()]
+        with self._lock, self._conn:
+            self._conn.executemany(
+                """
+                INSERT INTO episodes (stem, indexed, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(stem) DO UPDATE SET indexed = ?, updated_at = ?
+                """,
+                rows,
+            )
+
     def ensure_episode(self, stem: str, audio_path: str | None = None) -> None:
         """Create an episode row if it does not exist (idempotent)."""
         with self._lock:

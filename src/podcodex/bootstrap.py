@@ -103,14 +103,14 @@ def bootstrap_for_subprocess_child() -> None:
 def _install_all_patches() -> None:
     """Apply every monkey-patch we install at startup.
 
-    Each ``_install_*`` helper is responsible for logging its own outcome
-    (``logger.info`` on apply / skip, ``logger.warning`` on failure).
-    Subprocess children rely on these logs to confirm bootstrap actually
-    ran — silent failure is what hid the rc.9 torch-check bug.
+    ``_install_torch_from_numpy_patch`` runs before the transformers
+    patches because both end up importing torch and we want the numpy ABI
+    fallback installed before any caller hits ``torch.from_numpy``.
     """
     logger.info("bootstrap: installing platform patches (pid={})", os.getpid())
     _install_hf_symlink_patch()
     _install_subprocess_console_patch()
+    _install_torch_from_numpy_patch()
     _install_transformers_doc_patch()
     _install_transformers_torch_check_patch()
     logger.info("bootstrap: all patches installed")
@@ -175,6 +175,67 @@ def _install_subprocess_console_patch() -> None:
     logger.info("subprocess-console patch: applied")
 
 
+def _install_torch_from_numpy_patch() -> None:
+    """Make ``torch.from_numpy`` survive the numpy 2.x / torch ABI mismatch.
+
+    Torch wheels compiled against numpy 1.x can fail in frozen bundles where
+    the FrozenImporter loads numpy 2.x first; ``torch.from_numpy`` then raises
+    ``RuntimeError: Numpy is not available`` even though numpy is importable.
+    Wrap ``torch.from_numpy`` with a ctypes ``memmove`` fallback that bypasses
+    the C-level numpy ABI version check. Adapted from voicebox.
+
+    Runs synchronously after ``import torch`` finishes — never mid-init —
+    which is the whole point of this function existing instead of the old
+    polling-thread runtime hook.
+    """
+    try:
+        import ctypes
+
+        import numpy as np
+        import torch
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("torch from_numpy patch: import failed: {!r}", exc)
+        return
+
+    if getattr(torch, "_podcodex_from_numpy_patched", False):
+        return
+
+    _orig = torch.from_numpy
+    dtype_map = {
+        "float16": torch.float16,
+        "float32": torch.float32,
+        "float64": torch.float64,
+        "int8": torch.int8,
+        "int16": torch.int16,
+        "int32": torch.int32,
+        "int64": torch.int64,
+        "uint8": torch.uint8,
+        "bool": torch.bool,
+        "complex64": torch.complex64,
+        "complex128": torch.complex128,
+    }
+
+    def _safe_from_numpy(arr):
+        try:
+            return _orig(arr)
+        except RuntimeError:
+            a = np.ascontiguousarray(arr)
+            key = str(a.dtype)
+            if key not in dtype_map:
+                raise TypeError(
+                    f"torch from_numpy patch: unsupported numpy dtype {key!r}; "
+                    "add an explicit mapping rather than silently copying bytes "
+                    "into the wrong dtype."
+                )
+            out = torch.empty(list(a.shape), dtype=dtype_map[key])
+            ctypes.memmove(out.data_ptr(), a.ctypes.data, a.nbytes)
+            return out
+
+    torch.from_numpy = _safe_from_numpy
+    torch._podcodex_from_numpy_patched = True
+    logger.info("torch from_numpy patch: applied")
+
+
 def _install_transformers_torch_check_patch() -> None:
     """Make transformers' torch version gate work in a PyInstaller bundle.
 
@@ -209,6 +270,7 @@ def _install_transformers_torch_check_patch() -> None:
         def _patched(library_version: str, accept_dev: bool = False) -> bool:
             try:
                 import torch
+
                 base = _v.parse(getattr(torch, "__version__", "0.0")).base_version
                 return _v.parse(base) >= _v.parse(library_version)
             except Exception:  # noqa: BLE001
@@ -243,6 +305,7 @@ def _install_transformers_torch_check_patch() -> None:
                     from torch._dynamo._trace_wrapped_higher_order_op import (
                         TransformGetItemToIndex as _TGI,
                     )
+
                     _mu.TransformGetItemToIndex = _TGI
                     tgi_inject = "ok"
                 except Exception as exc:  # noqa: BLE001
@@ -390,9 +453,7 @@ def _install_stdlib_intercept() -> None:
                 level, record.getMessage()
             )
 
-    logging.basicConfig(
-        handlers=[_InterceptHandler()], level=logging.INFO, force=True
-    )
+    logging.basicConfig(handlers=[_InterceptHandler()], level=logging.INFO, force=True)
     for _name in (
         "uvicorn",
         "uvicorn.error",

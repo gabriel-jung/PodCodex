@@ -32,7 +32,12 @@ from podcodex.api.schemas import (
     UnifiedEpisodeOut,
 )
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
-from podcodex.ingest.folder import EpisodeInfo, invalidate_scan_cache, scan_folder
+from podcodex.ingest.folder import (
+    EpisodeInfo,
+    invalidate_scan_cache,
+    lance_indexed_stems,
+    scan_folder,
+)
 from podcodex.ingest.rss import (
     episode_stem,
     feed_artwork,
@@ -464,14 +469,28 @@ async def unified_episodes(
     effective = _resolve_defaults(app_defaults, show_meta)
 
     # ── Pipeline status from DB (or one-time migration) ──
+    # LanceDB is the source of truth for indexed status; query once and
+    # share between the (possible) initial scan and the reconciliation
+    # pass below.
+    lance_indexed = lance_indexed_stems(path)
+
     db = get_pipeline_db(path)
     if db.episode_count() == 0:
-        episodes = scan_folder(path)
+        episodes = scan_folder(path, indexed_stems=lance_indexed)
         if episodes:
             db.populate_from_scan(episodes)
 
     status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
     seg_counts = db.latest_segment_counts("transcript")
+
+    indexed_updates: dict[str, bool] = {}
+    for stem, row in status_map.items():
+        truth = stem in lance_indexed
+        if bool(row.get("indexed", False)) != truth:
+            indexed_updates[stem] = truth
+            row["indexed"] = truth
+    if indexed_updates:
+        db.mark_indexed_bulk(indexed_updates)
 
     local_audio = _scan_audio_files(path)
     episode_files = _scan_episode_files(path, local_audio)
@@ -981,9 +1000,33 @@ async def move_show(show_folder: str, req: MoveShowRequest) -> dict:
             f"Task {active.task_id} is running on this show — wait for it to finish",
         )
 
+    # Release any cached file handles BEFORE the move. On Windows, SQLite (WAL)
+    # holds file locks that prevent rename/unlink while open.
+    close_pipeline_db(old_path)
+    invalidate_scan_cache(old_path)
+
+    leftover_warning: str | None = None
+
     if req.move_files:
         new_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(old_path), str(new_path))
+        try:
+            shutil.move(str(old_path), str(new_path))
+        except OSError as exc:
+            # Fallback: copy then best-effort cleanup. Handles cross-volume
+            # moves and Windows file locks that survive close().
+            logger.warning(
+                "shutil.move failed ({}); falling back to copytree + rmtree",
+                exc,
+            )
+            shutil.copytree(str(old_path), str(new_path), dirs_exist_ok=True)
+            try:
+                shutil.rmtree(str(old_path))
+            except OSError as rm_exc:
+                leftover_warning = (
+                    f"Copied to {new_path} but could not remove {old_path}: {rm_exc}. "
+                    "Delete it manually once no process is using it."
+                )
+                logger.warning(leftover_warning)
         logger.info("Moved show folder {} → {}", old_path, new_path)
     else:
         # Just create the new folder with show metadata, leave files behind
@@ -1004,12 +1047,12 @@ async def move_show(show_folder: str, req: MoveShowRequest) -> dict:
     ]
     _save(cfg)
 
-    # Invalidate caches
-    close_pipeline_db(old_path)
-    invalidate_scan_cache(old_path)
     invalidate_scan_cache(new_path)
 
-    return {"status": "moved", "new_path": str(new_path)}
+    result: dict = {"status": "moved", "new_path": str(new_path)}
+    if leftover_warning:
+        result["warning"] = leftover_warning
+    return result
 
 
 class DeleteShowRequest(BaseModel):

@@ -64,9 +64,8 @@ def _episode_status(
 ) -> dict:
     """Derive pipeline status flags from the set of filenames in an output dir.
 
-    Only detects artifacts that are still written to disk (transcription
-    intermediates, transcript files, synthesis outputs, RAG marker).
-    Correct/translation status comes from the version DB via ``mark_step``.
+    ``indexed`` is intentionally False here — authoritative truth comes from
+    the LanceDB index, set by ``scan_folder`` after this function returns.
     """
     segments_ready = (
         f"{stem}.segments.parquet" in existing
@@ -80,8 +79,6 @@ def _episode_status(
 
     transcript_raw = f"{stem}.transcript.raw.json" in existing
     transcript_val = f"{stem}.transcript.json" in existing
-    # Check for actual transcript version files (.json) inside transcript/,
-    # not just the directory existing (it gets created early by parquet sub-steps).
     has_version_transcript = False
     if output_dir and (output_dir / "transcript").is_dir():
         has_version_transcript = any(
@@ -91,7 +88,6 @@ def _episode_status(
         )
     transcribed = transcript_raw or transcript_val or has_version_transcript
 
-    indexed = ".rag_indexed" in existing
     synthesized = f"{stem}.synthesized.wav" in existing
     has_subtitles = any(f.endswith(".vtt") for f in existing)
 
@@ -101,11 +97,38 @@ def _episode_status(
         "assigned": assigned,
         "transcribed": transcribed,
         "corrected": False,
-        "indexed": indexed,
+        "indexed": False,
         "synthesized": synthesized,
         "has_subtitles": has_subtitles,
         "translations": [],
     }
+
+
+def lance_indexed_stems(show_folder: Path) -> set[str]:
+    """Return the set of episode stems that LanceDB has chunks for, for this show.
+
+    Authoritative source for ``indexed`` status. Returns empty set if the
+    index is unavailable or the show has no collections (treat as
+    not-indexed rather than blocking the scan).
+    """
+    try:
+        from podcodex.ingest.show import load_show_meta
+        from podcodex.rag.index_store import get_index_store
+    except Exception:
+        return set()
+
+    meta = load_show_meta(show_folder)
+    show_name = (meta.name if meta else None) or show_folder.name
+    try:
+        store = get_index_store()
+        cols = store.list_collections(show=show_name)
+        indexed: set[str] = set()
+        for col in cols:
+            indexed.update(store.list_episodes(col))
+        return indexed
+    except Exception as exc:
+        logger.warning("lance indexed-set lookup failed for {!r}: {!r}", show_name, exc)
+        return set()
 
 
 def _list_dir(d: Path) -> set[str]:
@@ -144,11 +167,18 @@ def _make_episode(
     )
 
 
-def scan_folder(show_folder: Path) -> list[EpisodeInfo]:
+def scan_folder(
+    show_folder: Path, indexed_stems: set[str] | None = None
+) -> list[EpisodeInfo]:
     """Return a sorted list of EpisodeInfo for every episode in *show_folder*.
 
-    Results are cached for ``_CACHE_TTL`` seconds.  Call
+    Results are cached for ``_CACHE_TTL`` seconds. Call
     ``invalidate_scan_cache(show_folder)`` after mutations.
+
+    Args:
+        indexed_stems: Pre-computed set from :func:`lance_indexed_stems`.
+            Pass it when the caller already queried LanceDB to avoid a
+            second round-trip.
     """
     show_folder = Path(show_folder)
     key = str(show_folder)
@@ -158,7 +188,7 @@ def scan_folder(show_folder: Path) -> list[EpisodeInfo]:
     if cached and (now - cached[0]) < _CACHE_TTL:
         return cached[1]
 
-    result = _scan_folder_uncached(show_folder)
+    result = _scan_folder_uncached(show_folder, indexed_stems)
     _scan_cache[key] = (now, result)
     return result
 
@@ -171,7 +201,9 @@ def invalidate_scan_cache(show_folder: Path | str | None = None) -> None:
         _scan_cache.pop(str(show_folder), None)
 
 
-def _scan_folder_uncached(show_folder: Path) -> list[EpisodeInfo]:
+def _scan_folder_uncached(
+    show_folder: Path, indexed_stems: set[str] | None = None
+) -> list[EpisodeInfo]:
     """Batch-scan a show folder in two OS calls instead of O(n)."""
     episodes: dict[str, EpisodeInfo] = {}
 
@@ -218,5 +250,10 @@ def _scan_folder_uncached(show_folder: Path) -> list[EpisodeInfo]:
         has_meta = EPISODE_META_FILE in existing
         if has_transcript or has_meta:
             episodes[name] = _make_episode(name, show_folder / name, existing)
+
+    if indexed_stems is None:
+        indexed_stems = lance_indexed_stems(show_folder)
+    for ep in episodes.values():
+        ep.indexed = ep.stem in indexed_stems
 
     return sorted(episodes.values(), key=lambda ep: ep.stem)

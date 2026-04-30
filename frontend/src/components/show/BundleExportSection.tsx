@@ -6,7 +6,7 @@ import { exportShowBundle } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { SettingSection } from "@/components/ui/setting-row";
 import FolderPicker from "@/components/common/FolderPicker";
-import { errorMessage, parentPath } from "@/lib/utils";
+import { errorMessage, parentPath, splitPath } from "@/lib/utils";
 
 interface Props {
   folder: string;
@@ -14,7 +14,7 @@ interface Props {
 }
 
 const folderBasename = (path: string): string =>
-  path.replace(/\/+$/, "").split("/").pop() || "show";
+  splitPath(path.replace(/[\\/]+$/, "")).basename || "show";
 
 const slugify = (s: string, fallback: string): string => {
   const slug = s

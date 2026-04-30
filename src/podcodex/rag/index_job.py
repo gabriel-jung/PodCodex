@@ -8,13 +8,7 @@ imports (torch, sentence-transformers, LanceDB) out of the server process.
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
-
-
-def _mark_indexed(episode_dir: Path) -> None:
-    """Drop the ``.rag_indexed`` marker used by pipeline status probes."""
-    (episode_dir / ".rag_indexed").touch()
 
 
 def _autodetect_device() -> str:
@@ -105,8 +99,6 @@ def run(
             "The transcript may be too short or have unsupported format."
         )
 
-    _mark_indexed(p.base.parent)
-
     provenance = build_provenance(
         "indexed",
         model=(model_keys or ["bge-m3"])[0],
@@ -186,8 +178,6 @@ def run_for_batch(
 
     if upserted == 0:
         return {"upserted": 0, "indexed": False, "skipped": False}
-
-    _mark_indexed(p.base.parent)
 
     provenance = build_provenance(
         "indexed",

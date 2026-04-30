@@ -160,7 +160,6 @@ COLLECT_SUBMODULES = [
 # strict version parser.
 RUNTIME_HOOKS = [
     PYI_HOOKS_DIR / "pyi_rth_aaa_anaconda_sysver.py",
-    PYI_HOOKS_DIR / "pyi_rth_numpy_compat.py",
     PYI_HOOKS_DIR / "pyi_rth_torch_compiler_disable.py",
 ]
 
@@ -416,8 +415,12 @@ def copy_to_sidecar(source: Path, triple: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--gpu", action="store_true", help="build GPU sidecar (CUDA, --onedir)")
-    parser.add_argument("--clean", action="store_true", help="wipe dist/ and build_work/ first")
+    parser.add_argument(
+        "--gpu", action="store_true", help="build GPU sidecar (CUDA, --onedir)"
+    )
+    parser.add_argument(
+        "--clean", action="store_true", help="wipe dist/ and build_work/ first"
+    )
     parser.add_argument(
         "--no-torch-swap",
         action="store_true",
@@ -447,7 +450,9 @@ def main() -> None:
 
     if args.gpu:
         print(f"GPU --onedir built at: {output}")
-        print("Next: run packaging/package_gpu.py to split into server-core + cuda-libs archives.")
+        print(
+            "Next: run packaging/package_gpu.py to split into server-core + cuda-libs archives."
+        )
     else:
         copy_to_sidecar(output, triple)
 

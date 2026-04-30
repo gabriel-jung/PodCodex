@@ -12,7 +12,7 @@ import {
 import { queryKeys } from "@/api/queryKeys";
 import { artworkUrl } from "@/api/filesystem";
 import type { Episode } from "@/api/types";
-import { languageToISO, isOutdated } from "@/lib/utils";
+import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
 import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore } from "@/stores";
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
@@ -200,7 +200,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     return list;
   }, [all, search, filter, sort, minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude]);
 
-  const showName = meta?.name || folder.replace(/\/+$/, "").split("/").pop() || "Show";
+  const showName = meta?.name || splitPath(folder.replace(/[\\/]+$/, "")).basename || "Show";
 
   // Single pass over `filtered` to derive selection-gated subsets.
   // Replaces five separate .filter() walks.

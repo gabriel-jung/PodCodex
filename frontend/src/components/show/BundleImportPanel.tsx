@@ -7,7 +7,7 @@ import { queryKeys } from "@/api/queryKeys";
 import type { ImportRequest, ImportResult } from "@/api/generated-types";
 import { Button } from "@/components/ui/button";
 import FolderPicker from "@/components/common/FolderPicker";
-import { errorMessage, parentPath, selectClass } from "@/lib/utils";
+import { errorMessage, parentPath, selectClass, splitPath } from "@/lib/utils";
 
 type Policy = Exclude<NonNullable<ImportRequest["on_conflict"]>, "auto">;
 
@@ -91,7 +91,7 @@ export default function BundleImportPanel({ onImported }: Props) {
         ) : (
           <FolderOpen className="w-4 h-4" />
         )}
-        {archivePath ? archivePath.split("/").pop() : "Browse for a .podcodex file…"}
+        {archivePath ? splitPath(archivePath).basename : "Choose a .podcodex file…"}
       </Button>
 
       {previewError && (

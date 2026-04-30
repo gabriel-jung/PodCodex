@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { splitPath } from "@/lib/utils";
 import FolderPicker from "./FolderPicker";
 
 interface FolderLocationFieldsProps {
@@ -22,7 +23,8 @@ export default function FolderLocationFields({
   autoFocus,
 }: FolderLocationFieldsProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
-  const fullPath = `${parentPath.replace(/\/+$/, "")}/${folderName}`;
+  const { sep } = splitPath(parentPath || "/");
+  const fullPath = `${parentPath.replace(/[\\/]+$/, "")}${sep}${folderName}`;
 
   return (
     <>
