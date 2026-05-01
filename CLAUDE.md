@@ -29,3 +29,4 @@ Don't add `version` back to `tauri.conf.json` or hardcode `__version__` in `src/
 - **PyInstaller config single source:** `packaging/build_server.py`. ~100 hidden imports + COPY_METADATA hardcoded. CPU builds swap torch to CPU wheel (-1.5 GB); GPU builds install `cu128` JIT and skip the swap.
 - **Frontend TS/eslint non-blocking in CI** (~190 TS + ~40 eslint baseline). Don't enable strict without a planned cleanup PR.
 - **Type sync:** after editing any Pydantic model in `src/podcodex/api/`, run `make types` to regen `frontend/src/api/types.ts`. The file is checked in; never hand-edit.
+- **Icon source of truth:** `assets/icon.png` (1024×1024 RGBA). `frontend/public/icon.png` and `src-tauri/icons/*` are derived — `make icons` regenerates them. Don't hand-edit the derived copies; they get blown away on next regen.
