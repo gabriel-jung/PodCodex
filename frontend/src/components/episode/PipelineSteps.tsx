@@ -134,53 +134,6 @@ export const STEP_BY_KEY: Record<PipelineStepKey, PipelineStepDef> = Object.from
 
 // ── Small components ─────────────────────────────────────────────────────
 
-export function PipelineRow({ label, status, detail, subtitle, provenance, files, onClick }: {
-  label: string;
-  status: "done" | "partial" | false;
-  detail?: string;
-  subtitle?: string;
-  provenance?: Record<string, unknown>;
-  files?: string[];
-  onClick?: () => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const hasFiles = (files?.length ?? 0) > 0;
-  const hasInfo = !!provenance || hasFiles;
-
-  const LabelTag = onClick ? "button" : "span";
-  return (
-    <div>
-      <div className="flex items-center gap-3 text-sm">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${status === "done" ? "bg-success" : status === "partial" ? "bg-info" : "bg-muted-foreground/30"}`} />
-        <span className="flex flex-col">
-          <span className="flex items-center gap-2">
-            <LabelTag
-              onClick={onClick}
-              className={`${status ? "text-foreground" : "text-muted-foreground"} ${onClick ? "hover:underline cursor-pointer" : ""}`}
-            >
-              {label}
-            </LabelTag>
-            {detail && <span className="text-xs text-muted-foreground">{detail}</span>}
-            {hasInfo && status && (
-              <button onClick={() => setExpanded(!expanded)} className="text-xs text-muted-foreground hover:text-foreground transition">
-                {hasFiles ? `${files!.length} file${files!.length !== 1 ? "s" : ""} ` : ""}{expanded ? "▾" : "▸"}
-              </button>
-            )}
-          </span>
-          {subtitle && <span className="text-2xs text-muted-foreground">{subtitle}</span>}
-        </span>
-      </div>
-      {expanded && (
-        <div className="mt-1 ml-5 space-y-0.5">
-          {files?.map((f) => (
-            <div key={f} className="text-xs text-muted-foreground font-mono truncate">{f}</div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function PipelineStatus({ episode }: { episode: Episode }) {
   const prevStatus = useRef<Partial<Record<PipelineStepKey, StepStatus>>>({});
   const timers = useRef<Partial<Record<PipelineStepKey, ReturnType<typeof setTimeout>>>>({});

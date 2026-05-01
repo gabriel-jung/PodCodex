@@ -1,7 +1,7 @@
 /** Context menu for an episode row/card — Play, Download, Process (per-step), Delete. */
 
 import { memo } from "react";
-import { MoreVertical, Play, Download, Trash2, Sparkles, FileText, Languages, Database, ExternalLink } from "lucide-react";
+import { MoreVertical, Play, Download, Trash2, Mic, Sparkles, Languages, Database, Wand2, ExternalLink } from "lucide-react";
 import type { Episode } from "@/api/types";
 import {
   DropdownMenu,
@@ -27,9 +27,9 @@ export interface EpisodeMenuProps {
   children?: React.ReactNode;
 }
 
-const STEP_LABELS: Record<PipelineStep, { icon: typeof Sparkles; label: string }> = {
-  transcribe: { icon: Sparkles, label: "Transcribe" },
-  correct: { icon: FileText, label: "Correct" },
+const STEP_LABELS: Record<PipelineStep, { icon: typeof Mic; label: string }> = {
+  transcribe: { icon: Mic, label: "Transcribe" },
+  correct: { icon: Sparkles, label: "Correct" },
   translate: { icon: Languages, label: "Translate" },
   index: { icon: Database, label: "Index" },
 };
@@ -73,7 +73,7 @@ function EpisodeMenuInner({ ep, onOpen, onPlay, onDownload, onDelete, onProcess,
             <DropdownMenuSeparator />
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
-                <Sparkles className="w-3.5 h-3.5" /> Process
+                <Wand2 className="w-3.5 h-3.5" /> Process
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
                 {(Object.entries(STEP_LABELS) as [PipelineStep, typeof STEP_LABELS[PipelineStep]][]).map(([step, { icon: Icon, label }]) => (

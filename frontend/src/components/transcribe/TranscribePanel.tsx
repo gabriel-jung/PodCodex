@@ -244,16 +244,20 @@ export default function TranscribePanel() {
             </div>
           )}
           <FormGrid>
-            <HelpLabel label="Source" />
-            <Segmented
-              value={transcribeSource}
-              onChange={pickSource}
-              options={[
-                ["audio", "Audio", hasRealAudio ? "Transcribe the audio file" : "No audio file available", hasRealAudio],
-                ...(hasSubs ? [["subtitles", "Subtitles", "Reimport a .vtt/.srt already in the episode folder"] as const] : []),
-                ["upload", "Upload", "Upload any transcript file from disk"],
-              ]}
-            />
+            {(hasSubs || transcribeSource !== "audio") && (
+              <>
+                <HelpLabel label="Source" />
+                <Segmented
+                  value={transcribeSource}
+                  onChange={pickSource}
+                  options={[
+                    ["audio", "Audio", hasRealAudio ? "Transcribe the audio file" : "No audio file available", hasRealAudio],
+                    ...(hasSubs ? [["subtitles", "Subtitles", "Reimport a .vtt/.srt already in the episode folder"] as const] : []),
+                    ["upload", "Upload", "Upload any transcript file from disk"],
+                  ]}
+                />
+              </>
+            )}
 
             {transcribeSource === "audio" && hasWhisperX && (
               <TranscribeAudioRows
@@ -330,6 +334,15 @@ export default function TranscribePanel() {
               </Button>
               {episode.transcribed && (
                 <span className="text-xs text-muted-foreground">Saves a new version — previous ones stay in History.</span>
+              )}
+              {!hasSubs && (
+                <button
+                  type="button"
+                  onClick={() => pickSource("upload")}
+                  className="text-xs text-muted-foreground hover:text-foreground underline transition"
+                >
+                  Upload transcript instead
+                </button>
               )}
               {startMutation.isError && (
                 <p className="text-destructive text-xs w-full">{errorMessage(startMutation.error)}</p>
