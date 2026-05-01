@@ -361,10 +361,11 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
     enabled: !!audioPath && hasTranscript,
   });
 
+  const outputDir = episode.output_dir;
   const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(audioPath),
-    queryFn: () => getAllVersions(audioPath!),
-    enabled: !!audioPath && hasTranscript,
+    queryKey: queryKeys.allVersions(audioPath ?? outputDir),
+    queryFn: () => getAllVersions(audioPath, outputDir),
+    enabled: (!!audioPath || !!outputDir) && hasTranscript,
   });
 
   const showName = meta?.name ?? "";
@@ -872,7 +873,7 @@ function IndexGroup({
     return (
       <div className="rounded-lg border border-border/50 px-4 py-2.5 flex items-center gap-3 text-sm text-muted-foreground italic">
         <Database className="w-3.5 h-3.5" />
-        <span className="flex-1">Not indexed.</span>
+        <span className="flex-1">{indexed ? "Indexed." : "Not indexed yet."}</span>
         <button
           onClick={onOpen}
           className="text-xs not-italic text-foreground hover:underline"
