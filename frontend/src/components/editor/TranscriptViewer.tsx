@@ -9,7 +9,8 @@
 import { memo, useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment, VersionEntry } from "@/api/types";
-import { exportTextUrl, exportSrtUrl, exportVttUrl } from "@/api/client";
+import { saveExportFile } from "@/api/client";
+import { usePlatform } from "@/platform";
 import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
@@ -96,6 +97,7 @@ function ExportDropdown({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const platform = usePlatform();
 
   useEffect(() => {
     if (!open) return;
@@ -105,6 +107,22 @@ function ExportDropdown({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
+
+  const formats: { label: string; ext: "txt" | "srt" | "vtt" }[] = [
+    { label: "Plain Text", ext: "txt" },
+    { label: "SRT Subtitles", ext: "srt" },
+    { label: "WebVTT Subtitles", ext: "vtt" },
+  ];
+
+  const handleExport = (ext: "txt" | "srt" | "vtt") => {
+    setOpen(false);
+    return saveExportFile(platform, {
+      audioPath,
+      source,
+      format: ext,
+      defaultName: `${filename || "export"}.${ext}`,
+    });
+  };
 
   return (
     <div className="relative" ref={ref}>
@@ -119,20 +137,15 @@ function ExportDropdown({
       </Button>
       {open && (
         <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-36">
-          {[
-            { label: "Plain Text", ext: "txt", url: exportTextUrl(audioPath, source) },
-            { label: "SRT Subtitles", ext: "srt", url: exportSrtUrl(audioPath, source) },
-            { label: "WebVTT Subtitles", ext: "vtt", url: exportVttUrl(audioPath, source) },
-          ].map(({ label, ext, url }) => (
-            <a
-              key={label}
-              href={url}
-              download={filename ? `${filename}.${ext}` : ""}
-              className="block px-3 py-1.5 text-xs hover:bg-accent transition"
-              onClick={() => setOpen(false)}
+          {formats.map(({ label, ext }) => (
+            <button
+              key={ext}
+              type="button"
+              onClick={() => handleExport(ext)}
+              className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition"
             >
               {label}
-            </a>
+            </button>
           ))}
         </div>
       )}

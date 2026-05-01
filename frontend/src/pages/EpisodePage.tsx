@@ -1,10 +1,10 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getEpisodes, getShowMeta, exportZipUrl, openFolder } from "@/api/client";
-import { audioFileUrl } from "@/api/client";
+import { getEpisodes, getShowMeta, openFolder } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
-import { artworkUrl, deleteFile } from "@/api/filesystem";
+import { artworkUrl, deleteFile, saveExportFile } from "@/api/filesystem";
+import { usePlatform } from "@/platform";
 import { uploadTranscript, getSpeakerMap, deleteTranscribeVersion } from "@/api/transcribe";
 import { getSegmentsPreview as getTranscribePreview } from "@/api/transcribe";
 import { getCorrectSegmentsPreview as getCorrectPreview, deleteCorrectVersion } from "@/api/correct";
@@ -32,7 +32,7 @@ import PanelLoading from "@/components/common/PanelLoading";
 const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
 const SegmentContextDialog = lazy(() => import("@/components/search/SegmentContextDialog"));
 const IndexInspectorModal = lazy(() => import("@/components/index/IndexInspectorModal"));
-import { formatDuration, formatDate, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited } from "@/lib/utils";
+import { formatDuration, formatDate, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, splitPath } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import {
   Play,
@@ -340,6 +340,7 @@ function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, 
 }
 
 function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError, onNavigateStep }: { episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string; onNavigateStep: (step: ActiveStep) => void }) {
+  const platform = usePlatform();
   const audioPath = episode.audio_path;
   const hasTranscript = !!episode.transcribed;
   const seekTo = useAudioStore((s) => s.seekTo);
@@ -550,10 +551,18 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
           </button>
         )}
         {episode.audio_path && (
-          <a href={exportZipUrl(episode.audio_path)} download className="flex items-center gap-1.5 hover:text-foreground transition ml-auto shrink-0">
+          <button
+            type="button"
+            onClick={() => saveExportFile(platform, {
+              audioPath: episode.audio_path!,
+              format: "zip",
+              defaultName: `${episode.stem || "episode"}.zip`,
+            })}
+            className="flex items-center gap-1.5 hover:text-foreground transition ml-auto shrink-0"
+          >
             <Download className="w-3.5 h-3.5" />
             <span>Export ZIP</span>
-          </a>
+          </button>
         )}
       </div>
 
@@ -717,6 +726,7 @@ function SourcesSection({
   onDeleteSubtitle: (filename: string) => void;
   onPreviewFile?: () => void;
 }) {
+  const platform = usePlatform();
   return (
     <div className="space-y-3">
       <h4 className="text-sm font-medium px-1">Sources</h4>
@@ -725,17 +735,25 @@ function SourcesSection({
         {episode.audio_path ? (
           <SourceFileRow
             icon={FileAudio}
-            label={episode.audio_path.split("/").pop() ?? "audio"}
+            label={splitPath(episode.audio_path).basename || "audio"}
             sublabel="audio"
-            action={
-              <a
-                href={audioFileUrl(episode.audio_path)}
-                download={`${episode.title}.${episode.audio_path.split(".").pop()}`}
-                className="text-2xs text-muted-foreground hover:text-foreground transition"
-              >
-                Save
-              </a>
-            }
+            action={(() => {
+              const audioPath = episode.audio_path;
+              const ext = audioPath.split(".").pop() || "mp3";
+              return (
+                <button
+                  type="button"
+                  onClick={() => saveExportFile(platform, {
+                    audioPath,
+                    format: "audio",
+                    defaultName: `${episode.title}.${ext}`,
+                  })}
+                  className="text-2xs text-muted-foreground hover:text-foreground transition"
+                >
+                  Save
+                </button>
+              );
+            })()}
           />
         ) : (
           <div className="px-4 py-3 text-sm text-muted-foreground italic">

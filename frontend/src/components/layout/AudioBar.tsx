@@ -235,7 +235,7 @@ export default function AudioBar() {
         </button>
 
         {/* Title above, show name below — vertical stack matches artwork height */}
-        <div className="flex-[2] min-w-0 flex flex-col justify-center leading-tight">
+        <div className="flex-1 min-w-0 flex flex-col justify-center leading-tight">
           <span className="text-sm font-medium truncate" title={audioTitle || "Playing"}>
             {audioTitle || "Playing"}
           </span>
@@ -246,8 +246,9 @@ export default function AudioBar() {
           )}
         </div>
 
-        {/* Centered transport */}
-        <div className="flex-1 flex items-center justify-center gap-0.5">
+        {/* Transport — sits at the geometric center thanks to the equal-flex
+            wrappers on the left (title) and right (controls). */}
+        <div className="shrink-0 flex items-center justify-center gap-0.5">
           <SkipLabelButton label="−15" onClick={() => skip(-15)} title="Back 15s" />
           <SkipLabelButton label="−5" onClick={() => skip(-5)} title="Back 5s" />
           <Button onClick={togglePlay} variant="ghost" size="icon" className="h-7 w-7 mx-0.5" aria-label={playing ? "Pause" : "Play"}>
@@ -257,6 +258,7 @@ export default function AudioBar() {
           <SkipLabelButton label="+15" onClick={() => skip(15)} title="Forward 15s" />
         </div>
 
+        <div className="flex-1 flex items-center justify-end gap-3 min-w-0">
         {/* Speed — grouped in a pill */}
         <div className="flex items-center shrink-0 bg-muted/40 rounded-full h-7">
           <button
@@ -348,6 +350,7 @@ export default function AudioBar() {
         <Button onClick={stopAudio} variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground" aria-label="Close player">
           <X className="w-3.5 h-3.5" />
         </Button>
+        </div>
       </div>
 
       {/* Row 2: Seek bar + time */}
