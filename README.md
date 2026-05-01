@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon.png" alt="PodCodex" width="160" />
+</p>
+
 # PodCodex
 
 **Turn any podcast feed into a searchable, multilingual library — on your laptop, no cloud.**

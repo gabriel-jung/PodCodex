@@ -108,6 +108,8 @@ export default function HomePage() {
       <EditorialHeader
         title="PodCodex"
         subtitle="Transcribe, translate, search your podcasts."
+        artworkUrl="/icon.png?v=5"
+        artworkBare
         fallbackIcon={Podcast}
         stats={[
           ...(sorted && sorted.length > 0

@@ -111,6 +111,11 @@ test:  ## Run Python tests
 types:  ## Regenerate frontend TS types from Pydantic models
 	.venv/bin/python scripts/generate_types.py
 
+icons:  ## Regenerate app icons from assets/icon.png (frontend + Tauri bundle)
+	@command -v magick >/dev/null 2>&1 || { echo "ImageMagick required: brew install imagemagick"; exit 1; }
+	magick assets/icon.png -resize 256x256 PNG32:frontend/public/icon.png
+	npx @tauri-apps/cli icon assets/icon.png
+
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
