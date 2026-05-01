@@ -54,6 +54,71 @@ class RSSEpisode:
     feed_order: int | None = None
 
 
+# Fields that flow from a richer extraction (per-video YouTube call, RSS
+# refetch) onto a sparse cached entry. ``description`` is excluded — its
+# merge rule depends on the caller (longer-wins for YouTube subtitle
+# enrichment, fill-if-empty for RSS refetch).
+_BACKFILL_FIELDS: tuple[str, ...] = (
+    "pub_date",
+    "duration",
+    "artwork_url",
+    "episode_number",
+    "season_number",
+)
+
+
+def _is_field_empty(value) -> bool:
+    """True when an RSSEpisode field is missing/zero/blank."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (int, float)):
+        return value == 0
+    return False
+
+
+def fill_empty_fields(
+    target: RSSEpisode,
+    source: RSSEpisode,
+    *,
+    prefer_longer_description: bool = False,
+) -> list[str]:
+    """Copy non-empty source fields into empty target fields, in place.
+
+    Used by every site that merges a richer ``RSSEpisode`` onto a sparser
+    one — the YouTube channel re-fetch (preserve enriched cache values
+    over a flat fresh extract), the per-video subtitle import (enrich
+    cache from full extraction), and the one-shot meta-file backfill.
+    Centralising the field list keeps those sites from drifting on which
+    keys count as enrichable.
+
+    Args:
+        prefer_longer_description: When True, also adopt ``source.description``
+            if it is strictly longer than ``target.description``; otherwise
+            description is filled only when ``target`` is empty.
+
+    Returns the list of field names that changed.
+    """
+    changed: list[str] = []
+    for field in _BACKFILL_FIELDS:
+        cur = getattr(target, field)
+        new = getattr(source, field)
+        if _is_field_empty(cur) and not _is_field_empty(new):
+            setattr(target, field, new)
+            changed.append(field)
+    src_desc = source.description or ""
+    tgt_desc = target.description or ""
+    if prefer_longer_description:
+        if src_desc.strip() and len(src_desc) > len(tgt_desc):
+            target.description = src_desc
+            changed.append("description")
+    elif _is_field_empty(tgt_desc) and not _is_field_empty(src_desc):
+        target.description = src_desc
+        changed.append("description")
+    return changed
+
+
 def slug_from_title(title: str) -> str:
     """Convert an episode title to a filesystem-safe stem.
 

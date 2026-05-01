@@ -17,6 +17,7 @@ from podcodex.api.schemas import RSSEpisodeOut, TaskResponse
 from podcodex.ingest.rss import (
     RSSEpisode,
     episode_stem,
+    fill_empty_fields,
     load_feed_cache,
     merge_with_cache,
     save_episode_meta,
@@ -76,16 +77,7 @@ async def youtube_fetch(show_folder: str) -> list[dict]:
     # fall back to the cached value whenever the fresh record has nothing.
     def _preserve_enriched(fresh: RSSEpisode, old: RSSEpisode) -> RSSEpisode:
         merged = RSSEpisode(**fresh.__dict__)
-        if old.episode_number is not None:
-            merged.episode_number = old.episode_number
-        if not merged.pub_date and old.pub_date:
-            merged.pub_date = old.pub_date
-        if not merged.duration and old.duration:
-            merged.duration = old.duration
-        if not merged.description and old.description:
-            merged.description = old.description
-        if not merged.artwork_url and old.artwork_url:
-            merged.artwork_url = old.artwork_url
+        fill_empty_fields(merged, old)
         return merged
 
     episodes = merge_with_cache(

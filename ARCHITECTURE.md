@@ -48,8 +48,10 @@ Each show is a self-contained folder under a user-chosen root:
 
 ```
 <show_root>/<show>/
+├── .feed_cache.json             RSS / YouTube feed metadata (all known episodes)
 ├── audio/                       Source audio per episode
 ├── <stem>/                      One folder per episode
+│   ├── .episode_meta.json       Per-episode RSSEpisode (indexer's RSS source)
 │   ├── <stem>.transcript.json   Latest transcript (ASR output)
 │   ├── <stem>.corrected.json    Latest LLM-corrected transcript
 │   ├── <stem>.<lang>.json       Latest translation per language
@@ -64,6 +66,8 @@ Each show is a self-contained folder under a user-chosen root:
 ```
 
 Files at the episode root are pointers to the latest version. `.versions/{step}/<id>.json` is the truth: every save (auto or manual) is archived with model, params, content hash, timestamp.
+
+`.episode_meta.json` is the indexer's RSS-metadata source (title, pub_date, description, episode_number, artwork_url). It mirrors a single `RSSEpisode` from `.feed_cache.json`. Whenever a richer extraction lands (per-video YouTube call, RSS refetch, one-shot backfill) the merge goes through `fill_empty_fields()` in `ingest/rss.py` — three call sites pre-consolidation each rolled their own and drifted on which keys counted. Don't add a fourth.
 
 ### `pipeline.db` schema (per show)
 
