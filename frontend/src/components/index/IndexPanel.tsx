@@ -25,6 +25,7 @@ export default function IndexPanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const audioPath = useAudioPath();
+  const outputDir = episode?.output_dir;
   const showName = getShowName(showMeta, audioPath);
   const task = usePipelineTask(audioPath, "index");
 
@@ -34,14 +35,14 @@ export default function IndexPanel() {
   });
 
   const { data: status } = useQuery({
-    queryKey: queryKeys.indexStatus(audioPath, showName),
-    queryFn: () => getIndexStatus(audioPath!, showName),
-    enabled: !!audioPath,
+    queryKey: queryKeys.indexStatus(audioPath ?? outputDir, showName),
+    queryFn: () => getIndexStatus(audioPath, showName, outputDir),
+    enabled: !!audioPath || !!outputDir,
   });
 
   const expanded = task.expanded || !episode?.indexed;
 
-  const inputVersions = useInputVersions(audioPath, "index", !!episode?.transcribed && expanded);
+  const inputVersions = useInputVersions(audioPath, "index", !!episode?.transcribed && expanded, outputDir);
 
   const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
   const indexModel = usePipelineConfigStore((s) => s.indexModel);

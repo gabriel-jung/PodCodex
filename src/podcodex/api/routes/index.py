@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import get_index_store, submit_subprocess_task
@@ -132,14 +132,16 @@ async def index_sources(
 
 @router.get("/status")
 async def index_status(
-    audio_path: str = Query(...),
     show: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict:
     """Check indexing status per (model, chunking) combination."""
     from podcodex.rag.defaults import CHUNKING_STRATEGIES, MODELS
     from podcodex.rag.store import collection_name
 
+    if not audio_path and not output_dir:
+        raise HTTPException(status_code=422, detail="audio_path or output_dir required")
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
 
@@ -188,16 +190,21 @@ async def list_collections(
 
 @router.get("/episode-collections")
 async def episode_collections(
-    audio_path: str = Query(...),
     show: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
     """List the index entries this episode currently lives in.
+
+    Either ``audio_path`` or ``output_dir`` must be provided so the episode
+    stem can be resolved (YouTube-subtitle episodes have no audio yet).
 
     Returns one row per (collection, episode) — including model, chunker,
     the source step (transcript / corrected / <lang>) the chunks were
     derived from, and the chunk count.
     """
+    if not audio_path and not output_dir:
+        raise HTTPException(status_code=422, detail="audio_path or output_dir required")
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
 
@@ -222,9 +229,9 @@ async def episode_collections(
 
 @router.delete("/episode")
 async def delete_episode_from_index(
-    audio_path: str = Query(...),
     show: str = Query(...),
     collection: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict:
     """Remove this episode's chunks from one collection.
@@ -234,6 +241,8 @@ async def delete_episode_from_index(
     """
     from podcodex.core.pipeline_db import mark_step
 
+    if not audio_path and not output_dir:
+        raise HTTPException(status_code=422, detail="audio_path or output_dir required")
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
 

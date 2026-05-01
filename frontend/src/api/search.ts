@@ -19,10 +19,18 @@ export const getIndexConfig = () =>
     defaults: { model: string; chunking: string; chunk_size: number; threshold: number };
   }>("/api/index/config");
 
-export const getIndexStatus = (audioPath: string, show: string) =>
-  json<{ combinations: IndexStatus[]; db_exists: boolean }>(
-    `/api/index/status?audio_path=${encodeURIComponent(audioPath)}&show=${encodeURIComponent(show)}`,
+export const getIndexStatus = (
+  audioPath: string | null | undefined,
+  show: string,
+  outputDir?: string | null,
+) => {
+  const params = new URLSearchParams({ show });
+  if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
+  return json<{ combinations: IndexStatus[]; db_exists: boolean }>(
+    `/api/index/status?${params}`,
   );
+};
 
 /** Fetch all versions across all steps for an episode (newest first). */
 export const getAllVersions = (audioPath?: string | null, outputDir?: string | null) => {
@@ -41,21 +49,26 @@ export interface EpisodeCollection {
 }
 
 /** Index entries this episode currently lives in (one per collection). */
-export const getEpisodeCollections = (audioPath: string, show: string) => {
-  const params = new URLSearchParams({ audio_path: audioPath, show });
+export const getEpisodeCollections = (
+  audioPath: string | null | undefined,
+  show: string,
+  outputDir?: string | null,
+) => {
+  const params = new URLSearchParams({ show });
+  if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
   return json<EpisodeCollection[]>(`/api/index/episode-collections?${params}`);
 };
 
 export const deleteEpisodeCollection = (
-  audioPath: string,
+  audioPath: string | null | undefined,
   show: string,
   collection: string,
+  outputDir?: string | null,
 ) => {
-  const params = new URLSearchParams({
-    audio_path: audioPath,
-    show,
-    collection,
-  });
+  const params = new URLSearchParams({ show, collection });
+  if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
   return json<{ status: string; still_indexed: boolean }>(
     `/api/index/episode?${params}`,
     { method: "DELETE" },

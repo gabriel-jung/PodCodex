@@ -370,18 +370,19 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
 
   const showName = meta?.name ?? "";
   const { data: indexEntries } = useQuery({
-    queryKey: queryKeys.episodeCollections(audioPath, showName),
-    queryFn: () => getEpisodeCollections(audioPath!, showName),
-    enabled: !!audioPath && !!showName && !!episode.indexed,
+    queryKey: queryKeys.episodeCollections(audioPath ?? outputDir, showName),
+    queryFn: () => getEpisodeCollections(audioPath, showName, outputDir),
+    enabled: (!!audioPath || !!outputDir) && !!showName && !!episode.indexed,
   });
 
   const invalidateAll = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.episodeCollections(audioPath, showName) });
+    const key = audioPath ?? outputDir;
+    queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(key) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodeCollections(key, showName) });
     queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
     queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("transcribe", audioPath) });
     queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", audioPath) });
-  }, [audioPath, showName, queryClient]);
+  }, [audioPath, outputDir, showName, queryClient]);
 
   const deleteVersionMutation = useMutation({
     mutationFn: async ({ step, id }: { step: string; id: string }) => {
@@ -395,7 +396,7 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
 
   const deleteCollectionMutation = useMutation({
     mutationFn: (collection: string) =>
-      deleteEpisodeCollection(audioPath!, showName, collection),
+      deleteEpisodeCollection(audioPath, showName, collection, outputDir),
     onSuccess: invalidateAll,
   });
 

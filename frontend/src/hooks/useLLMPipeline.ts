@@ -138,11 +138,12 @@ export function useInputVersions(
   audioPath: string | null | undefined,
   step: PipelineInputStep,
   enabled: boolean,
+  outputDir?: string | null,
 ) {
   const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(audioPath),
-    queryFn: () => getAllVersions(audioPath),
-    enabled: !!audioPath && enabled,
+    queryKey: queryKeys.allVersions(audioPath ?? outputDir),
+    queryFn: () => getAllVersions(audioPath, outputDir),
+    enabled: (!!audioPath || !!outputDir) && enabled,
   });
   return useMemo(
     () => (allVersions ? filterVersionsForStep(allVersions, step) : undefined),
