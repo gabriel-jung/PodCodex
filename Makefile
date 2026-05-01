@@ -115,6 +115,8 @@ icons:  ## Regenerate app icons from assets/icon.png (frontend + Tauri bundle)
 	@command -v magick >/dev/null 2>&1 || { echo "ImageMagick required: brew install imagemagick"; exit 1; }
 	magick assets/icon.png -resize 256x256 PNG32:frontend/public/icon.png
 	npx @tauri-apps/cli icon assets/icon.png
+	@# Tauri CLI emits iOS + Android icons unconditionally; we ship desktop only.
+	rm -rf src-tauri/icons/ios src-tauri/icons/android
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
