@@ -186,7 +186,7 @@ export default function AudioBar() {
         </div>
       )}
 
-    <div className="px-4 pt-1.5 pb-1">
+    <div className="px-4 py-2">
       {/* Hidden audio element */}
       <audio
         ref={audioRef}
@@ -214,7 +214,7 @@ export default function AudioBar() {
       />
 
       {/* Row 1: Artwork + info | centered transport | right controls */}
-      <div className="flex items-center gap-3 mb-0.5">
+      <div className="flex items-center gap-3 mb-1">
         {/* Artwork — click to open episode */}
         <button
           onClick={() => {
@@ -224,7 +224,7 @@ export default function AudioBar() {
               navigate({ to: "/file/$path", params: { path: encodeURIComponent(audioPath) } });
             }
           }}
-          className="w-8 h-8 rounded-md bg-muted shrink-0 overflow-hidden flex items-center justify-center hover:ring-2 hover:ring-primary/50 transition cursor-pointer"
+          className="w-10 h-10 rounded-md bg-muted shrink-0 overflow-hidden flex items-center justify-center hover:ring-2 hover:ring-primary/50 transition cursor-pointer"
           title="Go to episode"
         >
           {audioArtwork ? (
@@ -234,14 +234,13 @@ export default function AudioBar() {
           )}
         </button>
 
-        {/* Title + show name on one line. Show name shrinks ~infinitely faster
-            so it collapses to zero before the episode title starts truncating. */}
-        <div className="flex-[2] min-w-0 flex items-baseline gap-2">
-          <span className="text-sm font-medium truncate min-w-0" title={audioTitle || "Playing"}>
+        {/* Title above, show name below — vertical stack matches artwork height */}
+        <div className="flex-[2] min-w-0 flex flex-col justify-center leading-tight">
+          <span className="text-sm font-medium truncate" title={audioTitle || "Playing"}>
             {audioTitle || "Playing"}
           </span>
           {audioShowName && (
-            <span className="text-xs text-muted-foreground truncate min-w-0 shrink-[9999] max-w-[10rem]">
+            <span className="text-xs text-muted-foreground truncate">
               {audioShowName}
             </span>
           )}

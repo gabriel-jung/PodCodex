@@ -75,15 +75,26 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
   const [historyIndex, setHistoryIndex] = useState(-1);
   const pathInputRef = useRef<HTMLInputElement>(null);
 
-  const navigateTo = (path: string, addToHistory = true) => {
-    if (addToHistory && listing?.path) {
-      const newHistory = history.slice(0, historyIndex + 1);
-      newHistory.push(listing.path);
-      setHistory(newHistory);
-      setHistoryIndex(newHistory.length - 1);
+  // Latest-value refs so navigateTo's identity stays stable across renders and
+  // rapid breadcrumb clicks read the latest history rather than a stale closure.
+  const historyRef = useRef<string[]>(history);
+  const historyIndexRef = useRef<number>(historyIndex);
+  const listingPathRef = useRef<string | null>(null);
+  historyRef.current = history;
+  historyIndexRef.current = historyIndex;
+  listingPathRef.current = listing?.path ?? null;
+
+  const navigateTo = useCallback((path: string, addToHistory = true) => {
+    if (addToHistory && listingPathRef.current) {
+      const next = [
+        ...historyRef.current.slice(0, historyIndexRef.current + 1),
+        listingPathRef.current,
+      ];
+      setHistory(next);
+      setHistoryIndex(next.length - 1);
     }
     setCurrentPath(path);
-  };
+  }, []);
 
   const canGoBack = historyIndex >= 0;
   const canGoForward = historyIndex < history.length - 1;
@@ -187,7 +198,14 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
   const displayTitle = title || (mode === "file" ? "Choose a file" : "Choose a folder");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={displayTitle}
+    >
       <div className="bg-card border border-border rounded-lg w-[700px] h-[70vh] flex flex-col shadow-lg">
         {/* Header */}
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
@@ -195,17 +213,17 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
           {description && (
             <span className="text-xs text-muted-foreground ml-3 mr-auto">{description}</span>
           )}
-          <Button onClick={onClose} variant="ghost" size="sm" className="h-7 w-7 p-0">
+          <Button onClick={onClose} variant="ghost" size="sm" className="h-7 w-7 p-0" aria-label="Close">
             <X className="w-4 h-4" />
           </Button>
         </div>
 
         {/* Toolbar: nav buttons + breadcrumb/path */}
         <div className="px-4 py-2 border-b border-border flex items-center gap-1">
-          <Button onClick={goBack} variant="ghost" size="sm" disabled={!canGoBack} className="h-7 w-7 p-0">
+          <Button onClick={goBack} variant="ghost" size="sm" disabled={!canGoBack} className="h-7 w-7 p-0" aria-label="Go back">
             <ChevronLeft className="w-4 h-4" />
           </Button>
-          <Button onClick={goForward} variant="ghost" size="sm" disabled={!canGoForward} className="h-7 w-7 p-0">
+          <Button onClick={goForward} variant="ghost" size="sm" disabled={!canGoForward} className="h-7 w-7 p-0" aria-label="Go forward">
             <ChevronRight className="w-4 h-4" />
           </Button>
           <Button
@@ -213,6 +231,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
             variant="ghost" size="sm"
             disabled={!listing?.parent}
             className="h-7 w-7 p-0"
+            aria-label="Go up one folder"
           >
             <ArrowUp className="w-4 h-4" />
           </Button>

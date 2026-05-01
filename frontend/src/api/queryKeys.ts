@@ -64,9 +64,6 @@ export const queryKeys = {
   indexConfig: () => ["index", "config"] as const,
   indexStatus: (audioPath: AudioPath, showName: string) =>
     ["index", "status", audioPath, showName] as const,
-  indexSources: (audioPath: AudioPath) => ["index", "sources", audioPath] as const,
-  indexStepVersions: (audioPath: AudioPath, source: string) =>
-    ["index", "step-versions", audioPath, source] as const,
   /** Collections this episode currently lives in (one row per entry). */
   episodeCollections: (audioPath: AudioPath, showName: string) =>
     ["index", "episode-collections", audioPath, showName] as const,

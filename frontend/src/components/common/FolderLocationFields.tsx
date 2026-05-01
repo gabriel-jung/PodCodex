@@ -29,8 +29,9 @@ export default function FolderLocationFields({
   return (
     <>
       <div>
-        <label className="text-xs text-muted-foreground block mb-1">Folder name</label>
+        <label htmlFor="folder-name-input" className="text-xs text-muted-foreground block mb-1">Folder name</label>
         <input
+          id="folder-name-input"
           value={folderName}
           onChange={(e) => onFolderNameChange(e.target.value)}
           placeholder={placeholder}
@@ -39,9 +40,10 @@ export default function FolderLocationFields({
         />
       </div>
       <div>
-        <label className="text-xs text-muted-foreground block mb-1">Save location</label>
+        <label htmlFor="save-location-input" className="text-xs text-muted-foreground block mb-1">Save location</label>
         <div className="flex gap-2">
           <input
+            id="save-location-input"
             value={parentPath}
             onChange={(e) => onParentPathChange(e.target.value)}
             className="input flex-1 text-xs"

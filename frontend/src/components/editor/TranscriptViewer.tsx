@@ -147,7 +147,7 @@ function DiffView({ original, current }: { original: string; current: string }) 
   return (
     <div className="text-sm leading-relaxed py-0">
       {diff.map((part, i) => (
-        <span key={i}>
+        <span key={`${i}:${part.type}:${part.text}`}>
           {i > 0 && " "}
           <span
             className={

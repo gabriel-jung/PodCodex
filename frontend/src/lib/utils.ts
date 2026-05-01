@@ -204,7 +204,7 @@ export function versionDate(v: VersionEntry): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-export const SOURCE_LABELS: Record<string, string> = {
+const SOURCE_LABELS: Record<string, string> = {
   whisper: "Whisper",
   "youtube-subtitles": "YouTube subtitles",
   upload: "Upload",

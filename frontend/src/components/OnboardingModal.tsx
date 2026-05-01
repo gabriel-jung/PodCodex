@@ -36,11 +36,15 @@ export default function OnboardingModal({ onAddShow }: OnboardingModalProps) {
     onAddShow();
   };
 
+  const stepTitle = step === 0 ? "Welcome to PodCodex"
+    : step === 1 ? "Three ways to add a show"
+    : "From audio to answers";
+
   return (
     <Dialog open onOpenChange={(o) => !o && finish()}>
       <DialogContent className="sm:max-w-lg h-[440px] flex flex-col">
         <VisuallyHidden.Root>
-          <DialogTitle>Welcome to PodCodex</DialogTitle>
+          <DialogTitle>{stepTitle}</DialogTitle>
           <DialogDescription>First-launch walkthrough</DialogDescription>
         </VisuallyHidden.Root>
         <div className="flex items-center justify-center gap-2 pt-2 pb-4">

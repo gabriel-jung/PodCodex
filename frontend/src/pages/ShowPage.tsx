@@ -82,7 +82,10 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const [sort, setSort] = useState<SortKey>("date_desc");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const lastShiftClickIndex = useRef<number | null>(null);
-  const { downloadTaskId, batchTaskId, setBatchTask } = useTaskStore();
+  // Narrow selectors so unrelated task store writes don't re-render this page.
+  const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
+  const batchTaskId = useTaskStore((s) => s.batchTaskId);
+  const setBatchTask = useTaskStore((s) => s.setBatchTask);
 
   // Pipeline config from store (for batch start)
   const { tc, llm, engine, targetLang } = usePipelineConfig();
@@ -94,11 +97,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     queryFn: () => getShowMeta(folder),
   });
 
+  const isPolling = !!(downloadTaskId || batchTaskId);
   const { data: episodes, isLoading: episodesLoading } = useQuery({
     queryKey: queryKeys.episodes(folder, pipelineDefaults),
     queryFn: () => getEpisodes(folder, pipelineDefaults),
     placeholderData: keepPreviousData,
-    refetchInterval: downloadTaskId || batchTaskId ? 5000 : false,
+    refetchInterval: isPolling ? 5000 : false,
+    // While polling, suppress focus refetch so alt-tabs don't double the cadence.
+    refetchOnWindowFocus: isPolling ? false : undefined,
   });
 
   const { downloadMutation, importSubsMutation, isYouTube } = useShowActions(folder, meta);

@@ -25,7 +25,9 @@ import {
 import { deriveEpisodeStatuses, type EpStatus } from "@/lib/batchUtils";
 
 function DownloadStrip() {
-  const { downloadTaskId, downloadFolder, setDownloadTask } = useTaskStore();
+  const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
+  const downloadFolder = useTaskStore((s) => s.downloadFolder);
+  const setDownloadTask = useTaskStore((s) => s.setDownloadTask);
   const progress = useProgress(downloadTaskId);
   const queryClient = useQueryClient();
   const didInvalidateRef = useRef(false);
@@ -248,7 +250,11 @@ function BatchResultSummary({ result, onDismiss }: { result: BatchResult; onDism
 /* ── BatchStrip — expandable progress with per-episode detail ── */
 
 function BatchStrip() {
-  const { batchTaskId, batchFolder, batchEpisodes, batchStep, setBatchTask } = useTaskStore();
+  const batchTaskId = useTaskStore((s) => s.batchTaskId);
+  const batchFolder = useTaskStore((s) => s.batchFolder);
+  const batchEpisodes = useTaskStore((s) => s.batchEpisodes);
+  const batchStep = useTaskStore((s) => s.batchStep);
+  const setBatchTask = useTaskStore((s) => s.setBatchTask);
   const progress = useProgress(batchTaskId);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -457,7 +463,8 @@ function BatchStrip() {
 }
 
 export default function TaskBar() {
-  const { downloadTaskId, batchTaskId } = useTaskStore();
+  const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
+  const batchTaskId = useTaskStore((s) => s.batchTaskId);
   if (!downloadTaskId && !batchTaskId) return null;
 
   return (

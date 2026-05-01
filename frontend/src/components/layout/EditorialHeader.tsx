@@ -69,7 +69,7 @@ export default function EditorialHeader({
             onClick={onArtworkClick}
             className={`relative w-16 h-16 rounded-lg shrink-0 overflow-hidden ${
               onArtworkClick ? "group cursor-pointer" : ""
-            } ${artworkUrl ? "shadow-md shadow-black/20 ring-1 ring-border/50" : "bg-muted"}`}
+            } ${artworkUrl ? "ring-1 ring-border/50" : "bg-muted"}`}
           >
             {artworkUrl ? (
               <img src={artworkUrl} alt={title} className="w-full h-full object-cover" />
@@ -89,7 +89,7 @@ export default function EditorialHeader({
           <div className="text-2xs text-muted-foreground truncate min-h-4 flex items-center gap-1">
             {hasCrumbs
               ? breadcrumbs!.map((c, i) => (
-                  <Fragment key={i}>
+                  <Fragment key={c.label}>
                     {i > 0 && <ChevronRight className="w-3 h-3 shrink-0 opacity-60" />}
                     {c.onClick ? (
                       <button

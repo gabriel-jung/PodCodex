@@ -40,28 +40,30 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
         expanded ? "w-48" : "w-14"
       }`}
     >
-      <nav className="flex-1 py-2 flex flex-col overflow-y-auto">
-        {/* Back + Parent + Home — fall back to Home when there's no real history. */}
+      <nav className="flex-1 py-2 flex flex-col overflow-y-auto no-scrollbar">
+        {/* Back + Home + Parent — Home stays fixed above Parent so its position
+            doesn't shift between show and episode pages. */}
         {!isHome && (
           <SidebarBtn icon={ArrowLeft} label="Back" expanded={expanded} onClick={() => {
             if (historyIndex > 0) window.history.back();
             else navigate({ to: "/" });
           }} />
         )}
+        {!isHome && <SidebarBtn icon={Home} label="Home" expanded={expanded} onClick={() => navigate({ to: "/" })} />}
         {parentLabel && onParent && (
           <SidebarBtn icon={Podcast} label={parentLabel} expanded={expanded} onClick={onParent} />
         )}
-        {!isHome && <SidebarBtn icon={Home} label="Home" expanded={expanded} onClick={() => navigate({ to: "/" })} />}
 
         {/* Page-specific sections */}
         {pageSections?.map((section, si) => (
-          <div key={si}>
+          <div key={section.items[0]?.key ?? si}>
             <div className="mx-3 my-1.5 border-t border-border" />
             {section.items.map(({ key, label, icon: Icon, status }) => (
               <button
                 key={key}
                 onClick={() => onItemClick?.(key)}
                 title={expanded ? undefined : label}
+                aria-label={label}
                 className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition ${
                   activeItem === key
                     ? "bg-accent text-accent-foreground"
@@ -88,6 +90,7 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
       {/* Expand toggle */}
       <button
         onClick={() => setExpanded(!expanded)}
+        aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
         className="px-4 py-3 text-muted-foreground hover:text-foreground transition border-t border-border"
       >
         {expanded ? <PanelLeftClose className="w-5 h-5" /> : <PanelLeftOpen className="w-5 h-5" />}

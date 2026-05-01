@@ -154,6 +154,7 @@ export default function HomePage() {
                 onClick={() => setGroupBy(groupBy === "none" ? "source" : "none")}
                 className={`px-1.5 py-1 rounded transition ${groupBy !== "none" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`}
                 title="Group by source"
+                aria-label="Group by source"
               >
                 <Group className="w-3.5 h-3.5" />
               </button>
@@ -165,6 +166,7 @@ export default function HomePage() {
                   value={cardSize}
                   onChange={(e) => setCardSize(Number(e.target.value))}
                   className="w-16 accent-primary"
+                  aria-label="Card size"
                 />
               )}
               <div className="flex border border-border rounded overflow-hidden">
@@ -172,6 +174,7 @@ export default function HomePage() {
                   onClick={() => setViewMode("list")}
                   className={`px-1.5 py-1 transition ${viewMode === "list" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`}
                   title="List view"
+                  aria-label="List view"
                 >
                   <List className="w-3.5 h-3.5" />
                 </button>
@@ -179,6 +182,7 @@ export default function HomePage() {
                   onClick={() => setViewMode("card")}
                   className={`px-1.5 py-1 transition ${viewMode === "card" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`}
                   title="Card view"
+                  aria-label="Card view"
                 >
                   <LayoutGrid className="w-3.5 h-3.5" />
                 </button>

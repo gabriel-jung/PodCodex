@@ -9,7 +9,7 @@ import FolderLocationFields from "@/components/common/FolderLocationFields";
 import FolderPicker from "@/components/common/FolderPicker";
 import MissingDependency from "@/components/common/MissingDependency";
 import BundleImportPanel from "./BundleImportPanel";
-import { PlaySquare, Search, Rss, FolderOpen, Loader2, Package } from "lucide-react";
+import { PlaySquare, Search, Rss, FolderOpen, Loader2, Package, X } from "lucide-react";
 
 export interface AddShowModalProps {
   defaultSavePath: string;
@@ -100,13 +100,22 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+        onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-show-title"
+      >
         <div className={`bg-card border border-border rounded-lg p-6 max-w-lg w-full shadow-lg max-h-[85vh] flex flex-col ${STEP_HEIGHT[step]}`}>
           <div className="flex items-center justify-between mb-1">
-            <h3 className="text-lg font-semibold">
+            <h3 id="add-show-title" className="text-lg font-semibold">
               {step === "search" ? "Add a show" : "Save location"}
             </h3>
-            <Button onClick={onClose} variant="ghost" size="sm">x</Button>
+            <Button onClick={onClose} variant="ghost" size="sm" className="h-7 w-7 p-0" aria-label="Close">
+              <X className="w-4 h-4" />
+            </Button>
           </div>
 
           {step === "search" && (
@@ -167,9 +176,9 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
                   {/* Results */}
                   {searchMutation.data && searchMutation.data.length > 0 && (
                     <div className="overflow-y-auto flex-1 -mx-2">
-                      {searchMutation.data.map((r, i) => (
+                      {searchMutation.data.map((r) => (
                         <button
-                          key={i}
+                          key={r.feed_url}
                           onClick={() => selectResult(r)}
                           className="w-full text-left px-3 py-2.5 rounded-lg hover:bg-accent/50 transition flex items-center gap-3"
                         >
@@ -191,9 +200,10 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
 
                   {/* Manual URL */}
                   <div className="border-t border-border pt-4">
-                    <label className="text-xs text-muted-foreground block mb-1">Or paste RSS feed URL directly</label>
+                    <label htmlFor="rss-url-input" className="text-xs text-muted-foreground block mb-1">Or paste RSS feed URL directly</label>
                     <div className="flex gap-2">
                       <input
+                        id="rss-url-input"
                         value={rssUrl}
                         onChange={(e) => setRssUrl(e.target.value)}
                         placeholder="https://feeds.example.com/podcast.xml"
@@ -350,6 +360,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
                         onChange={(e) => setCustomLang(e.target.value.toLowerCase().slice(0, 5))}
                         placeholder="ISO code (e.g. nl, zh, ar)"
                         className="input w-32 mt-1.5"
+                        aria-label="Custom language ISO code"
                       />
                     )}
                   </div>

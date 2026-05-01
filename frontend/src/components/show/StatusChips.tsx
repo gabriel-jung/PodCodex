@@ -48,7 +48,7 @@ function Chip({ status, stage, label, title }: { status: StepStatus; stage: Stag
     );
   }
   return (
-    <span className={`${base} ${c.bg} ${c.text}`} title={title}>
+    <span className={`${base} ${c.bg} ${c.text}`} title={title} role="img" aria-label={title}>
       {label}
     </span>
   );
@@ -92,12 +92,12 @@ export function StatusChips({ ep, compact }: { ep: Episode; compact?: boolean })
         />
       )}
       {ep.synthesized && (
-        <span className="text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium bg-stage-synth/15 text-stage-synth" title="Synthesized">
+        <span className="text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium bg-stage-synth/15 text-stage-synth" title="Synthesized" role="img" aria-label="Synthesized">
           {compact ? "S" : "Synth"}
         </span>
       )}
       {ep.indexed && (
-        <span className="text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium bg-warning/15 text-warning" title="Indexed">
+        <span className="text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium bg-warning/15 text-warning" title="Indexed" role="img" aria-label="Indexed">
           {compact ? "I" : "Indexed"}
         </span>
       )}

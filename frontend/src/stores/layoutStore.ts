@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type ShowGroupBy = "none" | "source";
+type ShowGroupBy = "none" | "source";
 
 interface LayoutState {
   /** Show view mode on the home page. */

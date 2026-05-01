@@ -137,7 +137,7 @@ function AppearancePanel() {
 
   return (
     <section className="space-y-4">
-      <h2 className="text-lg font-semibold flex items-center gap-2">
+      <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
         <Palette className="w-5 h-5" /> Appearance
       </h2>
       <div className="flex gap-2">
@@ -165,7 +165,7 @@ function AppearancePanel() {
 function ShortcutsPanel() {
   return (
     <section className="space-y-4">
-      <h2 className="text-lg font-semibold flex items-center gap-2">
+      <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
         <Keyboard className="w-5 h-5" /> Keyboard shortcuts
       </h2>
       <div className="border border-border rounded-lg divide-y divide-border">
@@ -230,7 +230,7 @@ function PipelineDefaultsPanel() {
       </div>
 
       <section className="space-y-3">
-        <h2 className="text-lg font-semibold flex items-center gap-2">
+        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
           <Mic className="w-5 h-5" /> Transcribe
         </h2>
         <PresetCards
@@ -326,7 +326,7 @@ function PipelineDefaultsPanel() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-lg font-semibold flex items-center gap-2">
+        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
           <Sparkles className="w-5 h-5" /> Correct &amp; Translate (LLM)
         </h2>
         <PresetCards
@@ -386,7 +386,7 @@ function PipelineDefaultsPanel() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-lg font-semibold flex items-center gap-2">
+        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
           <Database className="w-5 h-5" /> Index (embeddings)
         </h2>
         <PresetCards
@@ -416,7 +416,7 @@ function FlagPatternsSection() {
 
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold flex items-center gap-2">
+      <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
         <Sparkles className="w-5 h-5" /> Editor flagging
       </h2>
       <p className="text-xs text-muted-foreground">
@@ -478,7 +478,7 @@ function PluginsPanel() {
   return (
     <section className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold flex items-center gap-2">
+        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
           <Puzzle className="w-5 h-5" /> Plugins
         </h2>
         <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-7">
@@ -578,7 +578,7 @@ function ModelCachePanel() {
   return (
     <section className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold flex items-center gap-2">
+        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
           <HardDrive className="w-5 h-5" /> Model Cache
         </h2>
         <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-7">
@@ -762,7 +762,7 @@ function CredentialsPanel() {
   return (
     <section className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold flex items-center gap-2">
+        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
           <KeyRound className="w-5 h-5" /> Credentials
         </h2>
         <p className="text-sm text-muted-foreground mt-1">
@@ -806,7 +806,7 @@ function CredentialsPanel() {
                     type="button"
                     onClick={() => setReveal((r) => ({ ...r, [item.key]: !showReveal }))}
                     className="px-2 rounded-md border border-border hover:bg-accent text-muted-foreground"
-                    title={showReveal ? "Hide" : "Reveal while typing"}
+                    aria-label={showReveal ? "Hide secret" : "Reveal secret while typing"}
                   >
                     {showReveal ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>

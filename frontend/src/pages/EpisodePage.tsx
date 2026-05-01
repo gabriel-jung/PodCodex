@@ -100,7 +100,7 @@ export default function EpisodePage({
   const [descExpanded, setDescExpanded] = useState(false);
 
   const isStandalone = !!audioFilePath;
-  const { downloadTaskId } = useTaskStore();
+  const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
   const pipelineDefaults = usePipelineDefaults();
 
   const { data: meta } = useQuery({
@@ -115,6 +115,7 @@ export default function EpisodePage({
     placeholderData: keepPreviousData,
     enabled: !!folder,
     refetchInterval: downloadTaskId ? 5000 : false,
+    refetchOnWindowFocus: downloadTaskId ? false : undefined,
   });
 
   const { downloadMutation: episodeDownloadMutation, importSubsMutation, isYouTube } = useShowActions(folder ?? "", meta, { withSubs: false });
@@ -527,8 +528,8 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
             </span>
           </div>
           <div className="space-y-1 text-sm">
-            {previewSegments.map((seg, i) => (
-              <p key={i} className="text-muted-foreground line-clamp-1">
+            {previewSegments.map((seg) => (
+              <p key={`${seg.start}-${seg.speaker ?? ""}`} className="text-muted-foreground line-clamp-1">
                 {seg.speaker && <span className="font-medium" style={{ color: speakerColor(seg.speaker) }}>{seg.speaker}: </span>}
                 {seg.text}
               </p>
