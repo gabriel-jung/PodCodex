@@ -251,9 +251,11 @@ export default function AudioBar() {
         <div className="shrink-0 flex items-center justify-center gap-0.5">
           <SkipLabelButton label="−15" onClick={() => skip(-15)} title="Back 15s" />
           <SkipLabelButton label="−5" onClick={() => skip(-5)} title="Back 5s" />
+          <SkipLabelButton label="−1" onClick={() => skip(-1)} title="Back 1s" />
           <Button onClick={togglePlay} variant="ghost" size="icon" className="h-7 w-7 mx-0.5" aria-label={playing ? "Pause" : "Play"}>
             {playing ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
           </Button>
+          <SkipLabelButton label="+1" onClick={() => skip(1)} title="Forward 1s" />
           <SkipLabelButton label="+5" onClick={() => skip(5)} title="Forward 5s" />
           <SkipLabelButton label="+15" onClick={() => skip(15)} title="Forward 15s" />
         </div>
