@@ -83,6 +83,8 @@ from podcodex.api.routes.bundle import (  # noqa: E402
     ImportRequest,
     PreviewRequest,
 )
+from podcodex.core.api_keys import APIKeyPublic  # noqa: E402
+from podcodex.core.provider_profiles import ProviderProfile  # noqa: E402
 from podcodex.bundle.manifest import (  # noqa: E402
     ArchivePreview,
     CollectionEntry,
@@ -143,6 +145,9 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, ExportIndexRequest),
     (None, PreviewRequest),
     (None, ImportRequest),
+    # api keys + provider profiles
+    (None, APIKeyPublic),
+    (None, ProviderProfile),
 ]
 
 # ── JSON Schema → TypeScript converter ──────────────────────────────────────

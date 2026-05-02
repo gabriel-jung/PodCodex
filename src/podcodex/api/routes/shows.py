@@ -389,7 +389,8 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
             model_size=meta.pipeline.model_size,
             diarize=meta.pipeline.diarize,
             llm_mode=meta.pipeline.llm_mode,
-            llm_provider=meta.pipeline.llm_provider,
+            llm_provider_profile=meta.pipeline.llm_provider_profile,
+            llm_key_name=meta.pipeline.llm_key_name,
             llm_model=meta.pipeline.llm_model,
             target_lang=meta.pipeline.target_lang,
         ),
@@ -415,7 +416,8 @@ async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
                 model_size=p.model_size,
                 diarize=p.diarize,
                 llm_mode=p.llm_mode,
-                llm_provider=p.llm_provider,
+                llm_provider_profile=p.llm_provider_profile,
+                llm_key_name=p.llm_key_name,
                 llm_model=p.llm_model,
                 target_lang=p.target_lang,
             ),
@@ -612,11 +614,11 @@ async def unified_episodes(
     return result
 
 
-_PARAM_RENAMES = {"mode": "llm_mode", "provider": "llm_provider"}
+_PARAM_RENAMES = {"mode": "llm_mode"}
 
 
 def _normalize_provenance(prov: dict) -> dict:
-    """Rename legacy param keys (mode→llm_mode, provider→llm_provider)."""
+    """Rename legacy param keys (mode→llm_mode)."""
     out = {}
     for step_key, meta in prov.items():
         if not isinstance(meta, dict):
@@ -644,8 +646,10 @@ def _resolve_defaults(app_defaults: dict, show_meta: _ShowMeta | None) -> dict:
         effective["model_size"] = p.model_size
     if p.llm_mode:
         effective["llm_mode"] = p.llm_mode
-    if p.llm_provider:
-        effective["llm_provider"] = p.llm_provider
+    if p.llm_provider_profile:
+        effective["llm_provider_profile"] = p.llm_provider_profile
+    if p.llm_key_name:
+        effective["llm_key_name"] = p.llm_key_name
     if p.llm_model:
         effective["llm_model"] = p.llm_model
     if p.target_lang:
@@ -677,8 +681,8 @@ def _llm_outdated(prov: dict, effective: dict) -> bool:
     if effective.get("llm_mode") and params.get("llm_mode") != effective["llm_mode"]:
         return True
     if (
-        effective.get("llm_provider")
-        and params.get("llm_provider") != effective["llm_provider"]
+        effective.get("llm_provider_profile")
+        and params.get("llm_provider_profile") != effective["llm_provider_profile"]
     ):
         return True
     if effective.get("llm_model") and prov.get("model") != effective["llm_model"]:

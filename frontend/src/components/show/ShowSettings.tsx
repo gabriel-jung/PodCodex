@@ -35,7 +35,8 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const [pipeModelSize, setPipeModelSize] = useState(meta.pipeline?.model_size ?? "");
   const [pipeDiarize, setPipeDiarize] = useState(meta.pipeline?.diarize ?? false);
   const [pipeLlmMode, setPipeLlmMode] = useState(meta.pipeline?.llm_mode ?? "");
-  const [pipeLlmProvider, setPipeLlmProvider] = useState(meta.pipeline?.llm_provider ?? "");
+  const [pipeLlmProviderProfile, setPipeLlmProviderProfile] = useState(meta.pipeline?.llm_provider_profile ?? "");
+  const [pipeLlmKeyName, setPipeLlmKeyName] = useState(meta.pipeline?.llm_key_name ?? "");
   const [pipeLlmModel, setPipeLlmModel] = useState(meta.pipeline?.llm_model ?? "");
   const [pipeTargetLang, setPipeTargetLang] = useState(meta.pipeline?.target_lang ?? "");
 
@@ -56,7 +57,8 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     setPipeModelSize(meta.pipeline?.model_size ?? "");
     setPipeDiarize(meta.pipeline?.diarize ?? false);
     setPipeLlmMode(meta.pipeline?.llm_mode ?? "");
-    setPipeLlmProvider(meta.pipeline?.llm_provider ?? "");
+    setPipeLlmProviderProfile(meta.pipeline?.llm_provider_profile ?? "");
+    setPipeLlmKeyName(meta.pipeline?.llm_key_name ?? "");
     setPipeLlmModel(meta.pipeline?.llm_model ?? "");
     setPipeTargetLang(meta.pipeline?.target_lang ?? "");
   }, [meta]);
@@ -70,7 +72,8 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     pipeModelSize !== (meta.pipeline?.model_size ?? "") ||
     pipeDiarize !== (meta.pipeline?.diarize ?? false) ||
     pipeLlmMode !== (meta.pipeline?.llm_mode ?? "") ||
-    pipeLlmProvider !== (meta.pipeline?.llm_provider ?? "") ||
+    pipeLlmProviderProfile !== (meta.pipeline?.llm_provider_profile ?? "") ||
+    pipeLlmKeyName !== (meta.pipeline?.llm_key_name ?? "") ||
     pipeLlmModel !== (meta.pipeline?.llm_model ?? "") ||
     pipeTargetLang !== (meta.pipeline?.target_lang ?? "");
 
@@ -87,7 +90,8 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
           model_size: pipeModelSize,
           diarize: pipeDiarize,
           llm_mode: pipeLlmMode,
-          llm_provider: pipeLlmProvider,
+          llm_provider_profile: pipeLlmProviderProfile,
+          llm_key_name: pipeLlmKeyName,
           llm_model: pipeLlmModel,
           target_lang: pipeTargetLang,
         },
@@ -112,7 +116,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   useEffect(() => {
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [name, language, rssUrl, youtubeUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeLlmMode, pipeLlmProvider, pipeLlmModel, pipeTargetLang]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [name, language, rssUrl, youtubeUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeLlmMode, pipeLlmProviderProfile, pipeLlmKeyName, pipeLlmModel, pipeTargetLang]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const moveMutation = useMutation({
     mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
@@ -344,10 +348,18 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             <option value="api">API</option>
           </select>
         </SettingRow>
-        <SettingRow label="LLM provider" help="Cloud API provider (openai, anthropic, etc.). Empty = app default.">
+        <SettingRow label="LLM provider" help="Profile name from Settings → Credentials (built-in or custom). Empty = app default.">
           <input
-            value={pipeLlmProvider}
-            onChange={(e) => setPipeLlmProvider(e.target.value)}
+            value={pipeLlmProviderProfile}
+            onChange={(e) => setPipeLlmProviderProfile(e.target.value)}
+            placeholder="(use default)"
+            className={`input ${inputWidth.short}`}
+          />
+        </SettingRow>
+        <SettingRow label="LLM key" help="API key name from the pool. Empty = app default.">
+          <input
+            value={pipeLlmKeyName}
+            onChange={(e) => setPipeLlmKeyName(e.target.value)}
             placeholder="(use default)"
             className={`input ${inputWidth.short}`}
           />

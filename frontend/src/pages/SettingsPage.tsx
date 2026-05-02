@@ -1,5 +1,18 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getModels, deleteModel, getExtras, installExtra, removeExtra, getSecretsStatus, updateSecrets, getHealth } from "@/api/client";
+import {
+  createApiKey,
+  deleteApiKey,
+  scanEnvForKeys,
+  updateApiKey,
+} from "@/api/keys";
+import type { APIKeyPublic } from "@/api/keys";
+import {
+  createProviderProfile,
+  deleteProviderProfile,
+  updateProviderProfile,
+} from "@/api/providerProfiles";
+import type { ProviderProfile } from "@/api/providerProfiles";
 import { queryKeys } from "@/api/queryKeys";
 import type { ExtraInfo } from "@/api/types";
 import type { SecretStatus } from "@/api/config";
@@ -7,19 +20,21 @@ import { Button } from "@/components/ui/button";
 import {
   Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2,
   Sun, Moon, Monitor, Keyboard, Palette, Mic, Sparkles, Database, Languages, Plug,
-  KeyRound, Eye, EyeOff, Check, Zap,
+  KeyRound, Eye, EyeOff, Check, Zap, Plus, Lock, Search, Settings,
 } from "lucide-react";
 import AppSidebar from "@/components/layout/AppSidebar";
-import PageHeader from "@/components/layout/PageHeader";
+import EditorialHeader from "@/components/layout/EditorialHeader";
 import IntegrationsPanel from "@/components/settings/IntegrationsPanel";
 import BundleExportPanel from "@/components/settings/BundleExportPanel";
 import GPUBackendPanel from "@/components/settings/GPUBackendPanel";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTheme } from "@/hooks/useTheme";
 import { SHORTCUTS, Kbd } from "@/components/ShortcutsHelp";
 import { NullableNumberInput } from "@/components/ui/number-input";
 import PresetCards from "@/components/common/PresetCards";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
+import { useApiKeys } from "@/hooks/useApiKeys";
+import { useProviderProfiles } from "@/hooks/useProviderProfiles";
 import {
   TRANSCRIBE_PRESETS, LLM_PRESETS, INDEX_PRESETS,
   CPU_LABELS, GPU_LABELS, CPU_MODELS, GPU_MODELS,
@@ -27,8 +42,6 @@ import {
 } from "@/stores/pipelineConfigStore";
 import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
 import { selectClass } from "@/lib/utils";
-
-type SettingsTab = "general" | "pipeline" | "credentials" | "integrations" | "plugins" | "gpu" | "cache";
 
 // Plugins panel runs `uv sync --extra X` to install Python extras — only
 // meaningful when a venv exists (dev mode). The bundled sidecar has its
@@ -44,7 +57,9 @@ const ALL_SECTIONS = [
   { key: "cache", label: "Model cache", icon: HardDrive },
 ] as const;
 
-const VALID_TABS: readonly SettingsTab[] = ["general", "pipeline", "credentials", "integrations", "plugins", "gpu", "cache"];
+type SettingsTab = (typeof ALL_SECTIONS)[number]["key"];
+
+const VALID_TABS: readonly SettingsTab[] = ALL_SECTIONS.map((s) => s.key);
 
 function readInitialTab(): SettingsTab {
   if (typeof window === "undefined") return "general";
@@ -59,12 +74,20 @@ export default function SettingsPage() {
     queryFn: getHealth,
     staleTime: Infinity,
   });
-  const isBundleMode = health?.mode === "bundle";
-  const sections = [
-    {
-      items: ALL_SECTIONS.filter((s) => !(isBundleMode && "devOnly" in s && s.devOnly)),
-    },
-  ];
+  // Default unknown mode to "bundle" (conservative): hide dev-only tabs
+  // until health proves we're in dev. Otherwise the plugins tab flashes
+  // visible during the loading window in shipped builds.
+  const isBundleMode = health?.mode !== "dev";
+  const visibleSections = ALL_SECTIONS.filter((s) => !(isBundleMode && "devOnly" in s && s.devOnly));
+  const sections = [{ items: visibleSections }];
+  const visibleKeys = visibleSections.map((s) => s.key) as SettingsTab[];
+
+  // If the active tab is hidden in current mode (e.g. bookmarked
+  // ?tab=plugins opened in bundle build), fall back to general.
+  const tabHidden = !visibleKeys.includes(tab);
+  useEffect(() => {
+    if (tabHidden) setTab("general");
+  }, [tabHidden]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -77,10 +100,21 @@ export default function SettingsPage() {
     if (typeof window === "undefined") return;
     const id = window.location.hash.slice(1);
     if (!id) return;
-    const raf = requestAnimationFrame(() => {
-      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
-    return () => cancelAnimationFrame(raf);
+    // Element may not exist yet on first paint (panels render async data).
+    // Poll for ~2s, then give up.
+    let cancelled = false;
+    const start = Date.now();
+    const tryScroll = () => {
+      if (cancelled) return;
+      const el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      if (Date.now() - start < 2000) requestAnimationFrame(tryScroll);
+    };
+    requestAnimationFrame(tryScroll);
+    return () => { cancelled = true; };
   }, [tab]);
 
   const selectTab = (t: SettingsTab) => {
@@ -92,7 +126,7 @@ export default function SettingsPage() {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <PageHeader title="Settings" />
+      <EditorialHeader title="Settings" fallbackIcon={Settings} />
       <div className="flex-1 flex overflow-hidden">
         <AppSidebar
           pageSections={sections}
@@ -110,7 +144,7 @@ export default function SettingsPage() {
             {tab === "pipeline" && <PipelineDefaultsPanel />}
             {tab === "credentials" && <CredentialsPanel />}
             {tab === "integrations" && <IntegrationsPanel />}
-            {tab === "plugins" && <PluginsPanel />}
+            {tab === "plugins" && !isBundleMode && <PluginsPanel />}
             {tab === "gpu" && <GPUBackendPanel />}
             {tab === "cache" && (
               <>
@@ -192,7 +226,10 @@ function ShortcutsPanel() {
 // ── Pipeline defaults ────────────────────────
 
 function PipelineDefaultsPanel() {
-  const { apiProviders, whisperModels, detectedKeys } = useLLMProviders();
+  const { whisperModels, detectedKeys } = useLLMProviders();
+  const { profiles } = useProviderProfiles();
+  const { keys: pooledKeys } = useApiKeys();
+  const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
 
   const transcribe = usePipelineConfigStore((s) => s.transcribe);
   const setTranscribe = usePipelineConfigStore((s) => s.setTranscribe);
@@ -273,13 +310,13 @@ function PipelineDefaultsPanel() {
             <span>
               Diarize speakers
               <span className="block text-xs text-muted-foreground">
-                Detect and label different speakers (requires a HuggingFace token).
+                Detect and label different speakers (requires a Hugging Face token).
               </span>
             </span>
           </label>
           {transcribe.diarize && !detectedKeys.hf_token && (
             <p className="pl-6 text-xs text-muted-foreground">
-              HuggingFace token needed —{" "}
+              Hugging Face token needed.{" "}
               <a
                 href="?tab=credentials#HF_TOKEN"
                 onClick={(e) => {
@@ -289,7 +326,7 @@ function PipelineDefaultsPanel() {
                 }}
                 className="underline hover:text-foreground"
               >
-                set it up in Credentials
+                Set it up in Credentials
               </a>
               .
             </p>
@@ -335,17 +372,36 @@ function PipelineDefaultsPanel() {
           onSelect={applyLLMPreset}
         />
         {llm.mode === "api" && (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <label className="block">
               <span className="text-xs text-muted-foreground">Provider</span>
               <select
-                value={llm.provider}
-                onChange={(e) => setLLM({ provider: e.target.value })}
+                value={llm.providerProfile}
+                onChange={(e) => setLLM({ providerProfile: e.target.value })}
                 className={selectClass + " mt-1"}
               >
-                {apiProviders.map(([key, spec]) => (
-                  <option key={key} value={key}>
-                    {spec.label}{detectedKeys[key] ? " ✓" : ""}
+                <option value="">Pick…</option>
+                {apiProfiles.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.name}{p.builtin ? "" : " (custom)"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs text-muted-foreground">LLM API key</span>
+              <select
+                value={llm.keyName}
+                onChange={(e) => setLLM({ keyName: e.target.value })}
+                className={selectClass + " mt-1"}
+              >
+                <option value="">
+                  {pooledKeys.length === 0 ? "No keys yet" : "Pick…"}
+                </option>
+                {pooledKeys.map((k) => (
+                  <option key={k.name} value={k.name}>
+                    {k.name}
+                    {k.suggested_provider ? ` — ${k.suggested_provider}` : ""}
                   </option>
                 ))}
               </select>
@@ -487,8 +543,8 @@ function PluginsPanel() {
       </div>
 
       <p className="text-sm text-muted-foreground">
-        PodCodex features are split into optional plugins so you only install what you need.
-        Install or remove them here. Changes take effect after restarting the backend.
+        PodCodex features are split into optional plugins so you only install
+        what you need. Install or remove them here.
       </p>
 
       <div className="text-xs text-muted-foreground">
@@ -496,7 +552,7 @@ function PluginsPanel() {
       </div>
 
       {isLoading ? (
-        <p className="text-sm text-muted-foreground">Loading...</p>
+        <p className="text-sm text-muted-foreground">Loading…</p>
       ) : (
         <div className="border border-border rounded-lg divide-y divide-border">
           {entries.map(([name, info]) => {
@@ -566,8 +622,8 @@ function ModelCachePanel() {
     mutationFn: (id: string) => deleteModel(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.models() });
-      setDeleting(null);
     },
+    onSettled: () => setDeleting(null),
   });
 
   const models = data?.models ?? [];
@@ -624,7 +680,7 @@ function ModelCachePanel() {
       )}
 
       {isLoading ? (
-        <p className="text-sm text-muted-foreground">Loading...</p>
+        <p className="text-sm text-muted-foreground">Loading…</p>
       ) : models.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No cached models yet. Models are downloaded automatically the first
@@ -702,7 +758,7 @@ function ModelCachePanel() {
 
 const SECRET_LABELS: Record<string, { label: string; hint: React.ReactNode; usedFor: string }> = {
   HF_TOKEN: {
-    label: "HuggingFace token",
+    label: "Hugging Face token",
     hint: (
       <>
         Get one free at{" "}
@@ -713,26 +769,6 @@ const SECRET_LABELS: Record<string, { label: string; hint: React.ReactNode; used
       </>
     ),
     usedFor: "Speaker diarization (transcribe step)",
-  },
-  OPENAI_API_KEY: {
-    label: "OpenAI API key",
-    hint: <>Keys at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer" className="underline hover:text-foreground">platform.openai.com/api-keys</a>.</>,
-    usedFor: "LLM correct / translate / synthesize with OpenAI provider",
-  },
-  ANTHROPIC_API_KEY: {
-    label: "Anthropic API key",
-    hint: <>Keys at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer" className="underline hover:text-foreground">console.anthropic.com/settings/keys</a>.</>,
-    usedFor: "LLM correct / translate / synthesize with Anthropic provider",
-  },
-  MISTRAL_API_KEY: {
-    label: "Mistral API key",
-    hint: <>Keys at <a href="https://console.mistral.ai/api-keys" target="_blank" rel="noreferrer" className="underline hover:text-foreground">console.mistral.ai/api-keys</a>.</>,
-    usedFor: "LLM correct / translate with Mistral provider",
-  },
-  DISCORD_TOKEN: {
-    label: "Discord bot token",
-    hint: <>Reset at the bot's page on <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer" className="underline hover:text-foreground">discord.com/developers/applications</a>.</>,
-    usedFor: "Running the Discord bot (`podcodex-bot`)",
   },
 };
 
@@ -760,92 +796,563 @@ function CredentialsPanel() {
   const dirty = Object.values(drafts).some((v) => v !== undefined);
 
   return (
-    <section className="space-y-6">
+    <section className="space-y-10">
       <div>
         <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
           <KeyRound className="w-5 h-5" /> Credentials
         </h2>
         <p className="text-sm text-muted-foreground mt-1">
-          API keys and tokens used by the pipeline, search, and Discord bot. Saved
-          to a user-scoped file ({data?.path ?? "~/.config/podcodex/secrets.env"})
-          with read/write restricted to your account. Leave blank to rely on an
-          environment variable instead.
+          LLM API keys live in a named pool below. The Hugging Face token is
+          a singleton (pyannote needs it as an env var). Stored in user-scoped
+          files with read/write restricted to your account.
         </p>
       </div>
 
-      {isLoading ? (
-        <div className="text-sm text-muted-foreground flex items-center gap-2">
-          <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+      <ApiKeysSection />
+      <ProviderProfilesSection />
+
+      <div className="space-y-4">
+        <div>
+          <h3 className="font-display text-lg font-semibold">Hugging Face token</h3>
+          <p className="text-sm text-muted-foreground mt-1">
+            Required for speaker diarization (pyannote). Saved at{" "}
+            {data?.path ?? "~/.config/podcodex/secrets.env"}. Leave blank to rely
+            on the same-named environment variable.
+          </p>
         </div>
-      ) : (
-        <div className="space-y-4">
-          {data?.items.map((item) => {
-            const meta = SECRET_LABELS[item.key] ?? { label: item.key, hint: null, usedFor: "" };
-            const draft = drafts[item.key];
-            const showReveal = !!reveal[item.key];
-            return (
-              <div key={item.key} id={item.key} className="border border-border rounded-lg p-4 space-y-2">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium">{meta.label}</div>
-                    <div className="text-xs text-muted-foreground mt-0.5">{meta.usedFor}</div>
+
+        {isLoading ? (
+          <div className="text-sm text-muted-foreground flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {data?.items.map((item) => {
+              const meta = SECRET_LABELS[item.key] ?? { label: item.key, hint: null, usedFor: "" };
+              const draft = drafts[item.key];
+              const showReveal = !!reveal[item.key];
+              return (
+                <div key={item.key} id={item.key} className="border border-border rounded-lg p-4 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">{meta.label}</div>
+                      <div className="text-xs text-muted-foreground mt-0.5">{meta.usedFor}</div>
+                    </div>
+                    <SecretBadge item={item} />
                   </div>
-                  <SecretBadge item={item} />
-                </div>
-                <div className="flex items-stretch gap-2">
-                  <input
-                    type={showReveal ? "text" : "password"}
-                    value={draft ?? ""}
-                    onChange={(e) => setDrafts((d) => ({ ...d, [item.key]: e.target.value }))}
-                    placeholder={item.set ? item.masked : "Not set"}
-                    className="input flex-1 font-mono text-xs"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setReveal((r) => ({ ...r, [item.key]: !showReveal }))}
-                    className="px-2 rounded-md border border-border hover:bg-accent text-muted-foreground"
-                    aria-label={showReveal ? "Hide secret" : "Reveal secret while typing"}
-                  >
-                    {showReveal ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                  {item.set && item.source === "file" && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setDrafts((d) => ({ ...d, [item.key]: "" }))}
-                      title="Clear this key on next save"
+                  <div className="flex items-stretch gap-2">
+                    <input
+                      type={showReveal ? "text" : "password"}
+                      value={draft ?? ""}
+                      onChange={(e) => setDrafts((d) => ({ ...d, [item.key]: e.target.value }))}
+                      placeholder={item.set ? item.masked : "Not set"}
+                      className="input flex-1 font-mono text-xs"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setReveal((r) => ({ ...r, [item.key]: !showReveal }))}
+                      className="px-2 rounded-md border border-border hover:bg-accent text-muted-foreground"
+                      aria-label={showReveal ? "Hide secret" : "Reveal secret while typing"}
                     >
-                      Clear
-                    </Button>
-                  )}
+                      {showReveal ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                    {item.set && item.source === "file" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setDrafts((d) => ({ ...d, [item.key]: "" }))}
+                        title="Clear this key on next save"
+                      >
+                        Clear
+                      </Button>
+                    )}
+                  </div>
+                  {meta.hint && <p className="text-xs text-muted-foreground">{meta.hint}</p>}
                 </div>
-                {meta.hint && <p className="text-xs text-muted-foreground">{meta.hint}</p>}
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
+        )}
+
+        <div className="flex items-center justify-end gap-3">
+          {savedAt && !dirty && (
+            <span className="text-xs text-success flex items-center gap-1">
+              <Check className="w-3.5 h-3.5" /> Saved
+            </span>
+          )}
+          {mutation.isError && (
+            <span className="text-xs text-destructive">{(mutation.error as Error).message}</span>
+          )}
+          <Button
+            onClick={() => mutation.mutate(drafts)}
+            disabled={!dirty || mutation.isPending}
+            size="sm"
+          >
+            {mutation.isPending ? <><Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />Saving</> : "Save changes"}
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ── LLM API key pool ────────────────────────
+
+function ApiKeysSection() {
+  const qc = useQueryClient();
+  const { keys } = useApiKeys();
+  const { profiles } = useProviderProfiles();
+  const apiProfileNames = useMemo(
+    () => profiles.filter((p) => p.type !== "ollama").map((p) => p.name),
+    [profiles],
+  );
+
+  const [adding, setAdding] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [draftValue, setDraftValue] = useState("");
+  const [draftProvider, setDraftProvider] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: queryKeys.apiKeys() });
+  };
+
+  const createMut = useMutation({
+    mutationFn: createApiKey,
+    onSuccess: () => {
+      refresh();
+      setAdding(false);
+      setDraftName("");
+      setDraftValue("");
+      setDraftProvider("");
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: deleteApiKey,
+    onSuccess: refresh,
+  });
+
+  const scanMut = useMutation({
+    mutationFn: scanEnvForKeys,
+    onSuccess: refresh,
+  });
+
+  const submit = () => {
+    setError(null);
+    createMut.mutate({
+      name: draftName.trim(),
+      value: draftValue,
+      suggested_provider: draftProvider || null,
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="font-display text-lg font-semibold">LLM API keys</h3>
+        <p className="text-sm text-muted-foreground mt-1">
+          Named pool used by the Correct and Translate steps. Each key carries
+          an optional provider hint so the LLM picker can prefill the profile.
+        </p>
+      </div>
+
+      {keys.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No keys yet.</p>
+      ) : (
+        <div className="border border-border rounded-lg divide-y divide-border">
+          {keys.map((k) => (
+            <ApiKeyRow
+              key={k.name}
+              entry={k}
+              providerOptions={apiProfileNames}
+              onDelete={() => deleteMut.mutate(k.name)}
+            />
+          ))}
         </div>
       )}
 
-      <div className="flex items-center justify-end gap-3">
-        {savedAt && !dirty && (
-          <span className="text-xs text-success flex items-center gap-1">
-            <Check className="w-3.5 h-3.5" /> Saved
-          </span>
-        )}
-        {mutation.isError && (
-          <span className="text-xs text-destructive">{(mutation.error as Error).message}</span>
-        )}
-        <Button
-          onClick={() => mutation.mutate(drafts)}
-          disabled={!dirty || mutation.isPending}
-          size="sm"
-        >
-          {mutation.isPending ? <><Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />Saving</> : "Save changes"}
-        </Button>
+      {adding ? (
+        <div className="border border-border rounded-lg p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-xs text-muted-foreground">Name</span>
+              <input
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                placeholder="e.g. Work OpenAI"
+                className="input mt-1"
+                autoFocus
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-muted-foreground">Used with (optional)</span>
+              <select
+                value={draftProvider}
+                onChange={(e) => setDraftProvider(e.target.value)}
+                className={selectClass + " mt-1"}
+              >
+                <option value="">No hint</option>
+                {apiProfileNames.map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label className="block">
+            <span className="text-xs text-muted-foreground">Value</span>
+            <input
+              type="password"
+              value={draftValue}
+              onChange={(e) => setDraftValue(e.target.value)}
+              placeholder="sk-…"
+              className="input mt-1 font-mono text-xs"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          <div className="flex items-center gap-2 justify-end">
+            <Button variant="ghost" size="sm" onClick={() => { setAdding(false); setError(null); }}>Cancel</Button>
+            <Button
+              size="sm"
+              onClick={submit}
+              disabled={!draftName.trim() || !draftValue || createMut.isPending}
+            >
+              {createMut.isPending ? <><Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />Saving</> : "Add key"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => setAdding(true)}>
+            <Plus className="w-3.5 h-3.5 mr-1" /> Add key
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => scanMut.mutate()}
+            disabled={scanMut.isPending}
+            title="Find unmanaged *_API_KEY env vars and add them to the pool"
+          >
+            {scanMut.isPending ? (
+              <><Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />Scanning</>
+            ) : (
+              <><Search className="w-3.5 h-3.5 mr-1" />Re-scan .env for new keys</>
+            )}
+          </Button>
+          {scanMut.isSuccess && scanMut.data && (
+            <span className="text-xs text-muted-foreground">
+              {scanMut.data.added.length === 0
+                ? "No new keys"
+                : `Added: ${scanMut.data.added.join(", ")}`}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ApiKeyRow({
+  entry,
+  providerOptions,
+  onDelete,
+}: {
+  entry: APIKeyPublic;
+  providerOptions: string[];
+  onDelete: () => void;
+}) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draftValue, setDraftValue] = useState("");
+  const [draftProvider, setDraftProvider] = useState(entry.suggested_provider ?? "");
+
+  const updateMut = useMutation({
+    mutationFn: (patch: { value?: string; suggested_provider?: string | null }) =>
+      updateApiKey(entry.name, patch),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.apiKeys() });
+      setEditing(false);
+      setDraftValue("");
+    },
+  });
+
+  return (
+    <div className="px-4 py-3 space-y-2">
+      <div className="flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-sm">{entry.name}</span>
+            <span className="text-xs text-muted-foreground font-mono">{entry.masked}</span>
+            {entry.source === "env" && (
+              <span className="text-2xs px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">from .env</span>
+            )}
+          </div>
+          {entry.suggested_provider && (
+            <div className="text-xs text-muted-foreground mt-0.5">
+              Suggested provider: <span className="font-medium">{entry.suggested_provider}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {!editing && (
+            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setEditing(true)}>
+              Edit
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+            onClick={onDelete}
+            aria-label="Delete key"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </Button>
+        </div>
       </div>
-    </section>
+      {editing && (
+        <div className="space-y-2 pl-1">
+          <label className="block">
+            <span className="text-xs text-muted-foreground">New value (leave blank to keep)</span>
+            <input
+              type="password"
+              value={draftValue}
+              onChange={(e) => setDraftValue(e.target.value)}
+              placeholder="sk-…"
+              className="input mt-1 font-mono text-xs"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-muted-foreground">Suggested provider</span>
+            <select
+              value={draftProvider}
+              onChange={(e) => setDraftProvider(e.target.value)}
+              className={selectClass + " mt-1"}
+            >
+              <option value="">No hint</option>
+              {providerOptions.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          </label>
+          <div className="flex items-center gap-2 justify-end">
+            <Button variant="ghost" size="sm" onClick={() => { setEditing(false); setDraftValue(""); }}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                const patch: { value?: string; suggested_provider?: string | null } = {};
+                if (draftValue) patch.value = draftValue;
+                if (draftProvider !== (entry.suggested_provider ?? "")) {
+                  patch.suggested_provider = draftProvider || "";
+                }
+                updateMut.mutate(patch);
+              }}
+              disabled={updateMut.isPending}
+            >
+              {updateMut.isPending ? "Saving" : "Save"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Provider profiles ───────────────────────
+
+function ProviderProfilesSection() {
+  const qc = useQueryClient();
+  const { profiles } = useProviderProfiles();
+
+  const [adding, setAdding] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [draftUrl, setDraftUrl] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: queryKeys.providerProfiles() });
+  };
+
+  const createMut = useMutation({
+    mutationFn: createProviderProfile,
+    onSuccess: () => {
+      refresh();
+      setAdding(false);
+      setDraftName("");
+      setDraftUrl("");
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: deleteProviderProfile,
+    onSuccess: refresh,
+  });
+
+  const updateMut = useMutation({
+    mutationFn: ({ name, base_url }: { name: string; base_url: string }) =>
+      updateProviderProfile(name, { base_url }),
+    onSuccess: refresh,
+  });
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="font-display text-lg font-semibold">Provider profiles</h3>
+        <p className="text-sm text-muted-foreground mt-1">
+          Built-in profiles are read-only. Add custom OpenAI-compatible profiles
+          (Groq, Together, OpenRouter, a self-hosted endpoint) by giving them a
+          name and base URL.
+        </p>
+      </div>
+      <div className="border border-border rounded-lg divide-y divide-border">
+        {profiles.map((p) => (
+          <ProviderProfileRow
+            key={p.name}
+            profile={p}
+            onDelete={() => deleteMut.mutate(p.name)}
+            onSaveUrl={(url) => updateMut.mutate({ name: p.name, base_url: url })}
+            saving={updateMut.isPending}
+          />
+        ))}
+      </div>
+
+      {adding ? (
+        <div className="border border-border rounded-lg p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-xs text-muted-foreground">Name</span>
+              <input
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                placeholder="e.g. Groq"
+                className="input mt-1"
+                autoFocus
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-muted-foreground">Base URL</span>
+              <input
+                value={draftUrl}
+                onChange={(e) => setDraftUrl(e.target.value)}
+                placeholder="https://api.groq.com/openai/v1"
+                className="input mt-1 font-mono text-xs"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+          </div>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          <div className="flex items-center gap-2 justify-end">
+            <Button variant="ghost" size="sm" onClick={() => { setAdding(false); setError(null); }}>Cancel</Button>
+            <Button
+              size="sm"
+              onClick={() => createMut.mutate({ name: draftName.trim(), base_url: draftUrl.trim() })}
+              disabled={!draftName.trim() || !draftUrl.trim() || createMut.isPending}
+            >
+              {createMut.isPending ? <><Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />Saving</> : "Add profile"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button size="sm" onClick={() => setAdding(true)}>
+          <Plus className="w-3.5 h-3.5 mr-1" /> Add profile
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function ProviderProfileRow({
+  profile,
+  onDelete,
+  onSaveUrl,
+  saving,
+}: {
+  profile: ProviderProfile;
+  onDelete: () => void;
+  onSaveUrl: (url: string) => void;
+  saving: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(profile.base_url ?? "");
+
+  return (
+    <div className="px-4 py-3 space-y-2">
+      <div className="flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-sm">{profile.name}</span>
+            <span className="text-2xs px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+              {profile.type}
+            </span>
+            {profile.builtin && (
+              <span className="text-2xs flex items-center gap-1 text-muted-foreground">
+                <Lock className="w-3 h-3" /> built-in
+              </span>
+            )}
+          </div>
+          {profile.base_url && (
+            <div className="text-xs text-muted-foreground font-mono mt-0.5 truncate">
+              {profile.base_url}
+            </div>
+          )}
+        </div>
+        {!profile.builtin && (
+          <div className="flex items-center gap-1 shrink-0">
+            {!editing && (
+              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setEditing(true)}>
+                Edit
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+              onClick={onDelete}
+              aria-label="Delete profile"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+          </div>
+        )}
+      </div>
+      {editing && !profile.builtin && (
+        <div className="space-y-2 pl-1">
+          <label className="block">
+            <span className="text-xs text-muted-foreground">Base URL</span>
+            <input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              className="input mt-1 font-mono text-xs"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <div className="flex items-center gap-2 justify-end">
+            <Button variant="ghost" size="sm" onClick={() => { setEditing(false); setDraft(profile.base_url ?? ""); }}>Cancel</Button>
+            <Button
+              size="sm"
+              onClick={() => { onSaveUrl(draft.trim()); setEditing(false); }}
+              disabled={saving || !draft.trim()}
+            >
+              {saving ? "Saving" : "Save"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

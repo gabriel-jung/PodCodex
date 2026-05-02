@@ -30,7 +30,8 @@ class PipelineDefaults:
     diarize: bool | None = None
     # Correct / Translate (LLM)
     llm_mode: str = ""  # "ollama" | "api"
-    llm_provider: str = ""  # "openai", "anthropic", etc.
+    llm_provider_profile: str = ""  # name of a profile from the catalog
+    llm_key_name: str = ""  # name of an entry in the api key pool
     llm_model: str = ""
     # Translate
     target_lang: str = ""
@@ -81,7 +82,8 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
         model_size=pipe_raw.get("model_size", ""),
         diarize=pipe_raw.get("diarize"),
         llm_mode=pipe_raw.get("llm_mode", ""),
-        llm_provider=pipe_raw.get("llm_provider", ""),
+        llm_provider_profile=pipe_raw.get("llm_provider_profile", ""),
+        llm_key_name=pipe_raw.get("llm_key_name", ""),
         llm_model=pipe_raw.get("llm_model", ""),
         target_lang=pipe_raw.get("target_lang", ""),
     )
@@ -138,8 +140,12 @@ def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
         pipe_lines.append(f"diarize = {'true' if p.diarize else 'false'}")
     if p.llm_mode:
         pipe_lines.append(f'llm_mode = "{_toml_string(p.llm_mode)}"')
-    if p.llm_provider:
-        pipe_lines.append(f'llm_provider = "{_toml_string(p.llm_provider)}"')
+    if p.llm_provider_profile:
+        pipe_lines.append(
+            f'llm_provider_profile = "{_toml_string(p.llm_provider_profile)}"'
+        )
+    if p.llm_key_name:
+        pipe_lines.append(f'llm_key_name = "{_toml_string(p.llm_key_name)}"')
     if p.llm_model:
         pipe_lines.append(f'llm_model = "{_toml_string(p.llm_model)}"')
     if p.target_lang:

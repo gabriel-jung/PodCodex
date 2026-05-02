@@ -11,7 +11,8 @@ class PipelineDefaultsSchema(BaseModel):
     model_size: str = ""
     diarize: bool | None = None
     llm_mode: str = ""
-    llm_provider: str = ""
+    llm_provider_profile: str = ""
+    llm_key_name: str = ""
     llm_model: str = ""
     target_lang: str = ""
 

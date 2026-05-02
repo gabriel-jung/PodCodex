@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import get_index_store, submit_subprocess_task
+from podcodex.api.routes._helpers import (
+    get_index_store,
+    require_audio_or_output,
+    submit_subprocess_task,
+)
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import AudioPaths
 
@@ -48,7 +52,7 @@ async def index_config() -> dict:
 
 @router.get("/sources")
 async def index_sources(
-    audio_path: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
     """List available source files for indexing (transcript, corrected, translations).
@@ -60,6 +64,7 @@ async def index_sources(
     from podcodex.core.translate import list_translations
     from podcodex.core.versions import get_latest_provenance, is_edited
 
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     def _version_detail(step: str, lang: str | None = None) -> str:
@@ -72,7 +77,10 @@ async def index_sources(
             if meta.get("model"):
                 parts.append(meta["model"])
             params = meta.get("params") or {}
-            if params.get("llm_provider"):
+            if params.get("llm_provider_profile"):
+                parts.append(str(params["llm_provider_profile"]))
+            elif params.get("llm_provider"):
+                # Backward-compat with old provenance entries.
                 parts.append(str(params["llm_provider"]))
             elif params.get("llm_mode"):
                 parts.append(str(params["llm_mode"]))
@@ -140,8 +148,7 @@ async def index_status(
     from podcodex.rag.defaults import CHUNKING_STRATEGIES, MODELS
     from podcodex.rag.store import collection_name
 
-    if not audio_path and not output_dir:
-        raise HTTPException(status_code=422, detail="audio_path or output_dir required")
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
 
@@ -203,8 +210,7 @@ async def episode_collections(
     the source step (transcript / corrected / <lang>) the chunks were
     derived from, and the chunk count.
     """
-    if not audio_path and not output_dir:
-        raise HTTPException(status_code=422, detail="audio_path or output_dir required")
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
 
@@ -241,8 +247,7 @@ async def delete_episode_from_index(
     """
     from podcodex.core.pipeline_db import mark_step
 
-    if not audio_path and not output_dir:
-        raise HTTPException(status_code=422, detail="audio_path or output_dir required")
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
 
@@ -264,10 +269,10 @@ async def delete_episode_from_index(
 
 @router.get("/inspect")
 async def inspect_index(
-    audio_path: str = Query(...),
     show: str = Query(...),
     model: str = Query(...),
     chunking: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict:
     """Return chunks + per-chunk vector health stats for one (model, chunking).
@@ -278,6 +283,7 @@ async def inspect_index(
     """
     from podcodex.rag.store import collection_name
 
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
     col = collection_name(show, model, chunking)

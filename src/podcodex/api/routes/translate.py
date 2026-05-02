@@ -14,6 +14,7 @@ from podcodex.api.routes._helpers import (
     format_prompt_batches,
     llm_prov_params,
     load_best_source,
+    require_audio_or_output,
     submit_task,
 )
 from podcodex.api.routes._versions import register_version_routes
@@ -29,7 +30,7 @@ register_version_routes(router, lang_param=True)
 
 @router.get("/segments")
 async def get_translated_segments(
-    audio_path: str = Query(...),
+    audio_path: str | None = Query(None),
     lang: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
@@ -37,6 +38,7 @@ async def get_translated_segments(
     from podcodex.api.routes._helpers import annotate_flags
     from podcodex.core.versions import load_latest
 
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     lang_norm = normalize_lang(lang)
     segments = load_latest(p.base, lang_norm)
@@ -48,13 +50,14 @@ async def get_translated_segments(
 @router.put("/segments")
 async def save_translated_segments(
     segments: list[Segment],
-    audio_path: str = Query(...),
+    audio_path: str | None = Query(None),
     lang: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> dict:
     """Save validated translated segments."""
     from podcodex.core.translate import save_translation
 
+    require_audio_or_output(audio_path, output_dir)
     lang_norm = normalize_lang(lang)
     seg_dicts = [s.model_dump() for s in segments]
     provenance = build_edit_provenance(lang_norm, audio_path, output_dir)
@@ -66,12 +69,13 @@ async def save_translated_segments(
 
 @router.get("/languages")
 async def list_languages(
-    audio_path: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[str]:
     """List available translation languages."""
     from podcodex.core.translate import list_translations
 
+    require_audio_or_output(audio_path, output_dir)
     return list_translations(audio_path, output_dir=output_dir)
 
 
@@ -85,6 +89,15 @@ class TranslateRequest(LLMRequest):
 @router.post("/start", response_model=TaskResponse)
 async def start_translate(req: TranslateRequest) -> TaskResponse:
     """Start the translate pipeline as a background task."""
+    if req.mode == "api":
+        from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm
+
+        try:
+            resolved = resolve_llm(req.provider_profile, req.key_name)
+        except LLMResolutionError as exc:
+            raise HTTPException(400, str(exc))
+    else:
+        resolved = None
 
     def run_translate(progress_cb, req_data):
         """Load source segments, run translation in batches, and save the raw output."""
@@ -115,9 +128,9 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
             target_lang=req_data.target_lang,
             model=req_data.model,
             batch_minutes=req_data.batch_minutes,
-            provider=req_data.provider,
-            api_base_url=req_data.api_base_url,
-            api_key=req_data.api_key,
+            provider=resolved.provider if resolved else None,
+            api_base_url=resolved.api_base_url if resolved else "",
+            api_key=resolved.api_key if resolved else None,
             original_segments=segments,
             merge=False,  # source segments are already merged on load/upload
             on_batch=batch_progress(progress_cb),
@@ -132,7 +145,8 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
             output_dir=req_data.output_dir,
             params=llm_prov_params(
                 req_data.mode,
-                req_data.provider,
+                provider_profile=req_data.provider_profile,
+                key_name=req_data.key_name,
                 source_lang=req_data.source_lang,
                 target_lang=req_data.target_lang,
                 batch_minutes=req_data.batch_minutes,

@@ -23,7 +23,8 @@ export function usePipelineDefaults() {
     model_size: tc.modelSize,
     diarize: tc.diarize,
     llm_mode: "",
-    llm_provider: "",
+    llm_provider_profile: "",
+    llm_key_name: "",
     llm_model: "",
     target_lang: targetLang,
   }), [tc.modelSize, tc.diarize, targetLang]);

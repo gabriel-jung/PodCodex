@@ -42,10 +42,9 @@ class BatchRequest(BaseModel):
     sub_lang: str = "en"
     # Correct/Translate config (LLM)
     llm_mode: str = "ollama"
-    llm_provider: str | None = None
+    llm_provider_profile: str | None = None
+    llm_key_name: str | None = None
     llm_model: str = ""
-    llm_api_base_url: str = ""
-    llm_api_key: str | None = None
     context: str = ""
     source_lang: str = "French"
     target_lang: str = "English"
@@ -221,7 +220,7 @@ def _batch_llm_step(
     match_params = {
         "model": req.llm_model,
         "llm_mode": req.llm_mode,
-        "llm_provider": req.llm_provider,
+        "llm_provider_profile": req.llm_provider_profile,
         "source_lang": req.source_lang,
     }
     if is_translate:
@@ -247,22 +246,36 @@ def _batch_llm_step(
     label = "Translating" if is_translate else "Correcting"
     ep_progress(i, step_offset, sw, 0.0, f"{label}...")
 
+    if req.llm_mode == "api":
+        from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm
+
+        try:
+            resolved = resolve_llm(req.llm_provider_profile, req.llm_key_name)
+        except LLMResolutionError as exc:
+            logger.warning(
+                "Batch {} skipped for {}: {}", step, Path(audio_path).stem, exc
+            )
+            return False
+    else:
+        resolved = None
+
     llm_kwargs = dict(
         mode=req.llm_mode,
         context=req.context,
         source_lang=req.source_lang,
         model=req.llm_model,
         batch_minutes=req.llm_batch_minutes,
-        provider=req.llm_provider,
-        api_base_url=req.llm_api_base_url,
-        api_key=req.llm_api_key,
+        provider=resolved.provider if resolved else None,
+        api_base_url=resolved.api_base_url if resolved else "",
+        api_key=resolved.api_key if resolved else None,
         original_segments=segments,
         merge=False,
     )
 
     prov_params = llm_prov_params(
         req.llm_mode,
-        req.llm_provider,
+        provider_profile=req.llm_provider_profile,
+        key_name=req.llm_key_name,
         source_lang=req.source_lang,
         batch_minutes=req.llm_batch_minutes,
     )

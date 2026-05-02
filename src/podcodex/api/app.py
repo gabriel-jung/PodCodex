@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from podcodex.api.routes import (
+    api_keys,
     audio,
     batch,
     bot_access,
@@ -40,6 +41,7 @@ from podcodex.api.routes import (
     mcp_prompts as mcp_prompts_route,
     models,
     correct,
+    provider_profiles,
     rss,
     search,
     shows,
@@ -226,6 +228,12 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix="/api", tags=["system"])
     app.include_router(config.router, prefix="/api", tags=["config"])
+    app.include_router(api_keys.router, prefix="/api/keys", tags=["api-keys"])
+    app.include_router(
+        provider_profiles.router,
+        prefix="/api/provider-profiles",
+        tags=["provider-profiles"],
+    )
     app.include_router(audio.router, prefix="/api/audio", tags=["audio"])
     app.include_router(filesystem.router, prefix="/api/fs", tags=["filesystem"])
     app.include_router(shows.router, prefix="/api/shows", tags=["shows"])

@@ -259,7 +259,8 @@ export function versionLabel(v: VersionEntry): string {
   const parts: string[] = [];
   if (p.source) parts.push(SOURCE_LABELS[String(p.source)] || String(p.source));
   if (v.model) parts.push(v.model);
-  if (p.llm_provider) parts.push(String(p.llm_provider));
+  if (p.llm_provider_profile) parts.push(String(p.llm_provider_profile));
+  else if (p.llm_provider) parts.push(String(p.llm_provider));
   else if (p.llm_mode === "manual") parts.push("Manual");
   else if (p.llm_mode) parts.push(String(p.llm_mode));
   if (p.language) parts.push(String(p.language));

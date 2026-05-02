@@ -6,6 +6,8 @@ import type { VersionEntry } from "@/api/types";
 import { queryKeys } from "@/api/queryKeys";
 import { usePipelineConfig } from "@/hooks/usePipelineConfig";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
+import { useApiKeys } from "@/hooks/useApiKeys";
+import { useProviderProfiles } from "@/hooks/useProviderProfiles";
 import {
   TRANSCRIBE_PRESETS,
   CPU_MODELS,
@@ -198,7 +200,10 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { tc, setTc, llm, setLLM, targetLang, setTargetLang } = usePipelineConfig();
-  const { whisperModels, detectedKeys: detected, apiProviders, getProviderInfo } = useLLMProviders();
+  const { whisperModels, detectedKeys: detected } = useLLMProviders();
+  const { profiles } = useProviderProfiles();
+  const { keys } = useApiKeys();
+  const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
   const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
   const applyTranscribePreset = usePipelineConfigStore((s) => s.applyTranscribePreset);
   const llmPreset = usePipelineConfigStore((s) => s.llmPreset);
@@ -816,7 +821,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <HelpLabel label="Model" help="LLM model name to use for processing." />
-                      <input value={llm.model} onChange={(e) => setLLM({ model: e.target.value })} placeholder={getProviderInfo(llm.provider)?.model || "default"} className={inputFieldClass} />
+                      <input value={llm.model} onChange={(e) => setLLM({ model: e.target.value })} placeholder="e.g. gpt-4o-mini" className={inputFieldClass} />
                     </div>
                     <div className="space-y-1.5">
                       <HelpLabel label="Batch (min)" help="Minutes of transcript per LLM request. Larger batches are faster but need more context. Large models (e.g. Opus, GPT-4o) can handle a full episode at once." />
@@ -824,29 +829,41 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                     </div>
                   </div>
                   {llm.mode === "api" && (
-                    <>
+                    <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1.5">
-                        <HelpLabel label="Provider" help="Cloud LLM provider. Determines the default endpoint and model." />
-                        <select value={llm.provider} onChange={(e) => setLLM({ provider: e.target.value })} className={selectFull}>
-                          {apiProviders.length > 0
-                            ? apiProviders.map(([key, spec]) => (
-                                <option key={key} value={key}>{spec.label}</option>
-                              ))
-                            : <option value={llm.provider}>{llm.provider}</option>
-                          }
+                        <HelpLabel label="Provider" help="Pick a profile (built-in or custom). Manage in Settings → Credentials." />
+                        <select
+                          value={llm.providerProfile}
+                          onChange={(e) => setLLM({ providerProfile: e.target.value })}
+                          className={selectFull}
+                        >
+                          <option value="">Pick a profile…</option>
+                          {apiProfiles.map((p) => (
+                            <option key={p.name} value={p.name}>
+                              {p.name}{p.builtin ? "" : " (custom)"}
+                            </option>
+                          ))}
                         </select>
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-1.5">
-                          <HelpLabel label="Endpoint" help="OpenAI-compatible API base URL. Leave empty to use the provider's default." />
-                          <input value={llm.apiBaseUrl} onChange={(e) => setLLM({ apiBaseUrl: e.target.value })} placeholder={getProviderInfo(llm.provider)?.url || "default"} className={inputFieldClass} />
-                        </div>
-                        <div className="space-y-1.5">
-                          <HelpLabel label="API key" help="API key for authentication. Reads from .env if not set here." />
-                          <input type="password" value={llm.apiKey} onChange={(e) => setLLM({ apiKey: e.target.value })} placeholder={detected[llm.provider] ? `••• (${detected[llm.provider]})` : "not set"} className={inputFieldClass} />
-                        </div>
+                      <div className="space-y-1.5">
+                        <HelpLabel label="LLM API key" help="Pick a key from the pool. Add keys in Settings → Credentials." />
+                        <select
+                          value={llm.keyName}
+                          onChange={(e) => setLLM({ keyName: e.target.value })}
+                          className={selectFull}
+                        >
+                          <option value="">
+                            {keys.length === 0 ? "No keys yet" : "Pick a key…"}
+                          </option>
+                          {keys.map((k) => (
+                            <option key={k.name} value={k.name}>
+                              {k.name}
+                              {k.suggested_provider ? ` — ${k.suggested_provider}` : ""}
+                            </option>
+                          ))}
+                        </select>
                       </div>
-                    </>
+                    </div>
                   )}
                 </div>
               )}

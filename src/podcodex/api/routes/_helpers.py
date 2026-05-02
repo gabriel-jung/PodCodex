@@ -86,11 +86,18 @@ def transcribe_prov_params(
     return d
 
 
-def llm_prov_params(mode: str, provider: str | None = None, **extra: object) -> dict:
+def llm_prov_params(
+    mode: str,
+    provider_profile: str | None = None,
+    key_name: str | None = None,
+    **extra: object,
+) -> dict:
     """Build the LLM portion of provenance params."""
     d: dict = {"llm_mode": mode}
-    if provider:
-        d["llm_provider"] = provider
+    if provider_profile:
+        d["llm_provider_profile"] = provider_profile
+    if key_name:
+        d["llm_key_name"] = key_name
     d.update(extra)
     return d
 
@@ -198,6 +205,18 @@ def require_show_folder(show_folder: str) -> Path:
     if not path.is_dir():
         raise HTTPException(404, f"Show folder not found: {show_folder}")
     return path
+
+
+def require_audio_or_output(audio_path: str | None, output_dir: str | None) -> None:
+    """Raise 422 unless at least one of ``audio_path`` / ``output_dir`` is set.
+
+    Most pipeline routes accept either: an audio file (real episode) or just
+    an output dir (e.g. YouTube subtitle imports without audio). Backend's
+    ``AudioPaths.from_audio`` already raises ``ValueError`` when both are
+    None, but it surfaces as a 500 — this gives a proper 422 to clients.
+    """
+    if not audio_path and not output_dir:
+        raise HTTPException(status_code=422, detail="audio_path or output_dir required")
 
 
 def resolve_inside_show_root(path: str) -> Path:
@@ -436,18 +455,22 @@ def build_index_transcript(
 
 
 class LLMRequest(BaseModel):
-    """Base request for LLM pipeline steps (correct & translate)."""
+    """Base request for LLM pipeline steps (correct & translate).
+
+    The frontend sends a profile name + key name; the route resolves
+    them via ``llm_resolver.resolve_llm`` before invoking core. Ollama
+    profiles need no key.
+    """
 
     audio_path: str
     output_dir: str | None = None
     mode: str = "ollama"
-    provider: str | None = None
+    provider_profile: str | None = None
+    key_name: str | None = None
     model: str = ""
     context: str = ""
     source_lang: str = "French"
     batch_minutes: float = 15.0
-    api_base_url: str = ""
-    api_key: str | None = None
     source_version_id: str | None = None
 
     @field_validator("batch_minutes")
