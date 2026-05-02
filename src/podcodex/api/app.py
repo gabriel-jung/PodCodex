@@ -97,6 +97,43 @@ async def _watch_parent(parent_pid: int) -> None:
             pass
 
 
+def _warmup_caches_sync() -> None:
+    """Pre-open LanceDB and per-show pipeline.db connections.
+
+    Without this, the first ``GET /api/shows/{folder}/unified`` after a
+    process boot pays the ``import lancedb`` + ``lancedb.connect()`` cost
+    inside the request, making the user's first show open feel sluggish
+    (~10s on cold OS cache). Both are process-wide singletons, so warming
+    them once at startup eliminates that delay.
+    """
+    try:
+        from podcodex.rag.index_store import get_index_store
+
+        store = get_index_store()
+        # Touch the metadata table so the connection actually loads.
+        store.list_collections()
+    except Exception:
+        logger.opt(exception=True).debug("warmup: index store failed")
+
+    try:
+        from podcodex.api.routes.config import _load
+        from podcodex.core.pipeline_db import get_pipeline_db
+
+        cfg = _load()
+        for folder in cfg.show_folders:
+            p = Path(folder)
+            if not p.is_dir():
+                continue
+            try:
+                get_pipeline_db(p)
+            except Exception:
+                logger.opt(exception=True).debug(
+                    f"warmup: pipeline_db open failed for {p}"
+                )
+    except Exception:
+        logger.opt(exception=True).debug("warmup: pipeline_db pass failed")
+
+
 def _make_lifespan(mcp_http):
     """Nest the mounted MCP sub-app's lifespan under FastAPI's."""
 
@@ -112,6 +149,11 @@ def _make_lifespan(mcp_http):
             if parent_pid > 0:
                 watcher_task = asyncio.create_task(_watch_parent(parent_pid))
 
+        # Fire-and-forget on a worker thread. ``asyncio.to_thread`` cannot
+        # actually interrupt the underlying thread, so there's no point trying
+        # to cancel; on shutdown we just await whatever is left.
+        warmup_task = asyncio.create_task(asyncio.to_thread(_warmup_caches_sync))
+
         try:
             if mcp_http is not None:
                 async with mcp_http.router.lifespan_context(app):
@@ -119,6 +161,10 @@ def _make_lifespan(mcp_http):
             else:
                 yield
         finally:
+            try:
+                await warmup_task
+            except Exception:
+                pass
             if watcher_task is not None:
                 watcher_task.cancel()
                 try:
