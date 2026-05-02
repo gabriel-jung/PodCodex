@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 import type { Episode, VersionEntry } from "@/api/types";
 import type { LLMConfig, LLMPresetKey } from "@/stores/pipelineConfigStore";
 import { LLM_PRESETS } from "@/stores/pipelineConfigStore";
 import { formatDuration, selectClass, versionOption } from "@/lib/utils";
+import { modelPlaceholderFor, modelsFor } from "@/lib/providerModels";
 import { useApiKeys } from "@/hooks/useApiKeys";
 import { useProviderProfiles } from "@/hooks/useProviderProfiles";
 import { useBatchCount } from "@/hooks/useLLMPipeline";
@@ -54,6 +55,8 @@ export default function LLMControlsForm({
   const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
   const { episodeMinutes, batchCount, setBatchCount, minutesPerBatch } = useBatchCount(episode, config, patch);
   const hasOllama = useCapabilities().has("ollama");
+  const datalistId = useId();
+  const modelSuggestions = activePreset === "cloud" ? modelsFor(config.providerProfile) : [];
 
   const onPickKey = (name: string) => {
     if (!name) {
@@ -143,15 +146,23 @@ export default function LLMControlsForm({
         <input
           value={config.model}
           onChange={(e) => patch({ model: e.target.value })}
+          list={modelSuggestions.length > 0 ? datalistId : undefined}
           placeholder={
             activePreset === "cloud"
-              ? "e.g. gpt-4o-mini"
+              ? modelPlaceholderFor(config.providerProfile)
               : activePreset === "manual"
                 ? "e.g. ChatGPT-4o, Claude 3.5…"
                 : "default"
           }
           className="input"
         />
+        {modelSuggestions.length > 0 && (
+          <datalist id={datalistId}>
+            {modelSuggestions.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        )}
 
         {languageRows}
 

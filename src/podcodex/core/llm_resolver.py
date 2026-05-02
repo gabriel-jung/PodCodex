@@ -6,8 +6,8 @@ terms of `(provider, api_base_url, api_key)` so this module bridges
 the two — looking up the profile in the catalog (built-ins + custom)
 and the key value in the pool.
 
-Returned ``provider`` matches the legacy `LLM_PROVIDERS` keys so
-``run_api()`` can keep its existing dispatch.
+Returned ``provider`` matches the legacy ``LLM_PROVIDER_DEFAULTS`` keys
+so ``run_api()`` can keep its existing dispatch.
 """
 
 from __future__ import annotations

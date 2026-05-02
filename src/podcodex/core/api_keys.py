@@ -25,6 +25,10 @@ _KNOWN_PROVIDER_PREFIXES: dict[str, str] = {
     "OPENAI": "openai",
     "ANTHROPIC": "anthropic",
     "MISTRAL": "mistral",
+    "DEEPSEEK": "deepseek",
+    "GEMINI": "gemini",
+    "GROQ": "groq",
+    "OPENROUTER": "openrouter",
 }
 
 _API_KEY_VAR_RE = re.compile(r"^([A-Z0-9_]+)_API_KEY$")

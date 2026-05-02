@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Episode } from "@/api/types";
 import { getAllVersions } from "@/api/search";
@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Copy, Check, Settings as SettingsIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { languageToISO, errorMessage, selectClass, cn, versionLabel, versionOption, stepTag, SUB_LANGUAGES } from "@/lib/utils";
+import { modelPlaceholderFor, modelsFor } from "@/lib/providerModels";
 import { INPUT_STEPS, filterVersionsForStep, type PipelineInputStep } from "@/lib/pipelineInputs";
 import PresetCards from "@/components/common/PresetCards";
 import SectionHeader from "@/components/common/SectionHeader";
@@ -204,6 +205,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
   const { profiles } = useProviderProfiles();
   const { keys } = useApiKeys();
   const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
+  const modelDatalistId = useId();
   const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
   const applyTranscribePreset = usePipelineConfigStore((s) => s.applyTranscribePreset);
   const llmPreset = usePipelineConfigStore((s) => s.llmPreset);
@@ -821,7 +823,20 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <HelpLabel label="Model" help="LLM model name to use for processing." />
-                      <input value={llm.model} onChange={(e) => setLLM({ model: e.target.value })} placeholder="e.g. gpt-4o-mini" className={inputFieldClass} />
+                      <input
+                        value={llm.model}
+                        onChange={(e) => setLLM({ model: e.target.value })}
+                        list={llm.mode === "api" && modelsFor(llm.providerProfile).length > 0 ? modelDatalistId : undefined}
+                        placeholder={llm.mode === "api" ? modelPlaceholderFor(llm.providerProfile) : "e.g. gpt-4o-mini"}
+                        className={inputFieldClass}
+                      />
+                      {llm.mode === "api" && modelsFor(llm.providerProfile).length > 0 && (
+                        <datalist id={modelDatalistId}>
+                          {modelsFor(llm.providerProfile).map((m) => (
+                            <option key={m} value={m} />
+                          ))}
+                        </datalist>
+                      )}
                     </div>
                     <div className="space-y-1.5">
                       <HelpLabel label="Batch (min)" help="Minutes of transcript per LLM request. Larger batches are faster but need more context. Large models (e.g. Opus, GPT-4o) can handle a full episode at once." />

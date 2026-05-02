@@ -1218,13 +1218,12 @@ def run_api(
 
     from openai import OpenAI
 
-    from podcodex.core.constants import LLM_PROVIDERS
+    from podcodex.core.constants import LLM_PROVIDER_DEFAULTS
 
-    if provider and provider in LLM_PROVIDERS:
-        spec = LLM_PROVIDERS[provider]
-        api_base_url = api_base_url or spec["url"]
+    if provider and provider in LLM_PROVIDER_DEFAULTS:
+        spec = LLM_PROVIDER_DEFAULTS[provider]
         model = model or spec["model"]
-        api_key = api_key or os.environ.get(spec.get("env_var", ""))
+        api_key = api_key or os.environ.get(spec["env_var"])
 
     key = api_key or os.environ.get("API_KEY")
     if not key:
@@ -1341,10 +1340,12 @@ def run_llm_pipeline(
         logger.info(f"After merge: {len(segments)} segments")
 
     if mode == "ollama":
+        from podcodex.core.constants import DEFAULT_OLLAMA_MODEL
+
         return run_ollama(
             segments,
             system_prompt,
-            model=model or "qwen3:4b",
+            model=model or DEFAULT_OLLAMA_MODEL,
             batch_minutes=batch_minutes,
             instruction=instruction,
             label=label,

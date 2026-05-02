@@ -61,6 +61,9 @@ class ProviderProfilesFile(BaseModel):
 
 
 # Hardcoded built-ins. Order is render order in the UI dropdown.
+# The "openai-compatible" entries below all route through the OpenAI SDK with
+# a custom base_url — see ``llm_resolver.resolve_llm`` and ``run_api`` in
+# ``core/_utils.py``. Adding more is just appending here; no runtime changes.
 BUILTIN_PROFILES: tuple[ProviderProfile, ...] = (
     ProviderProfile(
         name="openai",
@@ -78,6 +81,30 @@ BUILTIN_PROFILES: tuple[ProviderProfile, ...] = (
         name="mistral",
         type="mistral",
         base_url="https://api.mistral.ai/v1",
+        builtin=True,
+    ),
+    ProviderProfile(
+        name="deepseek",
+        type="openai-compatible",
+        base_url="https://api.deepseek.com",
+        builtin=True,
+    ),
+    ProviderProfile(
+        name="gemini",
+        type="openai-compatible",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        builtin=True,
+    ),
+    ProviderProfile(
+        name="groq",
+        type="openai-compatible",
+        base_url="https://api.groq.com/openai/v1",
+        builtin=True,
+    ),
+    ProviderProfile(
+        name="openrouter",
+        type="openai-compatible",
+        base_url="https://openrouter.ai/api/v1",
         builtin=True,
     ),
     ProviderProfile(
