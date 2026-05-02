@@ -46,6 +46,9 @@ export default function AudioBar() {
       setAudioSegments(path, toAudioSegments(data));
       setShowSegment(true);
     },
+    onError: (err) => {
+      console.error("Failed to load transcript segments", err);
+    },
   });
   const navigate = useNavigate();
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -59,7 +62,8 @@ export default function AudioBar() {
   const [muted, setMuted] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem("audioVolume", String(volume));
+    const id = setTimeout(() => localStorage.setItem("audioVolume", String(volume)), 250);
+    return () => clearTimeout(id);
   }, [volume]);
   const [speed, setSpeed] = useState(1);
   const [showSegment, setShowSegment] = useState(false);
@@ -94,19 +98,20 @@ export default function AudioBar() {
     return () => { save(); clearInterval(interval); };
   }, [audioPath, playing]);
 
-  // Reset when track changes — restore saved speed
+  // Reset when track changes — restore saved speed, default 1× if none.
   useEffect(() => {
     setCurrentTime(0);
     setDuration(0);
     setPlaying(false);
-    let newSpeed = speed;
+    let newSpeed = 1;
     if (audioPath) {
       const savedSpeed = localStorage.getItem(`speed:${audioPath}`);
       if (savedSpeed) {
         const s = parseFloat(savedSpeed);
-        if (s >= 0.5 && s <= 3) { setSpeed(s); newSpeed = s; }
+        if (s >= 0.5 && s <= 3) newSpeed = s;
       }
     }
+    setSpeed(newSpeed);
     if (audioRef.current) audioRef.current.playbackRate = newSpeed;
   }, [audioPath]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -129,7 +134,7 @@ export default function AudioBar() {
     // short segments miss their opening.
     const doSeek = () => {
       audio.currentTime = Math.max(0, pendingSeek - 0.15);
-      audio.play();
+      audio.play().catch(() => { /* autoplay block or interrupted */ });
       consumeSeek();
     };
 
@@ -156,7 +161,7 @@ export default function AudioBar() {
     const audio = audioRef.current;
     if (!audio) return;
     if (audio.paused) {
-      audio.play();
+      audio.play().catch(() => { /* autoplay block or interrupted by pause */ });
     } else {
       audio.pause();
     }
@@ -164,7 +169,7 @@ export default function AudioBar() {
 
   const skip = (delta: number) => {
     const audio = audioRef.current;
-    if (!audio) return;
+    if (!audio || !Number.isFinite(audio.duration)) return;
     audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + delta));
   };
 
@@ -200,7 +205,7 @@ export default function AudioBar() {
           if (pendingSeek == null && audioPath) {
             try {
               const saved = JSON.parse(localStorage.getItem(`pos:${audioPath}`) || "null");
-              if (saved?.time > 5 && saved.time < e.currentTarget.duration - 5) {
+              if (saved?.time > 5 && saved.time < e.currentTarget.duration - 1) {
                 e.currentTarget.currentTime = saved.time;
               }
             } catch { /* ignore */ }
@@ -292,7 +297,14 @@ export default function AudioBar() {
         {/* Volume — mute toggle; hover reveals a vertical slider above. */}
         <div className="group/vol relative shrink-0">
           <button
-            onClick={() => setMuted(!muted)}
+            onClick={() => {
+              if (muted) {
+                setMuted(false);
+                if (volume === 0) setVolume(0.2);
+              } else {
+                setMuted(true);
+              }
+            }}
             className="h-7 w-7 flex items-center justify-center rounded-full bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition"
             title={muted ? "Unmute" : "Mute"}
             aria-label={muted ? "Unmute" : "Mute"}
@@ -304,22 +316,25 @@ export default function AudioBar() {
             )}
           </button>
           <div
-            className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-1.5 py-3 rounded-md bg-popover border border-border shadow-md opacity-0 pointer-events-none group-hover/vol:opacity-100 group-hover/vol:pointer-events-auto transition-opacity"
+            className="absolute bottom-full left-1/2 -translate-x-1/2 pb-1 opacity-0 pointer-events-none group-hover/vol:opacity-100 group-hover/vol:pointer-events-auto transition-opacity"
           >
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.01}
-              value={muted ? 0 : volume}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setVolume(v);
-                if (v > 0 && muted) setMuted(false);
-              }}
-              aria-label="Volume"
-              className="accent-primary cursor-pointer h-20 w-1 [writing-mode:vertical-lr] [direction:rtl]"
-            />
+            <div className="px-2 py-3 rounded-md bg-popover border border-border shadow-md">
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={muted ? 0 : volume}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setVolume(v);
+                  if (v > 0 && muted) setMuted(false);
+                  if (v === 0 && !muted) setMuted(true);
+                }}
+                aria-label="Volume"
+                className="accent-primary cursor-pointer h-24 w-1.5 [writing-mode:vertical-lr] [direction:rtl] [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3"
+              />
+            </div>
           </div>
         </div>
 
@@ -390,7 +405,7 @@ export default function AudioBar() {
           {hoverTime && (
             <div
               className="absolute bottom-full mb-1.5 -translate-x-1/2 bg-popover text-popover-foreground text-2xs font-mono px-1.5 py-0.5 rounded border border-border shadow-sm pointer-events-none"
-              style={{ left: `${hoverTime.pct}%` }}
+              style={{ left: `${Math.max(3, Math.min(97, hoverTime.pct))}%` }}
             >
               {formatTime(hoverTime.time, false)}
             </div>
