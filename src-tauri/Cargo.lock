@@ -2694,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "podcodex-app"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "command-group",
  "log",
