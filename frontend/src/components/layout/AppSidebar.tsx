@@ -1,9 +1,12 @@
 import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { useTheme } from "@/hooks/useTheme";
 import { useLayoutStore } from "@/stores";
+import { getGPUStatus } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import {
   ArrowLeft, Home, Podcast, Settings, SunMoon,
-  PanelLeftOpen, PanelLeftClose,
+  PanelLeftOpen, PanelLeftClose, Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -81,9 +84,10 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
         ))}
       </nav>
 
-      {/* Bottom: Theme + Settings */}
+      {/* Bottom: Theme + GPU available + Settings */}
       <div className="flex flex-col border-t border-border py-1">
         <SidebarBtn icon={SunMoon} label={`Theme: ${theme}`} expanded={expanded} onClick={() => setTheme(nextTheme)} />
+        <GPUAvailableWarning expanded={expanded} onClick={() => navigate({ to: "/settings", search: { tab: "gpu" } })} />
         <SidebarBtn icon={Settings} label="Settings" expanded={expanded} onClick={() => navigate({ to: "/settings" })} />
       </div>
 
@@ -96,6 +100,30 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
         {expanded ? <PanelLeftClose className="w-5 h-5" /> : <PanelLeftOpen className="w-5 h-5" />}
       </button>
     </div>
+  );
+}
+
+function GPUAvailableWarning({ expanded, onClick }: { expanded: boolean; onClick: () => void }) {
+  const { data: status } = useQuery({
+    queryKey: queryKeys.gpuStatus(),
+    queryFn: getGPUStatus,
+    staleTime: 30_000,
+  });
+  if (!status) return null;
+  if (!status.platform_supported || !status.gpu_detected) return null;
+  const accelerated = status.activated && !!status.installed_version && !status.needs_update;
+  if (accelerated) return null;
+  const label = status.installed_version ? "Activate GPU" : "GPU available";
+  return (
+    <button
+      onClick={onClick}
+      title={expanded ? undefined : label}
+      aria-label={label}
+      className={`mx-2 my-1 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 text-warning px-2 py-2 text-xs transition hover:bg-warning/20 ${expanded ? "" : "justify-center"}`}
+    >
+      <Zap className="w-4 h-4 shrink-0" />
+      {expanded && <span className="truncate font-medium">{label}</span>}
+    </button>
   );
 }
 

@@ -22,6 +22,9 @@ def register_version_routes(
     """
 
     def _resolve(audio_path: str | None, output_dir: str | None, lang: str | None):
+        from podcodex.api.routes._helpers import require_audio_or_output
+
+        require_audio_or_output(audio_path, output_dir)
         p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
         s = normalize_lang(lang) if lang_param and lang else step
         if not s:
