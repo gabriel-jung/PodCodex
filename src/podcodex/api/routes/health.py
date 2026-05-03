@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -121,8 +123,51 @@ async def free_vram_endpoint() -> dict:
 async def get_device_info() -> dict:
     """Return resolved device, dtype, GPU name, compute capability, env override."""
     from podcodex.core.device import device_info
+    from podcodex.core.user_settings import get_device_override
 
-    return device_info()
+    info = device_info()
+    info["persisted_override"] = get_device_override()
+    return info
+
+
+class SetDeviceRequest(BaseModel):
+    override: Literal["auto", "cpu", "cuda"]
+
+
+@router.post("/system/device")
+async def set_device(req: SetDeviceRequest) -> dict:
+    """Persist the device override and apply it to the running process.
+
+    Validates a ``cuda`` request against actual CUDA availability so the
+    UI can surface an immediate, actionable error rather than letting the
+    next pipeline run die at ``resolve_device()``. Returns
+    ``restart_required: true`` because torch / faster-whisper state already
+    initialized on the previous device cannot be migrated mid-process.
+    """
+    if req.override == "cuda":
+        try:
+            import torch
+
+            if not torch.cuda.is_available():
+                raise HTTPException(
+                    400,
+                    "Cannot force CUDA: no CUDA-capable device is available.",
+                )
+        except ImportError as exc:
+            raise HTTPException(
+                400, "Cannot force CUDA: torch is not installed."
+            ) from exc
+
+    from podcodex.core.device import device_info
+    from podcodex.core.user_settings import set_device_override
+
+    set_device_override(req.override)
+    os.environ["PODCODEX_DEVICE"] = req.override
+
+    info = device_info()
+    info["persisted_override"] = req.override
+    info["restart_required"] = True
+    return info
 
 
 @router.get("/tasks/active")

@@ -7,7 +7,9 @@ import {
 import {
   getGPUStatus, downloadGPUBackend, activateGPUBackend,
   deactivateGPUBackend, uninstallGPUBackend, getTaskStatus,
+  getDeviceInfo, setDeviceOverride,
 } from "@/api/client";
+import type { DeviceInfo, DeviceOverride } from "@/api/gpu";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
 
@@ -37,6 +39,19 @@ export default function GPUBackendPanel() {
   const { data: status, isLoading, refetch } = useQuery({
     queryKey: queryKeys.gpuStatus(),
     queryFn: getGPUStatus,
+  });
+
+  const { data: deviceInfo, refetch: refetchDevice } = useQuery({
+    queryKey: queryKeys.deviceInfo(),
+    queryFn: getDeviceInfo,
+  });
+
+  const overrideMut = useMutation({
+    mutationFn: (next: DeviceOverride) => setDeviceOverride(next),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.deviceInfo() });
+      void restartApp();
+    },
   });
 
   const { data: task } = useQuery({
@@ -116,12 +131,24 @@ export default function GPUBackendPanel() {
     <section className="space-y-6">
       <div className="flex items-center justify-between">
         <Heading />
-        <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-7">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => { void refetch(); void refetchDevice(); }}
+          className="h-7"
+        >
           <RefreshCw className="w-3.5 h-3.5" />
         </Button>
       </div>
 
       <StatusCard status={status} />
+
+      <DeviceOverrideRow
+        info={deviceInfo}
+        pending={overrideMut.isPending}
+        error={overrideMut.error ? (overrideMut.error as Error).message : null}
+        onChange={(next) => overrideMut.mutate(next)}
+      />
 
       {status.mode === "bundle" && status.needs_update && (
         <UpdateAvailableBanner
@@ -335,6 +362,67 @@ function ActionBlock({
       {downloadError && (
         <p className="text-xs text-destructive flex items-center gap-1">
           <AlertCircle className="w-3.5 h-3.5" /> {downloadError}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function DeviceOverrideRow({
+  info,
+  pending,
+  error,
+  onChange,
+}: {
+  info: DeviceInfo | undefined;
+  pending: boolean;
+  error: string | null;
+  onChange: (next: DeviceOverride) => void;
+}) {
+  // Persisted setting drives the control; env override (if different) is
+  // surfaced as a hint so the user understands why the running process
+  // diverges from what's saved on disk.
+  const persisted = info?.persisted_override ?? "auto";
+  const envForced = info?.override ?? null;
+  const envOverridesPersisted = envForced !== null && envForced !== persisted;
+  const isCpu = persisted === "cpu";
+  const next: DeviceOverride = isCpu ? "auto" : "cpu";
+
+  return (
+    <div className="rounded-lg border border-border p-4 space-y-2">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">Force CPU mode</div>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Skip GPU even when one is available. Useful for low-VRAM setups
+            or when a driver mismatch is causing crashes.
+          </p>
+        </div>
+        <div className="shrink-0 flex items-center gap-2">
+          <Button
+            variant={isCpu ? "default" : "outline"}
+            size="sm"
+            disabled={pending}
+            onClick={() => onChange(next)}
+          >
+            {pending && <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />}
+            {isCpu ? "On" : "Off"}
+          </Button>
+        </div>
+      </div>
+      {envOverridesPersisted && (
+        <p className="text-xs text-muted-foreground flex items-start gap-1">
+          <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <span>
+            Running process is forced to <code className="font-mono text-2xs">{envForced}</code>{" "}
+            via the <code className="font-mono text-2xs">PODCODEX_DEVICE</code> env var,
+            which overrides this setting until unset.
+          </span>
+        </p>
+      )}
+      {error && (
+        <p className="text-xs text-destructive flex items-center gap-1">
+          <AlertCircle className="w-3.5 h-3.5" /> {error}
         </p>
       )}
     </div>

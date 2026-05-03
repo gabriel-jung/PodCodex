@@ -22,6 +22,7 @@ export const queryKeys = {
   capabilities: () => ["system", "extras"] as const,
   models: () => ["models"] as const,
   gpuStatus: () => ["gpu", "status"] as const,
+  deviceInfo: () => ["system", "device"] as const,
 
   // ── Shows & episodes ───────────────────────────────────
   shows: () => ["shows"] as const,

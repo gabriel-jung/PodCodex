@@ -108,6 +108,7 @@ def _install_all_patches() -> None:
     fallback installed before any caller hits ``torch.from_numpy``.
     """
     logger.info("bootstrap: installing platform patches (pid={})", os.getpid())
+    _apply_persisted_device_override()
     _install_hf_symlink_patch()
     _install_subprocess_console_patch()
     _install_torch_from_numpy_patch()
@@ -115,6 +116,28 @@ def _install_all_patches() -> None:
     _install_transformers_torch_check_patch()
     _check_cuda_kernels_or_degrade()
     logger.info("bootstrap: all patches installed")
+
+
+def _apply_persisted_device_override() -> None:
+    """Promote the persisted ``device_override`` setting to ``PODCODEX_DEVICE``.
+
+    Env var wins when explicitly set (dev / CI / ``make dev-no-tauri-cpu``);
+    otherwise the value the user picked in the desktop GPU panel is read from
+    ``data_dir()/settings.json`` and exported so every downstream
+    ``device.user_override()`` call sees it.
+    """
+    if os.environ.get("PODCODEX_DEVICE", "").strip():
+        return
+    try:
+        from podcodex.core.user_settings import get_device_override
+
+        value = get_device_override()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("device override: persisted setting load failed: {!r}", exc)
+        return
+    if value != "auto":
+        os.environ["PODCODEX_DEVICE"] = value
+        logger.info("device override: applied persisted setting {!r}", value)
 
 
 def _check_cuda_kernels_or_degrade() -> None:
