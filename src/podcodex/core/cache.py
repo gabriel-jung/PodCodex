@@ -82,7 +82,9 @@ def list_cached_models() -> list[dict]:
             seen.add(entry.name)
             blobs_dir = entry / "blobs"
             if blobs_dir.is_dir():
-                size = sum(f.stat().st_size for f in blobs_dir.rglob("*") if f.is_file())
+                size = sum(
+                    f.stat().st_size for f in blobs_dir.rglob("*") if f.is_file()
+                )
             else:
                 size = sum(
                     f.stat().st_size
@@ -115,11 +117,13 @@ def delete_cached_model(model_id: str) -> bool:
 
 def get_vram_status() -> dict | None:
     """Return GPU VRAM info if torch + CUDA available, else None."""
+    from podcodex.core.device import cuda_available
+
+    if not cuda_available():
+        return None
     try:
         import torch
 
-        if not torch.cuda.is_available():
-            return None
         total = torch.cuda.get_device_properties(0).total_mem
         used = torch.cuda.memory_allocated(0)
         reserved = torch.cuda.memory_reserved(0)

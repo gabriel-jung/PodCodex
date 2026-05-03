@@ -10,6 +10,11 @@ follows [Semantic Versioning](https://semver.org/). Dates are ISO 8601.
 - Discord bot `/ask` and `/ask-advanced` commands, plus the `synthesis` module and all `ask_*` config fields (CLI, `BotConfig`, `ServerSettings`, `/setup` params). LLM-synthesized answers are not yet ready for release — surface to be revisited after prompt-isolation and grounding guarantees are in place. `openai` dependency dropped from the `bot` extra. Pre-existing `ask_*` entries in `server_config.json` are ignored at load time (no migration needed).
 
 ### Added
+- `src/podcodex/core/device.py` — single facility for device + dtype + compute-type resolution. Replaces seven scattered `torch.cuda.is_available()` callsites and the inline `compute_type="float16"` / `dtype=torch.bfloat16` hardcodes. Picks per compute capability: `float16` + `bfloat16` for Ampere+, `float16` + `float16` for Volta/Turing, `int8_float32` + `float32` for Pascal (GTX 10xx, P40, P100), `int8` + `float32` for CPU.
+- `PODCODEX_DEVICE=auto|cpu|cuda` env var. `cpu` skips GPU init even when CUDA is available — useful for `make dev-no-tauri-cpu`, ad-hoc CPU testing, or as an escape hatch when the installed torch wheel doesn't match the GPU. `cuda` raises if no CUDA device is present.
+- `make dev-no-tauri-cpu` target — `dev-no-tauri` with `PODCODEX_DEVICE=cpu` exported.
+- Bootstrap-time CUDA kernel guard (`bootstrap._check_cuda_kernels_or_degrade`). On a wheel/GPU mismatch (e.g. cu128 wheel on a Pascal box), sets `PODCODEX_DEVICE=cpu` and logs a clear warning instead of letting `CUDA error: no kernel image is available` surface from the first transcription call.
+- `GET /api/system/device` endpoint — returns resolved device, compute_type, dtype, GPU name, compute capability, arch list, and active env override. Diagnostic surface for the frontend GPU panel.
 - macOS standalone `.app` / `.dmg` build via PyInstaller-frozen FastAPI sidecar (`make bundle`). Single-file `podcodex-server` onefile binary (~420 MB), bundled `ffmpeg` + `yt-dlp` static binaries, ML caches relocated under `~/Library/Application Support/com.podcodex.desktop/models/`. Cold start 10-30 s while PyInstaller extracts; warm <1 s. Phased boot UI in `RootLayout` keeps the user informed during first launch.
 - Sign + notarize wrapper at `scripts/sign_and_notarize.sh` (Developer ID + notarytool keychain profile). Resigns nested PyInstaller `.so` / `.dylib` defensively before stapling.
 - Tauri shell (`src-tauri/src/lib.rs`) auto-spawns the bundled sidecar, polls `/api/health` before revealing the window, kills the child on `RunEvent::Exit`. `PODCODEX_SKIP_BACKEND_SPAWN=1` keeps `make dev` working with an external uvicorn.
@@ -31,6 +36,8 @@ follows [Semantic Versioning](https://semver.org/). Dates are ISO 8601.
 - `deploy/SMOKE.md` — cross-platform smoke checklist (macOS / Ubuntu / Windows / WSL2), covering startup, onboarding, pipeline, editor, search, integrations, reindex CLI, and recovery paths.
 
 ### Fixed
+- `transcribe.py` no longer hardcodes `compute_type="float16"`. CTranslate2 rejects FP16 on Pascal GPUs (`Requested float16 compute type, but the target device or backend does not support efficient float16 computation`); GTX 10xx users now get `int8_float32` automatically.
+- `synthesize.py` no longer hardcodes `dtype=torch.bfloat16` for Qwen3-TTS. bfloat16 requires sm_80 (Ampere); Pascal users would have hit a kernel error. Dtype is now picked per compute capability via `device.torch_dtype()`.
 - Three flaky unit tests realigned with current behavior:
   - `test_translate.py::test_build_manual_prompt_asks_for_positional_text_output` now checks for position-based output contract rather than the removed `"index"` key.
   - `test_utils.py::test_call_and_parse_count_mismatch_rejects_whole_batch` validates that a short LLM reply triggers batch rejection (keeping all originals) rather than partial application.

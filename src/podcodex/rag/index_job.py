@@ -11,23 +11,6 @@ from collections.abc import Callable
 from typing import Any
 
 
-def _autodetect_device() -> str:
-    """Pick the best torch device for embedding.
-
-    The GPU sidecar bundles CUDA torch; the CPU sidecar bundles CPU torch.
-    Falls back to "cpu" if torch is missing or CUDA isn't usable, so the
-    same code path works in both bundles plus dev.
-    """
-    try:
-        import torch as _torch
-
-        if _torch.cuda.is_available():
-            return "cuda"
-    except Exception:  # noqa: BLE001
-        pass
-    return "cpu"
-
-
 def run(
     *,
     progress_cb: Callable[[float, str], None],
@@ -77,7 +60,9 @@ def run(
         frac = 0.05 + 0.9 * (step / max(total, 1))
         progress_cb(frac, f"{label} ({step + 1}/{total})")
 
-    device = _autodetect_device()
+    from podcodex.core.device import device_str
+
+    device = device_str()
 
     total_upserted = vectorize_batch(
         transcript,
@@ -164,6 +149,8 @@ def run_for_batch(
     def on_prog(step: int, total: int, label: str) -> None:
         progress_cb(step / max(total, 1), f"{label} ({step + 1}/{total})")
 
+    from podcodex.core.device import device_str
+
     upserted = vectorize_batch(
         transcript,
         show_name,
@@ -172,7 +159,7 @@ def run_for_batch(
         chunkings,
         local,
         overwrite=force,
-        device=_autodetect_device(),
+        device=device_str(),
         on_progress=on_prog,
     )
 

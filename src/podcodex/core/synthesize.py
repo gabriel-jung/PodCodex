@@ -450,8 +450,6 @@ def load_tts_model(model_size: str = "1.7B"):
     import contextlib
     import io
 
-    import torch
-
     # qwen_tts.core.tokenizer_25hz.vq.whisper_encoder prints a multi-line
     # "flash-attn is not installed" banner at import time. It is harmless
     # (the encoder falls back to plain PyTorch attention) and we pin
@@ -459,15 +457,18 @@ def load_tts_model(model_size: str = "1.7B"):
     with contextlib.redirect_stdout(io.StringIO()):
         from qwen_tts import Qwen3TTSModel
 
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
     from podcodex.core._hf_logging import timed_load
     from podcodex.core.cache import get_hf_cache_dir
+    from podcodex.core.device import device_str, torch_dtype
 
-    with timed_load(f"Qwen3-TTS {model_size} on {device}"):
+    device = device_str()
+    dtype = torch_dtype()
+
+    with timed_load(f"Qwen3-TTS {model_size} on {device} ({dtype})"):
         model = Qwen3TTSModel.from_pretrained(
             f"Qwen/Qwen3-TTS-12Hz-{model_size}-Base",
             device_map=device,
-            dtype=torch.bfloat16,
+            dtype=dtype,
             attn_implementation="sdpa",
             cache_dir=str(get_hf_cache_dir()),
         )

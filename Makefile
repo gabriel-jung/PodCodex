@@ -67,6 +67,9 @@ dev-no-tauri:  ## Start just API + Vite (use browser at localhost:5173)
 	$(MAKE) dev-frontend & \
 	wait
 
+dev-no-tauri-cpu:  ## Same as dev-no-tauri but force CPU (skip GPU init)
+	@PODCODEX_DEVICE=cpu $(MAKE) dev-no-tauri
+
 # ── Production Build ─────────────────────────────────────
 
 setup-pyinstaller:  ## Install PyInstaller into the dev venv

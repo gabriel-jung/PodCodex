@@ -313,10 +313,12 @@ def wav_duration(path: Path) -> float:
 
 def default_batch_size() -> int:
     """Return 16 if total VRAM > 10 GB, else 8."""
-    try:
-        import torch
+    from podcodex.core.device import cuda_available
 
-        if torch.cuda.is_available():
+    try:
+        if cuda_available():
+            import torch
+
             _, total = torch.cuda.mem_get_info()
             if total > 10 * 1024 * 1024 * 1024:
                 return 16
@@ -327,10 +329,12 @@ def default_batch_size() -> int:
 
 def free_vram() -> None:
     """Flush VRAM — call after ``del model`` in the caller's scope."""
-    import torch
+    from podcodex.core.device import cuda_available
 
     gc.collect()
-    if torch.cuda.is_available():
+    if cuda_available():
+        import torch
+
         torch.cuda.empty_cache()
 
 
@@ -340,10 +344,12 @@ def check_vram(label: str = "model", min_mb: int = 512) -> None:
     Call this on CUDA devices before loading a heavy model.  On CPU or
     when CUDA is unavailable, this is a no-op.
     """
+    from podcodex.core.device import cuda_available
+
+    if not cuda_available():
+        return
     import torch
 
-    if not torch.cuda.is_available():
-        return
     # flush first so the reading is accurate
     gc.collect()
     torch.cuda.empty_cache()

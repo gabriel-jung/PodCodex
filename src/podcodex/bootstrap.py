@@ -113,7 +113,39 @@ def _install_all_patches() -> None:
     _install_torch_from_numpy_patch()
     _install_transformers_doc_patch()
     _install_transformers_torch_check_patch()
+    _check_cuda_kernels_or_degrade()
     logger.info("bootstrap: all patches installed")
+
+
+def _check_cuda_kernels_or_degrade() -> None:
+    """Verify the installed torch wheel has kernels for the local GPU.
+
+    Auto-detect mode: on mismatch (e.g. cu128 wheel on a Pascal box) set
+    ``PODCODEX_DEVICE=cpu`` so downstream pipeline code skips GPU init
+    cleanly instead of crashing with ``CUDA error: no kernel image is
+    available``.
+
+    User-forced ``PODCODEX_DEVICE=cuda`` mode: surface the same mismatch
+    immediately at bootstrap rather than letting it cascade — they asked
+    for CUDA, they get a clear error if the wheel can't deliver.
+    """
+    from podcodex.core.device import assert_kernels_available, user_override
+
+    override = user_override()
+    if override == "cpu":
+        return
+
+    try:
+        assert_kernels_available()
+    except RuntimeError as exc:
+        if override == "cuda":
+            raise
+        os.environ["PODCODEX_DEVICE"] = "cpu"
+        logger.warning(
+            "device-guard: degrading to CPU because installed torch wheel "
+            "lacks kernels for this GPU. Original error: {}",
+            exc,
+        )
 
 
 def _install_hf_symlink_patch() -> None:

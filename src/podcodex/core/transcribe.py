@@ -75,26 +75,6 @@ def processing_status(
 
 
 # ──────────────────────────────────────────────
-# Device
-# ──────────────────────────────────────────────
-
-
-def get_device() -> tuple[str, str]:
-    """Auto-detect best device and compute type.
-
-    Note: MPS (Apple Silicon) is not yet supported by WhisperX, falls back to CPU.
-
-    Returns:
-        (device, compute_type) — e.g. ("cuda", "float16") or ("cpu", "int8")
-    """
-    import torch
-
-    if torch.cuda.is_available():
-        return "cuda", "float16"
-    return "cpu", "int8"
-
-
-# ──────────────────────────────────────────────
 # STEP 1 — Transcription
 # ──────────────────────────────────────────────
 
@@ -137,7 +117,9 @@ def transcribe_file(
         logger.info("[SKIP] Matching segments version already exists")
         return load_segments(audio_path, output_dir=output_dir)
 
-    dev, ctype = get_device()
+    from podcodex.core.device import resolve_device
+
+    dev, ctype = resolve_device()
     device = device or dev
     compute_type = compute_type or ctype
 
@@ -283,7 +265,9 @@ def diarize_file(
             "HF_TOKEN not found. Set the HF_TOKEN environment variable or pass hf_token=."
         )
 
-    dev, _ = get_device()
+    from podcodex.core.device import resolve_device
+
+    dev, _ = resolve_device()
     device = device or dev
 
     logger.info(f"Diarizing {p.audio_path.name}")
