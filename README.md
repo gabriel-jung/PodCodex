@@ -56,7 +56,21 @@ make setup          # uv sync + npm install
 make dev            # FastAPI + Vite + Tauri, hot-reload
 ```
 
-`make dev-no-tauri` runs in the browser (no Rust required). Full build / signing guide: [`deploy/BUILD.md`](deploy/BUILD.md).
+`make dev-no-tauri` runs in the browser (no Rust required). `make dev-no-tauri-cpu` forces CPU mode even if a GPU is present. Full build / signing guide: [`deploy/BUILD.md`](deploy/BUILD.md).
+
+### Hardware support
+
+| GPU generation                          | Status            | Install path                                              |
+|-----------------------------------------|-------------------|-----------------------------------------------------------|
+| Ampere / Ada / Blackwell (RTX 30/40/50) | Full              | bundled `.dmg` / `.msi`, or `--extra gpu` from source     |
+| Turing (RTX 20xx, GTX 16xx)             | Full              | bundled `.dmg` / `.msi`, or `--extra gpu` from source     |
+| Pascal (GTX 10xx, Titan Xp, P40, P100)  | Supported, opt-in | `--extra gpu-pascal` — see [deploy/PASCAL.md](deploy/PASCAL.md) |
+| Apple Silicon                           | CPU only          | bundled `.dmg` (WhisperX has no MPS path upstream yet)    |
+| No GPU / CPU only                       | Works, slow       | bundled, or `PODCODEX_DEVICE=cpu` to force                |
+
+Pascal users: the bundle ships cu128 wheels which lack sm_61 kernels. The
+`gpu-pascal` extra pulls cu126 wheels that still support Pascal — read
+[`deploy/PASCAL.md`](deploy/PASCAL.md) before installing.
 
 ---
 
@@ -133,7 +147,7 @@ Internals: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - WhisperX runs CPU-only on Apple Silicon (no MPS support upstream yet).
 - YouTube auto-generated subtitles need [deno](https://deno.com/) installed (yt-dlp delegates JS challenge solving to it). Manual subtitles work without it.
 - Ollama correct/translate works best with larger models. Small ones drop format.
-- Qwen3-TTS is GPU-heavy. CUDA recommended for synthesis.
+- Qwen3-TTS is GPU-heavy. CUDA recommended for synthesis. See the [Hardware support](#hardware-support) table for which GPUs are covered by the default install vs. the Pascal opt-in.
 
 ---
 

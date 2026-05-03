@@ -11,6 +11,18 @@ LLM-correction pipeline step is **correct** (or "AI correct"). Never "polish" �
 - Pinned 3.12. Install: `uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp`
 - Don't use `.venv/bin/pip`. Use `uv pip install -e . --python .venv/bin/python` if needed.
 - Tests: `.venv/bin/python -m pytest`. No root `conftest.py`; fixtures explicit-import from `tests/fixtures/`.
+- GPU extras: `--extra gpu` (cu128, Turing+) or `--extra gpu-pascal` (cu126, GTX 10xx/P40/P100). Mutually exclusive — never enable both. Wheel routing in `[tool.uv.sources]` of `pyproject.toml`.
+
+## GPU extras lifecycle
+
+`gpu-pascal` is a transient escape hatch for Pascal users (sm_60–62) and is pinned to `torch>=2.8,<2.10`. PyTorch 2.10 is expected to drop sm_61 entirely. When the project's torch baseline crosses 2.10:
+
+1. Delete the `gpu-pascal` entry from `[project.optional-dependencies]` in `pyproject.toml`.
+2. Delete both `gpu-pascal` lines from `[tool.uv.sources]` torch + torchaudio routing.
+3. Delete the `pytorch-cu126` `[[tool.uv.index]]` entry.
+4. Delete `deploy/PASCAL.md`.
+5. Drop the Pascal row from the README "Hardware support" table; remove the Pascal note below it.
+6. Drop the Pascal-specific fallback path from the bootstrap kernel guard's warning text in `src/podcodex/bootstrap.py:_check_cuda_kernels_or_degrade` (currently points to `deploy/PASCAL.md`).
 
 ## Versioning (bump on every Windows MSI release)
 
