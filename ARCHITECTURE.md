@@ -28,7 +28,7 @@ Non-obvious wiring. For folder layout and what each module contains, run `ls src
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Why subprocess workers:** torch + CUDA leak GPU memory across runs in-process. Re-execing isolates each step. The Tauri process group ensures workers die when the app quits — without it, orphaned torch processes survive the shell.
+**Why subprocess workers:** torch + CUDA leak GPU memory across runs in-process. Re-execing isolates each step. The Tauri process group ensures workers die when the app quits; without it, orphaned torch processes survive the shell.
 
 **Bootstrap order matters.** `bootstrap.py` patches must run before any `torch.*` import. Required env vars (`PODCODEX_DATA_DIR`, `HF_HOME`, `TORCH_HOME`) must be set before `bootstrap_for_*()`.
 
@@ -42,7 +42,7 @@ Non-obvious wiring. For folder layout and what each module contains, run `ls src
 | Windows | `%APPDATA%\podcodex\` |
 | Linux | `~/.local/share/podcodex/` |
 
-User config (`secrets.env`, etc.) is separate and lives at `~/.config/podcodex/` on **all platforms** (`config_dir()` deliberately ignores XDG defaults to keep paths symmetric — config is small, data is big).
+User config (`secrets.env`, etc.) is separate and lives at `~/.config/podcodex/` on **all platforms** (`config_dir()` deliberately ignores XDG defaults to keep paths symmetric: config is small, data is big).
 
 Each show is a self-contained folder under a user-chosen root:
 
@@ -67,7 +67,7 @@ Each show is a self-contained folder under a user-chosen root:
 
 Files at the episode root are pointers to the latest version. `.versions/{step}/<id>.json` is the truth: every save (auto or manual) is archived with model, params, content hash, timestamp.
 
-`.episode_meta.json` is the indexer's RSS-metadata source (title, pub_date, description, episode_number, artwork_url). It mirrors a single `RSSEpisode` from `.feed_cache.json`. Whenever a richer extraction lands (per-video YouTube call, RSS refetch, one-shot backfill) the merge goes through `fill_empty_fields()` in `ingest/rss.py` — three call sites pre-consolidation each rolled their own and drifted on which keys counted. Don't add a fourth.
+`.episode_meta.json` is the indexer's RSS-metadata source (title, pub_date, description, episode_number, artwork_url). It mirrors a single `RSSEpisode` from `.feed_cache.json`. Whenever a richer extraction lands (per-video YouTube call, RSS refetch, one-shot backfill), the merge goes through `fill_empty_fields()` in `ingest/rss.py`. Three call sites pre-consolidation each rolled their own and drifted on which keys counted. Don't add a fourth.
 
 ### `pipeline.db` schema (per show)
 
@@ -92,7 +92,7 @@ versions (
 )
 ```
 
-Step status (`transcribed`, `corrected`, …) is a count flag, not a boolean — increments on each save. `versions.input_hash` chains a step to the version it was derived from, enabling the version tree UI.
+Step status (`transcribed`, `corrected`, …) is a count flag, not a boolean; it increments on each save. `versions.input_hash` chains a step to the version it was derived from, enabling the version tree UI.
 
 ## RAG layer
 
@@ -104,7 +104,7 @@ All embeddings for all shows live in **one** LanceDB index at `<data_dir>/index/
 
 Example: `myshow__bge-m3__semantic`.
 
-This means changing the embedding model or chunker creates a new collection rather than overwriting — old collections stick around until explicitly removed. The desktop app's Index step writes here; the bot and MCP server read.
+This means changing the embedding model or chunker creates a new collection rather than overwriting; old collections stick around until explicitly removed. The desktop app's Index step writes here; the bot and MCP server read.
 
 **Truth-of-record:** indexed status comes from LanceDB itself, not from filesystem markers. `lance_indexed_stems()` returns the set of stems present in the index; `unified_episodes()` reconciles this against the per-show `pipeline.db` on each call. There is no `.rag_indexed` marker file.
 
@@ -118,6 +118,6 @@ Don't hand-edit `frontend/src/api/types.ts` — it's overwritten by `make types`
 
 ## Bot and MCP
 
-Both consume the same shared retriever. They are read-only — neither builds the index. The bot resolves the index path via `_resolve_default_index_path()` in `rag/index_store.py` (PODCODEX_INDEX env > `<data_dir>/index/` > `./deploy/index/` > `./index/`). MCP server runs over stdio for Claude Desktop and over HTTP at `/mcp` on the same uvicorn process for other clients.
+Both consume the same shared retriever. They are read-only; neither builds the index. The bot resolves the index path via `_resolve_default_index_path()` in `rag/index_store.py` (PODCODEX_INDEX env > `<data_dir>/index/` > `./deploy/index/` > `./index/`). MCP server runs over stdio for Claude Desktop. The same uvicorn process also exposes HTTP at `/mcp` for other clients.
 
 Detailed deploy guides: `deploy/BOT.md`, `deploy/MCP.md`.

@@ -2,17 +2,17 @@
 
 > Warm editorial aesthetic for a podcast pipeline desktop app. Cream paper canvas with sepia ink and a gold-leaf accent. Reads like an oil-printed catalogue raisonné under tungsten light. Built on shadcn/ui + Tailwind 4 + React 19, packaged in a Tauri shell.
 
-**Canonical references** — when in doubt, model new components on these:
+**Canonical references** (when in doubt, model new components on these):
 - `frontend/src/components/index/IndexInspectorModal.tsx` — dense list dialog with mono timestamps, IDs, opacity-de-emphasized values
 - `frontend/src/components/search/SegmentContextDialog.tsx` — same idiom, search-context variant
 
 ## 1. Visual Theme & Atmosphere
 
-PodCodex rejects the cold dark-mode-default of dev tooling. The canvas is **warm cream paper** in light mode (`oklch(0.962 0.012 78)` — a soft off-white with imperceptible orange undertone) and **warm near-black** in dark mode (`oklch(0.158 0.008 55)` — never pure black, always sepia-tinted). A subtle paper-grain SVG noise overlay sits above all content via `multiply` blend in light, `screen` in dark, at 5–7% opacity. The texture is felt, not seen — UIs feel printed, not rendered.
+PodCodex rejects the cold dark-mode-default of dev tooling. The canvas is **warm cream paper** in light mode (`oklch(0.962 0.012 78)`, a soft off-white with imperceptible orange undertone) and **warm near-black** in dark mode (`oklch(0.158 0.008 55)`, never pure black, always sepia-tinted). A subtle paper-grain SVG noise overlay sits above all content via `multiply` blend in light, `screen` in dark, at 5–7% opacity. The texture is felt, not seen; UIs feel printed, not rendered.
 
 Typography pairs **Inter Variable** for UI/body with **Fraunces Variable** (variable serif) for headings (`h1`, `h2`). Inter carries OpenType features `cv11, ss01, ss03` globally for the cleaner geometric alternates; Fraunces uses `ss01, onum` (old-style numerals) at headings with `-0.015em` letter-spacing. **JetBrains Mono Variable** handles code, timestamps, and technical labels.
 
-The accent is **gold-leaf** (`oklch(0.595 0.145 68)` — warm amber, not yellow), reserved for primary actions and active states. Secondary surfaces step up in warm-gray luminance rather than introducing color. Status colors (success green, warning amber, destructive red) are warm-shifted to coexist with the cream canvas.
+The accent is **gold-leaf** (`oklch(0.595 0.145 68)`, warm amber, not yellow), reserved for primary actions and active states. Secondary surfaces step up in warm-gray luminance rather than introducing color. Status colors (success green, warning amber, destructive red) are warm-shifted to coexist with the cream canvas.
 
 **Key Characteristics:**
 - Warm editorial canvas: cream `oklch(0.962 0.012 78)` light / sepia-black `oklch(0.158 0.008 55)` dark
@@ -20,7 +20,7 @@ The accent is **gold-leaf** (`oklch(0.595 0.145 68)` — warm amber, not yellow)
 - Inter Variable (`cv11, ss01, ss03`) for UI; Fraunces Variable (`ss01, onum`) for h1/h2
 - Gold-leaf primary: `oklch(0.595 0.145 68)` light / `oklch(0.745 0.145 72)` dark
 - All colors expressed in `oklch()` for perceptual uniformity
-- shadcn/ui token model (`--background`, `--foreground`, `--card`, etc.) — never raw hex in components
+- shadcn/ui token model (`--background`, `--foreground`, `--card`, etc.); never raw hex in components
 - Single base radius `--radius: 0.5rem` (8px); `sm/md/lg/xl` derive from it
 - Two-column settings panels (label left, control right)
 - Dense lists: zebra-free, hover-tinted only
@@ -28,7 +28,7 @@ The accent is **gold-leaf** (`oklch(0.595 0.145 68)` — warm amber, not yellow)
 
 ## 2. Color Palette & Roles
 
-All colors are CSS custom properties resolved via `@theme inline` to Tailwind utilities (`bg-background`, `text-muted-foreground`, etc.). **Never hardcode hex or oklch in components** — read tokens.
+All colors are CSS custom properties resolved via `@theme inline` to Tailwind utilities (`bg-background`, `text-muted-foreground`, etc.). **Never hardcode hex or oklch in components**; read tokens.
 
 ### Light mode (default)
 | Token | Value | Role |
@@ -37,8 +37,8 @@ All colors are CSS custom properties resolved via `@theme inline` to Tailwind ut
 | `--foreground` | `oklch(0.205 0.018 50)` | Primary ink |
 | `--card` | `oklch(0.970 0.011 78)` | Card surface (one shade brighter than bg) |
 | `--popover` | `oklch(0.985 0.008 78)` | Popover/dropdown surface |
-| `--primary` | `oklch(0.595 0.145 68)` | Gold-leaf accent — CTAs, focus ring |
-| `--secondary` | `oklch(0.918 0.014 76)` | Muted surface — chips, inputs |
+| `--primary` | `oklch(0.595 0.145 68)` | Gold-leaf accent: CTAs, focus ring |
+| `--secondary` | `oklch(0.918 0.014 76)` | Muted surface: chips, inputs |
 | `--muted` | `oklch(0.918 0.014 76)` | Same as secondary; disabled/recessed |
 | `--muted-foreground` | `oklch(0.470 0.025 58)` | Metadata, captions, timestamps |
 | `--accent` | `oklch(0.895 0.022 72)` | Warm-tinted hover surface |
@@ -79,8 +79,8 @@ bg (canvas)  →  card  →  popover  →  (elevated dialog uses popover + ring 
 - **Mono (code, timestamps, technical labels):** `JetBrains Mono Variable, ui-monospace, SFMono-Regular, Menlo, monospace`
 
 ### OpenType features
-- **Inter (global on `body`):** `"cv11", "ss01", "ss03"` — geometric alternates, single-story `a`, cleaner letterforms
-- **Fraunces (h1, h2):** `"ss01", "onum"` — old-style figures for editorial feel
+- **Inter (global on `body`):** `"cv11", "ss01", "ss03"` (geometric alternates, single-story `a`, cleaner letterforms)
+- **Fraunces (h1, h2):** `"ss01", "onum"` (old-style figures for editorial feel)
 
 ### Hierarchy
 
@@ -117,7 +117,7 @@ bg (canvas)  →  card  →  popover  →  (elevated dialog uses popover + ring 
 - **Max font weight is 600 (`font-semibold`).** Never `font-bold` (700), `font-extrabold` (800), or `font-black` (900). Inter at warm-editorial cream looks aggressive past 600.
 - **Mono for content with structure.** Timestamps, hashes, model IDs, file paths, code. Always pair with `tabular-nums` when numerals matter (timestamps, durations, byte sizes).
 - **De-emphasize via opacity, not color shift.** Inspect dialogs use `text-muted-foreground/60` (60% opacity on already-muted) for tertiary values. Avoid inventing a fourth gray.
-- **Numerals in Fraunces use `onum`** (old-style); Inter uses lining figures by default — let it.
+- **Numerals in Fraunces use `onum`** (old-style); Inter uses lining figures by default; let it.
 
 ## 4. Component Stylings
 
@@ -141,7 +141,7 @@ bg (canvas)  →  card  →  popover  →  (elevated dialog uses popover + ring 
 - Radius: `rounded-lg` (8px)
 - Padding: `p-4` (compact), `p-6` (standard)
 - Shadow: none by default; `shadow-sm` only on floating popovers
-- Hover (when interactive): `hover:bg-accent` — never elevate via shadow
+- Hover (when interactive): `hover:bg-accent`; never elevate via shadow
 
 ### Inputs
 Use the `.input` utility from `index.css`:
@@ -150,26 +150,26 @@ Use the `.input` utility from `index.css`:
        border border-border focus:border-primary focus:outline-none
        placeholder:text-muted-foreground;
 ```
-- Background is `bg-secondary` (not `bg-background`) — inputs sit recessed against canvas
+- Background is `bg-secondary` (not `bg-background`); inputs sit recessed against canvas
 - Focus replaces border color rather than adding ring (subtler)
 
 ### Lists & rows (episode rows, inspect rows, settings rows)
 - Body: `text-xs` (inspect-dialog standard); metadata aligned right
-- Inline row container: `rounded` (4px) — not `rounded-md`. Buttons stay `rounded-md`; rows stay `rounded`.
+- Inline row container: `rounded` (4px), not `rounded-md`. Buttons stay `rounded-md`; rows stay `rounded`.
 - Hover: `hover:bg-accent` (warm tint)
-- No alternating zebra stripes — borders or no separator at all
+- No alternating zebra stripes; borders or no separator at all
 - Active/selected: `bg-accent` persistent + `text-foreground`
 - Mono columns (timestamps, IDs, hashes): `font-mono tabular-nums`; de-emphasize with `text-muted-foreground/60` rather than introducing a new color
 - Status pills inside rows: `text-2xs` weight 500, `bg-{role}/20 text-{role}` (e.g. `bg-primary/20 text-primary` for "show", `bg-warning/20 text-warning` for "audio"). Never `bg-success text-white`.
 
 ### Badges / pills
 - Status (indexed, pending, error): inline dot or filled pill
-- Use `bg-success/15 text-success` style (color at 15% alpha bg, full color text) — don't fill
+- Use `bg-success/15 text-success` style (color at 15% alpha bg, full color text); don't fill
 - Radius: `rounded-full` for pills, `rounded` (4px) for inline tags
 - Font: `text-2xs` (`0.625rem`) weight 500; never `tracking-wider`
 
 ### Icon ↔ text size pairing (warnings, status, badges)
-Match icon dimension to its accompanying text size — icon bigger than text reads as top-heavy.
+Match icon dimension to its accompanying text size; icon bigger than text reads as top-heavy.
 
 | Tier | Use | Text | Icon |
 |------|-----|------|------|
@@ -177,18 +177,18 @@ Match icon dimension to its accompanying text size — icon bigger than text rea
 | Callout / toolbar button | banner inside panel, flagged-toggle button | `text-xs` | `w-3 h-3` |
 | Dialog / modal heading | error modal, warning dialog | `text-sm` | `w-4 h-4` |
 
-Don't pair `text-2xs` with `w-3.5 h-3.5` icons or `text-xs` with `w-4 h-4` icons — visual mismatch.
+Don't pair `text-2xs` with `w-3.5 h-3.5` icons or `text-xs` with `w-4 h-4` icons (visual mismatch).
 
 ### Modals / dialogs
-- **Prefer shadcn `<Dialog>` primitive** — `IndexInspectorModal` and `SegmentContextDialog` are the canonical examples. Custom modal divs are tolerated but should migrate when touched.
-- Title: `text-lg font-semibold` (shadcn `DialogTitle` default — don't override)
+- **Prefer shadcn `<Dialog>` primitive.** `IndexInspectorModal` and `SegmentContextDialog` are the canonical examples. Custom modal divs are tolerated but should migrate when touched.
+- Title: `text-lg font-semibold` (shadcn `DialogTitle` default; don't override)
 - Description: `text-sm text-muted-foreground` (shadcn `DialogDescription` default)
 - Body density: `text-xs` for dense rows; `text-sm` for prose, status, and empty states
 - Surface: `bg-popover` (one luminance step above card)
 - Border: `border border-border`
 - Radius: `rounded-lg` (never `rounded-xl`)
 - Shadow: `shadow-lg` (never `shadow-2xl`)
-- Backdrop: `bg-black/50` (shadcn `DialogOverlay` default — match across custom modals too)
+- Backdrop: `bg-black/50` (shadcn `DialogOverlay` default; match across custom modals too)
 - Two-column layout for settings: label column 1/3, control column 2/3
 
 ### Audio player (`AudioBar`)
@@ -199,23 +199,23 @@ Don't pair `text-2xs` with `w-3.5 h-3.5` icons or `text-xs` with `w-4 h-4` icons
 ## 5. Layout Principles
 
 ### Spacing scale (Tailwind defaults; document the rhythm we actually hit)
-- Tight rhythm: `gap-1` (4px), `gap-1.5` (6px), `gap-2` (8px) — within rows, between icon+label
-- Standard rhythm: `gap-3` (12px), `gap-4` (16px) — within cards
-- Section rhythm: `gap-6` (24px), `gap-8` (32px) — between cards, panels
-- Page rhythm: `py-8`, `py-12` — page padding
+- Tight rhythm: `gap-1` (4px), `gap-1.5` (6px), `gap-2` (8px); within rows, between icon+label
+- Standard rhythm: `gap-3` (12px), `gap-4` (16px); within cards
+- Section rhythm: `gap-6` (24px), `gap-8` (32px); between cards, panels
+- Page rhythm: `py-8`, `py-12`; page padding
 
 ### Grid
-- Sidebar (left nav): `w-56` to `w-64` — fixed, dense
+- Sidebar (left nav): `w-56` to `w-64`; fixed, dense
 - Main column: flexible, `max-w-5xl` for content-heavy pages (transcript reader); full-width for data tables
 - Settings: two columns at `md:` breakpoint, single column on mobile
 - Episode lists: full-width single column with right-aligned metadata
 
 ### Border radius scale
-- `rounded` (4px) — inline list rows, tags, badges, micro-elements
-- `rounded-md` (6px) — buttons, inputs, small cards
-- `rounded-lg` (8px) — cards, modals, popovers (default for all dialogs)
-- `rounded-xl` (12px) — *avoid by default*; reserved for featured marketing modules, not standard cards or modals
-- `rounded-full` — circular icon buttons, status dots, pill chips, badges
+- `rounded` (4px): inline list rows, tags, badges, micro-elements
+- `rounded-md` (6px): buttons, inputs, small cards
+- `rounded-lg` (8px): cards, modals, popovers (default for all dialogs)
+- `rounded-xl` (12px): *avoid by default*; reserved for featured marketing modules, not standard cards or modals
+- `rounded-full`: circular icon buttons, status dots, pill chips, badges
 
 ## 6. Depth & Elevation
 
@@ -228,7 +228,7 @@ PodCodex uses **luminance step**, not box-shadow, for elevation. On the cream ca
 | Floating (2) | `bg-popover` + `border-border` | Dropdowns, popovers, tooltips |
 | Dialog (3) | `bg-popover` + `border-border` + `shadow-lg` over `bg-background/80 backdrop-blur-sm` backdrop | Modals only |
 
-Shadow used only on dialog level — `shadow-lg` is the cap. Never `shadow-2xl`. Tooltips/dropdowns rely on the popover background + border alone. Decorative `shadow-lg` on overlay buttons (e.g. play/download hover overlays on cards) is forbidden — use border or background tint instead.
+Shadow used only on dialog level; `shadow-lg` is the cap. Never `shadow-2xl`. Tooltips/dropdowns rely on the popover background + border alone. Decorative `shadow-lg` on overlay buttons (e.g. play/download hover overlays on cards) is forbidden; use border or background tint instead.
 
 ## 7. Do's and Don'ts
 
@@ -236,24 +236,24 @@ Shadow used only on dialog level — `shadow-lg` is the cap. Never `shadow-2xl`.
 - Default to `text-sm` for UI density; reserve `text-base` for prose
 - Use shadcn semantic tokens (`bg-card`, `text-muted-foreground`); the cream/sepia/gold balance only holds when tokens stay consistent
 - Reserve `--primary` (gold-leaf) for one CTA per view and active states
-- Use `font-mono` for timestamps, IDs, hashes, file paths — not for body
+- Use `font-mono` for timestamps, IDs, hashes, file paths; not for body
 - Apply `font-feature-settings` correctly: Inter gets `cv11, ss01, ss03` (set on body), Fraunces gets `ss01, onum` (set on h1/h2)
-- Use `oklch()` when introducing new color tokens — match perceptual luminance steps of the existing scale
+- Use `oklch()` when introducing new color tokens; match perceptual luminance steps of the existing scale
 - Two-column settings: label left, control right
 - Hover with `hover:bg-accent` (warm tint), not with shadow or scale
 - Omit defaults and absent values in labels (don't render "Speaker: —" when there's no speaker)
 
 ### Don't
-- Don't use pure white (`#ffffff`) or pure black (`#000000`) — both fight the warm canvas
+- Don't use pure white (`#ffffff`) or pure black (`#000000`); both fight the warm canvas
 - Don't use `uppercase` or `tracking-wider`. Period. Use weight 500–600 if you need emphasis.
 - Don't add waveform visualizations to the AudioBar
-- Don't introduce a second chromatic accent — gold-leaf is the only chromatic color
+- Don't introduce a second chromatic accent; gold-leaf is the only chromatic color
 - Don't use Fraunces in body text, buttons, captions, or labels
-- Don't elevate cards with `shadow-md`/`shadow-lg` on the canvas — use `border` + `bg-card` instead
+- Don't elevate cards with `shadow-md`/`shadow-lg` on the canvas; use `border` + `bg-card` instead
 - Don't apply zebra-striped lists; rows separate by border or hover only
-- Don't introduce em dashes liberally — sparingly, where the prose needs the pause
+- Don't introduce em dashes liberally; use sparingly, where the prose needs the pause
 - Don't bypass the token system with literal hex/oklch values in component code
-- Don't disable the paper-grain overlay — it's load-bearing for the editorial feel
+- Don't disable the paper-grain overlay; it's load-bearing for the editorial feel
 
 ### Pipeline stage palette
 Pipeline stages get distinct hues for quick recognition. Tokens defined in `index.css`, warm-shifted to coexist with the cream + gold-leaf canvas:
@@ -264,16 +264,16 @@ Pipeline stages get distinct hues for quick recognition. Tokens defined in `inde
 | Corrected | `--stage-correct` | `bg-stage-correct`, `text-stage-correct` | 305° (purple) |
 | Translated | `--stage-translate` | `bg-stage-translate`, `text-stage-translate` | 195° (teal) |
 | Synthesized | `--stage-synth` | `bg-stage-synth`, `text-stage-synth` | 50° (orange) |
-| Indexed | `--warning` | `bg-warning/15 text-warning` | 82° (amber — reuses semantic token) |
+| Indexed | `--warning` | `bg-warning/15 text-warning` | 82° (amber, reuses semantic token) |
 
-Each stage chip uses the `bg-{stage}/15 text-{stage}` pattern. If new stages are added, extend `index.css` and this table — don't reach for raw Tailwind colors.
+Each stage chip uses the `bg-{stage}/15 text-{stage}` pattern. If new stages are added, extend `index.css` and this table; don't reach for raw Tailwind colors.
 
 ### Exception: media scrims
 Elements rendered **on top of artwork or video** (episode card overlays, play buttons, image badges) need contrast against arbitrary image content, not against the theme. The token system would flip in dark mode and break legibility on bright images. Allowed only on top of media:
 - `bg-black/{60,65}` and `bg-white/{90,95}` for scrims and floating buttons
 - `text-white`, `text-black` paired with the scrims
 - `bg-gradient-to-t from-black/60 to-transparent` for bottom-fade overlays
-- `shadow-lg` on floating media buttons (play/download) — legibility, not decoration
+- `shadow-lg` on floating media buttons (play/download): legibility, not decoration
 
 These never appear on theme surfaces. If you find one on a card or panel without an image behind it, replace with tokens.
 
@@ -323,7 +323,7 @@ These never appear on theme surfaces. If you find one on a card or panel without
 - "Modal: `bg-popover border border-border rounded-lg shadow-lg` over `bg-background/80 backdrop-blur-sm` backdrop. Title in `font-display text-2xl` (Fraunces). Body in `text-sm`. Footer right-aligned with `outline` cancel and `default` confirm."
 
 ### Iteration guide
-1. If colors feel cold or harsh, the warm hue (`oklch H ≈ 55–80`) was lost — re-derive from the existing oklch scale, don't add raw hex
+1. If colors feel cold or harsh, the warm hue (`oklch H ≈ 55–80`) was lost; re-derive from the existing oklch scale, don't add raw hex
 2. If headings feel generic, you forgot `font-display` (Fraunces) or `font-feature-settings: 'ss01', 'onum'`
 3. If lists feel cluttered, drop a font size (`text-base` → `text-sm`) before adding spacing
 4. If a CTA isn't standing out, check that you used `bg-primary` and that no other element on the view is also primary

@@ -16,15 +16,15 @@ make dev                  # FastAPI + Vite + Tauri, hot-reload
 
 - **Run a single test:** `.venv/bin/python -m pytest tests/test_foo.py::test_bar -xvs`
 - **Run all Python tests:** `make test`
-- **Regenerate frontend types:** `make types` — required after editing any Pydantic model in `src/podcodex/api/`. The generated `frontend/src/api/types.ts` is checked in; never hand-edit.
-- **Regenerate app icons:** `make icons` — after replacing `assets/icon.png` (canonical 1024×1024 source). Rebuilds `frontend/public/icon.png` and the full `src-tauri/icons/*` set (desktop + iOS + Android). Requires ImageMagick + `npx`.
-- **Lint frontend:** `cd frontend && npm run lint` (currently non-blocking, see ROADMAP)
-- **Type-check frontend:** `cd frontend && npx tsc -b` (currently non-blocking)
+- **Regenerate frontend types:** `make types`. Required after editing any Pydantic model in `src/podcodex/api/`. The generated `frontend/src/api/types.ts` is checked in; never hand-edit.
+- **Regenerate app icons:** `make icons` after replacing `assets/icon.png` (canonical 1024×1024 source). Rebuilds `frontend/public/icon.png` and the desktop sizes + `.icns`/`.ico` under `src-tauri/icons/`; iOS/Android trees emitted by the Tauri CLI are stripped. Requires ImageMagick + `npx`.
+- **Lint frontend:** `cd frontend && npm run lint` (currently non-blocking)
+- **Type-check frontend:** `cd frontend && npx tsc -b` (strict mode is on and clean; non-blocking in CI)
 
 ## Conventions
 
 - **Branches:** `phase-X-short-description` for feature work, `fix-short-description` for bug fixes
-- **Commits:** conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`); imperative mood; concise — no trial-and-error context
+- **Commits:** conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`); imperative mood; concise; no trial-and-error context
 - **Versioning:** bump `pyproject.toml` + `src-tauri/Cargo.toml` together on every Windows MSI release (WiX skips same-version replace). See [CLAUDE.md § Versioning](CLAUDE.md#versioning-bump-on-every-windows-msi-release).
 - **Terminology:** the LLM-correction step is **correct** (or "AI correct"), never "polish". See [CLAUDE.md § Terminology](CLAUDE.md#terminology).
 

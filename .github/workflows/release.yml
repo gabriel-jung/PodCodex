@@ -23,10 +23,15 @@ name: Release
 #   workflow_dispatch → draft, hidden until manually published
 # See CLAUDE.md "Release tags" for details.
 
+# FROZEN 2026-05-03: GPL contamination in bundle (PyAV + imageio-ffmpeg ship
+# GPL'd FFmpeg + libx264/libx265 dylibs into the MIT release artifacts). See
+# LICENSE_AUDIT.md. Tag-push trigger disabled until decontamination ships;
+# `workflow_dispatch` left available so a draft can still be cut manually
+# once the fix lands.
 on:
-  push:
-    tags:
-      - "v*"
+  # push:
+  #   tags:
+  #     - "v*"
   workflow_dispatch:
     inputs:
       ref:

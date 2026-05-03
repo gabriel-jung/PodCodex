@@ -1,6 +1,6 @@
 # Installing the PodCodex Discord bot
 
-Two install paths — pick whichever fits your setup:
+Two install paths. Pick whichever fits your setup:
 
 - [Path A — uv (native)](#path-a--uv-native) — lightweight, good for a dedicated VPS or running alongside the desktop app
 - [Path B — Docker](#path-b--docker) — isolated runtime, good for multi-service hosts
@@ -19,22 +19,22 @@ You need four things before either install path:
 ### 1. A Discord bot application and token
 
 1. Go to <https://discord.com/developers/applications> and click **New Application**.
-2. Name it, open the **Bot** tab, and click **Reset Token** to reveal and copy the token. Save it — Discord only shows it once.
+2. Name it, open the **Bot** tab, and click **Reset Token** to reveal and copy the token. Save it. Discord only shows it once.
 3. Leave **Privileged Gateway Intents** off. The bot uses only default intents.
 4. Under **OAuth2 → URL Generator**, select:
    - Scopes: `bot` and `applications.commands`
    - Bot Permissions: `Send Messages`, `Embed Links`, `Read Message History`, `Use Slash Commands`
 5. Visit the generated URL and invite the bot to each Discord server you want it in.
 
-**If the token ever leaks**, click **Reset Token** to invalidate it — the old one stops working immediately.
+**If the token ever leaks**, click **Reset Token** to invalidate it; the old one stops working immediately.
 
 ### 2. A host machine
 
 Requirements:
 
-- **Python 3.12** specifically (not 3.11, not 3.13). The Docker image bundles it. For the uv path, `uv sync` downloads and pins Python 3.12 into the project's virtual environment — your system Python version doesn't matter.
-- **~3 GB RAM**, mostly for the BGE-M3 query embedder. See [Resource requirements](#resource-requirements).
-- Outbound internet — the bot connects to Discord's gateway. No inbound ports needed.
+- **Python 3.12** specifically (not 3.11, not 3.13). The Docker image bundles it. For the uv path, `uv sync` downloads and pins Python 3.12 into the project's virtual environment, so your system Python version doesn't matter.
+- **1-10 GB RAM**, depending on the embedder. BGE-M3 (the default) uses ~2.5 GB; smaller models cut this to ~1 GB, larger ones (Perplexity 4B) need ~10 GB. See [Resource requirements](#resource-requirements).
+- Outbound internet for the bot's connection to Discord's gateway. No inbound ports needed.
 
 The bot is a read-only frontend over an existing index, so it does **not** need:
 
@@ -44,7 +44,7 @@ The bot is a read-only frontend over an existing index, so it does **not** need:
 
 ### 3. An index to serve
 
-The bot is read-only — it doesn't build indexes itself. You need an existing LanceDB index, produced by the desktop app's **Index** step on any show.
+The bot is read-only and doesn't build indexes itself. You need an existing LanceDB index, produced by the desktop app's **Index** step on any show.
 
 The desktop app writes to its platform `<data_dir>/index/` — `~/.local/share/podcodex/index/` on Linux, `~/Library/Application Support/podcodex/index/` on macOS, `%APPDATA%\podcodex\index\` on Windows. The bot resolves the same path and looks there first, so in most setups there is nothing to configure. If it doesn't find an index there, it also checks `./deploy/index/` and `./index/` relative to its working directory. Set `PODCODEX_INDEX=/abs/path` to override explicitly.
 
@@ -57,7 +57,7 @@ The bot logs the resolved path and the reason on startup (`IndexStore opened: <p
 
 Discord propagates globally-scoped slash commands lazily — commands may take up to an hour to appear in servers after the bot's first start. They're available instantly in the Discord client's command picker once propagated.
 
-For faster iteration during testing, start the bot with `--dev-guild <GUILD_ID>` — commands sync instantly to that one guild.
+For faster iteration during testing, start the bot with `--dev-guild <GUILD_ID>`; commands sync instantly to that one guild.
 
 Once propagated, commands stay registered; restarts don't re-trigger the wait.
 
@@ -81,7 +81,7 @@ This creates `.venv/` with all runtime dependencies.
 
 ### 3. Create `.env` at the repo root
 
-The bot's `load_dotenv` searches from the current working directory upward — the repo root is the reliable location. Write the file directly:
+The bot's `load_dotenv` searches from the current working directory upward, so the repo root is the reliable location. Write the file directly:
 
 ```bash
 cat > .env <<'EOF'
@@ -172,7 +172,7 @@ git pull && docker compose up -d --build bot
 
 Notes:
 
-- The host's `~/.local/share/podcodex/index/` is mounted into the container at `/root/.local/share/podcodex/index/`, matching the bot's default — no `PODCODEX_INDEX` override needed.
+- The host's `~/.local/share/podcodex/index/` is mounted into the container at `/root/.local/share/podcodex/index/`, matching the bot's default, so no `PODCODEX_INDEX` override is needed.
 - To serve an index at a different host location, set `PODCODEX_INDEX_HOST=/abs/path` in `deploy/.env` before `docker compose up`.
 - BGE-M3 lives in the `model_cache` named volume — survives rebuilds.
 - `restart: unless-stopped` handles crashes and host reboots.
@@ -182,11 +182,11 @@ Notes:
 
 ## Access control (passwords)
 
-**Optional — skip this section entirely unless you need it.** By default every indexed show is visible to every Discord server the bot is in. That's the right setup for a personal bot, or when one bot serves one audience.
+**Optional. Skip this section entirely unless you need it.** By default every indexed show is visible to every Discord server the bot is in. That's the right setup for a personal bot, or when one bot serves one audience.
 
-You only need passwords when you're running a single bot process that carries **multiple shows**, and each show should be available to a **different Discord server** — e.g. one bot hosting Show A for server A's listeners and Show B for server B's listeners, without either side seeing the other show in `/stats` or `/search`.
+You only need passwords when you're running a single bot process that carries **multiple shows**, and each show should be available to a **different Discord server**. For example, one bot hosting Show A for server A's listeners and Show B for server B's listeners, without either side seeing the other show in `/stats` or `/search`.
 
-How it works: passwords flip a show to invisible by default. An admin in each Discord server runs `/unlock password:****` once to reveal the corresponding show only there. Passwords live in `_show_passwords.lance` inside the index directory — they ship with the index via rsync.
+How it works: passwords flip a show to invisible by default. An admin in each Discord server runs `/unlock password:****` once to reveal the corresponding show only there. Passwords live in `_show_passwords.lance` inside the index directory and ship with the index via rsync.
 
 ### Set, rotate, or remove passwords
 
@@ -219,13 +219,13 @@ Per Discord server, an admin with `manage_guild` runs:
 /lock show:<name>             # remove a show
 ```
 
-All three responses are ephemeral — other users see nothing.
+All three responses are ephemeral; other users see nothing.
 
 ---
 
 ## Transferring the index
 
-**Skip this section if the bot runs on the same machine as the desktop app** — the bot finds the index automatically.
+**Skip this section if the bot runs on the same machine as the desktop app.** The bot finds the index automatically.
 
 Only transfer when the bot runs on a separate machine (e.g. a VPS). Both install paths read from `~/.local/share/podcodex/index/` by default on Linux, so the rsync target is the same regardless of which path you picked.
 
@@ -239,7 +239,7 @@ ssh user@host 'mkdir -p ~/.local/share/podcodex/index'
 
 ### 2. rsync from the indexing machine
 
-**Run as a single line** — multi-line paste without `\` continuations fails in zsh. Trailing slash on source matters (copies contents, not the dir itself):
+**Run as a single line.** Multi-line paste without `\` continuations fails in zsh. Trailing slash on source matters (copies contents, not the dir itself):
 
 ```bash
 # Dry run first — prints what would transfer, changes nothing
@@ -251,11 +251,11 @@ rsync -av --progress ~/.local/share/podcodex/index/ user@host:~/.local/share/pod
 
 If your source is elsewhere (you overrode `PODCODEX_INDEX` on the desktop), swap the local path accordingly.
 
-Safe to run while the bot is running — LanceDB is read-only on the bot side.
+Safe to run while the bot is running; LanceDB is read-only on the bot side.
 
 ### Per-show sync
 
-The full directory is the unit of transfer. Per-show selective sync is technically possible (rsync include/exclude on the `{show}__*.lance` tables), but `_collections.lance` and `_show_passwords.lance` are global registries — partial syncs leave them inconsistent. Transfer the whole directory.
+The full directory is the unit of transfer. Per-show selective sync is technically possible (rsync include/exclude on the `{show}__*.lance` tables), but `_collections.lance` and `_show_passwords.lance` are global registries; partial syncs leave them inconsistent. Transfer the whole directory.
 
 ### Alternative: bundle archive (selective, atomic)
 
@@ -274,7 +274,7 @@ scp shows-index.podcodex user@host:/tmp/
 podcodex-import /tmp/shows-index.podcodex --on-conflict replace
 ```
 
-Bundle format records each collection's embedding model + chunker in a manifest so the importer can warn if a model isn't installed. rsync stays the canonical option for "ship everything, fast updates" — bundle wins on selective deploy and atomic transfer without SSH.
+Bundle format records each collection's embedding model + chunker in a manifest so the importer can warn if a model isn't installed. rsync stays the canonical option for "ship everything, fast updates"; bundle wins on selective deploy and atomic transfer without SSH.
 
 ---
 
@@ -298,7 +298,9 @@ Bundle format records each collection's embedding model + chunker in a manifest 
 
 ## Resource requirements
 
-| Setup              | RAM     | Notes                                   |
-| ------------------ | ------- | --------------------------------------- |
-| Bot                | ~2.5 GB | BGE-M3 for query embedding              |
-| Many shows (20+)   | ~3 GB   | LanceDB scales well; RAM stays flat     |
+| Setup                | RAM         | Notes                                                  |
+| -------------------- | ----------- | ------------------------------------------------------ |
+| Bot (E5 small)       | ~1 GB       | Smallest, fastest, lower search quality                |
+| Bot (BGE-M3)         | ~2.5 GB     | Default, good search quality                           |
+| Bot (Perplexity 4B)  | ~10 GB      | Best quality, needs a beefier host                     |
+| Many shows (20+)     | negligible  | LanceDB scales well, RAM stays mostly flat             |
