@@ -38,6 +38,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGING_DIR = REPO_ROOT / "packaging"
 PYI_HOOKS_DIR = PACKAGING_DIR / "pyi_hooks"
+# Shadow site-packages during analysis. See pyi_av_stub/av/__init__.py.
+PYI_STUBS_DIR = PACKAGING_DIR / "pyi_av_stub"
 SRC_DIR = REPO_ROOT / "src"
 ENTRY_SCRIPT = SRC_DIR / "podcodex" / "api" / "server.py"
 DIST_DIR = PACKAGING_DIR / "dist"
@@ -82,7 +84,6 @@ HIDDEN_IMPORTS = [
     "librosa",
     "numba",
     "llvmlite",
-    "imageio_ffmpeg",
     # API + integrations
     "fastapi",
     "uvicorn",
@@ -129,11 +130,6 @@ COLLECT_ALL = [
     "numba",
     "llvmlite",
     "soundfile",
-    # imageio_ffmpeg ships its static ffmpeg binary inside the wheel under
-    # imageio_ffmpeg/binaries/ — collect_all picks it up alongside the .py
-    # files. Without this PyInstaller would freeze the Python module but
-    # the binary lookup would fail at runtime.
-    "imageio_ffmpeg",
     "yt_dlp",
     # jsonschema's rfc3987_syntax dep ships a .lark grammar file consumed at
     # import time; collect_all picks up the data file alongside the module.
@@ -321,6 +317,9 @@ def build_pyinstaller_args(*, gpu: bool, clean: bool) -> list[str]:
         "--name",
         name,
         "--onedir" if gpu else "--onefile",
+        # Stubs first — shadow real packages in modulegraph (first hit wins).
+        "--paths",
+        str(PYI_STUBS_DIR),
         "--paths",
         str(SRC_DIR),
         "--distpath",

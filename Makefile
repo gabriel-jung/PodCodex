@@ -86,7 +86,7 @@ package-gpu:  ## Split the GPU --onedir build into server-core + cuda-libs relea
 
 bundle-gpu: bundle-server-gpu package-gpu  ## Build GPU sidecar and package release archives + manifest
 
-bundle-natives:  ## Download yt-dlp static binary for the host (ffmpeg ships via imageio-ffmpeg)
+bundle-natives:  ## Download yt-dlp static binary for the host (ffmpeg uses system install)
 	.venv/bin/python scripts/fetch_native_binaries.py
 
 bundle: bundle-server bundle-natives  ## Full standalone .dmg / .msi (frontend + CPU sidecar + Tauri)

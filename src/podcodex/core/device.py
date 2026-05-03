@@ -76,6 +76,20 @@ def cuda_available() -> bool:
         return False
     if forced == "cuda":
         return True
+    return _probe_cuda()
+
+
+def physical_cuda_available() -> bool:
+    """Probe torch directly, ignoring ``PODCODEX_DEVICE`` overrides.
+
+    Use when validating whether a *new* override is feasible (e.g. user
+    flipping the GPU panel from CPU → CUDA): the existing override would
+    short-circuit ``cuda_available`` and produce circular validation.
+    """
+    return _probe_cuda()
+
+
+def _probe_cuda() -> bool:
     try:
         import torch
 

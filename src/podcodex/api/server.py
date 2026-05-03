@@ -87,9 +87,10 @@ def _redirect_stdio_to_logfile() -> None:
     if not data_dir:
         return  # bare frozen run with no data dir: leave stdio alone.
 
-    log_dir = Path(data_dir) / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "server.log"
+    from podcodex.core.app_paths import server_log_path
+
+    log_path = server_log_path(data_dir)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     log_fp = open(log_path, "a", buffering=1, encoding="utf-8")
 
     # Reassign Python-level streams so logger/print writes go to the file.
@@ -106,25 +107,37 @@ def _redirect_stdio_to_logfile() -> None:
 
 
 def _wire_native_binaries() -> None:
-    """Expose ffmpeg + yt-dlp on PATH for libraries that shell out.
+    """Prepend yt-dlp, ffmpeg override, and standard package-manager dirs to PATH.
 
-    ffmpeg comes from imageio-ffmpeg's vendored binary — prepending its
-    parent dir to PATH lets whisperx and faster-whisper find it via the
-    bare ``"ffmpeg"`` command they hard-code. yt-dlp's path is passed
-    by the Tauri shell as ``YT_DLP_BINARY`` so we can hot-swap it
-    between app releases without rebuilding the sidecar.
+    Libraries that shell out with bare ``"yt-dlp"`` / ``"ffmpeg"`` need
+    these on PATH. ``YT_DLP_BINARY`` (Tauri-injected) lets us hot-swap
+    yt-dlp without rebuilding the sidecar; ``PODCODEX_FFMPEG_EXE`` is
+    the user-facing override for non-PATH ffmpeg installs.
+
+    Also injects standard install dirs (``/opt/homebrew/bin`` etc.) when
+    missing — macOS GUI processes inherit ``launchd``'s minimal PATH and
+    don't see brew/MacPorts by default. Tauri's spawn does this on its
+    side; we mirror it here so MCP / dev / direct-CLI runs benefit too.
     """
+    from podcodex.core._ffmpeg import ffmpeg_override_dir
+
     extra_path: list[str] = []
 
-    from podcodex.core._ffmpeg import ffmpeg_exe
-
-    ffmpeg = ffmpeg_exe()
-    if ffmpeg != "ffmpeg" and Path(ffmpeg).exists():
-        extra_path.append(str(Path(ffmpeg).parent))
-
     ytdlp = os.environ.get("YT_DLP_BINARY")
-    if ytdlp and Path(ytdlp).exists():
+    if ytdlp and Path(ytdlp).is_file():
         extra_path.append(str(Path(ytdlp).parent))
+
+    ffmpeg_dir = ffmpeg_override_dir()
+    if ffmpeg_dir:
+        extra_path.append(ffmpeg_dir)
+
+    if sys.platform == "darwin":
+        candidates = ("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin")
+    elif sys.platform.startswith("linux"):
+        candidates = ("/usr/local/bin", "/snap/bin", "/var/lib/flatpak/exports/bin")
+    else:
+        candidates = ()
+    extra_path.extend(p for p in candidates if Path(p).is_dir())
 
     if extra_path:
         existing = os.environ.get("PATH", "").split(os.pathsep)

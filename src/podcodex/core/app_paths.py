@@ -90,6 +90,16 @@ def secrets_env_path() -> Path:
     return config_dir() / "secrets.env"
 
 
+def server_log_path(data_dir_str: str | os.PathLike) -> Path:
+    """Sidecar log file location under ``$PODCODEX_DATA_DIR``.
+
+    Pure path composition — caller is responsible for ``mkdir(parents=True)``.
+    Used by both ``server._redirect_stdio_to_logfile`` (runs pre-bootstrap)
+    and ``bootstrap._setup_loguru_file_sink`` so the path lives in one place.
+    """
+    return Path(data_dir_str) / "logs" / "server.log"
+
+
 def running_in_bundle() -> bool:
     """True when this Python process is the PyInstaller-frozen sidecar.
 

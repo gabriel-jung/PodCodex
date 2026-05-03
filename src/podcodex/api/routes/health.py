@@ -6,6 +6,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+from functools import lru_cache
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
@@ -53,8 +54,22 @@ _EXTRA_CAPS: dict[str, list[str]] = {
 }
 
 
-def _get_capabilities() -> dict[str, bool]:
+@lru_cache(maxsize=1)
+def _python_package_caps() -> dict[str, bool]:
+    """Cached: ``find_spec`` walks ``sys.path_hooks`` per package and
+    Python-extras require a backend restart anyway. Invalidated by
+    :func:`_invalidate_capabilities` after uv sync."""
     return {name: _has(pkg) for name, pkg in _CAPABILITY_CHECKS.items()}
+
+
+def _get_capabilities() -> dict[str, bool]:
+    from podcodex.core._ffmpeg import ffmpeg_available
+
+    return {**_python_package_caps(), "ffmpeg": ffmpeg_available()}
+
+
+def _invalidate_capabilities() -> None:
+    _python_package_caps.cache_clear()
 
 
 def _installed_extras(caps: dict[str, bool] | None = None) -> set[str]:
@@ -145,18 +160,14 @@ async def set_device(req: SetDeviceRequest) -> dict:
     initialized on the previous device cannot be migrated mid-process.
     """
     if req.override == "cuda":
-        try:
-            import torch
+        from podcodex.core.device import physical_cuda_available
 
-            if not torch.cuda.is_available():
-                raise HTTPException(
-                    400,
-                    "Cannot force CUDA: no CUDA-capable device is available.",
-                )
-        except ImportError as exc:
+        if not physical_cuda_available():
             raise HTTPException(
-                400, "Cannot force CUDA: torch is not installed."
-            ) from exc
+                400,
+                "Cannot force CUDA: no CUDA-capable device is available "
+                "(torch missing or no usable GPU).",
+            )
 
     from podcodex.core.device import device_info
     from podcodex.core.user_settings import set_device_override
@@ -268,6 +279,7 @@ def _run_uv_sync(
             f"uv sync failed (exit {proc.returncode}):\n" + "\n".join(lines[-20:])
         )
     progress_cb(0.95, "Verifying...")
+    _invalidate_capabilities()
     progress_cb(1.0, "Done! Restart the backend to activate.")
     return {"output": "\n".join(lines)}
 

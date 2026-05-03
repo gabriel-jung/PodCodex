@@ -4,8 +4,9 @@
 Run once before ``make bundle``. Re-run to refresh yt-dlp (gets bot-detection
 patches every couple weeks).
 
-ffmpeg is no longer fetched here — it ships inside the PyInstaller bundle
-via the ``imageio-ffmpeg`` Python package.
+ffmpeg is not fetched: PodCodex uses the system ``ffmpeg`` install (via
+PATH or the ``PODCODEX_FFMPEG_EXE`` env var). Bundled GPL FFmpeg builds
+contaminate the MIT release — see LICENSE_AUDIT.md.
 
 Usage:
     python scripts/fetch_native_binaries.py             # current host only

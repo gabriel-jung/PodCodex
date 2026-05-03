@@ -220,9 +220,15 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
 
-    // ffmpeg is sourced from imageio-ffmpeg's vendored binary inside the
-    // PyInstaller bundle — no sidecar needed. yt-dlp stays as a sidecar so
-    // we can hot-swap it between releases for bot-detection fixes.
+    // ffmpeg uses the user's system install (see LICENSE_AUDIT.md). macOS
+    // GUI apps inherit launchd's minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin),
+    // so brew/MacPorts/Linux-snap install dirs are invisible to the spawned
+    // sidecar — augment PATH here. Honored by Python's shutil.which and by
+    // whisperx/faster-whisper subprocess shellouts to bare "ffmpeg".
+    if let Some(extra) = augmented_path() {
+        cmd.env("PATH", extra);
+    }
+
     if let Some(ytdlp) = locate_sidecar("yt-dlp") {
         log::info!("Bundled yt-dlp: {:?}", ytdlp);
         cmd.env("YT_DLP_BINARY", ytdlp);
@@ -346,6 +352,50 @@ fn probe_sidecar_version(
         .split_whitespace()
         .last()
         .map(|w| w.to_string())
+}
+
+/// Augment PATH with the standard package-manager bin dirs that GUI apps
+/// don't see by default. Returns the new value, or None if no augmentation
+/// is needed (PATH already contains everything).
+///
+/// macOS GUI apps inherit launchd's PATH (/usr/bin:/bin:/usr/sbin:/sbin),
+/// missing /opt/homebrew/bin (Apple Silicon brew), /usr/local/bin (Intel
+/// brew), and /opt/local/bin (MacPorts). Linux desktop launchers usually
+/// have a fuller PATH already; Windows installs rely on the system PATH
+/// the user set at install time. Inject the missing dirs without losing
+/// what's already there.
+fn augmented_path() -> Option<String> {
+    let candidates: &[&str] = if cfg!(target_os = "macos") {
+        &["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
+    } else if cfg!(target_os = "linux") {
+        &["/usr/local/bin", "/snap/bin", "/var/lib/flatpak/exports/bin"]
+    } else {
+        &[]
+    };
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let current = std::env::var("PATH").unwrap_or_default();
+    let separator = if cfg!(target_os = "windows") { ';' } else { ':' };
+    let existing: std::collections::HashSet<&str> =
+        current.split(separator).collect();
+
+    let mut prepend: Vec<&str> = Vec::new();
+    for c in candidates {
+        if std::path::Path::new(c).is_dir() && !existing.contains(c) {
+            prepend.push(c);
+        }
+    }
+    if prepend.is_empty() {
+        return None;
+    }
+    let mut new_path = prepend.join(&separator.to_string());
+    if !current.is_empty() {
+        new_path.push(separator);
+        new_path.push_str(&current);
+    }
+    Some(new_path)
 }
 
 /// Find a Tauri externalBin sidecar by short name. Bundled .app: bare

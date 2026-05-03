@@ -54,6 +54,7 @@ def bootstrap_for_bundled_sidecar() -> None:
     line twice).
     """
     _install_all_patches()
+    _check_system_ffmpeg()
     _setup_loguru_file_sink()
     _install_stdlib_intercept()
     _log_hf_cache_state()
@@ -66,6 +67,7 @@ def bootstrap_for_mcp_stdio() -> None:
     and must stay clean — never touch it from here.
     """
     _install_all_patches()
+    _check_system_ffmpeg()
     _setup_loguru_stderr_sink()
     _install_stdlib_intercept()
 
@@ -74,6 +76,7 @@ def bootstrap_for_dev() -> None:
     """For dev uvicorn (``make dev-api``), the Discord bot, and one-off
     scripts. Logs to stderr."""
     _install_all_patches()
+    _check_system_ffmpeg()
     _setup_loguru_stderr_sink()
     _install_stdlib_intercept()
 
@@ -141,17 +144,9 @@ def _apply_persisted_device_override() -> None:
 
 
 def _check_cuda_kernels_or_degrade() -> None:
-    """Verify the installed torch wheel has kernels for the local GPU.
-
-    Auto-detect mode: on mismatch (e.g. cu128 wheel on a Pascal box) set
-    ``PODCODEX_DEVICE=cpu`` so downstream pipeline code skips GPU init
-    cleanly instead of crashing with ``CUDA error: no kernel image is
-    available``.
-
-    User-forced ``PODCODEX_DEVICE=cuda`` mode: surface the same mismatch
-    immediately at bootstrap rather than letting it cascade — they asked
-    for CUDA, they get a clear error if the wheel can't deliver.
-    """
+    """Degrade to CPU if installed torch wheel lacks kernels for this GPU,
+    unless the user explicitly forced CUDA — then re-raise so the mismatch
+    surfaces at bootstrap instead of mid-pipeline."""
     from podcodex.core.device import assert_kernels_available, user_override
 
     override = user_override()
@@ -169,6 +164,21 @@ def _check_cuda_kernels_or_degrade() -> None:
             "lacks kernels for this GPU. Original error: {}",
             exc,
         )
+
+
+def _check_system_ffmpeg() -> None:
+    """Warn if no system ffmpeg is reachable. Frontend surfaces ``/health``
+    capability so users see an install dialog before the first job fails."""
+    from podcodex.core._ffmpeg import PODCODEX_FFMPEG_EXE_ENV, ffmpeg_available
+
+    if ffmpeg_available():
+        return
+    logger.warning(
+        "ffmpeg: not found on PATH. Transcription / synthesis / clip extraction "
+        "will fail. Install from https://ffmpeg.org/download.html, or set "
+        "{} to point at the binary.",
+        PODCODEX_FFMPEG_EXE_ENV,
+    )
 
 
 def _install_hf_symlink_patch() -> None:
@@ -192,8 +202,7 @@ def _install_hf_symlink_patch() -> None:
 
     def _copy_instead_of_symlink(src, dst, new_blob: bool = False) -> None:
         try:
-            if os.path.exists(dst):
-                os.remove(dst)
+            os.remove(dst)
         except OSError:
             pass
         real_src = os.path.realpath(src)
@@ -309,14 +318,13 @@ def _install_transformers_torch_check_patch() -> None:
          case it imported before our function patch lands.
       3. Rebind ``sdpa_mask`` and the ``AttentionMaskInterface`` registry —
          dispatch happens by reference at call time and was sealed at
-         module import (lines 472 + 624 of masking_utils.py), so flipping
-         the bool is not enough.
+         module import, so flipping the bool is not enough.
       4. Inject ``TransformGetItemToIndex`` into ``masking_utils``'s
-         namespace. The module imports it conditionally at line 39-40,
-         guarded by the same broken ``_is_torch_greater_or_equal_than_2_6``
-         flag — when the gate misfired at import time the symbol was
-         never bound, and ``sdpa_mask_recent_torch``'s body resolves it
-         via free-variable lookup, raising ``NameError`` at call time.
+         namespace. The module imports it conditionally, guarded by the
+         same broken ``_is_torch_greater_or_equal_than_2_6`` flag — when
+         the gate misfired at import time the symbol was never bound,
+         and ``sdpa_mask_recent_torch``'s body resolves it via free-variable
+         lookup, raising ``NameError`` at call time.
     """
     try:
         from packaging import version as _v
@@ -427,7 +435,9 @@ def _setup_loguru_file_sink() -> None:
         return
 
     try:
-        log_path = Path(data_dir) / "logs" / "server.log"
+        from podcodex.core.app_paths import server_log_path
+
+        log_path = server_log_path(data_dir)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         logger.add(
             str(log_path),

@@ -12,7 +12,7 @@ The flow is the same on every shipped target:
 
 1. **Freeze the Python backend** with PyInstaller → single
    `podcodex-server` binary (CPU-only).
-2. **Fetch the `yt-dlp` static binary** for the host triple (ffmpeg ships via `imageio-ffmpeg`).
+2. **Fetch the `yt-dlp` static binary** for the host triple. ffmpeg is **not** bundled — the app shells out to the user's system install (see [LICENSE_AUDIT.md](../LICENSE_AUDIT.md)).
 3. **Build the frontend** (`npm run build`).
 4. **Bundle with Tauri** (`cargo tauri build`) → native installer.
 

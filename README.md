@@ -55,7 +55,22 @@ Each step is saved with its model and settings to a SQLite database. Roll back a
 
 ### Pre-built release
 
-> **Binary releases temporarily unavailable pending license cleanup.** Build from source (below) in the meantime.
+Direct download (latest):
+
+- **macOS (Apple Silicon)** — [PodCodex-macos-arm64.dmg](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-macos-arm64.dmg)
+- **Windows x64** — [PodCodex-windows-x64.msi](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-windows-x64.msi)
+
+All assets + checksums on the [Releases](https://github.com/gabriel-jung/podcodex/releases) page.
+
+PodCodex shells out to a system [FFmpeg](https://ffmpeg.org/download.html) install for transcription, clip extraction, and synthesis — install it before first launch (the app's first-run check surfaces a dialog if missing).
+
+**macOS quarantine on first launch.** The DMG is not yet signed/notarized, so Gatekeeper will say *"PodCodex.app is damaged and can't be opened"*. The app is fine. Drag it to `/Applications`, then once:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/PodCodex.app
+```
+
+Subsequent launches don't need it. Signing + notarization is a v0.1.0 blocker.
 
 ### Build from source
 
@@ -63,6 +78,7 @@ You'll need:
 
 - **[uv](https://docs.astral.sh/uv/)** — handles Python 3.12 install + dependencies.
 - **[Node.js](https://nodejs.org/) LTS** — frontend (or via nvm, Homebrew, winget, etc.).
+- **[FFmpeg](https://ffmpeg.org/download.html)** — system install on PATH (used for transcription, clip extraction, voice synthesis).
 - **[Rust](https://www.rust-lang.org/)** *(optional)* — for the native Tauri window.
 
 **Install:**
@@ -129,7 +145,7 @@ PodCodex ships a Model Context Protocol server, so any MCP-compatible client (Cl
 | Desktop shell  | [Tauri v2](https://tauri.app) (Rust)                                                                      |
 | Frontend       | [React 19](https://react.dev), [Vite](https://vitejs.dev), [TypeScript](https://www.typescriptlang.org), [Tailwind](https://tailwindcss.com), [shadcn/ui](https://ui.shadcn.com) |
 | Backend        | [FastAPI](https://fastapi.tiangolo.com) (REST + WebSocket, background tasks)                              |
-| Ingest         | [yt-dlp](https://github.com/yt-dlp/yt-dlp), [feedparser](https://github.com/kurtmckee/feedparser), [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) |
+| Ingest         | [yt-dlp](https://github.com/yt-dlp/yt-dlp), [feedparser](https://github.com/kurtmckee/feedparser), system [FFmpeg](https://ffmpeg.org/) |
 | Transcription  | [WhisperX](https://github.com/m-bain/whisperX), [pyannote-audio](https://github.com/pyannote/pyannote-audio) |
 | LLM            | [Ollama](https://ollama.com) (local), [OpenAI](https://openai.com), [Anthropic](https://anthropic.com), [Mistral](https://mistral.ai), [DeepSeek](https://deepseek.com), and others; or any OpenAI-compatible API |
 | Voice cloning  | [Qwen3-TTS](https://huggingface.co/collections/Qwen/qwen3-tts)                                            |
