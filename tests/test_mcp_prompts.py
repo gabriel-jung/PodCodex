@@ -33,7 +33,7 @@ def _isolated_store(tmp_path: Path, monkeypatch):
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app)
+    return TestClient(app, headers={"X-PodCodex": "1"})
 
 
 # ── validate_prompt ─────────────────────────────────────────────────────

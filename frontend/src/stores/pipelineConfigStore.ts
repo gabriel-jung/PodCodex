@@ -7,18 +7,22 @@ export type LLMMode = "api" | "ollama" | "manual";
 
 export interface LLMConfig {
   mode: LLMMode;
-  provider: string;
+  /** Name of a profile from /api/provider-profiles (built-in or custom). */
+  providerProfile: string;
+  /** Name of an entry in the API key pool (/api/keys). Empty for ollama. */
+  keyName: string;
   model: string;
   context: string;
   sourceLang: string;
   batchMinutes: number;
-  apiBaseUrl: string;
-  apiKey: string;
 }
 
 export interface TranscribeConfig {
   modelSize: string;
-  batchSize: number;
+  /** Whisper batch size. ``null`` means "auto" — the backend's
+   *  ``default_batch_size()`` returns 8 for ≤10 GB VRAM, 16 above.
+   *  Sending a concrete number overrides that auto-detection. */
+  batchSize: number | null;
   diarize: boolean;
   clean: boolean;
   hfToken: string;
@@ -56,7 +60,7 @@ export function modeToPreset(mode: LLMConfig["mode"]): LLMPresetKey {
 export const INDEX_PRESETS = {
   fast: { label: "Fast", desc: "Small model, ideal for light CPU", model: "e5-small" },
   balanced: { label: "Balanced", desc: "Good quality, works on CPU", model: "bge-m3" },
-  gpu: { label: "GPU", desc: "Context-aware, very slow on CPU", model: "pplx" },
+  gpu: { label: "GPU", desc: "Context-aware, very slow on CPU", model: "pplx-0.6B" },
 } as const;
 
 export type IndexPresetKey = keyof typeof INDEX_PRESETS;
@@ -100,9 +104,12 @@ export interface PipelineConfigState {
   /** Set to true once the user explicitly chooses an LLM preset so the
    *  auto-default (switch to "cloud" when an API key is detected) stops. */
   llmPresetTouched: boolean;
-  /** Apply an LLM preset. Pass `provider` for cloud/API to pre-fill the
-   *  selected provider (used by the auto-upgrade path). */
-  applyLLMPreset: (key: keyof typeof LLM_PRESETS, provider?: string) => void;
+  /** Apply an LLM preset. Pass `providerProfile` for cloud/API to pre-fill
+   *  the selected profile (used by the auto-upgrade path). */
+  applyLLMPreset: (
+    key: keyof typeof LLM_PRESETS,
+    providerProfile?: string,
+  ) => void;
   indexPreset: string;
   applyIndexPreset: (key: keyof typeof INDEX_PRESETS) => void;
 }
@@ -112,7 +119,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
     (set) => ({
       transcribe: {
         modelSize: "large-v3-turbo",
-        batchSize: 16,
+        batchSize: null,
         diarize: false,
         clean: false,
         hfToken: "",
@@ -128,13 +135,12 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
 
       llm: {
         mode: "manual",
-        provider: "openai",
+        providerProfile: "",
+        keyName: "",
         model: "",
         context: "",
         sourceLang: "French",
         batchMinutes: 15,
-        apiBaseUrl: "",
-        apiKey: "",
       },
       setLLM: (patch) =>
         set((s) => ({
@@ -164,12 +170,16 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         }),
       llmPreset: "manual",
       llmPresetTouched: false,
-      applyLLMPreset: (key, provider) =>
+      applyLLMPreset: (key, providerProfile) =>
         set((s) => {
           const p = LLM_PRESETS[key];
           if (!p) return s;
           return {
-            llm: { ...s.llm, mode: p.mode, ...(provider ? { provider } : {}) },
+            llm: {
+              ...s.llm,
+              mode: p.mode,
+              ...(providerProfile ? { providerProfile } : {}),
+            },
             llmPreset: key,
             llmPresetTouched: true,
           };
@@ -183,7 +193,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
     }),
     {
       name: "podcodex-pipeline-config",
-      version: 2,
+      version: 4,
       migrate(persisted: unknown, fromVersion: number) {
         const s = persisted as Record<string, unknown>;
         if (fromVersion < 1) {
@@ -204,12 +214,32 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
           const preset = (s.llmPreset as string | undefined) || "";
           s.llmPresetTouched = preset !== "";
         }
+        if (fromVersion < 3) {
+          // Old default of 16 was hardcoded and bypassed the backend's
+          // VRAM-based auto-detect; flip it to null so it actually runs.
+          const tc = s.transcribe as Record<string, unknown> | undefined;
+          if (tc && tc.batchSize === 16) tc.batchSize = null;
+        }
+        if (fromVersion < 4) {
+          // LLM credentials moved from `provider`/`apiKey`/`apiBaseUrl` on
+          // the LLM config to a named pool + profile catalog. Old picks are
+          // no longer addressable; reset to defaults so the user re-picks
+          // from the new UI.
+          const llm = s.llm as Record<string, unknown> | undefined;
+          if (llm) {
+            delete llm.provider;
+            delete llm.apiKey;
+            delete llm.apiBaseUrl;
+            llm.providerProfile = "";
+            llm.keyName = "";
+          }
+        }
         return s as unknown as PipelineConfigState;
       },
       // Don't persist secrets
       partialize: (s) => ({
         transcribe: { ...s.transcribe, hfToken: "" },
-        llm: { ...s.llm, apiKey: "" },
+        llm: s.llm,
         engine: s.engine,
         targetLang: s.targetLang,
         indexModel: s.indexModel,

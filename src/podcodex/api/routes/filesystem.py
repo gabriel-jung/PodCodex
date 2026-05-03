@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import platform
+import stat
 import subprocess
 from pathlib import Path
 
@@ -14,6 +16,44 @@ router = APIRouter()
 
 # Non-audio auxiliary files only; audio has its own delete endpoint.
 _DELETABLE_EXTS = {".vtt", ".srt", ".json", ".txt", ".info.json"}
+
+# APFS surfaces system pseudo-volumes under /Volumes that users never browse.
+_MAC_SKIP_VOLUMES = frozenset(
+    {"Recovery", "Preboot", "Update", "VM", "xarts", "iSCPreboot", "Hardware"}
+)
+
+# WSL2 ships internal-only mounts at /mnt/wsl and /mnt/wslg (WSL plumbing
+# + WSLg X-server runtime).
+_LINUX_SKIP_MOUNTS = frozenset({"wsl", "wslg"})
+
+
+def _is_hidden_st(name: str, st: os.stat_result | None) -> bool:
+    """True for entries Finder/Explorer would hide, given a pre-fetched stat.
+
+    Splits the name+stat-based check out of :func:`_is_hidden` so callers
+    that already hold a ``stat_result`` (e.g. the directory listing loop
+    that needs ``S_ISDIR``) avoid a second syscall. Covers dot-prefix
+    (Unix), macOS ``UF_HIDDEN``, Windows ``FILE_ATTRIBUTE_HIDDEN``.
+    """
+    if name.startswith("."):
+        return True
+    if st is None:
+        return False
+    if hasattr(st, "st_flags") and st.st_flags & getattr(stat, "UF_HIDDEN", 0):
+        return True
+    if hasattr(st, "st_file_attributes") and st.st_file_attributes & getattr(
+        stat, "FILE_ATTRIBUTE_HIDDEN", 0
+    ):
+        return True
+    return False
+
+
+def _is_hidden(item: Path) -> bool:
+    """True for entries Finder/Explorer would hide. Issues one ``lstat``."""
+    try:
+        return _is_hidden_st(item.name, item.lstat())
+    except OSError:
+        return item.name.startswith(".")
 
 
 @router.get("/list")
@@ -50,7 +90,7 @@ async def list_directory(
     dirs: list[dict] = []
     files: list[dict] = []
     try:
-        entries = sorted(target.iterdir())
+        entries = sorted(target.iterdir(), key=lambda p: p.name.casefold())
     except PermissionError:
         return {
             "path": str(target),
@@ -60,22 +100,38 @@ async def list_directory(
             "error": "Permission denied",
         }
 
+    from podcodex.ingest.show import SHOW_META_FILENAME
+
     for item in entries:
         try:
-            if item.name.startswith("."):
+            try:
+                st = item.lstat()
+            except OSError:
                 continue
-            if item.is_dir():
-                from podcodex.ingest.show import SHOW_META_FILENAME
-
+            if _is_hidden_st(item.name, st):
+                continue
+            if stat.S_ISDIR(st.st_mode):
                 is_show = (item / SHOW_META_FILENAME).exists()
+                # scandir + first-match so folders with thousands of episodes
+                # don't pay a full iterdir on every parent listing.
+                has_audio = False
                 try:
-                    has_audio = any(
-                        f.suffix.lower() in AUDIO_EXTS
-                        for f in item.iterdir()
-                        if f.is_file()
-                    )
-                except PermissionError:
-                    has_audio = False
+                    with os.scandir(item) as it:
+                        for child in it:
+                            try:
+                                name = child.name
+                                dot = name.rfind(".")
+                                if dot < 0:
+                                    continue
+                                if name[dot:].lower() in AUDIO_EXTS and child.is_file(
+                                    follow_symlinks=False
+                                ):
+                                    has_audio = True
+                                    break
+                            except OSError:
+                                continue
+                except (PermissionError, OSError):
+                    pass
                 dirs.append(
                     {
                         "name": item.name,
@@ -84,7 +140,11 @@ async def list_directory(
                         "has_audio": has_audio,
                     }
                 )
-            elif show_files and item.is_file() and item.suffix.lower() in ext_filter:
+            elif (
+                show_files
+                and stat.S_ISREG(st.st_mode)
+                and item.suffix.lower() in ext_filter
+            ):
                 files.append(
                     {
                         "name": item.name,
@@ -154,6 +214,85 @@ async def delete_file(
     except FileNotFoundError as e:
         raise HTTPException(404, f"File not found: {path}") from e
     return {"status": "deleted", "path": str(p)}
+
+
+@router.get("/drives")
+async def list_drives() -> dict:
+    """Enumerate filesystem roots for the FolderPicker's quick-access list.
+
+    Returns whatever's appropriate for the host OS:
+      - Windows native: probe A:..Z:, return present drive letters.
+      - Linux (incl. WSL2): WSL drive bridges under /mnt/<letter> if any,
+        plus /media/<user>/<vol> mounts.
+      - macOS: entries under /Volumes (one per mounted volume).
+    """
+    drives: list[dict] = []
+    system = platform.system()
+
+    if system == "Windows":
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            root = Path(f"{letter}:\\")
+            if root.exists():
+                drives.append({"label": f"Drive {letter}", "path": str(root)})
+    elif system == "Darwin":
+        volumes = Path("/Volumes")
+        if volumes.is_dir():
+            for v in sorted(volumes.iterdir(), key=lambda p: p.name.casefold()):
+                if not v.is_dir():
+                    continue
+                if _is_hidden(v) or v.name.startswith("com.apple."):
+                    continue
+                if v.name in _MAC_SKIP_VOLUMES:
+                    continue
+                # Skip the boot-disk symlink ("Macintosh HD" → "/") — Home
+                # already covers that tree. ``os.readlink`` reads only the
+                # link target without traversing it, so a stalled volume
+                # cannot block the event loop here.
+                try:
+                    if os.readlink(v) == "/":
+                        continue
+                except OSError:
+                    pass
+                drives.append({"label": v.name, "path": str(v)})
+    else:
+        # Linux + WSL2. /mnt/* covers WSL2 drive bridges (any letter
+        # 'c'-'z') plus arbitrary non-letter mounts (/mnt/data, /mnt/nas).
+        # /media/<user>/<vol> is the typical udisks/GVfs automount location
+        # on systemd desktops. /run/media/<user>/<vol> is the modern variant
+        # on Fedora-derived distros.
+        mnt = Path("/mnt")
+        if mnt.is_dir():
+            try:
+                for entry in sorted(mnt.iterdir(), key=lambda p: p.name.casefold()):
+                    if not entry.is_dir():
+                        continue
+                    if entry.name in _LINUX_SKIP_MOUNTS:
+                        continue
+                    if len(entry.name) == 1 and entry.name.isalpha():
+                        label = f"Drive {entry.name.upper()}"
+                    else:
+                        label = entry.name
+                    drives.append({"label": label, "path": str(entry)})
+            except PermissionError:
+                pass
+        for media_root in (Path("/media"), Path("/run/media")):
+            if not media_root.is_dir():
+                continue
+            try:
+                for user_dir in sorted(
+                    media_root.iterdir(), key=lambda p: p.name.casefold()
+                ):
+                    if not user_dir.is_dir():
+                        continue
+                    for vol in sorted(
+                        user_dir.iterdir(), key=lambda p: p.name.casefold()
+                    ):
+                        if vol.is_dir():
+                            drives.append({"label": vol.name, "path": str(vol)})
+            except PermissionError:
+                pass
+
+    return {"drives": drives}
 
 
 @router.post("/open")

@@ -28,6 +28,7 @@ import numpy as np
 import soundfile as sf
 from loguru import logger
 
+from podcodex.core._ffmpeg import ffmpeg_exe
 from podcodex.core._utils import (
     SAMPLE_RATE,
     UNKNOWN_SPEAKERS,
@@ -268,7 +269,7 @@ def _extract_clip(audio_path: Path, seg: dict, output_path: Path) -> dict:
     """
     subprocess.run(
         [
-            "ffmpeg",
+            ffmpeg_exe(),
             "-y",
             "-i",
             str(audio_path),
@@ -459,17 +460,17 @@ def load_tts_model(model_size: str = "1.7B"):
         from qwen_tts import Qwen3TTSModel
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Loading Qwen3-TTS {model_size} on {device}…")
+    from podcodex.core._hf_logging import timed_load
     from podcodex.core.cache import get_hf_cache_dir
 
-    model = Qwen3TTSModel.from_pretrained(
-        f"Qwen/Qwen3-TTS-12Hz-{model_size}-Base",
-        device_map=device,
-        dtype=torch.bfloat16,
-        attn_implementation="sdpa",
-        cache_dir=str(get_hf_cache_dir()),
-    )
-    logger.success(f"Qwen3-TTS {model_size} loaded")
+    with timed_load(f"Qwen3-TTS {model_size} on {device}"):
+        model = Qwen3TTSModel.from_pretrained(
+            f"Qwen/Qwen3-TTS-12Hz-{model_size}-Base",
+            device_map=device,
+            dtype=torch.bfloat16,
+            attn_implementation="sdpa",
+            cache_dir=str(get_hf_cache_dir()),
+        )
     return model
 
 

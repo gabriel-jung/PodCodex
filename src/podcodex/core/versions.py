@@ -42,6 +42,22 @@ from loguru import logger
 PARQUET_STEPS = frozenset({"segments", "diarization", "diarized_segments"})
 
 
+def _unwrap_legacy_segments(data) -> list[dict]:
+    """Normalize legacy on-disk transcript JSON to a flat segment list.
+
+    Legacy ``*.transcript.raw.json`` / ``*.transcript.json`` files come in
+    two shapes: a bare list of segment dicts (oldest format), or a wrapper
+    ``{"meta": {...}, "segments": [...]}`` (post-meta-introduction). The
+    version DB stores only the segment list, so backfill paths must
+    unwrap before re-saving — without this, the wrapped dict is written
+    under ``transcript/<id>.json``, ``load_version`` returns it instead
+    of a list, and the chunker iterates the dict's keys (strings).
+    """
+    if isinstance(data, dict):
+        return data.get("segments", [])
+    return data
+
+
 # ------------------------------------------------------------------
 # Data types
 # ------------------------------------------------------------------
@@ -164,7 +180,9 @@ def backfill_versions(show_dir: Path) -> int:
             continue
 
         try:
-            segments = json.loads(seg_file.read_text(encoding="utf-8"))
+            segments = _unwrap_legacy_segments(
+                json.loads(seg_file.read_text(encoding="utf-8"))
+            )
         except Exception:
             continue
 
@@ -286,7 +304,12 @@ def load_version(base: Path, step: str, version_id: str) -> list[dict]:
             from podcodex.core._utils import read_parquet
 
             return read_parquet(seg_path)
-        return json.loads(seg_path.read_text(encoding="utf-8"))
+        # Defensive: an earlier (buggy) backfill could have written the
+        # wrapped {"meta", "segments"} shape into a version file. Unwrap
+        # transparently so callers never see the malformed payload.
+        return _unwrap_legacy_segments(
+            json.loads(seg_path.read_text(encoding="utf-8"))
+        )
     except Exception as e:
         raise FileNotFoundError(
             f"Version {version_id} unreadable for step '{step}': {e}"
@@ -370,7 +393,9 @@ def _backfill_episode(base: Path, db) -> None:
         if not seg_file:
             continue
         try:
-            segments = json.loads(seg_file.read_text(encoding="utf-8"))
+            segments = _unwrap_legacy_segments(
+                json.loads(seg_file.read_text(encoding="utf-8"))
+            )
         except Exception:
             continue
         vtype = (

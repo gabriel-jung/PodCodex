@@ -21,7 +21,9 @@ from loguru import logger
 
 from podcodex.ingest.rss import (
     RSSEpisode,
+    fill_empty_fields,
     load_feed_cache,
+    save_episode_meta,
     save_feed_cache,
 )
 
@@ -497,30 +499,31 @@ def cache_youtube_subtitles(
     """
     vtt_text, video_info = download_youtube_subtitles(video_id, lang=lang)
 
-    # Backfill feed cache with full metadata from the per-video extraction
-    # (flat playlist extraction often misses upload_date, duration, description)
+    # Per-video extraction carries the full upload_date / duration /
+    # description / hi-res thumbnail that flat playlist extraction misses.
+    # Push it into both the feed cache and the per-episode meta file so the
+    # indexer (which reads .episode_meta.json) can stamp pub_date and
+    # description onto chunks.
     if video_info:
         show_folder = episode_dir.parent
         cached = load_feed_cache(show_folder)
         if cached:
-            full_description = video_info.get("description", "") or ""
             full_ep = _entry_to_episode(video_info, 0)
-            dirty = False
             for ep in cached:
                 if ep.guid != video_id:
                     continue
-                if full_description and len(full_description) > len(ep.description):
-                    ep.description = full_description
-                    dirty = True
-                if full_ep.pub_date and not ep.pub_date:
-                    ep.pub_date = full_ep.pub_date
-                    dirty = True
-                if full_ep.duration and not ep.duration:
-                    ep.duration = full_ep.duration
-                    dirty = True
+                if fill_empty_fields(ep, full_ep, prefer_longer_description=True):
+                    save_feed_cache(show_folder, cached)
+                # Rewrite unconditionally: the download flow saved this
+                # file earlier from the flat-extraction record, so the
+                # cache may already be rich while the meta file is stale.
+                try:
+                    save_episode_meta(episode_dir, ep)
+                except OSError:
+                    logger.opt(exception=True).warning(
+                        f"Could not refresh episode meta for {video_id}"
+                    )
                 break
-            if dirty:
-                save_feed_cache(show_folder, cached)
 
     no_subs_marker = episode_dir / ".no_subtitles"
     if not vtt_text:

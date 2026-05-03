@@ -1,4 +1,4 @@
-import { BASE, json } from "./client";
+import { json, rawFetch } from "./client";
 
 export interface ShowAccess {
   show: string;
@@ -27,11 +27,7 @@ export const setShowPassword = (show: string, password?: string) =>
   });
 
 export async function deleteShowPassword(show: string): Promise<void> {
-  const res = await fetch(
-    `${BASE}/api/bot-access/passwords/${encodeURIComponent(show)}`,
-    { method: "DELETE" },
-  );
-  if (!res.ok) {
-    throw new Error(`${res.status}: ${await res.text()}`);
-  }
+  await rawFetch(`/api/bot-access/passwords/${encodeURIComponent(show)}`, {
+    method: "DELETE",
+  });
 }

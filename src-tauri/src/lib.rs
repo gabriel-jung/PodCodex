@@ -1,12 +1,58 @@
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
+use command_group::{CommandGroup, GroupChild};
 use tauri::{Manager, RunEvent};
 
 const API_PORT: u16 = 18811;
 const HEALTH_TIMEOUT_SECS: u64 = 180;
+
+/// Directory name under each platform's app-data root. Mirrors
+/// ``APP_DATA_DIRNAME`` in src/podcodex/core/app_paths.py — the Rust
+/// shell injects this path via ``PODCODEX_DATA_DIR`` and the Python
+/// sidecar must compute the same path when run standalone (dev mode,
+/// bot, MCP), so they have to stay in sync.
+const APP_DATA_DIRNAME: &str = "podcodex";
+
+/// Compute the platform-native app-data root joined with
+/// ``APP_DATA_DIRNAME``. Deliberately bypasses Tauri's ``app_data_dir``
+/// (which uses the reverse-DNS bundle identifier) so config/data folders
+/// share the same simple name across the desktop app, dev mode, and the
+/// bot/CLI/MCP entry points.
+fn compute_data_dir() -> Result<PathBuf, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME").ok_or("HOME not set")?;
+        Ok(PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join(APP_DATA_DIRNAME))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let base: PathBuf = match std::env::var_os("APPDATA") {
+            Some(v) => PathBuf::from(v),
+            None => {
+                let home = std::env::var_os("USERPROFILE").ok_or("USERPROFILE not set")?;
+                PathBuf::from(home)
+            }
+        };
+        Ok(base.join(APP_DATA_DIRNAME))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let base = match std::env::var_os("XDG_DATA_HOME") {
+            Some(v) => PathBuf::from(v),
+            None => {
+                let home = std::env::var_os("HOME").ok_or("HOME not set")?;
+                PathBuf::from(home).join(".local").join("share")
+            }
+        };
+        Ok(base.join(APP_DATA_DIRNAME))
+    }
+}
 
 /// Tauri externalBin sidecar basename. Project tree carries
 /// ``src-tauri/binaries/podcodex-server-<triple>``; the bundler strips the
@@ -14,7 +60,40 @@ const HEALTH_TIMEOUT_SECS: u64 = 180;
 /// alongside the host exe.
 const SERVER_SIDECAR: &str = "podcodex-server";
 
-struct BackendProcess(Mutex<Option<Child>>);
+/// Optional GPU sidecar — installed at runtime into <app_data>/backends/gpu/
+/// when the user opts in via Settings. See ``packaging/package_gpu.py`` for
+/// the archive layout and ``src/podcodex/api/gpu_backend.py`` for the
+/// download/extract logic.
+const GPU_BACKEND_SUBDIR: &str = "backends/gpu";
+const GPU_SIDECAR_NAME: &str = "podcodex-server-gpu";
+const GPU_ACTIVATED_MARKER: &str = "activated";
+const GPU_MANIFEST_FILE: &str = "cuda-libs.json";
+
+struct BackendProcess(Mutex<Option<GroupChild>>);
+
+/// Restart the app. Invoked from the frontend after activate/deactivate of
+/// the GPU sidecar — sidecar selection happens once in spawn_backend_if_needed
+/// at startup, so a restart is the only way to switch backends.
+///
+/// ``app.restart()`` does **not** fire the ``RunEvent::Exit`` callback we
+/// registered in ``run()`` — it bypasses the run loop and exits via
+/// ``std::process::exit``. So we kill the backend group explicitly here,
+/// before the relaunch, otherwise the old sidecar lingers (holding port
+/// 18811 and any in-flight multiprocessing workers) and the new instance
+/// can't get a working backend until the user kills the orphans manually.
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    log::info!("restart_app invoked from frontend");
+    let child = app.state::<BackendProcess>().0.lock().unwrap().take();
+    if let Some(mut child) = child {
+        log::info!("Killing backend process group before restart (pid={})", child.id());
+        if let Err(e) = child.kill() {
+            log::error!("Failed to kill backend process group on restart: {e}");
+        }
+        let _ = child.wait();
+    }
+    app.restart();
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -23,6 +102,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .invoke_handler(tauri::generate_handler![restart_app])
         .setup(|app| {
             // Init log plugin in both debug and release. Backend draining
             // threads use log::info! / log::warn! and we want those visible
@@ -49,9 +129,11 @@ pub fn run() {
                 let state = app_handle.state::<BackendProcess>();
                 let child = state.0.lock().unwrap().take();
                 if let Some(mut child) = child {
-                    log::info!("Killing backend sidecar (pid={})", child.id());
+                    // GroupChild::kill terminates the entire job/process group,
+                    // so multiprocessing workers die with the parent.
+                    log::info!("Killing backend process group (pid={})", child.id());
                     if let Err(e) = child.kill() {
-                        log::error!("Failed to kill backend sidecar: {e}");
+                        log::error!("Failed to kill backend process group: {e}");
                     }
                 }
             }
@@ -69,29 +151,64 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         return Ok(());
     }
 
-    let server_exe = locate_sidecar(SERVER_SIDECAR).ok_or_else(|| {
-        format!(
-            "Cannot find {SERVER_SIDECAR} sidecar next to host binary. \
-             Did `packaging/build_server.py` run before `cargo tauri build`?"
-        )
-    })?;
-
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("cannot resolve app_data_dir: {e}"))?;
+    let data_dir = compute_data_dir()?;
     std::fs::create_dir_all(&data_dir)?;
+
+    // Prefer the user-installed GPU sidecar if present, activated, and
+    // version-matched; fall back to the bundled CPU sidecar otherwise. The
+    // two paths are interchangeable from FastAPI's perspective — both expose
+    // the same /api/* surface — but the GPU build has CUDA torch + cuDNN
+    // bundled for hardware-accelerated transcription.
+    //
+    // Read from package_info (Cargo.toml-baked) rather than config (tauri.conf.json),
+    // because we deliberately omit `version` from tauri.conf.json so it derives from
+    // Cargo.toml — config().version is None at runtime in that setup.
+    let app_version = app.package_info().version.to_string();
+    let (server_exe, gpu_install_dir, backend_label) =
+        match locate_gpu_sidecar(&data_dir, &app_version) {
+            Some((binary, install_dir)) => (binary, Some(install_dir), "GPU"),
+            None => {
+                let cpu = locate_sidecar(SERVER_SIDECAR).ok_or_else(|| {
+                    format!(
+                        "Cannot find {SERVER_SIDECAR} sidecar next to host binary. \
+                         Did `packaging/build_server.py` run before `cargo tauri build`?"
+                    )
+                })?;
+                (cpu, None, "CPU")
+            }
+        };
 
     let models_dir = data_dir.join("models");
     let hf_home = models_dir.join("huggingface");
     let torch_home = models_dir.join("torch");
 
-    log::info!("Spawning backend: {:?}  (data_dir={:?})", server_exe, data_dir);
+    log::info!(
+        "Spawning {} backend: {:?}  (data_dir={:?})",
+        backend_label,
+        server_exe,
+        data_dir
+    );
 
     let mut cmd = Command::new(&server_exe);
+    // PyInstaller --onedir (used by the GPU build) resolves _internal/ and
+    // the bundled NVIDIA libs relative to cwd. Without setting current_dir,
+    // the binary may fail to find its support files. CPU --onefile uses
+    // _MEIPASS for all resolution and doesn't care about cwd, so we leave
+    // it inherited from the Tauri parent in that case.
+    if let Some(ref dir) = gpu_install_dir {
+        cmd.current_dir(dir);
+    }
     cmd.env("PODCODEX_DATA_DIR", &data_dir)
         .env("PODCODEX_API_PORT", API_PORT.to_string())
-        .env("HF_HOME", &hf_home)
+        // Sidecar polls this PID and self-terminates if the shell dies
+        // without firing RunEvent::Exit (Force Quit, panic, SIGKILL).
+        // Job Object kill on Windows already covers that case, so this
+        // is the macOS/Linux escape hatch.
+        .env("PODCODEX_PARENT_PID", std::process::id().to_string())
+        // HF_HUB_CACHE is the canonical env var huggingface_hub respects for
+        // its model cache. We don't set HF_HOME — that would tell HF Hub to
+        // also look in <HF_HOME>/hub/, splitting the cache across two layouts
+        // depending on which library entry-point downloaded.
         .env("HF_HUB_CACHE", hf_home.join("hub"))
         .env("TORCH_HOME", &torch_home)
         .env("TRANSFORMERS_CACHE", hf_home.join("transformers"))
@@ -103,30 +220,34 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
 
-    if let Some(ffmpeg) = locate_sidecar("ffmpeg") {
-        log::info!("Bundled ffmpeg: {:?}", ffmpeg);
-        cmd.env("FFMPEG_BINARY", ffmpeg);
-    }
+    // ffmpeg is sourced from imageio-ffmpeg's vendored binary inside the
+    // PyInstaller bundle — no sidecar needed. yt-dlp stays as a sidecar so
+    // we can hot-swap it between releases for bot-detection fixes.
     if let Some(ytdlp) = locate_sidecar("yt-dlp") {
         log::info!("Bundled yt-dlp: {:?}", ytdlp);
         cmd.env("YT_DLP_BINARY", ytdlp);
     }
 
+    // group_spawn wraps the child in a Windows Job Object (with
+    // KILL_ON_JOB_CLOSE) or a Unix process group. Without this, multiprocessing
+    // workers (torch DataLoader, whisperx, pyannote) survive parent kill on
+    // app exit and accumulate as orphaned podcodex-server.exe processes.
     let mut child = cmd
-        .spawn()
+        .group_spawn()
         .map_err(|e| format!("backend spawn failed: {e}"))?;
 
     // Drain stdout/stderr on plain OS threads so we don't depend on a Tokio
     // reactor (Tauri's setup hook runs sync, before the runtime exists; using
     // tokio::process here panics with "no reactor running").
-    if let Some(stdout) = child.stdout.take() {
+    let inner = child.inner();
+    if let Some(stdout) = inner.stdout.take() {
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 log::info!("[backend] {}", line);
             }
         });
     }
-    if let Some(stderr) = child.stderr.take() {
+    if let Some(stderr) = inner.stderr.take() {
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 log::warn!("[backend] {}", line);
@@ -141,6 +262,90 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         .replace(child);
 
     Ok(())
+}
+
+/// Look for an installed + activated GPU sidecar at
+/// ``<data_dir>/backends/gpu/podcodex-server-gpu``. Returns ``None`` (fall
+/// back to CPU) on any of:
+///   - activation marker missing
+///   - manifest missing (broken/interrupted install)
+///   - binary not present
+///   - binary's reported version != ``app_version`` (ABI/contract drift
+///     after an app update without a matching GPU re-download)
+///
+/// On success returns ``(binary_path, install_dir)`` so the caller can set
+/// cwd correctly — PyInstaller --onedir needs cwd at the install root.
+fn locate_gpu_sidecar(
+    data_dir: &std::path::Path,
+    app_version: &str,
+) -> Option<(PathBuf, PathBuf)> {
+    let install_dir = data_dir.join(GPU_BACKEND_SUBDIR);
+    if !install_dir.join(GPU_ACTIVATED_MARKER).is_file() {
+        return None;
+    }
+    if !install_dir.join(GPU_MANIFEST_FILE).is_file() {
+        log::warn!(
+            "GPU activated marker present but manifest missing — \
+             ignoring activation, falling back to CPU"
+        );
+        return None;
+    }
+    let binary = {
+        let bare = install_dir.join(GPU_SIDECAR_NAME);
+        let exe = install_dir.join(format!("{GPU_SIDECAR_NAME}.exe"));
+        if bare.is_file() {
+            bare
+        } else if exe.is_file() {
+            exe
+        } else {
+            log::warn!(
+                "GPU activated but sidecar binary not found at {:?}",
+                install_dir
+            );
+            return None;
+        }
+    };
+
+    match probe_sidecar_version(&binary, &install_dir) {
+        Some(v) if v == app_version => Some((binary, install_dir)),
+        Some(v) => {
+            log::warn!(
+                "GPU sidecar version {v} != app version {app_version}, \
+                 falling back to CPU until user re-downloads"
+            );
+            None
+        }
+        None => {
+            log::warn!(
+                "Could not read GPU sidecar version, falling back to CPU"
+            );
+            None
+        }
+    }
+}
+
+/// Run ``<binary> --version`` (with ``cwd`` set to the install dir so
+/// PyInstaller --onedir can find its support files) and return the trailing
+/// version token from the output, e.g. ``"0.1.0"``.
+fn probe_sidecar_version(
+    binary: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Option<String> {
+    let output = Command::new(binary)
+        .arg("--version")
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    // Output format: "podcodex-server X.Y.Z\n"
+    stdout
+        .trim()
+        .split_whitespace()
+        .last()
+        .map(|w| w.to_string())
 }
 
 /// Find a Tauri externalBin sidecar by short name. Bundled .app: bare

@@ -1,9 +1,12 @@
 import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { useTheme } from "@/hooks/useTheme";
 import { useLayoutStore } from "@/stores";
+import { getGPUStatus } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
 import {
   ArrowLeft, Home, Podcast, Settings, SunMoon,
-  PanelLeftOpen, PanelLeftClose,
+  PanelLeftOpen, PanelLeftClose, Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -29,7 +32,6 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
   const navigate = useNavigate();
   const isHome = useRouterState({ select: (s) => s.location.pathname === "/" });
   const historyIndex = useRouterState({ select: (s) => s.location.state.__TSR_index ?? 0 });
-  const hideBack = historyIndex === 0;
   const expanded = useLayoutStore((s) => s.sidebarExpanded);
   const setExpanded = useLayoutStore((s) => s.setSidebarExpanded);
   const { theme, setTheme } = useTheme();
@@ -41,28 +43,30 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
         expanded ? "w-48" : "w-14"
       }`}
     >
-      <nav className="flex-1 py-2 flex flex-col overflow-y-auto">
-        {/* Back + Parent + Home */}
-        {!hideBack && (
+      <nav className="flex-1 py-2 flex flex-col overflow-y-auto no-scrollbar">
+        {/* Back + Home + Parent — Home stays fixed above Parent so its position
+            doesn't shift between show and episode pages. */}
+        {!isHome && (
           <SidebarBtn icon={ArrowLeft} label="Back" expanded={expanded} onClick={() => {
             if (historyIndex > 0) window.history.back();
             else navigate({ to: "/" });
           }} />
         )}
+        {!isHome && <SidebarBtn icon={Home} label="Home" expanded={expanded} onClick={() => navigate({ to: "/" })} />}
         {parentLabel && onParent && (
           <SidebarBtn icon={Podcast} label={parentLabel} expanded={expanded} onClick={onParent} />
         )}
-        {!isHome && <SidebarBtn icon={Home} label="Home" expanded={expanded} onClick={() => navigate({ to: "/" })} />}
 
         {/* Page-specific sections */}
         {pageSections?.map((section, si) => (
-          <div key={si}>
+          <div key={section.items[0]?.key ?? si}>
             <div className="mx-3 my-1.5 border-t border-border" />
             {section.items.map(({ key, label, icon: Icon, status }) => (
               <button
                 key={key}
                 onClick={() => onItemClick?.(key)}
                 title={expanded ? undefined : label}
+                aria-label={label}
                 className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition ${
                   activeItem === key
                     ? "bg-accent text-accent-foreground"
@@ -72,7 +76,7 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
                 <Icon className="w-5 h-5 shrink-0" />
                 {expanded && <span className="truncate">{label}</span>}
                 {status && (
-                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${expanded ? "ml-auto" : ""} ${status === "partial" ? "bg-blue-500" : "bg-success"}`} />
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${expanded ? "ml-auto" : ""} ${status === "partial" ? "bg-info" : "bg-success"}`} />
                 )}
               </button>
             ))}
@@ -80,20 +84,46 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
         ))}
       </nav>
 
-      {/* Bottom: Settings + Theme */}
+      {/* Bottom: Theme + GPU available + Settings */}
       <div className="flex flex-col border-t border-border py-1">
-        <SidebarBtn icon={Settings} label="Settings" expanded={expanded} onClick={() => navigate({ to: "/settings" })} />
         <SidebarBtn icon={SunMoon} label={`Theme: ${theme}`} expanded={expanded} onClick={() => setTheme(nextTheme)} />
+        <GPUAvailableWarning expanded={expanded} onClick={() => navigate({ to: "/settings", search: { tab: "gpu" } })} />
+        <SidebarBtn icon={Settings} label="Settings" expanded={expanded} onClick={() => navigate({ to: "/settings" })} />
       </div>
 
       {/* Expand toggle */}
       <button
         onClick={() => setExpanded(!expanded)}
+        aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
         className="px-4 py-3 text-muted-foreground hover:text-foreground transition border-t border-border"
       >
         {expanded ? <PanelLeftClose className="w-5 h-5" /> : <PanelLeftOpen className="w-5 h-5" />}
       </button>
     </div>
+  );
+}
+
+function GPUAvailableWarning({ expanded, onClick }: { expanded: boolean; onClick: () => void }) {
+  const { data: status } = useQuery({
+    queryKey: queryKeys.gpuStatus(),
+    queryFn: getGPUStatus,
+    staleTime: 30_000,
+  });
+  if (!status) return null;
+  if (!status.platform_supported || !status.gpu_detected) return null;
+  const accelerated = status.activated && !!status.installed_version && !status.needs_update;
+  if (accelerated) return null;
+  const label = status.installed_version ? "Activate GPU" : "GPU available";
+  return (
+    <button
+      onClick={onClick}
+      title={expanded ? undefined : label}
+      aria-label={label}
+      className={`mx-2 my-1 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 text-warning px-2 py-2 text-xs transition hover:bg-warning/20 ${expanded ? "" : "justify-center"}`}
+    >
+      <Zap className="w-4 h-4 shrink-0" />
+      {expanded && <span className="truncate font-medium">{label}</span>}
+    </button>
   );
 }
 

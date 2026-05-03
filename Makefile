@@ -8,22 +8,22 @@
 #   macOS:
 #     brew install node
 #
-#   Ubuntu/Debian (WSL2 included):
+#   Ubuntu/Debian (WSL2 included — dev only, no shipped Linux artifact):
 #     sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
 #       libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config \
-#       libsndfile1 libfuse2          # libfuse2 only needed for AppImage build
+#       libsndfile1
 #
-#   Fedora:
+#   Fedora (dev only):
 #     sudo dnf install webkit2gtk4.1-devel gtk3-devel \
 #       libappindicator-gtk3-devel librsvg2-devel openssl-devel pkg-config \
-#       libsndfile fuse-libs
+#       libsndfile
 #
 # Quick start:
 #   make setup   # one-time: install all deps
 #   make dev     # start FastAPI + Vite + Tauri (hot-reload)
-#   make build   # production .app / .exe bundle
+#   make build   # production .dmg (macOS) or .msi (Windows) bundle
 
-.PHONY: setup setup-python setup-frontend setup-pyinstaller dev dev-api dev-frontend dev-tauri dev-sidecar build bundle bundle-server bundle-natives bundle-sign bundle-sign-only clean
+.PHONY: setup setup-python setup-frontend setup-pyinstaller dev dev-api dev-frontend dev-tauri dev-sidecar build bundle bundle-gpu bundle-server bundle-server-gpu package-gpu bundle-natives bundle-sign bundle-sign-only clean
 
 # ── Setup ────────────────────────────────────────────────
 
@@ -72,13 +72,21 @@ dev-no-tauri:  ## Start just API + Vite (use browser at localhost:5173)
 setup-pyinstaller:  ## Install PyInstaller into the dev venv
 	uv pip install pyinstaller --python .venv/bin/python
 
-bundle-server: setup-pyinstaller  ## Freeze the Python backend as a sidecar binary
+bundle-server: setup-pyinstaller  ## Freeze the CPU Python backend as a sidecar binary
 	.venv/bin/python packaging/build_server.py
 
-bundle-natives:  ## Download ffmpeg + yt-dlp static binaries for the host
+bundle-server-gpu: setup-pyinstaller  ## Freeze the GPU sidecar (--onedir, includes CUDA libs)
+	.venv/bin/python packaging/build_server.py --gpu
+
+package-gpu:  ## Split the GPU --onedir build into server-core + cuda-libs release archives
+	.venv/bin/python packaging/package_gpu.py
+
+bundle-gpu: bundle-server-gpu package-gpu  ## Build GPU sidecar and package release archives + manifest
+
+bundle-natives:  ## Download yt-dlp static binary for the host (ffmpeg ships via imageio-ffmpeg)
 	.venv/bin/python scripts/fetch_native_binaries.py
 
-bundle: bundle-server bundle-natives  ## Full standalone .app/.exe (frontend + sidecars + Tauri)
+bundle: bundle-server bundle-natives  ## Full standalone .dmg / .msi (frontend + CPU sidecar + Tauri)
 	cd frontend && npm run build
 	cd src-tauri && . $$HOME/.cargo/env && cargo tauri build
 
@@ -88,7 +96,7 @@ bundle-sign:  ## Sign + notarize the macOS bundle (requires APPLE_SIGNING_IDENTI
 bundle-sign-only:  ## Sign without notarizing (faster iteration)
 	scripts/sign_and_notarize.sh --no-notary
 
-build: bundle  ## Alias for `bundle` — unsigned .app / .dmg with bundled backend
+build: bundle  ## Alias for `bundle` — unsigned .dmg (macOS) or .msi (Windows) with bundled backend
 
 # ── Utilities ────────────────────────────────────────────
 
@@ -102,6 +110,13 @@ test:  ## Run Python tests
 
 types:  ## Regenerate frontend TS types from Pydantic models
 	.venv/bin/python scripts/generate_types.py
+
+icons:  ## Regenerate app icons from assets/icon.png (frontend + Tauri bundle)
+	@command -v magick >/dev/null 2>&1 || { echo "ImageMagick required: brew install imagemagick"; exit 1; }
+	magick assets/icon.png -resize 256x256 PNG32:frontend/public/icon.png
+	npx @tauri-apps/cli icon assets/icon.png
+	@# Tauri CLI emits iOS + Android icons unconditionally; we ship desktop only.
+	rm -rf src-tauri/icons/ios src-tauri/icons/android
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \

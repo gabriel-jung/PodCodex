@@ -10,6 +10,7 @@ from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import load_best_source, submit_subprocess_task
 from podcodex.api.schemas import TaskResponse
+from podcodex.core._ffmpeg import ffmpeg_exe
 from podcodex.core._utils import AudioPaths, SAMPLE_RATE
 
 router = APIRouter()
@@ -142,7 +143,7 @@ async def upload_voice_sample(
     try:
         subprocess.run(
             [
-                "ffmpeg",
+                ffmpeg_exe(),
                 "-y",
                 "-i",
                 tmp_path,

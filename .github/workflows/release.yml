@@ -1,0 +1,203 @@
+name: Release
+
+# Builds and publishes:
+#   - macOS .dmg (built on macos-latest, includes the bundled CPU sidecar)
+#   - Windows .msi (built on windows-latest, includes the bundled CPU sidecar)
+#   - PodCodex-macos-arm64.dmg + PodCodex-windows-x64.msi — version-less
+#     aliases so README can link to /releases/latest/download/<alias>
+#   - server-core.tar.gz + cuda-libs-<ver>.tar.gz + cuda-libs.json (Windows GPU
+#     archives for in-app download — VoiceBox-style runtime CUDA install)
+#   - latest.json (Tauri updater manifest — only when TAURI_SIGNING_PRIVATE_KEY
+#     is configured; see deploy/BUILD.md for keypair setup)
+#
+# Linux is intentionally not built — see ROADMAP.md Phase M. Linux users
+# build from source via `make dev`.
+#
+# Each platform job builds + uploads its own artifacts to the same release
+# tag (tauri-action handles the deduplication). Windows additionally
+# uploads the GPU archives via softprops/action-gh-release.
+#
+# Tag name controls release flow:
+#   vX.Y.Z          → stable, becomes "latest"
+#   vX.Y.Z-beta.N   → prerelease (any hyphen suffix), skipped by "latest"
+#   workflow_dispatch → draft, hidden until manually published
+# See CLAUDE.md "Release tags" for details.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or commit to build (defaults to current ref)"
+        required: false
+
+jobs:
+  # ── macOS DMG ───────────────────────────────────────────────────────────
+  build-macos:
+    name: macOS DMG
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Setup Python deps
+        run: make setup-python setup-pyinstaller
+
+      - name: Setup frontend
+        run: make setup-frontend
+
+      - name: Build CPU sidecar
+        run: .venv/bin/python packaging/build_server.py --clean
+
+      - name: Fetch native sidecar (yt-dlp)
+        run: make bundle-natives
+
+      - uses: tauri-apps/tauri-action@v0.6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing — uploads latest.json when set, silently skips
+          # when not. Generate locally with `tauri signer generate -w` and
+          # add the keypair to repo secrets (see deploy/BUILD.md).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: "PodCodex ${{ github.ref_name }}"
+          releaseDraft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          includeUpdaterJson: true
+
+      # Upload version-less alias so README can link to a stable URL:
+      #   /releases/latest/download/PodCodex-macos-arm64.dmg
+      - name: Mirror DMG with stable name
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DMG=$(ls src-tauri/target/release/bundle/dmg/PodCodex_*_aarch64.dmg | head -1)
+          gh release upload "${{ github.ref_name }}" "${DMG}#PodCodex-macos-arm64.dmg" --clobber
+
+  # ── Windows MSI + GPU archives ──────────────────────────────────────────
+  build-windows:
+    name: Windows MSI + GPU
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Setup Python deps
+        run: |
+          uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp
+          uv pip install pyinstaller --python .venv/Scripts/python.exe
+
+      - name: Setup frontend
+        run: |
+          cd frontend
+          npm install
+
+      # CPU build first — produces src-tauri/binaries/podcodex-server-<triple>.exe
+      # consumed by tauri-action below. --clean wipes packaging/build_work so
+      # PyInstaller can't reuse anything from a prior step.
+      - name: Build CPU sidecar
+        run: .venv/Scripts/python.exe packaging/build_server.py --clean
+
+      - name: Fetch native sidecar (yt-dlp)
+        run: .venv/Scripts/python.exe scripts/fetch_native_binaries.py
+
+      - name: Verify externalBin sidecars are present
+        run: |
+          $expected = @(
+            "src-tauri\binaries\podcodex-server-x86_64-pc-windows-msvc.exe",
+            "src-tauri\binaries\yt-dlp-x86_64-pc-windows-msvc.exe"
+          )
+          $missing = @()
+          foreach ($p in $expected) {
+            if (-not (Test-Path $p)) { $missing += $p }
+            else { Write-Host "✓ $p ($((Get-Item $p).Length) bytes)" }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Error "Missing externalBin files: $($missing -join ', ')"
+            exit 1
+          }
+
+      - uses: tauri-apps/tauri-action@v0.6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: "PodCodex ${{ github.ref_name }}"
+          releaseDraft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          includeUpdaterJson: true
+
+      # Upload version-less alias so README can link to a stable URL:
+      #   /releases/latest/download/PodCodex-windows-x64.msi
+      - name: Mirror MSI with stable name
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $msi = Get-ChildItem src-tauri\target\release\bundle\msi\PodCodex_*_x64_en-US.msi | Select-Object -First 1
+          gh release upload "${{ github.ref_name }}" "$($msi.FullName)#PodCodex-windows-x64.msi" --clobber
+
+      # GPU build needs CUDA-flavored torch in the venv so PyInstaller can
+      # bundle the NVIDIA runtime libs. Without this, package_gpu.py would
+      # find no nvidia/* files and fail.
+      - name: Install CUDA-flavored torch for GPU build
+        run: |
+          uv pip install torch torchvision torchaudio `
+            --index-url https://download.pytorch.org/whl/cu128 `
+            --reinstall --no-deps `
+            --python .venv/Scripts/python.exe
+
+      - name: Verify CUDA torch is active
+        run: .venv/Scripts/python.exe -c "import torch; print('cuda:', torch.version.cuda); assert torch.version.cuda, 'CUDA torch not installed'"
+
+      # GPU build — separate --onedir output. --no-torch-swap because we
+      # explicitly want the cu128 torch we just installed in the bundle.
+      - name: Build GPU sidecar (--onedir, includes CUDA libs)
+        run: .venv/Scripts/python.exe packaging/build_server.py --gpu --clean --no-torch-swap
+
+      - name: Package GPU archives + manifest
+        run: .venv/Scripts/python.exe packaging/package_gpu.py
+
+      - name: Upload GPU archives to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            packaging/release-assets/server-core.tar.gz
+            packaging/release-assets/server-core.tar.gz.sha256
+            packaging/release-assets/cuda-libs-*.tar.gz
+            packaging/release-assets/cuda-libs-*.tar.gz.sha256
+            packaging/release-assets/cuda-libs.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

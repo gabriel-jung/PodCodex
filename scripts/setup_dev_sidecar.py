@@ -103,7 +103,7 @@ def main() -> int:
     triple = host_target_triple()
     SIDECAR_DIR.mkdir(parents=True, exist_ok=True)
 
-    for name in ("podcodex-server", "ffmpeg", "yt-dlp"):
+    for name in ("podcodex-server", "yt-dlp"):
         ensure_placeholder(name, triple)
 
     if "windows" in triple:

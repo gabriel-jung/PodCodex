@@ -11,7 +11,7 @@ import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
 import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 import { useLayoutStore } from "@/stores";
-import type { ShowSummary } from "@/api/generated-types";
+import type { ShowSummary } from "@/api/types";
 import ShowCard from "@/components/show/ShowCard";
 import ShowListRow from "@/components/show/ShowListRow";
 import AddShowModal from "@/components/show/AddShowModal";
@@ -108,6 +108,8 @@ export default function HomePage() {
       <EditorialHeader
         title="PodCodex"
         subtitle="Transcribe, translate, search your podcasts."
+        artworkUrl="/icon.png?v=5"
+        artworkBare
         fallbackIcon={Podcast}
         stats={[
           ...(sorted && sorted.length > 0
@@ -154,6 +156,7 @@ export default function HomePage() {
                 onClick={() => setGroupBy(groupBy === "none" ? "source" : "none")}
                 className={`px-1.5 py-1 rounded transition ${groupBy !== "none" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`}
                 title="Group by source"
+                aria-label="Group by source"
               >
                 <Group className="w-3.5 h-3.5" />
               </button>
@@ -165,6 +168,7 @@ export default function HomePage() {
                   value={cardSize}
                   onChange={(e) => setCardSize(Number(e.target.value))}
                   className="w-16 accent-primary"
+                  aria-label="Card size"
                 />
               )}
               <div className="flex border border-border rounded overflow-hidden">
@@ -172,6 +176,7 @@ export default function HomePage() {
                   onClick={() => setViewMode("list")}
                   className={`px-1.5 py-1 transition ${viewMode === "list" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`}
                   title="List view"
+                  aria-label="List view"
                 >
                   <List className="w-3.5 h-3.5" />
                 </button>
@@ -179,6 +184,7 @@ export default function HomePage() {
                   onClick={() => setViewMode("card")}
                   className={`px-1.5 py-1 transition ${viewMode === "card" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`}
                   title="Card view"
+                  aria-label="Card view"
                 >
                   <LayoutGrid className="w-3.5 h-3.5" />
                 </button>
@@ -233,6 +239,10 @@ export default function HomePage() {
               queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
               setAddOpen(false);
               goToShow(folder);
+            }}
+            onImported={(_folder) => {
+              queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+              setAddOpen(false);
             }}
             onOpenFile={(path) => {
               setAddOpen(false);

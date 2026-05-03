@@ -119,25 +119,26 @@ def test_scan_folder_validated_transcript(tmp_path):
 # ──────────────────────────────────────────────
 
 
-def test_scan_folder_indexed_true(tmp_path):
-    from podcodex.ingest.folder import scan_folder
+def test_scan_folder_indexed_true(tmp_path, monkeypatch):
+    from podcodex.ingest import folder as folder_mod
 
     (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / ".rag_indexed").touch()
+    monkeypatch.setattr(folder_mod, "lance_indexed_stems", lambda _: {"ep01"})
+    folder_mod.invalidate_scan_cache()
 
-    result = scan_folder(tmp_path)
+    result = folder_mod.scan_folder(tmp_path)
 
     assert result[0].indexed is True
 
 
-def test_scan_folder_indexed_false(tmp_path):
-    from podcodex.ingest.folder import scan_folder
+def test_scan_folder_indexed_false(tmp_path, monkeypatch):
+    from podcodex.ingest import folder as folder_mod
 
     (tmp_path / "ep01.mp3").touch()
+    monkeypatch.setattr(folder_mod, "lance_indexed_stems", lambda _: set())
+    folder_mod.invalidate_scan_cache()
 
-    result = scan_folder(tmp_path)
+    result = folder_mod.scan_folder(tmp_path)
 
     assert result[0].indexed is False
 

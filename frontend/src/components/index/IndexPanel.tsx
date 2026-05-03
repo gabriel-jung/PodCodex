@@ -18,11 +18,14 @@ import MissingDependency from "@/components/common/MissingDependency";
 import PipelinePanel from "@/components/common/PipelinePanel";
 import PipelineRunFooter from "@/components/common/PipelineRunFooter";
 import Segmented from "@/components/common/Segmented";
+import IndexInspectorModal from "@/components/index/IndexInspectorModal";
+import { Button } from "@/components/ui/button";
 
 export default function IndexPanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const audioPath = useAudioPath();
+  const outputDir = episode?.output_dir;
   const showName = getShowName(showMeta, audioPath);
   const task = usePipelineTask(audioPath, "index");
 
@@ -32,14 +35,14 @@ export default function IndexPanel() {
   });
 
   const { data: status } = useQuery({
-    queryKey: queryKeys.indexStatus(audioPath, showName),
-    queryFn: () => getIndexStatus(audioPath!, showName),
-    enabled: !!audioPath,
+    queryKey: queryKeys.indexStatus(audioPath ?? outputDir, showName),
+    queryFn: () => getIndexStatus(audioPath, showName, outputDir),
+    enabled: !!audioPath || !!outputDir,
   });
 
   const expanded = task.expanded || !episode?.indexed;
 
-  const inputVersions = useInputVersions(audioPath, "index", !!episode?.transcribed && expanded);
+  const inputVersions = useInputVersions(audioPath, "index", !!episode?.transcribed && expanded, outputDir);
 
   const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
   const indexModel = usePipelineConfigStore((s) => s.indexModel);
@@ -48,6 +51,7 @@ export default function IndexPanel() {
   const [chunkSize, setChunkSize] = useState(256);
   const [threshold, setThreshold] = useState(0.5);
   const [overwrite, setOverwrite] = useState(!!episode?.indexed);
+  const [inspectTarget, setInspectTarget] = useState<{ model: string; chunking: string } | null>(null);
   // Reset on episode switch only — preserve user toggle when status refetches.
   useEffect(() => {
     setOverwrite(!!episode?.indexed);
@@ -210,15 +214,34 @@ export default function IndexPanel() {
                   className="flex items-center gap-3 text-sm px-3 py-2 rounded bg-secondary border border-border"
                 >
                   <span className="w-2 h-2 rounded-full bg-success shrink-0" />
-                  <span className="font-medium">{c.model}</span>
+                  <span className="font-medium">{models?.[c.model]?.label ?? c.model}</span>
                   <span className="text-muted-foreground">/ {c.chunking}</span>
-                  <span className="ml-auto text-muted-foreground">
+                  <span className="ml-auto text-muted-foreground tabular-nums">
                     {c.chunk_count} chunks
                   </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7"
+                    onClick={() => setInspectTarget({ model: c.model, chunking: c.chunking })}
+                  >
+                    Inspect
+                  </Button>
                 </div>
               ))}
           </div>
         </div>
+      )}
+      {audioPath && inspectTarget && (
+        <IndexInspectorModal
+          open={!!inspectTarget}
+          onClose={() => setInspectTarget(null)}
+          audioPath={audioPath}
+          show={showName}
+          model={inspectTarget.model}
+          modelLabel={models?.[inspectTarget.model]?.label ?? inspectTarget.model}
+          chunking={inspectTarget.chunking}
+        />
       )}
     </PipelinePanel>
   );

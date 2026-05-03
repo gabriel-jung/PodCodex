@@ -16,6 +16,7 @@ import {
   AlertTriangle,
   Play,
   Pause,
+  Locate,
   X,
 } from "lucide-react";
 import type { Segment } from "@/api/types";
@@ -34,6 +35,7 @@ const isDiarizerDefault = (id: string) =>
 // ── Derived types ────────────────────────────────────────────────────────────
 
 interface Excerpt {
+  originalIndex: number;
   start: number;
   end: number;
   text: string;
@@ -50,14 +52,15 @@ interface SpeakerInfo {
 
 function computeSpeakerInfos(segments: Segment[]): SpeakerInfo[] {
   const bySpeaker = new Map<string, Excerpt[]>();
-  for (const seg of segments) {
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
     const sp = seg.speaker || "";
     if (sp === "[BREAK]") continue;
     if (!bySpeaker.has(sp)) bySpeaker.set(sp, []);
     const dur = (seg.end || 0) - (seg.start || 0);
     const text = seg.text || "";
     const suspect = !text || (dur > 0 && text.length / dur < MIN_DENSITY);
-    bySpeaker.get(sp)!.push({ start: seg.start, end: seg.end, text, suspect });
+    bySpeaker.get(sp)!.push({ originalIndex: i, start: seg.start, end: seg.end, text, suspect });
   }
   return Array.from(bySpeaker.entries())
     .map(([name, segs]) => {
@@ -90,6 +93,7 @@ interface SpeakerStripProps {
   onToggleRemoved: (name: string) => void;
   onAddSpeaker: (name: string) => void;
   onRemoveAdded: (name: string) => void;
+  onJumpToSegment?: (originalIndex: number) => void;
 }
 
 export default function SpeakerStrip({
@@ -103,6 +107,7 @@ export default function SpeakerStrip({
   onToggleRemoved,
   onAddSpeaker,
   onRemoveAdded,
+  onJumpToSegment,
 }: SpeakerStripProps) {
   const [drawerFor, setDrawerFor] = useState<string | null>(null);
   const [editingFor, setEditingFor] = useState<string | null>(null);
@@ -465,8 +470,8 @@ export default function SpeakerStrip({
         )}
 
         {unnamedCount > 0 && (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-2xs text-warning/80 shrink-0 ml-auto">
-            <AlertTriangle className="w-3 h-3" />
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-2xs leading-none text-warning/80 shrink-0 ml-auto">
+            <AlertTriangle className="w-2.5 h-2.5" />
             {unnamedCount} unnamed
           </span>
         )}
@@ -499,14 +504,16 @@ export default function SpeakerStrip({
           {drawerInfo.excerpts.length === 0 ? (
             <p className="text-xs text-muted-foreground italic">No excerpts.</p>
           ) : (
-            drawerInfo.excerpts.map((ex, i) => (
+            drawerInfo.excerpts.map((ex) => (
               <ExcerptRow
-                key={i}
+                key={ex.originalIndex}
                 audioPath={audioPath}
+                originalIndex={ex.originalIndex}
                 start={ex.start}
                 end={ex.end}
                 text={ex.text}
                 suspect={ex.suspect}
+                onJump={onJumpToSegment}
               />
             ))
           )}
@@ -520,16 +527,20 @@ export default function SpeakerStrip({
 
 function ExcerptRow({
   audioPath,
+  originalIndex,
   start,
   end,
   text,
   suspect,
+  onJump,
 }: {
   audioPath?: string;
+  originalIndex: number;
   start: number;
   end: number;
   text: string;
   suspect: boolean;
+  onJump?: (originalIndex: number) => void;
 }) {
   const seekTo = useAudioStore((s) => s.seekTo);
   const pauseAudio = useAudioStore((s) => s.pauseAudio);
@@ -566,6 +577,17 @@ function ExcerptRow({
           <Play className="w-3.5 h-3.5" />
         )}
       </button>
+      {onJump && (
+        <button
+          type="button"
+          onClick={() => onJump(originalIndex)}
+          className="shrink-0 text-muted-foreground hover:text-foreground transition"
+          title="Locate segment in editor"
+          aria-label="Locate segment in editor"
+        >
+          <Locate className="w-3.5 h-3.5" />
+        </button>
+      )}
       <span className="font-mono text-muted-foreground shrink-0">
         {formatTime(start, false)} – {formatTime(end, false)}
       </span>

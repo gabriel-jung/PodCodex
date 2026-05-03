@@ -1,8 +1,11 @@
+import { useId, useMemo } from "react";
 import type { Episode, VersionEntry } from "@/api/types";
 import type { LLMConfig, LLMPresetKey } from "@/stores/pipelineConfigStore";
 import { LLM_PRESETS } from "@/stores/pipelineConfigStore";
 import { formatDuration, selectClass, versionOption } from "@/lib/utils";
-import { useLLMProviders } from "@/hooks/useLLMProviders";
+import { modelPlaceholderFor, modelsFor } from "@/lib/providerModels";
+import { useApiKeys } from "@/hooks/useApiKeys";
+import { useProviderProfiles } from "@/hooks/useProviderProfiles";
 import { useBatchCount } from "@/hooks/useLLMPipeline";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import FormGrid from "./FormGrid";
@@ -47,10 +50,26 @@ export default function LLMControlsForm({
   languageRows,
   contextHelp,
 }: LLMControlsFormProps) {
-  const { apiProviders, getProviderInfo, detectedKeys } = useLLMProviders();
-  const providerInfo = getProviderInfo(config.provider);
+  const { profiles } = useProviderProfiles();
+  const { keys } = useApiKeys();
+  const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
   const { episodeMinutes, batchCount, setBatchCount, minutesPerBatch } = useBatchCount(episode, config, patch);
   const hasOllama = useCapabilities().has("ollama");
+  const datalistId = useId();
+  const modelSuggestions = activePreset === "cloud" ? modelsFor(config.providerProfile) : [];
+
+  const onPickKey = (name: string) => {
+    if (!name) {
+      patch({ keyName: "" });
+      return;
+    }
+    const entry = keys.find((k) => k.name === name);
+    if (entry?.suggested_provider && !config.providerProfile) {
+      patch({ keyName: name, providerProfile: entry.suggested_provider });
+    } else {
+      patch({ keyName: name });
+    }
+  };
 
   return (
     <>
@@ -84,42 +103,36 @@ export default function LLMControlsForm({
 
         {activePreset === "cloud" && (
           <>
-            <HelpLabel label="Provider" help="Which cloud AI service to use. Each provider requires its own API key, set as an environment variable (e.g. OPENAI_API_KEY for OpenAI)." />
+            <HelpLabel label="Provider" help="Pick a built-in profile (OpenAI, Anthropic, Mistral) or a custom one you added in Settings → Credentials. Custom profiles use OpenAI-compatible endpoints with your own base URL." />
             <select
-              value={config.provider}
-              onChange={(e) => patch({ provider: e.target.value, model: "" })}
+              value={config.providerProfile}
+              onChange={(e) => patch({ providerProfile: e.target.value, model: "" })}
               className={`${selectClass} max-w-full min-w-0`}
             >
-              {apiProviders.length > 0
-                ? apiProviders.map(([key, spec]) => (
-                    <option key={key} value={key}>{(spec as { label: string }).label}</option>
-                  ))
-                : <option value={config.provider}>{config.provider}</option>
-              }
+              <option value="">Pick a profile…</option>
+              {apiProfiles.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name}{p.builtin ? "" : " (custom)"}
+                </option>
+              ))}
             </select>
 
-            <HelpLabel label="Endpoint" help="Custom OpenAI-compatible API endpoint. Leave empty to use the provider's default." />
-            <input
-              value={config.apiBaseUrl}
-              onChange={(e) => patch({ apiBaseUrl: e.target.value })}
-              placeholder={providerInfo?.url || "https://api.example.com/v1"}
-              className="input"
-            />
-
-            <HelpLabel label="API key" help={providerInfo?.env_var ? `Leave empty to read from the ${providerInfo.env_var} environment variable.` : "API key for your endpoint."} />
-            <input
-              type="password"
-              value={config.apiKey}
-              onChange={(e) => patch({ apiKey: e.target.value })}
-              placeholder={
-                providerInfo?.env_var && detectedKeys[config.provider]
-                  ? `••• (${detectedKeys[config.provider]})`
-                  : providerInfo?.env_var
-                    ? `from ${providerInfo.env_var}`
-                    : "required"
-              }
-              className="input"
-            />
+            <HelpLabel label="LLM API key" help="Pick a key from your pool. Add or manage keys in Settings → Credentials." />
+            <select
+              value={config.keyName}
+              onChange={(e) => onPickKey(e.target.value)}
+              className={`${selectClass} max-w-full min-w-0`}
+            >
+              <option value="">
+                {keys.length === 0 ? "No keys — add one in Settings" : "Pick a key…"}
+              </option>
+              {keys.map((k) => (
+                <option key={k.name} value={k.name}>
+                  {k.name}
+                  {k.suggested_provider ? ` — ${k.suggested_provider}` : ""}
+                </option>
+              ))}
+            </select>
           </>
         )}
 
@@ -133,15 +146,23 @@ export default function LLMControlsForm({
         <input
           value={config.model}
           onChange={(e) => patch({ model: e.target.value })}
+          list={modelSuggestions.length > 0 ? datalistId : undefined}
           placeholder={
             activePreset === "cloud"
-              ? (providerInfo?.model || "default")
+              ? modelPlaceholderFor(config.providerProfile)
               : activePreset === "manual"
                 ? "e.g. ChatGPT-4o, Claude 3.5…"
                 : "default"
           }
           className="input"
         />
+        {modelSuggestions.length > 0 && (
+          <datalist id={datalistId}>
+            {modelSuggestions.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        )}
 
         {languageRows}
 

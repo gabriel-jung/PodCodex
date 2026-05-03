@@ -3,11 +3,32 @@ import type { BatchEpisode } from "@/stores/taskStore";
 
 export type EpStatus = "pending" | "running" | "done" | "failed";
 
-export interface EpisodeStatus {
+interface EpisodeStatus {
   title: string;
   stem: string;
   status: EpStatus;
   error?: string;
+}
+
+/**
+ * Parse the backend's "[i/total] ..." progress prefix. Both fields are null
+ * when the message is empty or the prefix is missing.
+ */
+export function parseProgressCount(
+  message: string | null | undefined,
+): { current: number | null; total: number | null } {
+  const match = (message ?? "").match(/^\[(\d+)\/(\d+)\]/);
+  if (!match) return { current: null, total: null };
+  return { current: Number(match[1]), total: Number(match[2]) };
+}
+
+/** Single-pass count of episodes by status. */
+export function countByStatus(
+  statuses: EpisodeStatus[],
+): Record<EpStatus, number> {
+  const out: Record<EpStatus, number> = { pending: 0, running: 0, done: 0, failed: 0 };
+  for (const s of statuses) out[s.status]++;
+  return out;
 }
 
 /**
@@ -20,10 +41,8 @@ export function deriveEpisodeStatuses(
   if (!episodes.length) return [];
   if (!progress) return episodes.map((ep) => ({ ...ep, status: "pending" as const }));
 
-  const msg = progress.message || "";
-  // Parse "[3/17] Correcting..." → current episode index is 3 (1-based)
-  const match = msg.match(/^\[(\d+)\/(\d+)\]/);
-  const currentIdx = match ? parseInt(match[1], 10) - 1 : 0;
+  const { current } = parseProgressCount(progress.message);
+  const currentIdx = current != null ? current - 1 : 0;
   const isFinished = ["completed", "failed", "cancelled"].includes(progress.status);
 
   // Check result for detailed per-episode info

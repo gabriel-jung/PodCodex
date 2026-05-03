@@ -17,8 +17,11 @@ export const queryKeys = {
   config: () => ["config"] as const,
   pipelineConfig: () => ["pipeline-config"] as const,
   secrets: () => ["config", "secrets"] as const,
+  apiKeys: () => ["api-keys"] as const,
+  providerProfiles: () => ["provider-profiles"] as const,
   capabilities: () => ["system", "extras"] as const,
   models: () => ["models"] as const,
+  gpuStatus: () => ["gpu", "status"] as const,
 
   // ── Shows & episodes ───────────────────────────────────
   shows: () => ["shows"] as const,
@@ -45,8 +48,6 @@ export const queryKeys = {
   synthesizeAll: () => ["synthesize"] as const,
   synthesizeStatus: (audioPath: AudioPath) =>
     ["synthesize", "status", audioPath] as const,
-  synthSourceSegments: (audioPath: AudioPath) =>
-    ["synth-source-segments", audioPath] as const,
   synthesizeVoices: (audioPath: AudioPath) =>
     ["synthesize", "voices", audioPath] as const,
   synthesizeGenerated: (audioPath: AudioPath) =>
@@ -65,12 +66,15 @@ export const queryKeys = {
   indexConfig: () => ["index", "config"] as const,
   indexStatus: (audioPath: AudioPath, showName: string) =>
     ["index", "status", audioPath, showName] as const,
-  indexSources: (audioPath: AudioPath) => ["index", "sources", audioPath] as const,
-  indexStepVersions: (audioPath: AudioPath, source: string) =>
-    ["index", "step-versions", audioPath, source] as const,
   /** Collections this episode currently lives in (one row per entry). */
   episodeCollections: (audioPath: AudioPath, showName: string) =>
     ["index", "episode-collections", audioPath, showName] as const,
+  indexInspect: (
+    audioPath: AudioPath,
+    showName: string,
+    model: string,
+    chunking: string,
+  ) => ["index", "inspect", audioPath, showName, model, chunking] as const,
 
   // ── Integrations & MCP ────────────────────────────────
   claudeDesktop: () => ["integrations", "claude-desktop"] as const,

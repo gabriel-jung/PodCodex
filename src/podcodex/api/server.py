@@ -3,7 +3,9 @@
 Runs uvicorn with the FastAPI app object directly (no string import path,
 so the frozen binary doesn't need importlib magic). Sets ML cache env
 vars from ``PODCODEX_DATA_DIR`` *before* any torch/transformers import,
-which the route modules pull in transitively.
+which the route modules pull in transitively. Then calls
+``bootstrap_for_bundled_sidecar`` to install platform monkey-patches and
+configure loguru.
 
 This module is intentionally a no-op for the standard dev workflow:
 
@@ -50,6 +52,19 @@ def _wire_ml_caches() -> None:
         "SENTENCE_TRANSFORMERS_HOME", str(models_dir / "sentence-transformers")
     )
 
+    # Cap HF Hub network calls so a flaky uplink (VPN, captive portal,
+    # huggingface.co outage) can't stall a cached-model load past 10s. The
+    # default urllib3 read-timeout is unset, so a half-broken TCP can hang
+    # the whole pipeline at startup.
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "10")
+
+    # Hard offline opt-in: when the user knows every model is cached, this
+    # bypasses the etag round-trip entirely. Maps to both HF Hub and the
+    # transformers-side flag because the two libraries gate on different vars.
+    if os.environ.get("PODCODEX_HF_OFFLINE", "").strip() in {"1", "true", "yes"}:
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 
 def _redirect_stdio_to_logfile() -> None:
     """Replace stdout/stderr with a log file when running frozen.
@@ -91,22 +106,20 @@ def _redirect_stdio_to_logfile() -> None:
 
 
 def _wire_native_binaries() -> None:
-    """Expose bundled ffmpeg / yt-dlp paths to libraries that shell out.
+    """Expose ffmpeg + yt-dlp on PATH for libraries that shell out.
 
-    The Rust shell resolves the absolute paths from the Tauri externalBin
-    layout and passes them via env. ``IMAGEIO_FFMPEG_EXE`` is honoured by
-    imageio-ffmpeg (whisperx, librosa); yt-dlp lives at ``YT_DLP_BINARY``
-    and is invoked by subprocess instead of the bundled Python lib so it
-    can be hot-swapped between releases.
-
-    Both binaries' parent directories are also prepended to ``PATH`` so any
-    library that resolves them via shutil.which keeps working.
+    ffmpeg comes from imageio-ffmpeg's vendored binary — prepending its
+    parent dir to PATH lets whisperx and faster-whisper find it via the
+    bare ``"ffmpeg"`` command they hard-code. yt-dlp's path is passed
+    by the Tauri shell as ``YT_DLP_BINARY`` so we can hot-swap it
+    between app releases without rebuilding the sidecar.
     """
     extra_path: list[str] = []
 
-    ffmpeg = os.environ.get("FFMPEG_BINARY")
-    if ffmpeg and Path(ffmpeg).exists():
-        os.environ.setdefault("IMAGEIO_FFMPEG_EXE", ffmpeg)
+    from podcodex.core._ffmpeg import ffmpeg_exe
+
+    ffmpeg = ffmpeg_exe()
+    if ffmpeg != "ffmpeg" and Path(ffmpeg).exists():
         extra_path.append(str(Path(ffmpeg).parent))
 
     ytdlp = os.environ.get("YT_DLP_BINARY")
@@ -125,7 +138,14 @@ def main() -> None:
     _redirect_stdio_to_logfile()
     _wire_native_binaries()
 
-    # Imports happen after env wiring so torch/transformers see the right caches.
+    # bootstrap installs platform monkey-patches and configures loguru.
+    # Must run before importing app (which transitively imports torch,
+    # transformers, FlagEmbedding — any of which can trip on the patches'
+    # absence).
+    from podcodex.bootstrap import bootstrap_for_bundled_sidecar
+
+    bootstrap_for_bundled_sidecar()
+
     import uvicorn
 
     from podcodex.api.app import app
@@ -142,11 +162,72 @@ def main() -> None:
     )
 
 
+def _handle_version_flag() -> None:
+    """Probe support for the launcher's version-mismatch check.
+
+    The Tauri shell calls ``<binary> --version`` to verify the installed GPU
+    sidecar matches the running app version (see lib.rs spawn_backend_if_needed).
+    Handled here, before any heavy imports or stdio redirection, so the check
+    is cheap (~150 ms on the GPU --onedir bundle) and lands on the original
+    stdout the launcher is reading.
+    """
+    if "--version" in sys.argv[1:]:
+        from podcodex import __version__
+
+        print(f"podcodex-server {__version__}")
+        sys.exit(0)
+
+
+def _handle_mcp_flag() -> None:
+    """Run the MCP stdio server instead of uvicorn.
+
+    Invoked when Claude Desktop spawns ``podcodex-server.exe --mcp``.
+    JSON-RPC flows over the child's real stdin/stdout, so we deliberately
+    do NOT call ``_redirect_stdio_to_logfile`` — FastMCP's stdio transport
+    reads/writes those pipes directly. Logs go to stderr, captured by
+    Claude Desktop and surfaced in its log viewer.
+
+    Auto-resolves ``PODCODEX_DATA_DIR`` so the MCP process shares the
+    GUI app's ``models/`` and LanceDB index.
+    """
+    if "--mcp" not in sys.argv[1:]:
+        return
+
+    if not os.environ.get("PODCODEX_DATA_DIR"):
+        # app_paths.data_dir() resolves to the platform-native appdata
+        # location matching what Tauri's app_data_dir() picks. Importing
+        # it triggers podcodex/__init__.py, which is now passive — no
+        # side effects, so this is safe to do before bootstrap runs.
+        from podcodex.core.app_paths import data_dir
+
+        os.environ["PODCODEX_DATA_DIR"] = str(data_dir())
+    # Anything writing to stdout corrupts JSON-RPC. tqdm/HF progress bars
+    # are the usual offenders during model load — silence them. Libraries
+    # that ignore the env still go to stdout, but cached embedder loads
+    # don't trigger downloads, so this covers the common path.
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+
+    _wire_ml_caches()
+    _wire_native_binaries()
+
+    from podcodex.bootstrap import bootstrap_for_mcp_stdio
+
+    bootstrap_for_mcp_stdio()
+
+    from podcodex.mcp.server import main as mcp_main
+
+    mcp_main()
+    sys.exit(0)
+
+
 if __name__ == "__main__":
+    _handle_version_flag()
     # PyInstaller frozen entry — sys.frozen is set when bundled.
     if getattr(sys, "frozen", False):
         # Multiprocessing support for PyInstaller bundles (torch DataLoader, etc.)
         from multiprocessing import freeze_support
 
         freeze_support()
+    _handle_mcp_flag()
     main()

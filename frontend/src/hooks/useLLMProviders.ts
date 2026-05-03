@@ -1,10 +1,14 @@
-/** Shared hook for LLM provider data from the backend pipeline config. */
+/** Pipeline-config bits that aren't part of the new key/profile pool.
+ *
+ * `apiProviders` and per-provider key detection moved to `useApiKeys` +
+ * `useProviderProfiles`. What's left here:
+ *  - whisper model catalog (transcribe step)
+ *  - `detectedKeys.hf_token` for the diarize gate
+ */
 
-import { useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getPipelineConfig } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
-import type { LLMProviderSpec } from "@/api/types";
 
 export function useLLMProviders() {
   const { data: pipelineConfig } = useQuery({
@@ -13,26 +17,8 @@ export function useLLMProviders() {
     staleTime: Infinity,
   });
 
-  const apiProviders = useMemo(
-    () =>
-      pipelineConfig
-        ? Object.entries(pipelineConfig.llm_providers).filter(
-            ([k]) => k !== "ollama",
-          )
-        : [],
-    [pipelineConfig],
-  );
-
-  const getProviderInfo = useCallback(
-    (key: string): LLMProviderSpec | null =>
-      (pipelineConfig?.llm_providers[key] as LLMProviderSpec) ?? null,
-    [pipelineConfig],
-  );
-
   return {
     pipelineConfig,
-    apiProviders,
-    getProviderInfo,
     detectedKeys: pipelineConfig?.detected_keys ?? {},
     whisperModels: pipelineConfig?.whisper_models ?? {},
   };

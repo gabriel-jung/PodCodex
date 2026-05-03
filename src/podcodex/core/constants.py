@@ -76,38 +76,19 @@ DEFAULT_SILENCE_DURATION = 0.5  # gap duration for the "silence" strategy
 
 # ── LLM providers (for Correct & Translate) ───────────────────────────────────
 #
-# Each provider entry contains the API base URL, a sensible default model,
-# and a human-friendly label for the UI.  "ollama" (local) is handled
-# separately since it doesn't need a URL.
+# Per-legacy-provider runtime fallbacks for the api mode in run_api(). Used
+# only when the caller leaves ``model``/``api_key`` blank — the API path
+# normally fills both via ``llm_resolver``. Base URLs and the full provider
+# catalog (incl. openai-compatible built-ins like deepseek/gemini/groq) live
+# in ``provider_profiles.BUILTIN_PROFILES``.
 
-LLM_PROVIDERS: dict[str, dict[str, str]] = {
-    "mistral": {
-        "url": "https://api.mistral.ai/v1",
-        "model": "mistral-small-latest",
-        "label": "Mistral",
-        "env_var": "MISTRAL_API_KEY",
-    },
-    "openai": {
-        "url": "https://api.openai.com/v1",
-        "model": "gpt-4o-mini",
-        "label": "OpenAI",
-        "env_var": "OPENAI_API_KEY",
-    },
-    "anthropic": {
-        "url": "https://api.anthropic.com/v1",
-        "model": "claude-sonnet-4-20250514",
-        "label": "Anthropic",
-        "env_var": "ANTHROPIC_API_KEY",
-    },
-    "custom": {
-        "url": "",
-        "model": "",
-        "label": "Custom (OpenAI-compatible)",
-        "env_var": "",
-    },
+LLM_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+    "openai": {"model": "gpt-4o-mini", "env_var": "OPENAI_API_KEY"},
+    "anthropic": {"model": "claude-sonnet-4-6", "env_var": "ANTHROPIC_API_KEY"},
+    "mistral": {"model": "mistral-small-latest", "env_var": "MISTRAL_API_KEY"},
 }
 
-DEFAULT_OLLAMA_MODEL = "qwen3:14b"  # default model when running locally via Ollama
+DEFAULT_OLLAMA_MODEL = "qwen3.5:27B"  # default model when running locally via Ollama
 
 DEFAULT_SOURCE_LANG = "French"
 DEFAULT_TARGET_LANG = "English"

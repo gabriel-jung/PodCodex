@@ -23,6 +23,18 @@ _FEED_CACHE = ".feed_cache.json"
 EPISODE_META_FILE = ".episode_meta.json"
 
 
+def _require_http_scheme(url: str, what: str = "URL") -> None:
+    """Reject non-HTTP(S) URLs to prevent SSRF and local-file reads.
+
+    Both ``feedparser.parse`` and ``httpx.stream`` accept ``file://`` and
+    other schemes that let a hostile feed read arbitrary local files or
+    pivot to internal IPs (cloud-metadata 169.254.169.254, etc.).
+    """
+    scheme = urlparse(url).scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError(f"{what} must use http/https, got: {scheme!r}")
+
+
 @dataclass
 class RSSEpisode:
     """Metadata for a single podcast episode from an RSS feed."""
@@ -40,6 +52,71 @@ class RSSEpisode:
     # Position in the source feed (0 = newest). Used as a sort fallback when
     # pub_date is missing (YouTube flat extraction often omits dates).
     feed_order: int | None = None
+
+
+# Fields that flow from a richer extraction (per-video YouTube call, RSS
+# refetch) onto a sparse cached entry. ``description`` is excluded — its
+# merge rule depends on the caller (longer-wins for YouTube subtitle
+# enrichment, fill-if-empty for RSS refetch).
+_BACKFILL_FIELDS: tuple[str, ...] = (
+    "pub_date",
+    "duration",
+    "artwork_url",
+    "episode_number",
+    "season_number",
+)
+
+
+def _is_field_empty(value) -> bool:
+    """True when an RSSEpisode field is missing/zero/blank."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (int, float)):
+        return value == 0
+    return False
+
+
+def fill_empty_fields(
+    target: RSSEpisode,
+    source: RSSEpisode,
+    *,
+    prefer_longer_description: bool = False,
+) -> list[str]:
+    """Copy non-empty source fields into empty target fields, in place.
+
+    Used by every site that merges a richer ``RSSEpisode`` onto a sparser
+    one — the YouTube channel re-fetch (preserve enriched cache values
+    over a flat fresh extract), the per-video subtitle import (enrich
+    cache from full extraction), and the one-shot meta-file backfill.
+    Centralising the field list keeps those sites from drifting on which
+    keys count as enrichable.
+
+    Args:
+        prefer_longer_description: When True, also adopt ``source.description``
+            if it is strictly longer than ``target.description``; otherwise
+            description is filled only when ``target`` is empty.
+
+    Returns the list of field names that changed.
+    """
+    changed: list[str] = []
+    for field in _BACKFILL_FIELDS:
+        cur = getattr(target, field)
+        new = getattr(source, field)
+        if _is_field_empty(cur) and not _is_field_empty(new):
+            setattr(target, field, new)
+            changed.append(field)
+    src_desc = source.description or ""
+    tgt_desc = target.description or ""
+    if prefer_longer_description:
+        if src_desc.strip() and len(src_desc) > len(tgt_desc):
+            target.description = src_desc
+            changed.append("description")
+    elif _is_field_empty(tgt_desc) and not _is_field_empty(src_desc):
+        target.description = src_desc
+        changed.append("description")
+    return changed
 
 
 def slug_from_title(title: str) -> str:
@@ -143,6 +220,7 @@ def _extract_audio_url(entry) -> str:
 
 def feed_artwork(url: str) -> str:
     """Extract the channel-level artwork URL from an RSS feed."""
+    _require_http_scheme(url, "Feed URL")
     feed = feedparser.parse(url)
     # itunes:image is the most reliable source
     img = feed.feed.get("image", {})
@@ -150,9 +228,8 @@ def feed_artwork(url: str) -> str:
     return itunes_img.get("href", "") or img.get("href", "")
 
 
-def fetch_feed(url: str) -> list[RSSEpisode]:
-    """Fetch and parse an RSS feed. Returns episodes in feed order."""
-    feed = feedparser.parse(url)
+def _episodes_from_parsed(feed) -> list[RSSEpisode]:
+    """Convert a feedparser-parsed feed into ``RSSEpisode`` records."""
     if feed.bozo and not feed.entries:
         logger.warning(f"Feed parse error: {feed.bozo_exception}")
         return []
@@ -182,6 +259,17 @@ def fetch_feed(url: str) -> list[RSSEpisode]:
         )
 
     return episodes
+
+
+def parse_feed_content(content: str) -> list[RSSEpisode]:
+    """Parse raw RSS XML content. For tests and offline cache rebuilds."""
+    return _episodes_from_parsed(feedparser.parse(content))
+
+
+def fetch_feed(url: str) -> list[RSSEpisode]:
+    """Fetch and parse an RSS feed. Returns episodes in feed order."""
+    _require_http_scheme(url, "Feed URL")
+    return _episodes_from_parsed(feedparser.parse(url))
 
 
 # ── iTunes / Apple Podcasts search ────────────
@@ -449,6 +537,11 @@ def download_audio(
     """
     if not rss_episode.audio_url:
         return None, None
+
+    try:
+        _require_http_scheme(rss_episode.audio_url, "Audio URL")
+    except ValueError as exc:
+        return None, str(exc)
 
     ext = _audio_ext_from_url(rss_episode.audio_url)
     stem = episode_stem(rss_episode, show_folder)

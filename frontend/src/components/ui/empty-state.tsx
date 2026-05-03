@@ -32,7 +32,7 @@ export function EmptyState({ icon: Icon, title, description, action, secondaryAc
   return (
     <div className={cn(
       "flex flex-col items-center justify-center py-16 px-6 text-center",
-      dashed && "border-2 border-dashed border-border rounded-xl mx-6 my-6",
+      dashed && "border-2 border-dashed border-border rounded-lg mx-6 my-6",
       className,
     )}>
       {Icon && (
@@ -51,7 +51,7 @@ export function EmptyState({ icon: Icon, title, description, action, secondaryAc
               <span
                 className={cn(
                   "w-5 h-5 rounded-full flex items-center justify-center text-2xs font-medium shrink-0",
-                  s.done ? "bg-success text-white" : "bg-muted text-foreground",
+                  s.done ? "bg-success/15 text-success" : "bg-muted text-foreground",
                 )}
               >
                 {s.done ? <Check className="w-3 h-3" /> : i + 1}

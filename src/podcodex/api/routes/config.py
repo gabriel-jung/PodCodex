@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel
 
+from podcodex.core.api_keys import mask_secret
 from podcodex.core.app_paths import config_dir, secrets_env_path
 from podcodex.core.constants import (
     ASSEMBLE_STRATEGIES,
@@ -19,7 +20,6 @@ from podcodex.core.constants import (
     DEFAULT_TARGET_LANG,
     DEFAULT_TTS_MODEL_SIZE,
     DEFAULT_WHISPER_MODEL,
-    LLM_PROVIDERS,
     TTS_MODEL_SIZES,
     WHISPER_MODELS,
 )
@@ -29,14 +29,10 @@ router = APIRouter()
 
 CONFIG_PATH = config_dir() / "config.json"
 
-# Env-var keys the Settings UI can manage. Order is the render order.
-SECRET_KEYS: tuple[str, ...] = (
-    "HF_TOKEN",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "MISTRAL_API_KEY",
-    "DISCORD_TOKEN",
-)
+# Singleton tokens managed in the Settings panel. LLM API keys live in
+# the named pool (`/api/keys`); the Discord bot is a separate process
+# with its own config, so its token isn't surfaced here.
+SECRET_KEYS: tuple[str, ...] = ("HF_TOKEN",)
 
 
 class AppConfig(BaseModel):
@@ -44,21 +40,38 @@ class AppConfig(BaseModel):
     default_save_path: str = ""  # suggested location for new shows
 
 
+# Hit on every search/list_shows; mtime-keyed so writes auto-invalidate.
+_LOAD_CACHE: tuple[float, AppConfig] | None = None
+
+
 def _load() -> AppConfig:
     """Load app config from disk, migrating legacy formats if needed."""
-    if CONFIG_PATH.exists():
-        try:
-            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            # Migrate from old podcast_dir format
-            if "podcast_dir" in data and "show_folders" not in data:
-                data["show_folders"] = []
-                data["default_save_path"] = data.pop("podcast_dir", "")
-            return AppConfig(**data)
-        except (json.JSONDecodeError, OSError):
-            logger.opt(exception=True).warning(
-                "Failed to load config from {}, using defaults", CONFIG_PATH
-            )
-    return AppConfig()
+    global _LOAD_CACHE
+    try:
+        mtime = CONFIG_PATH.stat().st_mtime
+    except FileNotFoundError:
+        return AppConfig()
+    except OSError:
+        mtime = -1.0
+
+    if _LOAD_CACHE is not None and _LOAD_CACHE[0] == mtime:
+        return _LOAD_CACHE[1]
+
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        # Migrate from old podcast_dir format
+        if "podcast_dir" in data and "show_folders" not in data:
+            data["show_folders"] = []
+            data["default_save_path"] = data.pop("podcast_dir", "")
+        cfg = AppConfig(**data)
+    except (json.JSONDecodeError, OSError):
+        logger.opt(exception=True).warning(
+            "Failed to load config from {}, using defaults", CONFIG_PATH
+        )
+        return AppConfig()
+
+    _LOAD_CACHE = (mtime, cfg)
+    return cfg
 
 
 def _save(cfg: AppConfig) -> None:
@@ -70,6 +83,8 @@ def _save(cfg: AppConfig) -> None:
         lambda p: p.write_text(cfg.model_dump_json(indent=2), encoding="utf-8"),
         suffix=".json",
     )
+    global _LOAD_CACHE
+    _LOAD_CACHE = None  # invalidate; next _load() picks up new mtime
 
 
 def _register_folder(cfg: AppConfig, folder_path: str) -> AppConfig:
@@ -82,25 +97,17 @@ def _register_folder(cfg: AppConfig, folder_path: str) -> AppConfig:
     return cfg
 
 
-def _mask(value: str) -> str:
-    """Show first 4 chars + asterisks for a secret value."""
-    if len(value) <= 4:
-        return "****"
-    return value[:4] + "****"
-
-
 def _detect_env_keys() -> dict[str, str]:
-    """Return masked values for known API keys found in the environment."""
+    """Return masked values for service tokens found in the environment.
+
+    LLM API keys live in the named pool now and are surfaced via
+    ``/api/keys``. This function only reports HF/Discord-style
+    singletons that the diarize gate and bot still need.
+    """
     detected: dict[str, str] = {}
     hf = os.environ.get("HF_TOKEN", "")
     if hf:
-        detected["hf_token"] = _mask(hf)
-    for provider, spec in LLM_PROVIDERS.items():
-        env_var = spec.get("env_var", "")
-        if env_var:
-            val = os.environ.get(env_var, "")
-            if val:
-                detected[provider] = _mask(val)
+        detected["hf_token"] = mask_secret(hf)
     return detected
 
 
@@ -163,11 +170,15 @@ def _status_from_file_values(file_values: dict[str, str]) -> SecretsStatusRespon
         env_val = os.environ.get(key, "")
         if file_val:
             items.append(
-                SecretStatus(key=key, set=True, masked=_mask(file_val), source="file")
+                SecretStatus(
+                    key=key, set=True, masked=mask_secret(file_val), source="file"
+                )
             )
         elif env_val:
             items.append(
-                SecretStatus(key=key, set=True, masked=_mask(env_val), source="env")
+                SecretStatus(
+                    key=key, set=True, masked=mask_secret(env_val), source="env"
+                )
             )
         else:
             items.append(SecretStatus(key=key, set=False, source="none"))
@@ -223,7 +234,6 @@ async def pipeline_config() -> dict:
         "tts_model_sizes": TTS_MODEL_SIZES,
         "default_tts_model_size": DEFAULT_TTS_MODEL_SIZE,
         "assemble_strategies": ASSEMBLE_STRATEGIES,
-        "llm_providers": LLM_PROVIDERS,
         "default_ollama_model": DEFAULT_OLLAMA_MODEL,
         "default_source_lang": DEFAULT_SOURCE_LANG,
         "default_target_lang": DEFAULT_TARGET_LANG,
@@ -257,7 +267,9 @@ class PodcastSearchResultOut(BaseModel):
 @router.get("/podcasts/search", response_model=list[PodcastSearchResultOut])
 async def search_podcasts(q: str, limit: int = 8) -> list[PodcastSearchResultOut]:
     """Search Apple Podcasts / iTunes for a podcast by name."""
+    import asyncio
+
     if not q.strip():
         return []
-    results = search_itunes(q.strip(), limit=limit)
+    results = await asyncio.to_thread(search_itunes, q.strip(), limit)
     return [PodcastSearchResultOut(**r.__dict__) for r in results]

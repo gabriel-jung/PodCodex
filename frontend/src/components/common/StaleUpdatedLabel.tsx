@@ -14,7 +14,7 @@ export function StaleUpdatedLabel({ timestamp, prefix = "Updated", className = "
   return (
     <span
       title={timestamp}
-      className={`${stale ? "text-amber-500" : "text-muted-foreground"} ${className}`}
+      className={`${stale ? "text-warning" : "text-muted-foreground"} ${className}`}
     >
       {prefix} {timeAgo(timestamp)}
     </span>

@@ -1,6 +1,6 @@
 [project]
 name = "podcodex"
-version = "0.1.0"
+version = "0.1.20"
 description = "AI tools for podcast production"
 readme = "README.md"
 license = { text = "MIT" }
@@ -42,7 +42,9 @@ rag = [
     "lancedb>=0.30.0",
     "numpy>=1.26",
     "sentence-transformers>=5.2.3,<5.4.0",
-    "torch>=2.3.0",
+    # 2.6 is the floor for transformers' or_mask_function / and_mask_function
+    # ops — the Perplexity embedder triggers that path and dies on older torch.
+    "torch>=2.6",
     "transformers>=4.40,<5",
 ]
 youtube = [
@@ -50,6 +52,7 @@ youtube = [
 ]
 pipeline = [
     "accelerate>=1.12.0",
+    "imageio-ffmpeg>=0.5",
     "ollama>=0.6.1",
     "openai>=2.23.0",
     "pandas>=2.0.0",

@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PodCodex",
-  "version": "0.1.0",
   "identifier": "com.podcodex.desktop",
   "build": {
     "frontendDist": "../frontend/dist",
@@ -25,15 +24,22 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self' tauri:",
+        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:18811 ws://127.0.0.1:18811 http://localhost:5173 ws://localhost:5173",
+        "img-src": "'self' data: https: tauri: asset: http://asset.localhost http://127.0.0.1:18811",
+        "media-src": "'self' http://127.0.0.1:18811",
+        "style-src": "'self' 'unsafe-inline'",
+        "script-src": "'self'",
+        "font-src": "'self' data:"
+      }
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["dmg", "msi"],
     "externalBin": [
       "binaries/podcodex-server",
-      "binaries/ffmpeg",
       "binaries/yt-dlp"
     ],
     "icon": [
@@ -47,30 +53,22 @@
       "minimumSystemVersion": "11.0",
       "entitlements": "Entitlements.plist"
     },
-    "linux": {
-      "deb": {
-        "depends": [
-          "libwebkit2gtk-4.1-0",
-          "libgtk-3-0",
-          "libayatana-appindicator3-1",
-          "librsvg2-2",
-          "libsndfile1"
-        ]
-      },
-      "appimage": {
-        "bundleMediaFramework": true
-      }
-    },
     "windows": {
       "wix": {
         "language": "en-US"
-      },
-      "nsis": {
-        "installMode": "perMachine"
       }
     },
     "category": "Productivity",
     "shortDescription": "Transcribe, translate, and search your podcasts.",
     "longDescription": "Local-first desktop app that ingests podcasts, YouTube channels, lectures, or interviews; transcribes with WhisperX + pyannote diarization; corrects and translates via LLM; and indexes everything into a LanceDB vector store for semantic search."
+  },
+  "plugins": {
+    "updater": {
+      "active": false,
+      "pubkey": "REPLACE_ME",
+      "endpoints": [
+        "https://github.com/gabriel-jung/PodCodex/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

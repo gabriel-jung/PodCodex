@@ -21,6 +21,8 @@ interface Props {
   breadcrumbs?: Crumb[];
   /** URL for both the artwork card and the blurred backdrop. */
   artworkUrl?: string;
+  /** Render artwork without the tile (no ring, no rounded crop, no bg) — for icons that carry their own shape and a transparent canvas. */
+  artworkBare?: boolean;
   /** Fallback icon when no artwork is provided. */
   fallbackIcon?: LucideIcon;
   /** Click handler on the artwork (e.g. play audio). */
@@ -38,6 +40,7 @@ export default function EditorialHeader({
   subtitle,
   breadcrumbs,
   artworkUrl,
+  artworkBare,
   fallbackIcon: FallbackIcon,
   onArtworkClick,
   artworkOverlay,
@@ -67,12 +70,20 @@ export default function EditorialHeader({
         {(artworkUrl || FallbackIcon) && (
           <Artwork
             onClick={onArtworkClick}
-            className={`relative w-16 h-16 rounded-lg shrink-0 overflow-hidden ${
+            className={`relative w-16 h-16 shrink-0 ${
               onArtworkClick ? "group cursor-pointer" : ""
-            } ${artworkUrl ? "shadow-md shadow-black/20 ring-1 ring-border/50" : "bg-muted"}`}
+            } ${artworkBare
+              ? ""
+              : artworkUrl
+                ? "rounded-lg overflow-hidden ring-1 ring-border/50"
+                : "rounded-lg overflow-hidden bg-muted"}`}
           >
             {artworkUrl ? (
-              <img src={artworkUrl} alt={title} className="w-full h-full object-cover" />
+              <img
+                src={artworkUrl}
+                alt={title}
+                className={`w-full h-full ${artworkBare ? "object-contain" : "object-cover"}`}
+              />
             ) : FallbackIcon ? (
               <span className="w-full h-full flex items-center justify-center">
                 <FallbackIcon className="w-7 h-7 text-muted-foreground/50" />
@@ -89,7 +100,7 @@ export default function EditorialHeader({
           <div className="text-2xs text-muted-foreground truncate min-h-4 flex items-center gap-1">
             {hasCrumbs
               ? breadcrumbs!.map((c, i) => (
-                  <Fragment key={i}>
+                  <Fragment key={c.label}>
                     {i > 0 && <ChevronRight className="w-3 h-3 shrink-0 opacity-60" />}
                     {c.onClick ? (
                       <button

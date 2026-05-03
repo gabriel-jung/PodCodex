@@ -48,7 +48,7 @@ export default function SearchPanel(props: SearchPanelProps) {
     [isShowScope, propsArtwork, hasStoreArtwork, storeFolder],
   );
 
-  const { lastQuery, addToHistory, setLastQuery } = useSearchStore();
+  const { lastQuery, setLastQuery } = useSearchStore();
   const [query, setQuery] = useState(lastQuery);
   const [mode, setMode] = useState<SearchMode>("semantic");
   const [model, setModel] = useState("bge-m3");
@@ -190,7 +190,6 @@ export default function SearchPanel(props: SearchPanelProps) {
     e.preventDefault();
     if (query.trim()) {
       setLastQuery(query);
-      addToHistory(query);
       setSubmittedQuery(query);
       searchMutation.mutate();
     }
@@ -381,7 +380,7 @@ export default function SearchPanel(props: SearchPanelProps) {
                         ? "1 episode"
                         : `${selectedEpisodes.length} episodes`}
                   </summary>
-                  <div className="absolute z-10 mt-1 max-h-64 overflow-y-auto bg-popover border border-border rounded-md min-w-64 shadow-md">
+                  <div className="absolute z-10 mt-1 max-h-64 overflow-y-auto bg-popover border border-border rounded-md min-w-64">
                     <div className="flex items-center justify-between gap-2 px-2 pt-2 pb-1 border-b border-border/60 sticky top-0 bg-popover z-10">
                       <div className="flex items-center gap-1">
                         <select

@@ -6,7 +6,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import get_index_store, submit_subprocess_task
+from podcodex.api.routes._helpers import (
+    get_index_store,
+    require_audio_or_output,
+    submit_subprocess_task,
+)
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import AudioPaths
 
@@ -48,7 +52,7 @@ async def index_config() -> dict:
 
 @router.get("/sources")
 async def index_sources(
-    audio_path: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
     """List available source files for indexing (transcript, corrected, translations).
@@ -60,6 +64,7 @@ async def index_sources(
     from podcodex.core.translate import list_translations
     from podcodex.core.versions import get_latest_provenance, is_edited
 
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     def _version_detail(step: str, lang: str | None = None) -> str:
@@ -72,7 +77,10 @@ async def index_sources(
             if meta.get("model"):
                 parts.append(meta["model"])
             params = meta.get("params") or {}
-            if params.get("llm_provider"):
+            if params.get("llm_provider_profile"):
+                parts.append(str(params["llm_provider_profile"]))
+            elif params.get("llm_provider"):
+                # Backward-compat with old provenance entries.
                 parts.append(str(params["llm_provider"]))
             elif params.get("llm_mode"):
                 parts.append(str(params["llm_mode"]))
@@ -132,14 +140,15 @@ async def index_sources(
 
 @router.get("/status")
 async def index_status(
-    audio_path: str = Query(...),
     show: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict:
     """Check indexing status per (model, chunking) combination."""
     from podcodex.rag.defaults import CHUNKING_STRATEGIES, MODELS
     from podcodex.rag.store import collection_name
 
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
 
@@ -148,13 +157,14 @@ async def index_status(
     for model_key in MODELS:
         for chunking in CHUNKING_STRATEGIES:
             col = collection_name(show, model_key, chunking)
-            indexed = local.episode_is_indexed(col, episode)
-            count = local.episode_chunk_count(col, episode) if indexed else 0
+            # chunk_count > 0 already implies indexed; the separate
+            # episode_is_indexed query was a redundant round-trip.
+            count = local.episode_chunk_count(col, episode)
             combinations.append(
                 {
                     "model": model_key,
                     "chunking": chunking,
-                    "indexed": indexed,
+                    "indexed": count > 0,
                     "chunk_count": count,
                 }
             )
@@ -187,24 +197,28 @@ async def list_collections(
 
 @router.get("/episode-collections")
 async def episode_collections(
-    audio_path: str = Query(...),
     show: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
     """List the index entries this episode currently lives in.
+
+    Either ``audio_path`` or ``output_dir`` must be provided so the episode
+    stem can be resolved (YouTube-subtitle episodes have no audio yet).
 
     Returns one row per (collection, episode) — including model, chunker,
     the source step (transcript / corrected / <lang>) the chunks were
     derived from, and the chunk count.
     """
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
 
     local = get_index_store()
     out: list[dict] = []
     for col_name in local.list_collections(show=show):
-        count = local.episode_chunk_count(col_name, episode)
-        if not count:
+        summary = local.episode_collection_summary(col_name, episode)
+        if not summary:
             continue
         info = local.get_collection_info(col_name) or {}
         out.append(
@@ -212,8 +226,8 @@ async def episode_collections(
                 "collection": col_name,
                 "model": info.get("model", ""),
                 "chunker": info.get("chunker", ""),
-                "source": local.episode_source(col_name, episode),
-                "chunk_count": count,
+                "source": summary["source"],
+                "chunk_count": summary["chunk_count"],
             }
         )
     return out
@@ -221,9 +235,9 @@ async def episode_collections(
 
 @router.delete("/episode")
 async def delete_episode_from_index(
-    audio_path: str = Query(...),
     show: str = Query(...),
     collection: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict:
     """Remove this episode's chunks from one collection.
@@ -233,6 +247,7 @@ async def delete_episode_from_index(
     """
     from podcodex.core.pipeline_db import mark_step
 
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
 
@@ -247,6 +262,60 @@ async def delete_episode_from_index(
         mark_step(p.show_dir, episode, indexed=False)
 
     return {"status": "deleted", "still_indexed": still_indexed}
+
+
+# ── Inspect (read chunks + vector stats) ────────────────
+
+
+@router.get("/inspect")
+async def inspect_index(
+    show: str = Query(...),
+    model: str = Query(...),
+    chunking: str = Query(...),
+    audio_path: str | None = Query(None),
+    output_dir: str | None = Query(None),
+) -> dict:
+    """Return chunks + per-chunk vector health stats for one (model, chunking).
+
+    Powers the index inspector modal: lets the user read which text /
+    speaker turns landed in each chunk and confirm the embedding vectors
+    aren't dead (norm ≈ 0) or collapsed (mostly zeros).
+    """
+    from podcodex.rag.store import collection_name
+
+    require_audio_or_output(audio_path, output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    episode = p.audio_path.stem
+    col = collection_name(show, model, chunking)
+
+    local = get_index_store()
+    chunks = local.load_chunks_with_vector_stats(col, episode)
+    info = local.get_collection_info(col) or {}
+
+    # Some embedders (pplx in particular) have ~2-3% zeros as natural
+    # sparsity, not a problem. Only flag chunks with substantially more.
+    ZERO_WARN_THRESHOLD = 0.10
+    norms = [c["vector_norm"] for c in chunks]
+    summary = {
+        "dim": int(info.get("dim", 0)),
+        "n_chunks": len(chunks),
+        "n_dead_chunks": sum(1 for n in norms if n < 1e-3),
+        "n_collapsed_chunks": sum(
+            1 for c in chunks if c.get("vector_zero_frac", 0.0) > 0.5
+        ),
+        "n_with_zeros": sum(
+            1 for c in chunks if c.get("vector_zero_frac", 0.0) > ZERO_WARN_THRESHOLD
+        ),
+        "zero_warn_threshold": ZERO_WARN_THRESHOLD,
+    }
+    return {
+        "collection": col,
+        "model": model,
+        "chunking": chunking,
+        "episode": episode,
+        "summary": summary,
+        "chunks": chunks,
+    }
 
 
 # ── Vectorize (background task) ──────────────────────────

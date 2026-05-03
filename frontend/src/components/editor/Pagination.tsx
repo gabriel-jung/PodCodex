@@ -73,7 +73,7 @@ export default function Pagination({
               onClick={() => onPageChange(p)}
               variant={p === page ? "secondary" : "ghost"}
               size="sm"
-              className={`h-6 w-6 p-0 text-xs ${p === page ? "font-bold" : ""}`}
+              className={`h-6 w-6 p-0 text-xs ${p === page ? "font-semibold" : ""}`}
             >
               {p + 1}
             </Button>

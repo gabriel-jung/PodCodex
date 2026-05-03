@@ -111,6 +111,19 @@ export function getShowName(showMeta: ShowMeta | null | undefined, audioPath: st
   return parts[parts.length - 2] || parts[parts.length - 1] || "";
 }
 
+/** Split a path into parent dir and last segment, preserving the original separator. Handles Windows (\) and POSIX (/). */
+export function splitPath(path: string): { parent: string; basename: string; sep: "/" | "\\" } {
+  const sep: "/" | "\\" = path.includes("\\") ? "\\" : "/";
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  const basename = parts.pop() ?? "";
+  let parent = parts.join(sep);
+  if (sep === "/" && path.startsWith("/")) parent = "/" + parent;
+  // Windows drive root: parent ends up as bare `C:`, but callers joining
+  // with sep would produce `C:foo` (working-dir-relative on Windows).
+  if (sep === "\\" && /^[A-Za-z]:$/.test(parent)) parent += "\\";
+  return { parent: parent || (sep === "/" ? "/" : ""), basename: basename || path, sep };
+}
+
 /** True if any pipeline step is outdated (transcribe, correct, or translate). */
 export function isOutdated(ep: { transcribe_status?: string; correct_status?: string; translate_status?: string }): boolean {
   return ep.transcribe_status === "outdated" || ep.correct_status === "outdated" || ep.translate_status === "outdated";
@@ -132,12 +145,9 @@ export function capitalize(s: string): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 
-/** POSIX-style parent directory of a path. Returns "/" for top-level paths. */
+/** Parent directory of a path. Handles Windows (\) and POSIX (/). Returns "/" or "" for top-level. */
 export function parentPath(path: string): string {
-  const trimmed = path.replace(/\/+$/, "");
-  const idx = trimmed.lastIndexOf("/");
-  if (idx <= 0) return "/";
-  return trimmed.slice(0, idx);
+  return splitPath(path.replace(/[\\/]+$/, "")).parent;
 }
 
 /** Extract error message from a mutation error, with safe casting. */
@@ -194,7 +204,7 @@ export function versionDate(v: VersionEntry): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-export const SOURCE_LABELS: Record<string, string> = {
+const SOURCE_LABELS: Record<string, string> = {
   whisper: "Whisper",
   "youtube-subtitles": "YouTube subtitles",
   upload: "Upload",
@@ -212,11 +222,11 @@ const STEP_LABELS: Record<string, string> = {
 /** True when a version should be labelled "edited" in the UI — covers both
  *  user hand-edits (`manual_edit`) and processed-but-not-raw outputs such as
  *  clean exports or applied manual-LLM passes (`type === "validated"`).
- *  Use this helper everywhere the UI shows an edited marker, so the check
- *  never drifts between surfaces. */
-export function isEdited(v: { type?: string; manual_edit?: boolean } | null | undefined): boolean {
-  if (!v) return false;
-  return v.type === "validated" || v.manual_edit === true;
+ *  Accepts ``unknown`` so callers passing untyped provenance entries
+ *  (StatusChips, PipelineSteps) can use the same predicate. */
+export function isEdited(v: unknown): boolean {
+  const p = v as { manual_edit?: unknown; type?: unknown } | null | undefined;
+  return p?.manual_edit === true || p?.type === "validated";
 }
 
 /** Format a version's step as a display tag, e.g. "transcript", "translated · fr". */
@@ -249,7 +259,8 @@ export function versionLabel(v: VersionEntry): string {
   const parts: string[] = [];
   if (p.source) parts.push(SOURCE_LABELS[String(p.source)] || String(p.source));
   if (v.model) parts.push(v.model);
-  if (p.llm_provider) parts.push(String(p.llm_provider));
+  if (p.llm_provider_profile) parts.push(String(p.llm_provider_profile));
+  else if (p.llm_provider) parts.push(String(p.llm_provider));
   else if (p.llm_mode === "manual") parts.push("Manual");
   else if (p.llm_mode) parts.push(String(p.llm_mode));
   if (p.language) parts.push(String(p.language));

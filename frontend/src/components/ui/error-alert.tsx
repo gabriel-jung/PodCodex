@@ -56,7 +56,7 @@ export function ErrorAlert({ error, onRetry, onDismiss, details, compact, classN
             </button>
           )}
           {showDetails && details && (
-            <pre className="mt-2 p-2 bg-black/40 rounded text-[0.65rem] leading-normal text-muted-foreground max-h-60 overflow-auto font-mono whitespace-pre-wrap">
+            <pre className="mt-2 p-2 bg-muted rounded text-2xs leading-normal text-muted-foreground max-h-60 overflow-auto font-mono whitespace-pre-wrap">
               {details}
             </pre>
           )}

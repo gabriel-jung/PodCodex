@@ -79,10 +79,12 @@ def run_startup_recovery() -> None:
             if p.is_dir():
                 roots.append(p)
 
-    # Also sweep the default LanceDB index dir if present.
-    default_index = Path.home() / ".local" / "share" / "podcodex" / "index"
-    if default_index.is_dir():
-        roots.append(default_index)
+    # Also sweep the LanceDB index dir under <data_dir>/index.
+    from podcodex.core.app_paths import data_dir
+
+    candidate = data_dir() / "index"
+    if candidate.is_dir() and candidate not in roots:
+        roots.append(candidate)
     env_index = os.environ.get("PODCODEX_INDEX")
     if env_index:
         p = Path(env_index)

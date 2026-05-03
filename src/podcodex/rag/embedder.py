@@ -16,6 +16,7 @@ Factory:
 from __future__ import annotations
 
 import threading
+import time
 
 import numpy as np
 from loguru import logger
@@ -27,44 +28,46 @@ from podcodex.rag.defaults import MODELS
 # PplxEmbedder
 # ──────────────────────────────────────────────
 
-_PPLX_SPEC = MODELS["pplx"]
-
 
 class PplxEmbedder:
     """
-    Context-aware embedder using Perplexity's pplx-embed-context-v1-0.6B.
+    Context-aware embedder using Perplexity's pplx-embed-context-v1 family.
 
     Passages are encoded with full episode context: all chunks from the same
     episode are passed together so each embedding is influenced by its neighbors.
-    Query encoding uses the separate pplx-embed-v1-0.6B query model.
+    Query encoding uses the separate pplx-embed-v1 query model.
 
     Dense vectors (dim from MODELS registry). Unnormalized — the retriever
     normalizes at cache-build time for cosine similarity.
     """
 
-    def __init__(self, device: str = "cpu"):
+    def __init__(self, model_key: str = "pplx-0.6B", device: str = "cpu"):
         """Initialize the Perplexity embedder, loading both context and query models.
 
         Args:
+            model_key: Registry key (``"pplx-0.6B"`` or ``"pplx-4B"``).
             device: Torch device string (e.g. ``"cpu"``, ``"cuda"``, ``"mps"``).
         """
         from transformers import AutoModel
         from sentence_transformers import SentenceTransformer
 
-        logger.info(f"Loading PplxEmbedder ({_PPLX_SPEC.hf_model}) on {device}")
+        spec = MODELS[model_key]
+        from podcodex.core._hf_logging import timed_load
         from podcodex.core.cache import get_hf_cache_dir
 
         cache_dir = str(get_hf_cache_dir())
-        self._ctx_model = AutoModel.from_pretrained(
-            _PPLX_SPEC.hf_model, trust_remote_code=True, cache_dir=cache_dir
-        ).to(device)
-        self._query_model = SentenceTransformer(
-            _PPLX_SPEC.hf_query_model,
-            trust_remote_code=True,
-            device=device,
-            cache_folder=cache_dir,
-        )
-        self._dim = _PPLX_SPEC.dim
+        with timed_load(f"PplxEmbedder ctx {spec.hf_model} on {device}"):
+            self._ctx_model = AutoModel.from_pretrained(
+                spec.hf_model, trust_remote_code=True, cache_dir=cache_dir
+            ).to(device)
+        with timed_load(f"PplxEmbedder query {spec.hf_query_model} on {device}"):
+            self._query_model = SentenceTransformer(
+                spec.hf_query_model,
+                trust_remote_code=True,
+                device=device,
+                cache_folder=cache_dir,
+            )
+        self._dim = spec.dim
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
         """
@@ -83,7 +86,16 @@ class PplxEmbedder:
         result = np.empty((len(chunks), self._dim), dtype=np.float32)
         for episode, indices in episode_indices.items():
             texts = [chunks[i]["text"] for i in indices]
+            logger.info(
+                f"PplxEmbedder: encoding {len(texts)} passages "
+                f"with full-episode context for '{episode}' (single forward pass)"
+            )
+            t0 = time.perf_counter()
             episode_embs = self._ctx_model.encode([texts])[0]  # (n_chunks, dim)
+            logger.info(
+                f"PplxEmbedder: forward pass for '{episode}' done in "
+                f"{time.perf_counter() - t0:.1f}s"
+            )
             for pos, idx in enumerate(indices):
                 result[idx] = episode_embs[pos].astype(np.float32)
 
@@ -132,14 +144,15 @@ class E5Embedder:
         from sentence_transformers import SentenceTransformer
 
         hf_model = MODELS[model_key].hf_model
-        logger.info(f"Loading E5Embedder ({hf_model}) on {device}")
+        from podcodex.core._hf_logging import timed_load
         from podcodex.core.cache import get_hf_cache_dir
 
-        self._model = SentenceTransformer(
-            hf_model,
-            device=device,
-            cache_folder=str(get_hf_cache_dir()),
-        )
+        with timed_load(f"E5Embedder {hf_model} on {device}"):
+            self._model = SentenceTransformer(
+                hf_model,
+                device=device,
+                cache_folder=str(get_hf_cache_dir()),
+            )
         self._batch_size = batch_size
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
@@ -152,13 +165,17 @@ class E5Embedder:
             L2-normalized float32 array of shape ``(n, dim)``.
         """
         texts = ["passage: " + c["text"] for c in chunks]
+        t0 = time.perf_counter()
         embs = self._model.encode(
             texts,
             batch_size=self._batch_size,
             normalize_embeddings=True,
             show_progress_bar=len(texts) > 100,
         )
-        logger.info(f"E5Embedder: encoded {len(chunks)} passages")
+        logger.info(
+            f"E5Embedder: encoded {len(chunks)} passages "
+            f"(batch_size={self._batch_size}) in {time.perf_counter() - t0:.1f}s"
+        )
         return np.array(embs, dtype=np.float32)
 
     def encode_query(self, query: str) -> np.ndarray:
@@ -203,12 +220,13 @@ class BGEEmbedder:
             batch_size: Encoding batch size.
         """
         from FlagEmbedding import BGEM3FlagModel
+        from podcodex.core._hf_logging import timed_load
         from podcodex.core.cache import get_hf_cache_dir
 
         get_hf_cache_dir()  # ensure HF_HOME is set before BGEM3 downloads
         devices = [device] if device else None
-        logger.info(f"Loading BGEEmbedder ({self.MODEL}) on {device}")
-        self._model = BGEM3FlagModel(self.MODEL, use_fp16=use_fp16, devices=devices)
+        with timed_load(f"BGEEmbedder {self.MODEL} on {device}"):
+            self._model = BGEM3FlagModel(self.MODEL, use_fp16=use_fp16, devices=devices)
         self._batch_size = batch_size
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:
@@ -221,10 +239,14 @@ class BGEEmbedder:
             Float32 array of shape ``(n, 1024)``.
         """
         texts = [c["text"] for c in chunks]
+        t0 = time.perf_counter()
         output = self._model.encode(
             texts, batch_size=self._batch_size, max_length=512, **self._ENCODE_OPTS
         )
-        logger.info(f"BGEEmbedder: encoded {len(chunks)} passages")
+        logger.info(
+            f"BGEEmbedder: encoded {len(chunks)} passages "
+            f"(batch_size={self._batch_size}) in {time.perf_counter() - t0:.1f}s"
+        )
         return np.array(output["dense_vecs"], dtype=np.float32)
 
     def encode_query(self, query: str) -> np.ndarray:
@@ -275,14 +297,20 @@ def get_embedder(
     Raises:
         ValueError: if model_key is not in the registry.
     """
-    # Fast path — no lock needed for cache hits (dict reads are GIL-atomic)
-    if model_key in _embedder_cache:
-        return _embedder_cache[model_key]
+    # Cache key includes device — same model on cpu vs cuda are different
+    # objects with different parameter tensors; collapsing them silently
+    # gave the wrong-device embedder to the second caller.
+    cache_key = f"{model_key}|{device}"
+
+    # Single .get() avoids the contains/index race against clear_embedder_cache
+    cached = _embedder_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     with _embedder_lock:
-        # Re-check under lock to prevent duplicate construction
-        if model_key in _embedder_cache:
-            return _embedder_cache[model_key]
+        cached = _embedder_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         if model_key not in MODELS:
             valid = ", ".join(MODELS.keys())
@@ -292,10 +320,10 @@ def get_embedder(
             embedder = BGEEmbedder(device=device)
         elif model_key in ("e5-small", "e5-large"):
             embedder = E5Embedder(model_key=model_key, device=device)
-        elif model_key == "pplx":
-            embedder = PplxEmbedder(device=device)
+        elif model_key in ("pplx-0.6B", "pplx-4B"):
+            embedder = PplxEmbedder(model_key=model_key, device=device)
         else:
             raise ValueError(f"No embedder class registered for '{model_key}'")
 
-        _embedder_cache[model_key] = embedder
+        _embedder_cache[cache_key] = embedder
         return embedder

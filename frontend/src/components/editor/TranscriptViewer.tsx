@@ -9,7 +9,8 @@
 import { memo, useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment, VersionEntry } from "@/api/types";
-import { exportTextUrl, exportSrtUrl, exportVttUrl } from "@/api/client";
+import { saveExportFile } from "@/api/client";
+import { usePlatform } from "@/platform";
 import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
@@ -32,7 +33,6 @@ import {
   Trash2,
   Merge,
   Scissors,
-  ScissorsLineDashed,
   Search,
   X,
   Diff,
@@ -96,6 +96,7 @@ function ExportDropdown({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const platform = usePlatform();
 
   useEffect(() => {
     if (!open) return;
@@ -105,6 +106,22 @@ function ExportDropdown({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
+
+  const formats: { label: string; ext: "txt" | "srt" | "vtt" }[] = [
+    { label: "Plain Text", ext: "txt" },
+    { label: "SRT Subtitles", ext: "srt" },
+    { label: "WebVTT Subtitles", ext: "vtt" },
+  ];
+
+  const handleExport = (ext: "txt" | "srt" | "vtt") => {
+    setOpen(false);
+    return saveExportFile(platform, {
+      audioPath,
+      source,
+      format: ext,
+      defaultName: `${filename || "export"}.${ext}`,
+    });
+  };
 
   return (
     <div className="relative" ref={ref}>
@@ -119,20 +136,15 @@ function ExportDropdown({
       </Button>
       {open && (
         <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-36">
-          {[
-            { label: "Plain Text", ext: "txt", url: exportTextUrl(audioPath, source) },
-            { label: "SRT Subtitles", ext: "srt", url: exportSrtUrl(audioPath, source) },
-            { label: "WebVTT Subtitles", ext: "vtt", url: exportVttUrl(audioPath, source) },
-          ].map(({ label, ext, url }) => (
-            <a
-              key={label}
-              href={url}
-              download={filename ? `${filename}.${ext}` : ""}
-              className="block px-3 py-1.5 text-xs hover:bg-accent transition"
-              onClick={() => setOpen(false)}
+          {formats.map(({ label, ext }) => (
+            <button
+              key={ext}
+              type="button"
+              onClick={() => handleExport(ext)}
+              className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition"
             >
               {label}
-            </a>
+            </button>
           ))}
         </div>
       )}
@@ -147,14 +159,14 @@ function DiffView({ original, current }: { original: string; current: string }) 
   return (
     <div className="text-sm leading-relaxed py-0">
       {diff.map((part, i) => (
-        <span key={i}>
+        <span key={`${i}:${part.type}:${part.text}`}>
           {i > 0 && " "}
           <span
             className={
               part.type === "removed"
-                ? "bg-red-500/20 text-red-400 line-through"
+                ? "bg-destructive/20 text-destructive line-through"
                 : part.type === "added"
-                  ? "bg-green-500/20 text-green-400"
+                  ? "bg-success/20 text-success"
                   : "text-muted-foreground/70"
             }
           >
@@ -171,6 +183,20 @@ function DiffView({ original, current }: { original: string; current: string }) 
 // ResizeObserver, no forced reflow storm on mount.
 const HAS_FIELD_SIZING =
   typeof CSS !== "undefined" && CSS.supports("field-sizing", "content");
+
+/** Nearest start-of-word boundary so splits never land mid-token. */
+function snapToWordStart(text: string, target: number): number {
+  if (target <= 0) return 0;
+  if (target >= text.length) return text.length;
+  const isWordStart = (i: number) =>
+    i > 0 && i < text.length && text[i - 1] === " " && text[i] !== " ";
+  if (isWordStart(target)) return target;
+  for (let i = 1; i <= text.length; i++) {
+    if (isWordStart(target - i)) return target - i;
+    if (isWordStart(target + i)) return target + i;
+  }
+  return target;
+}
 
 // ── Inline segment row ────────────────────────────────────────────────────────
 
@@ -264,6 +290,25 @@ const SegmentViewRow = memo(function SegmentViewRow({
 
   const handleSeek = () => {
     if (audioPath && validTime) useAudioStore.getState().seekTo(audioPath, segment.start);
+  };
+
+  // Resolve a split point given an optional caret offset. Caret takes priority;
+  // playback-time ratio is used only when no caret is placed. Time stamp comes
+  // from real playback when within range, else proportional from the reducer.
+  const computeSplit = (sel: number | null | undefined): { pos: number; t?: number } | null => {
+    const text = segment.text;
+    if (!text) return null;
+    const playT = audioPath && validTime ? useAudioStore.getState().currentTime : null;
+    const splitT = playT != null && playT > segment.start + 0.05 && playT < segment.end - 0.05
+      ? playT
+      : undefined;
+    let target: number | null = null;
+    if (sel != null && sel > 0 && sel < text.length) target = sel;
+    else if (splitT != null) target = Math.round(((splitT - segment.start) / (segment.end - segment.start)) * text.length);
+    if (target == null) return null;
+    const pos = snapToWordStart(text, target);
+    if (pos <= 0 || pos >= text.length) return null;
+    return { pos, t: splitT };
   };
 
   const hasDiff = hasRef && referenceText !== segment.text;
@@ -386,8 +431,8 @@ const SegmentViewRow = memo(function SegmentViewRow({
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && onSplit) {
                   e.preventDefault();
-                  const pos = e.currentTarget.selectionStart;
-                  if (pos > 0 && pos < segment.text.length) onSplit(originalIndex, pos);
+                  const split = computeSplit(e.currentTarget.selectionStart);
+                  if (split) onSplit(originalIndex, split.pos, split.t);
                 }
               }}
               className="w-full bg-transparent text-sm leading-relaxed resize-none outline-none overflow-hidden rounded border border-transparent hover:border-border focus:border-primary/50 focus:bg-accent/10 px-1.5 py-0 transition [field-sizing:content]"
@@ -407,10 +452,7 @@ const SegmentViewRow = memo(function SegmentViewRow({
 
       {/* Flag reason — always visible on flagged segments */}
       {isFlagged && flagReasonText && (
-        <div
-          className="flex items-center gap-1 mt-0.5 text-warning/80"
-          style={{ fontSize: "0.6rem" }}
-        >
+        <div className="flex items-center gap-1 mt-0.5 text-2xs leading-none text-warning/80">
           <AlertTriangle className="w-2.5 h-2.5" />
           <span>{flagReasonText}</span>
           {onDismissFlag && (
@@ -472,36 +514,13 @@ const SegmentViewRow = memo(function SegmentViewRow({
         {onSplit && (
           <button
             onClick={() => {
-              const pos = textRef.current?.selectionStart ?? Math.floor(segment.text.length / 2);
-              if (pos > 0 && pos < segment.text.length) onSplit(originalIndex, pos);
+              const split = computeSplit(textRef.current?.selectionStart);
+              if (split) onSplit(originalIndex, split.pos, split.t);
             }}
             className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
-            title="Split at text cursor (time proportional to character count)"
+            title="Split at current word (text caret) and current playback time"
           >
             <Scissors className="w-3.5 h-3.5" />
-          </button>
-        )}
-        {onSplit && audioPath && validTime && (
-          <button
-            onClick={() => {
-              const t = useAudioStore.getState().currentTime;
-              if (t <= segment.start + 0.05 || t >= segment.end - 0.05) return;
-              const ratio = (t - segment.start) / (segment.end - segment.start);
-              const target = Math.round(ratio * segment.text.length);
-              // snap to nearest whitespace (prefer the closer side)
-              let pos = target;
-              for (let i = 0; i < segment.text.length; i++) {
-                const back = target - i;
-                const fwd = target + i;
-                if (back > 0 && segment.text[back - 1] === " ") { pos = back; break; }
-                if (fwd < segment.text.length && segment.text[fwd] === " ") { pos = fwd; break; }
-              }
-              if (pos > 0 && pos < segment.text.length) onSplit(originalIndex, pos, t);
-            }}
-            className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
-            title="Split at current playback time"
-          >
-            <ScissorsLineDashed className="w-3.5 h-3.5" />
           </button>
         )}
         {onInsertAfter && (
@@ -1161,6 +1180,15 @@ export default function TranscriptViewer({
     return () => clearInterval(interval);
   }, [isPlayingThisFile]);
 
+  const scrollToOrigIdx = useCallback(
+    (origIdx: number, behavior: ScrollBehavior = "smooth") => {
+      const idx = pageSegments.findIndex((p) => p.originalIndex === origIdx);
+      if (idx >= 0) rowVirtualizer.scrollToIndex(idx, { align: "center", behavior });
+      return idx >= 0;
+    },
+    [pageSegments, rowVirtualizer],
+  );
+
   // Scroll to active segment ONCE on first resolve (so the editor opens
   // aligned to where the audio is), then never auto-follow — that would
   // yank the view out from under the user mid-edit. Manual re-sync via
@@ -1173,18 +1201,38 @@ export default function TranscriptViewer({
   }
   useEffect(() => {
     if (activeOrigIdx == null || didInitialSyncRef.current) return;
-    const idx = pageSegments.findIndex((p) => p.originalIndex === activeOrigIdx);
-    if (idx >= 0) {
-      rowVirtualizer.scrollToIndex(idx, { align: "center", behavior: "auto" });
-      didInitialSyncRef.current = true;
-    }
-  }, [activeOrigIdx, pageSegments, rowVirtualizer]);
+    if (scrollToOrigIdx(activeOrigIdx, "auto")) didInitialSyncRef.current = true;
+  }, [activeOrigIdx, scrollToOrigIdx]);
 
   const jumpToActive = () => {
-    if (activeOrigIdx == null) return;
-    const idx = pageSegments.findIndex((p) => p.originalIndex === activeOrigIdx);
-    if (idx >= 0) rowVirtualizer.scrollToIndex(idx, { align: "center", behavior: "smooth" });
+    if (activeOrigIdx != null) scrollToOrigIdx(activeOrigIdx);
   };
+
+  // Cross-page jump: SpeakerStrip excerpts ask to locate a segment in the
+  // editor. If a page flip is needed, the effect picks up the scroll once
+  // pageSegments contains the target.
+  const pendingJumpRef = useRef<number | null>(null);
+  const jumpToSegmentByOrigIdx = useCallback((origIdx: number) => {
+    const pos = displaySegments.findIndex((d) => d.originalIndex === origIdx);
+    if (pos < 0) return;
+    const targetPage = Math.floor(pos / filters.pageSize);
+    filters.setAnchorOrigIdx(origIdx);
+    if (targetPage !== filters.page) {
+      filters.setPage(targetPage);
+      pendingJumpRef.current = origIdx;
+    } else {
+      scrollToOrigIdx(origIdx);
+    }
+  }, [displaySegments, filters, scrollToOrigIdx]);
+
+  useEffect(() => {
+    const target = pendingJumpRef.current;
+    if (target == null) return;
+    // One-shot: clear regardless so a missing target (filtered out, etc.)
+    // can't trigger a stale jump on a later unrelated pageSegments change.
+    pendingJumpRef.current = null;
+    scrollToOrigIdx(target);
+  }, [pageSegments, scrollToOrigIdx]);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
 
@@ -1353,6 +1401,7 @@ export default function TranscriptViewer({
             onToggleRemoved={handleStripToggleRemoved}
             onAddSpeaker={handleStripAddSpeaker}
             onRemoveAdded={handleStripRemoveAdded}
+            onJumpToSegment={jumpToSegmentByOrigIdx}
           />
         )}
 
@@ -1506,7 +1555,7 @@ export default function TranscriptViewer({
             <button
               onClick={() => { filters.setShowChangedOnly(!filters.showChangedOnly); filters.setPage(0); }}
               className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border transition ${
-                filters.showChangedOnly ? "border-blue-500/50 text-blue-400" : "border-border text-muted-foreground hover:text-foreground"
+                filters.showChangedOnly ? "border-info/50 text-info" : "border-border text-muted-foreground hover:text-foreground"
               }`}
               title="Show changed only"
             >

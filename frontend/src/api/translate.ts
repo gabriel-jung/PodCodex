@@ -1,18 +1,20 @@
 import type { Segment, TaskResponse, TranslateRequest } from "./types";
 import { createLLMPipelineApi } from "./versions";
 
+type AudioRef = string | null | undefined;
+
 const api = createLLMPipelineApi("translate");
 
-export const getTranslateSegments = (audioPath: string, lang: string) =>
-  api.getSegments(audioPath, { lang });
-export const saveTranslateSegments = (audioPath: string, lang: string, segments: Segment[]) =>
-  api.saveSegments(audioPath, segments, { lang });
-export const getTranslateVersions = (audioPath: string, lang: string) =>
-  api.getVersions(audioPath, { lang });
-export const loadTranslateVersion = (audioPath: string, lang: string, versionId: string) =>
-  api.loadVersion(audioPath, versionId, { lang });
-export const deleteTranslateVersion = (audioPath: string, lang: string, versionId: string) =>
-  api.deleteVersion(audioPath, versionId, { lang });
+export const getTranslateSegments = (audioPath: AudioRef, lang: string, outputDir?: string) =>
+  api.getSegments(audioPath, { lang, output_dir: outputDir });
+export const saveTranslateSegments = (audioPath: AudioRef, lang: string, segments: Segment[], outputDir?: string) =>
+  api.saveSegments(audioPath, segments, { lang, output_dir: outputDir });
+export const getTranslateVersions = (audioPath: AudioRef, lang: string, outputDir?: string) =>
+  api.getVersions(audioPath, { lang, output_dir: outputDir });
+export const loadTranslateVersion = (audioPath: AudioRef, lang: string, versionId: string, outputDir?: string) =>
+  api.loadVersion(audioPath, versionId, { lang, output_dir: outputDir });
+export const deleteTranslateVersion = (audioPath: AudioRef, lang: string, versionId: string, outputDir?: string) =>
+  api.deleteVersion(audioPath, versionId, { lang, output_dir: outputDir });
 
 export const startTranslate = (req: TranslateRequest) =>
   api.start(req as unknown as Record<string, unknown>) as Promise<TaskResponse>;

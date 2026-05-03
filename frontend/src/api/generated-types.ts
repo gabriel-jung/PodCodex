@@ -11,7 +11,8 @@ export interface PipelineDefaultsSchema {
   model_size: string;
   diarize?: boolean | null;
   llm_mode: string;
-  llm_provider: string;
+  llm_provider_profile: string;
+  llm_key_name: string;
   llm_model: string;
   target_lang: string;
 }
@@ -172,13 +173,12 @@ export interface CorrectRequest {
   audio_path: string;
   output_dir?: string | null;
   mode?: string;
-  provider?: string | null;
+  provider_profile?: string | null;
+  key_name?: string | null;
   model?: string;
   context?: string;
   source_lang?: string;
   batch_minutes?: number;
-  api_base_url?: string;
-  api_key?: string | null;
   source_version_id?: string | null;
 }
 
@@ -224,13 +224,12 @@ export interface TranslateRequest {
   audio_path: string;
   output_dir?: string | null;
   mode?: string;
-  provider?: string | null;
+  provider_profile?: string | null;
+  key_name?: string | null;
   model?: string;
   context?: string;
   source_lang?: string;
   batch_minutes?: number;
-  api_base_url?: string;
-  api_key?: string | null;
   source_version_id?: string | null;
   target_lang?: string;
 }
@@ -269,10 +268,9 @@ export interface BatchRequest {
   transcribe_source?: string;
   sub_lang?: string;
   llm_mode?: string;
-  llm_provider?: string | null;
+  llm_provider_profile?: string | null;
+  llm_key_name?: string | null;
   llm_model?: string;
-  llm_api_base_url?: string;
-  llm_api_key?: string | null;
   context?: string;
   source_lang?: string;
   target_lang?: string;
@@ -468,4 +466,18 @@ export interface ImportRequest {
   shows_dir?: string | null;
   name?: string | null;
   on_conflict?: "auto" | "rename" | "replace" | "abort";
+}
+
+export interface APIKeyPublic {
+  name: string;
+  masked: string;
+  suggested_provider?: string | null;
+  source: "ui" | "env";
+}
+
+export interface ProviderProfile {
+  name: string;
+  type: "openai" | "anthropic" | "mistral" | "ollama" | "openai-compatible";
+  base_url?: string | null;
+  builtin: boolean;
 }

@@ -150,24 +150,27 @@ def transcribe_file(
 
     audio = whisperx.load_audio(str(p.audio_path))
 
+    from podcodex.core._hf_logging import timed_load
     from podcodex.core.cache import get_hf_cache_dir
 
-    model = whisperx.load_model(
-        model_size,
-        device,
-        compute_type=compute_type,
-        language=language or None,
-        download_root=str(get_hf_cache_dir()),
-    )
+    with timed_load(f"WhisperX {model_size} on {device}"):
+        model = whisperx.load_model(
+            model_size,
+            device,
+            compute_type=compute_type,
+            language=language or None,
+            download_root=str(get_hf_cache_dir()),
+        )
     result = model.transcribe(audio, batch_size=batch_size, language=language)
     del model
     free_vram()
 
     # Use detected language when none was specified
     detected_lang = result.get("language") or language
-    model_a, metadata = whisperx.load_align_model(
-        language_code=detected_lang, device=device
-    )
+    with timed_load(f"WhisperX align model ({detected_lang}) on {device}"):
+        model_a, metadata = whisperx.load_align_model(
+            language_code=detected_lang, device=device
+        )
     result = whisperx.align(result["segments"], model_a, metadata, audio, device)
     del model_a, metadata
     free_vram()
@@ -290,12 +293,14 @@ def diarize_file(
 
         check_vram("diarization", DIARIZATION_VRAM_MB)
 
+    from podcodex.core._hf_logging import timed_load
     from podcodex.core.cache import get_hf_cache_dir
     from whisperx.diarize import DiarizationPipeline
 
     get_hf_cache_dir()  # ensure HF_HOME is set before pyannote downloads
     audio = whisperx.load_audio(str(p.audio_path))
-    pipeline = DiarizationPipeline(token=token, device=device)
+    with timed_load(f"pyannote DiarizationPipeline on {device}"):
+        pipeline = DiarizationPipeline(token=token, device=device)
     diarize_segments = pipeline(
         audio,
         num_speakers=num_speakers,
@@ -567,7 +572,9 @@ def export_transcript(
     # Always save raw transcript
     raw_prov = _make_prov(_build_meta(resolved))
     save_version(p.base, "transcript", resolved, raw_prov)
-    logger.success(f"Export done — {len(resolved)} segments")
+    logger.success(
+        f"Export done ({'diarized' if diarized else 'raw'}) — {len(resolved)} segments"
+    )
 
     # If clean, also save a filtered version
     if clean:

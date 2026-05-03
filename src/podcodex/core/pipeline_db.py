@@ -202,6 +202,27 @@ class PipelineDB:
             self._conn.execute(sql, vals_full)
             self._conn.commit()
 
+    def mark_indexed_bulk(self, updates: dict[str, bool]) -> None:
+        """Set the ``indexed`` flag for many stems in a single transaction.
+
+        Used by the per-show LanceDB reconciliation path where dozens to
+        hundreds of rows may need correcting at once; one commit per row
+        would block the FastAPI event loop on the SQLite write lock.
+        """
+        if not updates:
+            return
+        now = time.time()
+        rows = [(stem, int(v), now, int(v), now) for stem, v in updates.items()]
+        with self._lock, self._conn:
+            self._conn.executemany(
+                """
+                INSERT INTO episodes (stem, indexed, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(stem) DO UPDATE SET indexed = ?, updated_at = ?
+                """,
+                rows,
+            )
+
     def ensure_episode(self, stem: str, audio_path: str | None = None) -> None:
         """Create an episode row if it does not exist (idempotent)."""
         with self._lock:
@@ -270,6 +291,29 @@ class PipelineDB:
             (stem, step),
         ).fetchone()
         return self._version_to_dict(row) if row else None
+
+    def latest_versions_for_steps(
+        self, steps: list[str]
+    ) -> dict[tuple[str, str], dict]:
+        """Bulk: latest version per ``(stem, step)`` via one window-function query."""
+        if not steps:
+            return {}
+        placeholders = ", ".join("?" for _ in steps)
+        rows = self._conn.execute(
+            f"""SELECT * FROM (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY stem, step ORDER BY timestamp DESC) AS rn
+                    FROM versions
+                    WHERE step IN ({placeholders})
+                )
+               WHERE rn = 1""",
+            steps,
+        ).fetchall()
+        out: dict[tuple[str, str], dict] = {}
+        for r in rows:
+            d = self._version_to_dict(r)
+            out[(d["stem"], d["step"])] = d
+        return out
 
     def list_all_versions(self, stem: str) -> list[dict]:
         """List all versions across all steps for an episode (newest first)."""

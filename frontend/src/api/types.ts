@@ -14,7 +14,6 @@ export type {
   CreateFromRSSResponse,
   CreateFromYouTubeRequest,
   CreateFromYouTubeResponse,
-  EpisodeOut,
   ExtractVoicesRequest,
   GenerateRequest,
   IndexRequest,
@@ -40,6 +39,10 @@ export type {
 export interface HealthResponse {
   status: string;
   capabilities: Record<string, boolean>;
+  /** "bundle" when running as the frozen PyInstaller sidecar; "dev" when
+   *  uvicorn is running from a venv. Frontend uses this to hide tabs
+   *  (e.g. Plugins) whose actions only make sense with a venv. */
+  mode: "bundle" | "dev";
 }
 
 export interface ExtraInfo {
@@ -83,20 +86,12 @@ export interface VersionEntry {
 
 // ── Pipeline config (from Python constants, not Pydantic) ─
 
-export interface LLMProviderSpec {
-  url: string;
-  model: string;
-  label: string;
-  env_var?: string;
-}
-
 export interface PipelineConfig {
   whisper_models: Record<string, string>;
   default_whisper_model: string;
   tts_model_sizes: Record<string, string>;
   default_tts_model_size: string;
   assemble_strategies: Record<string, string>;
-  llm_providers: Record<string, LLMProviderSpec>;
   default_ollama_model: string;
   default_source_lang: string;
   default_target_lang: string;

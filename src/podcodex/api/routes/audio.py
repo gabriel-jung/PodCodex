@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from podcodex.api.routes._helpers import AUDIO_EXTS
+from podcodex.api.routes._helpers import AUDIO_EXTS, resolve_inside_show_root
 
 router = APIRouter()
 
@@ -17,7 +16,7 @@ async def serve_audio_file(
     path: str = Query(..., description="Absolute path to audio file"),
 ):
     """Serve a full audio file with range-request support."""
-    p = Path(path)
+    p = resolve_inside_show_root(path)
     if not p.is_file():
         raise HTTPException(404, f"Audio file not found: {path}")
 
@@ -43,7 +42,7 @@ async def serve_audio_clip(
 
     Requires soundfile to be installed. Falls back to full file if not available.
     """
-    p = Path(path)
+    p = resolve_inside_show_root(path)
     if not p.is_file():
         raise HTTPException(404, f"Audio file not found: {path}")
 
@@ -80,7 +79,7 @@ async def delete_audio_file(
     path: str = Query(..., description="Absolute path to audio file"),
 ):
     """Delete an audio file from disk."""
-    p = Path(path)
+    p = resolve_inside_show_root(path)
     if not p.is_file():
         raise HTTPException(404, f"Audio file not found: {path}")
 

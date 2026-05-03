@@ -14,9 +14,9 @@ Record outcomes in the PR description, linking to logs where relevant.
 
 ## Before you start
 
-- Fresh user account or wiped `~/.config/podcodex/`, `~/.local/share/podcodex/`, and `%APPDATA%\PodCodex\` equivalents — onboarding has to behave like a true first launch.
+- Fresh user account or wiped `~/.config/podcodex/`, `~/.local/share/podcodex/` (Linux), `~/Library/Application Support/podcodex/` (macOS), and `%APPDATA%\podcodex\` (Windows) — onboarding has to behave like a true first launch.
 - Ensure `ffmpeg` on PATH. Ensure Rust toolchain for Tauri native window.
-- Record: OS version, Node version, Python version, GPU (if any), `make dev` vs `make build`.
+- Record: OS version, Node version, Python version, GPU (if any), `make dev` vs `make bundle`.
 
 ## Smoke run
 
@@ -79,9 +79,9 @@ Start with `make dev` on the host platform (or `make dev-no-tauri` for WSL / bro
 - [ ] Drop a `.tmp_test` file (older than 30 min) into a show folder → backend restart reports "reaped 1 stale temp file".
 - [ ] Drop a fresh `.tmp_test` file → it survives (race safety).
 
-### 10. Packaging smoke (once Phase P begins)
+### 10. Packaging smoke (per release)
 
-- [ ] `make build` produces a native bundle for the current OS.
+- [ ] `make bundle` produces a native bundle for the current OS.
 - [ ] Installed bundle launches without a dev checkout present.
 - [ ] Config and secrets still resolve to `~/.config/podcodex/`.
 - [ ] Claude Desktop integration picks the installed binary, not the dev venv.

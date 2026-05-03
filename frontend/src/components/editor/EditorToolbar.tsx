@@ -134,7 +134,7 @@ export default function EditorToolbar({
             {showVersions && (
               <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg min-w-72 max-h-80 overflow-y-auto">
                 <div className="px-3 py-1 text-muted-foreground/60 flex items-center gap-3 border-b border-border/50">
-                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" /> pipeline</span>
+                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-info" /> pipeline</span>
                   <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-success" /> edited</span>
                 </div>
                 <div className="divide-y divide-border/30">
@@ -179,8 +179,8 @@ export default function EditorToolbar({
 
         {hasReference && changedCount > 0 && (
           <label className="flex items-center gap-1 cursor-pointer whitespace-nowrap">
-            <input type="checkbox" checked={showChangedOnly} onChange={(e) => onChangedFilterChange(e.target.checked)} className="accent-blue-500" />
-            <span className="text-blue-600 dark:text-blue-400">{changedCount} changed</span>
+            <input type="checkbox" checked={showChangedOnly} onChange={(e) => onChangedFilterChange(e.target.checked)} className="accent-info" />
+            <span className="text-info">{changedCount} changed</span>
             <Tip text="Segments where the text differs from the previous step's version. Useful for reviewing what the AI changed." />
           </label>
         )}

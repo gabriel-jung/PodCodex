@@ -10,6 +10,7 @@ from pydantic import BaseModel, field_validator
 from podcodex.api.routes._helpers import (
     build_edit_provenance,
     build_provenance,
+    require_audio_or_output,
     submit_subprocess_task,
     transcribe_prov_params,
 )
@@ -28,7 +29,7 @@ register_version_routes(router, "transcript")
 
 @router.get("/segments")
 async def get_segments(
-    audio_path: str = Query(..., description="Absolute path to audio file"),
+    audio_path: str | None = Query(None, description="Absolute path to audio file"),
     output_dir: str | None = Query(None),
     limit: int | None = Query(None, ge=1, description="Max segments to return"),
 ) -> list[dict]:
@@ -36,6 +37,7 @@ async def get_segments(
     from podcodex.api.routes._helpers import annotate_flags
     from podcodex.core.versions import load_latest
 
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     segments = load_latest(p.base, "transcript")
     if segments is None:
@@ -52,12 +54,13 @@ async def get_segments(
 @router.put("/segments")
 async def save_segments(
     segments: list[Segment],
-    audio_path: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict:
     """Save validated transcript segments."""
     from podcodex.core.transcribe import save_transcript
 
+    require_audio_or_output(audio_path, output_dir)
     seg_dicts = [s.model_dump() for s in segments]
     provenance = build_edit_provenance("transcript", audio_path, output_dir)
     save_transcript(
@@ -74,24 +77,26 @@ async def save_segments(
 
 @router.get("/speaker-map")
 async def get_speaker_map(
-    audio_path: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict[str, str]:
     """Read the latest speaker name mapping linked to the current diarization."""
     from podcodex.core.transcribe import load_speaker_map
 
+    require_audio_or_output(audio_path, output_dir)
     return load_speaker_map(audio_path, output_dir=output_dir)
 
 
 @router.put("/speaker-map")
 async def save_speaker_map(
     mapping: dict[str, str],
-    audio_path: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict:
     """Save the speaker name mapping."""
     from podcodex.core.transcribe import save_speaker_map
 
+    require_audio_or_output(audio_path, output_dir)
     save_speaker_map(audio_path, mapping, output_dir=output_dir)
     return {"status": "saved"}
 
@@ -102,12 +107,13 @@ async def save_speaker_map(
 @router.post("/upload")
 async def upload_transcript(
     file: UploadFile = File(...),
-    audio_path: str = Query(..., description="Absolute path to audio file"),
+    audio_path: str | None = Query(None, description="Absolute path to audio file"),
     output_dir: str | None = Query(None),
 ) -> dict:
     """Upload a transcript file (JSON, SRT, or VTT) and save as raw transcript."""
     from podcodex.core._utils import srt_to_segments, vtt_to_segments
 
+    require_audio_or_output(audio_path, output_dir)
     content = await file.read()
     filename = (file.filename or "").lower()
 
@@ -186,7 +192,7 @@ async def upload_transcript(
 
 @router.post("/import")
 async def import_transcript(
-    audio_path: str = Query(..., description="Absolute path to audio file"),
+    audio_path: str | None = Query(None, description="Absolute path to audio file"),
     file_path: str = Query(
         ..., description="Absolute path to VTT/SRT/JSON file to import"
     ),
@@ -197,6 +203,7 @@ async def import_transcript(
 
     from podcodex.core._utils import srt_to_segments, vtt_to_segments
 
+    require_audio_or_output(audio_path, output_dir)
     src = Path(file_path)
     if not src.exists():
         raise HTTPException(404, f"File not found: {file_path}")

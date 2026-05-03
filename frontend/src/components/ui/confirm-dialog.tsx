@@ -58,7 +58,7 @@ export function ConfirmDialogHost() {
       />
       {/* Dialog */}
       <div className="relative bg-card border border-border rounded-lg shadow-lg p-6 max-w-md w-full mx-4 animate-in zoom-in-95 fade-in duration-150">
-        <h3 className="text-base font-semibold">{state.title}</h3>
+        <h3 className="text-lg font-semibold">{state.title}</h3>
         {state.description && (
           <p className="text-sm text-muted-foreground mt-2">{state.description}</p>
         )}

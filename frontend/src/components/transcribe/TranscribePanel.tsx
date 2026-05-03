@@ -1,6 +1,12 @@
-import { useState, useRef } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
+import { useEffect, useRef, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
+import { useEpisodeStore, useAudioPath, usePipelineConfigStore, useTaskStore } from "@/stores";
+import { useShowActions } from "@/hooks/useShowActions";
+import { EmptyState } from "@/components/ui/empty-state";
+import { getGPUStatus } from "@/api/client";
+import { queryKeys } from "@/api/queryKeys";
+import { AlertCircle } from "lucide-react";
 import { TRANSCRIBE_PRESETS, CPU_MODELS, GPU_MODELS, CPU_LABELS, GPU_LABELS } from "@/stores/pipelineConfigStore";
 import {
   deleteTranscribeVersion,
@@ -15,7 +21,7 @@ import {
 } from "@/api/client";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { Button } from "@/components/ui/button";
-import { FileText, Upload } from "lucide-react";
+import { FileAudio, FileText, Upload } from "lucide-react";
 import { errorMessage, languageToISO, selectClass, SUB_LANGUAGES } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useCapabilities } from "@/hooks/useCapabilities";
@@ -40,6 +46,24 @@ export default function TranscribePanel() {
   const hasWhisperX = hasCap("whisperx");
   const task = usePipelineTask(audioPath, "transcribe");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { downloadMutation: episodeDownloadMutation } = useShowActions(folder ?? "", showMeta ?? undefined, { withSubs: false });
+  const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
+  const downloadDisabled = episodeDownloadMutation.isPending || !!downloadTaskId;
+  const navigate = useNavigate();
+
+  // GPU staleness check — when the user updated the app but didn't re-download
+  // the GPU backend, the Tauri shell silently fell back to CPU. Surface that
+  // inline so the user knows why transcription will be slow before they kick
+  // it off, with a one-click jump to Settings → GPU.
+  const { data: gpuStatus } = useQuery({
+    queryKey: queryKeys.gpuStatus(),
+    queryFn: getGPUStatus,
+    staleTime: 60_000,
+  });
+  const gpuOutOfDate =
+    !!gpuStatus?.activated &&
+    !!gpuStatus?.needs_update &&
+    !!gpuStatus?.platform_supported;
 
   const { whisperModels: whisperModelsMap, detectedKeys } = useLLMProviders();
   const hfTokenDetected = !!detectedKeys.hf_token;
@@ -87,6 +111,17 @@ export default function TranscribePanel() {
   const [transcribeSource, setTranscribeSource] = useState<"audio" | "subtitles" | "upload">(
     hasRealAudio ? "audio" : hasSubs ? "subtitles" : "upload",
   );
+  // Auto-switch to "audio" when it becomes available, unless the user
+  // has already picked something else.
+  const userPickedSourceRef = useRef(false);
+  const pickSource = (v: "audio" | "subtitles" | "upload") => {
+    userPickedSourceRef.current = true;
+    setTranscribeSource(v);
+  };
+  useEffect(() => {
+    if (userPickedSourceRef.current) return;
+    setTranscribeSource(hasRealAudio ? "audio" : hasSubs ? "subtitles" : "upload");
+  }, [hasRealAudio, hasSubs]);
 
   // Per-episode cleanup mode — defaults to Manual because the user is about
   // to open the editor and can delete junk by hand. Auto runs the density
@@ -122,7 +157,7 @@ export default function TranscribePanel() {
         audio_path: audioPath!,
         model_size: tc.modelSize,
         language: effectiveLang || undefined,
-        batch_size: tc.batchSize,
+        batch_size: tc.batchSize ?? undefined,
         force: episode!.transcribed,
         // CPU mode forces diarize off regardless of stored preference —
         // pyannote needs a GPU in practice, and the UI column is hidden.
@@ -139,11 +174,43 @@ export default function TranscribePanel() {
   if (!episode) return null;
   const expanded = task.expanded || !episode.transcribed;
 
+  const emptyStateProps = downloadDisabled
+    ? {
+        title: "Downloading audio…",
+        description: "The audio is downloading — this view will refresh when it's ready.",
+      }
+    : {
+        title: "No audio file yet",
+        description:
+          "Download the audio file to transcribe it, or upload an existing transcript (JSON, SRT, VTT).",
+        action: {
+          label: "Download audio",
+          onClick: () => episodeDownloadMutation.mutate({ guids: [episode.id] }),
+        },
+        secondaryAction: {
+          label: "Upload transcript",
+          onClick: () => fileInputRef.current?.click(),
+        },
+      };
+
   return (
     <PipelinePanel
       title="Transcribe"
       description="Transcribe audio or import subtitles."
-      prerequisite={!audioPath ? "Download the audio file or import subtitles first." : undefined}
+      blocker={
+        !audioPath ? (
+          <>
+            <EmptyState icon={FileAudio} {...emptyStateProps} />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,.srt,.vtt"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+          </>
+        ) : undefined
+      }
       done={episode.transcribed}
       expanded={expanded}
       onToggle={() => task.setExpanded(!expanded)}
@@ -156,17 +223,41 @@ export default function TranscribePanel() {
       emptyMessage="No transcript yet."
       controls={
         <div className="px-4 pt-3 pb-4 space-y-4">
+          {gpuOutOfDate && (
+            <div className="rounded-md border border-warning/40 bg-warning/5 p-2.5 text-xs text-muted-foreground flex items-start gap-2">
+              <AlertCircle className="w-3 h-3 text-warning shrink-0 mt-0.5" />
+              <span className="flex-1">
+                Hardware acceleration is unavailable — your GPU backend (
+                <code className="font-mono">{gpuStatus?.installed_server_version ?? "?"}</code>
+                ) is out of date for app{" "}
+                <code className="font-mono">{gpuStatus?.app_version}</code>.
+                Transcription will run on CPU.{" "}
+                <button
+                  type="button"
+                  onClick={() => navigate({ to: "/settings", search: { tab: "gpu" } })}
+                  className="underline hover:text-foreground"
+                >
+                  Update in Settings
+                </button>
+                .
+              </span>
+            </div>
+          )}
           <FormGrid>
-            <HelpLabel label="Source" />
-            <Segmented
-              value={transcribeSource}
-              onChange={setTranscribeSource}
-              options={[
-                ["audio", "Audio", hasRealAudio ? "Transcribe the audio file" : "No audio file available", hasRealAudio],
-                ...(hasSubs ? [["subtitles", "Subtitles", "Reimport a .vtt/.srt already in the episode folder"] as const] : []),
-                ["upload", "Upload", "Upload any transcript file from disk"],
-              ]}
-            />
+            {(hasSubs || transcribeSource !== "audio") && (
+              <>
+                <HelpLabel label="Source" />
+                <Segmented
+                  value={transcribeSource}
+                  onChange={pickSource}
+                  options={[
+                    ["audio", "Audio", hasRealAudio ? "Transcribe the audio file" : "No audio file available", hasRealAudio],
+                    ...(hasSubs ? [["subtitles", "Subtitles", "Reimport a .vtt/.srt already in the episode folder"] as const] : []),
+                    ["upload", "Upload", "Upload any transcript file from disk"],
+                  ]}
+                />
+              </>
+            )}
 
             {transcribeSource === "audio" && hasWhisperX && (
               <TranscribeAudioRows
@@ -243,6 +334,15 @@ export default function TranscribePanel() {
               </Button>
               {episode.transcribed && (
                 <span className="text-xs text-muted-foreground">Saves a new version — previous ones stay in History.</span>
+              )}
+              {!hasSubs && (
+                <button
+                  type="button"
+                  onClick={() => pickSource("upload")}
+                  className="text-xs text-muted-foreground hover:text-foreground underline transition"
+                >
+                  Upload transcript instead
+                </button>
               )}
               {startMutation.isError && (
                 <p className="text-destructive text-xs w-full">{errorMessage(startMutation.error)}</p>

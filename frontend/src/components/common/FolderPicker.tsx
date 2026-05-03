@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useRef } from "react";
-import { listDirectory, createDirectory } from "@/api/client";
+import { listDirectory, createDirectory, listDrives } from "@/api/client";
 import type { DirEntry, DirListing, FileEntry } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Folder, FolderPlus, Music, ChevronLeft, ChevronRight, ArrowUp, Home, HardDrive, X } from "lucide-react";
@@ -22,33 +22,47 @@ interface FolderPickerProps {
 const QUICK_ACCESS_BASE = [
   { label: "Home", path: "~", icon: Home },
 ];
-const QUICK_ACCESS_OPTIONAL = [
-  { label: "Drive C", path: "/mnt/c", icon: HardDrive },
-  { label: "Drive D", path: "/mnt/d", icon: HardDrive },
-];
+
+const LAST_PATH_KEY = "podcodex.lastBrowsePath";
+
+const readLastPath = (): string | null => {
+  try {
+    return localStorage.getItem(LAST_PATH_KEY);
+  } catch {
+    return null;
+  }
+};
+
+const writeLastPath = (path: string): void => {
+  try {
+    localStorage.setItem(LAST_PATH_KEY, path);
+  } catch {
+    /* localStorage unavailable — ignore */
+  }
+};
 
 export default function FolderPicker({ open, onClose, onSelect, initialPath, mode = "folder", extensions, title, description }: FolderPickerProps) {
-  const [currentPath, setCurrentPath] = useState(initialPath || "~");
+  const [currentPath, setCurrentPath] = useState(() => readLastPath() || initialPath || "~");
   const [listing, setListing] = useState<DirListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [editingPath, setEditingPath] = useState(false);
-  const [quickAccess, setQuickAccess] = useState(QUICK_ACCESS_BASE);
+  const [quickAccess, setQuickAccess] = useState<{ label: string; path: string; icon: typeof Home }[]>(QUICK_ACCESS_BASE);
 
-  // Probe optional Quick Access entries (e.g. WSL drives) once and only show
-  // those that actually resolve on the host.
+  // Backend enumerates drives based on host OS — Windows letters, macOS
+  // /Volumes/*, Linux /mnt/<letter> (incl. WSL bridges) + /media/<user>.
+  // Replaces a previously-hardcoded WSL-only list that didn't surface
+  // anything on native Windows or macOS installs.
   useEffect(() => {
     let cancelled = false;
-    Promise.all(
-      QUICK_ACCESS_OPTIONAL.map((item) =>
-        listDirectory(item.path)
-          .then((data) => (data.error ? null : item))
-          .catch(() => null),
-      ),
-    ).then((results) => {
-      if (cancelled) return;
-      const extras = results.filter((r): r is typeof QUICK_ACCESS_OPTIONAL[number] => r !== null);
-      if (extras.length > 0) setQuickAccess([...QUICK_ACCESS_BASE, ...extras]);
-    });
+    listDrives()
+      .then(({ drives }) => {
+        if (cancelled || drives.length === 0) return;
+        setQuickAccess([
+          ...QUICK_ACCESS_BASE,
+          ...drives.map((d) => ({ ...d, icon: HardDrive })),
+        ]);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -61,15 +75,26 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
   const [historyIndex, setHistoryIndex] = useState(-1);
   const pathInputRef = useRef<HTMLInputElement>(null);
 
-  const navigateTo = (path: string, addToHistory = true) => {
-    if (addToHistory && listing?.path) {
-      const newHistory = history.slice(0, historyIndex + 1);
-      newHistory.push(listing.path);
-      setHistory(newHistory);
-      setHistoryIndex(newHistory.length - 1);
+  // Latest-value refs so navigateTo's identity stays stable across renders and
+  // rapid breadcrumb clicks read the latest history rather than a stale closure.
+  const historyRef = useRef<string[]>(history);
+  const historyIndexRef = useRef<number>(historyIndex);
+  const listingPathRef = useRef<string | null>(null);
+  historyRef.current = history;
+  historyIndexRef.current = historyIndex;
+  listingPathRef.current = listing?.path ?? null;
+
+  const navigateTo = useCallback((path: string, addToHistory = true) => {
+    if (addToHistory && listingPathRef.current) {
+      const next = [
+        ...historyRef.current.slice(0, historyIndexRef.current + 1),
+        listingPathRef.current,
+      ];
+      setHistory(next);
+      setHistoryIndex(next.length - 1);
     }
     setCurrentPath(path);
-  };
+  }, []);
 
   const canGoBack = historyIndex >= 0;
   const canGoForward = historyIndex < history.length - 1;
@@ -131,11 +156,14 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
     }
   };
 
+  const commitSelect = (selected: string) => {
+    if (listing?.path) writeLastPath(listing.path);
+    onSelect(selected);
+    onClose();
+  };
+
   const handleSelect = () => {
-    if (listing) {
-      onSelect(listing.path);
-      onClose();
-    }
+    if (listing) commitSelect(listing.path);
   };
 
   const handleCreateFolder = async () => {
@@ -151,40 +179,51 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
     }
   };
 
-  // Build breadcrumb segments from the resolved path.
+  // Build breadcrumb segments from the resolved path. Handles Windows (\) and POSIX (/).
   const breadcrumbs = (() => {
     const p = listing?.path || "";
     if (!p) return [];
-    const parts = p.split("/").filter(Boolean);
-    const crumbs: { label: string; path: string }[] = [{ label: "/", path: "/" }];
+    const isWindows = p.includes("\\") || /^[a-zA-Z]:/.test(p);
+    const sep = isWindows ? "\\" : "/";
+    const parts = p.split(/[\\/]+/).filter(Boolean);
+    const root = isWindows ? "" : "/";
+    const crumbs: { label: string; path: string }[] = isWindows ? [] : [{ label: "/", path: "/" }];
     for (let i = 0; i < parts.length; i++) {
-      crumbs.push({ label: parts[i], path: "/" + parts.slice(0, i + 1).join("/") });
+      const joined = parts.slice(0, i + 1).join(sep);
+      crumbs.push({ label: parts[i], path: isWindows ? joined : root + joined });
     }
     return crumbs;
   })();
 
-  const displayTitle = title || (mode === "file" ? "Browse for an audio file" : "Browse for a folder");
+  const displayTitle = title || (mode === "file" ? "Choose a file" : "Choose a folder");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-card border border-border rounded-xl w-[700px] max-h-[80vh] flex flex-col shadow-2xl">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={displayTitle}
+    >
+      <div className="bg-card border border-border rounded-lg w-[700px] h-[70vh] flex flex-col shadow-lg">
         {/* Header */}
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <h3 className="font-semibold text-sm">{displayTitle}</h3>
+          <h3 className="text-lg font-semibold">{displayTitle}</h3>
           {description && (
             <span className="text-xs text-muted-foreground ml-3 mr-auto">{description}</span>
           )}
-          <Button onClick={onClose} variant="ghost" size="sm" className="h-7 w-7 p-0">
+          <Button onClick={onClose} variant="ghost" size="sm" className="h-7 w-7 p-0" aria-label="Close">
             <X className="w-4 h-4" />
           </Button>
         </div>
 
         {/* Toolbar: nav buttons + breadcrumb/path */}
         <div className="px-4 py-2 border-b border-border flex items-center gap-1">
-          <Button onClick={goBack} variant="ghost" size="sm" disabled={!canGoBack} className="h-7 w-7 p-0">
+          <Button onClick={goBack} variant="ghost" size="sm" disabled={!canGoBack} className="h-7 w-7 p-0" aria-label="Go back">
             <ChevronLeft className="w-4 h-4" />
           </Button>
-          <Button onClick={goForward} variant="ghost" size="sm" disabled={!canGoForward} className="h-7 w-7 p-0">
+          <Button onClick={goForward} variant="ghost" size="sm" disabled={!canGoForward} className="h-7 w-7 p-0" aria-label="Go forward">
             <ChevronRight className="w-4 h-4" />
           </Button>
           <Button
@@ -192,6 +231,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
             variant="ghost" size="sm"
             disabled={!listing?.parent}
             className="h-7 w-7 p-0"
+            aria-label="Go up one folder"
           >
             <ArrowUp className="w-4 h-4" />
           </Button>
@@ -213,7 +253,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
             ) : (
               <button
                 onClick={() => setEditingPath(true)}
-                className="flex items-center gap-0.5 w-full text-left text-sm px-2 py-1
+                className="flex items-center gap-0.5 w-full text-left text-xs px-2 py-1
                            rounded hover:bg-accent transition overflow-x-auto"
               >
                 {breadcrumbs.map((crumb, i) => (
@@ -240,7 +280,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
               <button
                 key={item.path}
                 onClick={() => navigateTo(item.path)}
-                className={`flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent transition text-left
+                className={`flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition text-left
                   ${listing?.path?.startsWith(item.path === "~" ? "" : item.path) ? "bg-accent text-foreground" : "text-muted-foreground"}`}
               >
                 <item.icon className="w-3.5 h-3.5" />
@@ -266,7 +306,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
                     key={dir.path}
                     dir={dir}
                     onNavigate={() => navigateTo(dir.path)}
-                    onSelect={mode === "folder" ? () => { onSelect(dir.path); onClose(); } : undefined}
+                    onSelect={mode === "folder" ? () => commitSelect(dir.path) : undefined}
                   />
                 ))}
 
@@ -274,7 +314,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
                   <FileRow
                     key={file.path}
                     file={file}
-                    onSelect={() => { onSelect(file.path); onClose(); }}
+                    onSelect={() => commitSelect(file.path)}
                   />
                 ))}
 
@@ -345,7 +385,7 @@ function DirRow({
 }) {
   return (
     <div
-      className="w-full text-left px-4 py-1.5 text-sm hover:bg-accent
+      className="w-full text-left px-4 py-1.5 text-xs hover:bg-accent
                  transition flex items-center gap-2 group"
     >
       <Folder className={`w-4 h-4 shrink-0 ${dir.is_show ? "text-primary" : dir.has_audio ? "text-warning" : "text-muted-foreground"}`} />
@@ -391,7 +431,7 @@ function FileRow({
   return (
     <button
       onClick={onSelect}
-      className="w-full text-left px-4 py-1.5 text-sm hover:bg-accent
+      className="w-full text-left px-4 py-1.5 text-xs hover:bg-accent
                  transition flex items-center gap-2"
     >
       <Music className="w-4 h-4 shrink-0 text-success" />

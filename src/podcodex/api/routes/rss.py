@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 
 from podcodex.api.routes._helpers import (
     is_downloaded,
@@ -40,8 +42,22 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
     if not rss_url:
         raise HTTPException(400, "No RSS URL provided and none in show.toml")
 
-    episodes = fetch_feed(rss_url)
+    try:
+        # feedparser blocks on network — keep it off the event loop
+        episodes = await asyncio.to_thread(fetch_feed, rss_url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if not episodes:
+        # Transient failures (DNS, captive portal, feedparser bozo) shouldn't
+        # block the show page when we already have a cache to serve.
+        cached = load_feed_cache(path)
+        if cached:
+            logger.warning(
+                "fetch_feed returned no episodes for {}; serving cache ({} episodes)",
+                rss_url,
+                len(cached),
+            )
+            return [rss_episode_to_out(ep, path) for ep in cached]
         raise HTTPException(502, "Feed returned no episodes (parse error or empty)")
 
     # Keep episodes pulled from the feed flagged ``removed=True`` rather than
@@ -53,7 +69,7 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
     if meta:
         current = meta.artwork_url or ""
         if not current or "60x60" in current or "artworkUrl60" in current:
-            fresh = feed_artwork(rss_url)
+            fresh = await asyncio.to_thread(feed_artwork, rss_url)
             if fresh and fresh != current:
                 meta.artwork_url = fresh
                 save_show_meta(path, meta)

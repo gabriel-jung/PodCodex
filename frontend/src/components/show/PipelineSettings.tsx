@@ -1,7 +1,11 @@
+import { useMemo } from "react";
 import { usePipelineConfig } from "@/hooks/usePipelineConfig";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
+import { useApiKeys } from "@/hooks/useApiKeys";
+import { useProviderProfiles } from "@/hooks/useProviderProfiles";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { AdvancedFieldset } from "@/components/ui/advanced-fieldset";
+import { NullableNumberInput } from "@/components/ui/number-input";
 import { languageToISO, selectClass, inputWidth } from "@/lib/utils";
 
 interface PipelineSettingsProps {
@@ -11,7 +15,10 @@ interface PipelineSettingsProps {
 export default function PipelineSettings({ language }: PipelineSettingsProps) {
   const { tc, setTc, llm, setLLM, targetLang, setTargetLang } = usePipelineConfig();
 
-  const { whisperModels, detectedKeys: detected, apiProviders } = useLLMProviders();
+  const { whisperModels, detectedKeys: detected } = useLLMProviders();
+  const { profiles } = useProviderProfiles();
+  const { keys } = useApiKeys();
+  const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
 
   return (
     <>
@@ -61,14 +68,18 @@ export default function PipelineSettings({ language }: PipelineSettingsProps) {
         </SettingRow>
 
         {llm.mode === "api" && (
-          <SettingRow label="Provider" help="Cloud AI service.">
-            <select value={llm.provider} onChange={(e) => setLLM({ provider: e.target.value })} className={selectClass}>
-              {apiProviders.length > 0
-                ? apiProviders.map(([key, spec]) => (
-                    <option key={key} value={key}>{spec.label}</option>
-                  ))
-                : <option value={llm.provider}>{llm.provider}</option>
-              }
+          <SettingRow label="Provider" help="Pick a profile (built-in or custom). Manage profiles in Settings → Credentials.">
+            <select
+              value={llm.providerProfile}
+              onChange={(e) => setLLM({ providerProfile: e.target.value })}
+              className={selectClass}
+            >
+              <option value="">Pick a profile…</option>
+              {apiProfiles.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name}{p.builtin ? "" : " (custom)"}
+                </option>
+              ))}
             </select>
           </SettingRow>
         )}
@@ -78,8 +89,22 @@ export default function PipelineSettings({ language }: PipelineSettingsProps) {
         </SettingRow>
 
         {llm.mode === "api" && (
-          <SettingRow label="API key" help="Authentication key. Empty = read from environment.">
-            <input type="password" value={llm.apiKey} onChange={(e) => setLLM({ apiKey: e.target.value })} placeholder={detected[llm.provider] || "from env"} className={`input ${inputWidth.short}`} />
+          <SettingRow label="LLM API key" help="Pick a key from the pool. Add keys in Settings → Credentials.">
+            <select
+              value={llm.keyName}
+              onChange={(e) => setLLM({ keyName: e.target.value })}
+              className={selectClass}
+            >
+              <option value="">
+                {keys.length === 0 ? "No keys yet" : "Pick a key…"}
+              </option>
+              {keys.map((k) => (
+                <option key={k.name} value={k.name}>
+                  {k.name}
+                  {k.suggested_provider ? ` — ${k.suggested_provider}` : ""}
+                </option>
+              ))}
+            </select>
           </SettingRow>
         )}
       </SettingSection>
@@ -96,14 +121,15 @@ export default function PipelineSettings({ language }: PipelineSettingsProps) {
         legend="Advanced"
         description="Batch sizes, custom endpoints, and extra context. Most users leave these alone."
       >
-        <SettingRow label="Batch size" help="GPU batch size for transcription. Larger = faster, more VRAM.">
-          <input type="number" value={tc.batchSize} onChange={(e) => setTc({ batchSize: Number(e.target.value) })} min={1} className={`input ${inputWidth.numeric}`} />
+        <SettingRow label="Batch size" help="GPU batch size for transcription. Leave empty to auto-detect from VRAM (8 for ≤10 GB, 16 above). Lower if you hit out-of-memory; raise on big GPUs for more speed.">
+          <NullableNumberInput
+            value={tc.batchSize}
+            onChange={(batchSize) => setTc({ batchSize })}
+            placeholder="Auto"
+            min={1}
+            className={`input ${inputWidth.numeric}`}
+          />
         </SettingRow>
-        {llm.mode === "api" && (
-          <SettingRow label="Endpoint" help="Custom API base URL. Empty = provider default.">
-            <input value={llm.apiBaseUrl} onChange={(e) => setLLM({ apiBaseUrl: e.target.value })} placeholder="default" className={`input ${inputWidth.medium}`} />
-          </SettingRow>
-        )}
         <SettingRow label="Batch duration" help="Max audio duration per LLM request.">
           <div className="flex items-center gap-1.5">
             <input type="number" value={llm.batchMinutes} onChange={(e) => setLLM({ batchMinutes: Number(e.target.value) })} min={1} step={5} className={`input ${inputWidth.numeric}`} />

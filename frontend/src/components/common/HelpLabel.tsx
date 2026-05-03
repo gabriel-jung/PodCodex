@@ -9,7 +9,7 @@ interface HelpLabelProps {
 
 export default function HelpLabel({ label, help }: HelpLabelProps) {
   return (
-    <label className="text-muted-foreground flex items-center gap-1">
+    <label className="text-xs text-muted-foreground flex items-center gap-1">
       {label}
       {help && <HelpIcon help={help} />}
     </label>

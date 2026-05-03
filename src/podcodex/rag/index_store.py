@@ -207,8 +207,13 @@ def _approx_substring(
     return (best_d, prev_start[end], end)
 
 
-_HOME_INDEX_PATH: Path = Path.home() / ".local" / "share" / "podcodex" / "index"
 _REPO_FALLBACKS: tuple[Path, ...] = (Path("deploy") / "index", Path("index"))
+
+
+def _canonical_index_path() -> Path:
+    from podcodex.core.app_paths import data_dir
+
+    return data_dir() / "index"
 
 
 def _dir_has_data(path: Path) -> bool:
@@ -223,23 +228,25 @@ def _resolve_default_index_path() -> tuple[Path, str]:
     """Pick the default index path when no explicit one is passed.
 
     Resolution order:
-      1. ``PODCODEX_INDEX`` env var (explicit override)
-      2. ``~/.local/share/podcodex/index`` if populated (desktop app default)
-      3. ``./deploy/index`` or ``./index`` (repo-local fallback, if populated)
-      4. ``~/.local/share/podcodex/index`` (created empty)
+      1. ``PODCODEX_INDEX`` env var (explicit override).
+      2. ``<data_dir>/index`` if populated — canonical location, lives
+         under the same app-data root as models/logs/GPU backend.
+      3. ``./deploy/index`` or ``./index`` (repo-local fallback, if populated).
+      4. ``<data_dir>/index`` (created empty).
 
     Returns ``(path, reason)`` for logging.
     """
     override = os.environ.get("PODCODEX_INDEX", "").strip()
     if override:
         return Path(override), "PODCODEX_INDEX env"
-    if _dir_has_data(_HOME_INDEX_PATH):
-        return _HOME_INDEX_PATH, "home default"
+    canonical = _canonical_index_path()
+    if _dir_has_data(canonical):
+        return canonical, "data dir"
     for candidate in _REPO_FALLBACKS:
         resolved = candidate.resolve()
         if _dir_has_data(resolved):
             return resolved, f"repo-local fallback ({candidate})"
-    return _HOME_INDEX_PATH, "home default (new, empty)"
+    return canonical, "data dir (new, empty)"
 
 
 def _chunk_schema(dim: int) -> pa.Schema:
@@ -766,6 +773,21 @@ class IndexStore:
         )
         return str(rows[0].get("source", "")) if rows else ""
 
+    def episode_collection_summary(self, collection: str, episode: str) -> dict | None:
+        """``(chunk_count, source)`` for an episode in a collection, or ``None``."""
+        if not self.collection_exists(collection):
+            return None
+        t = self._table(collection)
+        where = f"episode = '{_escape(episode)}'"
+        count = int(t.count_rows(filter=where))
+        if not count:
+            return None
+        rows = t.search().where(where).select(["source"]).limit(1).to_list()
+        return {
+            "chunk_count": count,
+            "source": str(rows[0].get("source", "")) if rows else "",
+        }
+
     def delete_episode(self, collection: str, episode: str) -> None:
         """Delete every chunk for an episode in a collection.
 
@@ -915,6 +937,60 @@ class IndexStore:
         out.sort(key=lambda c: c.get("chunk_index", 0))
         return out
 
+    def load_chunks_with_vector_stats(
+        self, collection: str, episode: str
+    ) -> list[dict]:
+        """Return chunks for an episode with per-vector health stats attached.
+
+        Powers the index inspector. Loads the vector column, computes
+        L2 norm, zero-fraction, min/max per chunk, then drops the raw
+        vector before returning so the response stays small.
+        """
+        if not self.collection_exists(collection):
+            return []
+        t = self._table(collection)
+        rows = (
+            t.search()
+            .where(f"episode = '{_escape(episode)}'")
+            .select(
+                [
+                    "chunk_index",
+                    "show",
+                    "episode",
+                    "source",
+                    "dominant_speaker",
+                    "start",
+                    "end",
+                    "text",
+                    "vector",
+                    "meta",
+                ]
+            )
+            .limit(100_000)
+            .to_list()
+        )
+        out: list[dict] = []
+        for r in rows:
+            v = np.asarray(r.get("vector") or [], dtype=np.float32)
+            chunk = _row_to_chunk(r)
+            if v.size:
+                chunk["vector_norm"] = float(np.linalg.norm(v))
+                chunk["vector_zero_frac"] = float((v == 0.0).mean())
+                chunk["vector_min"] = float(v.min())
+                chunk["vector_max"] = float(v.max())
+                chunk["vector_mean"] = float(v.mean())
+                chunk["vector_std"] = float(v.std())
+            else:
+                chunk["vector_norm"] = 0.0
+                chunk["vector_zero_frac"] = 1.0
+                chunk["vector_min"] = 0.0
+                chunk["vector_max"] = 0.0
+                chunk["vector_mean"] = 0.0
+                chunk["vector_std"] = 0.0
+            out.append(chunk)
+        out.sort(key=lambda c: c.get("chunk_index", 0))
+        return out
+
     def get_chunk_window(
         self,
         collection: str,
@@ -1040,11 +1116,17 @@ class IndexStore:
         if not self.collection_exists(collection):
             return []
         t = self._table(collection)
+        # ``metric="cosine"`` matters for unnormalized embedders (Perplexity's
+        # context model emits int8-quantized unnormalized vectors with
+        # norms ~500). LanceDB's default is L2, which would rank by
+        # magnitude rather than direction and break similarity. For
+        # pre-normalized embedders (E5, BGE) cosine and L2 produce
+        # identical rankings, so this is safe for everyone.
         q = t.search(
             query_vec.astype(np.float32).tolist(),
             query_type="vector",
             vector_column_name="vector",
-        )
+        ).metric("cosine")
         clause = _build_where(
             episode=episode,
             episodes=episodes,
@@ -1058,6 +1140,8 @@ class IndexStore:
         rows = q.limit(top_k).to_list()
         out: list[dict] = []
         for r in rows:
+            # LanceDB cosine distance is 1 - cosine_sim, so 1 - distance is
+            # the cosine similarity in [0, 1] (assuming non-negative dot).
             score = max(0.0, 1.0 - float(r.get("_distance", 1.0)))
             out.append({**_row_to_chunk(r), "score": score})
         return out
@@ -1321,6 +1405,20 @@ class IndexStore:
     def list_sources(self, collection: str) -> list[str]:
         """Return sorted distinct ``source`` values in a collection."""
         return self._distinct(collection, "source")
+
+    def collection_summary(self, collection: str) -> dict:
+        """Single-scan ``{episodes, chunks, sources}`` for ``/api/search/stats``."""
+        if not self.collection_exists(collection):
+            return {"episodes": 0, "chunks": 0, "sources": []}
+        t = self._table(collection)
+        rows = t.search().select(["episode", "source"]).limit(1_000_000).to_list()
+        episodes = {r["episode"] for r in rows if r.get("episode")}
+        sources = sorted({r["source"] for r in rows if r.get("source")})
+        return {
+            "episodes": len(episodes),
+            "chunks": len(rows),
+            "sources": sources,
+        }
 
     def list_speakers(self, collection: str) -> list[str]:
         """Return sorted distinct ``dominant_speaker`` values in a collection."""
@@ -1727,8 +1825,9 @@ def _row_to_chunk(row: dict) -> dict:
 def get_index_store() -> IndexStore:
     """Process-wide cached IndexStore using the default path resolution.
 
-    Respects ``PODCODEX_INDEX`` env var, then ``~/.local/share/podcodex/index``,
-    then repo-local fallbacks. Callers that need a different path should
-    instantiate ``IndexStore(custom_path)`` directly.
+    Path resolution lives in ``_resolve_default_index_path`` — env var,
+    canonical ``<data_dir>/index``, legacy XDG fallback, repo-local. Callers
+    that need a different path should instantiate ``IndexStore(custom_path)``
+    directly.
     """
     return IndexStore()

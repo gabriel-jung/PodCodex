@@ -22,17 +22,18 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { deriveEpisodeStatuses, type EpStatus } from "@/lib/batchUtils";
+import { countByStatus, deriveEpisodeStatuses, parseProgressCount, type EpStatus } from "@/lib/batchUtils";
 
 function DownloadStrip() {
-  const { downloadTaskId, downloadFolder, setDownloadTask } = useTaskStore();
+  const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
+  const downloadFolder = useTaskStore((s) => s.downloadFolder);
+  const setDownloadTask = useTaskStore((s) => s.setDownloadTask);
   const progress = useProgress(downloadTaskId);
   const queryClient = useQueryClient();
   const didInvalidateRef = useRef(false);
   const [showFailed, setShowFailed] = useState(false);
 
   const pct = progress ? Math.round(progress.progress * 100) : 0;
-  const msg = progress?.message || "Starting...";
   const isDone = progress?.status === "completed";
   const isFailed = progress?.status === "failed";
   const isCancelled = progress?.status === "cancelled";
@@ -47,6 +48,10 @@ function DownloadStrip() {
   const successPct = Math.round((successCount / total) * 100);
   const failedPct = Math.round((failedCount / total) * 100);
   const hasFailures = failedCount > 0;
+
+  const { current: msgCurrent, total: msgTotal } = parseProgressCount(progress?.message);
+  const dlTotal = msgTotal ?? (results.length || null);
+  const dlCurrent = isFinished ? (results.length || null) : msgCurrent;
 
   const dismiss = () => {
     setDownloadTask(null);
@@ -85,33 +90,34 @@ function DownloadStrip() {
     <div>
       <div className="px-4 py-2 flex items-center gap-3 text-xs">
         <Download className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-        <div className="flex-1 min-w-0 flex items-center gap-2">
-          <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden flex">
-            {isFinished && results.length > 0 ? (
-              <>
-                <div
-                  className="h-full bg-success transition-all duration-300"
-                  style={{ width: `${successPct}%` }}
-                />
-                {failedPct > 0 && (
-                  <div
-                    className="h-full bg-destructive transition-all duration-300"
-                    style={{ width: `${failedPct}%` }}
-                  />
-                )}
-              </>
-            ) : (
+        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden flex">
+          {isFinished && results.length > 0 ? (
+            <>
               <div
-                className={`h-full transition-all duration-300 ${
-                  isFailed ? "bg-destructive" : isCancelled ? "bg-warning" : "bg-primary"
-                }`}
-                style={{ width: `${pct}%` }}
+                className="h-full bg-success transition-all duration-300"
+                style={{ width: `${successPct}%` }}
               />
-            )}
-          </div>
-          <span className="text-muted-foreground shrink-0 w-8 text-right">{pct}%</span>
+              {failedPct > 0 && (
+                <div
+                  className="h-full bg-destructive transition-all duration-300"
+                  style={{ width: `${failedPct}%` }}
+                />
+              )}
+            </>
+          ) : (
+            <div
+              className={`h-full transition-all duration-300 ${
+                isFailed ? "bg-destructive" : isCancelled ? "bg-warning" : "bg-primary"
+              }`}
+              style={{ width: `${pct}%` }}
+            />
+          )}
         </div>
-        <span className="text-muted-foreground truncate max-w-[300px]">{msg}</span>
+        {dlTotal != null && (
+          <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
+            {dlCurrent ?? 0}/{dlTotal}
+          </span>
+        )}
         {isFinished && failedResults.length > 0 && (
           <button onClick={() => setShowFailed(!showFailed)} className="text-destructive hover:text-destructive/80 transition text-2xs shrink-0">
             {failedResults.length} failed
@@ -201,15 +207,15 @@ function BatchResultSummary({ result, onDismiss }: { result: BatchResult; onDism
         <div className="px-5 py-4 space-y-2">
           <div className="grid grid-cols-3 gap-3 text-center">
             <div>
-              <p className="text-2xl font-bold text-success">{result.completed}</p>
+              <p className="text-2xl font-semibold text-success">{result.completed}</p>
               <p className="text-xs text-muted-foreground">Completed</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-muted-foreground">{result.skipped}</p>
+              <p className="text-2xl font-semibold text-muted-foreground">{result.skipped}</p>
               <p className="text-xs text-muted-foreground">Skipped</p>
             </div>
             <div>
-              <p className="text-2xl font-bold text-destructive">{result.failed}</p>
+              <p className="text-2xl font-semibold text-destructive">{result.failed}</p>
               <p className="text-xs text-muted-foreground">Failed</p>
             </div>
           </div>
@@ -248,7 +254,11 @@ function BatchResultSummary({ result, onDismiss }: { result: BatchResult; onDism
 /* ── BatchStrip — expandable progress with per-episode detail ── */
 
 function BatchStrip() {
-  const { batchTaskId, batchFolder, batchEpisodes, batchStep, setBatchTask } = useTaskStore();
+  const batchTaskId = useTaskStore((s) => s.batchTaskId);
+  const batchFolder = useTaskStore((s) => s.batchFolder);
+  const batchEpisodes = useTaskStore((s) => s.batchEpisodes);
+  const batchStep = useTaskStore((s) => s.batchStep);
+  const setBatchTask = useTaskStore((s) => s.setBatchTask);
   const progress = useProgress(batchTaskId);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -261,7 +271,6 @@ function BatchStrip() {
   const log = progress?.log ?? [];
 
   const pct = progress ? Math.round(progress.progress * 100) : 0;
-  const msg = progress?.message || "Starting...";
   const isDone = progress?.status === "completed";
   const isFailed = progress?.status === "failed";
   const isCancelled = progress?.status === "cancelled";
@@ -286,6 +295,13 @@ function BatchStrip() {
     () => deriveEpisodeStatuses(batchEpisodes, progress),
     [batchEpisodes, progress],
   );
+
+  const counts = useMemo(() => countByStatus(episodeStatuses), [episodeStatuses]);
+  const totalCount = episodeStatuses.length;
+  const completedCount = counts.done + counts.failed;
+  const currentN = isFinished
+    ? completedCount
+    : Math.min(totalCount, completedCount + counts.running);
 
   // Auto-dismiss if task ID is set but neither WS nor API polling returns progress.
   // 12s gives the 5s poll interval time to fire and hydrate before we give up.
@@ -341,24 +357,25 @@ function BatchStrip() {
             className={`w-3.5 h-3.5 shrink-0 ${isFinished ? "text-muted-foreground" : "text-primary animate-spin"}`}
           />
           <span className="text-foreground font-medium shrink-0">{stepLabel}</span>
-          <div className="flex-1 min-w-0 flex items-center gap-2">
-            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all duration-300 ${
-                  isFailed
-                    ? "bg-destructive"
-                    : isCancelled
-                      ? "bg-warning"
-                      : isDone
-                        ? "bg-success"
-                        : "bg-primary"
-                }`}
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-            <span className="text-muted-foreground shrink-0 w-8 text-right">{pct}%</span>
+          <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${
+                isFailed
+                  ? "bg-destructive"
+                  : isCancelled
+                    ? "bg-warning"
+                    : isDone
+                      ? "bg-success"
+                      : "bg-primary"
+              }`}
+              style={{ width: `${pct}%` }}
+            />
           </div>
-          <span className="text-muted-foreground truncate max-w-[200px]">{msg}</span>
+          {totalCount > 0 && (
+            <span className="text-muted-foreground shrink-0 font-mono tabular-nums">
+              {currentN}/{totalCount}
+            </span>
+          )}
           {batchEpisodes.length > 0 && (
             expanded ? (
               <ChevronUp className="w-3 h-3 text-muted-foreground shrink-0" />
@@ -434,7 +451,7 @@ function BatchStrip() {
               Logs ({log.length})
             </button>
             {showLog && (
-              <pre className="mt-1.5 p-2 bg-black/40 rounded text-[0.55rem] leading-normal text-muted-foreground max-h-80 overflow-auto font-mono">
+              <pre className="mt-1.5 p-2 bg-muted rounded text-3xs leading-normal text-muted-foreground max-h-80 overflow-auto font-mono">
                 {log.map((line, i) => (
                   <div key={i}>{line}</div>
                 ))}
@@ -457,7 +474,8 @@ function BatchStrip() {
 }
 
 export default function TaskBar() {
-  const { downloadTaskId, batchTaskId } = useTaskStore();
+  const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
+  const batchTaskId = useTaskStore((s) => s.batchTaskId);
   if (!downloadTaskId && !batchTaskId) return null;
 
   return (

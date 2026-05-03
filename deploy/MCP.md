@@ -38,7 +38,7 @@ PodCodex's desktop app writes the Claude Desktop config for you and points it at
 
 The toggle writes a stdio `mcpServers.podcodex` entry into `claude_desktop_config.json` that points at the absolute path of `.venv/bin/podcodex-mcp`. Claude Desktop spawns that binary on each startup and keeps it alive for the session.
 
-PodCodex's desktop app does not need to be running for Claude Desktop to use the MCP — the entry persists and the subprocess reads the shared LanceDB index at `~/.local/share/podcodex/index/` directly. Toggling off removes the entry.
+PodCodex's desktop app does not need to be running for Claude Desktop to use the MCP — the entry persists and the subprocess reads the shared LanceDB index at `<data_dir>/index/` directly (resolved per platform; see [Path B requirements](#requirements) below). Toggling off removes the entry.
 
 ### Why the toggle
 
@@ -81,7 +81,7 @@ Use this when you run Claude Code, or Claude Desktop without PodCodex's desktop 
 ### Requirements
 
 - Python 3.12, same venv as the desktop app / bot.
-- An existing index at `~/.local/share/podcodex/index/` (or wherever you point `PODCODEX_INDEX`).
+- An existing index at `<data_dir>/index/` (or wherever you point `PODCODEX_INDEX`). `<data_dir>` resolves to `~/.local/share/podcodex` on Linux, `~/Library/Application Support/podcodex` on macOS, `%APPDATA%\podcodex` on Windows.
 
 ### Install
 
@@ -115,14 +115,14 @@ Add (or merge into) the `mcpServers` block:
     "podcodex": {
       "command": "/absolute/path/to/PodCodex/.venv/bin/podcodex-mcp",
       "env": {
-        "PODCODEX_INDEX": "/Users/you/.local/share/podcodex/index"
+        "PODCODEX_INDEX": "/Users/you/Library/Application Support/podcodex/index"
       }
     }
   }
 }
 ```
 
-Replace `/absolute/path/to/PodCodex` with your actual checkout. `PODCODEX_INDEX` can be omitted — it defaults to `~/.local/share/podcodex/index`. Same env var as the desktop app and Discord bot.
+Replace `/absolute/path/to/PodCodex` with your actual checkout. `PODCODEX_INDEX` can be omitted — it defaults to `<data_dir>/index` (see [Requirements](#requirements) for the platform-specific path). Same env var as the desktop app and Discord bot.
 
 Restart Claude Desktop. You should see the 🔌 plug icon next to the composer and the four tools in its menu.
 

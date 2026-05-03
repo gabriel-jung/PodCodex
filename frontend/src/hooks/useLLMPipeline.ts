@@ -9,11 +9,11 @@ import type { LLMConfig, LLMPresetKey } from "@/stores/pipelineConfigStore";
 import type { Episode, ShowMeta, Segment } from "@/api/types";
 import { usePipelineConfigStore } from "@/stores";
 import { useCapabilities } from "@/hooks/useCapabilities";
-import { useLLMProviders } from "@/hooks/useLLMProviders";
+import { useApiKeys } from "@/hooks/useApiKeys";
 
-// Priority order for auto-selecting the cloud provider when multiple API keys
-// are present. Mirrors SECRET_KEYS in src/podcodex/api/routes/config.py.
-const _AUTO_PROVIDERS = ["openai", "anthropic", "mistral"] as const;
+// Priority order for the one-shot "promote to cloud" preset when an
+// imported key has a hint. Built-in profile names only.
+const AUTO_PROFILES = ["openai", "anthropic", "mistral"] as const;
 
 /**
  * Shared LLM configuration state for pipeline panels (correct, translate).
@@ -31,7 +31,7 @@ export function useLLMConfig(
   const setLLM = usePipelineConfigStore((s) => s.setLLM);
   const llmPresetTouched = usePipelineConfigStore((s) => s.llmPresetTouched);
   const applyLLMPreset = usePipelineConfigStore((s) => s.applyLLMPreset);
-  const { detectedKeys } = useLLMProviders();
+  const { keys: pooledKeys } = useApiKeys();
 
   // Sync sourceLang and context when the episode or show changes
   const episodeId = episode?.id;
@@ -45,15 +45,16 @@ export function useLLMConfig(
     if (Object.keys(patches).length > 0) setLLM(patches);
   }, [episodeId, showName]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // One-shot: when the user has never chosen a preset but credentials exist,
-  // switch to cloud with the highest-priority detected provider. Runs once
-  // because applyLLMPreset flips `llmPresetTouched` to true.
+  // One-shot: when the user has never chosen a preset but their pool
+  // contains a key with a known provider hint, switch to cloud + that
+  // profile. Runs once because applyLLMPreset flips `llmPresetTouched`.
   useEffect(() => {
-    if (llmPresetTouched) return;
-    const detected = detectedKeys || {};
-    const provider = _AUTO_PROVIDERS.find((p) => detected[p]);
-    if (provider) applyLLMPreset("cloud", provider);
-  }, [llmPresetTouched, detectedKeys, applyLLMPreset]);
+    if (llmPresetTouched || pooledKeys.length === 0) return;
+    const profile = AUTO_PROFILES.find((p) =>
+      pooledKeys.some((k) => k.suggested_provider === p),
+    );
+    if (profile) applyLLMPreset("cloud", profile);
+  }, [llmPresetTouched, pooledKeys, applyLLMPreset]);
 
   const setter = useCallback(
     (valOrFn: LLMConfig | ((prev: LLMConfig) => LLMConfig)) => {
@@ -79,13 +80,12 @@ export function buildLLMRequest(audioPath: string, config: LLMConfig) {
   return {
     audio_path: audioPath,
     mode: config.mode === "api" ? "api" : "ollama",
-    provider: config.mode === "api" && config.provider !== "custom" ? config.provider : undefined,
+    provider_profile: config.providerProfile || undefined,
+    key_name: config.keyName || undefined,
     model: config.model,
     context: config.context,
     source_lang: config.sourceLang,
     batch_minutes: config.batchMinutes,
-    api_base_url: config.apiBaseUrl || undefined,
-    api_key: config.apiKey || undefined,
   } as const;
 }
 
@@ -138,11 +138,12 @@ export function useInputVersions(
   audioPath: string | null | undefined,
   step: PipelineInputStep,
   enabled: boolean,
+  outputDir?: string | null,
 ) {
   const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(audioPath),
-    queryFn: () => getAllVersions(audioPath),
-    enabled: !!audioPath && enabled,
+    queryKey: queryKeys.allVersions(audioPath ?? outputDir),
+    queryFn: () => getAllVersions(audioPath, outputDir),
+    enabled: (!!audioPath || !!outputDir) && enabled,
   });
   return useMemo(
     () => (allVersions ? filterVersionsForStep(allVersions, step) : undefined),

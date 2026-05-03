@@ -9,18 +9,27 @@ import FolderLocationFields from "@/components/common/FolderLocationFields";
 import FolderPicker from "@/components/common/FolderPicker";
 import MissingDependency from "@/components/common/MissingDependency";
 import BundleImportPanel from "./BundleImportPanel";
-import { PlaySquare, Search, Rss, FolderOpen, Loader2, Package } from "lucide-react";
+import { PlaySquare, Search, Rss, FolderOpen, Loader2, Package, X } from "lucide-react";
 
 export interface AddShowModalProps {
   defaultSavePath: string;
   onClose: () => void;
+  /** Show created via RSS/YouTube fetch — caller typically navigates to it. */
   onCreated: (folder: string) => void;
+  /** Existing show registered (local folder or bundle restore) — caller typically stays put. */
+  onImported?: (folder: string) => void;
   onOpenFile?: (path: string) => void;
 }
 
-type SourceMode = "podcast" | "local" | "youtube" | "import";
+type SourceMode = "podcast" | "youtube" | "local" | "bundle";
 
-export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOpenFile }: AddShowModalProps) {
+const STEP_HEIGHT: Record<"search" | "location", string> = {
+  search: "h-[340px]",
+  location: "h-[440px]",
+};
+
+export default function AddShowModal({ defaultSavePath, onClose, onCreated, onImported, onOpenFile }: AddShowModalProps) {
+  const handleImported = onImported ?? onCreated;
   const [step, setStep] = useState<"search" | "location">("search");
   const [sourceMode, setSourceMode] = useState<SourceMode>("podcast");
   const [searchQuery, setSearchQuery] = useState("");
@@ -84,25 +93,34 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
 
   const importMutation = useMutation({
     mutationFn: (path: string) => registerShow(path),
-    onSuccess: (_, path) => onCreated(path),
+    onSuccess: (_, path) => handleImported(path),
   });
 
   const handleLocalImport = (path: string) => importMutation.mutate(path);
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-        <div className="bg-card border border-border rounded-xl p-6 max-w-lg w-full shadow-2xl max-h-[80vh] flex flex-col">
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+        onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-show-title"
+      >
+        <div className={`bg-card border border-border rounded-lg p-6 max-w-lg w-full shadow-lg max-h-[85vh] flex flex-col ${STEP_HEIGHT[step]}`}>
           <div className="flex items-center justify-between mb-1">
-            <h3 className="font-medium">
+            <h3 id="add-show-title" className="text-lg font-semibold">
               {step === "search" ? "Add a show" : "Save location"}
             </h3>
-            <Button onClick={onClose} variant="ghost" size="sm">x</Button>
+            <Button onClick={onClose} variant="ghost" size="sm" className="h-7 w-7 p-0" aria-label="Close">
+              <X className="w-4 h-4" />
+            </Button>
           </div>
 
           {step === "search" && (
             <div className="flex flex-col gap-4 overflow-hidden">
-              {/* Source mode toggle: Podcast | Local | YouTube */}
+              {/* Source mode toggle: Podcast | YouTube | Local | Bundle */}
               <div className="flex gap-1 bg-muted rounded-lg p-1">
                 <button
                   className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "podcast" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
@@ -111,22 +129,22 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                   <Rss className="h-3.5 w-3.5" /> Podcast
                 </button>
                 <button
-                  className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "local" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
-                  onClick={() => switchMode("local")}
-                >
-                  <FolderOpen className="h-3.5 w-3.5" /> Local
-                </button>
-                <button
                   className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "youtube" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
                   onClick={() => switchMode("youtube")}
                 >
                   <PlaySquare className="h-3.5 w-3.5" /> YouTube
                 </button>
                 <button
-                  className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "import" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
-                  onClick={() => switchMode("import")}
+                  className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "local" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={() => switchMode("local")}
                 >
-                  <Package className="h-3.5 w-3.5" /> Import
+                  <FolderOpen className="h-3.5 w-3.5" /> Local
+                </button>
+                <button
+                  className={`flex-1 text-sm py-1.5 px-3 rounded-md transition flex items-center justify-center gap-1.5 ${sourceMode === "bundle" ? "bg-background shadow-sm font-medium" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={() => switchMode("bundle")}
+                >
+                  <Package className="h-3.5 w-3.5" /> Podcodex
                 </button>
               </div>
 
@@ -158,9 +176,9 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                   {/* Results */}
                   {searchMutation.data && searchMutation.data.length > 0 && (
                     <div className="overflow-y-auto flex-1 -mx-2">
-                      {searchMutation.data.map((r, i) => (
+                      {searchMutation.data.map((r) => (
                         <button
-                          key={i}
+                          key={r.feed_url}
                           onClick={() => selectResult(r)}
                           className="w-full text-left px-3 py-2.5 rounded-lg hover:bg-accent/50 transition flex items-center gap-3"
                         >
@@ -182,9 +200,10 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
 
                   {/* Manual URL */}
                   <div className="border-t border-border pt-4">
-                    <label className="text-xs text-muted-foreground block mb-1">Or paste RSS feed URL directly</label>
+                    <label htmlFor="rss-url-input" className="text-xs text-muted-foreground block mb-1">Or paste RSS feed URL directly</label>
                     <div className="flex gap-2">
                       <input
+                        id="rss-url-input"
                         value={rssUrl}
                         onChange={(e) => setRssUrl(e.target.value)}
                         placeholder="https://feeds.example.com/podcast.xml"
@@ -208,7 +227,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
               {sourceMode === "local" && (
                 <>
                   <p className="text-xs text-muted-foreground">
-                    Browse to a folder of existing episodes or to a single audio file.
+                    Pick an existing folder of episodes (creates a show) or a single audio file (one-off transcription).
                   </p>
 
                   <div className="flex flex-col gap-3">
@@ -217,7 +236,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                       variant="outline"
                       className="justify-start gap-2"
                     >
-                      <FolderOpen className="w-4 h-4" /> Browse for a folder…
+                      <FolderOpen className="w-4 h-4" /> Existing folder…
                     </Button>
                     {onOpenFile && (
                       <Button
@@ -225,7 +244,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                         variant="outline"
                         className="justify-start gap-2"
                       >
-                        <Search className="w-4 h-4" /> Browse for an audio file…
+                        <Search className="w-4 h-4" /> Single audio file…
                       </Button>
                     )}
                   </div>
@@ -239,11 +258,11 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                 </>
               )}
 
-              {sourceMode === "import" && (
+              {sourceMode === "bundle" && (
                 <BundleImportPanel
                   onImported={(showsDir, finalFolder) => {
                     if (finalFolder && showsDir) {
-                      onCreated(`${showsDir.replace(/\/+$/, "")}/${finalFolder}`);
+                      handleImported(`${showsDir.replace(/\/+$/, "")}/${finalFolder}`);
                     } else {
                       // Index-only import: nothing to navigate to.
                       onClose();
@@ -292,7 +311,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
           )}
 
           {step === "location" && (
-            <div className="space-y-4">
+            <div className="space-y-4 overflow-y-auto">
               {createMutation.isPending ? (
                 <div className="flex flex-col items-center gap-3 py-6">
                   <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -341,6 +360,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
                         onChange={(e) => setCustomLang(e.target.value.toLowerCase().slice(0, 5))}
                         placeholder="ISO code (e.g. nl, zh, ar)"
                         className="input w-32 mt-1.5"
+                        aria-label="Custom language ISO code"
                       />
                     )}
                   </div>
@@ -370,7 +390,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
       {localPickerOpen === "folder" && (
         <FolderPicker
           open
-          title="Browse for a show folder"
+          title="Choose a show folder"
           description="Select a folder that already contains podcast episodes or transcripts."
           onClose={() => setLocalPickerOpen(null)}
           onSelect={(p) => { setLocalPickerOpen(null); handleLocalImport(p); }}
@@ -382,7 +402,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onOp
         <FolderPicker
           open
           mode="file"
-          title="Browse for an audio file"
+          title="Choose an audio file"
           description="Select a single audio file to transcribe and process."
           onClose={() => setLocalPickerOpen(null)}
           onSelect={(p) => { setLocalPickerOpen(null); onOpenFile(p); }}

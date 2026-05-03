@@ -3,10 +3,13 @@ import { isEdited, type BackendStepStatus } from "@/lib/stepStatus";
 
 type StepStatus = "none" | "partial" | "outdated" | "done";
 
-const BORDER_MAP: Record<string, string> = {
-  "bg-blue-500/15": "border-blue-500",
-  "bg-purple-500/15": "border-purple-500",
-  "bg-teal-500/15": "border-teal-500",
+type StageKey = "transcribe" | "correct" | "translate" | "synth";
+
+const STAGE_CLASSES: Record<StageKey, { bg: string; text: string; border: string }> = {
+  transcribe: { bg: "bg-stage-transcribe/15", text: "text-stage-transcribe", border: "border-stage-transcribe" },
+  correct:    { bg: "bg-stage-correct/15",    text: "text-stage-correct",    border: "border-stage-correct" },
+  translate:  { bg: "bg-stage-translate/15",  text: "text-stage-translate",  border: "border-stage-translate" },
+  synth:      { bg: "bg-stage-synth/15",      text: "text-stage-synth",      border: "border-stage-synth" },
 };
 
 /** Combine "freshness" status from backend (`raw | outdated | done`) with
@@ -26,26 +29,26 @@ function resolveStatus(
   return isEdited(provenance) ? "done" : "partial";
 }
 
-function Chip({ status, label, color, textColor, title }: { status: StepStatus; label: string; color: string; textColor: string; title: string }) {
+function Chip({ status, stage, label, title }: { status: StepStatus; stage: StageKey; label: string; title: string }) {
   if (status === "none") return null;
-  const borderColor = BORDER_MAP[color] ?? "border-border";
+  const c = STAGE_CLASSES[stage];
   const base = "text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium";
   if (status === "outdated") {
     return (
-      <span className={`${base} border border-dashed ${borderColor} ${textColor}`} title={`${title} (outdated)`}>
+      <span className={`${base} border border-dashed ${c.border} ${c.text}`} title={`${title} (outdated)`}>
         {label}
       </span>
     );
   }
   if (status === "partial") {
     return (
-      <span className={`${base} border ${borderColor} ${textColor}`} title={`${title} (raw — awaiting review)`}>
+      <span className={`${base} border ${c.border} ${c.text}`} title={`${title} (raw — awaiting review)`}>
         {label}
       </span>
     );
   }
   return (
-    <span className={`${base} ${color} ${textColor}`} title={title}>
+    <span className={`${base} ${c.bg} ${c.text}`} title={title} role="img" aria-label={title}>
       {label}
     </span>
   );
@@ -56,16 +59,14 @@ export function StatusChips({ ep, compact }: { ep: Episode; compact?: boolean })
     <div className="flex gap-1 items-center flex-wrap">
       <Chip
         status={resolveStatus(ep.transcribe_status, !!ep.transcribed, ep.provenance?.transcript)}
+        stage="transcribe"
         label={compact ? "T" : "Transcribed"}
-        color="bg-blue-500/15"
-        textColor="text-blue-500"
         title="Transcribed"
       />
       <Chip
         status={resolveStatus(ep.correct_status, !!ep.corrected, ep.provenance?.corrected)}
+        stage="correct"
         label={compact ? "AI" : "Corrected"}
-        color="bg-purple-500/15"
-        textColor="text-purple-500"
         title="Corrected"
       />
       {compact && ep.translations.length > 0 ? (
@@ -73,9 +74,8 @@ export function StatusChips({ ep, compact }: { ep: Episode; compact?: boolean })
           <Chip
             key={lang}
             status={resolveStatus(ep.translate_status, true, ep.provenance?.[lang])}
+            stage="translate"
             label={lang.toUpperCase()}
-            color="bg-teal-500/15"
-            textColor="text-teal-500"
             title={`Translated (${lang})`}
           />
         ))
@@ -86,19 +86,18 @@ export function StatusChips({ ep, compact }: { ep: Episode; compact?: boolean })
             ep.translations.length > 0,
             ep.provenance?.[ep.translations[0] ?? ""],
           )}
+          stage="translate"
           label="Translated"
-          color="bg-teal-500/15"
-          textColor="text-teal-500"
           title={ep.translations.length > 0 ? `Translated (${ep.translations.join(", ")})` : "Translated"}
         />
       )}
       {ep.synthesized && (
-        <span className="text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium bg-orange-500/15 text-orange-500" title="Synthesized">
+        <span className="text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium bg-stage-synth/15 text-stage-synth" title="Synthesized" role="img" aria-label="Synthesized">
           {compact ? "S" : "Synth"}
         </span>
       )}
       {ep.indexed && (
-        <span className="text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium bg-warning/15 text-warning" title="Indexed">
+        <span className="text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium bg-warning/15 text-warning" title="Indexed" role="img" aria-label="Indexed">
           {compact ? "I" : "Indexed"}
         </span>
       )}

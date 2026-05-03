@@ -7,6 +7,7 @@ result into the global :class:`IndexStore` LanceDB index.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 
 from loguru import logger
@@ -101,15 +102,38 @@ def vectorize_episode(
         local.delete_episode(col, episode)
 
     if chunks is None:
+        n_segs = len(transcript.get("segments", []))
+        logger.info(
+            f"Chunking '{episode}' with strategy '{chunking}' "
+            f"({n_segs} segments, chunk_size={chunk_size}, threshold={threshold})"
+        )
+        t0 = time.perf_counter()
         chunks = _chunk_transcript(transcript, chunking, chunk_size, threshold)
+        logger.info(
+            f"Chunked '{episode}': {len(chunks)} chunks in {time.perf_counter() - t0:.1f}s"
+        )
     if not chunks:
         raise ValueError(f"No chunks produced for strategy '{chunking}'")
 
     embedder = get_embedder(model_key, device=device)
+    logger.info(
+        f"Embedding {len(chunks)} chunks for '{episode}' "
+        f"with '{model_key}' on {device} → '{col}'"
+    )
+    t0 = time.perf_counter()
     embeddings = embedder.encode_passages(chunks)
-    local.save_chunks(col, episode, chunks, embeddings)
+    logger.info(
+        f"Embedded {len(chunks)} chunks for '{episode}' "
+        f"in {time.perf_counter() - t0:.1f}s"
+    )
 
-    logger.success(f"Vectorized {len(chunks)} chunks into '{col}'")
+    logger.info(f"Upserting {len(chunks)} chunks into '{col}'")
+    t0 = time.perf_counter()
+    local.save_chunks(col, episode, chunks, embeddings)
+    logger.success(
+        f"Vectorized {len(chunks)} chunks into '{col}' "
+        f"(upsert {time.perf_counter() - t0:.1f}s)"
+    )
     return chunks, len(chunks)
 
 
@@ -136,11 +160,13 @@ def vectorize_batch(
         on_progress : callback ``(step, total, label)`` for UI progress updates.
 
     Returns:
-        Total number of chunks upserted across all combinations.
+        Total number of chunks present in the index across all combinations
+        — counts both newly upserted and cache-hit chunks. 0 only when
+        nothing landed in any collection (every combination failed).
     """
     total = len(model_keys) * len(chunkings)
     step = 0
-    total_upserted = 0
+    total_processed = 0
 
     for chunking in chunkings:
         chunks_for_strategy: list[dict] | None = None
@@ -164,7 +190,12 @@ def vectorize_batch(
                     overwrite=overwrite,
                     device=device,
                 )
-                total_upserted += n
+                # Count cache hits (n == 0 with chunks present) as processed,
+                # so index_job can distinguish "all cached" from "real 0".
+                if n > 0:
+                    total_processed += n
+                elif chunks_for_strategy:
+                    total_processed += len(chunks_for_strategy)
             except ValueError as e:
                 logger.warning(str(e))
                 step += len(model_keys) - model_keys.index(model_key)
@@ -174,4 +205,4 @@ def vectorize_batch(
 
             step += 1
 
-    return total_upserted
+    return total_processed

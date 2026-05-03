@@ -46,7 +46,7 @@ The bot is a read-only frontend over an existing index, so it does **not** need:
 
 The bot is read-only — it doesn't build indexes itself. You need an existing LanceDB index, produced by the desktop app's **Index** step on any show.
 
-The desktop app writes to `~/.local/share/podcodex/index/`. The bot looks there first, so in most setups there is nothing to configure. If it doesn't find an index there, it also checks `./deploy/index/` and `./index/` relative to its working directory. Set `PODCODEX_INDEX=/abs/path` to override explicitly.
+The desktop app writes to its platform `<data_dir>/index/` — `~/.local/share/podcodex/index/` on Linux, `~/Library/Application Support/podcodex/index/` on macOS, `%APPDATA%\podcodex\index\` on Windows. The bot resolves the same path and looks there first, so in most setups there is nothing to configure. If it doesn't find an index there, it also checks `./deploy/index/` and `./index/` relative to its working directory. Set `PODCODEX_INDEX=/abs/path` to override explicitly.
 
 - **Bot on the same machine as the desktop app** → nothing to do. The bot finds the desktop's index automatically.
 - **Bot on a different machine (VPS, server)** → rsync the index over, see [Transferring the index](#transferring-the-index).
@@ -88,7 +88,8 @@ cat > .env <<'EOF'
 DISCORD_TOKEN=your-bot-token
 
 # Optional — only if you want to point the bot at an index that is neither
-# at ~/.local/share/podcodex/index nor at ./deploy/index / ./index.
+# at <data_dir>/index (e.g. ~/.local/share/podcodex/index on
+# Linux) nor at ./deploy/index / ./index.
 # PODCODEX_INDEX=/absolute/path/to/index
 EOF
 ```
@@ -98,9 +99,9 @@ Then open `.env` and fill in `DISCORD_TOKEN`. `.env` is gitignored.
 **How the bot finds the index** (logged at startup):
 
 1. `PODCODEX_INDEX` env var if set — always wins.
-2. `~/.local/share/podcodex/index/` if it exists with data — desktop app default.
+2. `<data_dir>/index/` if it exists with data — desktop app default (Linux: `~/.local/share/podcodex/index/`).
 3. `./deploy/index/` or `./index/` relative to the bot's working directory — repo-local fallback.
-4. Else: creates an empty `~/.local/share/podcodex/index/`.
+4. Else: creates an empty `<data_dir>/index/`.
 
 Check the startup log line (`IndexStore opened: <path> (<reason>)`) to confirm which one was picked.
 
@@ -171,7 +172,7 @@ git pull && docker compose up -d --build bot
 
 Notes:
 
-- The host's `~/.local/share/podcodex/index/` is mounted into the container at the same path, matching the bot's default — no `PODCODEX_INDEX` override needed.
+- The host's `~/.local/share/podcodex/index/` is mounted into the container at `/root/.local/share/podcodex/index/`, matching the bot's default — no `PODCODEX_INDEX` override needed.
 - To serve an index at a different host location, set `PODCODEX_INDEX_HOST=/abs/path` in `deploy/.env` before `docker compose up`.
 - BGE-M3 lives in the `model_cache` named volume — survives rebuilds.
 - `restart: unless-stopped` handles crashes and host reboots.
@@ -226,7 +227,7 @@ All three responses are ephemeral — other users see nothing.
 
 **Skip this section if the bot runs on the same machine as the desktop app** — the bot finds the index automatically.
 
-Only transfer when the bot runs on a separate machine (e.g. a VPS). Both install paths read from `~/.local/share/podcodex/index/` by default, so the rsync target is the same regardless of which path you picked.
+Only transfer when the bot runs on a separate machine (e.g. a VPS). Both install paths read from `~/.local/share/podcodex/index/` by default on Linux, so the rsync target is the same regardless of which path you picked.
 
 ### 1. Create the target directory on the bot host
 

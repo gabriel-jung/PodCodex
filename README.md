@@ -1,205 +1,115 @@
+<p align="center">
+  <img src="assets/icon.png" alt="PodCodex" width="160" />
+</p>
+
 # PodCodex
 
-**Transcribe, translate, search your podcasts.**
+**Turn any podcast feed into a searchable, multilingual library — on your laptop, no cloud.**
 
-Turn audio into a searchable knowledge base. Ingest podcasts, YouTube channels, lectures, or interviews — anything with speech — and build a structured, multilingual library you can query by meaning.
+Drop in an RSS feed, a YouTube channel, or a folder of recordings. PodCodex transcribes, diarizes, optionally translates, and indexes everything into a local vector store you can query by meaning. Plug it into a Discord bot or Claude Desktop and the whole archive becomes a conversational knowledge base.
 
-PodCodex is a **local-first desktop app** that transcribes, diarizes, corrects, translates, and indexes your audio into an embedded LanceDB vector store. A bundled **Discord bot** lets anyone search the library with slash commands, and an **MCP server** exposes the same retrieval to Claude Desktop / Claude Code.
+> **Screenshots + 30 s demo coming with v0.1.0.** Tracked in [ROADMAP.md](ROADMAP.md).
 
 ---
 
 ## What it does
 
-Point it at a podcast RSS feed, a YouTube channel, or a folder of recordings and it will:
+Point it at audio. Six steps, all on your machine:
 
-1. **Ingest** — pull episodes from RSS, YouTube, or local files. Manage multiple shows with per-show config.
-2. **Transcribe** — WhisperX + pyannote speaker diarization, with word-level timestamps.
-3. **Correct** — fix transcription errors with an LLM (Ollama, OpenAI, Anthropic, Mistral, or manual copy/paste).
-4. **Translate** — any target language, via the same LLM backends.
-5. **Synthesize** (optional) — Qwen3-TTS voice cloning for dubbed versions.
-6. **Index & search** — vectorize into a local LanceDB index with hybrid retrieval (vector ANN + Tantivy FTS), then search by meaning (semantic), keywords (exact), or random sampling.
+1. **Ingest** — RSS, YouTube, or local folders. Manage multiple shows side by side.
+2. **Transcribe** — WhisperX + pyannote diarization, word-level timestamps.
+3. **Correct** — fix transcription errors with an LLM (Ollama, OpenAI, Anthropic, Mistral, or manual).
+4. **Translate** — any target language via the same backends.
+5. **Synthesize** *(optional)* — Qwen3-TTS voice cloning for dubbed versions.
+6. **Index & search** — local LanceDB index, hybrid retrieval (vector ANN + BM25 FTS).
 
-All steps share a segment editor (inline editing, speaker mapping, timestamp snapping) and a global audio player (WaveSurfer waveform, per-episode speed, segment-level playback). Everything runs on your machine — no cloud lock-in, no external vector DB.
+Every save is archived as a versioned snapshot with full provenance — model, params, content hash. Roll back any step.
 
-## Features
+## Why local-first
 
-### Shows & ingest
-
-- Add podcasts by Apple Podcasts search, RSS URL, YouTube channel/playlist, or existing folder
-- Per-show pipeline defaults (Whisper model, LLM provider, translation target, …)
-- Batch download with shift-select, rate-limit backoff for YouTube
-- Auto-refresh artwork, feed metadata, and speaker registry
-- Removed-from-feed flag: keeps local copies of episodes that disappear from the live RSS/YouTube source
-
-### Pipeline
-
-- WhisperX (tiny → large-v3-turbo) + pyannote diarization
-- LLM correct and translate via Ollama, OpenAI-compatible APIs, or manual copy/paste
-- Voice cloning with Qwen3-TTS (voice sample extraction, segment generation, episode assembly)
-- Batch pipeline: select N episodes, run any steps in order, skip what's already done (provenance-based)
-- Global task bar with per-episode logs, progress, cancellation
-
-### Editing & playback
-
-- Shared segment editor (virtualized, scales to 10k+ segments): inline edit, speaker dropdown, timestamp snap, split-at-time, tail-merge
-- Flagged-segment detection (unknown speakers, low density), pagination, filters
-- Global audio player persists across pages — WaveSurfer waveform, per-episode speed, drag-to-seek
-- Inline "now playing" segment overlay on the audio bar; transcript editor syncs once on open, with a manual re-sync button (no auto-follow during edits)
-- Word-level diff view between original and corrected segments
-- Version history per step with full provenance (model, params, timestamp, content hash); atomic writes for config, manifest, and versions
-
-### Search
-
-- Semantic (BGE-M3 hybrid or E5), exact, or random across indexed segments
-- Show / episode / speaker / source / pub-date filters, unified across frontend, Discord bot, and MCP
-- Per-episode search panel and show-wide search tab
-- Command palette (Cmd+K) searches transcripts across every indexed show
-- Export transcripts as text, SRT, VTT, or ZIP archive
-
-### Integrations
-
-- **Discord bot** — `/search`, `/exact`, `/random`, `/speakers`, `/stats`, `/episodes`; simple/advanced command split; password-gated per-server show access
-- **MCP server** — expose `search`, `exact`, `list_shows`, `get_context` to Claude Desktop (one-toggle setup from Settings) or Claude Code via stdio/HTTP
-
-## Tech stack
-
-| Layer          | Technology                                          |
-|----------------|-----------------------------------------------------|
-| Desktop shell  | Tauri v2 (Rust)                                     |
-| Frontend       | React 19, Vite, TypeScript, Tailwind CSS, shadcn/ui |
-| State          | Zustand, TanStack Query, TanStack Router            |
-| Backend        | FastAPI (REST + WebSocket, background tasks)        |
-| Transcription  | WhisperX, pyannote-audio                            |
-| LLM            | Ollama (local), OpenAI, Anthropic, Mistral          |
-| Voice cloning  | Qwen3-TTS                                           |
-| Search         | LanceDB, BGE-M3 / E5 embeddings, Chonkie            |
-| Audio          | WaveSurfer.js, ffmpeg, sox                          |
+- **Your audio never leaves your machine.** No upload, no third-party transcription pipeline.
+- **No API bills for the heavy lifting.** Transcription, embeddings, and search run locally; LLMs are your choice (a free Ollama model works).
+- **Open-format outputs.** Transcripts as JSON / SRT / VTT / text, audio in standard codecs. Nothing locked in a vendor cloud.
 
 ---
 
-## Install
+## Get it
 
-Prerequisites: Python 3.12, Node.js (LTS), ffmpeg, and [uv](https://docs.astral.sh/uv/). For YouTube auto-generated subtitles, [deno](https://deno.com/) is also required (`brew install deno` on macOS).
+### Pre-built release
 
-```bash
-git clone https://github.com/gabriel-jung/podcodex
-cd podcodex
+Direct download (latest):
 
-# Python deps (pick the extras you need)
-uv sync --extra desktop --extra pipeline --extra rag --extra youtube
+- **macOS (Apple Silicon)** — [PodCodex-macos-arm64.dmg](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-macos-arm64.dmg)
+- **Windows x64** — [PodCodex-windows-x64.msi](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-windows-x64.msi) (path documented but not yet smoke-tested; report what breaks)
+- **Linux** — build from source (GPU + glibc + distro matrix makes single redistributable impractical)
 
-# Frontend deps
-cd frontend && npm install && cd ..
+All assets + checksums on the [Releases](https://github.com/gabriel-jung/podcodex/releases) page.
 
-# Run in browser (API on :18811, Vite on :5173)
-make dev-no-tauri
-```
-
-For a native window (requires Rust + GTK/WebKit on Linux), run `make dev` instead. See [Makefile](Makefile) for all targets.
-
-### Build a standalone .app / .dmg / .deb / .exe
-
-The desktop build freezes the Python backend with PyInstaller into a single
-sidecar binary, fetches static `ffmpeg` + `yt-dlp`, then asks Tauri to bundle
-everything into a native installer. macOS arm64 verified; Linux `.deb` /
-`.AppImage` and Windows `.msi` / `.exe` documented but not yet smoke-tested.
+**macOS quarantine on first launch.** The DMG is not yet signed/notarized, so Gatekeeper will say *"PodCodex.app is damaged and can't be opened"*. The app is fine — drag it to `/Applications`, then once:
 
 ```bash
-make setup-pyinstaller    # one-time — adds PyInstaller to .venv
-make bundle               # ~5 min — freezes backend, fetches sidecars,
-                          # builds frontend, runs cargo tauri build
+xattr -dr com.apple.quarantine /Applications/PodCodex.app
 ```
 
-`make bundle` chains `bundle-server` → `bundle-natives` → `npm run build` →
-`cargo tauri build`. Use the individual `make bundle-*` targets when
-iterating on a single layer. Clean rebuild: `make clean && make bundle`.
+Subsequent launches don't need it. Signing + notarization is a v0.1.0 blocker.
 
-macOS outputs:
-`src-tauri/target/release/bundle/macos/PodCodex.app` (~497 MB) and
-`src-tauri/target/release/bundle/dmg/PodCodex_<version>_<arch>.dmg`
-(~459 MB). ML weights download on first use to
-`~/Library/Application Support/com.podcodex.desktop/models/`.
+### Build from source
 
-Full per-OS guide (macOS, Linux native, WSL2, Windows native + signing,
-notarization, troubleshooting): see [`deploy/BUILD.md`](deploy/BUILD.md).
+Prerequisites: Python 3.12, Node.js LTS, [uv](https://docs.astral.sh/uv/), Rust (for the native window).
 
-| Target               | What it does                                                  |
-|----------------------|---------------------------------------------------------------|
-| `make setup`         | Install Python + frontend deps                                |
-| `make dev`           | FastAPI + Vite + Tauri (hot reload)                           |
-| `make dev-no-tauri`  | FastAPI + Vite only (browser at localhost:5173)               |
-| `make bundle-server` | PyInstaller-freeze the backend                                |
-| `make bundle-natives`| Download ffmpeg + yt-dlp                                      |
-| `make bundle`        | Full standalone .app/.dmg                                     |
-| `make bundle-sign`   | Sign + notarize (needs `APPLE_SIGNING_IDENTITY` + notary kc)  |
-| `make clean`         | Remove build artifacts                                        |
-| `make types`         | Regenerate frontend TS types from Pydantic                    |
-| `make test`          | Run Python tests                                              |
-
-### Extras
-
-| Extra      | Installs                                           | Needed for                           |
-|------------|----------------------------------------------------|--------------------------------------|
-| `desktop`  | fastapi, uvicorn                                   | Desktop app backend                  |
-| `pipeline` | whisperx, pyannote-audio, ollama, openai, qwen-tts | Transcription, correction, synthesis |
-| `rag`      | torch, sentence-transformers, chonkie, lancedb     | Embeddings & semantic search         |
-| `youtube`  | yt-dlp                                             | YouTube ingest                       |
-| `bot`      | discord.py, openai                                 | Discord bot                          |
-
-> **YouTube subtitles:** Manual subtitles download instantly. Auto-generated subtitles require deno (yt-dlp uses it to solve YouTube's JS challenges) and take ~60 seconds per episode due to rate limiting.
-
-### Environment variables
-
-Create `.env` at the repo root, set only what you need:
-
-```env
-HF_TOKEN=your_huggingface_token   # speaker diarization (pyannote)
-API_KEY=your_api_key              # any OpenAI-compatible provider
-DISCORD_TOKEN=your_bot_token      # Discord bot
-PODCODEX_INDEX=/path/to/index     # optional override of LanceDB location
+```bash
+git clone https://github.com/gabriel-jung/podcodex && cd podcodex
+make setup          # uv sync + npm install
+make dev            # FastAPI + Vite + Tauri, hot-reload
 ```
 
-`HF_TOKEN` requires accepting the terms for [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) and [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0).
+`make dev-no-tauri` runs in the browser (no Rust required). Full build / signing guide: [`deploy/BUILD.md`](deploy/BUILD.md).
 
 ---
 
-## Discord bot
+## Use it
 
-Search your transcripts from Discord with slash commands.
+1. **Add a show** — Apple Podcasts search, RSS URL, YouTube channel, or existing folder.
+2. **Transcribe** — pick a Whisper preset, optionally enable speaker identification (needs a free [HuggingFace token](https://huggingface.co/pyannote/speaker-diarization-community-1)).
+3. **Correct + translate** *(optional)* — point it at a local Ollama model or any OpenAI-compatible API.
+4. **Index** — one click. Then search by meaning, by exact phrase, or random-sample across every indexed show.
 
-| Command     | Description                                             |
-|-------------|---------------------------------------------------------|
-| `/search`   | Semantic / hybrid search by meaning                     |
-| `/exact`    | Literal substring match (like Ctrl+F), accent-aware, 1-edit fuzzy tier |
-| `/random`   | Random quote, with show/episode/speaker/source filters  |
-| `/speakers` | List speakers for a show with episode counts            |
-| `/stats`    | Index overview (shows, episodes, duration)              |
-| `/episodes` | List episodes for a show                                |
-| `/unlock` · `/lock` · `/changepassword` | Per-server show access control (admin) |
-| `/setup`    | Per-server defaults (admin)                             |
+Cmd/Ctrl+K opens a global command palette that searches transcripts across the whole library.
 
-`/search` and `/exact` each have an `-advanced` variant exposing alpha / model / chunker / top_k — keeps the default surface clean.
+---
 
-Run locally:
+## Integrations
+
+### Discord bot
+
+Search transcripts from any Discord server with `/search`, `/exact`, `/random`, `/speakers`, `/stats`, `/episodes`. Per-server access control with passwords for multi-show deployments.
 
 ```bash
 uv sync --extra bot --extra rag
 DISCORD_TOKEN=... uv run podcodex-bot
 ```
 
-Full install guide (uv and Docker paths, token setup, access control, VPS deploy): see [`deploy/BOT.md`](deploy/BOT.md).
+Full guide (uv + Docker, systemd, password rotation, VPS rsync): [`deploy/BOT.md`](deploy/BOT.md).
+
+### Claude Desktop / MCP
+
+The desktop app writes the Claude Desktop config for you — **Settings → Claude Desktop → Enable integration**. Claude can then call `search`, `exact`, `list_shows`, `get_context` directly during a conversation, plus editable slash prompts (`/brief`, `/speaker`, `/quote`, `/compare`, `/timeline`).
+
+Manual stdio config + Claude Code registration: [`deploy/MCP.md`](deploy/MCP.md).
 
 ---
 
-## Claude Desktop / MCP
+## Tech stack
 
-An MCP server exposes your index to Claude Desktop (or any MCP-capable client) so Claude can search your transcripts directly during a conversation. The server does retrieval only — the client LLM reads the chunks and synthesizes the answer.
-
-Fastest path: **Settings → Claude Desktop → Enable Claude Desktop integration** in the desktop app. PodCodex writes the `claude_desktop_config.json` entry, resolves the absolute path to the bundled `podcodex-mcp` stdio binary, and handles WSL (Linux binary wrapped via `wsl.exe` for Windows Claude Desktop) automatically.
-
-Tools exposed: `search`, `exact`, `list_shows`, `get_context` — plus editable slash prompts (`/brief`, `/speaker`, `/quote`, `/compare`, `/timeline`).
-
-Full guide (manual stdio config, Claude Code registration, prompts, troubleshooting): see [`deploy/MCP.md`](deploy/MCP.md).
+| Layer          | Technology                                          |
+|----------------|-----------------------------------------------------|
+| Desktop shell  | Tauri v2 (Rust)                                     |
+| Frontend       | React 19, Vite, TypeScript, Tailwind, shadcn/ui     |
+| Backend        | FastAPI (REST + WebSocket, background tasks)        |
+| Transcription  | WhisperX, pyannote-audio                            |
+| LLM            | Ollama (local), OpenAI, Anthropic, Mistral          |
+| Voice cloning  | Qwen3-TTS                                           |
+| Search         | LanceDB, BGE-M3 / E5 embeddings, Chonkie            |
 
 ---
 
@@ -210,41 +120,37 @@ Full guide (manual stdio config, Claude Code registration, prompts, troubleshoot
 │  Tauri shell — native window, file system access    │
 │  ┌───────────────────────────────────────────────┐  │
 │  │  React frontend (Vite + TypeScript)           │  │
-│  │  └── Zustand stores, TanStack Query           │  │
 │  └───────────────────────────────────────────────┘  │
 │             ↕ HTTP + WebSocket                      │
 │  ┌───────────────────────────────────────────────┐  │
 │  │  FastAPI backend (Python)                     │  │
-│  │  └── podcodex.core.* pipeline modules         │  │
+│  │  └── pipeline workers (subprocess per step)   │  │
 │  └───────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────┘
 ```
 
-- **Frontend** (`frontend/`) — React 19, Vite, Tailwind, shadcn/ui. Talks to the backend over REST + WebSocket.
-  - Pipeline step registry (`PipelineSteps.tsx`) drives sidebar, status badges, and info tab.
-  - Shared hooks: `usePipelineTask` (task lifecycle), `useLLMConfig` / `buildLLMRequest` (LLM settings), `usePipelineDefaults` (step-status comparison).
-  - API client factory: `createVersionApi` (segments + versions CRUD) and `createLLMPipelineApi` (adds start/manual-prompts/apply-manual).
-- **Backend** (`src/podcodex/api/`) — FastAPI, exposes the pipeline as HTTP endpoints with background tasks.
-  - Shared `LLMRequest` base model, `_batch_llm_step()` unified handler, `_resolve_source_segments()` for version DB lookups.
-- **Core** (`src/podcodex/core/`) — transcribe, correct, translate, synthesize, versioning, per-show pipeline DB.
-  - `run_llm_pipeline()` — single LLM dispatch function shared by correct and translate.
-- **RAG** (`src/podcodex/rag/`) — chunking, embedding, LanceDB index store, hybrid retrieval (vector ANN + BM25 FTS).
-- **Bot** (`src/podcodex/bot/`) — Discord slash commands over the shared retriever, password-gated show access.
-- **MCP** (`src/podcodex/mcp/`) — stdio + HTTP MCP server exposing `search` / `exact` / `list_shows` / `get_context` plus user-editable prompts.
-- **Tauri** (`src-tauri/`) — thin Rust shell, auto-spawns backend, native file dialogs.
+Each show is a self-contained folder. Every pipeline save is archived as a versioned snapshot with full provenance. All embeddings live in one LanceDB index under the platform app-data directory; collections follow `{show}__{model}__{chunker}`.
 
-Every pipeline save (transcribe, correct, translate, manual edit) is archived as a **version** under `.versions/{step}/` with full provenance (model, params, content hash). Episode status is tracked in a per-show `pipeline.db` SQLite. All embeddings live in a single LanceDB index (`~/.local/share/podcodex/index` by default). Collection names follow `{show}__{model}__{chunker}`.
+Internals: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+---
+
+## Notes & caveats
+
+- WhisperX runs CPU-only on Apple Silicon (no MPS support upstream yet).
+- YouTube auto-generated subtitles need [deno](https://deno.com/) installed (yt-dlp delegates JS challenge solving to it). Manual subtitles work without it.
+- Ollama correct/translate works best with larger models — small ones drop format.
+- Qwen3-TTS is GPU-heavy. CUDA recommended for synthesis.
+
+---
+
+## Develop / contribute
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). AI assistant context: [CLAUDE.md](CLAUDE.md). Frontend design rules: [DESIGN.md](DESIGN.md).
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md). Next up: semi-automatic speaker mapping via voice embeddings, then standalone `.app`/`.deb`/`.exe` distribution.
-
-## Notes
-
-- WhisperX does not yet support MPS — transcription runs on CPU on Apple Silicon.
-- YouTube auto-generated subtitles need deno installed. yt-dlp delegates JS challenge solving to deno at runtime. Without it, YouTube returns 429 errors for auto-generated captions. Manual subtitles work without deno.
-- Ollama correct/translate may not work reliably with small models. Larger models are recommended but this needs more testing.
-- Qwen3-TTS is GPU-heavy — CUDA recommended for synthesis.
+[ROADMAP.md](ROADMAP.md). Next up: signed Windows MSI, speaker auto-mapping.
 
 ## License
 

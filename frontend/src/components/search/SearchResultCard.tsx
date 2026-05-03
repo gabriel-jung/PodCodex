@@ -35,9 +35,9 @@ function SearchResultCardInner({ result, show, query = "" }: SearchResultCardPro
   // Badge for /exact hits that aren't literal: accent-folded ("cafe" ≈ "café")
   // or fuzzy near-typo. Signals to the user that this isn't a verbatim hit.
   const matchBadge = result.fuzzy_match
-    ? { label: "〜 near-typo", tone: "bg-orange-500/15 text-orange-700 dark:text-orange-300 border-orange-500/30" }
+    ? { label: "〜 near-typo", tone: "bg-warning/15 text-warning border-warning/30" }
     : result.accent_match
-      ? { label: "≈ variant", tone: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30" }
+      ? { label: "≈ variant", tone: "bg-warning/15 text-warning border-warning/30" }
       : null;
 
   const path = result.audio_path;

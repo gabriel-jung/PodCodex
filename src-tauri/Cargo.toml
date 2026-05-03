@@ -1,6 +1,6 @@
 [package]
 name = "podcodex-app"
-version = "0.1.0"
+version = "0.1.20"
 description = "PodCodex desktop app"
 authors = ["Gabriel Jung"]
 license = "MIT"
@@ -31,3 +31,7 @@ tauri-plugin-dialog = "=2.6.0"
 tauri-plugin-window-state = "2"
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["time", "macros"] }
+# Wraps the spawned backend in a Windows Job Object / Unix process group so
+# multiprocessing.spawn workers (torch/whisperx/pyannote re-execing the same
+# binary) die with the parent on app exit.
+command-group = "5"

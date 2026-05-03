@@ -9,6 +9,9 @@ import os
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+import asyncio
+import signal
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -16,11 +19,13 @@ from dotenv import load_dotenv
 
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from podcodex.api.routes import (
+    api_keys,
     audio,
     batch,
     bot_access,
@@ -29,12 +34,14 @@ from podcodex.api.routes import (
     episodes as episodes_route,
     export,
     filesystem,
+    gpu,
     health,
     index,
     integrations,
     mcp_prompts as mcp_prompts_route,
     models,
     correct,
+    provider_profiles,
     rss,
     search,
     shows,
@@ -64,16 +71,106 @@ else:
     _mcp_import_error = None
 
 
+async def _watch_parent(parent_pid: int) -> None:
+    """Self-terminate when the Tauri shell dies abruptly.
+
+    The Rust shell injects ``PODCODEX_PARENT_PID`` and normally kills the
+    sidecar process group on ``RunEvent::Exit``. That callback doesn't fire
+    on SIGKILL / Force Quit / panic, so this poll is the fallback: every
+    2s, check the parent still exists; on disappearance, raise SIGTERM at
+    ourselves so uvicorn runs lifespan teardown.
+
+    Windows already gets KILL_ON_JOB_CLOSE via ``command_group``, so the
+    Rust shell skips setting the env on that platform path if desired —
+    this watcher is a no-op when the var is unset.
+    """
+    while True:
+        await asyncio.sleep(2.0)
+        try:
+            os.kill(parent_pid, 0)
+        except ProcessLookupError:
+            logger.warning(f"parent process {parent_pid} gone, shutting down sidecar")
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+        except PermissionError:
+            # Process exists but is owned by someone else — still alive.
+            pass
+
+
+def _warmup_caches_sync() -> None:
+    """Pre-open LanceDB and per-show pipeline.db connections.
+
+    Without this, the first ``GET /api/shows/{folder}/unified`` after a
+    process boot pays the ``import lancedb`` + ``lancedb.connect()`` cost
+    inside the request, making the user's first show open feel sluggish
+    (~10s on cold OS cache). Both are process-wide singletons, so warming
+    them once at startup eliminates that delay.
+    """
+    try:
+        from podcodex.rag.index_store import get_index_store
+
+        store = get_index_store()
+        # Touch the metadata table so the connection actually loads.
+        store.list_collections()
+    except Exception:
+        logger.opt(exception=True).debug("warmup: index store failed")
+
+    try:
+        from podcodex.api.routes.config import _load
+        from podcodex.core.pipeline_db import get_pipeline_db
+
+        cfg = _load()
+        for folder in cfg.show_folders:
+            p = Path(folder)
+            if not p.is_dir():
+                continue
+            try:
+                get_pipeline_db(p)
+            except Exception:
+                logger.opt(exception=True).debug(
+                    f"warmup: pipeline_db open failed for {p}"
+                )
+    except Exception:
+        logger.opt(exception=True).debug("warmup: pipeline_db pass failed")
+
+
 def _make_lifespan(mcp_http):
     """Nest the mounted MCP sub-app's lifespan under FastAPI's."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        if mcp_http is not None:
-            async with mcp_http.router.lifespan_context(app):
+        watcher_task: asyncio.Task | None = None
+        parent_pid_raw = os.environ.get("PODCODEX_PARENT_PID", "").strip()
+        if parent_pid_raw and sys.platform != "win32":
+            try:
+                parent_pid = int(parent_pid_raw)
+            except ValueError:
+                parent_pid = 0
+            if parent_pid > 0:
+                watcher_task = asyncio.create_task(_watch_parent(parent_pid))
+
+        # Fire-and-forget on a worker thread. ``asyncio.to_thread`` cannot
+        # actually interrupt the underlying thread, so there's no point trying
+        # to cancel; on shutdown we just await whatever is left.
+        warmup_task = asyncio.create_task(asyncio.to_thread(_warmup_caches_sync))
+
+        try:
+            if mcp_http is not None:
+                async with mcp_http.router.lifespan_context(app):
+                    yield
+            else:
                 yield
-        else:
-            yield
+        finally:
+            try:
+                await warmup_task
+            except Exception:
+                pass
+            if watcher_task is not None:
+                watcher_task.cancel()
+                try:
+                    await watcher_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     return lifespan
 
@@ -112,6 +209,14 @@ def _register_show_folder_resolver() -> None:
         return None
 
     IndexStore.set_show_folder_resolver(resolve)
+
+
+# Frontend's `json()` and direct fetch sites must send this header on
+# state-changing requests; the middleware below enforces it.
+CSRF_HEADER = "X-PodCodex"
+CSRF_VALUE = "1"
+_CSRF_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_CSRF_EXEMPT_PREFIXES = ("/mcp",)
 
 
 def create_app() -> FastAPI:
@@ -153,8 +258,28 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Custom header forces a CORS preflight that the origin allowlist rejects,
+    # so a drive-by <form> on a malicious page can't reach mutating endpoints.
+    @app.middleware("http")
+    async def _csrf_guard(request: Request, call_next):
+        if request.method in _CSRF_METHODS and not request.url.path.startswith(
+            _CSRF_EXEMPT_PREFIXES
+        ):
+            if request.headers.get(CSRF_HEADER.lower()) != CSRF_VALUE:
+                return JSONResponse(
+                    {"detail": "CSRF token missing"},
+                    status_code=403,
+                )
+        return await call_next(request)
+
     app.include_router(health.router, prefix="/api", tags=["system"])
     app.include_router(config.router, prefix="/api", tags=["config"])
+    app.include_router(api_keys.router, prefix="/api/keys", tags=["api-keys"])
+    app.include_router(
+        provider_profiles.router,
+        prefix="/api/provider-profiles",
+        tags=["provider-profiles"],
+    )
     app.include_router(audio.router, prefix="/api/audio", tags=["audio"])
     app.include_router(filesystem.router, prefix="/api/fs", tags=["filesystem"])
     app.include_router(shows.router, prefix="/api/shows", tags=["shows"])
@@ -173,6 +298,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router, prefix="/api/models", tags=["models"])
     app.include_router(export.router, prefix="/api/export", tags=["export"])
     app.include_router(bundle.router, prefix="/api/bundle", tags=["bundle"])
+    app.include_router(gpu.router, prefix="/api/gpu", tags=["gpu"])
     app.include_router(
         integrations.router, prefix="/api/integrations", tags=["integrations"]
     )
@@ -194,6 +320,9 @@ app.state.api_port = _API_PORT
 
 def main() -> None:
     """Entry point for ``podcodex-api`` script."""
+    from podcodex.bootstrap import bootstrap_for_dev
+
+    bootstrap_for_dev()
     uvicorn.run(
         "podcodex.api.app:app",
         host="127.0.0.1",

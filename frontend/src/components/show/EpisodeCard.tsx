@@ -38,8 +38,16 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, onProcess,
 
   return (
     <div
-      className="group relative bg-card border border-border rounded-xl overflow-hidden hover:border-muted-foreground/30 transition cursor-pointer"
+      className="group relative bg-card border border-border rounded-lg overflow-hidden hover:border-muted-foreground/30 transition cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:outline-none"
+      role="button"
+      tabIndex={0}
       onClick={handleOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          handleOpen();
+        }
+      }}
       onContextMenu={onContextMenu}
     >
       {/* Artwork — square container; wide images (YouTube) letterbox over a blurred backdrop of themselves */}

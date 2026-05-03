@@ -36,11 +36,15 @@ export default function OnboardingModal({ onAddShow }: OnboardingModalProps) {
     onAddShow();
   };
 
+  const stepTitle = step === 0 ? "Welcome to PodCodex"
+    : step === 1 ? "Three ways to add a show"
+    : "From audio to answers";
+
   return (
     <Dialog open onOpenChange={(o) => !o && finish()}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg h-[440px] flex flex-col">
         <VisuallyHidden.Root>
-          <DialogTitle>Welcome to PodCodex</DialogTitle>
+          <DialogTitle>{stepTitle}</DialogTitle>
           <DialogDescription>First-launch walkthrough</DialogDescription>
         </VisuallyHidden.Root>
         <div className="flex items-center justify-center gap-2 pt-2 pb-4">
@@ -54,9 +58,11 @@ export default function OnboardingModal({ onAddShow }: OnboardingModalProps) {
           ))}
         </div>
 
-        {step === 0 && <StepWelcome />}
-        {step === 1 && <StepSources />}
-        {step === 2 && <StepPipeline />}
+        <div className="flex-1 overflow-y-auto">
+          {step === 0 && <StepWelcome />}
+          {step === 1 && <StepSources />}
+          {step === 2 && <StepPipeline />}
+        </div>
 
         <div className="flex items-center justify-between pt-4 border-t border-border mt-2">
           <Button onClick={finish} variant="ghost" size="sm">Skip</Button>
@@ -97,7 +103,7 @@ function StepWelcome() {
       <ul className="text-sm text-muted-foreground space-y-2 pt-2 text-left max-w-sm mx-auto">
         {[
           "Transcribe with WhisperX — accurate, diarized, timestamped",
-          "Polish and translate with any local or cloud LLM",
+          "Correct and translate with any local or cloud LLM",
           "Search across your entire library, semantic and exact",
         ].map((line) => (
           <li key={line} className="flex items-start gap-2">
@@ -143,7 +149,7 @@ function StepSources() {
 function StepPipeline() {
   const steps = [
     { icon: Mic, label: "Transcribe", detail: "WhisperX + diarization" },
-    { icon: Wand2, label: "Polish & translate", detail: "Your LLM of choice" },
+    { icon: Wand2, label: "Correct & translate", detail: "With your LLM of choice" },
     { icon: Search, label: "Index & search", detail: "Across every episode" },
   ];
   return (

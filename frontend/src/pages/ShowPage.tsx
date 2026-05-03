@@ -12,7 +12,7 @@ import {
 import { queryKeys } from "@/api/queryKeys";
 import { artworkUrl } from "@/api/filesystem";
 import type { Episode } from "@/api/types";
-import { languageToISO, isOutdated } from "@/lib/utils";
+import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
 import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore } from "@/stores";
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
@@ -82,7 +82,10 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const [sort, setSort] = useState<SortKey>("date_desc");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const lastShiftClickIndex = useRef<number | null>(null);
-  const { downloadTaskId, batchTaskId, setBatchTask } = useTaskStore();
+  // Narrow selectors so unrelated task store writes don't re-render this page.
+  const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
+  const batchTaskId = useTaskStore((s) => s.batchTaskId);
+  const setBatchTask = useTaskStore((s) => s.setBatchTask);
 
   // Pipeline config from store (for batch start)
   const { tc, llm, engine, targetLang } = usePipelineConfig();
@@ -94,11 +97,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     queryFn: () => getShowMeta(folder),
   });
 
+  const isPolling = !!(downloadTaskId || batchTaskId);
   const { data: episodes, isLoading: episodesLoading } = useQuery({
     queryKey: queryKeys.episodes(folder, pipelineDefaults),
     queryFn: () => getEpisodes(folder, pipelineDefaults),
     placeholderData: keepPreviousData,
-    refetchInterval: downloadTaskId || batchTaskId ? 5000 : false,
+    refetchInterval: isPolling ? 5000 : false,
+    // While polling, suppress focus refetch so alt-tabs don't double the cadence.
+    refetchOnWindowFocus: isPolling ? false : undefined,
   });
 
   const { downloadMutation, importSubsMutation, isYouTube } = useShowActions(folder, meta);
@@ -200,7 +206,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     return list;
   }, [all, search, filter, sort, minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude]);
 
-  const showName = meta?.name || folder.replace(/\/+$/, "").split("/").pop() || "Show";
+  const showName = meta?.name || splitPath(folder.replace(/[\\/]+$/, "")).basename || "Show";
 
   // Single pass over `filtered` to derive selection-gated subsets.
   // Replaces five separate .filter() walks.
@@ -317,7 +323,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       index: step === "index",
       model_size: tc.modelSize,
       language: tc.language || languageToISO(meta?.language || ""),
-      batch_size: tc.batchSize,
+      batch_size: tc.batchSize ?? undefined,
       diarize: tc.diarize,
       clean: tc.clean,
       hf_token: tc.hfToken || undefined,
@@ -325,10 +331,9 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       transcribe_source: transcribeSource || "audio",
       sub_lang: languageToISO(meta?.language || "") || "en",
       llm_mode: llm.mode === "api" ? "api" : "ollama",
-      llm_provider: llm.mode === "api" ? llm.provider : undefined,
+      llm_provider_profile: llm.mode === "api" ? (llm.providerProfile || undefined) : undefined,
+      llm_key_name: llm.mode === "api" ? (llm.keyName || undefined) : undefined,
       llm_model: llm.model || undefined,
-      llm_api_base_url: llm.apiBaseUrl || undefined,
-      llm_api_key: llm.apiKey || undefined,
       context: llm.context,
       source_lang: llm.sourceLang,
       target_lang: targetLang,

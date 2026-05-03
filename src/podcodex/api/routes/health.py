@@ -69,9 +69,15 @@ def _installed_extras(caps: dict[str, bool] | None = None) -> set[str]:
 @router.get("/health")
 async def health() -> dict:
     """Return API status and detected capabilities."""
+    from podcodex.core.app_paths import running_in_bundle
+
     return {
         "status": "ok",
         "capabilities": _get_capabilities(),
+        # mode: "bundle" = frozen PyInstaller sidecar (no venv to manage);
+        # "dev" = uvicorn from .venv (extras installable via uv sync).
+        # Frontend uses this to hide tabs that only make sense in dev.
+        "mode": "bundle" if running_in_bundle() else "dev",
     }
 
 

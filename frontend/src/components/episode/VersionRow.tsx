@@ -25,7 +25,7 @@ export default function VersionRow({
   const [confirming, setConfirming] = useState(false);
 
   const edited = isEdited(version);
-  const dotColor = edited ? "bg-success" : "bg-blue-500";
+  const dotColor = edited ? "bg-success" : "bg-info";
   const hash = version.content_hash.replace("sha256:", "").slice(0, 6);
   const padding = dense ? "px-3 py-1.5" : "px-4 py-2";
   const accent = isLatest ? "border-success/60" : "border-transparent";

@@ -19,26 +19,17 @@ export const getIndexConfig = () =>
     defaults: { model: string; chunking: string; chunk_size: number; threshold: number };
   }>("/api/index/config");
 
-export const getIndexStatus = (audioPath: string, show: string) =>
-  json<{ combinations: IndexStatus[]; db_exists: boolean }>(
-    `/api/index/status?audio_path=${encodeURIComponent(audioPath)}&show=${encodeURIComponent(show)}`,
+export const getIndexStatus = (
+  audioPath: string | null | undefined,
+  show: string,
+  outputDir?: string | null,
+) => {
+  const params = new URLSearchParams({ show });
+  if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
+  return json<{ combinations: IndexStatus[]; db_exists: boolean }>(
+    `/api/index/status?${params}`,
   );
-
-export interface IndexSource {
-  key: string;
-  label: string;
-  detail: string;
-  exists: boolean;
-}
-
-/** Fetch versions for a pipeline step (transcript, corrected, or translation lang). */
-export const getStepVersions = (audioPath: string, stepKey: string) => {
-  const ap = encodeURIComponent(audioPath);
-  let url: string;
-  if (stepKey === "transcript") url = `/api/transcribe/versions?audio_path=${ap}`;
-  else if (stepKey === "corrected") url = `/api/correct/versions?audio_path=${ap}`;
-  else url = `/api/translate/versions?audio_path=${ap}&lang=${encodeURIComponent(stepKey)}`;
-  return json<VersionEntry[]>(url);
 };
 
 /** Fetch all versions across all steps for an episode (newest first). */
@@ -49,11 +40,6 @@ export const getAllVersions = (audioPath?: string | null, outputDir?: string | n
   return json<VersionEntry[]>(`/api/shows/versions?${params}`);
 };
 
-export const getIndexSources = (audioPath: string) =>
-  json<IndexSource[]>(
-    `/api/index/sources?audio_path=${encodeURIComponent(audioPath)}`,
-  );
-
 export interface EpisodeCollection {
   collection: string;
   model: string;
@@ -63,25 +49,81 @@ export interface EpisodeCollection {
 }
 
 /** Index entries this episode currently lives in (one per collection). */
-export const getEpisodeCollections = (audioPath: string, show: string) => {
-  const params = new URLSearchParams({ audio_path: audioPath, show });
+export const getEpisodeCollections = (
+  audioPath: string | null | undefined,
+  show: string,
+  outputDir?: string | null,
+) => {
+  const params = new URLSearchParams({ show });
+  if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
   return json<EpisodeCollection[]>(`/api/index/episode-collections?${params}`);
 };
 
 export const deleteEpisodeCollection = (
-  audioPath: string,
+  audioPath: string | null | undefined,
   show: string,
   collection: string,
+  outputDir?: string | null,
 ) => {
-  const params = new URLSearchParams({
-    audio_path: audioPath,
-    show,
-    collection,
-  });
+  const params = new URLSearchParams({ show, collection });
+  if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
   return json<{ status: string; still_indexed: boolean }>(
     `/api/index/episode?${params}`,
     { method: "DELETE" },
   );
+};
+
+export interface InspectChunkSpeakerTurn {
+  speaker: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface InspectChunk {
+  chunk_index: number;
+  start: number;
+  end: number;
+  dominant_speaker: string;
+  text: string;
+  source: string;
+  speakers?: InspectChunkSpeakerTurn[];
+  vector_norm: number;
+  vector_zero_frac: number;
+  vector_min: number;
+  vector_max: number;
+  vector_mean: number;
+  vector_std: number;
+}
+
+export interface InspectSummary {
+  dim: number;
+  n_chunks: number;
+  n_dead_chunks: number;
+  n_collapsed_chunks: number;
+  n_with_zeros: number;
+  zero_warn_threshold: number;
+}
+
+export interface InspectResponse {
+  collection: string;
+  model: string;
+  chunking: string;
+  episode: string;
+  summary: InspectSummary;
+  chunks: InspectChunk[];
+}
+
+export const getIndexInspect = (
+  audioPath: string,
+  show: string,
+  model: string,
+  chunking: string,
+) => {
+  const params = new URLSearchParams({ audio_path: audioPath, show, model, chunking });
+  return json<InspectResponse>(`/api/index/inspect?${params}`);
 };
 
 export const startIndex = (req: IndexRequest) =>

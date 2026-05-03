@@ -1,10 +1,10 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { getEpisodes, getShowMeta, exportZipUrl, openFolder } from "@/api/client";
-import { audioFileUrl } from "@/api/client";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getEpisodes, getShowMeta, openFolder } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
-import { artworkUrl, deleteFile } from "@/api/filesystem";
+import { artworkUrl, deleteFile, saveExportFile } from "@/api/filesystem";
+import { usePlatform } from "@/platform";
 import { uploadTranscript, getSpeakerMap, deleteTranscribeVersion } from "@/api/transcribe";
 import { getSegmentsPreview as getTranscribePreview } from "@/api/transcribe";
 import { getCorrectSegmentsPreview as getCorrectPreview, deleteCorrectVersion } from "@/api/correct";
@@ -31,7 +31,8 @@ import PanelLoading from "@/components/common/PanelLoading";
 
 const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
 const SegmentContextDialog = lazy(() => import("@/components/search/SegmentContextDialog"));
-import { formatDuration, formatDate, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited } from "@/lib/utils";
+const IndexInspectorModal = lazy(() => import("@/components/index/IndexInspectorModal"));
+import { formatDuration, formatDate, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, splitPath } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import {
   Play,
@@ -99,7 +100,7 @@ export default function EpisodePage({
   const [descExpanded, setDescExpanded] = useState(false);
 
   const isStandalone = !!audioFilePath;
-  const { downloadTaskId } = useTaskStore();
+  const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
   const pipelineDefaults = usePipelineDefaults();
 
   const { data: meta } = useQuery({
@@ -114,9 +115,22 @@ export default function EpisodePage({
     placeholderData: keepPreviousData,
     enabled: !!folder,
     refetchInterval: downloadTaskId ? 5000 : false,
+    refetchOnWindowFocus: downloadTaskId ? false : undefined,
   });
 
   const { downloadMutation: episodeDownloadMutation, importSubsMutation, isYouTube } = useShowActions(folder ?? "", meta, { withSubs: false });
+
+  // TaskBar invalidates ["episodes", folder] on completion, but in
+  // practice the panel sometimes still shows stale audio_path. Force a
+  // second refetch when downloadTaskId clears so the blocker swaps to
+  // the live transcribe form without a manual reload.
+  const prevDownloadTaskId = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevDownloadTaskId.current && !downloadTaskId && folder) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(folder) });
+    }
+    prevDownloadTaskId.current = downloadTaskId;
+  }, [downloadTaskId, folder, queryClient]);
 
   const episode: Episode | undefined = audioFilePath
     ? standaloneEpisode(audioFilePath)
@@ -326,10 +340,12 @@ function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, 
 }
 
 function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError, onNavigateStep }: { episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string; onNavigateStep: (step: ActiveStep) => void }) {
+  const platform = usePlatform();
   const audioPath = episode.audio_path;
   const hasTranscript = !!episode.transcribed;
   const seekTo = useAudioStore((s) => s.seekTo);
   const [previewSource, setPreviewSource] = useState<string | null>(null);
+  const [inspectTarget, setInspectTarget] = useState<{ model: string; chunking: string } | null>(null);
   const queryClient = useQueryClient();
 
   const { data: speakerMap } = useQuery({
@@ -345,26 +361,28 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
     enabled: !!audioPath && hasTranscript,
   });
 
+  const outputDir = episode.output_dir;
   const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(audioPath),
-    queryFn: () => getAllVersions(audioPath!),
-    enabled: !!audioPath && hasTranscript,
+    queryKey: queryKeys.allVersions(audioPath ?? outputDir),
+    queryFn: () => getAllVersions(audioPath, outputDir),
+    enabled: (!!audioPath || !!outputDir) && hasTranscript,
   });
 
   const showName = meta?.name ?? "";
   const { data: indexEntries } = useQuery({
-    queryKey: queryKeys.episodeCollections(audioPath, showName),
-    queryFn: () => getEpisodeCollections(audioPath!, showName),
-    enabled: !!audioPath && !!showName && !!episode.indexed,
+    queryKey: queryKeys.episodeCollections(audioPath ?? outputDir, showName),
+    queryFn: () => getEpisodeCollections(audioPath, showName, outputDir),
+    enabled: (!!audioPath || !!outputDir) && !!showName && !!episode.indexed,
   });
 
   const invalidateAll = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.episodeCollections(audioPath, showName) });
+    const key = audioPath ?? outputDir;
+    queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(key) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodeCollections(key, showName) });
     queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
     queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("transcribe", audioPath) });
     queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", audioPath) });
-  }, [audioPath, showName, queryClient]);
+  }, [audioPath, outputDir, showName, queryClient]);
 
   const deleteVersionMutation = useMutation({
     mutationFn: async ({ step, id }: { step: string; id: string }) => {
@@ -378,7 +396,7 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
 
   const deleteCollectionMutation = useMutation({
     mutationFn: (collection: string) =>
-      deleteEpisodeCollection(audioPath!, showName, collection),
+      deleteEpisodeCollection(audioPath, showName, collection, outputDir),
     onSuccess: invalidateAll,
   });
 
@@ -487,6 +505,7 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
             indexed={!!episode.indexed}
             entries={indexEntries ?? []}
             onOpen={() => onNavigateStep("index")}
+            onInspect={(model, chunking) => setInspectTarget({ model, chunking })}
             onDelete={(collection) => deleteCollectionMutation.mutate(collection)}
           />
         )}
@@ -512,8 +531,8 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
             </span>
           </div>
           <div className="space-y-1 text-sm">
-            {previewSegments.map((seg, i) => (
-              <p key={i} className="text-muted-foreground line-clamp-1">
+            {previewSegments.map((seg) => (
+              <p key={`${seg.start}-${seg.speaker ?? ""}`} className="text-muted-foreground line-clamp-1">
                 {seg.speaker && <span className="font-medium" style={{ color: speakerColor(seg.speaker) }}>{seg.speaker}: </span>}
                 {seg.text}
               </p>
@@ -534,10 +553,18 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
           </button>
         )}
         {episode.audio_path && (
-          <a href={exportZipUrl(episode.audio_path)} download className="flex items-center gap-1.5 hover:text-foreground transition ml-auto shrink-0">
+          <button
+            type="button"
+            onClick={() => saveExportFile(platform, {
+              audioPath: episode.audio_path!,
+              format: "zip",
+              defaultName: `${episode.stem || "episode"}.zip`,
+            })}
+            className="flex items-center gap-1.5 hover:text-foreground transition ml-auto shrink-0"
+          >
             <Download className="w-3.5 h-3.5" />
             <span>Export ZIP</span>
-          </a>
+          </button>
         )}
       </div>
 
@@ -557,6 +584,19 @@ function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSu
             else onNavigateStep("translate");
           }}
         />
+        </Suspense>
+      )}
+
+      {audioPath && inspectTarget && (
+        <Suspense fallback={null}>
+          <IndexInspectorModal
+            open={true}
+            onClose={() => setInspectTarget(null)}
+            audioPath={audioPath}
+            show={meta?.name ?? ""}
+            model={inspectTarget.model}
+            chunking={inspectTarget.chunking}
+          />
         </Suspense>
       )}
     </div>
@@ -688,6 +728,7 @@ function SourcesSection({
   onDeleteSubtitle: (filename: string) => void;
   onPreviewFile?: () => void;
 }) {
+  const platform = usePlatform();
   return (
     <div className="space-y-3">
       <h4 className="text-sm font-medium px-1">Sources</h4>
@@ -696,17 +737,25 @@ function SourcesSection({
         {episode.audio_path ? (
           <SourceFileRow
             icon={FileAudio}
-            label={episode.audio_path.split("/").pop() ?? "audio"}
+            label={splitPath(episode.audio_path).basename || "audio"}
             sublabel="audio"
-            action={
-              <a
-                href={audioFileUrl(episode.audio_path)}
-                download={`${episode.title}.${episode.audio_path.split(".").pop()}`}
-                className="text-2xs text-muted-foreground hover:text-foreground transition"
-              >
-                Save
-              </a>
-            }
+            action={(() => {
+              const audioPath = episode.audio_path;
+              const ext = audioPath.split(".").pop() || "mp3";
+              return (
+                <button
+                  type="button"
+                  onClick={() => saveExportFile(platform, {
+                    audioPath,
+                    format: "audio",
+                    defaultName: `${episode.title}.${ext}`,
+                  })}
+                  className="text-2xs text-muted-foreground hover:text-foreground transition"
+                >
+                  Save
+                </button>
+              );
+            })()}
           />
         ) : (
           <div className="px-4 py-3 text-sm text-muted-foreground italic">
@@ -812,18 +861,20 @@ function IndexGroup({
   indexed,
   entries,
   onOpen,
+  onInspect,
   onDelete,
 }: {
   indexed: boolean;
   entries: EpisodeCollection[];
   onOpen: () => void;
+  onInspect: (model: string, chunking: string) => void;
   onDelete: (collection: string) => void;
 }) {
   if (!indexed || entries.length === 0) {
     return (
       <div className="rounded-lg border border-border/50 px-4 py-2.5 flex items-center gap-3 text-sm text-muted-foreground italic">
         <Database className="w-3.5 h-3.5" />
-        <span className="flex-1">Not indexed.</span>
+        <span className="flex-1">{indexed ? "Indexed." : "Not indexed yet."}</span>
         <button
           onClick={onOpen}
           className="text-xs not-italic text-foreground hover:underline"
@@ -846,7 +897,12 @@ function IndexGroup({
       defaultOpen={entries.length <= 3}
     >
       {entries.map((e) => (
-        <IndexRow key={e.collection} entry={e} onDelete={() => onDelete(e.collection)} />
+        <IndexRow
+          key={e.collection}
+          entry={e}
+          onInspect={() => onInspect(e.model, e.chunker)}
+          onDelete={() => onDelete(e.collection)}
+        />
       ))}
     </OutputGroup>
   );
@@ -854,9 +910,11 @@ function IndexGroup({
 
 function IndexRow({
   entry,
+  onInspect,
   onDelete,
 }: {
   entry: EpisodeCollection;
+  onInspect: () => void;
   onDelete: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -878,15 +936,20 @@ function IndexRow({
 
   return (
     <div className="px-4 py-2 flex items-center gap-2 group/row hover:bg-accent/40 transition border-l-2 border-transparent">
-      <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-blue-500" />
-      <span className="flex-1 truncate text-xs">
+      <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-info" />
+      <button
+        type="button"
+        onClick={onInspect}
+        className="flex-1 truncate text-xs text-left hover:underline cursor-pointer"
+        title="Inspect chunks and vectors"
+      >
         <span className="text-foreground">
           {entry.model} · {entry.chunker}
         </span>
         {entry.source && (
           <span className="text-muted-foreground"> · from {entry.source}</span>
         )}
-      </span>
+      </button>
       <span className="shrink-0 font-mono text-2xs text-muted-foreground/60 tabular-nums">
         {entry.chunk_count} chunks
       </span>

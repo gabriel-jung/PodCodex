@@ -32,7 +32,12 @@ from podcodex.api.schemas import (
     UnifiedEpisodeOut,
 )
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
-from podcodex.ingest.folder import EpisodeInfo, invalidate_scan_cache, scan_folder
+from podcodex.ingest.folder import (
+    EpisodeInfo,
+    invalidate_scan_cache,
+    lance_indexed_stems,
+    scan_folder,
+)
 from podcodex.ingest.rss import (
     episode_stem,
     feed_artwork,
@@ -384,7 +389,8 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
             model_size=meta.pipeline.model_size,
             diarize=meta.pipeline.diarize,
             llm_mode=meta.pipeline.llm_mode,
-            llm_provider=meta.pipeline.llm_provider,
+            llm_provider_profile=meta.pipeline.llm_provider_profile,
+            llm_key_name=meta.pipeline.llm_key_name,
             llm_model=meta.pipeline.llm_model,
             target_lang=meta.pipeline.target_lang,
         ),
@@ -410,7 +416,8 @@ async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
                 model_size=p.model_size,
                 diarize=p.diarize,
                 llm_mode=p.llm_mode,
-                llm_provider=p.llm_provider,
+                llm_provider_profile=p.llm_provider_profile,
+                llm_key_name=p.llm_key_name,
                 llm_model=p.llm_model,
                 target_lang=p.target_lang,
             ),
@@ -464,14 +471,28 @@ async def unified_episodes(
     effective = _resolve_defaults(app_defaults, show_meta)
 
     # ── Pipeline status from DB (or one-time migration) ──
+    # LanceDB is the source of truth for indexed status; query once and
+    # share between the (possible) initial scan and the reconciliation
+    # pass below.
+    lance_indexed = lance_indexed_stems(path)
+
     db = get_pipeline_db(path)
     if db.episode_count() == 0:
-        episodes = scan_folder(path)
+        episodes = scan_folder(path, indexed_stems=lance_indexed)
         if episodes:
             db.populate_from_scan(episodes)
 
     status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
     seg_counts = db.latest_segment_counts("transcript")
+
+    indexed_updates: dict[str, bool] = {}
+    for stem, row in status_map.items():
+        truth = stem in lance_indexed
+        if bool(row.get("indexed", False)) != truth:
+            indexed_updates[stem] = truth
+            row["indexed"] = truth
+    if indexed_updates:
+        db.mark_indexed_bulk(indexed_updates)
 
     local_audio = _scan_audio_files(path)
     episode_files = _scan_episode_files(path, local_audio)
@@ -593,11 +614,11 @@ async def unified_episodes(
     return result
 
 
-_PARAM_RENAMES = {"mode": "llm_mode", "provider": "llm_provider"}
+_PARAM_RENAMES = {"mode": "llm_mode"}
 
 
 def _normalize_provenance(prov: dict) -> dict:
-    """Rename legacy param keys (mode→llm_mode, provider→llm_provider)."""
+    """Rename legacy param keys (mode→llm_mode)."""
     out = {}
     for step_key, meta in prov.items():
         if not isinstance(meta, dict):
@@ -625,8 +646,10 @@ def _resolve_defaults(app_defaults: dict, show_meta: _ShowMeta | None) -> dict:
         effective["model_size"] = p.model_size
     if p.llm_mode:
         effective["llm_mode"] = p.llm_mode
-    if p.llm_provider:
-        effective["llm_provider"] = p.llm_provider
+    if p.llm_provider_profile:
+        effective["llm_provider_profile"] = p.llm_provider_profile
+    if p.llm_key_name:
+        effective["llm_key_name"] = p.llm_key_name
     if p.llm_model:
         effective["llm_model"] = p.llm_model
     if p.target_lang:
@@ -658,8 +681,8 @@ def _llm_outdated(prov: dict, effective: dict) -> bool:
     if effective.get("llm_mode") and params.get("llm_mode") != effective["llm_mode"]:
         return True
     if (
-        effective.get("llm_provider")
-        and params.get("llm_provider") != effective["llm_provider"]
+        effective.get("llm_provider_profile")
+        and params.get("llm_provider_profile") != effective["llm_provider_profile"]
     ):
         return True
     if effective.get("llm_model") and prov.get("model") != effective["llm_model"]:
@@ -715,8 +738,10 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
 
 
 def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
+    from concurrent.futures import ThreadPoolExecutor
+
     from podcodex.core._utils import BREAK_SPEAKER, UNKNOWN_SPEAKERS, group_by_speaker
-    from podcodex.core.versions import load_latest
+    from podcodex.core.versions import load_version
 
     db = get_pipeline_db(path)
     if db.episode_count() == 0:
@@ -732,11 +757,29 @@ def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
     episodes_scanned = 0
     episodes_with_transcripts = 0
 
-    for ep in db.all_episodes():
-        stem = ep["stem"]
-        episodes_scanned += 1
-        base = path / stem / stem
-        segments = load_latest(base, "corrected") or load_latest(base, "transcript")
+    # Single bulk DB query for the latest version per (stem, step). Replaces
+    # 2*N ``list_versions`` round-trips that scaled badly with N episodes.
+    episodes = db.all_episodes()
+    latest_by_step = db.latest_versions_for_steps(["corrected", "transcript"])
+
+    def _load_segments(stem: str) -> tuple[str, list[dict] | None]:
+        for step in ("corrected", "transcript"):
+            v = latest_by_step.get((stem, step))
+            if not v:
+                continue
+            try:
+                return stem, load_version(path / stem / stem, step, v["id"])
+            except FileNotFoundError:
+                continue
+        return stem, None
+
+    # JSON reads parallelize well — they're disk-bound, not CPU-bound.
+    stems = [ep["stem"] for ep in episodes]
+    episodes_scanned = len(stems)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        loaded = list(pool.map(_load_segments, stems))
+
+    for stem, segments in loaded:
         if not segments:
             continue
         episodes_with_transcripts += 1
@@ -981,9 +1024,33 @@ async def move_show(show_folder: str, req: MoveShowRequest) -> dict:
             f"Task {active.task_id} is running on this show — wait for it to finish",
         )
 
+    # Release any cached file handles BEFORE the move. On Windows, SQLite (WAL)
+    # holds file locks that prevent rename/unlink while open.
+    close_pipeline_db(old_path)
+    invalidate_scan_cache(old_path)
+
+    leftover_warning: str | None = None
+
     if req.move_files:
         new_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(old_path), str(new_path))
+        try:
+            shutil.move(str(old_path), str(new_path))
+        except OSError as exc:
+            # Fallback: copy then best-effort cleanup. Handles cross-volume
+            # moves and Windows file locks that survive close().
+            logger.warning(
+                "shutil.move failed ({}); falling back to copytree + rmtree",
+                exc,
+            )
+            shutil.copytree(str(old_path), str(new_path), dirs_exist_ok=True)
+            try:
+                shutil.rmtree(str(old_path))
+            except OSError as rm_exc:
+                leftover_warning = (
+                    f"Copied to {new_path} but could not remove {old_path}: {rm_exc}. "
+                    "Delete it manually once no process is using it."
+                )
+                logger.warning(leftover_warning)
         logger.info("Moved show folder {} → {}", old_path, new_path)
     else:
         # Just create the new folder with show metadata, leave files behind
@@ -1004,12 +1071,12 @@ async def move_show(show_folder: str, req: MoveShowRequest) -> dict:
     ]
     _save(cfg)
 
-    # Invalidate caches
-    close_pipeline_db(old_path)
-    invalidate_scan_cache(old_path)
     invalidate_scan_cache(new_path)
 
-    return {"status": "moved", "new_path": str(new_path)}
+    result: dict = {"status": "moved", "new_path": str(new_path)}
+    if leftover_warning:
+        result["warning"] = leftover_warning
+    return result
 
 
 class DeleteShowRequest(BaseModel):

@@ -46,6 +46,9 @@ export default function AudioBar() {
       setAudioSegments(path, toAudioSegments(data));
       setShowSegment(true);
     },
+    onError: (err) => {
+      console.error("Failed to load transcript segments", err);
+    },
   });
   const navigate = useNavigate();
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -59,7 +62,8 @@ export default function AudioBar() {
   const [muted, setMuted] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem("audioVolume", String(volume));
+    const id = setTimeout(() => localStorage.setItem("audioVolume", String(volume)), 250);
+    return () => clearTimeout(id);
   }, [volume]);
   const [speed, setSpeed] = useState(1);
   const [showSegment, setShowSegment] = useState(false);
@@ -94,19 +98,20 @@ export default function AudioBar() {
     return () => { save(); clearInterval(interval); };
   }, [audioPath, playing]);
 
-  // Reset when track changes — restore saved speed
+  // Reset when track changes — restore saved speed, default 1× if none.
   useEffect(() => {
     setCurrentTime(0);
     setDuration(0);
     setPlaying(false);
-    let newSpeed = speed;
+    let newSpeed = 1;
     if (audioPath) {
       const savedSpeed = localStorage.getItem(`speed:${audioPath}`);
       if (savedSpeed) {
         const s = parseFloat(savedSpeed);
-        if (s >= 0.5 && s <= 3) { setSpeed(s); newSpeed = s; }
+        if (s >= 0.5 && s <= 3) newSpeed = s;
       }
     }
+    setSpeed(newSpeed);
     if (audioRef.current) audioRef.current.playbackRate = newSpeed;
   }, [audioPath]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -129,7 +134,7 @@ export default function AudioBar() {
     // short segments miss their opening.
     const doSeek = () => {
       audio.currentTime = Math.max(0, pendingSeek - 0.15);
-      audio.play();
+      audio.play().catch(() => { /* autoplay block or interrupted */ });
       consumeSeek();
     };
 
@@ -156,7 +161,7 @@ export default function AudioBar() {
     const audio = audioRef.current;
     if (!audio) return;
     if (audio.paused) {
-      audio.play();
+      audio.play().catch(() => { /* autoplay block or interrupted by pause */ });
     } else {
       audio.pause();
     }
@@ -164,7 +169,7 @@ export default function AudioBar() {
 
   const skip = (delta: number) => {
     const audio = audioRef.current;
-    if (!audio) return;
+    if (!audio || !Number.isFinite(audio.duration)) return;
     audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + delta));
   };
 
@@ -186,7 +191,7 @@ export default function AudioBar() {
         </div>
       )}
 
-    <div className="px-4 pt-1.5 pb-1">
+    <div className="px-4 py-2">
       {/* Hidden audio element */}
       <audio
         ref={audioRef}
@@ -200,7 +205,7 @@ export default function AudioBar() {
           if (pendingSeek == null && audioPath) {
             try {
               const saved = JSON.parse(localStorage.getItem(`pos:${audioPath}`) || "null");
-              if (saved?.time > 5 && saved.time < e.currentTarget.duration - 5) {
+              if (saved?.time > 5 && saved.time < e.currentTarget.duration - 1) {
                 e.currentTarget.currentTime = saved.time;
               }
             } catch { /* ignore */ }
@@ -214,7 +219,7 @@ export default function AudioBar() {
       />
 
       {/* Row 1: Artwork + info | centered transport | right controls */}
-      <div className="flex items-center gap-3 mb-0.5">
+      <div className="flex items-center gap-3 mb-1">
         {/* Artwork — click to open episode */}
         <button
           onClick={() => {
@@ -224,7 +229,7 @@ export default function AudioBar() {
               navigate({ to: "/file/$path", params: { path: encodeURIComponent(audioPath) } });
             }
           }}
-          className="w-8 h-8 rounded-md bg-muted shrink-0 overflow-hidden flex items-center justify-center hover:ring-2 hover:ring-primary/50 transition cursor-pointer"
+          className="w-10 h-10 rounded-md bg-muted shrink-0 overflow-hidden flex items-center justify-center hover:ring-2 hover:ring-primary/50 transition cursor-pointer"
           title="Go to episode"
         >
           {audioArtwork ? (
@@ -234,30 +239,33 @@ export default function AudioBar() {
           )}
         </button>
 
-        {/* Title + show name on one line. Show name shrinks ~infinitely faster
-            so it collapses to zero before the episode title starts truncating. */}
-        <div className="flex-[2] min-w-0 flex items-baseline gap-2">
-          <span className="text-sm font-medium truncate min-w-0" title={audioTitle || "Playing"}>
+        {/* Title above, show name below — vertical stack matches artwork height */}
+        <div className="flex-1 min-w-0 flex flex-col justify-center leading-tight">
+          <span className="text-sm font-medium truncate" title={audioTitle || "Playing"}>
             {audioTitle || "Playing"}
           </span>
           {audioShowName && (
-            <span className="text-xs text-muted-foreground truncate min-w-0 shrink-[9999] max-w-[10rem]">
+            <span className="text-xs text-muted-foreground truncate">
               {audioShowName}
             </span>
           )}
         </div>
 
-        {/* Centered transport */}
-        <div className="flex-1 flex items-center justify-center gap-0.5">
+        {/* Transport — sits at the geometric center thanks to the equal-flex
+            wrappers on the left (title) and right (controls). */}
+        <div className="shrink-0 flex items-center justify-center gap-0.5">
           <SkipLabelButton label="−15" onClick={() => skip(-15)} title="Back 15s" />
           <SkipLabelButton label="−5" onClick={() => skip(-5)} title="Back 5s" />
+          <SkipLabelButton label="−1" onClick={() => skip(-1)} title="Back 1s" />
           <Button onClick={togglePlay} variant="ghost" size="icon" className="h-7 w-7 mx-0.5" aria-label={playing ? "Pause" : "Play"}>
             {playing ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
           </Button>
+          <SkipLabelButton label="+1" onClick={() => skip(1)} title="Forward 1s" />
           <SkipLabelButton label="+5" onClick={() => skip(5)} title="Forward 5s" />
           <SkipLabelButton label="+15" onClick={() => skip(15)} title="Forward 15s" />
         </div>
 
+        <div className="flex-1 flex items-center justify-end gap-3 min-w-0">
         {/* Speed — grouped in a pill */}
         <div className="flex items-center shrink-0 bg-muted/40 rounded-full h-7">
           <button
@@ -289,7 +297,14 @@ export default function AudioBar() {
         {/* Volume — mute toggle; hover reveals a vertical slider above. */}
         <div className="group/vol relative shrink-0">
           <button
-            onClick={() => setMuted(!muted)}
+            onClick={() => {
+              if (muted) {
+                setMuted(false);
+                if (volume === 0) setVolume(0.2);
+              } else {
+                setMuted(true);
+              }
+            }}
             className="h-7 w-7 flex items-center justify-center rounded-full bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition"
             title={muted ? "Unmute" : "Mute"}
             aria-label={muted ? "Unmute" : "Mute"}
@@ -301,22 +316,25 @@ export default function AudioBar() {
             )}
           </button>
           <div
-            className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-1.5 py-3 rounded-md bg-popover border border-border shadow-md opacity-0 pointer-events-none group-hover/vol:opacity-100 group-hover/vol:pointer-events-auto transition-opacity"
+            className="absolute bottom-full left-1/2 -translate-x-1/2 pb-1 opacity-0 pointer-events-none group-hover/vol:opacity-100 group-hover/vol:pointer-events-auto transition-opacity"
           >
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.01}
-              value={muted ? 0 : volume}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setVolume(v);
-                if (v > 0 && muted) setMuted(false);
-              }}
-              aria-label="Volume"
-              className="accent-primary cursor-pointer h-20 w-1 [writing-mode:vertical-lr] [direction:rtl]"
-            />
+            <div className="px-2 py-3 rounded-md bg-popover border border-border shadow-md">
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={muted ? 0 : volume}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setVolume(v);
+                  if (v > 0 && muted) setMuted(false);
+                  if (v === 0 && !muted) setMuted(true);
+                }}
+                aria-label="Volume"
+                className="accent-primary cursor-pointer h-24 w-1.5 [writing-mode:vertical-lr] [direction:rtl] [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3"
+              />
+            </div>
           </div>
         </div>
 
@@ -349,6 +367,7 @@ export default function AudioBar() {
         <Button onClick={stopAudio} variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground" aria-label="Close player">
           <X className="w-3.5 h-3.5" />
         </Button>
+        </div>
       </div>
 
       {/* Row 2: Seek bar + time */}
@@ -386,7 +405,7 @@ export default function AudioBar() {
           {hoverTime && (
             <div
               className="absolute bottom-full mb-1.5 -translate-x-1/2 bg-popover text-popover-foreground text-2xs font-mono px-1.5 py-0.5 rounded border border-border shadow-sm pointer-events-none"
-              style={{ left: `${hoverTime.pct}%` }}
+              style={{ left: `${Math.max(3, Math.min(97, hoverTime.pct))}%` }}
             >
               {formatTime(hoverTime.time, false)}
             </div>

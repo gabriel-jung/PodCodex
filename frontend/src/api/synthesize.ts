@@ -7,7 +7,7 @@ import type {
   TaskResponse,
   VoiceSample,
 } from "./types";
-import { BASE, json } from "./client";
+import { json, rawFetch } from "./client";
 
 export const getSynthesisStatus = (audioPath: string) =>
   json<SynthesisStatus>(`/api/synthesize/status?audio_path=${encodeURIComponent(audioPath)}`);
@@ -27,11 +27,10 @@ export async function uploadVoiceSample(audioPath: string, speaker: string, file
   form.append("audio_path", audioPath);
   form.append("speaker", speaker);
   form.append("file", file);
-  const res = await fetch(`${BASE}/api/synthesize/upload-sample`, { method: "POST", body: form });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`${res.status}: ${body}`);
-  }
+  const res = await rawFetch(`/api/synthesize/upload-sample`, {
+    method: "POST",
+    body: form,
+  });
   return res.json();
 }
 
