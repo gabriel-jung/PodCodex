@@ -37,11 +37,13 @@ Every save is archived as a versioned snapshot with full provenance — model, p
 
 ### Pre-built release
 
-Grab the latest installer from the [Releases](https://github.com/gabriel-jung/podcodex/releases) page:
+Direct download (latest):
 
-- **macOS** — `.dmg` (Apple Silicon)
-- **Windows** — `.msi` (Windows path is documented but not yet smoke-tested; report what breaks)
-- **Linux** — build from source (the GPU + glibc + distro matrix makes a single redistributable impractical)
+- **macOS (Apple Silicon)** — [PodCodex-macos-arm64.dmg](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-macos-arm64.dmg)
+- **Windows x64** — [PodCodex-windows-x64.msi](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-windows-x64.msi) (path documented but not yet smoke-tested; report what breaks)
+- **Linux** — build from source (GPU + glibc + distro matrix makes single redistributable impractical)
+
+All assets + checksums on the [Releases](https://github.com/gabriel-jung/podcodex/releases) page.
 
 **macOS quarantine on first launch.** The DMG is not yet signed/notarized, so Gatekeeper will say *"PodCodex.app is damaged and can't be opened"*. The app is fine — drag it to `/Applications`, then once:
 

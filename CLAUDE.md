@@ -22,6 +22,20 @@ WiX skips file replace on same version → silent broken upgrade. Keep two files
 
 Don't add `version` back to `tauri.conf.json` or hardcode `__version__` in `src/podcodex/__init__.py` — both derive from above. `importlib.metadata.version("podcodex")` works in the PyInstaller bundle only because `"podcodex"` is in `COPY_METADATA` in `packaging/build_server.py`. Don't remove.
 
+## Release tags (controls README download links)
+
+`release.yml` triggers on `push: tags: v*`. Tag name decides flow:
+
+| Tag | Result |
+|-----|--------|
+| `vX.Y.Z` | Stable. Becomes "latest". README's `/releases/latest/download/PodCodex-{macos-arm64.dmg,windows-x64.msi}` links resolve here. |
+| `vX.Y.Z-beta.N`, `vX.Y.Z-rc.N` (any hyphen suffix) | Prerelease. Skipped by "latest". README links untouched. Direct asset URL still works. |
+| Actions UI → "Run workflow" | Draft. Hidden until manually published. |
+
+Workflow detects prerelease via `contains(github.ref_name, '-')`. Tag from main after merge for stable; tag from branch with `-beta`/`-rc` suffix for safe branch builds. Never tag stable from branch — main's README link will start serving unmerged code.
+
+README download links use stable aliases (`PodCodex-macos-arm64.dmg`, `PodCodex-windows-x64.msi`) uploaded by post-`tauri-action` `gh release upload ... #<alias>` steps. Don't rename — README breaks.
+
 ## Footguns
 
 - **Bootstrap order:** `PODCODEX_DATA_DIR`, `HF_HOME`, `TORCH_HOME` must be set before `bootstrap_for_*()`. Touching `torch.*` before bootstrap → `function 'abs' already has a docstring` race.

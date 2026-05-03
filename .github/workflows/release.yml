@@ -3,6 +3,8 @@ name: Release
 # Builds and publishes:
 #   - macOS .dmg (built on macos-latest, includes the bundled CPU sidecar)
 #   - Windows .msi (built on windows-latest, includes the bundled CPU sidecar)
+#   - PodCodex-macos-arm64.dmg + PodCodex-windows-x64.msi — version-less
+#     aliases so README can link to /releases/latest/download/<alias>
 #   - server-core.tar.gz + cuda-libs-<ver>.tar.gz + cuda-libs.json (Windows GPU
 #     archives for in-app download — VoiceBox-style runtime CUDA install)
 #   - latest.json (Tauri updater manifest — only when TAURI_SIGNING_PRIVATE_KEY
@@ -14,6 +16,12 @@ name: Release
 # Each platform job builds + uploads its own artifacts to the same release
 # tag (tauri-action handles the deduplication). Windows additionally
 # uploads the GPU archives via softprops/action-gh-release.
+#
+# Tag name controls release flow:
+#   vX.Y.Z          → stable, becomes "latest"
+#   vX.Y.Z-beta.N   → prerelease (any hyphen suffix), skipped by "latest"
+#   workflow_dispatch → draft, hidden until manually published
+# See CLAUDE.md "Release tags" for details.
 
 on:
   push:
@@ -68,7 +76,17 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "PodCodex ${{ github.ref_name }}"
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
           includeUpdaterJson: true
+
+      # Upload version-less alias so README can link to a stable URL:
+      #   /releases/latest/download/PodCodex-macos-arm64.dmg
+      - name: Mirror DMG with stable name
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DMG=$(ls src-tauri/target/release/bundle/dmg/PodCodex_*_aarch64.dmg | head -1)
+          gh release upload "${{ github.ref_name }}" "${DMG}#PodCodex-macos-arm64.dmg" --clobber
 
   # ── Windows MSI + GPU archives ──────────────────────────────────────────
   build-windows:
@@ -135,7 +153,17 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "PodCodex ${{ github.ref_name }}"
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
           includeUpdaterJson: true
+
+      # Upload version-less alias so README can link to a stable URL:
+      #   /releases/latest/download/PodCodex-windows-x64.msi
+      - name: Mirror MSI with stable name
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $msi = Get-ChildItem src-tauri\target\release\bundle\msi\PodCodex_*_x64_en-US.msi | Select-Object -First 1
+          gh release upload "${{ github.ref_name }}" "$($msi.FullName)#PodCodex-windows-x64.msi" --clobber
 
       # GPU build needs CUDA-flavored torch in the venv so PyInstaller can
       # bundle the NVIDIA runtime libs. Without this, package_gpu.py would
@@ -163,6 +191,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true
           files: |
             packaging/release-assets/server-core.tar.gz
