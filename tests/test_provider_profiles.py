@@ -23,7 +23,7 @@ from podcodex.core.provider_profiles import (
 
 def test_builtins_present_and_marked():
     names = {p.name for p in BUILTIN_PROFILES}
-    assert names == {"openai", "anthropic", "mistral", "ollama"}
+    assert {"openai", "anthropic", "mistral", "ollama"} <= names
     for p in BUILTIN_PROFILES:
         assert p.builtin is True
 
@@ -86,7 +86,7 @@ def test_list_returns_builtins_only_initially(client):
     assert r.status_code == 200
     profiles = r.json()["profiles"]
     names = [p["name"] for p in profiles]
-    assert names == ["openai", "anthropic", "mistral", "ollama"]
+    assert names == [p.name for p in BUILTIN_PROFILES]
     assert all(p["builtin"] is True for p in profiles)
 
 

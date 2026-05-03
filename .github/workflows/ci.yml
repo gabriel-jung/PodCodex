@@ -31,7 +31,9 @@ jobs:
         # Skip the `pipeline` extra (whisperx + torch + pyannote) — ~3 GB and
         # not needed for the pure-Python tests. Re-add if pipeline-level
         # integration tests land.
-        run: uv sync --extra dev --extra desktop --extra bot --extra mcp --extra rag --extra youtube
+        # `dev` lives in [dependency-groups], everything else in
+        # [project.optional-dependencies], so the flags differ.
+        run: uv sync --group dev --extra desktop --extra bot --extra mcp --extra rag --extra youtube
 
       - name: Run tests
         run: uv run pytest -q

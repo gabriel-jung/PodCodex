@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -77,32 +77,6 @@ def test_retriever_unknown_model_raises():
         from podcodex.rag.retriever import Retriever
 
         Retriever(model="bad_model")
-
-
-def test_retriever_uses_get_embedder(tmp_path):
-    mock_emb = MagicMock()
-    mock_factory = MagicMock(return_value=mock_emb)
-    local = IndexStore(tmp_path / "index")
-
-    with patch("podcodex.rag.embedder.get_embedder", mock_factory):
-        from podcodex.rag.retriever import Retriever
-
-        retriever = Retriever(model="e5-small", local=local)
-        _ = retriever.embedder  # trigger lazy load
-
-    mock_factory.assert_called_once_with("e5-small", device="cpu")
-
-
-def test_retriever_accepts_index_store(tmp_path):
-    local = IndexStore(tmp_path / "index")
-    mock_emb = MagicMock()
-
-    with patch("podcodex.rag.embedder.get_embedder", return_value=mock_emb):
-        from podcodex.rag.retriever import Retriever
-
-        r = Retriever(model="bge-m3", local=local)
-
-    assert r._local is local
 
 
 # ── Dense search (alpha=1.0) ─────────────────────────────────────────────

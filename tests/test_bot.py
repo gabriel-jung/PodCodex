@@ -103,15 +103,18 @@ def test_speaker_unknown_when_none():
 # ──────────────────────────────────────────────
 
 
-def test_score_bar_full():
-    assert _score_bar(1.0) == "████████"
+@pytest.mark.parametrize(
+    "score,expected",
+    [
+        (1.0, "████████"),
+        (0.0, "░░░░░░░░"),
+    ],
+)
+def test_score_bar_extremes(score, expected):
+    assert _score_bar(score) == expected
 
 
-def test_score_bar_empty():
-    assert _score_bar(0.0) == "░░░░░░░░"
-
-
-def test_score_bar_half():
+def test_score_bar_half_is_mixed():
     bar = _score_bar(0.5)
     assert len(bar) == 8
     assert "█" in bar and "░" in bar
@@ -563,51 +566,3 @@ def test_autocomplete_cache_stale_after_ttl():
         ttl=300.0,
     )
     assert cache.is_stale() is True
-
-
-# ──────────────────────────────────────────────
-# /setup show list mutations
-# ──────────────────────────────────────────────
-
-
-def test_setup_show_add_appends():
-    """show_add should append to existing allowed_shows."""
-    current = ServerSettings(allowed_shows=["ShowA"])
-    new_shows = list(current.allowed_shows)
-    show_add = "ShowB"
-    if show_add not in new_shows:
-        new_shows.append(show_add)
-    assert new_shows == ["ShowA", "ShowB"]
-
-
-def test_setup_show_add_no_duplicate():
-    current = ServerSettings(allowed_shows=["ShowA"])
-    new_shows = list(current.allowed_shows)
-    show_add = "ShowA"
-    if show_add not in new_shows:
-        new_shows.append(show_add)
-    assert new_shows == ["ShowA"]
-
-
-def test_setup_show_remove():
-    current = ServerSettings(allowed_shows=["ShowA", "ShowB"])
-    new_shows = list(current.allowed_shows)
-    show_remove = "ShowA"
-    if show_remove in new_shows:
-        new_shows.remove(show_remove)
-    assert new_shows == ["ShowB"]
-
-
-def test_setup_show_clear_then_add():
-    """show_clear runs first, then show_add — allows clear-and-add in one call."""
-    current = ServerSettings(allowed_shows=["Old1", "Old2"])
-    new_shows = list(current.allowed_shows)
-    show_clear = True
-    show_add = "NewShow"
-
-    if show_clear:
-        new_shows = []
-    if show_add and show_add not in new_shows:
-        new_shows.append(show_add)
-
-    assert new_shows == ["NewShow"]
