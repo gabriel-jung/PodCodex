@@ -4,7 +4,7 @@
 
 # PodCodex
 
-**Turn any podcast feed into a searchable, multilingual library — on your laptop, no cloud.**
+**Turn podcasts into a searchable knowledge base.**
 
 Drop in an RSS feed, a YouTube channel, or a folder of recordings. PodCodex transcribes, diarizes, optionally translates, and indexes everything into a local vector store you can query by meaning. Plug it into a Discord bot or Claude Desktop and the whole archive becomes a conversational knowledge base.
 
@@ -23,13 +23,7 @@ Point it at audio. Six steps, all on your machine:
 5. **Synthesize** *(optional)* — Qwen3-TTS voice cloning for dubbed versions.
 6. **Index & search** — local LanceDB index, hybrid retrieval (vector ANN + BM25 FTS).
 
-Every save is archived as a versioned snapshot with full provenance — model, params, content hash. Roll back any step.
-
-## Why local-first
-
-- **Your audio never leaves your machine.** No upload, no third-party transcription pipeline.
-- **No API bills for the heavy lifting.** Transcription, embeddings, and search run locally; LLMs are your choice (a free Ollama model works).
-- **Open-format outputs.** Transcripts as JSON / SRT / VTT / text, audio in standard codecs. Nothing locked in a vendor cloud.
+Every save is archived as a versioned snapshot with full provenance: model, params, content hash. Roll back any step.
 
 ---
 
@@ -40,12 +34,11 @@ Every save is archived as a versioned snapshot with full provenance — model, p
 Direct download (latest):
 
 - **macOS (Apple Silicon)** — [PodCodex-macos-arm64.dmg](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-macos-arm64.dmg)
-- **Windows x64** — [PodCodex-windows-x64.msi](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-windows-x64.msi) (path documented but not yet smoke-tested; report what breaks)
-- **Linux** — build from source (GPU + glibc + distro matrix makes single redistributable impractical)
+- **Windows x64** — [PodCodex-windows-x64.msi](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-windows-x64.msi)
 
 All assets + checksums on the [Releases](https://github.com/gabriel-jung/podcodex/releases) page.
 
-**macOS quarantine on first launch.** The DMG is not yet signed/notarized, so Gatekeeper will say *"PodCodex.app is damaged and can't be opened"*. The app is fine — drag it to `/Applications`, then once:
+**macOS quarantine on first launch.** The DMG is not yet signed/notarized, so Gatekeeper will say *"PodCodex.app is damaged and can't be opened"*. The app is fine. Drag it to `/Applications`, then once:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/PodCodex.app
@@ -93,7 +86,7 @@ Full guide (uv + Docker, systemd, password rotation, VPS rsync): [`deploy/BOT.md
 
 ### Claude Desktop / MCP
 
-The desktop app writes the Claude Desktop config for you — **Settings → Claude Desktop → Enable integration**. Claude can then call `search`, `exact`, `list_shows`, `get_context` directly during a conversation, plus editable slash prompts (`/brief`, `/speaker`, `/quote`, `/compare`, `/timeline`).
+The desktop app writes the Claude Desktop config for you: **Settings → Claude Desktop → Enable integration**. Claude can then call `search`, `exact`, `list_shows`, `get_context` directly during a conversation, plus editable slash prompts (`/brief`, `/speaker`, `/quote`, `/compare`, `/timeline`).
 
 Manual stdio config + Claude Code registration: [`deploy/MCP.md`](deploy/MCP.md).
 
@@ -139,7 +132,7 @@ Internals: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 - WhisperX runs CPU-only on Apple Silicon (no MPS support upstream yet).
 - YouTube auto-generated subtitles need [deno](https://deno.com/) installed (yt-dlp delegates JS challenge solving to it). Manual subtitles work without it.
-- Ollama correct/translate works best with larger models — small ones drop format.
+- Ollama correct/translate works best with larger models. Small ones drop format.
 - Qwen3-TTS is GPU-heavy. CUDA recommended for synthesis.
 
 ---
