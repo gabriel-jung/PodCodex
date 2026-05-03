@@ -94,5 +94,17 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # tauri.conf.json declares externalBin sidecars (podcodex-server, yt-dlp).
+      # Tauri's build script appends the target triple and requires the file to
+      # exist. We don't ship Linux, so create empty stubs here just to satisfy
+      # cargo check.
+      - name: Stub Linux sidecars (Linux not shipped)
+        run: |
+          mkdir -p binaries
+          touch binaries/podcodex-server-x86_64-unknown-linux-gnu
+          touch binaries/yt-dlp-x86_64-unknown-linux-gnu
+          chmod +x binaries/podcodex-server-x86_64-unknown-linux-gnu \
+                   binaries/yt-dlp-x86_64-unknown-linux-gnu
+
       - name: Cargo check
         run: cargo check --all-targets
