@@ -3,15 +3,27 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useActiveTask } from "@/hooks/useActiveTask";
 import { cancelTask } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
+import type { Episode } from "@/api/types";
 
 /**
  * Shared hook for pipeline panel task management.
  * Replaces the repeated pattern of useActiveTask + taskId state + handlers.
+ *
+ * `optimisticPatch` runs the moment the task completes and patches the
+ * matching episode (by stem) in the ["episodes"] cache before the slow
+ * /episodes refetch returns. /episodes walks the folder + LanceDB on big
+ * libraries — without the patch, status pills can lag a minute.
  */
+interface PipelineTaskOpts {
+  onComplete?: () => void;
+  targetStem?: string | null;
+  optimisticPatch?: (ep: Episode) => Partial<Episode>;
+}
+
 export function usePipelineTask(
   audioPath: string | null | undefined,
   stepKey: string,
-  opts?: { onComplete?: () => void },
+  opts?: PipelineTaskOpts,
 ) {
   const queryClient = useQueryClient();
   const [resumedTaskId, setResumedTaskId] = useActiveTask(audioPath, stepKey);
@@ -19,10 +31,10 @@ export function usePipelineTask(
   const [expanded, setExpanded] = useState(false);
   const activeTaskId = taskId || resumedTaskId;
 
-  // Keep a stable ref to onComplete so handleComplete doesn't change identity
-  const onCompleteRef = useRef(opts?.onComplete);
+  // Single ref for opts so handleComplete identity stays put across renders.
+  const optsRef = useRef<PipelineTaskOpts | undefined>(opts);
   // eslint-disable-next-line react-hooks/refs
-  onCompleteRef.current = opts?.onComplete;
+  optsRef.current = opts;
 
   const clearActive = useCallback(() => {
     setTaskId(null);
@@ -44,12 +56,22 @@ export function usePipelineTask(
     }
   }, [queryClient, stepKey, audioPath]);
 
+  const applyOptimisticPatch = useCallback(() => {
+    const { targetStem, optimisticPatch } = optsRef.current ?? {};
+    if (!targetStem || !optimisticPatch) return;
+    queryClient.setQueriesData<Episode[] | undefined>(
+      { queryKey: queryKeys.episodesAll() },
+      (prev) => prev?.map((e) => (e.stem === targetStem ? { ...e, ...optimisticPatch(e) } : e)),
+    );
+  }, [queryClient]);
+
   const handleComplete = useCallback(() => {
+    applyOptimisticPatch();
     refreshQueries();
     clearActive();
     setExpanded(false);
-    onCompleteRef.current?.();
-  }, [refreshQueries, clearActive]);
+    optsRef.current?.onComplete?.();
+  }, [applyOptimisticPatch, refreshQueries, clearActive]);
 
   const handleRetry = useCallback(() => {
     clearActive();

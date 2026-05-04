@@ -7,6 +7,7 @@
  */
 
 import type { VersionEntry } from "@/api/types";
+import { isEdited } from "@/lib/utils";
 
 export type PipelineInputStep = "transcribe" | "correct" | "translate" | "index";
 
@@ -29,4 +30,22 @@ export function filterVersionsForStep(
 ): VersionEntry[] {
   const valid = INPUT_STEP_SETS[step];
   return valid.size > 0 ? versions.filter((v) => !!v.step && valid.has(v.step)) : versions;
+}
+
+/** Order versions for "default pick" across multiple input steps.
+ *  Priority: step rank first, edited-vs-not within each step.
+ *  Example for `index` (steps = ["corrected", "transcript"]):
+ *    edited corrected > corrected > edited transcript > transcript.
+ *  Stable — within tier, input order (timestamp DESC) is preserved. */
+export function sortVersionsForDefault(
+  versions: VersionEntry[],
+  step?: PipelineInputStep,
+): VersionEntry[] {
+  const priority = step ? INPUT_STEPS[step] : [];
+  const rank = (v: VersionEntry) => {
+    const stepIdx = v.step ? priority.indexOf(v.step) : -1;
+    const stepKey = stepIdx === -1 ? priority.length : stepIdx;
+    return stepKey * 2 + (isEdited(v) ? 0 : 1);
+  };
+  return [...versions].sort((a, b) => rank(a) - rank(b));
 }

@@ -55,6 +55,9 @@ class BatchRequest(BaseModel):
     show_name: str = ""
     index_model_keys: list[str] = ["bge-m3"]
     index_chunkings: list[str] = ["semantic"]
+    # Per-episode source version override, keyed by audio_path. If a path
+    # is absent the step helpers fall back to load_latest (edited-first).
+    source_version_ids: dict[str, str] | None = None
 
     @field_validator("batch_size")
     @classmethod
@@ -205,11 +208,14 @@ def _resolve_video_id(episode_dir: Path) -> str | None:
 
 
 def _batch_llm_step(
-    audio_path, p, req, cancelled, ep_progress, i, step_offset, *, step
+    audio_path, p, req, cancelled, ep_progress, i, step_offset, *, step, version_id=None
 ):
     """Run a correct or translate step. Returns True if work was done.
 
-    Skips if a version already exists with matching LLM params.
+    Skips if a version already exists with matching LLM params. When
+    ``version_id`` is supplied the source segments are loaded from that
+    specific version (resolving the step from the version DB) instead of
+    the default-pick.
     """
     from podcodex.core.versions import has_matching_version
 
@@ -228,8 +234,21 @@ def _batch_llm_step(
     if not req.force and has_matching_version(p.base, step_name, match_params):
         return False
 
-    # Load source segments
-    if is_translate:
+    # Load source segments — explicit version_id overrides the default.
+    if version_id:
+        from podcodex.core.versions import load_version_by_id
+
+        resolved = load_version_by_id(p.base, version_id)
+        if not resolved:
+            logger.warning(
+                "Batch {}: version_id {!r} not found for {}",
+                step,
+                version_id,
+                p.base.name,
+            )
+            return False
+        segments = resolved[0]
+    elif is_translate:
         from podcodex.api.routes._helpers import load_best_source
 
         try:
@@ -306,7 +325,9 @@ def _batch_llm_step(
     return True
 
 
-def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offset):
+def _batch_index(
+    audio_path, stem, p, req, cancelled, ep_progress, i, step_offset, version_id=None
+):
     """Run index step in a spawned subprocess. Returns True if work was done."""
     sw = _STEP_WEIGHTS["index"]
     from podcodex.api.subprocess_runner import run_in_subprocess
@@ -323,6 +344,7 @@ def _batch_index(audio_path, stem, p, req, cancelled, ep_progress, i, step_offse
             "model_keys": req.index_model_keys,
             "chunkings": req.index_chunkings,
             "force": req.force,
+            "version_id": version_id,
         },
         on_progress=on_prog,
         on_log=getattr(cancelled, "log_cb", None),
@@ -385,6 +407,7 @@ def _run_batch(progress_cb, req: BatchRequest):
         task_manager.lock(audio_path, batch_task_id)
         progress_cb(i / total, f"[{i + 1}/{total}] Starting...")
         ep_had_work = False
+        ep_version_id = (req.source_version_ids or {}).get(audio_path)
 
         try:
             has_audio = Path(audio_path).exists()
@@ -429,6 +452,7 @@ def _run_batch(progress_cb, req: BatchRequest):
                     i,
                     step_offset,
                     step="correct",
+                    version_id=ep_version_id,
                 ):
                     ep_had_work = True
                 step_offset += _STEP_WEIGHTS["correct"]
@@ -443,13 +467,22 @@ def _run_batch(progress_cb, req: BatchRequest):
                     i,
                     step_offset,
                     step="translate",
+                    version_id=ep_version_id,
                 ):
                     ep_had_work = True
                 step_offset += _STEP_WEIGHTS["translate"]
 
             if req.index and not _cancelled():
                 if _batch_index(
-                    audio_path, stem, p, req, _cancelled, ep_progress, i, step_offset
+                    audio_path,
+                    stem,
+                    p,
+                    req,
+                    _cancelled,
+                    ep_progress,
+                    i,
+                    step_offset,
+                    version_id=ep_version_id,
                 ):
                     ep_had_work = True
 

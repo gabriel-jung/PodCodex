@@ -38,7 +38,10 @@ export default function CorrectPanel() {
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const audioPath = useAudioPath();
 
-  const task = usePipelineTask(audioPath, "correct");
+  const task = usePipelineTask(audioPath, "correct", {
+    targetStem: episode?.stem,
+    optimisticPatch: () => ({ corrected: true }),
+  });
   const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
 
   const [config, setConfig] = useLLMConfig(episode, showMeta);

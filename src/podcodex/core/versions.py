@@ -307,27 +307,51 @@ def load_version(base: Path, step: str, version_id: str) -> list[dict]:
         # Defensive: an earlier (buggy) backfill could have written the
         # wrapped {"meta", "segments"} shape into a version file. Unwrap
         # transparently so callers never see the malformed payload.
-        return _unwrap_legacy_segments(
-            json.loads(seg_path.read_text(encoding="utf-8"))
-        )
+        return _unwrap_legacy_segments(json.loads(seg_path.read_text(encoding="utf-8")))
     except Exception as e:
         raise FileNotFoundError(
             f"Version {version_id} unreadable for step '{step}': {e}"
         ) from e
 
 
-def load_latest(base: Path, step: str) -> list[dict] | None:
-    """Load segments from the most recent usable version of a step.
+def load_version_by_id(base: Path, version_id: str) -> tuple[list[dict], str] | None:
+    """Resolve a version_id to ``(segments, step)``, or None if unknown.
 
-    Walks versions newest-first and returns the first one that loads
-    cleanly. If the newest file is missing or corrupt (crash, cloud-sync
-    stub, user deleted it) the call falls through to the next-newest
-    instead of failing.
+    Centralises the lookup pattern used by index + LLM step entry points
+    (single-episode and batch).
+    """
+    meta = _get_db(base).get_version(version_id)
+    if not meta:
+        return None
+    try:
+        return load_version(base, meta["step"], version_id), meta["step"]
+    except FileNotFoundError:
+        return None
+
+
+def sort_versions_for_default(versions: list[dict]) -> list[dict]:
+    """Sort version list so the default pick (index 0) is edited-first.
+
+    Hand-edited / validated versions outrank model recency for any "what's
+    the current best" decision (pipeline source defaults, status pills,
+    dropdown defaults). Within each tier (edited / non-edited) the input
+    order is preserved, so a newest-first input stays newest-first.
+    """
+    return sorted(versions, key=lambda v: not is_edited(v))
+
+
+def load_latest(base: Path, step: str) -> list[dict] | None:
+    """Load segments from the best available version of a step.
+
+    Prefers hand-edited / validated versions over more recent model output
+    (per the "edited beats freshness" rule). Within each tier walks
+    newest-first and returns the first one that loads cleanly — a missing
+    or corrupt file falls through to the next candidate.
 
     Returns None if no version exists or all versions are unreadable.
     """
     db = _get_db(base)
-    versions = db.list_versions(base.name, step)
+    versions = sort_versions_for_default(db.list_versions(base.name, step))
     if not versions:
         return None
     for meta in versions:
@@ -339,11 +363,16 @@ def load_latest(base: Path, step: str) -> list[dict] | None:
 
 
 def get_latest_provenance(base: Path, step: str) -> dict | None:
-    """Return the provenance dict of the most recent version, or None."""
+    """Return the provenance dict of the default-pick version, or None.
+
+    Uses the same edited-first ordering as ``load_latest`` so status
+    surfaces and pipeline defaults agree on which version is "current".
+    """
     db = _get_db(base)
-    meta = db.get_latest_version(base.name, step)
-    if not meta:
+    versions = sort_versions_for_default(db.list_versions(base.name, step))
+    if not versions:
         return None
+    meta = versions[0]
     return {
         "model": meta.get("model"),
         "type": meta.get("type"),

@@ -1,20 +1,15 @@
-/** Context menu for an episode row/card — Play, Download, Process (per-step), Delete. */
+/** Context menu for an episode row/card — Open, Play, Download, Delete. */
 
 import { memo } from "react";
-import { MoreVertical, Play, Download, Trash2, Mic, Sparkles, Languages, Database, Wand2, ExternalLink } from "lucide-react";
+import { MoreVertical, Play, Download, Trash2, ExternalLink } from "lucide-react";
 import type { Episode } from "@/api/types";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSub,
-  DropdownMenuSubTrigger,
-  DropdownMenuSubContent,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-
-export type PipelineStep = "transcribe" | "correct" | "translate" | "index";
 
 export interface EpisodeMenuProps {
   ep: Episode;
@@ -22,20 +17,11 @@ export interface EpisodeMenuProps {
   onPlay?: () => void;
   onDownload?: () => void;
   onDelete?: () => void;
-  onProcess?: (step: PipelineStep) => void;
   /** Override the trigger button. If omitted renders a compact "⋯" button. */
   children?: React.ReactNode;
 }
 
-const STEP_LABELS: Record<PipelineStep, { icon: typeof Mic; label: string }> = {
-  transcribe: { icon: Mic, label: "Transcribe" },
-  correct: { icon: Sparkles, label: "Correct" },
-  translate: { icon: Languages, label: "Translate" },
-  index: { icon: Database, label: "Index" },
-};
-
-function EpisodeMenuInner({ ep, onOpen, onPlay, onDownload, onDelete, onProcess, children }: EpisodeMenuProps) {
-  const canProcess = !!onProcess && (ep.downloaded || ep.has_subtitles || (ep.transcribed && ep.output_dir));
+function EpisodeMenuInner({ ep, onOpen, onPlay, onDownload, onDelete, children }: EpisodeMenuProps) {
   const canPlay = !!onPlay && !!ep.audio_path;
   const canDownload = !!onDownload && !ep.downloaded;
   const canDelete = !!onDelete && !!ep.audio_path;
@@ -67,23 +53,6 @@ function EpisodeMenuInner({ ep, onOpen, onPlay, onDownload, onDelete, onProcess,
           <DropdownMenuItem onSelect={onDownload}>
             <Download className="w-3.5 h-3.5" /> Download audio
           </DropdownMenuItem>
-        )}
-        {canProcess && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <Wand2 className="w-3.5 h-3.5" /> Process
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                {(Object.entries(STEP_LABELS) as [PipelineStep, typeof STEP_LABELS[PipelineStep]][]).map(([step, { icon: Icon, label }]) => (
-                  <DropdownMenuItem key={step} onSelect={() => onProcess?.(step)}>
-                    <Icon className="w-3.5 h-3.5" /> {label}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          </>
         )}
         {canDelete && (
           <>

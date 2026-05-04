@@ -46,6 +46,12 @@ export default function TranslatePanel() {
 
   const task = usePipelineTask(audioPath, "translate", {
     onComplete: () => setEditingLang(langKey(targetLang)),
+    targetStem: episode?.stem,
+    optimisticPatch: (ep) => {
+      const lang = langKey(targetLang);
+      if (!lang || ep.translations.includes(lang)) return {};
+      return { translations: [...ep.translations, lang] };
+    },
   });
 
   const [config, setConfig] = useLLMConfig(episode, showMeta);

@@ -4,7 +4,7 @@ import { getCorrectSegments, getSegments } from "@/api/client";
 import { getAllVersions } from "@/api/search";
 import { queryKeys } from "@/api/queryKeys";
 import { buildDefaultContext } from "@/lib/utils";
-import { filterVersionsForStep, type PipelineInputStep } from "@/lib/pipelineInputs";
+import { filterVersionsForStep, sortVersionsForDefault, type PipelineInputStep } from "@/lib/pipelineInputs";
 import type { LLMConfig, LLMPresetKey } from "@/stores/pipelineConfigStore";
 import type { Episode, ShowMeta, Segment } from "@/api/types";
 import { usePipelineConfigStore } from "@/stores";
@@ -145,10 +145,10 @@ export function useInputVersions(
     queryFn: () => getAllVersions(audioPath, outputDir),
     enabled: (!!audioPath || !!outputDir) && enabled,
   });
-  return useMemo(
-    () => (allVersions ? filterVersionsForStep(allVersions, step) : undefined),
-    [allVersions, step],
-  );
+  return useMemo(() => {
+    if (!allVersions) return undefined;
+    return sortVersionsForDefault(filterVersionsForStep(allVersions, step), step);
+  }, [allVersions, step]);
 }
 
 /**

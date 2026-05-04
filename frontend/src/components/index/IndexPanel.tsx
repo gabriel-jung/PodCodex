@@ -27,7 +27,10 @@ export default function IndexPanel() {
   const audioPath = useAudioPath();
   const outputDir = episode?.output_dir;
   const showName = getShowName(showMeta, audioPath);
-  const task = usePipelineTask(audioPath, "index");
+  const task = usePipelineTask(audioPath, "index", {
+    targetStem: episode?.stem,
+    optimisticPatch: () => ({ indexed: true }),
+  });
 
   const { data: config } = useQuery({
     queryKey: queryKeys.indexConfig(),
@@ -126,7 +129,7 @@ export default function IndexPanel() {
                   className={`${selectClass} text-xs max-w-full min-w-0`}
                 >
                   <option value="">Latest — {versionOption(inputVersions[0])}</option>
-                  {inputVersions.map((v) => (
+                  {inputVersions.slice(1).map((v) => (
                     <option key={v.id} value={v.id}>{versionOption(v)}</option>
                   ))}
                 </select>

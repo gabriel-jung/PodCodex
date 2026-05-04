@@ -281,6 +281,7 @@ export interface BatchRequest {
   show_name?: string;
   index_model_keys?: string[];
   index_chunkings?: string[];
+  source_version_ids?: Record<string, string> | null;
 }
 
 export interface SearchRequest {

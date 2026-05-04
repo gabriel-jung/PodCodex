@@ -94,7 +94,7 @@ export default function LLMControlsForm({
               className={`${selectClass} text-xs max-w-full min-w-0`}
             >
               <option value="">Latest: {versionOption(inputVersions[0])}</option>
-              {inputVersions.map((v) => (
+              {inputVersions.slice(1).map((v) => (
                 <option key={v.id} value={v.id}>{versionOption(v)}</option>
               ))}
             </select>

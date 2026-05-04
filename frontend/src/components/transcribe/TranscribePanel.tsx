@@ -44,7 +44,10 @@ export default function TranscribePanel() {
 
   const { has: hasCap } = useCapabilities();
   const hasWhisperX = hasCap("whisperx");
-  const task = usePipelineTask(audioPath, "transcribe");
+  const task = usePipelineTask(audioPath, "transcribe", {
+    targetStem: episode?.stem,
+    optimisticPatch: () => ({ transcribed: true }),
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { downloadMutation: episodeDownloadMutation } = useShowActions(folder ?? "", showMeta ?? undefined, { withSubs: false });
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);

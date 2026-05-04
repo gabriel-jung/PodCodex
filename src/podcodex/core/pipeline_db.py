@@ -292,6 +292,14 @@ class PipelineDB:
         ).fetchone()
         return self._version_to_dict(row) if row else None
 
+    def get_version(self, version_id: str) -> dict | None:
+        """Return the version row for ``version_id``, or None."""
+        row = self._conn.execute(
+            "SELECT * FROM versions WHERE id = ? LIMIT 1",
+            (version_id,),
+        ).fetchone()
+        return self._version_to_dict(row) if row else None
+
     def latest_versions_for_steps(
         self, steps: list[str]
     ) -> dict[tuple[str, str], dict]:

@@ -59,7 +59,7 @@ def test_vectorize_episode_upgrades_on_source_change(tmp_path):
             chunks=[{"text": "t"}],
         )
 
-    mock_local.delete_episode.assert_called_once()
+    mock_local.save_chunks.assert_called_once()
     mock_embedder.encode_passages.assert_called_once()
     assert n == 1
 
@@ -97,5 +97,4 @@ def test_vectorize_overwrite_always_deletes(tmp_path):
             overwrite=True,
         )
 
-    mock_local.delete_episode.assert_called_once()
     mock_local.save_chunks.assert_called_once()

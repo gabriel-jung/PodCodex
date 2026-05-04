@@ -3,7 +3,7 @@ import type { Episode } from "@/api/types";
 import { Play, Download, MoreVertical, Captions, CloudOff } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
 import { StatusChips } from "./StatusChips";
-import { EpisodeMenu, type PipelineStep } from "./EpisodeMenu";
+import { EpisodeMenu } from "./EpisodeMenu";
 
 export interface EpisodeRowProps {
   ep: Episode;
@@ -14,12 +14,11 @@ export interface EpisodeRowProps {
   onPlay: (ep: Episode) => void;
   onDownload?: (id: string) => void;
   onDelete: (ep: Episode) => void;
-  onProcess?: (step: PipelineStep, ep: Episode) => void;
   downloading?: boolean;
   isPlaying: boolean;
 }
 
-function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDownload, onDelete, onProcess, downloading, isPlaying }: EpisodeRowProps) {
+function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying }: EpisodeRowProps) {
   const shiftRef = useRef(false);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
 
@@ -32,7 +31,6 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
   const handlePlay = () => onPlay(ep);
   const handleDownload = onDownload ? () => onDownload(ep.id) : undefined;
   const handleDelete = () => onDelete(ep);
-  const handleProcess = onProcess ? (step: PipelineStep) => onProcess(step, ep) : undefined;
 
   return (
     <div onContextMenu={onContextMenu} className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
@@ -78,7 +76,6 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
           onPlay={ep.audio_path ? handlePlay : undefined}
           onDownload={handleDownload}
           onDelete={handleDelete}
-          onProcess={handleProcess}
         >
           <button
             ref={menuTriggerRef}

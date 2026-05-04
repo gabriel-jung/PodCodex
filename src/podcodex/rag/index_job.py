@@ -34,7 +34,7 @@ def run(
     )
     from podcodex.core._utils import AudioPaths
     from podcodex.core.pipeline_db import mark_step
-    from podcodex.core.versions import load_version
+    from podcodex.core.versions import load_version_by_id
     from podcodex.rag.indexing import vectorize_batch
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
@@ -42,10 +42,18 @@ def run(
 
     progress_cb(0.0, "Resolving source...")
 
-    if version_id and source != "auto":
-        segments = load_version(p.base, source, version_id)
+    if version_id:
+        resolved = load_version_by_id(p.base, version_id)
+        if not resolved:
+            raise ValueError(f"version_id {version_id!r} not found for {episode!r}")
+        segments, resolved_step = resolved
         transcript = build_index_transcript(
-            audio_path, show, episode, segments=segments, output_dir=output_dir
+            audio_path,
+            show,
+            episode,
+            segments=segments,
+            source=resolved_step,
+            output_dir=output_dir,
         )
     else:
         transcript = build_index_transcript(
@@ -113,6 +121,7 @@ def run_for_batch(
     model_keys: list[str],
     chunkings: list[str],
     force: bool,
+    version_id: str | None = None,
 ) -> dict[str, Any]:
     """Batch-mode index entry — skips already-indexed combinations unless forced.
 
@@ -142,7 +151,18 @@ def run_for_batch(
             return {"upserted": 0, "indexed": False, "skipped": True}
 
     progress_cb(0.0, "Indexing...")
-    transcript = build_index_transcript(audio_path, show_name, stem)
+    if version_id:
+        from podcodex.core.versions import load_version_by_id
+
+        resolved = load_version_by_id(p.base, version_id)
+        if not resolved:
+            return {"upserted": 0, "indexed": False, "skipped": False}
+        segments, resolved_step = resolved
+        transcript = build_index_transcript(
+            audio_path, show_name, stem, segments=segments, source=resolved_step
+        )
+    else:
+        transcript = build_index_transcript(audio_path, show_name, stem)
     if not transcript.get("segments"):
         return {"upserted": 0, "indexed": False, "skipped": False}
 

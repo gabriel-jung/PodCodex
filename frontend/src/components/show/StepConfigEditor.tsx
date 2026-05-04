@@ -23,7 +23,7 @@ import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Copy, Check, Set
 import { useNavigate } from "@tanstack/react-router";
 import { languageToISO, errorMessage, selectClass, cn, versionLabel, versionOption, stepTag, SUB_LANGUAGES } from "@/lib/utils";
 import { modelPlaceholderFor, modelsFor } from "@/lib/providerModels";
-import { INPUT_STEPS, filterVersionsForStep, type PipelineInputStep } from "@/lib/pipelineInputs";
+import { INPUT_STEPS, filterVersionsForStep, sortVersionsForDefault, type PipelineInputStep } from "@/lib/pipelineInputs";
 import PresetCards from "@/components/common/PresetCards";
 import SectionHeader from "@/components/common/SectionHeader";
 import HelpLabel from "@/components/common/HelpLabel";
@@ -537,7 +537,10 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
               <div className="space-y-1">
                 {canRun.map((ep) => {
                   const ek = epKey(ep);
-                  const versions = filterVersionsForStep(epVersionsMap[ek] || [], step);
+                  const versions = sortVersionsForDefault(
+                    filterVersionsForStep(epVersionsMap[ek] || [], step),
+                    step,
+                  );
                   const sel = customVersions[ek] || "";
                   return (
                     <div key={ek} className="border border-border/50 rounded px-3 py-2 space-y-1.5">
@@ -1062,7 +1065,10 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                 const sourceVids: Record<string, string> = {};
                 const isVariant = !sourceGroups.some((g) => g.key === selectedSource);
                 for (const ep of filteredEpisodes) {
-                  const versions = filterVersionsForStep(epVersionsMap[epKey(ep)] || [], step);
+                  const versions = sortVersionsForDefault(
+                    filterVersionsForStep(epVersionsMap[epKey(ep)] || [], step),
+                    step,
+                  );
                   const match = isVariant
                     ? versions.find((v) => `${v.step}:${versionLabel(v)}` === selectedSource)
                     : versions.find((v) => v.step === selectedSource);

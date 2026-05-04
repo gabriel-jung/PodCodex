@@ -92,14 +92,11 @@ def vectorize_episode(
                 f"[UPGRADE] '{episode}' source changed: "
                 f"{stored_source} → {new_source} ({col})"
             )
-            local.delete_episode(col, episode)
+            # save_chunks deletes existing rows for this episode before insert.
         else:
             local_count = local.episode_chunk_count(col, episode)
             logger.info(f"[SKIP] '{episode}' cached ({col}, {local_count} chunks)")
             return chunks or stored, 0
-
-    if overwrite and local.episode_is_indexed(col, episode):
-        local.delete_episode(col, episode)
 
     if chunks is None:
         n_segs = len(transcript.get("segments", []))

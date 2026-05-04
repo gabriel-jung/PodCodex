@@ -13,6 +13,7 @@ import { queryKeys } from "@/api/queryKeys";
 import { artworkUrl } from "@/api/filesystem";
 import type { Episode } from "@/api/types";
 import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
+import type { PipelineInputStep } from "@/lib/pipelineInputs";
 import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore } from "@/stores";
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
@@ -309,7 +310,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const indexModel = usePipelineConfigStore((s) => s.indexModel);
 
   const batchMutate = batchMutation.mutate;
-  const runStep = useCallback((step: "transcribe" | "correct" | "translate" | "index", filteredEpisodes?: Episode[], _sourceVersionIds?: Record<string, string>, transcribeSource?: string, force?: boolean) => {
+  const runStep = useCallback((step: PipelineInputStep, filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: string, force?: boolean) => {
     const source = filteredEpisodes || batchableSelectedRef.current;
     const audioPaths = source.map(batchPath).filter(Boolean) as string[];
     if (audioPaths.length === 0) return;
@@ -341,6 +342,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       engine,
       show_name: meta?.name || "",
       index_model_keys: step === "index" ? [indexModel] : undefined,
+      source_version_ids: sourceVersionIds && Object.keys(sourceVersionIds).length > 0 ? sourceVersionIds : undefined,
       force,
     }, {
       onSuccess: (data) => setBatchTask(data.task_id, folder, episodes, step),
@@ -361,10 +363,6 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const downloadEpisode = useCallback((id: string) => {
     downloadMutate({ guids: [id] });
   }, [downloadMutate]);
-
-  const processEpisode = useCallback((step: "transcribe" | "correct" | "translate" | "index", ep: Episode) => {
-    runStep(step, [ep]);
-  }, [runStep]);
 
   const rowDownloading = downloadMutation.isPending || !!downloadTaskId;
 
@@ -551,7 +549,6 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                 onPlay={playEpisode}
                 onDownload={downloadEpisode}
                 onDelete={confirmDeleteAudio}
-                onProcess={processEpisode}
                 downloading={rowDownloading}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
               />
@@ -570,7 +567,6 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                 onPlay={playEpisode}
                 onDownload={downloadEpisode}
                 onDelete={confirmDeleteAudio}
-                onProcess={processEpisode}
                 downloading={rowDownloading}
                 isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
               />

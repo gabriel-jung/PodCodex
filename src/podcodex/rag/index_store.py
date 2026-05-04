@@ -844,20 +844,11 @@ class IndexStore:
         chunks: list[dict],
         embeddings: np.ndarray,
     ) -> None:
-        """Insert chunks and their embeddings for an episode.
+        """Upsert chunks and their embeddings for an episode (idempotent).
 
-        The caller is responsible for calling :meth:`delete_episode` first
-        when overwriting — this method does not upsert.
-
-        Args:
-            collection: Target collection name (must already exist).
-            episode: Episode identifier.
-            chunks: List of chunk dicts, each with at least ``"text"``.
-                Keys ``show``, ``source``, ``dominant_speaker``, ``start``,
-                ``end`` are unpacked into filter columns; everything else
-                is preserved inside the JSON ``meta`` column.
-            embeddings: Float32 array of shape ``(n, dim)`` aligned with
-                *chunks*.
+        Replaces any existing rows for ``episode`` before insert so
+        re-indexing with a different transcript version cannot leave
+        stale chunks behind.
 
         Raises:
             ValueError: If ``len(chunks) != len(embeddings)``.
@@ -870,6 +861,9 @@ class IndexStore:
         if not chunks:
             return
         t = self._table(collection)
+        if self.episode_is_indexed(collection, episode):
+            t.delete(f"episode = '{_escape(episode)}'")
+            self._fts_ready.discard(collection)
         rows: list[dict[str, Any]] = []
         for i, chunk in enumerate(chunks):
             speaker = chunk.get("dominant_speaker") or chunk.get("speaker") or ""

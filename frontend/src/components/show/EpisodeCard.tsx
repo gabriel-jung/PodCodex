@@ -3,7 +3,7 @@ import type { Episode } from "@/api/types";
 import { Play, Download, MoreVertical, Captions, CloudOff } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
 import { StatusChips } from "./StatusChips";
-import { EpisodeMenu, type PipelineStep } from "./EpisodeMenu";
+import { EpisodeMenu } from "./EpisodeMenu";
 
 export interface EpisodeCardProps {
   ep: Episode;
@@ -11,12 +11,11 @@ export interface EpisodeCardProps {
   onPlay: (ep: Episode) => void;
   onDownload?: (id: string) => void;
   onDelete?: (ep: Episode) => void;
-  onProcess?: (step: PipelineStep, ep: Episode) => void;
   downloading?: boolean;
   isPlaying: boolean;
 }
 
-function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, onProcess, downloading, isPlaying }: EpisodeCardProps) {
+function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying }: EpisodeCardProps) {
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const [isWide, setIsWide] = useState(false);
 
@@ -34,7 +33,6 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, onProcess,
   const handlePlay = () => onPlay(ep);
   const handleDownload = onDownload ? () => onDownload(ep.id) : undefined;
   const handleDelete = onDelete ? () => onDelete(ep) : undefined;
-  const handleProcess = onProcess ? (step: PipelineStep) => onProcess(step, ep) : undefined;
 
   return (
     <div
@@ -128,7 +126,6 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, onProcess,
             onPlay={ep.audio_path ? handlePlay : undefined}
             onDownload={handleDownload}
             onDelete={handleDelete}
-            onProcess={handleProcess}
           >
             <button
               ref={menuTriggerRef}
