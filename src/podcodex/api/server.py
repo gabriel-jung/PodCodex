@@ -46,9 +46,6 @@ def _wire_ml_caches() -> None:
     os.environ.setdefault("HF_HUB_CACHE", str(models_dir / "huggingface" / "hub"))
     os.environ.setdefault("TORCH_HOME", str(models_dir / "torch"))
     os.environ.setdefault(
-        "TRANSFORMERS_CACHE", str(models_dir / "huggingface" / "transformers")
-    )
-    os.environ.setdefault(
         "SENTENCE_TRANSFORMERS_HOME", str(models_dir / "sentence-transformers")
     )
 

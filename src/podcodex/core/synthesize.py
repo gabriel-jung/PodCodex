@@ -461,6 +461,7 @@ def load_tts_model(model_size: str = "1.7B"):
     from podcodex.core.cache import get_hf_cache_dir
     from podcodex.core.device import device_str, torch_dtype
 
+    get_hf_cache_dir()  # ensure HF_HOME is set; qwen_tts internals use HF_HUB_CACHE
     device = device_str()
     dtype = torch_dtype()
 
@@ -470,7 +471,6 @@ def load_tts_model(model_size: str = "1.7B"):
             device_map=device,
             dtype=dtype,
             attn_implementation="sdpa",
-            cache_dir=str(get_hf_cache_dir()),
         )
     return model
 

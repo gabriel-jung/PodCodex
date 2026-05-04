@@ -50,7 +50,7 @@ TTS_MODEL_SIZES: dict[str, str] = {
 }
 
 TTS_VRAM_MB: dict[str, int] = {
-    "1.7B": 8000,
+    "1.7B": 6500,
     "0.6B": 4000,
 }
 
