@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import unicodedata
 from collections.abc import Callable
@@ -175,7 +176,12 @@ def _guid_suffix(guid: str) -> str:
     return hashlib.sha1(guid.encode("utf-8")).hexdigest()[:8]
 
 
-def episode_stem(rss_episode: RSSEpisode, show_folder: Path | str | None = None) -> str:
+def episode_stem(
+    rss_episode: RSSEpisode,
+    show_folder: Path | str | None = None,
+    *,
+    existing_stems: set[str] | frozenset[str] | None = None,
+) -> str:
     """Return the filesystem stem for an RSS episode.
 
     - With an ``episode_number`` (RSS ``itunes:episode``, or a legacy-numbered
@@ -183,19 +189,77 @@ def episode_stem(rss_episode: RSSEpisode, show_folder: Path | str | None = None)
     - Without a number: ``"{slug}_{guid_suffix}"`` to prevent title collisions
       (two videos called "Episode Rerun" would otherwise share a stem).
 
-    When *show_folder* is provided and a legacy slug-only directory already
-    exists (episodes created before the guid suffix was introduced), the legacy
-    stem is returned so existing on-disk outputs keep resolving.
+    When *show_folder* is provided, the function also reuses an existing
+    on-disk stem for the same guid even if the title (and therefore slug)
+    has changed since the file was written — without this, a refreshed feed
+    that returns a slightly different title produces a second download next
+    to the original. Pass ``existing_stems`` (e.g.
+    ``set(local_audio.keys()) | set(episode_files.keys())``) to skip the
+    inline directory scan when the caller already has the stem listing.
     """
     slug = slug_from_title(rss_episode.title)
     if rss_episode.episode_number is not None:
         return f"{rss_episode.episode_number}_{slug}"
-    if show_folder is not None:
-        legacy_dir = Path(show_folder) / slug
-        if legacy_dir.is_dir():
-            return slug
     suffix = _guid_suffix(rss_episode.guid)
-    return f"{slug}_{suffix}" if suffix else slug
+    fresh = f"{slug}_{suffix}" if suffix else slug
+
+    if show_folder is None:
+        return fresh
+
+    # Title-drift mitigation: if a file/dir for *this exact guid* already
+    # exists under a different slug, reuse that stem so we don't write a
+    # parallel copy. The suffix is a stable hash of the immutable guid.
+    if suffix:
+        match = _find_stem_with_suffix(show_folder, suffix, existing_stems)
+        if match is not None:
+            return match
+
+    # Legacy fallback (slug-only directory from before guid suffixes existed).
+    if (Path(show_folder) / slug).is_dir():
+        return slug
+
+    return fresh
+
+
+def _find_stem_with_suffix(
+    show_folder: Path | str,
+    suffix: str,
+    existing_stems: set[str] | frozenset[str] | None,
+) -> str | None:
+    """Return the first stem ending with ``_{suffix}``, or None.
+
+    Uses ``existing_stems`` if provided (caller already has the listing),
+    otherwise scans ``show_folder`` once via ``os.scandir``. Inline scan is
+    bounded to one syscall regardless of how many entries; the cost only
+    matters when called repeatedly for many episodes — pass the set to
+    amortise that.
+    """
+    needle = f"_{suffix}"
+    if existing_stems is not None:
+        for stem in existing_stems:
+            if stem.endswith(needle):
+                return stem
+        return None
+
+    try:
+        with os.scandir(show_folder) as it:
+            for entry in it:
+                name = entry.name
+                if entry.is_dir(follow_symlinks=False):
+                    if name.endswith(needle):
+                        return name
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                dot = name.rfind(".")
+                if dot <= 0:
+                    continue
+                stem = name[:dot]
+                if stem.endswith(needle):
+                    return stem
+    except OSError:
+        pass
+    return None
 
 
 def _audio_ext_from_url(url: str) -> str:

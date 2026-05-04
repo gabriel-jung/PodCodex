@@ -31,6 +31,7 @@ from podcodex.api.schemas import (
     SpeakerRosterResponse,
     UnifiedEpisodeOut,
 )
+from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
 from podcodex.core.versions import is_edited
 from podcodex.ingest.folder import (
@@ -562,9 +563,14 @@ async def unified_episodes(
             **_step_statuses(st, prov, effective),
         }
 
+    # Pass the set of stems already on disk so episode_stem can match a
+    # changed-title episode to its existing file without re-scandir-ing per
+    # call. Covers root-audio stems and per-episode subdir stems.
+    existing_stems = set(local_audio) | set(episode_files)
+
     # RSS episodes first (preserves feed order)
     for r in rss:
-        stem = episode_stem(r, path)
+        stem = episode_stem(r, path, existing_stems=existing_stems)
         if r.guid in seen_ids:
             continue
         seen_ids.add(r.guid)
@@ -928,16 +934,9 @@ def _scan_audio_files(show_folder: Path) -> dict[str, Path]:
     return audio
 
 
-_INTERESTING_EXTS = {
-    ".mp3",
-    ".m4a",
-    ".wav",
-    ".ogg",
-    ".flac",  # audio
-    ".vtt",
-    ".srt",  # subtitles
-    ".json",
-    ".parquet",  # transcripts / pipeline outputs
+_INTERESTING_EXTS = AUDIO_EXTENSIONS | {
+    ".vtt", ".srt",                    # subtitles
+    ".json", ".parquet",               # transcripts / pipeline outputs
 }
 _SKIP_PREFIXES = (".", "__")
 _SKIP_NAMES = {"manifest.json"}

@@ -13,14 +13,44 @@ from pydantic import BaseModel, field_validator
 
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import UNKNOWN_SPEAKERS
+from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.ingest.rss import RSSEpisode, episode_stem
 from podcodex.rag.index_store import get_index_store  # re-export
 
 __all__ = ["get_index_store"]
 
-# ── Shared constants ────────────────────────────
+# Single source of truth — keeping this aligned with the scanner's set
+# avoids "is_downloaded says yes, scanner says no" mismatches that hid
+# yt-dlp output behind missing-ffmpeg failures.
+AUDIO_EXTS = AUDIO_EXTENSIONS
 
-AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".opus", ".wma"}
+
+def list_show_stems(show_folder: Path) -> set[str]:
+    """One-shot listing of stems on disk in a show folder.
+
+    Pass into :func:`episode_stem` / :func:`rss_episode_to_out` from any
+    loop that processes many episodes — without it, each call inside the
+    loop would do its own ``os.scandir``.
+    """
+    import os
+
+    stems: set[str] = set()
+    try:
+        with os.scandir(show_folder) as it:
+            for entry in it:
+                name = entry.name
+                if entry.is_dir(follow_symlinks=False):
+                    if not name.startswith("."):
+                        stems.add(name)
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                dot = name.rfind(".")
+                if dot > 0 and name[dot:].lower() in AUDIO_EXTENSIONS:
+                    stems.add(name[:dot])
+    except OSError:
+        pass
+    return stems
 
 
 def _build_source_chain(
@@ -237,9 +267,19 @@ def is_downloaded(show_folder: Path, stem: str) -> bool:
     return any((show_folder / f"{stem}{ext}").exists() for ext in AUDIO_EXTS)
 
 
-def rss_episode_to_out(ep: RSSEpisode, show_folder: Path) -> dict:
-    """Convert an RSSEpisode to an RSSEpisodeOut dict."""
-    stem = episode_stem(ep, show_folder)
+def rss_episode_to_out(
+    ep: RSSEpisode,
+    show_folder: Path,
+    *,
+    existing_stems: set[str] | frozenset[str] | None = None,
+) -> dict:
+    """Convert an RSSEpisode to an RSSEpisodeOut dict.
+
+    Loop callers should pre-compute ``existing_stems`` once via
+    ``_list_show_stems`` (or equivalent) and pass it in to avoid an
+    ``os.scandir`` per episode inside ``episode_stem``.
+    """
+    stem = episode_stem(ep, show_folder, existing_stems=existing_stems)
     return {
         **asdict(ep),
         "local_stem": stem,

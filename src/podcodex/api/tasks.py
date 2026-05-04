@@ -228,6 +228,11 @@ class TaskManager:
             try:
                 result = fn(progress_cb, *args)
                 if not info.cancel_event.is_set():
+                    # Invalidate the scan cache *before* publishing "completed"
+                    # so any frontend that refetches the moment it sees the
+                    # status change reads against fresh caches, not against
+                    # whatever was cached during the run.
+                    _invalidate_scan_for(audio_path)
                     info.status = "completed"
                     info.progress = 1.0
                     info.message = "Done"
@@ -243,15 +248,9 @@ class TaskManager:
                 if info.finished_at is None:
                     info.finished_at = time.monotonic()
                 self._audio_locks.pop(audio_path, None)
-                # Invalidate folder scan cache so next listing reflects changes
-                try:
-                    from podcodex.ingest.folder import invalidate_scan_cache
-                    from pathlib import Path
-
-                    p = Path(audio_path)
-                    invalidate_scan_cache(p if p.is_dir() else p.parent)
-                except Exception:
-                    pass
+                # Belt-and-suspenders: also invalidate on the failure / cancel
+                # path so a partially-written file is still reflected.
+                _invalidate_scan_for(audio_path)
                 self._broadcast_sync(task_id)
 
         self._executor.submit(run)
@@ -420,6 +419,19 @@ class TaskManager:
             ws: The WebSocket connection to remove.
         """
         self._ws_connections.discard(ws)
+
+
+def _invalidate_scan_for(audio_path: str) -> None:
+    """Drop the scan cache for the show folder owning ``audio_path``."""
+    try:
+        from pathlib import Path
+
+        from podcodex.ingest.folder import invalidate_scan_cache
+
+        p = Path(audio_path)
+        invalidate_scan_cache(p if p.is_dir() else p.parent)
+    except Exception:
+        pass
 
 
 def _add_loguru_sink(

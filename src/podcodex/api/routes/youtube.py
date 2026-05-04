@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from podcodex.api.routes._helpers import (
     is_downloaded,
+    list_show_stems,
     require_show_folder,
     rss_episode_to_out,
     submit_task,
@@ -103,7 +104,8 @@ async def youtube_fetch(show_folder: str) -> list[dict]:
             except Exception:
                 pass  # non-critical
 
-    return [rss_episode_to_out(ep, path) for ep in episodes]
+    existing_stems = list_show_stems(path)
+    return [rss_episode_to_out(ep, path, existing_stems=existing_stems) for ep in episodes]
 
 
 @router.post(
@@ -146,13 +148,14 @@ async def youtube_download(
         results = []
         consecutive_fails = 0
         total = len(episodes)
+        existing_stems = list_show_stems(show_path)
         reset_pace()
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
                 progress_cb(i / total, "Cancelled")
                 break
 
-            stem = episode_stem(ep, show_path)
+            stem = episode_stem(ep, show_path, existing_stems=existing_stems)
             progress_cb(i / total, f"Downloading {i + 1}/{total}: {ep.title[:40]}")
 
             if is_downloaded(show_path, stem):
@@ -254,6 +257,7 @@ async def youtube_import_subs(
         failed = 0
         consecutive_fails = 0
         total = len(episodes)
+        existing_stems = list_show_stems(show_path)
         results: list[dict] = []
         reset_pace()
         for i, ep in enumerate(episodes):
@@ -261,7 +265,7 @@ async def youtube_import_subs(
                 progress_cb(i / total, "Cancelled")
                 break
 
-            stem = episode_stem(ep, show_path)
+            stem = episode_stem(ep, show_path, existing_stems=existing_stems)
             progress_cb(i / total, f"Downloading subs {i + 1}/{total}: {ep.title[:40]}")
             episode_dir = show_path / stem
             episode_dir.mkdir(parents=True, exist_ok=True)

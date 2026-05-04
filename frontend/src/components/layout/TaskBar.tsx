@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useTaskStore, useBatchHistoryStore } from "@/stores";
+import { useAudioStore, useTaskStore, useBatchHistoryStore } from "@/stores";
 import { cancelTask } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { useProgress } from "@/hooks/useProgress";
@@ -70,6 +70,11 @@ function DownloadStrip() {
     if (isFinished && downloadFolder && !didInvalidateRef.current) {
       didInvalidateRef.current = true;
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(downloadFolder) });
+      // AudioBar caches segments in Zustand on first "show segment" click and
+      // never refetches. After a subtitle import, the cached array is stale;
+      // clearing it forces a fresh fetch on next toggle. Audio playback is
+      // unaffected — the <audio> element keys off audioPath, not segments.
+      useAudioStore.setState({ audioSegments: null });
     }
     if (!isFinished) didInvalidateRef.current = false;
   }, [isFinished, downloadFolder, queryClient]);

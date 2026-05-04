@@ -95,4 +95,12 @@ DEFAULT_TARGET_LANG = "English"
 
 # ── Supported audio file formats ─────────────────────────────────────────────
 
-AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+# Includes the formats yt-dlp's bestaudio can leave behind when the FFmpeg
+# post-processor (mp3 conversion) doesn't run — e.g. when ffmpeg is missing.
+# Without ``.opus``/``.webm``/``.aac``/``.wma`` here, ``_scan_audio_files``
+# misses those files and the episode summary shows no audio_path even
+# though the file is on disk and playable.
+AUDIO_EXTENSIONS = {
+    ".mp3", ".wav", ".m4a", ".ogg", ".flac",
+    ".opus", ".webm", ".aac", ".wma",
+}

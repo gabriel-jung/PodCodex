@@ -11,6 +11,7 @@ from loguru import logger
 
 from podcodex.api.routes._helpers import (
     is_downloaded,
+    list_show_stems,
     require_show_folder,
     rss_episode_to_out,
     submit_task,
@@ -57,7 +58,8 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
                 rss_url,
                 len(cached),
             )
-            return [rss_episode_to_out(ep, path) for ep in cached]
+            stems = list_show_stems(path)
+            return [rss_episode_to_out(ep, path, existing_stems=stems) for ep in cached]
         raise HTTPException(502, "Feed returned no episodes (parse error or empty)")
 
     # Keep episodes pulled from the feed flagged ``removed=True`` rather than
@@ -74,7 +76,8 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
                 meta.artwork_url = fresh
                 save_show_meta(path, meta)
 
-    return [rss_episode_to_out(ep, path) for ep in episodes]
+    stems = list_show_stems(path)
+    return [rss_episode_to_out(ep, path, existing_stems=stems) for ep in episodes]
 
 
 @router.get("/{show_folder:path}/rss/cache", response_model=list[RSSEpisodeOut])
@@ -84,7 +87,8 @@ async def rss_cache(show_folder: str) -> list[dict]:
     cached = load_feed_cache(path)
     if cached is None:
         return []
-    return [rss_episode_to_out(ep, path) for ep in cached]
+    stems = list_show_stems(path)
+    return [rss_episode_to_out(ep, path, existing_stems=stems) for ep in cached]
 
 
 @router.post(
