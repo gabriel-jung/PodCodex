@@ -12,6 +12,9 @@ Resolution order for an explicit override (highest priority first):
   2. ``ffmpeg_exe_override`` field in ``config.json``. Set via the
      Settings → ffmpeg picker; survives restarts independently of env.
   3. ``shutil.which("ffmpeg")``.
+  4. Windows-only fallback: live registry PATH + winget/scoop/chocolatey
+     shim dirs. PATH is captured per-process at logon so a winget install
+     during a session is invisible to ``shutil.which`` until reboot.
 """
 
 from __future__ import annotations
@@ -19,6 +22,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
+from functools import lru_cache
 from pathlib import Path
 
 from podcodex.core.app_config import load_config, strip_user_path
@@ -56,6 +61,79 @@ def _override_from_config() -> str:
         return ""
 
 
+@lru_cache(maxsize=1)
+def _windows_extra_dirs() -> tuple[str, ...]:
+    """Windows-only: dirs to scan when in-process PATH misses fresh installs.
+
+    PATH is captured per-process at logon. ``winget install Gyan.FFmpeg``
+    appends to the user PATH in the registry but the running app
+    (and even an in-app restart, which inherits Tauri's PATH) won't see
+    it until the user signs out. Read PATH from the registry directly,
+    plus the standard winget/scoop/chocolatey shim dirs.
+
+    Cached for the process lifetime: the registry only changes via
+    OS-level installs and the user gets a fresh process via Restart.
+    Returns a tuple so it stays hashable.
+    """
+    if sys.platform != "win32":
+        return ()
+    dirs: list[str] = []
+    try:
+        import winreg
+
+        keys = (
+            (
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            ),
+            (winreg.HKEY_CURRENT_USER, r"Environment"),
+        )
+        for root, sub in keys:
+            try:
+                with winreg.OpenKey(root, sub) as k:
+                    raw, _ = winreg.QueryValueEx(k, "Path")
+                    expanded = os.path.expandvars(raw or "")
+                    dirs.extend(p for p in expanded.split(";") if p)
+            except OSError:
+                continue
+    except ImportError:
+        pass
+
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        dirs.append(os.path.join(local, "Microsoft", "WinGet", "Links"))
+    user = os.environ.get("USERPROFILE", "")
+    if user:
+        dirs.append(os.path.join(user, "scoop", "shims"))
+    program_data = os.environ.get("ProgramData", "")
+    if program_data:
+        dirs.append(os.path.join(program_data, "chocolatey", "bin"))
+    return tuple(dirs)
+
+
+def _which_with_fallback() -> str | None:
+    """Resolve ffmpeg via PATH; on Windows fall back to registry + shim dirs.
+
+    Side effect: when the fallback resolves a binary whose dir isn't on
+    PATH, prepends it so subsequent subprocess spawns (whisperx,
+    faster-whisper) hardcoding bare ``"ffmpeg"`` find the same binary.
+    """
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    extra = _windows_extra_dirs()
+    if not extra:
+        return None
+    found = shutil.which("ffmpeg", path=os.pathsep.join(extra))
+    if not found:
+        return None
+    bin_dir = str(Path(found).parent)
+    existing = os.environ.get("PATH", "").split(os.pathsep)
+    if bin_dir not in existing:
+        os.environ["PATH"] = os.pathsep.join([bin_dir, *existing])
+    return found
+
+
 def ffmpeg_exe() -> str:
     """Absolute path to the ffmpeg binary, or ``"ffmpeg"`` as a last resort.
 
@@ -65,18 +143,19 @@ def ffmpeg_exe() -> str:
     override = _resolve_override()
     if override:
         return override
-    return shutil.which("ffmpeg") or "ffmpeg"
+    return _which_with_fallback() or "ffmpeg"
 
 
 def ffmpeg_available() -> bool:
     """``True`` if a usable ffmpeg binary is reachable.
 
-    Cost is ~one PATH walk per call; only ``/api/health`` and
-    ``/api/system/extras`` hit it.
+    Cost is ~one PATH walk per call (plus one registry read on Windows
+    when PATH misses); only ``/api/health`` and ``/api/system/extras``
+    hit it.
     """
     if _resolve_override():
         return True
-    return shutil.which("ffmpeg") is not None
+    return _which_with_fallback() is not None
 
 
 def probe_ffmpeg(path: str | None = None, timeout: float = 3.0) -> dict:
@@ -152,13 +231,15 @@ def log_ffmpeg_status() -> None:
 
 
 def ffmpeg_override_dir() -> str | None:
-    """Parent dir of the resolved override binary, or None.
+    """Parent dir of the resolved ffmpeg binary, or None.
 
-    Used at startup to prepend the override dir to PATH so libraries that
-    hard-code bare ``"ffmpeg"`` (whisperx, faster-whisper) resolve to the
-    same binary that :func:`ffmpeg_exe` returns.
+    Used at startup to prepend the dir to PATH so libraries that hard-code
+    bare ``"ffmpeg"`` (whisperx, faster-whisper) resolve to the same
+    binary that :func:`ffmpeg_exe` returns. Honours the explicit override
+    first, then the Windows registry / shim-dir fallback so a winget
+    install discovered post-logon also lands on the worker PATH.
     """
-    resolved = _resolve_override()
+    resolved = _resolve_override() or _which_with_fallback()
     if not resolved:
         return None
     return str(Path(resolved).parent)

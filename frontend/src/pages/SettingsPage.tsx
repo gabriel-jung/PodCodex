@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { settingsRoute } from "@/router";
 import { getModels, deleteModel, getExtras, installExtra, removeExtra, getSecretsStatus, updateSecrets, getHealth } from "@/api/client";
 import {
   createApiKey,
@@ -63,14 +64,16 @@ type SettingsTab = (typeof ALL_SECTIONS)[number]["key"];
 
 const VALID_TABS: readonly SettingsTab[] = ALL_SECTIONS.map((s) => s.key);
 
-function readInitialTab(): SettingsTab {
-  if (typeof window === "undefined") return "general";
-  const t = new URLSearchParams(window.location.search).get("tab");
-  return (VALID_TABS as readonly string[]).includes(t ?? "") ? (t as SettingsTab) : "general";
-}
-
 export default function SettingsPage() {
-  const [tab, setTab] = useState<SettingsTab>(readInitialTab);
+  // settingsRoute.useSearch() reactively returns the validated `?tab=…` so
+  // both initial render and in-app navigation (sidebar warning click) land
+  // on the right panel without hand-rolled popstate listeners.
+  const search = settingsRoute.useSearch();
+  const urlTab = search.tab && (VALID_TABS as readonly string[]).includes(search.tab)
+    ? (search.tab as SettingsTab)
+    : "general";
+  const [tab, setTab] = useState<SettingsTab>(urlTab);
+  useEffect(() => { setTab(urlTab); }, [urlTab]);
   const { data: health } = useQuery({
     queryKey: queryKeys.health(),
     queryFn: getHealth,
@@ -90,13 +93,6 @@ export default function SettingsPage() {
   useEffect(() => {
     if (tabHidden) setTab("general");
   }, [tabHidden]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const onPop = () => setTab(readInitialTab());
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;

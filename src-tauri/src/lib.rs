@@ -102,6 +102,77 @@ const GPU_MANIFEST_FILE: &str = "cuda-libs.json";
 
 struct BackendProcess(Mutex<Option<GroupChild>>);
 
+/// Replace in-process PATH with the live system + user PATH from the registry.
+///
+/// Explorer caches PATH at logon, so post-logon installs (winget, scoop,
+/// chocolatey) are invisible to the app — and stay invisible across
+/// ``app.restart()`` because ``Command::new`` inherits the parent's env.
+#[cfg(windows)]
+fn refresh_path_from_registry() {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::RegKey;
+
+    fn expand(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '%' {
+                out.push(c);
+                continue;
+            }
+            let mut name = String::new();
+            let mut closed = false;
+            for nc in chars.by_ref() {
+                if nc == '%' {
+                    closed = true;
+                    break;
+                }
+                name.push(nc);
+            }
+            if closed {
+                match std::env::var(&name) {
+                    Ok(v) => out.push_str(&v),
+                    Err(_) => {
+                        out.push('%');
+                        out.push_str(&name);
+                        out.push('%');
+                    }
+                }
+            } else {
+                out.push('%');
+                out.push_str(&name);
+            }
+        }
+        out
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    if let Ok(env) = hklm.open_subkey(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") {
+        if let Ok(p) = env.get_value::<String, _>("Path") {
+            parts.push(expand(&p));
+        }
+    }
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    if let Ok(env) = hkcu.open_subkey("Environment") {
+        if let Ok(p) = env.get_value::<String, _>("Path") {
+            parts.push(expand(&p));
+        }
+    }
+    if parts.is_empty() {
+        return;
+    }
+    let merged = parts.join(";");
+    log::info!(
+        "refresh_path_from_registry: PATH refreshed from registry ({} chars)",
+        merged.len()
+    );
+    std::env::set_var("PATH", merged);
+}
+
+#[cfg(not(windows))]
+fn refresh_path_from_registry() {}
+
 /// Restart the app. Invoked from the frontend after activate/deactivate of
 /// the GPU sidecar — sidecar selection happens once in spawn_backend_if_needed
 /// at startup, so a restart is the only way to switch backends.
@@ -123,6 +194,10 @@ fn restart_app(app: tauri::AppHandle) {
         }
         let _ = child.wait();
     }
+    // Refresh PATH so the relaunched process (and its sidecar) sees any
+    // post-logon installs. Without this the Restart button is functionally
+    // a no-op for PATH-derived state.
+    refresh_path_from_registry();
     app.restart();
 }
 
@@ -148,6 +223,10 @@ pub fn run() {
                     .build(),
             )?;
 
+            // Refresh PATH from the Windows registry before spawning the
+            // sidecar so post-logon installs (winget/scoop/chocolatey) are
+            // visible to whisperx, yt-dlp, ffmpeg, etc. on first launch.
+            refresh_path_from_registry();
             spawn_backend_if_needed(app.handle())?;
             schedule_window_show(app.handle().clone());
 

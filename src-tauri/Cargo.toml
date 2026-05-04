@@ -35,3 +35,10 @@ tokio = { version = "1", features = ["time", "macros"] }
 # multiprocessing.spawn workers (torch/whisperx/pyannote re-execing the same
 # binary) die with the parent on app exit.
 command-group = "5"
+
+# Read fresh user/system PATH from the registry on Windows so installs that
+# happened after the current logon (winget, scoop, chocolatey) are visible
+# to the spawned sidecar — explorer.exe caches PATH at logon and child
+# processes inherit it stale. Linux/macOS don't have this problem.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"

@@ -66,9 +66,13 @@ const fileRoute = createRoute({
   },
 });
 
-const settingsRoute = createRoute({
+export const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
+  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
+    const tab = typeof search.tab === "string" ? search.tab : undefined;
+    return tab ? { tab } : {};
+  },
   component: SettingsPage,
 });
 
