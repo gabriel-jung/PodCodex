@@ -296,7 +296,7 @@ export default function EpisodePage({
                 folder={folder}
                 meta={meta}
                 isYouTube={isYouTube}
-                onDownloadAudio={() => episodeDownloadMutation.mutate({ guids: [episode.id] })}
+                onDownloadAudio={() => episodeDownloadMutation.mutate({ guids: [episode.id], force: episode.downloaded })}
                 onImportSubs={(lang) => importSubsMutation.mutate({ ids: [episode?.id ?? ""], lang })}
                 downloadDisabled={episodeDownloadMutation.isPending || importSubsMutation.isPending || !!downloadTaskId}
                 downloadError={episodeDownloadMutation.isError ? errorMessage(episodeDownloadMutation.error) : importSubsMutation.isError ? errorMessage(importSubsMutation.error) : undefined}
@@ -752,7 +752,7 @@ function SourcesSection({
                   })}
                   className="text-2xs text-muted-foreground hover:text-foreground transition"
                 >
-                  Save
+                  Export
                 </button>
               );
             })()}
@@ -781,11 +781,11 @@ function SourcesSection({
           showLanguage={meta?.language || ""}
           onDownload={onDownloadAudio}
           onImportSubs={onImportSubs}
-          subsLabel={episode.transcribed ? "Re-import subtitles" : "Import subtitles"}
+          subsLabel={episode.transcribed ? "Re-download subtitles" : "Download subtitles"}
           subsEnabled={true}
-          audioLabel="Download audio"
-          showAudio={!episode.downloaded}
-          audioEnabled={!episode.downloaded}
+          audioLabel={episode.downloaded ? "Re-download audio" : "Download audio"}
+          showAudio={true}
+          audioEnabled={true}
           disabled={downloadDisabled}
           variant={episode.downloaded ? "outline" : "default"}
           align="right"
