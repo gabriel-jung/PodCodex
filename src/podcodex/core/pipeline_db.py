@@ -315,6 +315,13 @@ class PipelineDB:
             out[(d["stem"], d["step"])] = d
         return out
 
+    def stems_with_step(self, step: str) -> set[str]:
+        """Return the set of stems that have at least one version for ``step``."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT stem FROM versions WHERE step = ?", (step,)
+        ).fetchall()
+        return {r[0] for r in rows}
+
     def list_all_versions(self, stem: str) -> list[dict]:
         """List all versions across all steps for an episode (newest first)."""
         rows = self._conn.execute(

@@ -359,6 +359,52 @@ class TestStepStatuses:
         result = self._step_statuses(st, prov, effective)
         assert result["translate_status"] == "outdated"
 
+    def test_edited_beats_outdated_transcript(self):
+        """User-validated transcript stays 'done' even if model defaults changed."""
+        prov = {
+            "transcript": {
+                "model": "small",
+                "type": "validated",
+                "manual_edit": True,
+                "params": {"diarize": False},
+            }
+        }
+        st = _make_status_row(transcribed=True, provenance=prov)
+        effective = {"model_size": "large-v3", "diarize": True}
+        result = self._step_statuses(st, prov, effective)
+        assert result["transcribe_status"] == "done"
+
+    def test_edited_beats_outdated_corrected(self):
+        prov = {
+            "corrected": {
+                "model": "qwen3:4b",
+                "manual_edit": True,
+                "params": {"llm_mode": "ollama", "llm_provider": ""},
+            }
+        }
+        st = _make_status_row(corrected=True, provenance=prov)
+        effective = {"llm_mode": "api", "llm_provider": "openai"}
+        result = self._step_statuses(st, prov, effective)
+        assert result["correct_status"] == "done"
+
+    def test_edited_beats_outdated_translate(self):
+        prov = {
+            "english": {
+                "model": "old-model",
+                "type": "validated",
+                "params": {"llm_mode": "api", "llm_provider": "openai"},
+            }
+        }
+        st = _make_status_row(translations=["english"], provenance=prov)
+        effective = {
+            "target_lang": "english",
+            "llm_mode": "api",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o",
+        }
+        result = self._step_statuses(st, prov, effective)
+        assert result["translate_status"] == "done"
+
 
 # ── Resolve defaults ─────────────────────────────────────
 

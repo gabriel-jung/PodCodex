@@ -32,6 +32,7 @@ from podcodex.api.schemas import (
     UnifiedEpisodeOut,
 )
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+from podcodex.core.versions import is_edited
 from podcodex.ingest.folder import (
     EpisodeInfo,
     invalidate_scan_cache,
@@ -484,6 +485,7 @@ async def unified_episodes(
 
     status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
     seg_counts = db.latest_segment_counts("transcript")
+    stems_with_speaker_map = db.stems_with_step("speaker_map")
 
     indexed_updates: dict[str, bool] = {}
     for stem, row in status_map.items():
@@ -522,6 +524,14 @@ async def unified_episodes(
         feed_order: int | None = None,
     ) -> dict:
         prov = _normalize_provenance(st.get("provenance", {}))
+        # Speaker labels resolved by user counts as editing the displayed transcript,
+        # even though raw segment text is unchanged.
+        if stem and stem in stems_with_speaker_map:
+            tprov = prov.get("transcript")
+            prov["transcript"] = {
+                **(tprov if isinstance(tprov, dict) else {}),
+                "manual_edit": True,
+            }
         seg_count = seg_counts.get(stem) if stem else None
         return {
             "id": ep_id,
@@ -699,6 +709,8 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
     """Compute per-step status: 'none' | 'outdated' | 'done'.
 
     Compares the episode's provenance against the effective defaults.
+    User-validated versions short-circuit to 'done': re-running would
+    discard the edits, so 'outdated' is misleading.
     """
 
     def _check_transcribe() -> str:
@@ -707,6 +719,8 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
         prov = provenance.get("transcript")
         if not prov:
             return "done"  # no provenance → legacy, assume done
+        if is_edited(prov):
+            return "done"
         return "outdated" if _transcribe_outdated(prov, effective) else "done"
 
     def _check_correct() -> str:
@@ -714,6 +728,8 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
             return "none"
         prov = provenance.get("corrected")
         if not prov or not effective:
+            return "done"
+        if is_edited(prov):
             return "done"
         return "outdated" if _llm_outdated(prov, effective) else "done"
 
@@ -727,6 +743,8 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
         lang_key = target or (translations[0] if translations else "")
         prov = provenance.get(lang_key)
         if not prov or not effective:
+            return "done"
+        if is_edited(prov):
             return "done"
         return "outdated" if _llm_outdated(prov, effective) else "done"
 
