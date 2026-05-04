@@ -158,8 +158,8 @@ function buildSourceGroups(
 const STEPS = [
   { key: "transcribe", label: "Transcribe", icon: Mic },
   { key: "correct", label: "Correct with AI", icon: Sparkles },
-  { key: "translate", label: "Translate", icon: Languages },
   { key: "index", label: "Index", icon: Database },
+  { key: "translate", label: "Translate", icon: Languages },
 ] as const;
 
 export { STEPS };
