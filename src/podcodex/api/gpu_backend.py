@@ -395,7 +395,7 @@ def download_and_install(
     _ensure_bundle_mode()
     _ensure_platform_supported()
     if not manifest_url:
-        raise ValueError("Manifest URL is empty — set PODCODEX_GPU_MANIFEST_URL or pass via API.")
+        raise ValueError("Manifest URL is empty. Set PODCODEX_GPU_MANIFEST_URL or pass via API.")
 
     cancel_event: threading.Event | None = getattr(progress_cb, "cancel_event", None)
     install_dir = gpu_install_dir()
@@ -465,7 +465,7 @@ def download_and_install(
                 actual = _sha256(server_tar)
                 if actual != expected:
                     raise RuntimeError(
-                        f"server-core sha256 mismatch — expected {expected[:16]}…, got {actual[:16]}…"
+                        f"server-core sha256 mismatch: expected {expected[:16]}…, got {actual[:16]}…"
                     )
             else:
                 logger.warning("server-core.tar.gz.sha256 not published; skipping integrity check")
@@ -491,7 +491,7 @@ def download_and_install(
             actual = _sha256(cuda_tar)
             if actual != cuda_sha:
                 raise RuntimeError(
-                    f"cuda-libs sha256 mismatch — expected {cuda_sha[:16]}…, got {actual[:16]}…"
+                    f"cuda-libs sha256 mismatch: expected {cuda_sha[:16]}…, got {actual[:16]}…"
                 )
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("Install cancelled before extraction")
@@ -514,7 +514,7 @@ def activate() -> None:
     """Mark the GPU backend as the one to spawn on next sidecar restart."""
     _ensure_bundle_mode()
     if installed_manifest() is None:
-        raise RuntimeError("No GPU backend installed — call download first.")
+        raise RuntimeError("No GPU backend installed. Call download first.")
     _activated_marker().touch()
     logger.info("GPU backend activated at {}", gpu_install_dir())
 

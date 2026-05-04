@@ -33,7 +33,7 @@ def run_extract(
     progress_cb(0.0, "Loading transcript...")
     segments = load_transcript(audio_path, output_dir=output_dir)
     if not segments:
-        raise ValueError("No transcript found — transcribe first")
+        raise ValueError("No transcript found. Transcribe first.")
 
     progress_cb(0.1, "Extracting voice samples...")
     samples = extract_voice_samples(
@@ -142,7 +142,7 @@ def run_generate(
     speakers = real_speakers(segments)
     voice_samples = load_voice_samples(str(p.base.parent), speakers)
     if not voice_samples:
-        raise ValueError("No voice samples found — extract voices first")
+        raise ValueError("No voice samples found. Extract voices first.")
 
     segments_dir = p.tts_segments_dir
     manifest = (

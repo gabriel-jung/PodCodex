@@ -89,7 +89,7 @@ export default function CorrectPanel() {
             <MissingDependency
               extra="pipeline"
               label="LLM libraries"
-              description="Required for automatic AI processing. Manual mode works without them — it gives you prompts to paste into any chatbot."
+              description="Required for automatic AI processing. Manual mode works without them, and gives you prompts to paste into any chatbot."
             />
           )}
 

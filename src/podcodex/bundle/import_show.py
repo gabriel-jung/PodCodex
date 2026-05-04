@@ -64,8 +64,8 @@ def _embedder_warnings(manifest: Manifest) -> list[str]:
             seen.add(c.model)
             if c.model not in MODELS:
                 out.append(
-                    f"model '{c.model}' (collection '{c.name}') not registered in this install — "
-                    "queries against this collection will fail until the model is added"
+                    f"model '{c.model}' (collection '{c.name}') not registered in this install. "
+                    "Queries against this collection will fail until the model is added."
                 )
     return out
 

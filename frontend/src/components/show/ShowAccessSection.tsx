@@ -235,7 +235,7 @@ function RevealDialog({
             {reveal?.generated ? "New password generated" : "Password saved"}
           </DialogTitle>
           <DialogDescription>
-            This is shown once. If you lose it, generate a new one — the
+            This is shown once. If you lose it, generate a new one. The
             previous password stops working immediately.
           </DialogDescription>
         </DialogHeader>
@@ -306,7 +306,7 @@ function ManualDialog({
         <DialogHeader>
           <DialogTitle>Set password manually</DialogTitle>
           <DialogDescription>
-            Minimum 16 characters — short passwords are trivially brute-forced.
+            Minimum 16 characters. Short passwords are trivially brute-forced.
             Prefer Generate password for a random one.
           </DialogDescription>
         </DialogHeader>

@@ -93,7 +93,7 @@ export default function LLMControlsForm({
               onChange={(e) => onSourceVersionChange(e.target.value || null)}
               className={`${selectClass} text-xs max-w-full min-w-0`}
             >
-              <option value="">Latest — {versionOption(inputVersions[0])}</option>
+              <option value="">Latest: {versionOption(inputVersions[0])}</option>
               {inputVersions.map((v) => (
                 <option key={v.id} value={v.id}>{versionOption(v)}</option>
               ))}
@@ -124,12 +124,12 @@ export default function LLMControlsForm({
               className={`${selectClass} max-w-full min-w-0`}
             >
               <option value="">
-                {keys.length === 0 ? "No keys — add one in Settings" : "Pick a key…"}
+                {keys.length === 0 ? "No keys, add one in Settings" : "Pick a key…"}
               </option>
               {keys.map((k) => (
                 <option key={k.name} value={k.name}>
                   {k.name}
-                  {k.suggested_provider ? ` — ${k.suggested_provider}` : ""}
+                  {k.suggested_provider ? `, ${k.suggested_provider}` : ""}
                 </option>
               ))}
             </select>
@@ -141,7 +141,7 @@ export default function LLMControlsForm({
             ? "The AI model to use (e.g. gpt-4o for OpenAI, mistral-large for Mistral). Leave empty for the provider's default."
             : activePreset === "local"
               ? "The Ollama model to use (e.g. llama3, mistral). Leave empty for the default."
-              : "Optional — note which model you used, so you can track it later in provenance."
+              : "Optional. Note which model you used, so you can track it later in provenance."
         } />
         <input
           value={config.model}

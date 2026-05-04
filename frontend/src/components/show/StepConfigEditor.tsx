@@ -904,7 +904,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                       <HelpLabel label="Model" help="Speech recognition model. Bigger models make fewer mistakes but are slower and need more GPU memory." />
                       <select value={tc.modelSize} onChange={(e) => setTc({ modelSize: e.target.value })} className={selectFull}>
                         {filtered.map(([key, label]) => (
-                          <option key={key} value={key}>{key} — {isCpu ? CPU_LABELS[key] || label : GPU_LABELS[key] || label}</option>
+                          <option key={key} value={key}>{key}: {isCpu ? CPU_LABELS[key] || label : GPU_LABELS[key] || label}</option>
                         ))}
                       </select>
                     </div>

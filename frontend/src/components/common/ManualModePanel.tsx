@@ -180,7 +180,7 @@ export default function ManualModePanel({
           <div className="border border-border rounded">
             <div className="flex items-center justify-between px-3 py-1.5 bg-secondary/50 border-b border-border">
               <span className="text-xs text-muted-foreground">
-                Batch {currentBatch + 1} — {batch.segment_count} segments
+                Batch {currentBatch + 1}: {batch.segment_count} segments
                 {batchDone && <span className="text-success ml-2">validated</span>}
               </span>
               <Button

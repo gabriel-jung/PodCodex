@@ -231,7 +231,7 @@ export default function EpisodePage({
           ...(episode.pub_date ? [{ value: formatDate(episode.pub_date) }] : []),
           ...(episode.duration > 0 ? [{ value: formatDuration(episode.duration) }] : []),
           ...(episode.has_subtitles ? [{ value: <span title="Subtitles cached" className="inline-flex items-center gap-1"><Captions className="w-3.5 h-3.5" /> subs</span> }] : []),
-          ...(episode.removed ? [{ value: <span title="No longer in the live feed — kept locally" className="inline-flex items-center gap-1 text-muted-foreground"><CloudOff className="w-3.5 h-3.5" /> removed</span> }] : []),
+          ...(episode.removed ? [{ value: <span title="No longer in the live feed, kept locally" className="inline-flex items-center gap-1 text-muted-foreground"><CloudOff className="w-3.5 h-3.5" /> removed</span> }] : []),
         ]}
         statusSlot={<PipelineStatus episode={episode} />}
         actions={

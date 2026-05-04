@@ -59,7 +59,7 @@ def resolve_llm(provider_profile: str | None, key_name: str | None) -> ResolvedL
 
     if not key_name:
         raise LLMResolutionError(
-            f"Profile {provider_profile!r} needs an API key — pick one from the pool"
+            f"Profile {provider_profile!r} needs an API key. Pick one from the pool."
         )
     entry = find_key(load_keys(), key_name)
     if entry is None:

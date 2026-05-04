@@ -91,7 +91,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
           <div className="flex items-center gap-2 shrink-0">
             {isStuck ? (
               <span className="text-xs text-warning">
-                No updates for {formatElapsed(staleElapsed)} — may be stuck
+                No updates for {formatElapsed(staleElapsed)}, may be stuck
               </span>
             ) : isSlow ? (
               <span className="text-xs text-muted-foreground italic">
