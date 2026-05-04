@@ -97,7 +97,27 @@ def bootstrap_for_subprocess_child() -> None:
     file sink here would race the parent's ``enqueue=True`` sink for
     the same ``server.log``.
     """
+    _patch_missing_stdio()
     _install_all_patches()
+
+
+def _patch_missing_stdio() -> None:
+    """Windows --noconsole spawn children get ``sys.stdout``/``stderr`` = None.
+    Libraries that call ``sys.stdout.write`` directly (torch.hub download
+    progress, tqdm, etc.) crash with ``AttributeError`` before our loguru
+    forwarder ever sees the failure. Redirect to devnull so writes are silent
+    no-ops; loguru output still reaches the parent over the IPC queue.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        devnull = open(os.devnull, "w", buffering=1, encoding="utf-8")
+    except Exception:
+        return
+    if sys.stdout is None:
+        sys.stdout = devnull
+    if sys.stderr is None:
+        sys.stderr = devnull
 
 
 # ── Patches ─────────────────────────────────────────────────────────────
