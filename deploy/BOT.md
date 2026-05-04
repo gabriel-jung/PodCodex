@@ -227,7 +227,17 @@ All three responses are ephemeral; other users see nothing.
 
 **Skip this section if the bot runs on the same machine as the desktop app.** The bot finds the index automatically.
 
-Only transfer when the bot runs on a separate machine (e.g. a VPS). Both install paths read from `~/.local/share/podcodex/index/` by default on Linux, so the rsync target is the same regardless of which path you picked.
+Only transfer when the bot runs on a separate machine (e.g. a VPS).
+
+The bot host (Linux) reads from `~/.local/share/podcodex/index/` by default. The source path on the desktop machine depends on its OS:
+
+| Desktop OS | Source path |
+| ---------- | ----------- |
+| Linux      | `~/.local/share/podcodex/index/` |
+| macOS      | `~/Library/Application Support/podcodex/index/` |
+| Windows    | `%APPDATA%\podcodex\index\` (rsync not native, see [From a Windows desktop](#from-a-windows-desktop)) |
+
+If you overrode `PODCODEX_DATA_DIR` on the desktop, the index lives under `<override>/index/` instead.
 
 ### 1. Create the target directory on the bot host
 
@@ -239,23 +249,38 @@ ssh user@host 'mkdir -p ~/.local/share/podcodex/index'
 
 ### 2. rsync from the indexing machine
 
-**Run as a single line.** Multi-line paste without `\` continuations fails in zsh. Trailing slash on source matters (copies contents, not the dir itself):
+**Run as a single line.** Multi-line paste without `\` continuations fails in zsh. Trailing slash on source matters (copies contents, not the dir itself). Use `--delete` so renamed/removed shows on the desktop don't leave stale tables on the bot.
+
+From Linux desktop:
 
 ```bash
-# Dry run first — prints what would transfer, changes nothing
-rsync -avn --progress ~/.local/share/podcodex/index/ user@host:~/.local/share/podcodex/index/
+# Dry run first — prints what would transfer or delete, changes nothing
+rsync -avn --delete --progress ~/.local/share/podcodex/index/ user@host:~/.local/share/podcodex/index/
 
 # Real copy
-rsync -av --progress ~/.local/share/podcodex/index/ user@host:~/.local/share/podcodex/index/
+rsync -av --delete --progress ~/.local/share/podcodex/index/ user@host:~/.local/share/podcodex/index/
 ```
 
-If your source is elsewhere (you overrode `PODCODEX_INDEX` on the desktop), swap the local path accordingly.
+From macOS desktop (note the escaped space):
+
+```bash
+rsync -avn --delete --progress ~/Library/Application\ Support/podcodex/index/ user@host:~/.local/share/podcodex/index/
+rsync -av --delete --progress ~/Library/Application\ Support/podcodex/index/ user@host:~/.local/share/podcodex/index/
+```
 
 Safe to run while the bot is running; LanceDB is read-only on the bot side.
 
 ### Per-show sync
 
 The full directory is the unit of transfer. Per-show selective sync is technically possible (rsync include/exclude on the `{show}__*.lance` tables), but `_collections.lance` and `_show_passwords.lance` are global registries; partial syncs leave them inconsistent. Transfer the whole directory.
+
+### From a Windows desktop
+
+rsync isn't native on Windows. Use the bundle path (below). `podcodex-export` resolves `%APPDATA%\podcodex\index\` automatically and produces a single file you can move by any means (scp, web upload, USB drive). WSL + rsync also works if you prefer parity with the Linux flow:
+
+```powershell
+wsl rsync -av --delete --progress /mnt/c/Users/<you>/AppData/Roaming/podcodex/index/ user@host:~/.local/share/podcodex/index/
+```
 
 ### Alternative: bundle archive (selective, atomic)
 
