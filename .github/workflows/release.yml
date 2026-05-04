@@ -81,12 +81,15 @@ jobs:
 
       # Upload version-less alias so README can link to a stable URL:
       #   /releases/latest/download/PodCodex-macos-arm64.dmg
+      # `gh release upload file#label` sets the display label, not the
+      # asset filename — must copy to the target name first.
       - name: Mirror DMG with stable name
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DMG=$(ls src-tauri/target/release/bundle/dmg/PodCodex_*_aarch64.dmg | head -1)
-          gh release upload "${{ github.ref_name }}" "${DMG}#PodCodex-macos-arm64.dmg" --clobber
+          cp "${DMG}" PodCodex-macos-arm64.dmg
+          gh release upload "${{ github.ref_name }}" PodCodex-macos-arm64.dmg --clobber
 
   # ── Windows MSI + GPU archives ──────────────────────────────────────────
   build-windows:
@@ -158,12 +161,15 @@ jobs:
 
       # Upload version-less alias so README can link to a stable URL:
       #   /releases/latest/download/PodCodex-windows-x64.msi
+      # `gh release upload file#label` sets the display label, not the
+      # asset filename — must copy to the target name first.
       - name: Mirror MSI with stable name
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $msi = Get-ChildItem src-tauri\target\release\bundle\msi\PodCodex_*_x64_en-US.msi | Select-Object -First 1
-          gh release upload "${{ github.ref_name }}" "$($msi.FullName)#PodCodex-windows-x64.msi" --clobber
+          Copy-Item $msi.FullName PodCodex-windows-x64.msi
+          gh release upload "${{ github.ref_name }}" PodCodex-windows-x64.msi --clobber
 
       # GPU build needs CUDA-flavored torch in the venv so PyInstaller can
       # bundle the NVIDIA runtime libs. Without this, package_gpu.py would

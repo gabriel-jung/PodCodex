@@ -1,7 +1,7 @@
 [project]
 name = "podcodex"
-version = "0.1.22"
-description = "AI tools for podcast production"
+version = "0.1.23"
+description = "Turn podcasts into a searchable knowledge base."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Gabriel Jung", email = "gabriel.jung@protonmail.com" }]
@@ -94,6 +94,7 @@ dev = [
     "nbstripout>=0.9.0",
     "pre-commit>=4.5.1",
     "pytest>=8.0.0",
+    "soundfile>=0.13.1",
 ]
 
 [build-system]

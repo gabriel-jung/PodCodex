@@ -2847,7 +2847,7 @@ wheels = [
 
 [[package]]
 name = "podcodex"
-version = "0.1.22"
+version = "0.1.23"
 source = { editable = "." }
 dependencies = [
     { name = "feedparser" },
@@ -2909,6 +2909,7 @@ dev = [
     { name = "nbstripout" },
     { name = "pre-commit" },
     { name = "pytest" },
+    { name = "soundfile" },
 ]
 
 [package.metadata]
@@ -2953,6 +2954,7 @@ dev = [
     { name = "nbstripout", specifier = ">=0.9.0" },
     { name = "pre-commit", specifier = ">=4.5.1" },
     { name = "pytest", specifier = ">=8.0.0" },
+    { name = "soundfile", specifier = ">=0.13.1" },
 ]
 
 [[package]]
