@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
 import os
 from pathlib import Path
 
 from dotenv import dotenv_values, load_dotenv
 from fastapi import APIRouter, HTTPException
-from loguru import logger
 from pydantic import BaseModel
 
 from podcodex.core.api_keys import mask_secret
-from podcodex.core.app_paths import config_dir, secrets_env_path
+from podcodex.core.app_config import (
+    CONFIG_PATH,
+    AppConfig,
+    load_config,
+    save_config,
+    strip_user_path,
+)
+from podcodex.core.app_paths import secrets_env_path
 from podcodex.core.constants import (
     ASSEMBLE_STRATEGIES,
     DEFAULT_OLLAMA_MODEL,
@@ -27,7 +33,8 @@ from podcodex.ingest.rss import search_itunes
 
 router = APIRouter()
 
-CONFIG_PATH = config_dir() / "config.json"
+# Re-exported so existing call sites that imported from this module keep working.
+__all__ = ["CONFIG_PATH", "AppConfig", "router"]
 
 # Singleton tokens managed in the Settings panel. LLM API keys live in
 # the named pool (`/api/keys`); the Discord bot is a separate process
@@ -35,56 +42,9 @@ CONFIG_PATH = config_dir() / "config.json"
 SECRET_KEYS: tuple[str, ...] = ("HF_TOKEN",)
 
 
-class AppConfig(BaseModel):
-    show_folders: list[str] = []
-    default_save_path: str = ""  # suggested location for new shows
-
-
-# Hit on every search/list_shows; mtime-keyed so writes auto-invalidate.
-_LOAD_CACHE: tuple[float, AppConfig] | None = None
-
-
-def _load() -> AppConfig:
-    """Load app config from disk, migrating legacy formats if needed."""
-    global _LOAD_CACHE
-    try:
-        mtime = CONFIG_PATH.stat().st_mtime
-    except FileNotFoundError:
-        return AppConfig()
-    except OSError:
-        mtime = -1.0
-
-    if _LOAD_CACHE is not None and _LOAD_CACHE[0] == mtime:
-        return _LOAD_CACHE[1]
-
-    try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        # Migrate from old podcast_dir format
-        if "podcast_dir" in data and "show_folders" not in data:
-            data["show_folders"] = []
-            data["default_save_path"] = data.pop("podcast_dir", "")
-        cfg = AppConfig(**data)
-    except (json.JSONDecodeError, OSError):
-        logger.opt(exception=True).warning(
-            "Failed to load config from {}, using defaults", CONFIG_PATH
-        )
-        return AppConfig()
-
-    _LOAD_CACHE = (mtime, cfg)
-    return cfg
-
-
-def _save(cfg: AppConfig) -> None:
-    """Persist app config to disk as JSON (atomic write)."""
-    from podcodex.core._utils import atomic_write
-
-    atomic_write(
-        CONFIG_PATH,
-        lambda p: p.write_text(cfg.model_dump_json(indent=2), encoding="utf-8"),
-        suffix=".json",
-    )
-    global _LOAD_CACHE
-    _LOAD_CACHE = None  # invalidate; next _load() picks up new mtime
+# Backwards-compatible aliases for callers still importing the old names.
+_load = load_config
+_save = save_config
 
 
 def _register_folder(cfg: AppConfig, folder_path: str) -> AppConfig:
@@ -93,7 +53,7 @@ def _register_folder(cfg: AppConfig, folder_path: str) -> AppConfig:
     existing = {str(Path(p).resolve()) for p in cfg.show_folders}
     if resolved not in existing:
         cfg.show_folders.append(resolved)
-        _save(cfg)
+        save_config(cfg)
     return cfg
 
 
@@ -252,6 +212,36 @@ async def put_config(cfg: AppConfig) -> AppConfig:
     """Persist and return an updated app configuration."""
     _save(cfg)
     return cfg
+
+
+class FfmpegValidateRequest(BaseModel):
+    path: str
+
+
+class FfmpegValidateResponse(BaseModel):
+    ok: bool
+    path: str | None = None
+    version: str = ""
+    error: str = ""
+
+
+@router.post("/config/validate-ffmpeg", response_model=FfmpegValidateResponse)
+async def validate_ffmpeg(req: FfmpegValidateRequest) -> FfmpegValidateResponse:
+    """Probe a candidate ffmpeg binary so the panel can show pre-save feedback."""
+    from podcodex.core._ffmpeg import probe_ffmpeg
+
+    candidate = strip_user_path(req.path)
+    if not candidate:
+        return FfmpegValidateResponse(ok=False, error="Empty path")
+    # subprocess.run blocks; route is async so we offload to keep the event
+    # loop free for concurrent requests.
+    result = await asyncio.to_thread(probe_ffmpeg, candidate)
+    return FfmpegValidateResponse(
+        ok=bool(result["ok"]),
+        path=result.get("path"),
+        version=result.get("version", ""),
+        error=result.get("error", ""),
+    )
 
 
 # ── Podcast search ────────────────────────────

@@ -2,11 +2,11 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useTheme } from "@/hooks/useTheme";
 import { useLayoutStore } from "@/stores";
-import { getGPUStatus } from "@/api/client";
+import { getGPUStatus, getHealth } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import {
   ArrowLeft, Home, Podcast, Settings, SunMoon,
-  PanelLeftOpen, PanelLeftClose, Zap,
+  PanelLeftOpen, PanelLeftClose, Zap, Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -84,10 +84,11 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
         ))}
       </nav>
 
-      {/* Bottom: Theme + GPU available + Settings */}
+      {/* Bottom: Theme + GPU available + ffmpeg missing + Settings */}
       <div className="flex flex-col border-t border-border py-1">
         <SidebarBtn icon={SunMoon} label={`Theme: ${theme}`} expanded={expanded} onClick={() => setTheme(nextTheme)} />
         <GPUAvailableWarning expanded={expanded} onClick={() => navigate({ to: "/settings", search: { tab: "gpu" } })} />
+        <FfmpegMissingWarning expanded={expanded} onClick={() => navigate({ to: "/settings", search: { tab: "ffmpeg" } })} />
         <SidebarBtn icon={Settings} label="Settings" expanded={expanded} onClick={() => navigate({ to: "/settings" })} />
       </div>
 
@@ -122,6 +123,28 @@ function GPUAvailableWarning({ expanded, onClick }: { expanded: boolean; onClick
       className={`mx-2 my-1 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 text-warning px-2 py-2 text-xs transition hover:bg-warning/20 ${expanded ? "" : "justify-center"}`}
     >
       <Zap className="w-4 h-4 shrink-0" />
+      {expanded && <span className="truncate font-medium">{label}</span>}
+    </button>
+  );
+}
+
+function FfmpegMissingWarning({ expanded, onClick }: { expanded: boolean; onClick: () => void }) {
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health(),
+    queryFn: getHealth,
+    staleTime: 30_000,
+  });
+  if (!health) return null;
+  if (health.capabilities?.ffmpeg) return null;
+  const label = "Install ffmpeg";
+  return (
+    <button
+      onClick={onClick}
+      title={expanded ? undefined : label}
+      aria-label={label}
+      className={`mx-2 my-1 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 text-warning px-2 py-2 text-xs transition hover:bg-warning/20 ${expanded ? "" : "justify-center"}`}
+    >
+      <Wrench className="w-4 h-4 shrink-0" />
       {expanded && <span className="truncate font-medium">{label}</span>}
     </button>
   );

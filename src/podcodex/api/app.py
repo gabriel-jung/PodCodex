@@ -323,6 +323,16 @@ def main() -> None:
     from podcodex.bootstrap import bootstrap_for_dev
 
     bootstrap_for_dev()
+
+    # Honour PODCODEX_FFMPEG_EXE in dev too: without this, whisperx /
+    # faster-whisper invoke bare "ffmpeg" and only see the system PATH,
+    # so the override silently fails for transcription.
+    from podcodex.api.server import _wire_native_binaries
+    from podcodex.core._ffmpeg import log_ffmpeg_status
+
+    _wire_native_binaries()
+    log_ffmpeg_status()
+
     uvicorn.run(
         "podcodex.api.app:app",
         host="127.0.0.1",

@@ -137,6 +137,7 @@ export interface TaskResponse {
 export interface AppConfig {
   show_folders: string[];
   default_save_path: string;
+  ffmpeg_exe_override: string;
 }
 
 export interface ShowSummary {

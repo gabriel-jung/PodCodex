@@ -28,6 +28,20 @@ export const updateConfig = (cfg: AppConfig) =>
     body: JSON.stringify(cfg),
   });
 
+export interface FfmpegValidateResponse {
+  ok: boolean;
+  path: string | null;
+  version: string;
+  error: string;
+}
+
+export const validateFfmpegPath = (path: string) =>
+  json<FfmpegValidateResponse>("/api/config/validate-ffmpeg", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+
 // ── Podcast search ──────────────────────────
 
 export const searchPodcasts = (query: string, limit = 8) =>

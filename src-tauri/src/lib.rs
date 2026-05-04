@@ -16,6 +16,37 @@ const HEALTH_TIMEOUT_SECS: u64 = 180;
 /// bot, MCP), so they have to stay in sync.
 const APP_DATA_DIRNAME: &str = "podcodex";
 
+/// Path to the user-scoped config directory. Mirrors
+/// ``src/podcodex/core/app_paths.py:config_dir`` — config lives at
+/// ``$XDG_CONFIG_HOME/podcodex`` or ``~/.config/podcodex`` on every
+/// platform (including Windows, deliberately), so the Tauri shell and
+/// the Python sidecar agree on where to find ``config.json``.
+fn compute_config_dir() -> Result<PathBuf, String> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(xdg).join("podcodex"));
+    }
+    let home_var = if cfg!(target_os = "windows") { "USERPROFILE" } else { "HOME" };
+    let home = std::env::var_os(home_var).ok_or_else(|| format!("{home_var} not set"))?;
+    Ok(PathBuf::from(home).join(".config").join("podcodex"))
+}
+
+/// Read ``ffmpeg_exe_override`` from the persisted ``config.json``, if set
+/// and the file exists. Returns ``None`` (silent fallback) on any failure
+/// — a malformed config must not break sidecar boot. Also strips
+/// surrounding quotes the user may have pasted.
+fn read_ffmpeg_override_from_config() -> Option<PathBuf> {
+    let cfg_path = compute_config_dir().ok()?.join("config.json");
+    let raw = std::fs::read_to_string(&cfg_path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let raw_value = parsed.get("ffmpeg_exe_override")?.as_str()?;
+    let trimmed = raw_value.trim().trim_matches(&['"', '\''][..]);
+    if trimmed.is_empty() {
+        return None;
+    }
+    let p = PathBuf::from(trimmed);
+    if p.is_file() { Some(p) } else { None }
+}
+
 /// Compute the platform-native app-data root joined with
 /// ``APP_DATA_DIRNAME``. Deliberately bypasses Tauri's ``app_data_dir``
 /// (which uses the reverse-DNS bundle identifier) so config/data folders
@@ -232,6 +263,14 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
     if let Some(ytdlp) = locate_sidecar("yt-dlp") {
         log::info!("Bundled yt-dlp: {:?}", ytdlp);
         cmd.env("YT_DLP_BINARY", ytdlp);
+    }
+
+    // User-set custom ffmpeg path from config.json. The sidecar's
+    // _wire_native_binaries() prepends this dir to PATH so whisperx /
+    // faster-whisper resolve bare "ffmpeg" to the override.
+    if let Some(ffmpeg) = read_ffmpeg_override_from_config() {
+        log::info!("Custom ffmpeg override: {:?}", ffmpeg);
+        cmd.env("PODCODEX_FFMPEG_EXE", ffmpeg);
     }
 
     // group_spawn wraps the child in a Windows Job Object (with

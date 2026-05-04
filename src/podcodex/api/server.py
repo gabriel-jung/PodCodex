@@ -156,6 +156,10 @@ def main() -> None:
 
     bootstrap_for_bundled_sidecar()
 
+    from podcodex.core._ffmpeg import log_ffmpeg_status
+
+    log_ffmpeg_status()
+
     import uvicorn
 
     from podcodex.api.app import app
@@ -224,6 +228,10 @@ def _handle_mcp_flag() -> None:
     from podcodex.bootstrap import bootstrap_for_mcp_stdio
 
     bootstrap_for_mcp_stdio()
+
+    from podcodex.core._ffmpeg import log_ffmpeg_status
+
+    log_ffmpeg_status()
 
     from podcodex.mcp.server import main as mcp_main
 

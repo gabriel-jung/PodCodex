@@ -20,13 +20,14 @@ import { Button } from "@/components/ui/button";
 import {
   Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2,
   Sun, Moon, Monitor, Keyboard, Palette, Mic, Sparkles, Database, Languages, Plug,
-  KeyRound, Eye, EyeOff, Check, Zap, Plus, Lock, Search, Settings,
+  KeyRound, Eye, EyeOff, Check, Zap, Plus, Lock, Search, Settings, Wrench,
 } from "lucide-react";
 import AppSidebar from "@/components/layout/AppSidebar";
 import EditorialHeader from "@/components/layout/EditorialHeader";
 import IntegrationsPanel from "@/components/settings/IntegrationsPanel";
 import BundleExportPanel from "@/components/settings/BundleExportPanel";
 import GPUBackendPanel from "@/components/settings/GPUBackendPanel";
+import FfmpegPanel from "@/components/settings/FfmpegPanel";
 import { useEffect, useMemo, useState } from "react";
 import { useTheme } from "@/hooks/useTheme";
 import { SHORTCUTS, Kbd } from "@/components/ShortcutsHelp";
@@ -54,6 +55,7 @@ const ALL_SECTIONS = [
   { key: "integrations", label: "Integrations", icon: Plug },
   { key: "plugins", label: "Plugins", icon: Puzzle, devOnly: true },
   { key: "gpu", label: "GPU acceleration", icon: Zap },
+  { key: "ffmpeg", label: "ffmpeg", icon: Wrench },
   { key: "cache", label: "Model cache", icon: HardDrive },
 ] as const;
 
@@ -146,6 +148,7 @@ export default function SettingsPage() {
             {tab === "integrations" && <IntegrationsPanel />}
             {tab === "plugins" && !isBundleMode && <PluginsPanel />}
             {tab === "gpu" && <GPUBackendPanel />}
+            {tab === "ffmpeg" && <FfmpegPanel />}
             {tab === "cache" && (
               <>
                 <ModelCachePanel />

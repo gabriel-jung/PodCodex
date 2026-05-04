@@ -12,21 +12,15 @@ import {
 import type { DeviceInfo, DeviceOverride } from "@/api/gpu";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
+import { restartApp } from "@/lib/restartApp";
 
 const POLL_INTERVAL_MS = 1000;
 
 // Sidecar selection happens once at app launch (lib.rs::spawn_backend_if_needed),
 // so flipping the activated marker — or replacing the binary under an already-
-// activated marker — has no effect on the running sidecar. Auto-restart through
-// the Tauri restart_app command after activate/deactivate, and after a download
-// that completes while activated (the update flow), so the user sees the change
-// without a manual relaunch.
-async function restartApp(): Promise<void> {
-  const w = window as unknown as { __TAURI__?: unknown };
-  if (!w.__TAURI__) return;
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("restart_app");
-}
+// activated marker — has no effect on the running sidecar. Auto-restart after
+// activate/deactivate, and after a download that completes while activated
+// (the update flow), so the user sees the change without a manual relaunch.
 
 export default function GPUBackendPanel() {
   const qc = useQueryClient();
@@ -204,7 +198,7 @@ function StatusCard({ status }: { status: import("@/api/gpu").GPUStatus }) {
   const sub = isGPU
     ? `Active · ${status.installed_version}`
     : status.gpu_detected
-    ? `${status.gpu_name} (${status.vram_mb} MB) detected — not yet activated`
+    ? `${status.gpu_name} (${status.vram_mb} MB) detected, not yet activated`
     : "No NVIDIA GPU detected";
 
   return (
@@ -227,8 +221,8 @@ function DevModeBanner() {
       </div>
       <p className="text-xs text-muted-foreground">
         GPU backend management is only available in the packaged desktop app.
-        Your dev environment uses whatever torch is installed in the venv —
-        on this machine that&apos;s the GPU build, so the pipeline already
+        Your dev environment uses whatever torch is installed in the venv.
+        On this machine that&apos;s the GPU build, so the pipeline already
         runs on your GPU.
       </p>
     </div>
@@ -259,7 +253,7 @@ function UpdateAvailableBanner({
         <code className="font-mono text-2xs">{installedVersion ?? "unknown"}</code>{" "}
         but the app is at{" "}
         <code className="font-mono text-2xs">{appVersion}</code>. Hardware
-        acceleration is currently disabled — the app fell back to the CPU
+        acceleration is currently disabled, and the app fell back to the CPU
         sidecar. Re-download to restore GPU acceleration; only the small
         server-core archive is fetched if the CUDA libs already match.
       </p>
@@ -320,7 +314,7 @@ function ActionBlock({
           <p className="text-xs text-muted-foreground">
             ~2.4 GB download. Installs into{" "}
             <code className="font-mono text-2xs">{status.install_dir}</code>.
-            Pinned to a specific torch major version — only re-downloaded
+            Pinned to a specific torch major version, only re-downloaded
             on toolkit upgrades.
           </p>
           <Button onClick={onDownload} disabled={mutating} className="mt-2">
@@ -437,7 +431,7 @@ function ExplainerCopy() {
       WhisperX upstream adds MPS support. On Windows or Linux with an NVIDIA
       GPU, you can download an optional CUDA backend for hardware-accelerated
       transcription, diarization, and embedding. When no GPU is detected,
-      every pipeline step still runs — just slower.
+      every pipeline step still runs, just slower.
     </p>
   );
 }
