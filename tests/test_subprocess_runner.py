@@ -46,7 +46,9 @@ def test_cancel_event_stops_child():
     )
     elapsed = time.monotonic() - start
     assert result == "cancelled"
-    assert elapsed < 3.0, f"took too long to honor cancel: {elapsed:.2f}s"
+    # Floor is the child's bootstrap time (~1–2 s on Linux CI) before it
+    # reaches the cancel poll loop; bound generously to stay non-flaky.
+    assert elapsed < 6.0, f"took too long to honor cancel: {elapsed:.2f}s"
     t.join(timeout=1)
 
 

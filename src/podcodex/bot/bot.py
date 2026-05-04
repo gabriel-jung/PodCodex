@@ -139,6 +139,11 @@ class _AutocompleteCache:
     ttl: float = 300.0  # 5 minutes
 
     def is_stale(self) -> bool:
+        # timestamp=0.0 is the "never populated" sentinel. On Linux fresh
+        # containers monotonic() can be small enough that delta-from-0 < ttl,
+        # so the sentinel must be checked explicitly.
+        if self.timestamp == 0.0:
+            return True
         return (time.monotonic() - self.timestamp) > self.ttl
 
     def reset(self) -> None:
