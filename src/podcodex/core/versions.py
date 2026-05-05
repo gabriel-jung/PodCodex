@@ -505,6 +505,18 @@ def has_matching_version(base: Path, step: str, params: dict) -> bool:
     return False
 
 
+def delete_version_by_id(base: Path, version_id: str) -> bool:
+    """Delete a version when only its id is known. Step is resolved from the DB.
+
+    Mirrors ``load_version_by_id`` for callers (e.g. step-agnostic delete
+    routes) that don't need to plumb the step through.
+    """
+    meta = _get_db(base).get_version(version_id)
+    if not meta:
+        return False
+    return delete_version(base, meta["step"], version_id)
+
+
 def delete_version(base: Path, step: str, version_id: str) -> bool:
     """Delete a single version (file + DB row).
 

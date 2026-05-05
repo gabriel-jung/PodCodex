@@ -314,6 +314,7 @@ def diarize_file(
     provenance = {
         "step": "diarization",
         "type": "raw",
+        "model": "pyannote/speaker-diarization-community-1",
         "params": {
             "num_speakers": num_speakers,
             "speakers_found": unique,
@@ -402,6 +403,7 @@ def assign_speakers(
     provenance = {
         "step": "diarized_segments",
         "type": "raw",
+        "model": "whisperx.assign_word_speakers",
     }
     save_version(p.base, "diarized_segments", segments, provenance)
     logger.success(f"Assignment done — {len(segments)} segments")

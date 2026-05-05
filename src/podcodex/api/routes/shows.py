@@ -915,6 +915,29 @@ async def list_all_versions(
     return list_all_versions(p.base)
 
 
+@router.delete("/versions/{version_id}")
+async def delete_any_version(
+    version_id: str,
+    audio_path: str | None = Query(None),
+    output_dir: str | None = Query(None),
+) -> dict:
+    """Delete a version regardless of step. Step is resolved from the DB.
+
+    Lets the episode overview "All other files" section delete intermediates
+    (segments, diarization, diarized_segments, speaker_map) without a
+    per-step DELETE route.
+    """
+    from podcodex.api.routes._helpers import require_audio_or_output
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.versions import delete_version_by_id
+
+    require_audio_or_output(audio_path, output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    if not delete_version_by_id(p.base, version_id):
+        raise HTTPException(404, f"Version {version_id} not found")
+    return {"status": "deleted", "version_id": version_id}
+
+
 def _scan_audio_files(show_folder: Path) -> dict[str, Path]:
     """Quick scan of audio files at show root — single os.scandir call."""
     import os
@@ -935,8 +958,10 @@ def _scan_audio_files(show_folder: Path) -> dict[str, Path]:
 
 
 _INTERESTING_EXTS = AUDIO_EXTENSIONS | {
-    ".vtt", ".srt",                    # subtitles
-    ".json", ".parquet",               # transcripts / pipeline outputs
+    ".vtt",
+    ".srt",  # subtitles
+    ".json",
+    ".parquet",  # transcripts / pipeline outputs
 }
 _SKIP_PREFIXES = (".", "__")
 _SKIP_NAMES = {"manifest.json"}

@@ -10,6 +10,7 @@ import { getSegmentsPreview as getTranscribePreview } from "@/api/transcribe";
 import { getCorrectSegmentsPreview as getCorrectPreview, deleteCorrectVersion } from "@/api/correct";
 import { deleteTranslateVersion } from "@/api/translate";
 import {
+  deleteAnyVersion,
   deleteEpisodeCollection,
   getAllVersions,
   getEpisodeCollections,
@@ -32,7 +33,7 @@ import PanelLoading from "@/components/common/PanelLoading";
 const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
 const SegmentContextDialog = lazy(() => import("@/components/search/SegmentContextDialog"));
 const IndexInspectorModal = lazy(() => import("@/components/index/IndexInspectorModal"));
-import { formatDuration, formatDate, formatTime, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, splitPath } from "@/lib/utils";
+import { formatDuration, formatDate, formatTime, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, splitPath, STEP_LABELS } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import {
   Play,
@@ -101,10 +102,10 @@ export default function EpisodePage({
 
   const setActiveStep = useCallback((step: ActiveStep) => {
     navigate({
-      search: (prev: Record<string, unknown>) => ({
+      search: ((prev: Record<string, unknown>) => ({
         ...prev,
         tab: step === "overview" ? undefined : step,
-      }),
+      })) as never,
     });
   }, [navigate]);
 
@@ -332,13 +333,14 @@ interface VersionGroups {
   transcript: VersionEntry[];
   corrected: VersionEntry[];
   translations: Record<string, VersionEntry[]>;
+  other: VersionEntry[];
 }
 
 function groupVersions(
   versions: VersionEntry[] | undefined,
   languages: string[],
 ): VersionGroups {
-  const groups: VersionGroups = { transcript: [], corrected: [], translations: {} };
+  const groups: VersionGroups = { transcript: [], corrected: [], translations: {}, other: [] };
   for (const lang of languages) groups.translations[lang] = [];
   if (!versions) return groups;
   for (const v of versions) {
@@ -346,6 +348,8 @@ function groupVersions(
     else if (v.step === "corrected") groups.corrected.push(v);
     else if (v.step && languages.includes(v.step)) {
       (groups.translations[v.step] ??= []).push(v);
+    } else {
+      groups.other.push(v);
     }
   }
   return groups;
@@ -528,9 +532,14 @@ function StageCard({
   );
 }
 
+const TRANSCRIBE_INTERMEDIATE_STEPS = new Set(["segments", "diarization", "diarized_segments", "speaker_map"]);
+
 function stepDisplay(step: string | undefined): { stage: StageColor; label: string; editorStep: ActiveStep } {
   if (step === "transcript") return { stage: "transcribe", label: "Transcribe", editorStep: "transcribe" };
   if (step === "corrected") return { stage: "correct", label: "Correct", editorStep: "correct" };
+  if (step && TRANSCRIBE_INTERMEDIATE_STEPS.has(step)) {
+    return { stage: "transcribe", label: STEP_LABELS[step], editorStep: "transcribe" };
+  }
   return { stage: "translate", label: `Translate · ${langLabel(step ?? "")}`, editorStep: "translate" };
 }
 
@@ -593,25 +602,30 @@ function ActivityLog({ versions, onPreview }: {
   );
 }
 
-function VersionsTable({ versions, onPreview, onDelete }: {
+function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPreview, onDelete, showEdited = true }: {
   /** Already sorted desc by timestamp by the caller. */
   versions: VersionEntry[] | undefined;
-  onPreview: (previewKey: string) => void;
+  heading: string;
+  firstColLabel: string;
+  countColLabel: string;
+  onPreview?: (previewKey: string) => void;
   onDelete: (step: string, id: string) => void;
+  showEdited?: boolean;
 }) {
   if (!versions || versions.length === 0) return null;
+  const clickable = !!onPreview;
 
   return (
     <section className="space-y-2">
-      <h4 className="text-sm font-medium px-1">All transcript versions</h4>
+      <h4 className="text-sm font-medium px-1">{heading}</h4>
       <div className="rounded-lg border border-border bg-card overflow-x-auto">
         <table className="w-full text-xs">
           <thead className="bg-background/40 border-b border-border">
             <tr className="text-muted-foreground">
-              <th className="text-left px-3 py-2 font-medium">Step</th>
+              <th className="text-left px-3 py-2 font-medium">{firstColLabel}</th>
               <th className="text-left px-3 py-2 font-medium">Made with</th>
               <th className="text-left px-3 py-2 font-medium">Created</th>
-              <th className="text-right px-3 py-2 font-medium">Segments</th>
+              <th className="text-right px-3 py-2 font-medium">{countColLabel}</th>
               <th className="px-3 py-2 w-8"></th>
             </tr>
           </thead>
@@ -619,12 +633,12 @@ function VersionsTable({ versions, onPreview, onDelete }: {
             {versions.map((v) => {
               const { stage, label } = stepDisplay(v.step);
               const c = STAGE_CARD_CLASSES[stage];
-              const edited = isEdited(v);
+              const edited = showEdited && isEdited(v);
               return (
                 <tr
                   key={v.id}
-                  onClick={() => onPreview(v.step ?? "")}
-                  className="group/vrow border-b border-border/40 last:border-b-0 hover:bg-accent/30 transition cursor-pointer"
+                  onClick={clickable ? () => onPreview!(v.step ?? "") : undefined}
+                  className={`group/vrow border-b border-border/40 last:border-b-0 hover:bg-accent/30 transition${clickable ? " cursor-pointer" : ""}`}
                 >
                   <td className="px-3 py-2">
                     <span className="inline-flex items-center gap-1.5">
@@ -835,11 +849,15 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
     queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", audioPath) });
   }, [audioPath, outputDir, showName, queryClient]);
 
+  const translations = episode.translations ?? EMPTY_LANGS;
+
   const deleteVersionMutation = useMutation({
     mutationFn: async ({ step, id }: { step: string; id: string }) => {
-      if (step === "transcript") return deleteTranscribeVersion(audioPath, id, outputDir);
-      if (step === "corrected") return deleteCorrectVersion(audioPath, id, outputDir);
-      return deleteTranslateVersion(audioPath, step, id, outputDir);
+      const od = outputDir ?? undefined;
+      if (step === "transcript") return deleteTranscribeVersion(audioPath, id, od);
+      if (step === "corrected") return deleteCorrectVersion(audioPath, id, od);
+      if (translations.includes(step)) return deleteTranslateVersion(audioPath, step, id, od);
+      return deleteAnyVersion(audioPath, id, od);
     },
     onSuccess: invalidateAll,
   });
@@ -864,7 +882,6 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
     () => groupVersions(allVersions, episode.translations ?? EMPTY_LANGS),
     [allVersions, episode.translations],
   );
-  const translations = episode.translations ?? EMPTY_LANGS;
 
   const subtitleFiles = useMemo(
     () => (episode.files ?? []).filter((f) => /\.(vtt|srt)$/i.test(f)),
@@ -1088,6 +1105,9 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
 
       <VersionsTable
         versions={transcriptVersions}
+        heading="All transcript versions"
+        firstColLabel="Step"
+        countColLabel="Segments"
         onPreview={openPreview}
         onDelete={(step, id) => deleteVersionMutation.mutate({ step, id })}
       />
@@ -1107,6 +1127,15 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
           </div>
         </section>
       )}
+
+      <VersionsTable
+        versions={versionGroups.other}
+        heading="All other files"
+        firstColLabel="File"
+        countColLabel="Entries"
+        showEdited={false}
+        onDelete={(step, id) => deleteVersionMutation.mutate({ step, id })}
+      />
 
       {(audioPath || outputDir) && previewSource && (
         <Suspense fallback={null}>

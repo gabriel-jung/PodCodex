@@ -211,12 +211,13 @@ const SOURCE_LABELS: Record<string, string> = {
   import: "Import",
 };
 
-const STEP_LABELS: Record<string, string> = {
+export const STEP_LABELS: Record<string, string> = {
   transcript: "Transcript",
   corrected: "Corrected",
-  segments: "Segments",
+  segments: "Whisper segments",
   diarization: "Diarization",
   diarized_segments: "Diarized segments",
+  speaker_map: "Speaker map",
 };
 
 /** True when a version should be labelled "edited" in the UI — covers both
@@ -267,7 +268,9 @@ export function versionLabel(v: VersionEntry): string {
   else if (p.source_lang && p.target_lang) parts.push(`${p.source_lang} → ${p.target_lang}`);
   else if (p.source_lang) parts.push(String(p.source_lang));
   if (p.diarize === true) parts.push("diarized");
-  return parts.join(", ") || "Unknown";
+  if (parts.length > 0) return parts.join(", ");
+  if (v.manual_edit) return "Manual";
+  return "Unknown";
 }
 
 /** Full single-line label for a version: "[Transcript · edited] 9 Apr, 10:37 — base (21 seg)".

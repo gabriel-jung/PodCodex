@@ -40,6 +40,21 @@ export const getAllVersions = (audioPath?: string | null, outputDir?: string | n
   return json<VersionEntry[]>(`/api/shows/versions?${params}`);
 };
 
+/** Delete a version regardless of step (step resolved server-side from DB). */
+export const deleteAnyVersion = (
+  audioPath: string | null | undefined,
+  versionId: string,
+  outputDir?: string | null,
+) => {
+  const params = new URLSearchParams();
+  if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
+  return json<{ status: string; version_id: string }>(
+    `/api/shows/versions/${encodeURIComponent(versionId)}?${params}`,
+    { method: "DELETE" },
+  );
+};
+
 export interface EpisodeCollection {
   collection: string;
   model: string;
