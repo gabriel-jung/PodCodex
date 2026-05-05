@@ -329,45 +329,14 @@ These never appear on theme surfaces. If you find one on a card or panel without
 4. If a CTA isn't standing out, check that you used `bg-primary` and that no other element on the view is also primary
 5. If something looks "AI-generic SaaS," check for: uppercase labels, `tracking-wider`, gradient buttons, drop shadows on cards, waveform in audio player
 
-## 10. Episode hub patterns
+## 10. Episode hub conventions
 
-> Patterns introduced by the Episode → Overview tab (the default episode page). Currently single-consumer; promote to a shared module if a second hub adopts them. Old Info tab is kept as `Info (legacy)` until removed.
+Single-consumer patterns introduced by the Episode → Overview tab. Read the components in `frontend/src/pages/EpisodePage.tsx` for the actual classes; the rules below are the *why*, not the CSS.
 
-### Stage card (Episode → Overview tab)
+- **Stage card** (`StageCard`) — represents a pipeline stage as a clickable card. Stage hue used for the icon tile and a `border-l-2` accent when content exists; empty stages use a dashed border and no accent. The card itself is the hit target — no inline "Open" CTA. Click opens the read-only viewer when content exists, otherwise navigates to the stage editor.
+- **Activity log row** (`ActivityLog`) — two-line clickable row: stage chip + `versionLabel` on top, `versionDate · {n} seg [· edited]` underneath. Caller pre-sorts desc by timestamp; component slices to a small cap. Click opens the viewer.
+- **Flat versions table** (`VersionsTable`) — when a hub aggregates artifacts from multiple stages, prefer one flat table over per-stage accordions. Plain-language headers ("Made with", not "Model · chain"). Whole row opens the viewer; only a hover-revealed trash icon stays on the row, with `e.stopPropagation()` so the row click still fires.
+- **Click semantics across the hub** — stage cards, version rows, and activity rows all open `SegmentContextDialog` (read-only viewer). The viewer exposes "Open editor" so the editor surface is one extra click away. Don't add inline editor links to the hub.
+- **Don't double-encode review state** — when a row already shows an `edited` marker (`text-2xs text-success`), keep the adjacent stage dot in the stage hue. Two greens means two signals, not one.
 
-Source: `StageCard` in `frontend/src/pages/EpisodePage.tsx`.
-
-Compact action card representing a pipeline stage on a hub page. Reads as: stage identity (icon + label), current state (status pill), what exists (one-line summary), where it goes (CTA).
-
-- Container: `rounded-md border border-border bg-card`. When the stage has a version, an extra `border-l-2` in the stage hue distinguishes it from empty stages, which use `border-dashed` and no left band.
-- Icon: `w-5 h-5` square tinted `bg-{stage}/15 text-{stage}`. Empty variant uses `bg-secondary text-muted-foreground`.
-- Status text (`ready` / `needs review` / `not started`): `text-2xs`, colored via `text-success` / `text-info` / `text-muted-foreground/60`. Right-aligned next to the label.
-- Summary line: `text-2xs text-muted-foreground/70 font-mono tabular-nums`, single-line truncate.
-- The whole card is the click target — no inline "Open" CTA. Hover background change is the affordance.
-- Click semantics: when content exists for the stage, open the read-only viewer (`SegmentContextDialog`); when empty, navigate directly to the stage's editor. The viewer in turn exposes "Open editor" so users can drill into the editing surface from there.
-- `muted` prop dims the label colour for stages the user hasn't opted into (e.g. translation, synthesis on a hub that lists all five stages).
-
-### Activity log row (Episode → Overview tab)
-
-Source: `ActivityLog` in `frontend/src/pages/EpisodePage.tsx`.
-
-Chronological feed of pipeline events. Three columns per row, one row per event:
-
-Each row is a clickable stack of two lines:
-
-- Top line: `[stage tag]` (`text-2xs px-1.5 py-0.5 rounded font-medium bg-{stage}/15 text-{stage}`) + the version's `versionLabel` (`text-xs text-foreground truncate`).
-- Bottom line: `versionDate · {n} seg [· edited]` (`font-mono tabular-nums text-2xs text-muted-foreground/70`, edited marker in `text-success`).
-
-Container is the same `rounded-lg border border-border bg-card` as cards. Rows separated by `border-b border-border/40`, last row no border. Caller passes pre-sorted (desc by timestamp) versions; row count is capped via `slice(0, n)` in the component (currently 8). Whole row opens the read-only viewer.
-
-### Flat versions table (Episode → Overview tab)
-
-Source: `VersionsTable` in `frontend/src/pages/EpisodePage.tsx`.
-
-When a hub aggregates artifacts from multiple stages, prefer one flat sortable table over per-stage accordions. Columns: Stage, Made with, Created (mono `tabular-nums`), Segments (right-aligned mono), trash on hover.
-
-- Header row: `bg-background/40 border-b border-border`, labels `text-muted-foreground font-medium text-xs`, no uppercase. Use plain-language headers (e.g. "Made with" not "Model · chain") so non-engineer listeners can scan the table.
-- Body cells: `text-xs`, separators `border-b border-border/40`, hover `hover:bg-accent/30`.
-- Stage cell uses a tiny dot (`w-1.5 h-1.5 rounded-full`) in the stage hue followed by the stage label, plus an inline `edited` marker (`text-2xs text-success`) when applicable. Don't double-encode review state — the dot stays stage-hue regardless of edited; `edited` is sufficient on its own.
-- Whole row is the click target — opens the read-only viewer for that artifact. Skip in-row "preview / open editor" buttons; the viewer offers the editor entry point.
-- Only the destructive trash icon stays on the row, revealed on hover via `opacity-0 group-hover/vrow:opacity-100`. Stop propagation so clicking trash doesn't also open the viewer.
+Promote to shared utilities when a second hub adopts these.
