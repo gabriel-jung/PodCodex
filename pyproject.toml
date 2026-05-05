@@ -1,6 +1,6 @@
 [project]
 name = "podcodex"
-version = "0.1.26"
+version = "0.1.27"
 description = "Turn podcasts into a searchable knowledge base."
 readme = "README.md"
 license = { text = "MIT" }
