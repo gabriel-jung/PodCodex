@@ -28,6 +28,16 @@ const STEP_HEIGHT: Record<"search" | "location", string> = {
   location: "h-[440px]",
 };
 
+const HTTP_RE = /^https?:\/\//i;
+
+/** RSS URL heuristic: scheme-prefixed http(s) or a host-looking token
+ *  (contains a dot, no spaces). Anything else is treated as a search query. */
+function looksLikeUrl(s: string): boolean {
+  const t = s.trim();
+  if (HTTP_RE.test(t)) return true;
+  return /^[^\s]+\.[^\s]+$/.test(t) && !t.includes(" ");
+}
+
 export default function AddShowModal({ defaultSavePath, onClose, onCreated, onImported, onOpenFile }: AddShowModalProps) {
   const handleImported = onImported ?? onCreated;
   const [step, setStep] = useState<"search" | "location">("search");
@@ -79,8 +89,18 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
     setStep("location");
   };
 
+  const queryIsUrl = looksLikeUrl(searchQuery);
+
   const handleSearch = () => {
-    if (searchQuery.trim()) searchMutation.mutate(searchQuery.trim());
+    const q = searchQuery.trim();
+    if (!q) return;
+    if (queryIsUrl) {
+      setRssUrl(HTTP_RE.test(q) ? q : `https://${q}`);
+      if (!folderName) setFolderName("podcast");
+      setStep("location");
+      return;
+    }
+    searchMutation.mutate(q);
   };
 
   const handleYouTubeNext = () => {
@@ -151,16 +171,15 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
               {sourceMode === "podcast" && (
                 <>
                   <p className="text-xs text-muted-foreground">
-                    Search the Apple Podcasts catalog or paste an RSS feed URL to get started.
+                    Type a podcast name to search Apple Podcasts, or paste an RSS feed URL.
                   </p>
 
-                  {/* Search */}
                   <div className="flex gap-2">
                     <input
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                      placeholder="Search by podcast name..."
+                      placeholder="Podcast name or feed URL"
                       className="input flex-1"
                       autoFocus
                     />
@@ -169,11 +188,10 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
                       disabled={!searchQuery.trim() || searchMutation.isPending}
                       size="sm"
                     >
-                      <Search /> {searchMutation.isPending ? "..." : "Search"}
+                      <Search /> {searchMutation.isPending ? "..." : queryIsUrl ? "Next" : "Search"}
                     </Button>
                   </div>
 
-                  {/* Results */}
                   {searchMutation.data && searchMutation.data.length > 0 && (
                     <div className="overflow-y-auto flex-1 -mx-2">
                       {searchMutation.data.map((r) => (
@@ -197,30 +215,6 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
                   {searchMutation.data && searchMutation.data.length === 0 && (
                     <p className="text-sm text-muted-foreground text-center py-4">No results found</p>
                   )}
-
-                  {/* Manual URL */}
-                  <div className="border-t border-border pt-4">
-                    <label htmlFor="rss-url-input" className="text-xs text-muted-foreground block mb-1">Or paste RSS feed URL directly</label>
-                    <div className="flex gap-2">
-                      <input
-                        id="rss-url-input"
-                        value={rssUrl}
-                        onChange={(e) => setRssUrl(e.target.value)}
-                        placeholder="https://feeds.example.com/podcast.xml"
-                        className="input flex-1"
-                      />
-                      <Button
-                        onClick={() => {
-                          if (!folderName) setFolderName("podcast");
-                          setStep("location");
-                        }}
-                        disabled={!rssUrl.trim()}
-                        size="sm"
-                      >
-                        Next
-                      </Button>
-                    </div>
-                  </div>
                 </>
               )}
 
