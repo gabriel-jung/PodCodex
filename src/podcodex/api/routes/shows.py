@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shutil
 from dataclasses import fields
@@ -42,8 +43,7 @@ from podcodex.ingest.folder import (
 )
 from podcodex.ingest.rss import (
     episode_stem,
-    feed_artwork,
-    fetch_feed,
+    fetch_feed_with_artwork,
     load_episode_meta,
     load_feed_cache,
     save_feed_cache,
@@ -224,8 +224,12 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
     if not save_base.is_dir():
         raise HTTPException(400, f"Save path does not exist: {req.save_path}")
 
-    # Fetch the feed
-    episodes = fetch_feed(req.rss_url)
+    try:
+        episodes, feed_art = await asyncio.to_thread(
+            fetch_feed_with_artwork, req.rss_url
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"Failed to fetch feed: {exc}") from exc
     if not episodes:
         raise HTTPException(502, "Feed returned no episodes")
 
@@ -238,8 +242,7 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
     show_path = save_base / folder_name
     show_path.mkdir(parents=True, exist_ok=True)
 
-    # Get artwork: prefer what was passed (from search), fall back to feed
-    artwork = req.artwork_url or feed_artwork(req.rss_url)
+    artwork = req.artwork_url or feed_art
 
     # Save show metadata — use the display name from search, fall back to folder name
     show_name = req.name.strip() or folder_name

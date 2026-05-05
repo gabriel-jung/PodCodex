@@ -22,11 +22,18 @@ from podcodex.core.versions import save_version
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    """FastAPI TestClient with an isolated config file."""
-    from podcodex.api.routes import config as config_mod
+    """FastAPI TestClient with an isolated config file.
+
+    Patches ``core.app_config.CONFIG_PATH`` (the canonical source read by
+    ``load_config``/``save_config``) and clears the load cache so the
+    fixture-patched path is honored. Patching ``routes.config.CONFIG_PATH``
+    alone is a no-op — that name is just a re-export.
+    """
+    from podcodex.core import app_config as app_config_mod
 
     cfg_path = tmp_path / "config.json"
-    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg_path)
+    monkeypatch.setattr(app_config_mod, "CONFIG_PATH", cfg_path)
+    monkeypatch.setattr(app_config_mod, "_LOAD_CACHE", None)
 
     app = create_app()
     return TestClient(app, headers={"X-PodCodex": "1"})

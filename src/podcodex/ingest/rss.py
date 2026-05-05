@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import feedparser
+import httpx
 from loguru import logger
 
 _FEED_CACHE = ".feed_cache.json"
@@ -282,14 +283,42 @@ def _extract_audio_url(entry) -> str:
     return ""
 
 
+def _fetch_feed_bytes(url: str, timeout: float = 15.0) -> bytes:
+    """Fetch raw bytes from an HTTP(S) URL with a hard timeout.
+
+    feedparser.parse(url) has no timeout and hangs forever on a stalled
+    HTTPS handshake (common in PyInstaller bundles when the system DNS
+    or proxy stack misbehaves). Always download the bytes ourselves and
+    hand them to feedparser as content.
+    """
+    _require_http_scheme(url, "Feed URL")
+    with httpx.Client(
+        timeout=httpx.Timeout(
+            connect=timeout, read=timeout, write=timeout, pool=timeout
+        ),
+        follow_redirects=True,
+        headers={"User-Agent": "podcodex/1.0"},
+    ) as client:
+        resp = client.get(url)
+        resp.raise_for_status()
+        return resp.content
+
+
+def _artwork_from_parsed(parsed) -> str:
+    img = parsed.feed.get("image", {})
+    itunes_img = parsed.feed.get("itunes_image", {})
+    return itunes_img.get("href", "") or img.get("href", "")
+
+
 def feed_artwork(url: str) -> str:
     """Extract the channel-level artwork URL from an RSS feed."""
     _require_http_scheme(url, "Feed URL")
-    feed = feedparser.parse(url)
-    # itunes:image is the most reliable source
-    img = feed.feed.get("image", {})
-    itunes_img = feed.feed.get("itunes_image", {})
-    return itunes_img.get("href", "") or img.get("href", "")
+    try:
+        content = _fetch_feed_bytes(url)
+    except httpx.HTTPError as exc:
+        logger.warning("feed_artwork fetch failed for {}: {}", url, exc)
+        return ""
+    return _artwork_from_parsed(feedparser.parse(content))
 
 
 def _episodes_from_parsed(feed) -> list[RSSEpisode]:
@@ -332,8 +361,19 @@ def parse_feed_content(content: str) -> list[RSSEpisode]:
 
 def fetch_feed(url: str) -> list[RSSEpisode]:
     """Fetch and parse an RSS feed. Returns episodes in feed order."""
-    _require_http_scheme(url, "Feed URL")
-    return _episodes_from_parsed(feedparser.parse(url))
+    content = _fetch_feed_bytes(url)
+    return _episodes_from_parsed(feedparser.parse(content))
+
+
+def fetch_feed_with_artwork(url: str) -> tuple[list[RSSEpisode], str]:
+    """Fetch a feed once and return both episodes and channel artwork.
+
+    Avoids the back-to-back ``fetch_feed`` + ``feed_artwork`` pattern,
+    which previously downloaded and parsed the same RSS XML twice.
+    """
+    content = _fetch_feed_bytes(url)
+    parsed = feedparser.parse(content)
+    return _episodes_from_parsed(parsed), _artwork_from_parsed(parsed)
 
 
 # ── iTunes / Apple Podcasts search ────────────
