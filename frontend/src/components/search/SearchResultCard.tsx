@@ -41,6 +41,8 @@ function SearchResultCardInner({ result, show, query = "" }: SearchResultCardPro
       : null;
 
   const path = result.audio_path;
+  const outputDir = result.output_dir;
+  const canOpen = !!path || !!outputDir;
 
   const playAt = (time: number) => {
     if (!path) return;
@@ -100,10 +102,10 @@ function SearchResultCardInner({ result, show, query = "" }: SearchResultCardPro
           </span>
         </div>
         <button
-          onClick={() => path && setContextOpen(true)}
-          disabled={!path}
+          onClick={() => canOpen && setContextOpen(true)}
+          disabled={!canOpen}
           className="text-left w-full disabled:cursor-default"
-          title={path ? "Open in context" : undefined}
+          title={canOpen ? "Open in context" : undefined}
         >
           {turns.length > 0 ? (
             <ol className="space-y-1 text-sm">
@@ -128,11 +130,12 @@ function SearchResultCardInner({ result, show, query = "" }: SearchResultCardPro
         </button>
       </div>
 
-      {path && (
+      {canOpen && (
         <SegmentContextDialog
           open={contextOpen}
           onOpenChange={setContextOpen}
-          audioPath={path}
+          audioPath={path || undefined}
+          outputDir={outputDir || undefined}
           source={result.source}
           start={result.start}
           end={result.end}

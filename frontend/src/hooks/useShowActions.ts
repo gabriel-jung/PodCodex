@@ -18,7 +18,7 @@ export function useShowActions(
   const downloadMutation = useMutation({
     mutationFn: ({ guids, force = false }: { guids: string[]; force?: boolean }) =>
       isYouTube
-        ? downloadYouTubeEpisodes(folder, guids, withSubs, showLangISO)
+        ? downloadYouTubeEpisodes(folder, guids, withSubs, showLangISO, force)
         : downloadEpisodes(folder, guids, force),
     onSuccess: (data) => { setDownloadTask(data.task_id, folder); },
   });

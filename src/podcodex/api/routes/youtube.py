@@ -105,7 +105,9 @@ async def youtube_fetch(show_folder: str) -> list[dict]:
                 pass  # non-critical
 
     existing_stems = list_show_stems(path)
-    return [rss_episode_to_out(ep, path, existing_stems=existing_stems) for ep in episodes]
+    return [
+        rss_episode_to_out(ep, path, existing_stems=existing_stems) for ep in episodes
+    ]
 
 
 @router.post(
@@ -115,8 +117,14 @@ async def youtube_fetch(show_folder: str) -> list[dict]:
 async def youtube_download(
     show_folder: str,
     req: YouTubeDownloadRequest,
+    force: bool = False,
 ) -> TaskResponse:
-    """Download YouTube episodes as a background task."""
+    """Download YouTube episodes as a background task.
+
+    `force=true` re-downloads even when the audio already exists locally
+    (matches the RSS download semantics so the "Re-download audio" button
+    works the same on YouTube shows).
+    """
     from podcodex.ingest.youtube import (
         cache_youtube_subtitles,
         download_youtube_audio,
@@ -158,7 +166,7 @@ async def youtube_download(
             stem = episode_stem(ep, show_path, existing_stems=existing_stems)
             progress_cb(i / total, f"Downloading {i + 1}/{total}: {ep.title[:40]}")
 
-            if is_downloaded(show_path, stem):
+            if not force and is_downloaded(show_path, stem):
                 results.append({"stem": stem, "status": "exists"})
                 consecutive_fails = 0
             else:

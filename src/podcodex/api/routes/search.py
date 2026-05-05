@@ -18,11 +18,19 @@ router = APIRouter()
 
 # Cache key combines folder mtime + show.toml mtime so that renaming a show
 # (which only touches show.toml) invalidates the cached display name.
-_AUDIO_LOOKUP_CACHE: dict[str, tuple[tuple[float, float], str, dict[str, str]]] = {}
+# Cached value: (key, show_name, folder_path, {stem: audio_path}).
+_AUDIO_LOOKUP_CACHE: dict[
+    str, tuple[tuple[float, float], str, str, dict[str, str]]
+] = {}
 
 
-def _build_audio_lookup() -> dict[str, dict[str, str]]:
-    """Per-request map: show name → {episode_stem: audio_path_str}."""
+def _build_audio_lookup() -> dict[str, dict]:
+    """Per-request map: show name → {"folder": str, "audio": {stem: audio_path}}.
+
+    ``folder`` is the show folder path; combined with an episode stem it
+    yields ``output_dir`` for episodes that have no audio file (e.g. YouTube
+    flat-extraction or subtitle-only imports).
+    """
     from podcodex.api.routes.config import _load
     from podcodex.ingest.show import SHOW_META_FILENAME, load_show_meta
 
@@ -32,7 +40,7 @@ def _build_audio_lookup() -> dict[str, dict[str, str]]:
     for stale in [k for k in _AUDIO_LOOKUP_CACHE if k not in active_folders]:
         _AUDIO_LOOKUP_CACHE.pop(stale, None)
 
-    out: dict[str, dict[str, str]] = {}
+    out: dict[str, dict] = {}
     for folder_path in cfg.show_folders:
         p = Path(folder_path)
         try:
@@ -49,7 +57,7 @@ def _build_audio_lookup() -> dict[str, dict[str, str]]:
 
         cached = _AUDIO_LOOKUP_CACHE.get(folder_path)
         if cached is not None and cached[0] == key:
-            out[cached[1]] = cached[2]
+            out[cached[1]] = {"folder": cached[2], "audio": cached[3]}
             continue
 
         meta = load_show_meta(p)
@@ -58,8 +66,8 @@ def _build_audio_lookup() -> dict[str, dict[str, str]]:
         for f in p.iterdir():
             if f.is_file() and f.suffix.lower() in AUDIO_EXTS:
                 stems[f.stem] = str(f)
-        _AUDIO_LOOKUP_CACHE[folder_path] = (key, name, stems)
-        out[name] = stems
+        _AUDIO_LOOKUP_CACHE[folder_path] = (key, name, folder_path, stems)
+        out[name] = {"folder": folder_path, "audio": stems}
     return out
 
 
@@ -133,6 +141,7 @@ class SearchResult(BaseModel):
     episode_stem: str = ""
     episode_number: int | None = None
     audio_path: str = ""
+    output_dir: str = ""
     speaker: str
     start: float
     end: float
@@ -181,23 +190,25 @@ async def search_query(req: SearchRequest) -> list[dict]:
     return [_result_to_dict(r, audio_lookup) for r in results]
 
 
-def _result_to_dict(
-    r: dict, audio_lookup: dict[str, dict[str, str]] | None = None
-) -> dict:
+def _result_to_dict(r: dict, audio_lookup: dict[str, dict] | None = None) -> dict:
     stem = r.get("episode", "")
     title = r.get("episode_title") or humanize_stem(stem)
     show_name = r.get("show", "")
-    audio_path = (
-        (audio_lookup.get(show_name) or {}).get(stem, "")
+    show_entry = (
+        audio_lookup.get(show_name)
         if audio_lookup is not None and stem and show_name
-        else ""
-    )
+        else None
+    ) or {}
+    audio_path = (show_entry.get("audio") or {}).get(stem, "")
+    folder = show_entry.get("folder", "")
+    output_dir = str(Path(folder) / stem) if folder and stem else ""
     return {
         "text": r.get("text", ""),
         "episode": title,
         "episode_stem": stem,
         "episode_number": r.get("episode_number"),
         "audio_path": audio_path,
+        "output_dir": output_dir,
         "speaker": r.get("dominant_speaker", r.get("speaker", "")),
         "start": r.get("start", 0.0),
         "end": r.get("end", 0.0),

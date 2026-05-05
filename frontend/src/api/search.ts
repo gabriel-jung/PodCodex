@@ -117,12 +117,15 @@ export interface InspectResponse {
 }
 
 export const getIndexInspect = (
-  audioPath: string,
+  audioPath: string | null | undefined,
   show: string,
   model: string,
   chunking: string,
+  outputDir?: string | null,
 ) => {
-  const params = new URLSearchParams({ audio_path: audioPath, show, model, chunking });
+  const params = new URLSearchParams({ show, model, chunking });
+  if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
   return json<InspectResponse>(`/api/index/inspect?${params}`);
 };
 

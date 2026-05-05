@@ -147,6 +147,7 @@ export interface SearchResult {
   episode_stem: string;
   episode_number: number | null;
   audio_path: string;
+  output_dir: string;
   speaker: string;
   start: number;
   end: number;

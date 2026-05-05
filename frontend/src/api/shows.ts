@@ -149,16 +149,20 @@ export const downloadYouTubeEpisodes = (
   videoIds?: string[],
   importSubs = false,
   subLang = "en",
+  force = false,
 ) =>
-  json<TaskResponse>(`/api/shows/${enc(folder)}/youtube/download`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      video_ids: videoIds ?? null,
-      import_subs: importSubs,
-      sub_lang: subLang,
-    }),
-  });
+  json<TaskResponse>(
+    `/api/shows/${enc(folder)}/youtube/download${force ? "?force=true" : ""}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        video_ids: videoIds ?? null,
+        import_subs: importSubs,
+        sub_lang: subLang,
+      }),
+    },
+  );
 
 export const importYouTubeSubs = (
   folder: string,

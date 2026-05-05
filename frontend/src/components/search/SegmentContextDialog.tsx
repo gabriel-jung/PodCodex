@@ -4,8 +4,9 @@ import type { Segment } from "@/api/types";
 import { getSegments as getTranscribeSegs } from "@/api/transcribe";
 import { getCorrectSegments } from "@/api/correct";
 import { getTranslateSegments } from "@/api/translate";
+import { getAllVersions } from "@/api/search";
 import { queryKeys } from "@/api/queryKeys";
-import { formatDate, formatDuration, formatTime, errorMessage } from "@/lib/utils";
+import { formatDate, formatDuration, formatTime, errorMessage, versionLabel, versionDate, isEdited } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import { useAudioStore } from "@/stores";
 import { getIndexedEpisode } from "@/api/episodes";
@@ -22,7 +23,12 @@ import { Play, Pause } from "lucide-react";
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  audioPath: string;
+  /** Required for audio playback; when absent, the dialog still renders the
+   *  transcript using `outputDir` for the segment fetch (e.g. YouTube shows
+   *  with imported subtitles before the audio is downloaded). */
+  audioPath?: string;
+  /** Per-episode folder; required when `audioPath` is absent. */
+  outputDir?: string;
   /** Indexed source: "transcript", "corrected", or a language code. */
   source: string;
   /** Matched chunk range — highlighted and scrolled into view. Omit to show all without highlighting. */
@@ -51,6 +57,7 @@ export default function SegmentContextDialog({
   open,
   onOpenChange,
   audioPath,
+  outputDir,
   source,
   start,
   end,
@@ -65,15 +72,16 @@ export default function SegmentContextDialog({
   const step = sourceToStep(source);
   const lang = step === "translate" ? source : "";
   const editorKey = step === "translate" ? `translate-${lang}` : step;
+  const sourceKey = audioPath ?? outputDir ?? null;
 
   const { data: segments, isLoading, isError, error } = useQuery({
-    queryKey: queryKeys.stepSegments(editorKey, audioPath),
+    queryKey: queryKeys.stepSegments(editorKey, sourceKey),
     queryFn: () => {
-      if (step === "transcribe") return getTranscribeSegs(audioPath);
-      if (step === "correct") return getCorrectSegments(audioPath);
-      return getTranslateSegments(audioPath, lang);
+      if (step === "transcribe") return getTranscribeSegs(audioPath, outputDir);
+      if (step === "correct") return getCorrectSegments(audioPath, outputDir);
+      return getTranslateSegments(audioPath, lang, outputDir);
     },
-    enabled: open && !!audioPath,
+    enabled: open && (!!audioPath || !!outputDir),
     staleTime: 30_000,
   });
 
@@ -89,6 +97,19 @@ export default function SegmentContextDialog({
   const metaDuration = episodeMeta?.duration ? formatDuration(episodeMeta.duration) : "";
   const metaNumber = episodeMeta?.episode_number != null ? `#${episodeMeta.episode_number}` : "";
   const metaSpeakers = episodeMeta?.speakers ?? [];
+
+  const { data: allVersions } = useQuery({
+    queryKey: queryKeys.allVersions(sourceKey),
+    queryFn: () => getAllVersions(audioPath, outputDir),
+    enabled: open && (!!audioPath || !!outputDir),
+    staleTime: 30_000,
+  });
+  const latestVersion = useMemo(() => {
+    if (!allVersions) return undefined;
+    return [...allVersions]
+      .filter((v) => v.step === source)
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
+  }, [allVersions, source]);
 
   const { matchIndices, firstMatchIdx } = useMemo(() => {
     const set = new Set<number>();
@@ -170,6 +191,20 @@ export default function SegmentContextDialog({
           </div>
           <DialogDescription className="flex items-center gap-2 text-xs flex-wrap">
             <span className="italic">{source}</span>
+            {latestVersion && (
+              <>
+                <span className="text-muted-foreground/40">·</span>
+                <span>{versionLabel(latestVersion)}</span>
+                <span className="text-muted-foreground/40">·</span>
+                <span>{versionDate(latestVersion)}</span>
+                {isEdited(latestVersion) && (
+                  <>
+                    <span className="text-muted-foreground/40">·</span>
+                    <span className="text-success">edited</span>
+                  </>
+                )}
+              </>
+            )}
             {[metaDate, metaDuration, metaNumber]
               .filter(Boolean)
               .map((value, i) => (
@@ -222,16 +257,22 @@ export default function SegmentContextDialog({
                       isMatch ? "bg-primary/10 border-l-2 border-primary" : ""
                     }`}
                   >
-                    <button
-                      onClick={() => (activeIdx === i && isPlaying) ? pauseAudio() : handlePlay(seg)}
-                      className="font-mono tabular-nums text-muted-foreground/60 hover:text-foreground transition text-left flex items-center gap-1"
-                      title={(activeIdx === i && isPlaying) ? "Pause" : `Play from ${formatTime(seg.start ?? 0, false)}`}
-                    >
-                      {activeIdx === i && isPlaying
-                        ? <Pause className="w-2.5 h-2.5" />
-                        : <Play className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition" />}
-                      {formatTime(seg.start ?? 0, false)}
-                    </button>
+                    {audioPath ? (
+                      <button
+                        onClick={() => (activeIdx === i && isPlaying) ? pauseAudio() : handlePlay(seg)}
+                        className="font-mono tabular-nums text-muted-foreground/60 hover:text-foreground transition text-left flex items-center gap-1"
+                        title={(activeIdx === i && isPlaying) ? "Pause" : `Play from ${formatTime(seg.start ?? 0, false)}`}
+                      >
+                        {activeIdx === i && isPlaying
+                          ? <Pause className="w-2.5 h-2.5" />
+                          : <Play className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition" />}
+                        {formatTime(seg.start ?? 0, false)}
+                      </button>
+                    ) : (
+                      <span className="font-mono tabular-nums text-muted-foreground/60">
+                        {formatTime(seg.start ?? 0, false)}
+                      </span>
+                    )}
                     {isBreak ? (
                       <span className="italic text-muted-foreground/60">break</span>
                     ) : (

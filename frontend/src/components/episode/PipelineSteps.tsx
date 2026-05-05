@@ -53,7 +53,7 @@ function translateStatus(e: Episode): StepStatus {
 }
 
 export type PipelineStepKey = PipelineStepDef["key"];
-export type ActiveStep = PipelineStepKey | "info" | "search";
+export type ActiveStep = PipelineStepKey | "overview" | "search";
 
 // ── Step registry ────────────────────────────────────────────────────────
 

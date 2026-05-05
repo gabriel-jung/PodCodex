@@ -235,11 +235,12 @@ export default function IndexPanel() {
           </div>
         </div>
       )}
-      {audioPath && inspectTarget && (
+      {(audioPath || outputDir) && inspectTarget && (
         <IndexInspectorModal
           open={!!inspectTarget}
           onClose={() => setInspectTarget(null)}
-          audioPath={audioPath}
+          audioPath={audioPath ?? undefined}
+          outputDir={outputDir ?? undefined}
           show={showName}
           model={inspectTarget.model}
           modelLabel={models?.[inspectTarget.model]?.label ?? inspectTarget.model}

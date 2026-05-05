@@ -103,28 +103,36 @@ const _exportFallbackUrl = (
   format: ExportFormat,
   audioPath: string,
   source: string,
+  outputDir?: string,
 ): string => {
   switch (format) {
-    case "txt": return exportTextUrl(audioPath, source);
-    case "srt": return exportSrtUrl(audioPath, source);
-    case "vtt": return exportVttUrl(audioPath, source);
-    case "zip": return exportZipUrl(audioPath);
+    case "txt": return exportTextUrl(audioPath, source, outputDir);
+    case "srt": return exportSrtUrl(audioPath, source, outputDir);
+    case "vtt": return exportVttUrl(audioPath, source, outputDir);
+    case "zip": return exportZipUrl(audioPath, outputDir);
     case "audio": return audioFileUrl(audioPath);
   }
 };
 
-/** Save an export to disk via native dialog (Tauri) or browser download (web). */
+/** Save an export to disk via native dialog (Tauri) or browser download (web).
+ *  Either `audioPath` or `outputDir` must be provided — `outputDir` covers
+ *  YouTube episodes whose audio hasn't been downloaded yet but whose
+ *  per-episode folder still holds transcripts/subs to export. */
 export async function saveExportFile(
   platform: Platform,
   args: {
-    audioPath: string;
+    audioPath?: string;
+    outputDir?: string;
     format: ExportFormat;
     defaultName: string;
     source?: string;
   },
 ): Promise<void> {
+  if (!args.audioPath && !args.outputDir) {
+    throw new Error("saveExportFile requires audioPath or outputDir");
+  }
   const ext = args.format === "audio"
-    ? (args.audioPath.split(".").pop() || "mp3")
+    ? (args.audioPath?.split(".").pop() || "mp3")
     : args.format;
   if (platform.isTauri) {
     const dest = await platform.fs.saveFileDialog({
@@ -133,7 +141,8 @@ export async function saveExportFile(
     });
     if (!dest) return;
     await saveExport({
-      audio_path: args.audioPath,
+      audio_path: args.audioPath ?? "",
+      output_dir: args.outputDir,
       source: args.source,
       format: args.format,
       dest,
@@ -141,7 +150,7 @@ export async function saveExportFile(
     return;
   }
   const a = document.createElement("a");
-  a.href = _exportFallbackUrl(args.format, args.audioPath, args.source ?? "transcript");
+  a.href = _exportFallbackUrl(args.format, args.audioPath ?? "", args.source ?? "transcript", args.outputDir);
   a.download = args.defaultName;
   document.body.appendChild(a);
   a.click();

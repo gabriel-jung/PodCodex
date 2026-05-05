@@ -32,11 +32,10 @@ import PanelLoading from "@/components/common/PanelLoading";
 const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
 const SegmentContextDialog = lazy(() => import("@/components/search/SegmentContextDialog"));
 const IndexInspectorModal = lazy(() => import("@/components/index/IndexInspectorModal"));
-import { formatDuration, formatDate, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, splitPath } from "@/lib/utils";
+import { formatDuration, formatDate, formatTime, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, splitPath } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import {
   Play,
-  Info,
   Download,
   Search,
   FolderOpen,
@@ -50,27 +49,27 @@ import {
   Trash2,
   Captions,
   CloudOff,
+  LayoutGrid,
 } from "lucide-react";
 import {
   PIPELINE_STEPS,
   STEP_BY_KEY,
   PipelineStatus,
   type ActiveStep,
+  type PipelineStepKey,
   type StepStatus,
 } from "@/components/episode/PipelineSteps";
-import OutputGroup from "@/components/episode/OutputGroup";
-import VersionRow from "@/components/episode/VersionRow";
 
 type SidebarItem = {
   key: ActiveStep;
   label: string;
-  icon: typeof Info;
+  icon: typeof Mic;
   status: StepStatus;
 };
 
 function buildSidebarSections(episode: Episode) {
   const meta: SidebarItem[] = [
-    { key: "info", label: "Info", icon: Info, status: false as StepStatus },
+    { key: "overview", label: "Overview", icon: LayoutGrid, status: false as StepStatus },
     { key: "search", label: "Search", icon: Search, status: false as StepStatus },
   ];
   const core: SidebarItem[] = [];
@@ -87,17 +86,27 @@ export default function EpisodePage({
   folder,
   stem,
   audioFilePath,
+  initialTab,
 }: {
   folder?: string;
   stem?: string;
   audioFilePath?: string;
+  initialTab?: string;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const seekTo = useAudioStore((s) => s.seekTo);
   const setAudioMeta = useAudioStore((s) => s.setAudioMeta);
-  const [activeStep, setActiveStep] = useState<ActiveStep>("info");
-  const [descExpanded, setDescExpanded] = useState(false);
+  const activeStep: ActiveStep = (initialTab as ActiveStep) || "overview";
+
+  const setActiveStep = useCallback((step: ActiveStep) => {
+    navigate({
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        tab: step === "overview" ? undefined : step,
+      }),
+    });
+  }, [navigate]);
 
   const isStandalone = !!audioFilePath;
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
@@ -177,7 +186,7 @@ export default function EpisodePage({
         console.error("Transcript drop import failed:", e);
       }
     },
-    [episode?.audio_path, queryClient],
+    [episode?.audio_path, queryClient, setActiveStep],
   );
 
   const { isDragging } = useDropZone({
@@ -273,21 +282,6 @@ export default function EpisodePage({
         />
 
         <div className="flex-1 flex flex-col overflow-hidden">
-          {episode.description && (
-            <div className="px-6 py-2 border-b border-border">
-              <p
-                className={`text-2xs text-muted-foreground whitespace-pre-line select-text ${descExpanded ? "" : "line-clamp-2"}`}
-              >
-                {stripHtml(episode.description)}
-              </p>
-              <button
-                onClick={() => setDescExpanded(!descExpanded)}
-                className="text-2xs text-muted-foreground/50 hover:text-foreground transition"
-              >
-                {descExpanded ? "Less" : "More"}
-              </button>
-            </div>
-          )}
           <div className="flex-1 overflow-y-auto">
             <Suspense fallback={<PanelLoading />}>
               <StepContent
@@ -310,300 +304,27 @@ export default function EpisodePage({
   );
 }
 
-/** Compute a next-action hint from episode state. */
-function getNextAction(episode: Episode): string | undefined {
-  if (!episode.downloaded && !episode.transcribed) return "Download audio to get started";
-  if (episode.downloaded && !episode.transcribed) return "Ready to transcribe";
-  if (episode.transcribed && !episode.corrected) return "Transcript ready for review";
-  if (episode.corrected && !episode.indexed) return "Ready to index or translate";
-  return undefined;
-}
-
 function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError, onNavigateStep }: { step: ActiveStep; episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string; onNavigateStep: (step: ActiveStep) => void }) {
   if (step === "search") return <SearchPanel scope="episode" />;
-  if (step === "info") {
-    return (
-      <InfoTab
-        episode={episode}
-        folder={folder}
-        meta={meta}
-        isYouTube={isYouTube}
-        onDownloadAudio={onDownloadAudio}
-        onImportSubs={onImportSubs}
-        downloadDisabled={downloadDisabled}
-        downloadError={downloadError}
-        onNavigateStep={onNavigateStep}
-      />
-    );
-  }
-  return STEP_BY_KEY[step].component();
-}
-
-function InfoTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError, onNavigateStep }: { episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string; onNavigateStep: (step: ActiveStep) => void }) {
-  const platform = usePlatform();
-  const audioPath = episode.audio_path;
-  const hasTranscript = !!episode.transcribed;
-  const seekTo = useAudioStore((s) => s.seekTo);
-  const [previewSource, setPreviewSource] = useState<string | null>(null);
-  const [inspectTarget, setInspectTarget] = useState<{ model: string; chunking: string } | null>(null);
-  const queryClient = useQueryClient();
-
-  const { data: speakerMap } = useQuery({
-    queryKey: queryKeys.speakerMap(audioPath),
-    queryFn: () => getSpeakerMap(audioPath!),
-    enabled: !!audioPath && hasTranscript,
-  });
-  const previewStep = episode.corrected ? "correct" : "transcribe";
-  const PREVIEW_LIMIT = 5;
-  const { data: previewSegments } = useQuery({
-    queryKey: [...queryKeys.stepSegments(previewStep, audioPath), "preview"],
-    queryFn: () => (previewStep === "correct" ? getCorrectPreview(audioPath!, PREVIEW_LIMIT) : getTranscribePreview(audioPath!, PREVIEW_LIMIT)),
-    enabled: !!audioPath && hasTranscript,
-  });
-
-  const outputDir = episode.output_dir;
-  const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(audioPath ?? outputDir),
-    queryFn: () => getAllVersions(audioPath, outputDir),
-    enabled: (!!audioPath || !!outputDir) && hasTranscript,
-  });
-
-  const showName = meta?.name ?? "";
-  const { data: indexEntries } = useQuery({
-    queryKey: queryKeys.episodeCollections(audioPath ?? outputDir, showName),
-    queryFn: () => getEpisodeCollections(audioPath, showName, outputDir),
-    enabled: (!!audioPath || !!outputDir) && !!showName && !!episode.indexed,
-  });
-
-  const invalidateAll = useCallback(() => {
-    const key = audioPath ?? outputDir;
-    queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(key) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.episodeCollections(key, showName) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-    queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("transcribe", audioPath) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", audioPath) });
-  }, [audioPath, outputDir, showName, queryClient]);
-
-  const deleteVersionMutation = useMutation({
-    mutationFn: async ({ step, id }: { step: string; id: string }) => {
-      if (!audioPath) return;
-      if (step === "transcript") return deleteTranscribeVersion(audioPath, id);
-      if (step === "corrected") return deleteCorrectVersion(audioPath, id);
-      return deleteTranslateVersion(audioPath, step, id);
-    },
-    onSuccess: invalidateAll,
-  });
-
-  const deleteCollectionMutation = useMutation({
-    mutationFn: (collection: string) =>
-      deleteEpisodeCollection(audioPath, showName, collection, outputDir),
-    onSuccess: invalidateAll,
-  });
-
-  const deleteFileMutation = useMutation({
-    mutationFn: (path: string) => deleteFile(path),
-    onSuccess: invalidateAll,
-  });
-
-  const speakers = useMemo(() => {
-    if (!speakerMap) return [];
-    return [...new Set(Object.values(speakerMap))].filter(Boolean);
-  }, [speakerMap]);
-
-  const versionGroups = useMemo(
-    () => groupVersions(allVersions, episode.translations ?? EMPTY_LANGS),
-    [allVersions, episode.translations],
-  );
-  const translations = episode.translations ?? EMPTY_LANGS;
-
-  const nextAction = getNextAction(episode);
-  const subtitleFiles = useMemo(
-    () => (episode.files ?? []).filter((f) => !f.includes("/") && /\.(vtt|srt|info\.json)$/.test(f)),
-    [episode.files],
-  );
-
+  const def = STEP_BY_KEY[step as PipelineStepKey];
+  if (def) return def.component();
   return (
-    <div className="p-6 space-y-5 max-w-2xl">
-      {nextAction && (
-        <p className="text-sm text-muted-foreground italic">{nextAction}</p>
-      )}
-
-      <SourcesSection
-        episode={episode}
-        folder={folder}
-        meta={meta}
-        isYouTube={isYouTube}
-        subtitleFiles={subtitleFiles}
-        onDownloadAudio={onDownloadAudio}
-        onImportSubs={onImportSubs}
-        downloadDisabled={downloadDisabled}
-        downloadError={downloadError}
-        onDeleteSubtitle={(filename) => {
-          if (folder) deleteFileMutation.mutate(`${folder}/${filename}`);
-        }}
-        onPreviewFile={hasTranscript ? () => setPreviewSource(episode.corrected ? "corrected" : "transcript") : undefined}
-      />
-
-      <div className="space-y-2">
-        <h4 className="text-sm font-medium px-1">Outputs</h4>
-
-        <StepGroup
-          title="Transcripts"
-          icon={Mic}
-          versions={versionGroups.transcript}
-          onPreview={() => setPreviewSource("transcript")}
-          onOpenEditor={() => onNavigateStep("transcribe")}
-          onDelete={(id) => deleteVersionMutation.mutate({ step: "transcript", id })}
-          emptyHint="Not transcribed yet."
-          emptyOnClick={() => onNavigateStep("transcribe")}
-        />
-
-        {episode.transcribed && (
-          <StepGroup
-            title="Corrected"
-            icon={Sparkles}
-            versions={versionGroups.corrected}
-            onPreview={() => setPreviewSource("corrected")}
-            onOpenEditor={() => onNavigateStep("correct")}
-            onDelete={(id) => deleteVersionMutation.mutate({ step: "corrected", id })}
-            emptyHint="Not corrected yet."
-            emptyOnClick={() => onNavigateStep("correct")}
-          />
-        )}
-
-        {episode.transcribed && translations.length > 0 &&
-          translations.map((lang) => (
-            <StepGroup
-              key={lang}
-              title={`Translation · ${langLabel(lang)}`}
-              icon={Languages}
-              versions={versionGroups.translations[lang] ?? []}
-              onPreview={() => setPreviewSource(lang)}
-              onOpenEditor={() => onNavigateStep("translate")}
-              onDelete={(id) => deleteVersionMutation.mutate({ step: lang, id })}
-              emptyHint="No versions."
-              emptyOnClick={() => onNavigateStep("translate")}
-            />
-          ))}
-
-        {episode.synthesized && (
-          <OutputGroup
-            title="Synthesized audio"
-            icon={AudioLines}
-            count={1}
-            summary="present"
-            defaultOpen={false}
-          >
-            <div className="px-4 py-2 text-xs text-muted-foreground">
-              Open the Synthesize step to inspect or rebuild.
-            </div>
-          </OutputGroup>
-        )}
-
-        {episode.transcribed && (
-          <IndexGroup
-            indexed={!!episode.indexed}
-            entries={indexEntries ?? []}
-            onOpen={() => onNavigateStep("index")}
-            onInspect={(model, chunking) => setInspectTarget({ model, chunking })}
-            onDelete={(collection) => deleteCollectionMutation.mutate(collection)}
-          />
-        )}
-      </div>
-
-      {hasTranscript && previewSegments && previewSegments.length > 0 && (
-        <button
-          onClick={() => onNavigateStep(previewStep)}
-          className="w-full text-left rounded-lg bg-muted/50 px-4 py-3 space-y-2.5 hover:bg-muted/70 transition group"
-        >
-          <div className="flex items-baseline justify-between">
-            <div className="flex items-baseline gap-2">
-              <h4 className="text-sm font-medium">Preview</h4>
-              <span className="text-2xs text-muted-foreground">
-                {[
-                  episode.segment_count != null ? `${episode.segment_count} segments` : null,
-                  speakers.length > 0 ? speakers.join(", ") : null,
-                ].filter(Boolean).join(" · ")}
-              </span>
-            </div>
-            <span className="text-2xs text-muted-foreground opacity-0 group-hover:opacity-100 transition shrink-0">
-              Open {previewStep === "correct" ? "corrected" : "transcript"} &rarr;
-            </span>
-          </div>
-          <div className="space-y-1 text-sm">
-            {previewSegments.map((seg) => (
-              <p key={`${seg.start}-${seg.speaker ?? ""}`} className="text-muted-foreground line-clamp-1">
-                {seg.speaker && <span className="font-medium" style={{ color: speakerColor(seg.speaker) }}>{seg.speaker}: </span>}
-                {seg.text}
-              </p>
-            ))}
-          </div>
-        </button>
-      )}
-
-      <div className="flex items-center gap-4 pt-2 border-t border-border text-xs text-muted-foreground">
-        {folder && (
-          <button
-            onClick={() => openFolder(folder)}
-            className="flex items-center gap-1.5 hover:text-foreground transition"
-            title={folder}
-          >
-            <FolderOpen className="w-3.5 h-3.5 shrink-0" />
-            <span className="break-all font-mono">{folder}</span>
-          </button>
-        )}
-        {episode.audio_path && (
-          <button
-            type="button"
-            onClick={() => saveExportFile(platform, {
-              audioPath: episode.audio_path!,
-              format: "zip",
-              defaultName: `${episode.stem || "episode"}.zip`,
-            })}
-            className="flex items-center gap-1.5 hover:text-foreground transition ml-auto shrink-0"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export ZIP</span>
-          </button>
-        )}
-      </div>
-
-      {audioPath && previewSource && (
-        <Suspense fallback={null}>
-        <SegmentContextDialog
-          open={true}
-          onOpenChange={(open) => { if (!open) setPreviewSource(null); }}
-          audioPath={audioPath}
-          source={previewSource}
-          episodeTitle={episode.title}
-          onSeek={(t) => seekTo(audioPath, t)}
-          onOpenEditor={() => {
-            setPreviewSource(null);
-            if (previewSource === "corrected") onNavigateStep("correct");
-            else if (previewSource === "transcript") onNavigateStep("transcribe");
-            else onNavigateStep("translate");
-          }}
-        />
-        </Suspense>
-      )}
-
-      {audioPath && inspectTarget && (
-        <Suspense fallback={null}>
-          <IndexInspectorModal
-            open={true}
-            onClose={() => setInspectTarget(null)}
-            audioPath={audioPath}
-            show={meta?.name ?? ""}
-            model={inspectTarget.model}
-            chunking={inspectTarget.chunking}
-          />
-        </Suspense>
-      )}
-    </div>
+    <OverviewTab
+      episode={episode}
+      folder={folder}
+      meta={meta}
+      isYouTube={isYouTube}
+      onDownloadAudio={onDownloadAudio}
+      onImportSubs={onImportSubs}
+      downloadDisabled={downloadDisabled}
+      downloadError={downloadError}
+      onNavigateStep={onNavigateStep}
+    />
   );
 }
 
-// ── InfoTab helpers ──────────────────────────────────────────────────────
+
+// ── Episode helpers ──────────────────────────────────────────────────────
 
 const EMPTY_LANGS: string[] = [];
 
@@ -631,172 +352,11 @@ function groupVersions(
 }
 
 
-function StepGroup({
-  title,
-  icon,
-  versions,
-  onPreview,
-  onOpenEditor,
-  onDelete,
-  emptyHint,
-  emptyOnClick,
-}: {
-  title: string;
-  icon: typeof Mic;
-  versions: VersionEntry[];
-  onPreview: () => void;
-  onOpenEditor: () => void;
-  onDelete: (id: string) => void;
-  emptyHint?: string;
-  emptyOnClick?: () => void;
-}) {
-  if (versions.length === 0) {
-    if (!emptyHint) return null;
-    const Icon = icon;
-    return (
-      <div className="rounded-lg border border-border/50 px-4 py-2.5 flex items-center gap-3 text-sm text-muted-foreground italic">
-        <Icon className="w-3.5 h-3.5" />
-        <span className="flex-1">{emptyHint}</span>
-        {emptyOnClick && (
-          <button
-            onClick={emptyOnClick}
-            className="text-xs not-italic text-foreground hover:underline"
-          >
-            Open &rarr;
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  const latest = versions[0];
-  return (
-    <OutputGroup
-      title={title}
-      icon={icon}
-      count={versions.length}
-      summary={latestSummary(latest)}
-      defaultOpen={versions.length <= 3}
-    >
-      {versions.map((v, i) => (
-        <VersionRow
-          key={v.id}
-          version={v}
-          isLatest={i === 0}
-          onOpen={onPreview}
-          onDelete={() => onDelete(v.id)}
-        />
-      ))}
-      <div className="px-4 py-1.5 border-t border-border/40">
-        <button
-          onClick={onOpenEditor}
-          className="text-xs text-muted-foreground hover:text-foreground transition"
-        >
-          Open editor &rarr;
-        </button>
-      </div>
-    </OutputGroup>
-  );
-}
 
 function latestSummary(v: VersionEntry): string {
   return `${versionLabel(v)} · ${versionDate(v)}${isEdited(v) ? " · edited" : ""}`;
 }
 
-function SourcesSection({
-  episode,
-  folder,
-  meta,
-  isYouTube,
-  subtitleFiles,
-  onDownloadAudio,
-  onImportSubs,
-  downloadDisabled,
-  downloadError,
-  onDeleteSubtitle,
-  onPreviewFile,
-}: {
-  episode: Episode;
-  folder?: string;
-  meta?: ShowMeta;
-  isYouTube: boolean;
-  subtitleFiles: string[];
-  onDownloadAudio: () => void;
-  onImportSubs: (lang: string) => void;
-  downloadDisabled: boolean;
-  downloadError?: string;
-  onDeleteSubtitle: (filename: string) => void;
-  onPreviewFile?: () => void;
-}) {
-  const platform = usePlatform();
-  return (
-    <div className="space-y-3">
-      <h4 className="text-sm font-medium px-1">Sources</h4>
-
-      <div className="rounded-lg border border-border/50 divide-y divide-border/40">
-        {episode.audio_path ? (
-          <SourceFileRow
-            icon={FileAudio}
-            label={splitPath(episode.audio_path).basename || "audio"}
-            sublabel="audio"
-            action={(() => {
-              const audioPath = episode.audio_path;
-              const ext = audioPath.split(".").pop() || "mp3";
-              return (
-                <button
-                  type="button"
-                  onClick={() => saveExportFile(platform, {
-                    audioPath,
-                    format: "audio",
-                    defaultName: `${episode.title}.${ext}`,
-                  })}
-                  className="text-2xs text-muted-foreground hover:text-foreground transition"
-                >
-                  Export
-                </button>
-              );
-            })()}
-          />
-        ) : (
-          <div className="px-4 py-3 text-sm text-muted-foreground italic">
-            No audio yet.
-          </div>
-        )}
-
-        {subtitleFiles.map((f) => (
-          <SourceFileRow
-            key={f}
-            icon={FileText}
-            label={f}
-            sublabel="subtitles"
-            onClick={/\.(vtt|srt)$/.test(f) ? onPreviewFile : undefined}
-            onDelete={folder ? () => onDeleteSubtitle(f) : undefined}
-          />
-        ))}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <DownloadDropdown
-          isYouTube={isYouTube}
-          showLanguage={meta?.language || ""}
-          onDownload={onDownloadAudio}
-          onImportSubs={onImportSubs}
-          subsLabel={episode.transcribed ? "Re-download subtitles" : "Download subtitles"}
-          subsEnabled={true}
-          audioLabel={episode.downloaded ? "Re-download audio" : "Download audio"}
-          showAudio={true}
-          audioEnabled={true}
-          disabled={downloadDisabled}
-          variant={episode.downloaded ? "outline" : "default"}
-          align="right"
-        />
-      </div>
-      {downloadError && (
-        <p className="text-destructive text-xs">{downloadError}</p>
-      )}
-    </div>
-  );
-}
 
 function SourceFileRow({
   icon: Icon,
@@ -857,56 +417,6 @@ function SourceFileRow({
   );
 }
 
-function IndexGroup({
-  indexed,
-  entries,
-  onOpen,
-  onInspect,
-  onDelete,
-}: {
-  indexed: boolean;
-  entries: EpisodeCollection[];
-  onOpen: () => void;
-  onInspect: (model: string, chunking: string) => void;
-  onDelete: (collection: string) => void;
-}) {
-  if (!indexed || entries.length === 0) {
-    return (
-      <div className="rounded-lg border border-border/50 px-4 py-2.5 flex items-center gap-3 text-sm text-muted-foreground italic">
-        <Database className="w-3.5 h-3.5" />
-        <span className="flex-1">{indexed ? "Indexed." : "Not indexed yet."}</span>
-        <button
-          onClick={onOpen}
-          className="text-xs not-italic text-foreground hover:underline"
-        >
-          Open &rarr;
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <OutputGroup
-      title="Search index"
-      icon={Database}
-      count={entries.length}
-      summary={entries
-        .map((e) => `${e.model}·${e.chunker}`)
-        .slice(0, 2)
-        .join(", ")}
-      defaultOpen={entries.length <= 3}
-    >
-      {entries.map((e) => (
-        <IndexRow
-          key={e.collection}
-          entry={e}
-          onInspect={() => onInspect(e.model, e.chunker)}
-          onDelete={() => onDelete(e.collection)}
-        />
-      ))}
-    </OutputGroup>
-  );
-}
 
 function IndexRow({
   entry,
@@ -960,6 +470,675 @@ function IndexRow({
       >
         <Trash2 className="w-3 h-3" />
       </button>
+    </div>
+  );
+}
+
+// ── Overview tab ────────────────────────────────────────────────────────
+
+type StageColor = "transcribe" | "correct" | "translate" | "synth" | "index";
+
+const STAGE_CARD_CLASSES: Record<StageColor, { text: string; borderL: string; bg: string; dot: string }> = {
+  transcribe: { text: "text-stage-transcribe", borderL: "border-l-stage-transcribe/60", bg: "bg-stage-transcribe/15", dot: "bg-stage-transcribe" },
+  correct:    { text: "text-stage-correct",    borderL: "border-l-stage-correct/60",    bg: "bg-stage-correct/15",    dot: "bg-stage-correct"    },
+  translate:  { text: "text-stage-translate",  borderL: "border-l-stage-translate/60",  bg: "bg-stage-translate/15",  dot: "bg-stage-translate"  },
+  synth:      { text: "text-stage-synth",      borderL: "border-l-stage-synth/60",      bg: "bg-stage-synth/15",      dot: "bg-stage-synth"      },
+  index:      { text: "text-warning",          borderL: "border-l-warning/60",          bg: "bg-warning/15",          dot: "bg-warning"          },
+};
+
+function StageCard({
+  stage, icon: Icon, label, status, summary, muted = false, onOpen,
+}: {
+  stage: StageColor;
+  icon: typeof Mic;
+  label: string;
+  status: StepStatus;
+  summary?: string;
+  muted?: boolean;
+  onOpen: () => void;
+}) {
+  const c = STAGE_CARD_CLASSES[stage];
+  const isEmpty = !status;
+  const statusText = status === "done" ? "ready" : status === "partial" ? "needs review" : "not started";
+  const statusColor = status === "done" ? "text-success" : status === "partial" ? "text-info" : "text-muted-foreground/60";
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`group/card text-left rounded-md border border-border bg-card hover:bg-accent/40 transition px-3 py-2.5 flex flex-col gap-1.5 min-w-0 ${
+        isEmpty ? "border-dashed" : `border-l-2 ${c.borderL}`
+      }`}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <span
+          className={`w-5 h-5 rounded inline-flex items-center justify-center shrink-0 ${
+            isEmpty ? "bg-secondary text-muted-foreground" : `${c.bg} ${c.text}`
+          }`}
+        >
+          <Icon className="w-3 h-3" />
+        </span>
+        <span className={`text-sm font-medium truncate ${muted ? "text-muted-foreground" : "text-foreground"}`}>{label}</span>
+        <span className={`ml-auto text-2xs shrink-0 ${statusColor}`}>{statusText}</span>
+      </div>
+      {summary && (
+        <div className="text-2xs text-muted-foreground/70 truncate font-mono tabular-nums">{summary}</div>
+      )}
+    </button>
+  );
+}
+
+function stepDisplay(step: string | undefined): { stage: StageColor; label: string; editorStep: ActiveStep } {
+  if (step === "transcript") return { stage: "transcribe", label: "Transcribe", editorStep: "transcribe" };
+  if (step === "corrected") return { stage: "correct", label: "Correct", editorStep: "correct" };
+  return { stage: "translate", label: `Translate · ${langLabel(step ?? "")}`, editorStep: "translate" };
+}
+
+function StageArrow() {
+  return (
+    <div className="hidden sm:flex items-center justify-center text-muted-foreground/40">
+      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+        <path d="M5 12h14M13 5l7 7-7 7" />
+      </svg>
+    </div>
+  );
+}
+
+function ActivityLog({ versions, onPreview }: {
+  /** Already sorted desc by timestamp by the caller. */
+  versions: VersionEntry[] | undefined;
+  onPreview: (previewKey: string) => void;
+}) {
+  if (!versions || versions.length === 0) return null;
+  const recent = versions.slice(0, 8);
+  return (
+    <section className="space-y-2">
+      <h4 className="text-sm font-medium px-1">Activity</h4>
+      <div className="rounded-lg border border-border bg-card overflow-hidden">
+        {recent.map((v) => {
+          const { stage, label } = stepDisplay(v.step);
+          const c = STAGE_CARD_CLASSES[stage];
+          const edited = isEdited(v);
+          return (
+            <button
+              type="button"
+              key={v.id}
+              onClick={() => onPreview(v.step ?? "")}
+              className="w-full text-left px-3 py-2 border-b border-border/40 last:border-b-0 hover:bg-accent/40 transition space-y-1"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`text-2xs px-1.5 py-0.5 rounded font-medium shrink-0 ${c.bg} ${c.text}`}>
+                  {label}
+                </span>
+                <span className="text-xs text-foreground truncate flex-1" title={versionLabel(v)}>
+                  {versionLabel(v)}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-2xs text-muted-foreground/70 font-mono tabular-nums">
+                <span>{versionDate(v)}</span>
+                <span aria-hidden="true">·</span>
+                <span>{v.segment_count} seg</span>
+                {edited && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="text-success">edited</span>
+                  </>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function VersionsTable({ versions, onPreview, onDelete }: {
+  /** Already sorted desc by timestamp by the caller. */
+  versions: VersionEntry[] | undefined;
+  onPreview: (previewKey: string) => void;
+  onDelete: (step: string, id: string) => void;
+}) {
+  if (!versions || versions.length === 0) return null;
+
+  return (
+    <section className="space-y-2">
+      <h4 className="text-sm font-medium px-1">All transcript versions</h4>
+      <div className="rounded-lg border border-border bg-card overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-background/40 border-b border-border">
+            <tr className="text-muted-foreground">
+              <th className="text-left px-3 py-2 font-medium">Step</th>
+              <th className="text-left px-3 py-2 font-medium">Made with</th>
+              <th className="text-left px-3 py-2 font-medium">Created</th>
+              <th className="text-right px-3 py-2 font-medium">Segments</th>
+              <th className="px-3 py-2 w-8"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {versions.map((v) => {
+              const { stage, label } = stepDisplay(v.step);
+              const c = STAGE_CARD_CLASSES[stage];
+              const edited = isEdited(v);
+              return (
+                <tr
+                  key={v.id}
+                  onClick={() => onPreview(v.step ?? "")}
+                  className="group/vrow border-b border-border/40 last:border-b-0 hover:bg-accent/30 transition cursor-pointer"
+                >
+                  <td className="px-3 py-2">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.dot}`} />
+                      <span className="text-foreground">{label}</span>
+                      {edited && <span className="ml-1 text-2xs text-success">edited</span>}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-muted-foreground truncate max-w-[320px]" title={versionLabel(v)}>
+                    {versionLabel(v)}
+                  </td>
+                  <td className="px-3 py-2 font-mono text-2xs text-muted-foreground/70 tabular-nums whitespace-nowrap">
+                    {versionDate(v)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                    {v.segment_count}
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); onDelete(v.step ?? "", v.id); }}
+                      className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover/vrow:opacity-100 transition"
+                      title="Delete this version"
+                    >
+                      <Trash2 className="w-3 h-3 inline-block" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function OverviewSourceCard({
+  episode, folder, meta, isYouTube, subtitleFiles,
+  onDownloadAudio, onImportSubs, downloadDisabled, downloadError,
+  onDeleteSubtitle, onPreviewFile,
+}: {
+  episode: Episode;
+  folder?: string;
+  meta?: ShowMeta;
+  isYouTube: boolean;
+  subtitleFiles: string[];
+  onDownloadAudio: () => void;
+  onImportSubs: (lang: string) => void;
+  downloadDisabled: boolean;
+  downloadError?: string;
+  onDeleteSubtitle: (filename: string) => void;
+  onPreviewFile?: () => void;
+}) {
+  const platform = usePlatform();
+  const audioPath = episode.audio_path;
+  const ext = audioPath?.split(".").pop()?.toLowerCase() ?? "";
+  const formatLabel = ext ? ext.toUpperCase() : "audio";
+  const durationLabel = episode.duration > 0 ? formatDuration(episode.duration) : "";
+  const audioMeta = [formatLabel, durationLabel].filter(Boolean).join(" · ");
+
+  const showsDownloadButton = !episode.downloaded || isYouTube;
+
+  return (
+    <section className="space-y-2">
+      <h4 className="text-sm font-medium px-1">Source</h4>
+      <div className="rounded-lg border border-border bg-card">
+        {audioPath ? (
+          <SourceFileRow
+            icon={FileAudio}
+            label={splitPath(audioPath).basename || "audio"}
+            sublabel={audioMeta || "audio"}
+            action={
+              <button
+                type="button"
+                onClick={() => saveExportFile(platform, {
+                  audioPath,
+                  format: "audio",
+                  defaultName: `${episode.title}.${ext || "mp3"}`,
+                })}
+                className="text-2xs text-muted-foreground hover:text-foreground transition"
+              >
+                Export
+              </button>
+            }
+          />
+        ) : (
+          <div className="px-4 py-3 text-sm text-muted-foreground italic">
+            No audio yet.
+          </div>
+        )}
+
+        {subtitleFiles.map((f) => (
+          <SourceFileRow
+            key={f}
+            icon={FileText}
+            label={f}
+            sublabel="subtitles"
+            onClick={/\.(vtt|srt)$/.test(f) ? onPreviewFile : undefined}
+            onDelete={folder ? () => onDeleteSubtitle(f) : undefined}
+          />
+        ))}
+
+        {(showsDownloadButton || isYouTube) && (
+          <div className="border-t border-border/40 px-3 py-2">
+            <DownloadDropdown
+              isYouTube={isYouTube}
+              showLanguage={meta?.language || ""}
+              onDownload={onDownloadAudio}
+              onImportSubs={onImportSubs}
+              subsLabel={episode.transcribed ? "Re-download subtitles" : "Download subtitles"}
+              subsEnabled={true}
+              audioLabel={episode.downloaded ? "Re-download audio" : "Download audio"}
+              showAudio={true}
+              audioEnabled={true}
+              disabled={downloadDisabled}
+              variant={episode.downloaded ? "outline" : "default"}
+              align="left"
+            />
+          </div>
+        )}
+      </div>
+      {downloadError && (
+        <p className="text-destructive text-xs px-1">{downloadError}</p>
+      )}
+    </section>
+  );
+}
+
+function ShowNotesCard({ description }: { description: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const ref = useRef<HTMLParagraphElement | null>(null);
+  const text = stripHtml(description).trim();
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setOverflows(el.scrollHeight > el.clientHeight + 1);
+  }, [text]);
+
+  if (!text) return null;
+  return (
+    <section className="space-y-2">
+      <h4 className="text-sm font-medium px-1">Show notes</h4>
+      <div className="rounded-lg border border-border bg-card px-3 py-2.5">
+        <p
+          ref={ref}
+          className={`text-xs text-muted-foreground whitespace-pre-line select-text ${expanded ? "" : "line-clamp-4"}`}
+        >
+          {text}
+        </p>
+        {(overflows || expanded) && (
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="text-2xs text-muted-foreground/60 hover:text-foreground transition mt-1.5"
+          >
+            {expanded ? "Less" : "More"}
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError, onNavigateStep }: { episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string; onNavigateStep: (step: ActiveStep) => void }) {
+  const platform = usePlatform();
+  const audioPath = episode.audio_path;
+  const hasTranscript = !!episode.transcribed;
+  const seekTo = useAudioStore((s) => s.seekTo);
+  const [previewSource, setPreviewSource] = useState<string | null>(null);
+  const [inspectTarget, setInspectTarget] = useState<{ model: string; chunking: string } | null>(null);
+  const queryClient = useQueryClient();
+
+  const { data: speakerMap } = useQuery({
+    queryKey: queryKeys.speakerMap(audioPath),
+    queryFn: () => getSpeakerMap(audioPath!),
+    enabled: !!audioPath && hasTranscript,
+  });
+  const previewStep = episode.corrected ? "correct" : "transcribe";
+  const PREVIEW_LIMIT = 5;
+  const { data: previewSegments } = useQuery({
+    queryKey: [...queryKeys.stepSegments(previewStep, audioPath), "preview"],
+    queryFn: () => (previewStep === "correct" ? getCorrectPreview(audioPath!, PREVIEW_LIMIT) : getTranscribePreview(audioPath!, PREVIEW_LIMIT)),
+    enabled: !!audioPath && hasTranscript,
+  });
+
+  const outputDir = episode.output_dir;
+  const { data: allVersions } = useQuery({
+    queryKey: queryKeys.allVersions(audioPath ?? outputDir),
+    queryFn: () => getAllVersions(audioPath, outputDir),
+    enabled: (!!audioPath || !!outputDir) && hasTranscript,
+  });
+
+  const showName = meta?.name ?? "";
+  const { data: indexEntries } = useQuery({
+    queryKey: queryKeys.episodeCollections(audioPath ?? outputDir, showName),
+    queryFn: () => getEpisodeCollections(audioPath, showName, outputDir),
+    enabled: (!!audioPath || !!outputDir) && !!showName && !!episode.indexed,
+  });
+
+  const invalidateAll = useCallback(() => {
+    const key = audioPath ?? outputDir;
+    queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(key) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodeCollections(key, showName) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("transcribe", audioPath) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", audioPath) });
+  }, [audioPath, outputDir, showName, queryClient]);
+
+  const deleteVersionMutation = useMutation({
+    mutationFn: async ({ step, id }: { step: string; id: string }) => {
+      if (step === "transcript") return deleteTranscribeVersion(audioPath, id, outputDir);
+      if (step === "corrected") return deleteCorrectVersion(audioPath, id, outputDir);
+      return deleteTranslateVersion(audioPath, step, id, outputDir);
+    },
+    onSuccess: invalidateAll,
+  });
+
+  const deleteCollectionMutation = useMutation({
+    mutationFn: (collection: string) =>
+      deleteEpisodeCollection(audioPath, showName, collection, outputDir),
+    onSuccess: invalidateAll,
+  });
+
+  const deleteFileMutation = useMutation({
+    mutationFn: (path: string) => deleteFile(path),
+    onSuccess: invalidateAll,
+  });
+
+  const speakers = useMemo(() => {
+    if (!speakerMap) return [];
+    return [...new Set(Object.values(speakerMap))].filter(Boolean);
+  }, [speakerMap]);
+
+  const versionGroups = useMemo(
+    () => groupVersions(allVersions, episode.translations ?? EMPTY_LANGS),
+    [allVersions, episode.translations],
+  );
+  const translations = episode.translations ?? EMPTY_LANGS;
+
+  const subtitleFiles = useMemo(
+    () => (episode.files ?? []).filter((f) => /\.(vtt|srt)$/i.test(f)),
+    [episode.files],
+  );
+
+  const transcribeStatus = STEP_BY_KEY.transcribe.status(episode);
+  const correctStatus = STEP_BY_KEY.correct.status(episode);
+  const indexStatus = STEP_BY_KEY.index.status(episode);
+  const translateStatus = STEP_BY_KEY.translate.status(episode);
+  const synthStatus = STEP_BY_KEY.synthesize.status(episode);
+
+  const transcriptVersions = useMemo(
+    () => [
+      ...versionGroups.transcript,
+      ...versionGroups.corrected,
+      ...Object.values(versionGroups.translations).flat(),
+    ].sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
+    [versionGroups],
+  );
+
+  const indexSummary = useMemo(() => {
+    if (!episode.indexed) return undefined;
+    if (!indexEntries || indexEntries.length === 0) return "indexed";
+    const total = indexEntries.reduce((acc, e) => acc + (e.chunk_count ?? 0), 0);
+    const models = [...new Set(indexEntries.map((e) => e.model))].slice(0, 2).join(", ");
+    return total ? `${total} chunks · ${models}` : models;
+  }, [episode.indexed, indexEntries]);
+
+  const openPreview = useCallback((previewKey: string) => {
+    if (audioPath || outputDir) {
+      setPreviewSource(previewKey);
+      return;
+    }
+    onNavigateStep(stepDisplay(previewKey).editorStep);
+  }, [audioPath, outputDir, onNavigateStep]);
+
+  return (
+    <div className="p-6 space-y-5 max-w-6xl">
+      {/* Folder + Export ZIP */}
+      {(folder || episode.audio_path || outputDir) && (
+        <nav className="flex items-baseline gap-2 text-2xs text-muted-foreground/70 min-w-0">
+          {folder && (
+            <button
+              type="button"
+              onClick={() => openFolder(folder)}
+              className="flex items-baseline gap-1.5 min-w-0 truncate hover:text-foreground transition"
+              title={folder}
+            >
+              <FolderOpen className="w-3 h-3 shrink-0 self-center" />
+              <span className="font-mono truncate">{folder}</span>
+            </button>
+          )}
+          {(episode.audio_path || outputDir) && (
+            <button
+              type="button"
+              onClick={() => saveExportFile(platform, {
+                audioPath: episode.audio_path ?? undefined,
+                outputDir: outputDir ?? undefined,
+                format: "zip",
+                defaultName: `${episode.stem || "episode"}.zip`,
+              })}
+              className="ml-auto flex items-center gap-1 shrink-0 hover:text-foreground transition"
+            >
+              <Download className="w-3 h-3" />
+              <span>Export ZIP</span>
+            </button>
+          )}
+        </nav>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr_auto_1fr] gap-2 items-stretch">
+        <StageCard
+          stage="transcribe"
+          icon={Mic}
+          label="Transcribe"
+          status={transcribeStatus}
+          summary={versionGroups.transcript[0] && latestSummary(versionGroups.transcript[0])}
+          onOpen={() => hasTranscript ? openPreview("transcript") : onNavigateStep("transcribe")}
+        />
+        <StageArrow />
+        <StageCard
+          stage="correct"
+          icon={Sparkles}
+          label="Correct"
+          status={correctStatus}
+          summary={versionGroups.corrected[0] && latestSummary(versionGroups.corrected[0])}
+          onOpen={() => episode.corrected ? openPreview("corrected") : onNavigateStep("correct")}
+        />
+        <StageArrow />
+        <StageCard
+          stage="index"
+          icon={Database}
+          label="Search index"
+          status={indexStatus}
+          summary={indexSummary}
+          onOpen={() => {
+            if (indexEntries && indexEntries.length === 1) {
+              const e = indexEntries[0];
+              setInspectTarget({ model: e.model, chunking: e.chunker });
+            } else {
+              onNavigateStep("index");
+            }
+          }}
+        />
+      </div>
+
+      {/* Optional outputs (translation, synthesized audio) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <StageCard
+          stage="translate"
+          icon={Languages}
+          label="Translate"
+          status={translateStatus}
+          summary={
+            translations.length > 0
+              ? translations.map(langLabel).join(", ")
+              : undefined
+          }
+          muted={!translateStatus}
+          onOpen={() => {
+            const onlyLang = translations.length === 1 ? translations[0] : null;
+            if (onlyLang && (versionGroups.translations[onlyLang] ?? []).length > 0) {
+              openPreview(onlyLang);
+            } else {
+              onNavigateStep("translate");
+            }
+          }}
+        />
+        <StageCard
+          stage="synth"
+          icon={AudioLines}
+          label="Synthesized audio"
+          status={synthStatus}
+          summary={synthStatus ? "audio ready" : undefined}
+          muted={!synthStatus}
+          onOpen={() => onNavigateStep("synthesize")}
+        />
+      </div>
+
+      {/* 2-col: preview LEFT, source/activity/notes RIGHT */}
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-5">
+        <div className="space-y-5 min-w-0">
+          {hasTranscript && previewSegments && previewSegments.length > 0 ? (() => {
+            const previewLabel = previewStep === "correct" ? "corrected" : "transcript";
+            const previewStage: StageColor = previewStep === "correct" ? "correct" : "transcribe";
+            const previewVersion = previewStep === "correct" ? versionGroups.corrected[0] : versionGroups.transcript[0];
+            const c = STAGE_CARD_CLASSES[previewStage];
+            const subline = [
+              episode.segment_count != null ? `${episode.segment_count} segments` : null,
+              speakers.length > 0 ? speakers.join(", ") : null,
+            ].filter(Boolean).join(" · ");
+            return (
+              <button
+                onClick={() => openPreview(episode.corrected ? "corrected" : "transcript")}
+                className="w-full text-left rounded-lg border border-border bg-card px-4 py-3.5 space-y-3 hover:bg-accent/40 transition group"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <div className="flex items-baseline gap-2 min-w-0">
+                      <h4 className="text-sm font-medium">Transcript preview</h4>
+                      <span className={`text-2xs px-1.5 py-0.5 rounded font-medium shrink-0 ${c.bg} ${c.text}`}>
+                        {previewLabel}
+                      </span>
+                      {previewVersion && (
+                        <span className="text-2xs text-muted-foreground truncate">
+                          {latestSummary(previewVersion)}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-2xs text-primary opacity-0 group-hover:opacity-100 transition shrink-0">
+                      Open &rarr;
+                    </span>
+                  </div>
+                  {subline && <div className="text-2xs text-muted-foreground">{subline}</div>}
+                </div>
+                <div className="space-y-1.5 text-sm">
+                  {previewSegments.map((seg) => (
+                    <p key={`${seg.start}-${seg.speaker ?? ""}`} className="text-muted-foreground line-clamp-2">
+                      <span className="font-mono tabular-nums text-2xs text-muted-foreground/50 mr-2">{formatTime(seg.start ?? 0, false)}</span>
+                      {seg.speaker && <span className="font-medium" style={{ color: speakerColor(seg.speaker) }}>{seg.speaker}: </span>}
+                      {seg.text}
+                    </p>
+                  ))}
+                </div>
+              </button>
+            );
+          })() : hasTranscript ? null : (
+            <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground italic">
+              Transcribe the episode to see a preview here.
+            </div>
+          )}
+
+        </div>
+
+        <aside className="space-y-5">
+          <OverviewSourceCard
+            episode={episode}
+            folder={folder}
+            meta={meta}
+            isYouTube={isYouTube}
+            subtitleFiles={subtitleFiles}
+            onDownloadAudio={onDownloadAudio}
+            onImportSubs={onImportSubs}
+            downloadDisabled={downloadDisabled}
+            downloadError={downloadError}
+            onDeleteSubtitle={(filename) => {
+              if (folder) deleteFileMutation.mutate(`${folder}/${filename}`);
+            }}
+            onPreviewFile={hasTranscript ? () => openPreview(episode.corrected ? "corrected" : "transcript") : undefined}
+          />
+
+          {episode.description && <ShowNotesCard description={episode.description} />}
+        </aside>
+      </div>
+
+      <ActivityLog
+        versions={transcriptVersions}
+        onPreview={openPreview}
+      />
+
+      <VersionsTable
+        versions={transcriptVersions}
+        onPreview={openPreview}
+        onDelete={(step, id) => deleteVersionMutation.mutate({ step, id })}
+      />
+
+      {episode.indexed && indexEntries && indexEntries.length > 0 && (
+        <section className="space-y-2">
+          <h4 className="text-sm font-medium px-1">All index versions</h4>
+          <div className="rounded-lg border border-border bg-card overflow-hidden">
+            {indexEntries.map((e) => (
+              <IndexRow
+                key={e.collection}
+                entry={e}
+                onInspect={() => setInspectTarget({ model: e.model, chunking: e.chunker })}
+                onDelete={() => deleteCollectionMutation.mutate(e.collection)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {(audioPath || outputDir) && previewSource && (
+        <Suspense fallback={null}>
+          <SegmentContextDialog
+            open={true}
+            onOpenChange={(open) => { if (!open) setPreviewSource(null); }}
+            audioPath={audioPath ?? undefined}
+            outputDir={outputDir ?? undefined}
+            source={previewSource}
+            episodeTitle={episode.title}
+            onSeek={(t) => audioPath && seekTo(audioPath, t)}
+            onOpenEditor={() => {
+              setPreviewSource(null);
+              onNavigateStep(stepDisplay(previewSource).editorStep);
+            }}
+          />
+        </Suspense>
+      )}
+
+      {(audioPath || outputDir) && inspectTarget && (
+        <Suspense fallback={null}>
+          <IndexInspectorModal
+            open={true}
+            onClose={() => setInspectTarget(null)}
+            audioPath={audioPath ?? undefined}
+            outputDir={outputDir ?? undefined}
+            show={meta?.name ?? ""}
+            model={inspectTarget.model}
+            chunking={inspectTarget.chunking}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

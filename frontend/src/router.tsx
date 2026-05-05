@@ -46,12 +46,18 @@ const showRoute = createRoute({
 const episodeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/show/$folder/episode/$stem",
+  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
+    const tab = typeof search.tab === "string" ? search.tab : undefined;
+    return tab ? { tab } : {};
+  },
   component: function EpisodeWrapper() {
     const { folder, stem } = episodeRoute.useParams();
+    const { tab } = episodeRoute.useSearch();
     return (
       <EpisodePage
         folder={decodeURIComponent(folder)}
         stem={decodeURIComponent(stem)}
+        initialTab={tab}
       />
     );
   },
@@ -60,9 +66,14 @@ const episodeRoute = createRoute({
 const fileRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/file/$path",
+  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
+    const tab = typeof search.tab === "string" ? search.tab : undefined;
+    return tab ? { tab } : {};
+  },
   component: function FileWrapper() {
     const { path } = fileRoute.useParams();
-    return <EpisodePage audioFilePath={decodeURIComponent(path)} />;
+    const { tab } = fileRoute.useSearch();
+    return <EpisodePage audioFilePath={decodeURIComponent(path)} initialTab={tab} />;
   },
 });
 

@@ -23,7 +23,11 @@ import { useAudioStore } from "@/stores";
 interface Props {
   open: boolean;
   onClose: () => void;
-  audioPath: string;
+  /** Required for in-modal audio playback; when absent (e.g. YouTube show
+   *  before download), `outputDir` locates the index for the inspect query
+   *  and play buttons are hidden. */
+  audioPath?: string;
+  outputDir?: string;
   show: string;
   model: string;
   modelLabel?: string;
@@ -31,12 +35,13 @@ interface Props {
 }
 
 export default function IndexInspectorModal({
-  open, onClose, audioPath, show, model, modelLabel, chunking,
+  open, onClose, audioPath, outputDir, show, model, modelLabel, chunking,
 }: Props) {
+  const sourceKey = audioPath ?? outputDir ?? null;
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: queryKeys.indexInspect(audioPath, show, model, chunking),
-    queryFn: () => getIndexInspect(audioPath, show, model, chunking),
-    enabled: open,
+    queryKey: queryKeys.indexInspect(sourceKey, show, model, chunking),
+    queryFn: () => getIndexInspect(audioPath, show, model, chunking, outputDir),
+    enabled: open && (!!audioPath || !!outputDir),
     staleTime: 30_000,
   });
 
@@ -132,7 +137,7 @@ function ChunkBlock({
   chunk, audioPath, zeroThreshold,
 }: {
   chunk: InspectChunk;
-  audioPath: string;
+  audioPath?: string;
   zeroThreshold: number;
 }) {
   const seek = useAudioStore((s) => s.seekTo);
@@ -173,15 +178,17 @@ function ChunkBlock({
             zeros {zeroPct.toFixed(0)}%
           </span>
         )}
-        <button
-          type="button"
-          onClick={() => seek(audioPath, chunk.start)}
-          className="shrink-0 text-muted-foreground/60 hover:text-foreground transition"
-          aria-label={`Play from ${formatTime(chunk.start, false)}`}
-          title={`Play from ${formatTime(chunk.start, false)}`}
-        >
-          <Play className="w-3.5 h-3.5" aria-hidden="true" />
-        </button>
+        {audioPath && (
+          <button
+            type="button"
+            onClick={() => seek(audioPath, chunk.start)}
+            className="shrink-0 text-muted-foreground/60 hover:text-foreground transition"
+            aria-label={`Play from ${formatTime(chunk.start, false)}`}
+            title={`Play from ${formatTime(chunk.start, false)}`}
+          >
+            <Play className="w-3.5 h-3.5" aria-hidden="true" />
+          </button>
+        )}
       </div>
       {turns.length > 0 ? (
         <ol className="px-2 py-1.5 space-y-1">
@@ -221,19 +228,25 @@ function TurnRow({
   turn, audioPath, onSeek,
 }: {
   turn: InspectChunkSpeakerTurn;
-  audioPath: string;
+  audioPath?: string;
   onSeek: (path: string, time: number) => void;
 }) {
   return (
     <li className="group grid grid-cols-[auto_auto_1fr] gap-3 px-2 py-1.5 rounded text-xs items-baseline">
-      <button
-        onClick={() => onSeek(audioPath, turn.start)}
-        className="font-mono tabular-nums text-muted-foreground/60 hover:text-foreground transition text-left flex items-center gap-1"
-        title={`Play from ${formatTime(turn.start, false)}`}
-      >
-        <Play className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition" />
-        {formatTime(turn.start, false)}
-      </button>
+      {audioPath ? (
+        <button
+          onClick={() => onSeek(audioPath, turn.start)}
+          className="font-mono tabular-nums text-muted-foreground/60 hover:text-foreground transition text-left flex items-center gap-1"
+          title={`Play from ${formatTime(turn.start, false)}`}
+        >
+          <Play className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition" />
+          {formatTime(turn.start, false)}
+        </button>
+      ) : (
+        <span className="font-mono tabular-nums text-muted-foreground/60">
+          {formatTime(turn.start, false)}
+        </span>
+      )}
       <span
         className="font-medium truncate"
         style={{ color: speakerColor(turn.speaker) }}
