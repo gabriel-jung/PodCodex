@@ -1,16 +1,10 @@
 import type { Episode } from "@/api/types";
 import { isEdited } from "@/lib/stepStatus";
+import { STAGE_CLASSES, type StageKey } from "@/lib/stageClasses";
 
 type StepStatus = "none" | "partial" | "done";
 
-type StageKey = "transcribe" | "correct" | "translate" | "synth";
-
-const STAGE_CLASSES: Record<StageKey, { bg: string; text: string; border: string }> = {
-  transcribe: { bg: "bg-stage-transcribe/15", text: "text-stage-transcribe", border: "border-stage-transcribe" },
-  correct:    { bg: "bg-stage-correct/15",    text: "text-stage-correct",    border: "border-stage-correct" },
-  translate:  { bg: "bg-stage-translate/15",  text: "text-stage-translate",  border: "border-stage-translate" },
-  synth:      { bg: "bg-stage-synth/15",      text: "text-stage-synth",      border: "border-stage-synth" },
-};
+type ChipStage = Exclude<StageKey, "index">;
 
 /** Provenance-derived review status. Backend "outdated" freshness is hidden
  *  here (reserved for the planned advanced filter) — outdated raw output and
@@ -25,7 +19,7 @@ function resolveStatus(present: boolean, provenance: unknown): StepStatus {
   return "partial";
 }
 
-function Chip({ status, stage, label, title }: { status: StepStatus; stage: StageKey; label: string; title: string }) {
+function Chip({ status, stage, label, title }: { status: StepStatus; stage: ChipStage; label: string; title: string }) {
   if (status === "none") return null;
   const c = STAGE_CLASSES[stage];
   const base = "text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium";

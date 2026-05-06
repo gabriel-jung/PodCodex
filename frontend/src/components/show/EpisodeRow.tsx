@@ -2,6 +2,7 @@ import { memo, useRef } from "react";
 import type { Episode } from "@/api/types";
 import { Play, Download, MoreVertical, Captions, CloudOff } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
+import { useLayoutStore } from "@/stores";
 import { StatusChips } from "./StatusChips";
 import { EpisodeMenu } from "./EpisodeMenu";
 
@@ -19,6 +20,7 @@ export interface EpisodeRowProps {
 }
 
 function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying }: EpisodeRowProps) {
+  const compact = useLayoutStore((s) => s.compact);
   const shiftRef = useRef(false);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
 
@@ -52,7 +54,7 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
         )}
         <span className="truncate">{ep.title}</span>
       </button>
-      <StatusChips ep={ep} compact />
+      {!compact && <StatusChips ep={ep} compact />}
       <span className="text-xs text-muted-foreground w-20 text-right shrink-0">{formatDate(ep.pub_date)}</span>
       <span className="text-xs text-muted-foreground w-12 text-right shrink-0">{formatDuration(ep.duration)}</span>
       <div className="w-24 flex justify-end gap-2.5 shrink-0">

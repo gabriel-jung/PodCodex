@@ -144,10 +144,20 @@ export interface ShowSummary {
   name: string;
   path: string;
   episode_count: number;
+  feed_episode_count?: number | null;
   has_rss: boolean;
   has_youtube: boolean;
   artwork_url: string;
   last_rss_update?: string | null;
+  pipeline_total_count?: number | null;
+  transcribed_count?: number | null;
+  transcribed_edited_count?: number | null;
+  corrected_count?: number | null;
+  corrected_edited_count?: number | null;
+  translated_count?: number | null;
+  translated_edited_count?: number | null;
+  synthesized_count?: number | null;
+  indexed_count?: number | null;
 }
 
 export interface MoveShowRequest {
@@ -305,6 +315,7 @@ export interface SearchResultSchema {
   episode_stem: string;
   episode_number?: number | null;
   audio_path: string;
+  output_dir: string;
   speaker: string;
   start: number;
   end: number;

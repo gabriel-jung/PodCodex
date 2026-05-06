@@ -124,7 +124,7 @@ export default function EditorialHeader({
               {title}
             </h1>
             {stats && stats.length > 0 && (
-              <dl className="flex gap-4 text-xs shrink-0">
+              <dl className="hidden md:flex gap-4 text-xs shrink-0">
                 {stats.map((s, i) => (
                   <div key={i} className="flex items-baseline gap-1">
                     <dt className="font-mono font-medium tabular-nums">{s.value}</dt>

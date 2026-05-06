@@ -61,11 +61,26 @@ router = APIRouter()
 class ShowSummary(BaseModel):
     name: str
     path: str
-    episode_count: int = 0
+    episode_count: int = 0  # downloaded audio files on disk
+    feed_episode_count: int | None = (
+        None  # total episodes in feed cache (RSS/YouTube), None if no feed
+    )
     has_rss: bool = False
     has_youtube: bool = False
     artwork_url: str = ""
     last_rss_update: str | None = None  # ISO timestamp of last feed cache write
+    # Per-stage progress aggregates from pipeline_db. All None when no pipeline.db file.
+    pipeline_total_count: int | None = (
+        None  # rows in pipeline_db (denominator for percentages)
+    )
+    transcribed_count: int | None = None
+    transcribed_edited_count: int | None = None
+    corrected_count: int | None = None
+    corrected_edited_count: int | None = None
+    translated_count: int | None = None
+    translated_edited_count: int | None = None
+    synthesized_count: int | None = None
+    indexed_count: int | None = None
 
 
 @router.get("/", response_model=list[ShowSummary])
@@ -93,21 +108,58 @@ async def list_shows() -> list[ShowSummary]:
         has_rss = feed_cache.exists() or bool(meta and meta.rss_url)
         has_youtube = bool(meta and meta.youtube_url)
         last_rss: str | None = None
+        feed_count: int | None = None
         if feed_cache.exists():
             from datetime import datetime, timezone
 
             last_rss = datetime.fromtimestamp(
                 feed_cache.stat().st_mtime, tz=timezone.utc
             ).isoformat()
+            cached = load_feed_cache(child)
+            if cached is not None:
+                feed_count = len(cached)
+
+        # Per-stage progress aggregates: only computed when pipeline.db file
+        # already exists (skip otherwise to avoid creating an empty DB file
+        # for every feed-only show on home-page load).
+        pipeline_total = transcribed = corrected = translated = synthesized = (
+            indexed
+        ) = None
+        transcribed_edited = corrected_edited = translated_edited = None
+        if (child / "pipeline.db").is_file():
+            try:
+                agg = get_pipeline_db(child).aggregate_status()
+                pipeline_total = agg["total"]
+                transcribed = agg["transcribed"]
+                transcribed_edited = agg["transcribed_edited"]
+                corrected = agg["corrected"]
+                corrected_edited = agg["corrected_edited"]
+                translated = agg["translated"]
+                translated_edited = agg["translated_edited"]
+                synthesized = agg["synthesized"]
+                indexed = agg["indexed"]
+            except Exception as exc:
+                logger.warning("aggregate_status failed for {}: {}", child, exc)
+
         shows.append(
             ShowSummary(
                 name=name,
                 path=str(child),
                 episode_count=audio_count,
+                feed_episode_count=feed_count,
                 has_rss=has_rss,
                 has_youtube=has_youtube,
                 artwork_url=artwork,
                 last_rss_update=last_rss,
+                pipeline_total_count=pipeline_total,
+                transcribed_count=transcribed,
+                transcribed_edited_count=transcribed_edited,
+                corrected_count=corrected,
+                corrected_edited_count=corrected_edited,
+                translated_count=translated,
+                translated_edited_count=translated_edited,
+                synthesized_count=synthesized,
+                indexed_count=indexed,
             )
         )
     return shows

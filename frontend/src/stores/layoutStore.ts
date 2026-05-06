@@ -18,6 +18,9 @@ interface LayoutState {
   /** Sidebar expanded state (shared across all pages). */
   sidebarExpanded: boolean;
   setSidebarExpanded: (v: boolean) => void;
+  /** Compact mode hides secondary metadata on show + episode lists. */
+  compact: boolean;
+  setCompact: (v: boolean) => void;
 }
 
 export const useLayoutStore = create<LayoutState>()(
@@ -31,6 +34,8 @@ export const useLayoutStore = create<LayoutState>()(
       setShowGroupBy: (g) => set({ showGroupBy: g }),
       sidebarExpanded: false,
       setSidebarExpanded: (v) => set({ sidebarExpanded: v }),
+      compact: false,
+      setCompact: (v) => set({ compact: v }),
     }),
     {
       name: "podcodex-layout",
@@ -39,6 +44,7 @@ export const useLayoutStore = create<LayoutState>()(
         showCardSize: s.showCardSize,
         showGroupBy: s.showGroupBy,
         sidebarExpanded: s.sidebarExpanded,
+        compact: s.compact,
       }),
     },
   ),

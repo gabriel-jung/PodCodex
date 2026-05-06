@@ -15,7 +15,7 @@ import type { Episode } from "@/api/types";
 import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
 import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
-import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore } from "@/stores";
+import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore, useLayoutStore } from "@/stores";
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useShowActions } from "@/hooks/useShowActions";
 
@@ -33,6 +33,7 @@ import ShowSettings from "@/components/show/ShowSettings";
 import SpeakersPanel from "@/components/show/SpeakersPanel";
 import { EpisodeRow } from "@/components/show/EpisodeRow";
 import { EpisodeCard } from "@/components/show/EpisodeCard";
+import CompactToggle from "@/components/show/CompactToggle";
 import SearchPanel from "@/components/search/SearchPanel";
 import PipelineButtons from "@/components/show/PipelineButtons";
 import FilterDropdown from "@/components/show/FilterDropdown";
@@ -78,6 +79,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   );
   const [view, setView] = useState<ViewMode>("list");
   const [cardSize, setCardSize] = useState(3);
+  const compact = useLayoutStore((s) => s.compact);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<SortKey>("date_desc");
@@ -439,6 +441,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         {view === "card" && (
           <input type="range" min={2} max={8} value={cardSize} onChange={(e) => setCardSize(Number(e.target.value))} className="w-20 accent-primary" />
         )}
+        <CompactToggle />
         <div className="flex border border-border rounded overflow-hidden">
           <button onClick={() => setView("list")} className={`px-1.5 py-1 transition ${view === "list" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`} title="List view">
             <List className="w-3.5 h-3.5" />
@@ -533,10 +536,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
               <div className="w-4 shrink-0" />
               <SortHeader col="number" label="#" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-8 text-right shrink-0" />
               <SortHeader col="title" label="Title" current={sortCol} dir={sortDir} onSort={toggleSort} className="flex-1 min-w-0" />
-              <div className="w-16 shrink-0" />
-              <SortHeader col="date" label="Date" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-20 text-right shrink-0" />
-              <SortHeader col="duration" label="Duration" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-12 text-right shrink-0" />
-              <span className="w-20 text-right shrink-0">Audio</span>
+              {!compact && <div className="w-16 shrink-0" />}
+              {!compact && (
+                <SortHeader col="date" label="Date" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-20 text-right shrink-0" />
+              )}
+              {!compact && (
+                <SortHeader col="duration" label="Duration" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-12 text-right shrink-0" />
+              )}
+              <span className={`${compact ? "w-12" : "w-20"} text-right shrink-0`}>Audio</span>
             </div>
             {filtered.map((ep, i) => (
               <EpisodeRow
@@ -556,7 +563,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           </div>
         ) : (
           <div
-            className="p-6 grid gap-4"
+            className={`p-6 grid mx-auto max-w-7xl ${compact ? "gap-2" : "gap-4"}`}
             style={{ gridTemplateColumns: `repeat(${cardSize}, minmax(0, 1fr))` }}
           >
             {filtered.map((ep) => (

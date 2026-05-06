@@ -2,6 +2,7 @@ import { memo, useRef, useState } from "react";
 import type { Episode } from "@/api/types";
 import { Play, Download, MoreVertical, Captions, CloudOff } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
+import { useLayoutStore } from "@/stores";
 import { StatusChips } from "./StatusChips";
 import { EpisodeMenu } from "./EpisodeMenu";
 
@@ -16,6 +17,7 @@ export interface EpisodeCardProps {
 }
 
 function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying }: EpisodeCardProps) {
+  const compact = useLayoutStore((s) => s.compact);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const [isWide, setIsWide] = useState(false);
 
@@ -140,26 +142,30 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloadin
         </div>
 
         {/* Bottom-left: status chips (moved off artwork top to reduce top-right clutter) */}
-        <div className="absolute bottom-2 left-2 right-2 flex items-end justify-between gap-2">
-          <div className="flex gap-1 items-center flex-wrap opacity-95">
-            <StatusChips ep={ep} compact />
+        {!compact && (
+          <div className="absolute bottom-2 left-2 right-2 flex items-end justify-between gap-2">
+            <div className="flex gap-1 items-center flex-wrap opacity-95">
+              <StatusChips ep={ep} compact />
+            </div>
+            {isPlaying && (
+              <span className="text-2xs bg-success text-white px-1.5 py-0.5 rounded-md font-medium shadow-sm shrink-0">
+                Playing
+              </span>
+            )}
           </div>
-          {isPlaying && (
-            <span className="text-2xs bg-success text-white px-1.5 py-0.5 rounded-md font-medium shadow-sm shrink-0">
-              Playing
-            </span>
-          )}
-        </div>
+        )}
       </div>
 
       {/* Text content */}
-      <div className="p-3 space-y-1">
+      <div className={compact ? "p-2 space-y-0.5" : "p-3 space-y-1"}>
         <p className={`text-sm font-medium line-clamp-2 leading-snug ${ep.removed ? "text-muted-foreground" : ""}`}>{ep.title}</p>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          {ep.pub_date && <span>{formatDate(ep.pub_date)}</span>}
-          {ep.pub_date && ep.duration > 0 && <span className="w-0.5 h-0.5 rounded-full bg-muted-foreground/50" />}
-          {ep.duration > 0 && <span>{formatDuration(ep.duration)}</span>}
-        </div>
+        {!compact && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {ep.pub_date && <span>{formatDate(ep.pub_date)}</span>}
+            {ep.pub_date && ep.duration > 0 && <span className="w-0.5 h-0.5 rounded-full bg-muted-foreground/50" />}
+            {ep.duration > 0 && <span>{formatDuration(ep.duration)}</span>}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   getConfig,
   listShows,
@@ -14,6 +14,7 @@ import { useLayoutStore } from "@/stores";
 import type { ShowSummary } from "@/api/types";
 import ShowCard from "@/components/show/ShowCard";
 import ShowListRow from "@/components/show/ShowListRow";
+import CompactToggle from "@/components/show/CompactToggle";
 import AddShowModal from "@/components/show/AddShowModal";
 import { Plus, RefreshCw, List, LayoutGrid, Podcast, Group } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -21,6 +22,7 @@ import AppSidebar from "@/components/layout/AppSidebar";
 import EditorialHeader from "@/components/layout/EditorialHeader";
 import DropOverlay from "@/components/common/DropOverlay";
 import { useTauriFileDrop } from "@/hooks/useTauriFileDrop";
+import { useUniformCardHeight } from "@/hooks/useUniformCardHeight";
 import OnboardingModal from "@/components/OnboardingModal";
 
 const AUDIO_EXTS = [".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac"];
@@ -41,6 +43,8 @@ export default function HomePage() {
   const setCardSize = useLayoutStore((s) => s.setShowCardSize);
   const groupBy = useLayoutStore((s) => s.showGroupBy);
   const setGroupBy = useLayoutStore((s) => s.setShowGroupBy);
+  const compact = useLayoutStore((s) => s.compact);
+  const cardsContainerRef = useRef<HTMLDivElement | null>(null);
 
   const sorted = useMemo(() => {
     if (!rawShows) return undefined;
@@ -48,8 +52,15 @@ export default function HomePage() {
   }, [rawShows]);
 
   // Partition shows once, reused for sections and refresh
-  const { sections, rssShows, ytShows } = useMemo(() => {
-    if (!sorted) return { sections: undefined, rssShows: [] as ShowSummary[], ytShows: [] as ShowSummary[] };
+  const { sections, rssShows, ytShows, localShows } = useMemo(() => {
+    if (!sorted) {
+      return {
+        sections: undefined,
+        rssShows: [] as ShowSummary[],
+        ytShows: [] as ShowSummary[],
+        localShows: [] as ShowSummary[],
+      };
+    }
     const rss: ShowSummary[] = [], yt: ShowSummary[] = [], local: ShowSummary[] = [];
     for (const s of sorted) {
       if (s.has_youtube) yt.push(s);
@@ -63,7 +74,7 @@ export default function HomePage() {
           { label: "YouTube", shows: yt },
           { label: "Local", shows: local },
         ].filter((g) => g.shows.length > 0);
-    return { sections: sects, rssShows: rss, ytShows: yt };
+    return { sections: sects, rssShows: rss, ytShows: yt, localShows: local };
   }, [sorted, groupBy]);
 
   // Oldest feed update across all shows with a feed (RSS or YouTube),
@@ -93,6 +104,13 @@ export default function HomePage() {
     navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } }),
   [navigate]);
 
+  useUniformCardHeight(cardsContainerRef, [
+    sorted?.length ?? 0,
+    viewMode,
+    cardSize,
+    compact,
+  ]);
+
   const { isHovering } = useTauriFileDrop({
     accept: AUDIO_EXTS,
     onDrop: (paths) => {
@@ -112,11 +130,11 @@ export default function HomePage() {
         artworkBare
         fallbackIcon={Podcast}
         stats={[
-          ...(sorted && sorted.length > 0
-            ? [{ value: sorted.length, label: `show${sorted.length !== 1 ? "s" : ""}` }]
+          ...(rssShows.length > 0
+            ? [{ value: rssShows.length, label: rssShows.length === 1 ? "podcast" : "podcasts" }]
             : []),
-          ...(rssShows.length > 0 ? [{ value: rssShows.length, label: "RSS" }] : []),
           ...(ytShows.length > 0 ? [{ value: ytShows.length, label: "YouTube" }] : []),
+          ...(localShows.length > 0 ? [{ value: localShows.length, label: "local" }] : []),
         ]}
         actions={
           <div className="flex items-center gap-2">
@@ -126,16 +144,24 @@ export default function HomePage() {
                 disabled={refreshAllMutation.isPending}
                 variant="outline"
                 size="sm"
-                title="Refresh all feeds (RSS + YouTube)"
+                title={
+                  refreshAllMutation.isPending
+                    ? "Refreshing all feeds…"
+                    : oldestFeedUpdate
+                      ? "Refresh all feeds (RSS + YouTube)"
+                      : "Update feeds"
+                }
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${refreshAllMutation.isPending ? "animate-spin" : ""}`} />
-                {refreshAllMutation.isPending ? (
-                  "Refreshing..."
-                ) : oldestFeedUpdate ? (
-                  <StaleUpdatedLabel timestamp={oldestFeedUpdate} />
-                ) : (
-                  "Update feeds"
-                )}
+                <span className="hidden md:inline">
+                  {refreshAllMutation.isPending ? (
+                    "Refreshing..."
+                  ) : oldestFeedUpdate ? (
+                    <StaleUpdatedLabel timestamp={oldestFeedUpdate} />
+                  ) : (
+                    "Update feeds"
+                  )}
+                </span>
               </Button>
             )}
             <Button onClick={() => setAddOpen(true)} size="sm"><Plus /> Add show</Button>
@@ -160,6 +186,7 @@ export default function HomePage() {
               >
                 <Group className="w-3.5 h-3.5" />
               </button>
+              <CompactToggle />
               {viewMode === "card" && (
                 <input
                   type="range"
@@ -191,6 +218,7 @@ export default function HomePage() {
               </div>
             </div>
 
+            <div ref={cardsContainerRef}>
             {sections.map((section) => (
               <div key={section.label || "all"} className={sections.length > 1 ? "mb-6" : ""}>
                 {section.label && (
@@ -198,7 +226,7 @@ export default function HomePage() {
                 )}
                 {viewMode === "card" ? (
                   <div
-                    className="grid gap-4"
+                    className={compact ? "grid gap-2" : "grid gap-4"}
                     style={{ gridTemplateColumns: `repeat(${cardSize}, minmax(0, 1fr))` }}
                   >
                     {section.shows.map((show) => (
@@ -214,6 +242,7 @@ export default function HomePage() {
                 )}
               </div>
             ))}
+            </div>
           </>
         )}
 

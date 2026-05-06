@@ -156,6 +156,82 @@ class PipelineDB:
         """Return the number of episodes in the DB."""
         return self._conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
 
+    def aggregate_status(self) -> dict[str, int]:
+        """Return per-stage completion counts across all episodes.
+
+        Includes edited subset for transcribe/correct/translate. Edited mirrors
+        `core.versions.is_edited` (type='validated' or manual_edit=True on the
+        latest provenance entry for that step). Translation counts as edited
+        when at least one translation language has edited provenance.
+        """
+        # Lazy import: versions.py also lazy-imports pipeline_db inside its
+        # functions, so a top-level import here would still be fine — but
+        # keeping it lazy keeps the dependency direction obvious.
+        from podcodex.core.versions import is_edited
+
+        rows = self._conn.execute(
+            "SELECT transcribed, corrected, indexed, synthesized, "
+            "translations, provenance FROM episodes"
+        ).fetchall()
+
+        total = transcribed = corrected = translated = synthesized = indexed = 0
+        transcribed_edited = corrected_edited = translated_edited = 0
+
+        for r in rows:
+            total += 1
+            if r["transcribed"]:
+                transcribed += 1
+            if r["corrected"]:
+                corrected += 1
+            if r["indexed"]:
+                indexed += 1
+            if r["synthesized"]:
+                synthesized += 1
+
+            translations: list[str] = []
+            raw_t = r["translations"]
+            if raw_t:
+                try:
+                    parsed = json.loads(raw_t)
+                    if isinstance(parsed, list):
+                        translations = [t for t in parsed if isinstance(t, str)]
+                except (ValueError, TypeError):
+                    pass
+            has_translation = len(translations) > 0
+            if has_translation:
+                translated += 1
+
+            prov: dict = {}
+            raw_p = r["provenance"]
+            if raw_p:
+                try:
+                    parsed = json.loads(raw_p)
+                    if isinstance(parsed, dict):
+                        prov = parsed
+                except (ValueError, TypeError):
+                    pass
+
+            if r["transcribed"] and is_edited(prov.get("transcript")):
+                transcribed_edited += 1
+            if r["corrected"] and is_edited(prov.get("corrected")):
+                corrected_edited += 1
+            if has_translation and any(
+                is_edited(prov.get(lang)) for lang in translations
+            ):
+                translated_edited += 1
+
+        return {
+            "total": total,
+            "transcribed": transcribed,
+            "transcribed_edited": transcribed_edited,
+            "corrected": corrected,
+            "corrected_edited": corrected_edited,
+            "translated": translated,
+            "translated_edited": translated_edited,
+            "synthesized": synthesized,
+            "indexed": indexed,
+        }
+
     # ── Write ─────────────────────────────────────────────
 
     def mark(self, stem: str, **fields: object) -> None:
