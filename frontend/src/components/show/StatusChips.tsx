@@ -1,88 +1,82 @@
+import { Fragment } from "react";
 import type { Episode } from "@/api/types";
 import { isEdited } from "@/lib/stepStatus";
 import { STAGE_CLASSES, type StageKey } from "@/lib/stageClasses";
 
-type StepStatus = "none" | "partial" | "done";
-
-type ChipStage = Exclude<StageKey, "index">;
-
-/** Provenance-derived review status. Backend "outdated" freshness is hidden
- *  here (reserved for the planned advanced filter) — outdated raw output and
- *  fresh raw output both surface as `partial`.
- *    - not present      → none
- *    - present + edited → done    (solid fill)
- *    - present + raw    → partial (outlined, awaiting review)
- */
-function resolveStatus(present: boolean, provenance: unknown): StepStatus {
-  if (!present) return "none";
-  if (isEdited(provenance)) return "done";
-  return "partial";
+interface Entry {
+  verb: string;
+  hue: string;
+  needsReview: boolean;
+  title: string;
 }
 
-function Chip({ status, stage, label, title }: { status: StepStatus; stage: ChipStage; label: string; title: string }) {
-  if (status === "none") return null;
-  const c = STAGE_CLASSES[stage];
-  const base = "text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium";
-  if (status === "partial") {
-    return (
-      <span className={`${base} border ${c.border} ${c.text}`} title={`${title} (raw, awaiting review)`}>
-        {label}
-      </span>
-    );
-  }
+function reviewable(
+  present: boolean,
+  provenance: unknown,
+  verb: string,
+  stage: StageKey,
+): Entry | null {
+  if (!present) return null;
+  const edited = isEdited(provenance);
+  return {
+    verb,
+    hue: STAGE_CLASSES[stage].text,
+    needsReview: !edited,
+    title: edited ? verb : `${verb} · awaiting review`,
+  };
+}
+
+function plain(present: boolean, verb: string, stage: StageKey): Entry | null {
+  if (!present) return null;
+  return { verb, hue: STAGE_CLASSES[stage].text, needsReview: false, title: verb };
+}
+
+function EntrySpan({ entry }: { entry: Entry }) {
   return (
-    <span className={`${base} ${c.bg} ${c.text}`} title={title} role="img" aria-label={title}>
-      {label}
+    <span title={entry.title} className={entry.hue}>
+      {entry.verb}
+      {entry.needsReview && (
+        <span className="opacity-70"> (needs review)</span>
+      )}
     </span>
   );
 }
 
-export function StatusChips({ ep, compact }: { ep: Episode; compact?: boolean }) {
+export function StatusChips({ ep }: { ep: Episode }) {
+  const langs = ep.translations;
+  const anyTranslationEdited = langs.some((l) => isEdited(ep.provenance?.[l]));
+  const allTranslationsEdited = langs.length > 0 && langs.every((l) => isEdited(ep.provenance?.[l]));
+
+  const entries: Entry[] = [
+    reviewable(!!ep.transcribed, ep.provenance?.transcript, "transcribed", "transcribe"),
+    reviewable(!!ep.corrected, ep.provenance?.corrected, "corrected", "correct"),
+    langs.length > 0
+      ? {
+          verb: "translated",
+          hue: STAGE_CLASSES.translate.text,
+          needsReview: !allTranslationsEdited,
+          title:
+            allTranslationsEdited
+              ? `translated (${langs.join(", ")})`
+              : anyTranslationEdited
+                ? `translated (${langs.join(", ")}) · some awaiting review`
+                : `translated (${langs.join(", ")}) · awaiting review`,
+        }
+      : null,
+    plain(!!ep.synthesized, "synthesized", "synth"),
+    plain(!!ep.indexed, "indexed", "index"),
+  ].filter((x): x is Entry => x !== null);
+
+  if (entries.length === 0) return null;
+
   return (
-    <div className="flex gap-1 items-center flex-wrap">
-      <Chip
-        status={resolveStatus(!!ep.transcribed, ep.provenance?.transcript)}
-        stage="transcribe"
-        label={compact ? "T" : "Transcribed"}
-        title="Transcribed"
-      />
-      <Chip
-        status={resolveStatus(!!ep.corrected, ep.provenance?.corrected)}
-        stage="correct"
-        label={compact ? "AI" : "Corrected"}
-        title="Corrected"
-      />
-      {compact && ep.translations.length > 0 ? (
-        ep.translations.map((lang) => (
-          <Chip
-            key={lang}
-            status={resolveStatus(true, ep.provenance?.[lang])}
-            stage="translate"
-            label={lang.toUpperCase()}
-            title={`Translated (${lang})`}
-          />
-        ))
-      ) : (
-        <Chip
-          status={resolveStatus(
-            ep.translations.length > 0,
-            ep.provenance?.[ep.translations[0] ?? ""],
-          )}
-          stage="translate"
-          label="Translated"
-          title={ep.translations.length > 0 ? `Translated (${ep.translations.join(", ")})` : "Translated"}
-        />
-      )}
-      {ep.synthesized && (
-        <span className="text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium bg-stage-synth/15 text-stage-synth" title="Synthesized" role="img" aria-label="Synthesized">
-          {compact ? "S" : "Synth"}
-        </span>
-      )}
-      {ep.indexed && (
-        <span className="text-2xs leading-none px-1.5 py-0.5 rounded-full font-medium bg-warning/15 text-warning" title="Indexed" role="img" aria-label="Indexed">
-          {compact ? "I" : "Indexed"}
-        </span>
-      )}
-    </div>
+    <p className="text-2xs leading-snug flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+      {entries.map((e, i) => (
+        <Fragment key={i}>
+          {i > 0 && <span aria-hidden="true" className="text-muted-foreground/40">·</span>}
+          <EntrySpan entry={e} />
+        </Fragment>
+      ))}
+    </p>
   );
 }

@@ -45,6 +45,8 @@ interface AudioState {
   /** Set metadata then seek — atomic version of setAudioMeta + seekTo. */
   playEpisode: (path: string, time: number, meta: AudioMeta) => void;
   pauseAudio: () => void;
+  /** Resume current track from where it was paused. */
+  resumeAudio: () => void;
   consumeSeek: () => void;
   stopAudio: () => void;
 }
@@ -61,6 +63,7 @@ export const useAudioStore = create<AudioState>((set, get) => ({
   currentTime: 0,
   isPlaying: false,
   pauseAudio: () => set({ pendingSeek: -1 }),
+  resumeAudio: () => set({ pendingSeek: get().currentTime }),
   setAudioMeta: (path, meta) => {
     // Always write. An earlier guard ("only update if state.audioPath ===
     // path or unset") produced null titles when navigating between episodes:

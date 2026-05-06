@@ -1,6 +1,6 @@
 import { memo, useRef, useState } from "react";
 import type { Episode } from "@/api/types";
-import { Play, Download, MoreVertical, Captions, CloudOff } from "lucide-react";
+import { Play, Pause, Download, MoreVertical, Captions, CloudOff } from "lucide-react";
 import { formatDuration, formatDate } from "@/lib/utils";
 import { useLayoutStore } from "@/stores";
 import { StatusChips } from "./StatusChips";
@@ -13,10 +13,13 @@ export interface EpisodeCardProps {
   onDownload?: (id: string) => void;
   onDelete?: (ep: Episode) => void;
   downloading?: boolean;
+  /** True only while audio is actively playing (paused → false). */
   isPlaying: boolean;
+  /** True when this episode is the loaded track, regardless of play/pause. */
+  isCurrent: boolean;
 }
 
-function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying }: EpisodeCardProps) {
+function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying, isCurrent }: EpisodeCardProps) {
   const compact = useLayoutStore((s) => s.compact);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const [isWide, setIsWide] = useState(false);
@@ -69,16 +72,24 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloadin
         {/* Bottom gradient for overlay legibility */}
         <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
 
-        {/* Hover overlay with play/download button */}
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+        {/* Play/download overlay — always visible for the current track, hover-revealed otherwise. */}
+        <div className={`absolute inset-0 transition-colors flex items-center justify-center ${
+          isCurrent
+            ? "bg-black/30 opacity-100"
+            : "bg-black/0 group-hover:bg-black/30 opacity-0 group-hover:opacity-100"
+        }`}>
           {ep.audio_path ? (
             <button
               onClick={(e) => { e.stopPropagation(); handlePlay(); }}
-              className={`w-12 h-12 rounded-full bg-white/95 flex items-center justify-center transition hover:scale-110 shadow-lg ${isPlaying ? "ring-2 ring-success ring-offset-2 ring-offset-black/30" : ""}`}
-              title="Play"
-              aria-label="Play"
+              className={`w-12 h-12 rounded-full bg-white/95 flex items-center justify-center transition hover:scale-110 shadow-lg ${isPlaying ? "ring-2 ring-success ring-offset-2 ring-offset-black/30" : isCurrent ? "ring-2 ring-primary ring-offset-2 ring-offset-black/30" : ""}`}
+              title={isPlaying ? "Pause" : isCurrent ? "Resume" : "Play"}
+              aria-label={isPlaying ? "Pause" : "Play"}
             >
-              <Play className="w-5 h-5 text-black fill-black ml-0.5" />
+              {isPlaying ? (
+                <Pause className="w-5 h-5 text-black fill-black" />
+              ) : (
+                <Play className="w-5 h-5 text-black fill-black ml-0.5" />
+              )}
             </button>
           ) : handleDownload && (
             <button
@@ -141,31 +152,23 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloadin
           </EpisodeMenu>
         </div>
 
-        {/* Bottom-left: status chips (moved off artwork top to reduce top-right clutter) */}
-        {!compact && (
-          <div className="absolute bottom-2 left-2 right-2 flex items-end justify-between gap-2">
-            <div className="flex gap-1 items-center flex-wrap opacity-95">
-              <StatusChips ep={ep} compact />
-            </div>
-            {isPlaying && (
-              <span className="text-2xs bg-success text-white px-1.5 py-0.5 rounded-md font-medium shadow-sm shrink-0">
-                Playing
-              </span>
-            )}
-          </div>
+        {/* Bottom-right: playing indicator (chips moved into text section below) */}
+        {isPlaying && (
+          <span className="absolute bottom-2 right-2 text-2xs bg-success text-white px-1.5 py-0.5 rounded-md font-medium shadow-sm">
+            Playing
+          </span>
         )}
       </div>
 
       {/* Text content */}
-      <div className={compact ? "p-2 space-y-0.5" : "p-3 space-y-1"}>
+      <div className="p-3 space-y-1">
         <p className={`text-sm font-medium line-clamp-2 leading-snug ${ep.removed ? "text-muted-foreground" : ""}`}>{ep.title}</p>
-        {!compact && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            {ep.pub_date && <span>{formatDate(ep.pub_date)}</span>}
-            {ep.pub_date && ep.duration > 0 && <span className="w-0.5 h-0.5 rounded-full bg-muted-foreground/50" />}
-            {ep.duration > 0 && <span>{formatDuration(ep.duration)}</span>}
-          </div>
-        )}
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {ep.pub_date && <span>{formatDate(ep.pub_date)}</span>}
+          {ep.pub_date && ep.duration > 0 && <span className="w-0.5 h-0.5 rounded-full bg-muted-foreground/50" />}
+          {ep.duration > 0 && <span>{formatDuration(ep.duration)}</span>}
+        </div>
+        {!compact && <StatusChips ep={ep} />}
       </div>
     </div>
   );

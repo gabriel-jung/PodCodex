@@ -65,8 +65,8 @@ function batchPath(e: Episode): string | null {
 
 export default function ShowPage({ folder, initialTab }: { folder: string; initialTab?: string }) {
   const navigate = useNavigate();
-  const storePlayEpisode = useAudioStore((s) => s.playEpisode);
   const audioPath = useAudioStore((s) => s.audioPath);
+  const audioIsPlaying = useAudioStore((s) => s.isPlaying);
   const minDurationMinutes = useEpisodeStore((s) => s.minDurationMinutes);
   const maxDurationMinutes = useEpisodeStore((s) => s.maxDurationMinutes);
   const titleInclude = useEpisodeStore((s) => s.titleInclude);
@@ -353,14 +353,20 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const playEpisode = useCallback((ep: Episode) => {
     if (!ep.audio_path) return;
-    storePlayEpisode(ep.audio_path, 0, {
+    const audio = useAudioStore.getState();
+    if (ep.audio_path === audio.audioPath) {
+      if (audio.isPlaying) audio.pauseAudio();
+      else audio.resumeAudio();
+      return;
+    }
+    audio.playEpisode(ep.audio_path, 0, {
       title: ep.title,
       artwork: ep.artwork_url || meta?.artwork_url,
       showName,
       folder,
       stem: ep.stem || ep.id,
     });
-  }, [storePlayEpisode, meta?.artwork_url, showName, folder]);
+  }, [meta?.artwork_url, showName, folder]);
 
   const downloadEpisode = useCallback((id: string) => {
     downloadMutate({ guids: [id] });
@@ -545,39 +551,47 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
               )}
               <span className={`${compact ? "w-12" : "w-20"} text-right shrink-0`}>Audio</span>
             </div>
-            {filtered.map((ep, i) => (
-              <EpisodeRow
-                key={ep.id}
-                ep={ep}
-                index={i}
-                selected={selected.has(ep.id)}
-                onToggle={toggleSelect}
-                onOpen={goEpisode}
-                onPlay={playEpisode}
-                onDownload={downloadEpisode}
-                onDelete={confirmDeleteAudio}
-                downloading={rowDownloading}
-                isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
-              />
-            ))}
+            {filtered.map((ep, i) => {
+              const isCurrent = !!ep.audio_path && ep.audio_path === audioPath;
+              return (
+                <EpisodeRow
+                  key={ep.id}
+                  ep={ep}
+                  index={i}
+                  selected={selected.has(ep.id)}
+                  onToggle={toggleSelect}
+                  onOpen={goEpisode}
+                  onPlay={playEpisode}
+                  onDownload={downloadEpisode}
+                  onDelete={confirmDeleteAudio}
+                  downloading={rowDownloading}
+                  isPlaying={isCurrent && audioIsPlaying}
+                  isCurrent={isCurrent}
+                />
+              );
+            })}
           </div>
         ) : (
           <div
             className={`p-6 grid mx-auto max-w-7xl ${compact ? "gap-2" : "gap-4"}`}
             style={{ gridTemplateColumns: `repeat(${cardSize}, minmax(0, 1fr))` }}
           >
-            {filtered.map((ep) => (
-              <EpisodeCard
-                key={ep.id}
-                ep={ep}
-                onOpen={goEpisode}
-                onPlay={playEpisode}
-                onDownload={downloadEpisode}
-                onDelete={confirmDeleteAudio}
-                downloading={rowDownloading}
-                isPlaying={!!ep.audio_path && ep.audio_path === audioPath}
-              />
-            ))}
+            {filtered.map((ep) => {
+              const isCurrent = !!ep.audio_path && ep.audio_path === audioPath;
+              return (
+                <EpisodeCard
+                  key={ep.id}
+                  ep={ep}
+                  onOpen={goEpisode}
+                  onPlay={playEpisode}
+                  onDownload={downloadEpisode}
+                  onDelete={confirmDeleteAudio}
+                  downloading={rowDownloading}
+                  isPlaying={isCurrent && audioIsPlaying}
+                  isCurrent={isCurrent}
+                />
+              );
+            })}
           </div>
         )}
 
