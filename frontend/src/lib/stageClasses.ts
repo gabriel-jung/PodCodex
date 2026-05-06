@@ -11,7 +11,7 @@ export interface StageClasses {
   bg: string;
   text: string;
   border: string;
-  /** Left-border accent (`border-l-*/60`) — used by StageCard hub. */
+  /** Left-border accent at 60% alpha — used by StageCard hub. */
   borderL: string;
   /** Solid fill (used for status dots) — full saturation, no /15 alpha. */
   dot: string;

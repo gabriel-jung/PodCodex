@@ -18,7 +18,6 @@ export function useUniformCardHeight(
     if (!root) return;
 
     let measuring = false;
-    let lastMax = 0;
 
     const measure = () => {
       if (measuring) return;
@@ -33,10 +32,7 @@ export function useUniformCardHeight(
         const cards = Array.from(
           root.querySelectorAll<HTMLElement>("[data-uniform-card]"),
         );
-        if (cards.length === 0) {
-          lastMax = 0;
-          return;
-        }
+        if (cards.length === 0) return;
         let max = 0;
         for (const c of cards) {
           const h = c.offsetHeight;
@@ -44,7 +40,6 @@ export function useUniformCardHeight(
         }
         if (max > 0) {
           cards.forEach((c) => { c.style.minHeight = `${max}px`; });
-          lastMax = max;
         }
       } finally {
         requestAnimationFrame(() => { measuring = false; });
