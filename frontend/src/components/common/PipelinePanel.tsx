@@ -1,14 +1,22 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import ProgressBar from "@/components/editor/ProgressBar";
 import { EmptyState } from "@/components/ui/empty-state";
+import type { PanelStatus } from "@/lib/stepStatus";
+
+const STATUS_META: Record<PanelStatus, { text: string; color: string }> = {
+  ready: { text: "ready", color: "text-success" },
+  review: { text: "needs review", color: "text-info" },
+  none: { text: "not started", color: "text-muted-foreground/60" },
+};
 
 interface PipelinePanelProps {
   /** Panel title shown in the header. */
   title: string;
   /** One-line description shown below the title. */
   description: string;
-  /** Whether this step has already been completed. Controls chevron vs open. */
-  done: boolean;
+  /** Stage status — "none" hides the collapse chevron and shows settings inline.
+   *  "ready"/"review" enables collapse and renders a status badge in the header. */
+  status: PanelStatus;
   /** Controls are expanded (editable). */
   expanded: boolean;
   /** Toggle expanded state. */
@@ -40,7 +48,7 @@ interface PipelinePanelProps {
 export default function PipelinePanel({
   title,
   description,
-  done,
+  status,
   expanded,
   onToggle,
   rerunLabel,
@@ -55,13 +63,21 @@ export default function PipelinePanel({
   onRetry,
   onDismiss,
 }: PipelinePanelProps) {
+  const hasOutput = status !== "none";
+  const header = (
+    <div className="sticky top-0 z-10 bg-background px-4 py-2 border-b border-border">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-sm font-semibold">{title}</span>
+        <span className={`text-2xs shrink-0 ${STATUS_META[status].color}`}>{STATUS_META[status].text}</span>
+      </div>
+      <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
+    </div>
+  );
+
   if (blocker || prerequisite) {
     return (
       <div className="flex flex-col h-full">
-        <div className="sticky top-0 z-10 bg-background px-4 py-2 border-b border-border">
-          <span className="text-sm font-semibold">{title}</span>
-          <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
-        </div>
+        {header}
         <div className="p-6">{blocker || <span className="text-muted-foreground">{prerequisite}</span>}</div>
       </div>
     );
@@ -69,19 +85,11 @@ export default function PipelinePanel({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Step header — sticks to the top of the scroll container so the
-          panel title stays visible while the transcript/controls scroll. */}
-      <div className="sticky top-0 z-10 bg-background px-4 py-2 border-b border-border">
-        <span className="text-sm font-semibold">{title}</span>
-        <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
-      </div>
+      {header}
 
-      {/* Controls — collapsible when step is done.
-          Tinted background reads as a distinct "settings strip" so the eye
-          can separate it from the editor region below. */}
       {!taskId && controls && (
         <div className="border-b border-border bg-secondary/30">
-          {done ? (
+          {hasOutput ? (
             <button
               onClick={onToggle}
               className="w-full px-4 py-1.5 flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition"
@@ -99,14 +107,11 @@ export default function PipelinePanel({
         </div>
       )}
 
-      {/* Progress */}
       {taskId && <ProgressBar taskId={taskId} onComplete={onTaskComplete} onRetry={onRetry} onDismiss={onDismiss} onCancel={onDismiss} />}
 
-      {/* Main content (editor, results, etc.) */}
       {children}
 
-      {/* Empty state */}
-      {!done && !expanded && !taskId && emptyMessage && (
+      {!hasOutput && !expanded && !taskId && emptyMessage && (
         <EmptyState title={emptyMessage} dashed />
       )}
     </div>

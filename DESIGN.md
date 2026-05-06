@@ -5,6 +5,13 @@
 **Canonical references** (when in doubt, model new components on these):
 - `frontend/src/components/index/IndexInspectorModal.tsx` — dense list dialog with mono timestamps, IDs, opacity-de-emphasized values
 - `frontend/src/components/search/SegmentContextDialog.tsx` — same idiom, search-context variant
+- `frontend/src/components/show/ShowProgressStrip.tsx` — text-only stage-hued ledger; reuse pattern for any per-stage breakdown
+- `frontend/src/components/index/IndexRow.tsx` — shared collection row (whole-row click + optional `deletion` bundle)
+
+**Single facilities** (never reroll inline; extend if missing):
+- `frontend/src/lib/stageClasses.ts` — stage palette (`STAGE_CLASSES[stage]`: `bg`, `text`, `border`, `borderL`, `dot`)
+- `frontend/src/lib/stepStatus.ts` — `PanelStatus` (`"ready"|"review"|"none"`) + `reviewStatus` / `plainStatus` / `translationsStatus` / `isEdited`
+- `frontend/src/lib/showCounts.ts` — episode count label formatting
 
 ## 1. Visual Theme & Atmosphere
 
@@ -87,9 +94,11 @@ bg (canvas)  →  card  →  popover  →  (elevated dialog uses popover + ring 
 | Role | Font | Tailwind | Weight | Letter-spacing | Use |
 |------|------|----------|--------|----------------|-----|
 | Display | Fraunces | `text-3xl`–`text-5xl` | 500–600 | `-0.015em` | Hero, page titles |
-| H1 | Fraunces | `text-3xl` | 600 | `-0.015em` | Section landmarks |
-| H2 | Fraunces | `text-2xl` | 600 | `-0.015em` | Subsection |
+| H1 | Fraunces | `text-3xl` | 600 | `-0.015em` | Page title (one per page, via `EditorialHeader`) |
+| H2 (prose) | Fraunces | `text-2xl` | 600 | `-0.015em` | Section landmarks on prose pages |
+| H2 (dense) | Inter | `text-base` | 600 | normal | Subsection in settings/forms (Fraunces stacked 8+ times reads as title duplication — demote, drop `font-display`, shrink icons to `w-4 h-4`) |
 | H3 | Inter | `text-xl` | 600 | normal | Card titles, modal headers |
+| H3 (dense) | Inter | `text-sm` | 600 | normal | Sub-subsection inside dense panels |
 | H4 | Inter | `text-lg` | 600 | normal | Group headers |
 | Body | Inter | `text-base` | 400 | normal | Paragraph text |
 | Body-emphasis | Inter | `text-base` | 500 | normal | Inline strong |
@@ -266,7 +275,18 @@ Pipeline stages get distinct hues for quick recognition. Tokens defined in `inde
 | Synthesized | `--stage-synth` | `bg-stage-synth`, `text-stage-synth` | 50° (orange) |
 | Indexed | `--warning` | `bg-warning/15 text-warning` | 82° (amber, reuses semantic token) |
 
-Each stage chip uses the `bg-{stage}/15 text-{stage}` pattern. If new stages are added, extend `index.css` and this table; don't reach for raw Tailwind colors.
+Each stage chip uses the `bg-{stage}/15 text-{stage}` pattern. **Always read tokens through `STAGE_CLASSES` from `lib/stageClasses.ts`** — never hand-roll `text-stage-*` strings in components. If new stages are added, extend `index.css`, `STAGE_CLASSES`, and this table; don't reach for raw Tailwind colors.
+
+### Pipeline status vocabulary
+Three review states are surfaced consistently across StageCard (Overview hub), `PipelinePanel` headers, and `StatusChips` suffix copy. Derive via `reviewStatus` / `plainStatus` / `translationsStatus` from `lib/stepStatus.ts`; never hand-roll the present+edited check.
+
+| State | Label | Color | Meaning |
+|-------|-------|-------|---------|
+| `ready` | "ready" | `text-success` | Output present and edited (`isEdited` true) |
+| `review` | "needs review" | `text-info` | Output present but raw (awaiting human review) |
+| `none` | "not started" | `text-muted-foreground/60` | No output yet |
+
+Synth + index have no review concept — `plainStatus` collapses them to `ready` / `none`.
 
 ### Exception: media scrims
 Elements rendered **on top of artwork or video** (episode card overlays, play buttons, image badges) need contrast against arbitrary image content, not against the theme. The token system would flip in dark mode and break legibility on bright images. Allowed only on top of media:
@@ -324,7 +344,7 @@ These never appear on theme surfaces. If you find one on a card or panel without
 
 ### Iteration guide
 1. If colors feel cold or harsh, the warm hue (`oklch H ≈ 55–80`) was lost; re-derive from the existing oklch scale, don't add raw hex
-2. If headings feel generic, you forgot `font-display` (Fraunces) or `font-feature-settings: 'ss01', 'onum'`
+2. If a page-level heading feels generic, you forgot `font-display` (Fraunces) or `font-feature-settings: 'ss01', 'onum'`. Dense subsection headings (settings, forms) stay Inter `text-base font-semibold` — don't reach for Fraunces there
 3. If lists feel cluttered, drop a font size (`text-base` → `text-sm`) before adding spacing
 4. If a CTA isn't standing out, check that you used `bg-primary` and that no other element on the view is also primary
 5. If something looks "AI-generic SaaS," check for: uppercase labels, `tracking-wider`, gradient buttons, drop shadows on cards, waveform in audio player

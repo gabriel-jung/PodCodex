@@ -32,6 +32,7 @@ import ManualModePanel from "@/components/common/ManualModePanel";
 import LanguageChipRack from "@/components/common/LanguageChipRack";
 import LLMControlsForm from "@/components/common/LLMControlsForm";
 import PipelineRunFooter from "@/components/common/PipelineRunFooter";
+import { reviewStatus } from "@/lib/stepStatus";
 
 export default function CorrectPanel() {
   const episode = useEpisodeStore((s) => s.episode);
@@ -76,7 +77,7 @@ export default function CorrectPanel() {
       title="Correct"
       description="Use AI to fix spelling mistakes, punctuation, and other transcription errors. Runs locally or through a cloud service."
       prerequisite={!episode.transcribed ? "You need a transcript first. Go to the Transcribe tab to create one." : undefined}
-      done={episode.corrected}
+      status={reviewStatus(!!episode.corrected, episode.provenance?.corrected)}
       expanded={expanded}
       onToggle={() => task.setExpanded(!expanded)}
       rerunLabel="Re-run correction"

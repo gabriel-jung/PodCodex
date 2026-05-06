@@ -14,7 +14,6 @@ import {
   deleteEpisodeCollection,
   getAllVersions,
   getEpisodeCollections,
-  type EpisodeCollection,
 } from "@/api/search";
 import { useShowActions } from "@/hooks/useShowActions";
 import { usePipelineDefaults } from "@/hooks/usePipelineConfig";
@@ -33,6 +32,8 @@ import PanelLoading from "@/components/common/PanelLoading";
 const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
 const SegmentContextDialog = lazy(() => import("@/components/search/SegmentContextDialog"));
 const IndexInspectorModal = lazy(() => import("@/components/index/IndexInspectorModal"));
+import IndexRow from "@/components/index/IndexRow";
+import { STAGE_CLASSES, type StageKey } from "@/lib/stageClasses";
 import { formatDuration, formatDate, formatTime, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, splitPath, STEP_LABELS } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import {
@@ -422,73 +423,9 @@ function SourceFileRow({
 }
 
 
-function IndexRow({
-  entry,
-  onInspect,
-  onDelete,
-}: {
-  entry: EpisodeCollection;
-  onInspect: () => void;
-  onDelete: () => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-
-  if (confirming) {
-    return (
-      <div className="px-4 py-2 border-l-2 border-transparent">
-        <InlineConfirm
-          message={`Remove from ${entry.collection}?`}
-          onConfirm={() => {
-            setConfirming(false);
-            onDelete();
-          }}
-          onCancel={() => setConfirming(false)}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div className="px-4 py-2 flex items-center gap-2 group/row hover:bg-accent/40 transition border-l-2 border-transparent">
-      <span className="shrink-0 w-1.5 h-1.5 rounded-full bg-info" />
-      <button
-        type="button"
-        onClick={onInspect}
-        className="flex-1 truncate text-xs text-left hover:underline cursor-pointer"
-        title="Inspect chunks and vectors"
-      >
-        <span className="text-foreground">
-          {entry.model} · {entry.chunker}
-        </span>
-        {entry.source && (
-          <span className="text-muted-foreground"> · from {entry.source}</span>
-        )}
-      </button>
-      <span className="shrink-0 font-mono text-2xs text-muted-foreground/60 tabular-nums">
-        {entry.chunk_count} chunks
-      </span>
-      <button
-        onClick={() => setConfirming(true)}
-        className="shrink-0 text-muted-foreground/40 hover:text-destructive p-0.5 opacity-0 group-hover/row:opacity-100 transition"
-        title="Remove from this collection"
-      >
-        <Trash2 className="w-3 h-3" />
-      </button>
-    </div>
-  );
-}
-
 // ── Overview tab ────────────────────────────────────────────────────────
 
-type StageColor = "transcribe" | "correct" | "translate" | "synth" | "index";
-
-const STAGE_CARD_CLASSES: Record<StageColor, { text: string; borderL: string; bg: string; dot: string }> = {
-  transcribe: { text: "text-stage-transcribe", borderL: "border-l-stage-transcribe/60", bg: "bg-stage-transcribe/15", dot: "bg-stage-transcribe" },
-  correct:    { text: "text-stage-correct",    borderL: "border-l-stage-correct/60",    bg: "bg-stage-correct/15",    dot: "bg-stage-correct"    },
-  translate:  { text: "text-stage-translate",  borderL: "border-l-stage-translate/60",  bg: "bg-stage-translate/15",  dot: "bg-stage-translate"  },
-  synth:      { text: "text-stage-synth",      borderL: "border-l-stage-synth/60",      bg: "bg-stage-synth/15",      dot: "bg-stage-synth"      },
-  index:      { text: "text-warning",          borderL: "border-l-warning/60",          bg: "bg-warning/15",          dot: "bg-warning"          },
-};
+type StageColor = StageKey;
 
 function StageCard({
   stage, icon: Icon, label, status, summary, muted = false, onOpen,
@@ -501,7 +438,7 @@ function StageCard({
   muted?: boolean;
   onOpen: () => void;
 }) {
-  const c = STAGE_CARD_CLASSES[stage];
+  const c = STAGE_CLASSES[stage];
   const isEmpty = !status;
   const statusText = status === "done" ? "ready" : status === "partial" ? "needs review" : "not started";
   const statusColor = status === "done" ? "text-success" : status === "partial" ? "text-info" : "text-muted-foreground/60";
@@ -566,7 +503,7 @@ function ActivityLog({ versions, onPreview }: {
       <div className="rounded-lg border border-border bg-card overflow-hidden">
         {recent.map((v) => {
           const { stage, label } = stepDisplay(v.step);
-          const c = STAGE_CARD_CLASSES[stage];
+          const c = STAGE_CLASSES[stage];
           const edited = isEdited(v);
           return (
             <button
@@ -632,7 +569,7 @@ function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPrev
           <tbody>
             {versions.map((v) => {
               const { stage, label } = stepDisplay(v.step);
-              const c = STAGE_CARD_CLASSES[stage];
+              const c = STAGE_CLASSES[stage];
               const edited = showEdited && isEdited(v);
               return (
                 <tr
@@ -1029,7 +966,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
             const previewLabel = previewStep === "correct" ? "corrected" : "transcript";
             const previewStage: StageColor = previewStep === "correct" ? "correct" : "transcribe";
             const previewVersion = previewStep === "correct" ? versionGroups.corrected[0] : versionGroups.transcript[0];
-            const c = STAGE_CARD_CLASSES[previewStage];
+            const c = STAGE_CLASSES[previewStage];
             const subline = [
               episode.segment_count != null ? `${episode.segment_count} segments` : null,
               speakers.length > 0 ? speakers.join(", ") : null,
@@ -1119,9 +1056,15 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
             {indexEntries.map((e) => (
               <IndexRow
                 key={e.collection}
-                entry={e}
+                model={e.model}
+                chunker={e.chunker}
+                source={e.source}
+                chunkCount={e.chunk_count}
                 onInspect={() => setInspectTarget({ model: e.model, chunking: e.chunker })}
-                onDelete={() => deleteCollectionMutation.mutate(e.collection)}
+                deletion={{
+                  onConfirm: () => deleteCollectionMutation.mutate(e.collection),
+                  message: `Remove from ${e.collection}?`,
+                }}
               />
             ))}
           </div>

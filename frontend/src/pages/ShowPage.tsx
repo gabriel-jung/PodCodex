@@ -421,34 +421,54 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       <div className="flex-1 flex flex-col overflow-hidden">
 
       {tab === "episodes" && (<>
-      {/* Toolbar: search + filters + view toggle */}
-      <div className="px-6 py-2 border-b border-border flex items-center gap-2">
+      {/* Single toolbar: filter controls and selection actions both stay mounted (toggle via `hidden`)
+          so the search input keeps focus across selection changes. */}
+      <div className="px-6 py-2 border-b border-border flex items-center gap-2 text-xs">
         <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search episodes..."
-          className="input w-40 py-1.5 text-xs"
+          type="checkbox"
+          checked={allSelectableSelected}
+          onChange={toggleSelectAll}
+          className="accent-primary cursor-pointer shrink-0"
+          title={allSelectableSelected ? "Unselect all" : "Select all"}
         />
-        <select
-          value={filter}
-          onChange={(e) => setFilter(e.target.value as StatusFilter)}
-          className="bg-secondary text-secondary-foreground text-xs rounded px-2 py-1.5 border border-border"
-        >
-          <option value="all">All ({filterCounts.all})</option>
-          <option value="ready">Ready ({filterCounts.ready})</option>
-          <option value="transcribed">Transcribed ({filterCounts.transcribed})</option>
-          <option value="corrected">Corrected ({filterCounts.corrected})</option>
-          <option value="translated">Translated ({filterCounts.translated})</option>
-          <option value="indexed">Indexed ({filterCounts.indexed})</option>
-          <option value="outdated">Outdated ({filterCounts.outdated})</option>
-        </select>
-        <FilterDropdown />
+        <SelectionActions
+          hidden={selected.size === 0}
+          selected={selected}
+          filtered={filtered}
+          buckets={{
+            batchable: batchableSelected,
+            downloadable: downloadableSelected,
+            subtitleable: subtitleableSelected,
+            missingSubs: missingSubsSelected,
+          }}
+          isYouTube={isYouTube}
+          language={meta?.language || ""}
+          busy={{
+            downloadTask: !!downloadTaskId,
+            download: downloadMutation.isPending,
+            importSubs: importSubsMutation.isPending,
+            batchTask: !!batchTaskId,
+            batch: batchMutation.isPending,
+          }}
+          onClear={() => setSelected(new Set())}
+          onDownload={downloadMutate}
+          onImportSubs={(req) => importSubsMutation.mutate(req)}
+          onRun={runStep}
+        />
+        <FilterControls
+          hidden={selected.size > 0}
+          search={search}
+          setSearch={setSearch}
+          filter={filter}
+          setFilter={setFilter}
+          filterCounts={filterCounts}
+        />
         <div className="flex-1" />
         {view === "card" && (
-          <input type="range" min={2} max={8} value={cardSize} onChange={(e) => setCardSize(Number(e.target.value))} className="w-20 accent-primary" />
+          <input type="range" min={2} max={8} value={cardSize} onChange={(e) => setCardSize(Number(e.target.value))} className="w-20 accent-primary shrink-0" />
         )}
         <CompactToggle />
-        <div className="flex border border-border rounded overflow-hidden">
+        <div className="flex border border-border rounded overflow-hidden shrink-0">
           <button onClick={() => setView("list")} className={`px-1.5 py-1 transition ${view === "list" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`} title="List view">
             <List className="w-3.5 h-3.5" />
           </button>
@@ -458,80 +478,13 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         </div>
       </div>
 
-      {/* Selection + actions toolbar */}
-      <div className="relative px-6 py-2 border-b border-border flex items-center gap-2 text-xs">
-        <input
-          type="checkbox"
-          checked={allSelectableSelected}
-          onChange={toggleSelectAll}
-          className="accent-primary cursor-pointer"
-          title={allSelectableSelected ? "Unselect all" : "Select all"}
-        />
-        {selected.size > 0 && (
-          <>
-            <span className="text-muted-foreground">
-              {selected.size} selected
-              {batchableSelected.length < selected.size && (
-                <span title="Some selected episodes have no audio or subtitles and cannot be processed">
-                  {" "}({batchableSelected.length} ready)
-                </span>
-              )}
-            </span>
-            <Button onClick={() => setSelected(new Set())} variant="ghost" size="sm" className="text-xs h-6 px-1.5">Clear</Button>
-          </>
-        )}
-        <div className="flex-1" />
-        <DownloadDropdown
-          isYouTube={isYouTube}
-          showLanguage={meta?.language || ""}
-          onDownload={() => {
-            const selectedFiltered = filtered.filter((e) => selected.has(e.id));
-            if (downloadableSelected.length > 0) {
-              downloadMutate({ guids: downloadableSelected.map((e) => e.id) });
-            } else if (selectedFiltered.length > 0) {
-              const alreadyCount = selectedFiltered.length;
-              confirmDialog.open({
-                title: "Re-download?",
-                description: `${alreadyCount} selected episode${alreadyCount !== 1 ? "s are" : " is"} already downloaded. This will re-download and overwrite the existing files.`,
-                confirmLabel: "Re-download",
-                onConfirm: () => downloadMutate({ guids: selectedFiltered.map((e) => e.id), force: true }),
-              });
-            }
-          }}
-          onImportSubs={(lang) => {
-            importSubsMutation.mutate({ ids: subtitleableSelected.map((e) => e.id), lang });
-          }}
-          subsLabel={
-            missingSubsSelected.length > 0
-              ? `Subtitles (${missingSubsSelected.length})`
-              : subtitleableSelected.length > 0
-                ? `Re-import subtitles (${subtitleableSelected.length})`
-                : "Subtitles"
-          }
-          subsEnabled={subtitleableSelected.length > 0}
-          audioLabel={`Audio${downloadableSelected.length > 0 ? ` (${downloadableSelected.length})` : ""}`}
-          showAudio={true}
-          audioEnabled={downloadableSelected.length > 0 || selected.size > 0}
-          disabled={!!downloadTaskId || downloadMutation.isPending || importSubsMutation.isPending}
-          className="text-xs h-7 px-2"
-        />
-        <PipelineButtons
-          disabled={batchableSelected.length === 0 || !!batchTaskId || batchMutation.isPending}
-          episodes={batchableSelected}
-          showLanguage={meta?.language || ""}
-          onRun={runStep}
-
-        />
-        {batchMutation.isError && (
-          <ErrorAlert error={batchMutation.error} onDismiss={() => batchMutation.reset()} compact className="flex-1" />
-        )}
-        {downloadMutation.isError && (
-          <ErrorAlert error={downloadMutation.error} onDismiss={() => downloadMutation.reset()} compact className="flex-1" />
-        )}
-        {importSubsMutation.isError && (
-          <ErrorAlert error={importSubsMutation.error} onDismiss={() => importSubsMutation.reset()} compact className="flex-1" />
-        )}
-      </div>
+      {[batchMutation, downloadMutation, importSubsMutation]
+        .filter((m) => m.isError)
+        .map((m, i) => (
+          <div key={i} className="px-6 py-2 flex items-center gap-2">
+            <ErrorAlert error={m.error} onDismiss={() => m.reset()} compact className="flex-1" />
+          </div>
+        ))}
 
       {/* Episode list */}
       <div className="flex-1 overflow-y-auto">
@@ -654,6 +607,134 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       )}
     </div>
     </div>
+    </div>
+  );
+}
+
+interface FilterControlsProps {
+  hidden: boolean;
+  search: string;
+  setSearch: (s: string) => void;
+  filter: StatusFilter;
+  setFilter: (f: StatusFilter) => void;
+  filterCounts: Record<StatusFilter, number>;
+}
+
+function FilterControls({ hidden, search, setSearch, filter, setFilter, filterCounts }: FilterControlsProps) {
+  return (
+    <div className={`flex items-center gap-2 ${hidden ? "hidden" : ""}`}>
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search episodes..."
+        className="input w-40 py-1.5 text-xs"
+      />
+      <select
+        value={filter}
+        onChange={(e) => setFilter(e.target.value as StatusFilter)}
+        className="bg-secondary text-secondary-foreground text-xs rounded px-2 py-1.5 border border-border"
+      >
+        <option value="all">All ({filterCounts.all})</option>
+        <option value="ready">Ready ({filterCounts.ready})</option>
+        <option value="transcribed">Transcribed ({filterCounts.transcribed})</option>
+        <option value="corrected">Corrected ({filterCounts.corrected})</option>
+        <option value="translated">Translated ({filterCounts.translated})</option>
+        <option value="indexed">Indexed ({filterCounts.indexed})</option>
+        <option value="outdated">Outdated ({filterCounts.outdated})</option>
+      </select>
+      <FilterDropdown />
+    </div>
+  );
+}
+
+interface SelectionActionsProps {
+  hidden: boolean;
+  selected: Set<string>;
+  filtered: Episode[];
+  buckets: {
+    batchable: Episode[];
+    downloadable: Episode[];
+    subtitleable: Episode[];
+    missingSubs: Episode[];
+  };
+  isYouTube: boolean;
+  language: string;
+  busy: {
+    downloadTask: boolean;
+    download: boolean;
+    importSubs: boolean;
+    batchTask: boolean;
+    batch: boolean;
+  };
+  onClear: () => void;
+  onDownload: (req: { guids: string[]; force?: boolean }) => void;
+  onImportSubs: (req: { ids: string[]; lang: string }) => void;
+  onRun: React.ComponentProps<typeof PipelineButtons>["onRun"];
+}
+
+function SelectionActions({
+  hidden,
+  selected,
+  filtered,
+  buckets,
+  isYouTube,
+  language,
+  busy,
+  onClear,
+  onDownload,
+  onImportSubs,
+  onRun,
+}: SelectionActionsProps) {
+  const { batchable, downloadable, subtitleable, missingSubs } = buckets;
+  return (
+    <div className={`flex items-center gap-2 ${hidden ? "hidden" : ""}`}>
+      <span className="text-muted-foreground shrink-0">
+        {selected.size} selected
+        {batchable.length < selected.size && (
+          <span title="Some selected episodes have no audio or subtitles and cannot be processed">
+            {" "}({batchable.length} ready)
+          </span>
+        )}
+      </span>
+      <Button onClick={onClear} variant="ghost" size="sm" className="text-xs h-6 px-1.5 shrink-0">Clear</Button>
+      <DownloadDropdown
+        isYouTube={isYouTube}
+        showLanguage={language}
+        onDownload={() => {
+          const selectedFiltered = filtered.filter((e) => selected.has(e.id));
+          if (downloadable.length > 0) {
+            onDownload({ guids: downloadable.map((e) => e.id) });
+          } else if (selectedFiltered.length > 0) {
+            const alreadyCount = selectedFiltered.length;
+            confirmDialog.open({
+              title: "Re-download?",
+              description: `${alreadyCount} selected episode${alreadyCount !== 1 ? "s are" : " is"} already downloaded. This will re-download and overwrite the existing files.`,
+              confirmLabel: "Re-download",
+              onConfirm: () => onDownload({ guids: selectedFiltered.map((e) => e.id), force: true }),
+            });
+          }
+        }}
+        onImportSubs={(lang) => onImportSubs({ ids: subtitleable.map((e) => e.id), lang })}
+        subsLabel={
+          missingSubs.length > 0
+            ? `Subtitles (${missingSubs.length})`
+            : subtitleable.length > 0
+              ? `Re-import subtitles (${subtitleable.length})`
+              : "Subtitles"
+        }
+        subsEnabled={subtitleable.length > 0}
+        audioLabel={`Audio${downloadable.length > 0 ? ` (${downloadable.length})` : ""}`}
+        showAudio={true}
+        audioEnabled={downloadable.length > 0 || selected.size > 0}
+        disabled={busy.downloadTask || busy.download || busy.importSubs}
+        className="text-xs h-7 px-2 shrink-0"
+      />
+      <PipelineButtons
+        disabled={batchable.length === 0 || busy.batchTask || busy.batch}
+        episodes={batchable}
+        showLanguage={language}
+        onRun={onRun}
+      />
     </div>
   );
 }

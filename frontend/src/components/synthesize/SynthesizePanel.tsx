@@ -23,6 +23,7 @@ import SourceSegmentPicker, { type ResolvedSource } from "./SourceSegmentPicker"
 import VoiceExtractionSection from "./VoiceExtractionSection";
 import TTSGenerationSection from "./TTSGenerationSection";
 import AssemblySection from "./AssemblySection";
+import { plainStatus } from "@/lib/stepStatus";
 
 export default function SynthesizePanel() {
   const episode = useEpisodeStore((s) => s.episode);
@@ -217,7 +218,7 @@ export default function SynthesizePanel() {
           description="Voice cloning and TTS generation require soundfile, qwen-tts, and other dependencies from the pipeline extra."
         />
       ) : undefined}
-      done={episode.synthesized}
+      status={plainStatus(!!episode.synthesized)}
       expanded={expanded && !isRunning}
       onToggle={() => setExpanded(!expanded)}
       rerunLabel="Re-run synthesis"

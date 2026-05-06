@@ -19,7 +19,8 @@ import PipelinePanel from "@/components/common/PipelinePanel";
 import PipelineRunFooter from "@/components/common/PipelineRunFooter";
 import Segmented from "@/components/common/Segmented";
 import IndexInspectorModal from "@/components/index/IndexInspectorModal";
-import { Button } from "@/components/ui/button";
+import IndexRow from "@/components/index/IndexRow";
+import { plainStatus } from "@/lib/stepStatus";
 
 export default function IndexPanel() {
   const episode = useEpisodeStore((s) => s.episode);
@@ -107,7 +108,7 @@ export default function IndexPanel() {
           description="Semantic search requires torch, sentence-transformers, and other dependencies from the rag extra."
         />
       ) : undefined}
-      done={episode.indexed}
+      status={plainStatus(!!episode.indexed)}
       expanded={expanded}
       onToggle={() => task.setExpanded(!expanded)}
       rerunLabel="Re-index"
@@ -206,33 +207,18 @@ export default function IndexPanel() {
       }
     >
       {status && status.combinations.some((c) => c.indexed) && !expanded && !task.activeTaskId && (
-        <div className="p-4 space-y-2">
-          <h5 className="text-xs font-medium text-muted-foreground">Indexed combinations</h5>
-          <div className="grid gap-2">
-            {status.combinations
-              .filter((c) => c.indexed)
-              .map((c) => (
-                <div
-                  key={`${c.model}-${c.chunking}`}
-                  className="flex items-center gap-3 text-sm px-3 py-2 rounded bg-secondary border border-border"
-                >
-                  <span className="w-2 h-2 rounded-full bg-success shrink-0" />
-                  <span className="font-medium">{models?.[c.model]?.label ?? c.model}</span>
-                  <span className="text-muted-foreground">/ {c.chunking}</span>
-                  <span className="ml-auto text-muted-foreground tabular-nums">
-                    {c.chunk_count} chunks
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7"
-                    onClick={() => setInspectTarget({ model: c.model, chunking: c.chunking })}
-                  >
-                    Inspect
-                  </Button>
-                </div>
-              ))}
-          </div>
+        <div className="rounded-lg border border-border bg-card overflow-hidden">
+          {status.combinations
+            .filter((c) => c.indexed)
+            .map((c) => (
+              <IndexRow
+                key={`${c.model}-${c.chunking}`}
+                model={models?.[c.model]?.label ?? c.model}
+                chunker={c.chunking}
+                chunkCount={c.chunk_count}
+                onInspect={() => setInspectTarget({ model: c.model, chunking: c.chunking })}
+              />
+            ))}
         </div>
       )}
       {(audioPath || outputDir) && inspectTarget && (

@@ -12,6 +12,7 @@ import {
   applyTranslateManual,
 } from "@/api/client";
 import { selectClass } from "@/lib/utils";
+import { translationsStatus } from "@/lib/stepStatus";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import {
   useLLMConfig,
@@ -83,6 +84,7 @@ export default function TranslatePanel() {
 
   // Sync editingLang from episode on first load
   const hasTranslations = (episode?.translations.length ?? 0) > 0;
+  const translateStatus = translationsStatus(episode?.translations ?? [], episode?.provenance);
   useEffect(() => {
     if (episode && editingLang === "" && hasTranslations) {
       setEditingLang(episode.translations[0]);
@@ -100,7 +102,7 @@ export default function TranslatePanel() {
       title="Translate"
       description="Translate the transcript into another language using AI. If you corrected the text first, the translation will use that improved version."
       prerequisite={!episode.transcribed ? "You need a transcript first. Go to the Transcribe tab to create one." : undefined}
-      done={hasTranslations}
+      status={translateStatus}
       expanded={expanded}
       onToggle={() => task.setExpanded(!expanded)}
       rerunLabel="New translation"

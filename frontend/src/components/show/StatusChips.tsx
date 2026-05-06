@@ -1,6 +1,12 @@
 import { Fragment } from "react";
 import type { Episode } from "@/api/types";
-import { isEdited } from "@/lib/stepStatus";
+import {
+  isEdited,
+  plainStatus,
+  reviewStatus,
+  translationsStatus,
+  type PanelStatus,
+} from "@/lib/stepStatus";
 import { STAGE_CLASSES, type StageKey } from "@/lib/stageClasses";
 
 interface Entry {
@@ -10,25 +16,14 @@ interface Entry {
   title: string;
 }
 
-function reviewable(
-  present: boolean,
-  provenance: unknown,
-  verb: string,
-  stage: StageKey,
-): Entry | null {
-  if (!present) return null;
-  const edited = isEdited(provenance);
+function entry(status: PanelStatus, verb: string, stage: StageKey, title?: string): Entry | null {
+  if (status === "none") return null;
   return {
     verb,
     hue: STAGE_CLASSES[stage].text,
-    needsReview: !edited,
-    title: edited ? verb : `${verb} · awaiting review`,
+    needsReview: status === "review",
+    title: title ?? (status === "ready" ? verb : `${verb} · awaiting review`),
   };
-}
-
-function plain(present: boolean, verb: string, stage: StageKey): Entry | null {
-  if (!present) return null;
-  return { verb, hue: STAGE_CLASSES[stage].text, needsReview: false, title: verb };
 }
 
 function EntrySpan({ entry }: { entry: Entry }) {
@@ -42,29 +37,27 @@ function EntrySpan({ entry }: { entry: Entry }) {
   );
 }
 
-export function StatusChips({ ep }: { ep: Episode }) {
+function translationsEntry(ep: Episode): Entry | null {
   const langs = ep.translations;
-  const anyTranslationEdited = langs.some((l) => isEdited(ep.provenance?.[l]));
-  const allTranslationsEdited = langs.length > 0 && langs.every((l) => isEdited(ep.provenance?.[l]));
+  const status = translationsStatus(langs, ep.provenance);
+  if (status === "none") return null;
+  const someEdited = langs.some((l) => isEdited(ep.provenance?.[l]));
+  const title =
+    status === "ready"
+      ? `translated (${langs.join(", ")})`
+      : someEdited
+        ? `translated (${langs.join(", ")}) · some awaiting review`
+        : `translated (${langs.join(", ")}) · awaiting review`;
+  return entry(status, "translated", "translate", title);
+}
 
+export function StatusChips({ ep }: { ep: Episode }) {
   const entries: Entry[] = [
-    reviewable(!!ep.transcribed, ep.provenance?.transcript, "transcribed", "transcribe"),
-    reviewable(!!ep.corrected, ep.provenance?.corrected, "corrected", "correct"),
-    langs.length > 0
-      ? {
-          verb: "translated",
-          hue: STAGE_CLASSES.translate.text,
-          needsReview: !allTranslationsEdited,
-          title:
-            allTranslationsEdited
-              ? `translated (${langs.join(", ")})`
-              : anyTranslationEdited
-                ? `translated (${langs.join(", ")}) · some awaiting review`
-                : `translated (${langs.join(", ")}) · awaiting review`,
-        }
-      : null,
-    plain(!!ep.synthesized, "synthesized", "synth"),
-    plain(!!ep.indexed, "indexed", "index"),
+    entry(reviewStatus(!!ep.transcribed, ep.provenance?.transcript), "transcribed", "transcribe"),
+    entry(reviewStatus(!!ep.corrected, ep.provenance?.corrected), "corrected", "correct"),
+    translationsEntry(ep),
+    entry(plainStatus(!!ep.synthesized), "synthesized", "synth"),
+    entry(plainStatus(!!ep.indexed), "indexed", "index"),
   ].filter((x): x is Entry => x !== null);
 
   if (entries.length === 0) return null;

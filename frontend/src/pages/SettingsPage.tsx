@@ -170,8 +170,8 @@ function AppearancePanel() {
 
   return (
     <section className="space-y-4">
-      <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
-        <Palette className="w-5 h-5" /> Appearance
+      <h2 className="text-base font-semibold flex items-center gap-2">
+        <Palette className="w-4 h-4" /> Appearance
       </h2>
       <div className="flex gap-2">
         {options.map(({ value, label, icon: Icon }) => (
@@ -198,8 +198,8 @@ function AppearancePanel() {
 function ShortcutsPanel() {
   return (
     <section className="space-y-4">
-      <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
-        <Keyboard className="w-5 h-5" /> Keyboard shortcuts
+      <h2 className="text-base font-semibold flex items-center gap-2">
+        <Keyboard className="w-4 h-4" /> Keyboard shortcuts
       </h2>
       <div className="border border-border rounded-lg divide-y divide-border">
         {SHORTCUTS.map((group) => (
@@ -266,8 +266,8 @@ function PipelineDefaultsPanel() {
       </div>
 
       <section className="space-y-3">
-        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
-          <Mic className="w-5 h-5" /> Transcribe
+        <h2 className="text-base font-semibold flex items-center gap-2">
+          <Mic className="w-4 h-4" /> Transcribe
         </h2>
         <PresetCards
           presets={TRANSCRIBE_PRESETS}
@@ -362,8 +362,8 @@ function PipelineDefaultsPanel() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
-          <Sparkles className="w-5 h-5" /> Correct &amp; Translate (LLM)
+        <h2 className="text-base font-semibold flex items-center gap-2">
+          <Sparkles className="w-4 h-4" /> Correct &amp; Translate (LLM)
         </h2>
         <PresetCards
           presets={LLM_PRESETS}
@@ -441,8 +441,8 @@ function PipelineDefaultsPanel() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
-          <Database className="w-5 h-5" /> Index (embeddings)
+        <h2 className="text-base font-semibold flex items-center gap-2">
+          <Database className="w-4 h-4" /> Index (embeddings)
         </h2>
         <PresetCards
           presets={INDEX_PRESETS}
@@ -471,8 +471,8 @@ function FlagPatternsSection() {
 
   return (
     <section className="space-y-3">
-      <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
-        <Sparkles className="w-5 h-5" /> Editor flagging
+      <h2 className="text-base font-semibold flex items-center gap-2">
+        <Sparkles className="w-4 h-4" /> Editor flagging
       </h2>
       <p className="text-xs text-muted-foreground">
         One pattern per line. Segments whose text contains any pattern
@@ -533,8 +533,8 @@ function PluginsPanel() {
   return (
     <section className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
-          <Puzzle className="w-5 h-5" /> Plugins
+        <h2 className="text-base font-semibold flex items-center gap-2">
+          <Puzzle className="w-4 h-4" /> Plugins
         </h2>
         <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-7">
           <RefreshCw className="w-3.5 h-3.5" />
@@ -633,8 +633,8 @@ function ModelCachePanel() {
   return (
     <section className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
-          <HardDrive className="w-5 h-5" /> Model Cache
+        <h2 className="text-base font-semibold flex items-center gap-2">
+          <HardDrive className="w-4 h-4" /> Model Cache
         </h2>
         <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-7">
           <RefreshCw className="w-3.5 h-3.5" />
@@ -797,8 +797,8 @@ function CredentialsPanel() {
   return (
     <section className="space-y-10">
       <div>
-        <h2 className="font-display text-2xl font-semibold flex items-center gap-2">
-          <KeyRound className="w-5 h-5" /> Credentials
+        <h2 className="text-base font-semibold flex items-center gap-2">
+          <KeyRound className="w-4 h-4" /> Credentials
         </h2>
         <p className="text-sm text-muted-foreground mt-1">
           LLM API keys live in a named pool below. The Hugging Face token is
@@ -812,7 +812,7 @@ function CredentialsPanel() {
 
       <div className="space-y-4">
         <div>
-          <h3 className="font-display text-lg font-semibold">Hugging Face token</h3>
+          <h3 className="text-sm font-semibold">Hugging Face token</h3>
           <p className="text-sm text-muted-foreground mt-1">
             Required for speaker diarization (pyannote). Saved at{" "}
             {data?.path ?? "~/.config/podcodex/secrets.env"}. Leave blank to rely
@@ -953,7 +953,7 @@ function ApiKeysSection() {
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="font-display text-lg font-semibold">LLM API keys</h3>
+        <h3 className="text-sm font-semibold">LLM API keys</h3>
         <p className="text-sm text-muted-foreground mt-1">
           Named pool used by the Correct and Translate steps. Each key carries
           an optional provider hint so the LLM picker can prefill the profile.
@@ -1208,7 +1208,7 @@ function ProviderProfilesSection() {
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="font-display text-lg font-semibold">Provider profiles</h3>
+        <h3 className="text-sm font-semibold">Provider profiles</h3>
         <p className="text-sm text-muted-foreground mt-1">
           Built-in profiles are read-only. Add custom OpenAI-compatible profiles
           (Groq, Together, OpenRouter, a self-hosted endpoint) by giving them a

@@ -181,8 +181,8 @@ export default function GPUBackendPanel() {
 
 function Heading() {
   return (
-    <h2 className="text-lg font-semibold flex items-center gap-2">
-      <Zap className="w-5 h-5" /> GPU acceleration
+    <h2 className="text-base font-semibold flex items-center gap-2">
+      <Zap className="w-4 h-4" /> GPU acceleration
     </h2>
   );
 }

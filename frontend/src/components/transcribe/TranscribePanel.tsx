@@ -23,6 +23,7 @@ import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { Button } from "@/components/ui/button";
 import { FileAudio, FileText, Upload } from "lucide-react";
 import { errorMessage, languageToISO, selectClass, SUB_LANGUAGES } from "@/lib/utils";
+import { reviewStatus } from "@/lib/stepStatus";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import FormGrid from "@/components/common/FormGrid";
@@ -214,7 +215,7 @@ export default function TranscribePanel() {
           </>
         ) : undefined
       }
-      done={episode.transcribed}
+      status={reviewStatus(!!episode.transcribed, episode.provenance?.transcript)}
       expanded={expanded}
       onToggle={() => task.setExpanded(!expanded)}
       rerunLabel={transcribeSource === "audio" ? "Re-run transcription" : transcribeSource === "subtitles" ? "Reimport subtitles" : "Upload transcript"}
