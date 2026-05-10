@@ -57,12 +57,12 @@ Each step is saved with its model and settings to a SQLite database. Roll back a
 
 Direct download (latest):
 
-- **macOS (Apple Silicon)** — [PodCodex-macos-arm64.dmg](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-macos-arm64.dmg)
-- **Windows x64** — [PodCodex-windows-x64.msi](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-windows-x64.msi)
+- **macOS (Apple Silicon)**: [PodCodex-macos-arm64.dmg](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-macos-arm64.dmg)
+- **Windows x64**: [PodCodex-windows-x64.msi](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-windows-x64.msi)
 
 All assets + checksums on the [Releases](https://github.com/gabriel-jung/podcodex/releases) page.
 
-PodCodex shells out to a system [FFmpeg](https://ffmpeg.org/download.html) install for transcription, clip extraction, and synthesis — install it before first launch (the app's first-run check surfaces a dialog if missing).
+PodCodex shells out to a system [FFmpeg](https://ffmpeg.org/download.html) install for transcription, clip extraction, and synthesis. Install it before first launch (the app's first-run check surfaces a dialog if missing).
 
 **macOS quarantine on first launch.** The DMG is not yet signed/notarized, so Gatekeeper will say *"PodCodex.app is damaged and can't be opened"*. The app is fine. Drag it to `/Applications`, then once:
 
@@ -72,14 +72,18 @@ xattr -dr com.apple.quarantine /Applications/PodCodex.app
 
 Subsequent launches don't need it. Signing + notarization is a v0.1.0 blocker.
 
+### Local LLM *(optional)*
+
+"Local" correct/translate requires the [Ollama](https://ollama.com) app installed and running; models you pull there show up automatically in PodCodex.
+
 ### Build from source
 
 You'll need:
 
-- **[uv](https://docs.astral.sh/uv/)** — handles Python 3.12 install + dependencies.
-- **[Node.js](https://nodejs.org/) LTS** — frontend (or via nvm, Homebrew, winget, etc.).
-- **[FFmpeg](https://ffmpeg.org/download.html)** — system install on PATH (used for transcription, clip extraction, voice synthesis).
-- **[Rust](https://www.rust-lang.org/)** *(optional)* — for the native Tauri window.
+- **[uv](https://docs.astral.sh/uv/)**: handles Python 3.12 install + dependencies.
+- **[Node.js](https://nodejs.org/) LTS**: frontend (or via nvm, Homebrew, winget, etc.).
+- **[FFmpeg](https://ffmpeg.org/download.html)**: system install on PATH (used for transcription, clip extraction, voice synthesis).
+- **[Rust](https://www.rust-lang.org/)** *(optional)*: for the native Tauri window.
 
 **Install:**
 

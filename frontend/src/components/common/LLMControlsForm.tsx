@@ -8,8 +8,10 @@ import { useApiKeys } from "@/hooks/useApiKeys";
 import { useProviderProfiles } from "@/hooks/useProviderProfiles";
 import { useBatchCount } from "@/hooks/useLLMPipeline";
 import { useCapabilities } from "@/hooks/useCapabilities";
+import { useOllamaCheck } from "@/hooks/useOllamaCheck";
 import FormGrid from "./FormGrid";
 import HelpLabel from "./HelpLabel";
+import OllamaStatus from "./OllamaStatus";
 import Segmented from "./Segmented";
 import { NumberInput } from "@/components/ui/number-input";
 
@@ -57,6 +59,9 @@ export default function LLMControlsForm({
   const hasOllama = useCapabilities().has("ollama");
   const datalistId = useId();
   const modelSuggestions = activePreset === "cloud" ? modelsFor(config.providerProfile) : [];
+
+  const isLocal = activePreset === "local";
+  const ollama = useOllamaCheck(isLocal && hasOllama);
 
   const onPickKey = (name: string) => {
     if (!name) {
@@ -136,26 +141,53 @@ export default function LLMControlsForm({
           </>
         )}
 
+        {isLocal && hasOllama && (
+          <>
+            <HelpLabel label="Connection" help="Status of the local Ollama daemon. The desktop app does not bundle Ollama itself; install it from ollama.com and start it before running Local mode." />
+            <OllamaStatus
+              data={ollama.data}
+              isFetching={ollama.isFetching}
+              onRefresh={() => ollama.refetch()}
+            />
+          </>
+        )}
+
         <HelpLabel label="Model" help={
           activePreset === "cloud"
             ? "The AI model to use (e.g. gpt-4o for OpenAI, mistral-large for Mistral). Leave empty for the provider's default."
-            : activePreset === "local"
-              ? "The Ollama model to use (e.g. llama3, mistral). Leave empty for the default."
+            : isLocal
+              ? "Pick from the models pulled into your local Ollama. If the dropdown is empty, run e.g. `ollama pull mistral` and click Refresh."
               : "Optional. Note which model you used, so you can track it later in provenance."
         } />
-        <input
-          value={config.model}
-          onChange={(e) => patch({ model: e.target.value })}
-          list={modelSuggestions.length > 0 ? datalistId : undefined}
-          placeholder={
-            activePreset === "cloud"
-              ? modelPlaceholderFor(config.providerProfile)
-              : activePreset === "manual"
-                ? "e.g. ChatGPT-4o, Claude 3.5…"
-                : "default"
-          }
-          className="input"
-        />
+        {isLocal && ollama.data?.reachable && ollama.data.models.length > 0 ? (
+          <select
+            value={config.model}
+            onChange={(e) => patch({ model: e.target.value })}
+            className={`${selectClass} max-w-full min-w-0`}
+          >
+            <option value="">Default</option>
+            {!ollama.data.models.includes(config.model) && config.model && (
+              <option value={config.model}>{config.model} (not pulled)</option>
+            )}
+            {ollama.data.models.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        ) : (
+          <input
+            value={config.model}
+            onChange={(e) => patch({ model: e.target.value })}
+            list={modelSuggestions.length > 0 ? datalistId : undefined}
+            placeholder={
+              activePreset === "cloud"
+                ? modelPlaceholderFor(config.providerProfile)
+                : activePreset === "manual"
+                  ? "e.g. ChatGPT-4o, Claude 3.5…"
+                  : "default"
+            }
+            className="input"
+          />
+        )}
         {modelSuggestions.length > 0 && (
           <datalist id={datalistId}>
             {modelSuggestions.map((m) => (

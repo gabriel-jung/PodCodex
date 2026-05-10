@@ -7,6 +7,7 @@ so this module stays cheap to import at the top level.
 
 import gc
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,18 @@ from collections.abc import Callable
 from typing import Self
 
 from loguru import logger
+
+
+DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+
+
+def ollama_host() -> str:
+    """Return the Ollama daemon URL, honoring the ``OLLAMA_HOST`` env var.
+
+    Centralizes host resolution so both the pipeline (``run_ollama``) and
+    the API health check route resolve the same target.
+    """
+    return os.getenv("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST
 
 
 # ──────────────────────────────────────────────
@@ -1021,8 +1034,8 @@ def parse_llm_response(raw: str) -> dict[int, dict]:
         logger.debug(f"Parsed {len(parsed)} items from LLM response")
         return by_index
     except Exception as e:
-        logger.warning(f"Parse error: {e} — batch will keep original text")
-        logger.debug(f"Raw response (first 500 chars): {raw[:500]}")
+        logger.warning(f"Parse error: {e}, batch will keep original text")
+        logger.warning(f"Raw response (first 600 chars): {raw[:600]}")
         return {}
 
 
@@ -1066,7 +1079,8 @@ def apply_corrections(
         ):
             logger.warning(
                 f"Segment [{i}] truncated by LLM "
-                f"({len(corrected_text)} vs {len(original_text)} chars) — keeping original"
+                f"({len(corrected_text)} vs {len(original_text)} chars), keeping original. "
+                f"original={original_text!r:.120} corrected={corrected_text!r:.120}"
             )
             corrected_text = original_text
 
@@ -1118,8 +1132,16 @@ def call_and_parse(
     # misalign corrections. Reject the whole batch and keep originals.
     if by_index and len(by_index) != len(real_segs):
         logger.warning(
-            f"LLM returned {len(by_index)} items for {len(real_segs)} segments — "
+            f"LLM returned {len(by_index)} items for {len(real_segs)} segments, "
             "rejecting batch to avoid index drift; keeping original text."
+        )
+        # Surface enough of the raw response to diagnose the shape mismatch
+        # (top-level object vs array, wrapping key, single concatenated
+        # string). Without this the rejection is opaque.
+        logger.warning(f"Rejected raw response (first 600 chars): {raw[:600]}")
+        sample = next(iter(by_index.values()), None)
+        logger.warning(
+            f"Rejected first item shape: {type(sample).__name__}={sample!r:.300}"
         )
         by_index = {}
 
@@ -1153,7 +1175,7 @@ def run_ollama(
     """
     from ollama import Client
 
-    client = Client()
+    client = Client(host=ollama_host())
     results = []
     batches = batch_segments_by_duration(segments, batch_minutes)
     n_batches = len(batches)
@@ -1161,13 +1183,29 @@ def run_ollama(
 
     for batch_num, batch in enumerate(batches, 1):
         logger.info(f"{label} batch {batch_num}/{n_batches} via Ollama ({model})")
+        _, real_segs = _separate_breaks(batch)
+        n_items = len(real_segs)
+        # JSON-Schema decoding stops small models from emitting a wrapping
+        # object or looping garbage. Plain ``format="json"`` only validates
+        # syntax, which qwen3:0.6b regularly bypassed.
+        schema = {
+            "type": "array",
+            "minItems": n_items,
+            "maxItems": n_items,
+            "items": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+        }
 
         def call_fn(messages):
             response = client.chat(
                 model=model,
                 messages=messages,
                 options={"temperature": DEFAULT_TEMPERATURE},
-                format="json",
+                format=schema,
             )
             return response.message.content.strip()
 
@@ -1181,8 +1219,7 @@ def run_ollama(
                 start_index=offset,
             )
         )
-        _, real = _separate_breaks(batch)
-        offset += len(real)
+        offset += n_items
         if on_batch:
             on_batch(batch_num, n_batches)
 

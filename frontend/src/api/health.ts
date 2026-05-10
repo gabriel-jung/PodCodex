@@ -1,9 +1,18 @@
-import type { ExtrasResponse, HealthResponse, ModelsResponse, TaskResponse } from "./types";
+import type {
+  ExtrasResponse,
+  HealthResponse,
+  ModelsResponse,
+  OllamaCheckResponse,
+  TaskResponse,
+} from "./types";
 import { json } from "./client";
 
 export const getHealth = () => json<HealthResponse>("/api/health");
 
 export const getExtras = () => json<ExtrasResponse>("/api/system/extras");
+
+export const checkOllama = () =>
+  json<OllamaCheckResponse>("/api/system/ollama/check");
 
 export const getActiveTask = (audioPath: string) =>
   json<{

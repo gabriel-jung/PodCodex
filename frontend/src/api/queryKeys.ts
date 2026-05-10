@@ -20,6 +20,7 @@ export const queryKeys = {
   apiKeys: () => ["api-keys"] as const,
   providerProfiles: () => ["provider-profiles"] as const,
   capabilities: () => ["system", "extras"] as const,
+  ollamaCheck: () => ["system", "ollama"] as const,
   models: () => ["models"] as const,
   gpuStatus: () => ["gpu", "status"] as const,
   deviceInfo: () => ["system", "device"] as const,

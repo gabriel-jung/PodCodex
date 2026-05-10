@@ -115,6 +115,44 @@ async def list_extras() -> dict:
     }
 
 
+@router.get("/system/ollama/check")
+def ollama_check() -> dict:
+    """Probe the Ollama daemon. Sync def so FastAPI offloads the blocking
+    ``Client.list()`` HTTP call to a threadpool instead of stalling the
+    event loop while the TCP connection times out."""
+    from podcodex.core._utils import ollama_host
+
+    host = ollama_host()
+    if not _python_package_caps().get("ollama", False):
+        return {
+            "installed": False,
+            "reachable": False,
+            "host": host,
+            "models": [],
+            "error": "ollama python package not installed",
+        }
+    try:
+        from ollama import Client
+
+        resp = Client(host=host).list()
+        models = sorted(m.model for m in resp.models if m.model)
+        return {
+            "installed": True,
+            "reachable": True,
+            "host": host,
+            "models": models,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "installed": True,
+            "reachable": False,
+            "host": host,
+            "models": [],
+            "error": str(e)[:300],
+        }
+
+
 @router.post("/system/free-vram")
 async def free_vram_endpoint() -> dict:
     """Flush GPU VRAM — call before heavy pipeline steps if memory is tight."""

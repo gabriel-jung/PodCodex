@@ -56,6 +56,19 @@ export interface ExtrasResponse {
   capabilities: Record<string, boolean>;
 }
 
+export interface OllamaCheckResponse {
+  /** Python `ollama` package importable in the backend process. */
+  installed: boolean;
+  /** Daemon responded to `list()` at `host`. */
+  reachable: boolean;
+  /** Resolved host (honors `OLLAMA_HOST`, default `http://localhost:11434`). */
+  host: string;
+  /** Pulled model names, sorted. Empty when unreachable or none pulled. */
+  models: string[];
+  /** Reason the daemon was unreachable. `null` when reachable. */
+  error: string | null;
+}
+
 /** Unified episode used throughout the frontend (aliased from generated). */
 export type Episode = import("./generated-types").UnifiedEpisodeOut;
 
