@@ -1,8 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Check,
   ChevronRight,
-  Copy,
   Loader2,
   Lock,
   Pencil,
@@ -13,6 +11,8 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+
+import CopyButton from "@/components/common/CopyButton";
 
 import {
   disableClaudeDesktop,
@@ -442,37 +442,12 @@ function Chip({
 
 
 function CopyField({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const t = setTimeout(() => setCopied(false), 1500);
-    return () => clearTimeout(t);
-  }, [copied]);
-  async function doCopy() {
-    if (!value) return;
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-    } catch {
-      /* ignore */
-    }
-  }
   return (
     <div className="flex items-center gap-1.5">
       <code className="text-xs px-2 py-1 rounded bg-muted max-w-[22rem] truncate">
         {value || "—"}
       </code>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={doCopy}
-        disabled={!value}
-        className="h-7 w-7 p-0"
-        title="Copy"
-        aria-label={`Copy ${value}`}
-      >
-        {copied ? <Check size={14} /> : <Copy size={14} />}
-      </Button>
+      <CopyButton value={value} title={`Copy ${value}`} className="h-7 w-7 p-0" />
     </div>
   );
 }

@@ -74,7 +74,7 @@ Subsequent launches don't need it. Signing + notarization is a v0.1.0 blocker.
 
 ### Local LLM *(optional)*
 
-"Local" correct/translate requires the [Ollama](https://ollama.com) app installed and running; models you pull there show up automatically in PodCodex.
+"Local" correct/translate requires the [Ollama](https://ollama.com) app installed and running; models you pull there show up automatically in PodCodex. `qwen3.5:9b` ran fine on a laptop with acceptable quality; larger models produce better results.
 
 ### Build from source
 

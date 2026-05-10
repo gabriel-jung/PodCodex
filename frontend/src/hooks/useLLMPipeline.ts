@@ -106,8 +106,10 @@ export function useBatchCount(
     : 1;
   const setBatchCount = (count: number) => {
     if (!episodeMinutes) return;
-    const n = Math.max(1, Math.min(20, Math.floor(count) || 1));
-    const next = Math.max(1, Math.ceil(episodeMinutes / n));
+    const n = Math.max(1, Math.floor(count) || 1);
+    // Float batchMinutes; ceiling-to-integer used to pin counts (13 for a
+    // 40-min ep) because round(40/ceil(40/14)) collapses back to 13.
+    const next = episodeMinutes / n;
     if (next !== config.batchMinutes) patch({ batchMinutes: next });
   };
   const minutesPerBatch = episodeMinutes ? Math.ceil(episodeMinutes / batchCount) : null;

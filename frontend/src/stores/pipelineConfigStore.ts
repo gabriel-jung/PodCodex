@@ -11,7 +11,11 @@ export interface LLMConfig {
   providerProfile: string;
   /** Name of an entry in the API key pool (/api/keys). Empty for ollama. */
   keyName: string;
+  /** Live model for the current mode. Mirrors `modelsByMode[mode]`. */
   model: string;
+  /** Per-mode model stash so switching cloud→local→cloud restores prior
+   *  picks instead of clobbering them. `model` is always the current view. */
+  modelsByMode: Record<LLMMode, string>;
   context: string;
   sourceLang: string;
   batchMinutes: number;
@@ -138,18 +142,34 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         providerProfile: "",
         keyName: "",
         model: "",
+        modelsByMode: { api: "", ollama: "", manual: "" },
         context: "",
         sourceLang: "French",
         batchMinutes: 15,
       },
       setLLM: (patch) =>
-        set((s) => ({
-          llm: { ...s.llm, ...patch },
-          // Only invalidate the preset when the field a preset controls (mode)
-          // actually changes — tweaking sourceLang/context/etc. must not
-          // clobber the user's preset selection.
-          llmPreset: "mode" in patch ? "" : s.llmPreset,
-        })),
+        set((s) => {
+          // No-op short-circuit: zustand subscribers re-render on any new
+          // `llm` reference even when every patched field equals current.
+          const changed = (Object.keys(patch) as (keyof LLMConfig)[]).some(
+            (k) => patch[k] !== s.llm[k],
+          );
+          if (!changed) return s;
+          const next = { ...s.llm, ...patch };
+          if ("mode" in patch && patch.mode && patch.mode !== s.llm.mode) {
+            next.modelsByMode = { ...s.llm.modelsByMode, [s.llm.mode]: s.llm.model };
+            next.model = next.modelsByMode[patch.mode] ?? "";
+          } else if ("model" in patch) {
+            next.modelsByMode = { ...s.llm.modelsByMode, [next.mode]: patch.model ?? "" };
+          }
+          return {
+            llm: next,
+            // Only invalidate the preset when the field a preset controls (mode)
+            // actually changes; tweaking sourceLang/context/etc. must not
+            // clobber the user's preset selection.
+            llmPreset: "mode" in patch ? "" : s.llmPreset,
+          };
+        }),
 
       engine: "",
       setEngine: (engine) => set({ engine }),
@@ -174,10 +194,17 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         set((s) => {
           const p = LLM_PRESETS[key];
           if (!p) return s;
+          const modeChanged = p.mode !== s.llm.mode;
+          const modelsByMode = modeChanged
+            ? { ...s.llm.modelsByMode, [s.llm.mode]: s.llm.model }
+            : s.llm.modelsByMode;
+          const model = modeChanged ? modelsByMode[p.mode] ?? "" : s.llm.model;
           return {
             llm: {
               ...s.llm,
               mode: p.mode,
+              model,
+              modelsByMode,
               ...(providerProfile ? { providerProfile } : {}),
             },
             llmPreset: key,
@@ -193,7 +220,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
     }),
     {
       name: "podcodex-pipeline-config",
-      version: 4,
+      version: 5,
       migrate(persisted: unknown, fromVersion: number) {
         const s = persisted as Record<string, unknown>;
         if (fromVersion < 1) {
@@ -232,6 +259,17 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
             delete llm.apiBaseUrl;
             llm.providerProfile = "";
             llm.keyName = "";
+          }
+        }
+        if (fromVersion < 5) {
+          // Per-mode model stash. Seed it from the existing `model` so the
+          // user's current pick lives under their current mode and no
+          // value is lost on first load after upgrade.
+          const llm = s.llm as Record<string, unknown> | undefined;
+          if (llm) {
+            const mode = (llm.mode as LLMMode | undefined) ?? "manual";
+            const model = (llm.model as string | undefined) ?? "";
+            llm.modelsByMode = { api: "", ollama: "", manual: "", [mode]: model };
           }
         }
         return s as unknown as PipelineConfigState;

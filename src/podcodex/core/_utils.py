@@ -18,6 +18,13 @@ from loguru import logger
 
 
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+# Knobs for the schema-constrained correction call. See `run_ollama`.
+OLLAMA_READ_TIMEOUT_S = 600.0
+OLLAMA_CONNECT_TIMEOUT_S = 10.0
+OLLAMA_KEEP_ALIVE = "10m"
+OLLAMA_TEMPERATURE = 0.1
+OLLAMA_NUM_PREDICT_MAX = 8192
+OLLAMA_NUM_CTX_MAX = 16384
 
 
 def ollama_host() -> str:
@@ -27,6 +34,87 @@ def ollama_host() -> str:
     the API health check route resolve the same target.
     """
     return os.getenv("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST
+
+
+def list_pulled_ollama_models(host: str | None = None) -> list[str]:
+    """Return sorted list of model tags pulled into the local Ollama daemon.
+
+    Shared by the API health route and the pipeline's pre-flight check so
+    both stay in lock-step on how the daemon's model list is fetched.
+    """
+    from ollama import Client
+
+    resp = Client(host=host or ollama_host()).list()
+    return sorted(m.model for m in resp.models if m.model)
+
+
+def correction_schema(n_items: int) -> dict:
+    """JSON Schema for one batch of N correction items.
+
+    Used by ``run_ollama`` and the ``scripts/debug_ollama_output.py`` probe.
+    Constrains output to a JSON array of exactly N objects, each with a
+    single ``text`` field, which is what stops small models from emitting
+    a wrapping object or looping garbage when given ``format=<schema>``.
+    """
+    return {
+        "type": "array",
+        "minItems": n_items,
+        "maxItems": n_items,
+        "items": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _ollama_token_budget(n_items: int) -> tuple[int, int]:
+    """Pick ``num_predict`` and ``num_ctx`` for a batch of N correction items.
+
+    Schema-constrained sampling can spin forever without a num_predict cap.
+    Ollama's default ``num_ctx`` is 4096 regardless of the model card, so
+    we round the (prompt + output) budget up to the next power of two and
+    cap to keep KV cache within typical consumer VRAM.
+    """
+    num_predict = min(OLLAMA_NUM_PREDICT_MAX, n_items * 120 + 64)
+    rough_budget = 800 + n_items * 140 + num_predict
+    num_ctx = max(4096, 1 << max(0, rough_budget - 1).bit_length())
+    return num_predict, min(num_ctx, OLLAMA_NUM_CTX_MAX)
+
+
+def _warn_if_ollama_too_old(host: str) -> None:
+    """Structured-output ``format=<schema>`` requires Ollama >= 0.5; older
+    daemons silently ignore it and the model emits whatever shape it likes."""
+    import httpx
+
+    try:
+        version = (
+            httpx.get(f"{host}/api/version", timeout=5.0).json().get("version", "")
+        )
+        # Strip prerelease suffix (e.g. "0.5.0-rc1") before int-parsing.
+        major, minor = (int(p.split("-")[0]) for p in version.split(".")[:2])
+        if (major, minor) < (0, 5):
+            logger.warning(
+                f"Ollama daemon version {version} predates structured-output "
+                "support (>=0.5). Schema-constrained decoding will be ignored."
+            )
+    except Exception as e:
+        logger.debug(f"Could not read Ollama version: {e}")
+
+
+def _warn_if_model_unpulled(client, model: str) -> None:
+    """Pre-flight check so a typo'd model name fails before the first batch
+    instead of mid-pipeline with a confusing 404."""
+    try:
+        pulled = {m.model for m in client.list().models if m.model}
+        if model not in pulled:
+            logger.warning(
+                f"Model {model!r} not in pulled list {sorted(pulled)}; "
+                "first chat call will likely 404."
+            )
+    except Exception as e:
+        logger.debug(f"Could not list pulled models: {e}")
 
 
 # ──────────────────────────────────────────────
@@ -1021,20 +1109,43 @@ def parse_llm_response(raw: str) -> dict[int, dict]:
     ``len(parsed) == len(input)`` before applying, so position equals the
     intended target index regardless of any renumbering by the LLM.
 
-    Strips ``<think>`` tags and markdown fences before parsing JSON.
+    Strips ``<think>`` tags and markdown fences before parsing JSON. Falls
+    back through tiered repair (trim trailing junk, fix invalid ``\\'``
+    escape, regex-extract orphan ``"text": "..."`` pairs) so a single
+    schema slip from a small model doesn't drop the whole batch.
 
     Returns:
         ``{position: {"text": "...", ...}}`` dict.  Empty dict on parse failure.
     """
     raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
     raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
+
+    def _to_index(parsed: list) -> dict[int, dict]:
+        out: dict[int, dict] = {}
+        for i, item in enumerate(parsed):
+            if isinstance(item, dict):
+                out[i] = item
+            elif isinstance(item, str):
+                out[i] = {"text": item}
+        return out
+
     try:
-        parsed = json.loads(raw)
-        by_index = {i: item for i, item in enumerate(parsed)}
-        logger.debug(f"Parsed {len(parsed)} items from LLM response")
-        return by_index
-    except Exception as e:
-        logger.warning(f"Parse error: {e}, batch will keep original text")
+        return _to_index(json.loads(raw))
+    except Exception as first_err:
+        # Cross-model repair: trailing junk after the array close, and the
+        # `\'` escape (invalid in JSON, valid in Python/JS). Both seen on
+        # multiple model sizes, not just one run.
+        repaired = raw
+        last_bracket = repaired.rfind("]")
+        if last_bracket != -1:
+            repaired = repaired[: last_bracket + 1]
+        repaired = repaired.replace("\\'", "'")
+        try:
+            return _to_index(json.loads(repaired))
+        except Exception:
+            pass
+
+        logger.warning(f"Parse error: {first_err}, batch will keep original text")
         logger.warning(f"Raw response (first 600 chars): {raw[:600]}")
         return {}
 
@@ -1173,9 +1284,19 @@ def run_ollama(
     Returns:
         Processed segments with updated text fields.
     """
-    from ollama import Client
+    import time
 
-    client = Client(host=ollama_host())
+    import httpx
+    from ollama import Client, ResponseError
+
+    host = ollama_host()
+    client = Client(
+        host=host,
+        timeout=httpx.Timeout(OLLAMA_READ_TIMEOUT_S, connect=OLLAMA_CONNECT_TIMEOUT_S),
+    )
+    _warn_if_ollama_too_old(host)
+    _warn_if_model_unpulled(client, model)
+
     results = []
     batches = batch_segments_by_duration(segments, batch_minutes)
     n_batches = len(batches)
@@ -1185,29 +1306,57 @@ def run_ollama(
         logger.info(f"{label} batch {batch_num}/{n_batches} via Ollama ({model})")
         _, real_segs = _separate_breaks(batch)
         n_items = len(real_segs)
-        # JSON-Schema decoding stops small models from emitting a wrapping
-        # object or looping garbage. Plain ``format="json"`` only validates
-        # syntax, which qwen3:0.6b regularly bypassed.
-        schema = {
-            "type": "array",
-            "minItems": n_items,
-            "maxItems": n_items,
-            "items": {
-                "type": "object",
-                "properties": {"text": {"type": "string"}},
-                "required": ["text"],
-                "additionalProperties": False,
-            },
-        }
+        schema = correction_schema(n_items)
+        num_predict, num_ctx = _ollama_token_budget(n_items)
 
         def call_fn(messages):
-            response = client.chat(
-                model=model,
-                messages=messages,
-                options={"temperature": DEFAULT_TEMPERATURE},
-                format=schema,
-            )
-            return response.message.content.strip()
+            for attempt in range(3):
+                try:
+                    response = client.chat(
+                        model=model,
+                        messages=messages,
+                        options={
+                            "temperature": OLLAMA_TEMPERATURE,
+                            "num_predict": num_predict,
+                            "num_ctx": num_ctx,
+                        },
+                        format=schema,
+                        # Reasoning models (Qwen3, DeepSeek-R1) emit
+                        # `<think>...</think>` before the answer, which
+                        # conflicts with schema-constrained decoding and
+                        # burns the whole num_predict budget producing zero
+                        # JSON output.
+                        think=False,
+                        keep_alive=OLLAMA_KEEP_ALIVE,
+                    )
+                    break
+                except (httpx.HTTPError, ResponseError, ConnectionError) as e:
+                    if attempt == 2:
+                        raise
+                    backoff = 2**attempt
+                    logger.warning(
+                        f"Ollama call failed (attempt {attempt + 1}/3): {e}. "
+                        f"Retrying in {backoff}s."
+                    )
+                    time.sleep(backoff)
+
+            content = response.message.content.strip()
+            pec = response.prompt_eval_count or 0
+            # Ollama silently chops the prompt when it exceeds num_ctx; the
+            # system prompt is what gets cut first, so the model ends up
+            # following a partial instruction.
+            if pec > num_ctx * 0.9:
+                logger.warning(
+                    f"Prompt used {pec}/{num_ctx} tokens (>=90%); Ollama may "
+                    "have truncated the system prompt. Reduce batch size."
+                )
+            if not content:
+                logger.warning(
+                    f"Empty response from {model}. done_reason="
+                    f"{response.done_reason!r} eval_count={response.eval_count} "
+                    f"prompt_eval_count={pec} done={response.done}"
+                )
+            return content
 
         results.extend(
             call_and_parse(

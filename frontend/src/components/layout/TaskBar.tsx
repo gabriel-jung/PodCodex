@@ -9,6 +9,7 @@ import { queryKeys } from "@/api/queryKeys";
 import { useProgress } from "@/hooks/useProgress";
 import { capitalize } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import CopyButton from "@/components/common/CopyButton";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -447,14 +448,17 @@ function BatchStrip() {
         {/* Collapsible log */}
         {expanded && log.length > 0 && (
           <div className="px-4 pb-2">
-            <button
-              onClick={(e) => { e.stopPropagation(); setShowLog(!showLog); }}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition"
-            >
-              <Terminal className="w-3 h-3" />
-              {showLog ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-              Logs ({log.length})
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowLog(!showLog); }}
+                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition"
+              >
+                <Terminal className="w-3 h-3" />
+                {showLog ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                Logs ({log.length})
+              </button>
+              <CopyButton value={log.join("\n")} title="Copy log" />
+            </div>
             {showLog && (
               <pre className="mt-1.5 p-2 bg-muted rounded text-3xs leading-normal text-muted-foreground max-h-80 overflow-auto font-mono">
                 {log.map((line, i) => (

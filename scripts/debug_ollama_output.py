@@ -16,7 +16,12 @@ from __future__ import annotations
 import json
 import sys
 
-from podcodex.core._utils import format_segments, ollama_host, parse_llm_response
+from podcodex.core._utils import (
+    correction_schema,
+    format_segments,
+    ollama_host,
+    parse_llm_response,
+)
 from podcodex.core.correct import _build_prompt
 
 
@@ -53,28 +58,25 @@ def main(model: str = "qwen3:0.6b", n_extra: int = 0) -> None:
     print()
 
     client = Client(host=ollama_host())
-    n = len(segments)
-    schema = {
-        "type": "array",
-        "minItems": n,
-        "maxItems": n,
-        "items": {
-            "type": "object",
-            "properties": {"text": {"type": "string"}},
-            "required": ["text"],
-            "additionalProperties": False,
-        },
-    }
+    schema = correction_schema(len(segments))
     resp = client.chat(
         model=model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
-        options={"temperature": 0.0},
+        options={"temperature": 0.1},
         format=schema,
+        think=False,
     )
     raw = resp.message.content
+    print(f"done_reason: {resp.done_reason!r}")
+    print(f"eval_count: {resp.eval_count}")
+    print(f"prompt_eval_count: {resp.prompt_eval_count}")
+    if resp.message.thinking:
+        print(
+            f"thinking ({len(resp.message.thinking)} chars): {resp.message.thinking[:200]!r}"
+        )
 
     print("=" * 70)
     print("RAW RESPONSE")

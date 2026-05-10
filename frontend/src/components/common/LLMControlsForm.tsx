@@ -165,7 +165,7 @@ export default function LLMControlsForm({
             onChange={(e) => patch({ model: e.target.value })}
             className={`${selectClass} max-w-full min-w-0`}
           >
-            <option value="">Default</option>
+            <option value="" disabled>Pick a model…</option>
             {!ollama.data.models.includes(config.model) && config.model && (
               <option value={config.model}>{config.model} (not pulled)</option>
             )}
@@ -183,7 +183,7 @@ export default function LLMControlsForm({
                 ? modelPlaceholderFor(config.providerProfile)
                 : activePreset === "manual"
                   ? "e.g. ChatGPT-4o, Claude 3.5…"
-                  : "default"
+                  : "e.g. mistral, llama3"
             }
             className="input"
           />
@@ -207,7 +207,6 @@ export default function LLMControlsForm({
               value={batchCount}
               onChange={setBatchCount}
               min={1}
-              max={20}
               className="input w-16"
             />
             {minutesPerBatch !== null && (
