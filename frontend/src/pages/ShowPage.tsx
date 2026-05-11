@@ -19,6 +19,7 @@ import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore, useLayoutStore } from "@/stores";
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useShowActions } from "@/hooks/useShowActions";
+import { episodeCardGridTemplate } from "@/lib/cardGrid";
 
 import AppSidebar, { type SidebarSection } from "@/components/layout/AppSidebar";
 import EditorialHeader from "@/components/layout/EditorialHeader";
@@ -278,10 +279,16 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     setSelected((prev) => {
       const next = new Set(prev);
       if (shiftKey && lastIdx != null) {
+        // Mirror the clicked item's toggle direction across the whole range:
+        // clicking an already-selected item → unselect range; otherwise select.
+        const shouldSelect = !next.has(id);
         const from = Math.min(lastIdx, idx);
         const to = Math.max(lastIdx, idx);
         const list = filteredRef.current;
-        for (let i = from; i <= to; i++) next.add(list[i].id);
+        for (let i = from; i <= to; i++) {
+          if (shouldSelect) next.add(list[i].id);
+          else next.delete(list[i].id);
+        }
       } else {
         if (next.has(id)) next.delete(id); else next.add(id);
       }
@@ -532,8 +539,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           </div>
         ) : (
           <div
-            className={`p-6 grid mx-auto max-w-7xl ${compact ? "gap-2" : "gap-4"}`}
-            style={{ gridTemplateColumns: `repeat(${cardSize}, minmax(0, 1fr))` }}
+            className={`p-6 grid ${compact ? "gap-2" : "gap-4"}`}
+            style={{ gridTemplateColumns: episodeCardGridTemplate(cardSize) }}
           >
             {filtered.map((ep) => {
               const isCurrent = !!ep.audio_path && ep.audio_path === audioPath;

@@ -24,6 +24,7 @@ import DropOverlay from "@/components/common/DropOverlay";
 import { useTauriFileDrop } from "@/hooks/useTauriFileDrop";
 import { useUniformCardHeight } from "@/hooks/useUniformCardHeight";
 import OnboardingModal from "@/components/OnboardingModal";
+import { showCardGridTemplate } from "@/lib/cardGrid";
 
 const AUDIO_EXTS = [".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac"];
 
@@ -172,7 +173,7 @@ export default function HomePage() {
       <div className="flex-1 flex overflow-hidden">
       <AppSidebar />
       <div className="flex-1 overflow-y-auto">
-      <div className="max-w-7xl mx-auto px-6 py-8">
+      <div className="px-6 py-8">
 
         {sections && sections.length > 0 && (
           <>
@@ -227,7 +228,7 @@ export default function HomePage() {
                 {viewMode === "card" ? (
                   <div
                     className={compact ? "grid gap-2" : "grid gap-4"}
-                    style={{ gridTemplateColumns: `repeat(${cardSize}, minmax(0, 1fr))` }}
+                    style={{ gridTemplateColumns: showCardGridTemplate(cardSize) }}
                   >
                     {section.shows.map((show) => (
                       <ShowCard key={show.path} show={show} onClick={goToShow} vertical={cardSize >= 5} />
