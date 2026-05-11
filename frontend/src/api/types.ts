@@ -9,6 +9,7 @@
 export type {
   AppConfig,
   AssembleRequest,
+  AssembleStrategy,
   BatchRequest,
   CreateFromRSSRequest,
   CreateFromRSSResponse,

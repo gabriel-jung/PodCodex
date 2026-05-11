@@ -381,7 +381,7 @@ export interface ExtractSelectedRequest {
 }
 
 export interface GenerateRequest {
-  audio_path: string;
+  audio_path?: string | null;
   output_dir?: string | null;
   model_size?: string;
   language?: string;
@@ -393,14 +393,17 @@ export interface GenerateRequest {
   keep_segment_keys?: string[] | null;
 }
 
+export type AssembleStrategy = "silence" | "original_timing";
+
 export interface AssembleRequest {
-  audio_path: string;
+  audio_path?: string | null;
   output_dir?: string | null;
-  strategy?: string;
+  strategy?: AssembleStrategy;
   silence_duration?: number;
   language?: string;
   model_size?: string | null;
   source_version_id?: string | null;
+  keep_segment_keys?: string[] | null;
 }
 
 export interface YouTubeDownloadRequest {

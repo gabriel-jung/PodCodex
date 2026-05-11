@@ -66,11 +66,15 @@ def run_generate(
     """Incremental TTS generation guided by a manifest."""
     from podcodex.core._utils import (
         AudioPaths,
+        BREAK_SPEAKER,
         SAMPLE_RATE,
         check_vram,
+        fill_narrator_speaker,
         free_vram,
         normalize_lang,
+        real_speakers,
         seg_key,
+        tts_segment_filename,
     )
     from podcodex.core.constants import TTS_VRAM_MB
     from podcodex.core.synthesize import (
@@ -85,9 +89,8 @@ def run_generate(
         segment_is_current,
     )
     from podcodex.core.versions import (
-        list_all_versions,
         load_latest as _load_latest,
-        load_version,
+        load_version_by_id,
     )
     from podcodex.api.routes._helpers import load_best_source
 
@@ -96,26 +99,14 @@ def run_generate(
 
     segments: list[dict] | None = None
     if source_version_id:
-        # User pinned a specific version via the source picker. Look up its
-        # step (transcript / corrected / <lang>) and load it directly so
-        # re-running against a non-latest version stays reproducible.
-        meta = next(
-            (v for v in list_all_versions(p.base) if v.get("id") == source_version_id),
-            None,
-        )
-        if meta and meta.get("step"):
-            try:
-                segments = load_version(p.base, meta["step"], source_version_id)
-            except FileNotFoundError as exc:
-                logger.warning(
-                    "Pinned source version {} unreadable ({}), falling back",
-                    source_version_id,
-                    exc,
-                )
-                segments = None
+        # User pinned a specific version via the source picker. Resolve and
+        # load it so re-running against a non-latest version stays reproducible.
+        resolved = load_version_by_id(p.base, source_version_id)
+        if resolved:
+            segments, _ = resolved
         else:
             logger.warning(
-                "Pinned source version {} not found in DB, falling back",
+                "Pinned source version {} unresolved, falling back",
                 source_version_id,
             )
     if segments is None and source_lang:
@@ -128,23 +119,28 @@ def run_generate(
     if not segments:
         raise ValueError("No source segments found")
 
-    # UI scope filter — drop every segment the user unchecked in the source
+    # UI scope filter: drop every segment the user unchecked in the source
     # picker. Uses the shared seg_key helper so keys agree with the frontend.
+    # Run before the narrator fill so we don't allocate dicts for dropped segs.
     if keep_segment_keys is not None:
         wanted = set(keep_segment_keys)
         segments = [seg for seg in segments if seg_key(seg) in wanted]
         if not segments:
             raise ValueError("Selection dropped every segment, nothing to synthesize")
 
+    # Legacy transcripts (e.g. YouTube subtitle imports pre-parser-default)
+    # carry empty speaker labels. Map them to NARRATOR_SPEAKER so a single
+    # uploaded voice sample under that key applies to every segment.
+    segments = fill_narrator_speaker(segments)
+
     progress_cb(0.05, "Loading voice samples...")
-    from podcodex.core._utils import real_speakers
 
     speakers = real_speakers(segments)
     voice_samples = load_voice_samples(str(p.base.parent), speakers)
     if not voice_samples:
         raise ValueError("No voice samples found. Extract voices first.")
 
-    segments_dir = p.tts_segments_dir
+    segments_dir = p.ensure_tts_segments_dir()
     manifest = (
         load_manifest(segments_dir)
         if not force
@@ -159,10 +155,10 @@ def run_generate(
     for i, seg in enumerate(segments):
         speaker = seg.get("speaker", "UNK")
         text = seg.get("text", "").strip()
-        if speaker == "[BREAK]" or not text:
+        if speaker == BREAK_SPEAKER or not text:
             continue
 
-        filename = f"{i:04d}_{speaker}.wav"
+        filename = tts_segment_filename(seg)
         out_path = segments_dir / filename
         sample_name = _sample_key(voice_samples, speaker)
 

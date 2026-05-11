@@ -23,6 +23,8 @@ export interface TTSGenerationSectionProps {
 
   // Episode data — speakers for the "only" filter
   allSpeakers: string[];
+  /** Names from the active scope that have no voice sample on disk. */
+  speakersMissingSamples: string[];
 
   // Source label for the generate footer (resolved upstream).
   sourceSummary: string;
@@ -50,6 +52,7 @@ export default function TTSGenerationSection({
   onlySpeakers,
   setOnlySpeakers,
   allSpeakers,
+  speakersMissingSamples,
   sourceSummary,
   pipelineConfig,
   status,
@@ -155,10 +158,19 @@ export default function TTSGenerationSection({
           size="sm"
           variant={status?.tts_segments_generated ? "outline" : "default"}
         >
-          {status?.tts_segments_generated ? "Re-generate" : "Generate"}
+          {generateMutation.isPending
+            ? "Starting…"
+            : status?.tts_segments_generated
+              ? "Re-generate"
+              : "Generate"}
         </Button>
         {!status?.voice_samples_extracted && (
           <span className="text-xs text-muted-foreground">Extract voices first</span>
+        )}
+        {status?.voice_samples_extracted && speakersMissingSamples.length > 0 && (
+          <span className="text-xs text-warning w-full">
+            No voice sample for: {speakersMissingSamples.join(", ")}. Their segments will be skipped.
+          </span>
         )}
         {status?.voice_samples_extracted && (
           <span className="text-xs text-muted-foreground">

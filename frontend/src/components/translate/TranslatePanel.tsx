@@ -33,7 +33,7 @@ import LLMControlsForm from "@/components/common/LLMControlsForm";
 import PipelineRunFooter from "@/components/common/PipelineRunFooter";
 
 // Backend identifies translations by a normalized filesystem-safe key.
-const langKey = (lang: string) => lang.toLowerCase().replace(/\s+/g, "_");
+const langKey = (lang: string | undefined | null) => (lang ?? "").toLowerCase().replace(/\s+/g, "_");
 
 export default function TranslatePanel() {
   const episode = useEpisodeStore((s) => s.episode);
@@ -93,7 +93,7 @@ export default function TranslatePanel() {
 
   if (!episode) return null;
 
-  const missingTarget = !targetLang.trim();
+  const missingTarget = !(targetLang ?? "").trim();
   const runDisabled = backendMissing || missingTarget;
   const runDisabledTitle = disabledTitle || (missingTarget ? "Pick a target language first" : undefined);
 
@@ -218,6 +218,7 @@ export default function TranslatePanel() {
           showSpeaker
           referenceSegments={referenceSegments}
           referenceLabel="Source text"
+          defaultShowDiff={false}
           speakers={showMeta?.speakers}
           loadVersions={() => getTranslateVersions(audioPath!, editingLang)}
           loadVersion={(id) => loadTranslateVersion(audioPath!, editingLang, id)}

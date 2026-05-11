@@ -1,5 +1,5 @@
 import type { UseMutationResult } from "@tanstack/react-query";
-import type { PipelineConfig, SynthesisStatus } from "@/api/types";
+import type { AssembleStrategy, PipelineConfig, SynthesisStatus } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import AdvancedToggle from "@/components/common/AdvancedToggle";
 import FormGrid from "@/components/common/FormGrid";
@@ -9,8 +9,8 @@ import { errorMessage, selectClass } from "@/lib/utils";
 
 export interface AssemblySectionProps {
   // Settings state
-  assembleStrategy: string;
-  setAssembleStrategy: (v: string) => void;
+  assembleStrategy: AssembleStrategy;
+  setAssembleStrategy: (v: AssembleStrategy) => void;
   silenceDuration: number;
   setSilenceDuration: (v: number) => void;
 
@@ -19,6 +19,12 @@ export interface AssemblySectionProps {
 
   // Status
   status: SynthesisStatus | undefined;
+
+  /** Segments in the current scope minus those already generated.
+   *  A positive value means assembling will produce a shorter podcast
+   *  than the source. Driven by partial generation (only_speakers, errors,
+   *  cancellation, etc.). */
+  missingGeneratedCount: number;
 
   // Mutation
   assembleMutation: UseMutationResult<{ path: string; duration: number }, Error, void>;
@@ -31,6 +37,7 @@ export default function AssemblySection({
   setSilenceDuration,
   pipelineConfig,
   status,
+  missingGeneratedCount,
   assembleMutation,
 }: AssemblySectionProps) {
   return (
@@ -43,7 +50,7 @@ export default function AssemblySection({
         <HelpLabel label="Strategy" help="How to handle pauses between segments in the final audio." />
         <select
           value={assembleStrategy}
-          onChange={(e) => setAssembleStrategy(e.target.value)}
+          onChange={(e) => setAssembleStrategy(e.target.value as AssembleStrategy)}
           className={selectClass}
         >
           {pipelineConfig
@@ -78,13 +85,18 @@ export default function AssemblySection({
           variant={status?.synthesized ? "outline" : "default"}
         >
           {assembleMutation.isPending
-            ? "Assembling..."
+            ? "Assembling…"
             : status?.synthesized
               ? "Re-assemble"
               : "Assemble"}
         </Button>
         {!status?.tts_segments_generated && (
           <span className="text-xs text-muted-foreground">Generate TTS segments first</span>
+        )}
+        {status?.tts_segments_generated && missingGeneratedCount > 0 && (
+          <span className="text-xs text-warning w-full">
+            {missingGeneratedCount} segment{missingGeneratedCount !== 1 ? "s" : ""} in scope have no TTS audio yet. Assembly will skip them. Re-generate to include.
+          </span>
         )}
         {assembleMutation.isError && (
           <span className="text-xs text-destructive w-full">

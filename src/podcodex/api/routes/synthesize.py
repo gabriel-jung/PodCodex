@@ -8,10 +8,15 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import load_best_source, submit_subprocess_task
+from podcodex.api.routes._helpers import (
+    load_best_source,
+    require_audio_or_output,
+    submit_subprocess_task,
+)
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._ffmpeg import ffmpeg_exe
 from podcodex.core._utils import AudioPaths, SAMPLE_RATE
+from podcodex.core.constants import AssembleStrategy
 
 router = APIRouter()
 
@@ -21,12 +26,13 @@ router = APIRouter()
 
 @router.get("/status")
 async def synthesis_status(
-    audio_path: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict:
     """Check which synthesis artifacts exist on disk."""
     from podcodex.core.versions import list_versions
 
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     voice_dir = p.voice_samples_dir
     tts_dir = p.tts_segments_dir
@@ -78,10 +84,17 @@ async def extract_voices(req: ExtractVoicesRequest) -> TaskResponse:
     )
 
 
+class VoiceSelection(BaseModel):
+    speaker: str
+    start: float
+    end: float
+    text: str = ""
+
+
 class ExtractSelectedRequest(BaseModel):
-    audio_path: str
+    audio_path: str | None = None
     output_dir: str | None = None
-    selections: list[dict]  # [{speaker, start, end, text}, ...]
+    selections: list[VoiceSelection]
 
 
 @router.post("/extract-selected")
@@ -89,12 +102,14 @@ async def extract_selected(req: ExtractSelectedRequest) -> dict:
     """Extract specific user-chosen segments as voice samples."""
     from podcodex.core.synthesize import extract_selected_samples
 
+    if not req.audio_path:
+        raise HTTPException(400, "Audio source required for extraction")
     if not req.selections:
         raise HTTPException(400, "No segments selected")
 
     samples = extract_selected_samples(
         req.audio_path,
-        req.selections,
+        [s.model_dump() for s in req.selections],
         output_dir=req.output_dir,
     )
 
@@ -124,18 +139,24 @@ async def extract_selected(req: ExtractSelectedRequest) -> dict:
 
 @router.post("/upload-sample")
 async def upload_voice_sample(
-    audio_path: str = Form(...),
+    audio_path: str | None = Form(None),
+    output_dir: str | None = Form(None),
     speaker: str = Form(...),
     file: UploadFile = File(...),
 ) -> dict:
     """Upload an external audio file as a voice sample for a speaker."""
-    p = AudioPaths.from_audio(audio_path)
-    samples_dir = p.voice_samples_dir
+    require_audio_or_output(audio_path, output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    samples_dir = p.ensure_voice_samples_dir()
 
-    # Find next available index for this speaker
-    existing = sorted(samples_dir.glob(f"{speaker}_*.wav"))
-    next_idx = len(existing)
-    out_path = samples_dir / f"{speaker}_{next_idx:02d}.wav"
+    # Filename uses a uuid suffix to dodge collisions when two uploads for
+    # the same speaker arrive concurrently (a sequential next_idx counter
+    # raced under that pattern). The ``_custom_`` infix marks uploads so
+    # ``extract_selected_samples`` won't unlink them when the user re-runs
+    # extraction on the same speaker.
+    import uuid
+
+    out_path = samples_dir / f"{speaker}_custom_{uuid.uuid4().hex[:8]}.wav"
 
     # Save uploaded file to a temp location, then convert to 16kHz mono WAV
     import tempfile
@@ -185,18 +206,32 @@ async def upload_voice_sample(
 
 @router.get("/voice-samples")
 async def get_voice_samples(
-    audio_path: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
+    source_version_id: str | None = Query(None),
 ) -> dict[str, list[dict]]:
-    """Load extracted voice samples from disk."""
-    from podcodex.core._utils import real_speakers
+    """Load extracted voice samples from disk.
+
+    When ``source_version_id`` is set, derives the speaker list from that
+    pinned version (matching the source picker). Otherwise falls back to
+    the latest best source — keeps backward compatibility.
+    """
+    from podcodex.core._utils import fill_narrator_speaker, real_speakers
     from podcodex.core.synthesize import load_voice_samples
     from podcodex.core.transcribe import load_transcript
+    from podcodex.core.versions import load_version_by_id
 
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    segments = load_transcript(audio_path, output_dir=output_dir) or []
-    speakers = real_speakers(segments)
+    segments: list[dict] | None = None
+    if source_version_id:
+        resolved = load_version_by_id(p.base, source_version_id)
+        if resolved:
+            segments, _ = resolved
+    if segments is None:
+        segments = load_transcript(audio_path, output_dir=output_dir) or []
+    speakers = real_speakers(fill_narrator_speaker(segments))
 
     samples = load_voice_samples(str(p.base.parent), speakers)
 
@@ -218,7 +253,7 @@ async def get_voice_samples(
 
 
 class GenerateRequest(BaseModel):
-    audio_path: str
+    audio_path: str | None = None
     output_dir: str | None = None
     model_size: str = "1.7B"
     language: str = "English"
@@ -249,10 +284,13 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
     if their text and voice sample haven't changed.  Use ``force=true`` to
     regenerate everything, or ``only_speakers`` to target specific speakers.
     """
+    require_audio_or_output(req.audio_path, req.output_dir)
+    assert req.audio_path or req.output_dir
+    task_key = req.audio_path or req.output_dir
 
     return submit_subprocess_task(
         "generate_tts",
-        req.audio_path,
+        task_key,
         entry_path="podcodex.core.synthesize_job:run_generate",
         kwargs={
             "audio_path": req.audio_path,
@@ -275,17 +313,27 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
 
 @router.get("/generated-segments")
 async def get_generated_segments(
-    audio_path: str = Query(...),
+    audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
+    source_version_id: str | None = Query(None),
 ) -> list[dict]:
     """Load generated TTS segments from disk."""
     from podcodex.core.synthesize import load_generated_segments
+    from podcodex.core.versions import load_version_by_id
 
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    try:
-        segments = load_best_source(audio_path, output_dir)
-    except ValueError:
-        raise HTTPException(404, "No source segments found")
+
+    segments: list[dict] | None = None
+    if source_version_id:
+        resolved = load_version_by_id(p.base, source_version_id)
+        if resolved:
+            segments, _ = resolved
+    if segments is None:
+        try:
+            segments = load_best_source(audio_path, output_dir)
+        except ValueError:
+            raise HTTPException(404, "No source segments found")
 
     generated = load_generated_segments(str(p.base.parent), segments)
     # Convert Path objects for JSON, include manifest metadata
@@ -308,13 +356,18 @@ async def get_generated_segments(
 
 
 class AssembleRequest(BaseModel):
-    audio_path: str
+    audio_path: str | None = None
     output_dir: str | None = None
-    strategy: str = "original_timing"
+    strategy: AssembleStrategy = "original_timing"
     silence_duration: float = 0.5
     language: str = ""
     model_size: str | None = None
     source_version_id: str | None = None
+    # Same scope semantics as GenerateRequest. When set, drops every segment
+    # whose seg_key is not in the list — so re-generating a narrower scope
+    # actually shortens the assembled output instead of pulling in stale
+    # on-disk segments from earlier full runs.
+    keep_segment_keys: list[str] | None = None
 
     @field_validator("silence_duration")
     @classmethod
@@ -391,12 +444,21 @@ async def assemble(req: AssembleRequest) -> dict:
     from podcodex.core.synthesize import assemble_episode, load_generated_segments
     from podcodex.core.versions import new_version_id, save_synthesize_version
 
+    from podcodex.core._utils import seg_key
+
+    require_audio_or_output(req.audio_path, req.output_dir)
     p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
 
     try:
         segments = load_best_source(req.audio_path, req.output_dir)
     except ValueError:
         raise HTTPException(404, "No source segments found")
+
+    if req.keep_segment_keys is not None:
+        wanted = set(req.keep_segment_keys)
+        segments = [seg for seg in segments if seg_key(seg) in wanted]
+        if not segments:
+            raise HTTPException(400, "Selection dropped every segment")
 
     generated = load_generated_segments(str(p.base.parent), segments)
     if not generated:
@@ -439,7 +501,7 @@ async def assemble(req: AssembleRequest) -> dict:
     # forever after the first populate_from_scan.
     from podcodex.core.pipeline_db import get_pipeline_db
 
-    show_folder = Path(req.audio_path).parent
+    show_folder = p.show_dir
     get_pipeline_db(show_folder).mark(p.base.name, synthesized=True)
 
     # Drop folder scan cache so any disk-based fallback also reflects the

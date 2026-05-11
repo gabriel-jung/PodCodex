@@ -1,7 +1,8 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { UseMutationResult } from "@tanstack/react-query";
 import type { Segment, VoiceSample, SynthesisStatus } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { Play, Check, Upload, ArrowRightLeft } from "lucide-react";
+import { Play, Pause, Check, Upload, ArrowRightLeft, Mic } from "lucide-react";
 import { audioFileUrl } from "@/api/client";
 import SectionHeader from "@/components/common/SectionHeader";
 import { errorMessage } from "@/lib/utils";
@@ -36,7 +37,8 @@ export interface VoiceExtractionSectionProps {
 
   // Audio playback
   seekTo: (path: string, time: number) => void;
-  audioPath: string;
+  audioPath: string | null;
+  noAudio?: boolean;
 }
 
 export default function VoiceExtractionSection({
@@ -56,22 +58,58 @@ export default function VoiceExtractionSection({
   voiceSamples,
   seekTo,
   audioPath,
+  noAudio,
 }: VoiceExtractionSectionProps) {
   // Output-speaker order: detected speakers with segments first (stable),
   // then reassignment-only keys, then detected speakers that have no
   // assigned segments yet (so users can still upload for them).
-  const populatedSpeakers = allSpeakers.filter((s) => s in segmentsBySpeaker);
-  const reassignedOnly = Object.keys(segmentsBySpeaker).filter(
-    (s) => !allSpeakers.includes(s),
-  );
-  const emptySpeakers = allSpeakers.filter((s) => !(s in segmentsBySpeaker));
-  const renderedSpeakers = [...populatedSpeakers, ...reassignedOnly, ...emptySpeakers];
+  const renderedSpeakers = useMemo(() => {
+    const allSet = new Set(allSpeakers);
+    const populated = allSpeakers.filter((s) => s in segmentsBySpeaker);
+    const reassignedOnly = Object.keys(segmentsBySpeaker).filter((s) => !allSet.has(s));
+    const empty = allSpeakers.filter((s) => !(s in segmentsBySpeaker));
+    return [...populated, ...reassignedOnly, ...empty];
+  }, [allSpeakers, segmentsBySpeaker]);
+
+  // One shared Audio element for sample previews. Clicking a sample toggles
+  // play/pause; clicking a different sample swaps source then plays.
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playingFile, setPlayingFile] = useState<string | null>(null);
+  const playSample = (file: string) => {
+    if (!audioRef.current) {
+      audioRef.current = new Audio();
+      audioRef.current.onended = () => setPlayingFile(null);
+      audioRef.current.onpause = () => setPlayingFile((cur) => (cur === audioRef.current?.dataset.file ? null : cur));
+    }
+    const audio = audioRef.current;
+    if (playingFile === file && !audio.paused) {
+      audio.pause();
+      setPlayingFile(null);
+      return;
+    }
+    audio.pause();
+    audio.src = audioFileUrl(file);
+    audio.dataset.file = file;
+    void audio.play().then(() => setPlayingFile(file)).catch(() => setPlayingFile(null));
+  };
+  useEffect(() => () => {
+    audioRef.current?.pause();
+    if (audioRef.current) audioRef.current.src = "";
+  }, []);
 
   return (
     <section className="space-y-3 border-t border-border/50 pt-3">
-      <SectionHeader help="Pick the clearest clips per speaker. The model clones voices from these. You can upload a custom clip or reassign segments.">
+      <SectionHeader help={noAudio
+        ? "No source audio for this episode. Upload one clip per speaker; the model clones voices from these."
+        : "Pick the clearest clips per speaker. The model clones voices from these. You can upload a custom clip or reassign segments."}>
         2. Voice samples
       </SectionHeader>
+
+      {noAudio && (
+        <p className="text-xs text-muted-foreground">
+          No source audio. Upload one audio clip per speaker below.
+        </p>
+      )}
 
       {renderedSpeakers.length > 0 ? (
         <div className="space-y-4">
@@ -93,6 +131,9 @@ export default function VoiceExtractionSection({
               uploadMutation={uploadMutation}
               seekTo={seekTo}
               audioPath={audioPath}
+              noAudio={noAudio}
+              playSample={playSample}
+              playingFile={playingFile}
             />
           ))}
         </div>
@@ -100,28 +141,33 @@ export default function VoiceExtractionSection({
         <p className="text-xs text-muted-foreground italic">No transcript segments available.</p>
       )}
 
-      <div className="flex items-center gap-3 flex-wrap">
-        <Button
-          onClick={() => extractMutation.mutate()}
-          disabled={selected.size === 0 || extractMutation.isPending}
-          size="sm"
-          variant={status?.voice_samples_extracted ? "outline" : "default"}
-        >
-          {extractMutation.isPending
-            ? "Extracting..."
-            : status?.voice_samples_extracted
-              ? `Re-extract ${selected.size} sample${selected.size !== 1 ? "s" : ""}`
-              : `Extract ${selected.size} sample${selected.size !== 1 ? "s" : ""}`}
-        </Button>
-        {status?.voice_samples_extracted && (
-          <span className="text-xs text-success">Samples on disk</span>
-        )}
-        {extractMutation.isError && (
-          <span className="text-xs text-destructive w-full">
-            {errorMessage(extractMutation.error)}
-          </span>
-        )}
-      </div>
+      {!noAudio && (
+        <div className="flex items-center gap-3 flex-wrap">
+          <Button
+            onClick={() => extractMutation.mutate()}
+            disabled={selected.size === 0 || extractMutation.isPending}
+            size="sm"
+            variant={status?.voice_samples_extracted ? "outline" : "default"}
+          >
+            {extractMutation.isPending
+              ? "Extracting…"
+              : status?.voice_samples_extracted
+                ? `Re-extract ${selected.size} sample${selected.size !== 1 ? "s" : ""}`
+                : `Extract ${selected.size} sample${selected.size !== 1 ? "s" : ""}`}
+          </Button>
+          {selected.size === 0 && !extractMutation.isPending && (
+            <span className="text-xs text-muted-foreground">Pick at least one segment above</span>
+          )}
+          {selected.size > 0 && status?.voice_samples_extracted && (
+            <span className="text-xs text-success">Samples on disk</span>
+          )}
+          {extractMutation.isError && (
+            <span className="text-xs text-destructive w-full">
+              {errorMessage(extractMutation.error)}
+            </span>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -141,7 +187,10 @@ interface SpeakerBlockProps {
   samples: VoiceSample[];
   uploadMutation: UseMutationResult<unknown, Error, { speaker: string; file: File }>;
   seekTo: (path: string, time: number) => void;
-  audioPath: string;
+  audioPath: string | null;
+  noAudio?: boolean;
+  playSample: (file: string) => void;
+  playingFile: string | null;
 }
 
 function SpeakerBlock({
@@ -160,14 +209,25 @@ function SpeakerBlock({
   uploadMutation,
   seekTo,
   audioPath,
+  noAudio,
+  playSample,
+  playingFile,
 }: SpeakerBlockProps) {
-  const filtered = segments
-    .filter((s) => s.end - s.start >= 2)
-    .sort((a, b) => b.end - b.start - (a.end - a.start));
+  const filtered = useMemo(
+    () =>
+      segments
+        .filter((s) => s.end - s.start >= 2 && !!(s.text ?? "").trim())
+        .sort((a, b) => b.end - b.start - (a.end - a.start)),
+    [segments],
+  );
   const limit = showCount[speaker] || DEFAULT_SEGMENT_LIMIT;
   const visible = filtered.slice(0, limit);
   const hasMore = filtered.length > limit;
-  const speakerSelected = segments.filter((s) => selected.has(segKey(s))).length;
+  const speakerSelected = useMemo(() => {
+    let n = 0;
+    for (const s of segments) if (selected.has(segKey(s))) n++;
+    return n;
+  }, [segments, selected]);
 
   const uploading =
     uploadMutation.isPending && uploadMutation.variables?.speaker === speaker;
@@ -205,20 +265,33 @@ function SpeakerBlock({
       </div>
 
       {samples.length > 0 && (
-        <div className="flex gap-2 mb-2 flex-wrap">
-          {samples.map((s, i) => (
-            <button
-              key={i}
-              onClick={() => {
-                const audio = new Audio(audioFileUrl(s.file));
-                audio.play();
-              }}
-              className="text-xs px-2 py-1 rounded bg-background hover:bg-accent transition border border-border"
-              title={s.text || `Sample ${i + 1}`}
-            >
-              {s.duration.toFixed(1)}s
-            </button>
-          ))}
+        <div className="flex flex-col gap-1 mb-2">
+          {samples.map((s, i) => {
+            const isPlaying = playingFile === s.file;
+            return (
+              <button
+                key={i}
+                type="button"
+                onClick={() => playSample(s.file)}
+                className={`flex items-center gap-2 px-2 py-1 rounded text-xs border transition ${
+                  isPlaying
+                    ? "bg-primary/15 border-primary/40 text-foreground"
+                    : "bg-background border-border hover:bg-accent"
+                }`}
+                title={s.text || `Sample ${i + 1}`}
+              >
+                {isPlaying ? (
+                  <Pause className="w-3.5 h-3.5 text-primary shrink-0" />
+                ) : (
+                  <Play className="w-3.5 h-3.5 shrink-0" />
+                )}
+                <Mic className="w-3 h-3 text-muted-foreground shrink-0" />
+                <span className="text-muted-foreground shrink-0">Sample {i + 1}</span>
+                <span className="tabular-nums text-muted-foreground/80 shrink-0">{s.duration.toFixed(1)}s</span>
+                {s.text && <span className="truncate text-muted-foreground/80">{s.text}</span>}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -231,7 +304,13 @@ function SpeakerBlock({
         </p>
       )}
 
-      {segments.length === 0 ? (
+      {noAudio ? (
+        samples.length === 0 && (
+          <p className="text-xs text-muted-foreground italic">
+            Upload one audio clip for this speaker above.
+          </p>
+        )
+      ) : segments.length === 0 ? (
         <p className="text-xs text-muted-foreground italic">
           No segments assigned. Upload a custom clip above, or reassign a segment from another speaker.
         </p>
@@ -271,7 +350,7 @@ function SpeakerBlock({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      seekTo(audioPath, seg.start);
+                      if (audioPath) seekTo(audioPath, seg.start);
                     }}
                     className="shrink-0 p-0.5 rounded hover:bg-accent transition"
                     title="Play this segment"

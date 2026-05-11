@@ -27,6 +27,7 @@ import SectionHeader from "@/components/common/SectionHeader";
 import { formatTime, selectClass, versionOption } from "@/lib/utils";
 import { segKey } from "@/lib/segKey";
 import { speakerColor } from "@/lib/speakerColor";
+import { BREAK_SPEAKER } from "@/lib/speakers";
 
 /** Module-level stable reference so the onSegmentsChange effect doesn't fire
  *  a fresh `[]` literal on every render while the query is still loading. */
@@ -42,7 +43,8 @@ export interface ResolvedSource {
 }
 
 export interface SourceSegmentPickerProps {
-  audioPath: string;
+  audioPath: string | null;
+  outputDir?: string | null;
   episode: Episode;
 
   sourceVersionId: string | null;
@@ -53,12 +55,20 @@ export interface SourceSegmentPickerProps {
 
   selectedKeys: Set<string>;
   setSelectedKeys: (s: Set<string>) => void;
+  /**
+   * Parent-owned ref tracking the last (editorKey|versionId|length) stamp
+   * that seeded the selection. Must live above this component since the
+   * picker unmounts/remounts while a pipeline task is running; otherwise
+   * remounting would re-seed "all selected" and clobber the user's scope.
+   */
+  selectionStampRef: React.MutableRefObject<string>;
 
   seekTo: (path: string, time: number) => void;
 }
 
 export default function SourceSegmentPicker({
   audioPath,
+  outputDir,
   episode,
   sourceVersionId,
   setSourceVersionId,
@@ -66,15 +76,18 @@ export default function SourceSegmentPicker({
   onSegmentsChange,
   selectedKeys,
   setSelectedKeys,
+  selectionStampRef,
   seekTo,
 }: SourceSegmentPickerProps) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [listOpen, setListOpen] = useState(false);
 
+  const ref = audioPath ?? outputDir ?? null;
+
   const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(audioPath),
-    queryFn: () => getAllVersions(audioPath),
-    enabled: !!audioPath,
+    queryKey: queryKeys.allVersions(ref),
+    queryFn: () => getAllVersions(audioPath, outputDir),
+    enabled: !!ref,
   });
 
   const translationSet = useMemo(
@@ -128,8 +141,10 @@ export default function SourceSegmentPicker({
   // Segment cache is shared with the editors: stepVersionSegments for a
   // pinned version, stepSegments for "latest".
   const segmentsQueryKey = sourceVersionId
-    ? queryKeys.stepVersionSegments(editorKey, audioPath, sourceVersionId)
-    : queryKeys.stepSegments(editorKey, audioPath);
+    ? queryKeys.stepVersionSegments(editorKey, ref, sourceVersionId)
+    : queryKeys.stepSegments(editorKey, ref);
+
+  const od = outputDir ?? undefined;
 
   const { data: segments } = useQuery({
     queryKey: segmentsQueryKey,
@@ -137,14 +152,14 @@ export default function SourceSegmentPicker({
       // Load the pinned version when provided; otherwise the step's latest.
       if (sourceVersionId) {
         if (resolved.step === "transcript")
-          return loadTranscribeVersion(audioPath, sourceVersionId);
+          return loadTranscribeVersion(audioPath, sourceVersionId, od);
         if (resolved.step === "corrected")
-          return loadCorrectVersion(audioPath, sourceVersionId);
-        return loadTranslateVersion(audioPath, resolved.lang, sourceVersionId);
+          return loadCorrectVersion(audioPath, sourceVersionId, od);
+        return loadTranslateVersion(audioPath, resolved.lang, sourceVersionId, od);
       }
-      if (resolved.step === "transcript") return getSegments(audioPath);
-      if (resolved.step === "corrected") return getCorrectSegments(audioPath);
-      return getTranslateSegments(audioPath, resolved.lang);
+      if (resolved.step === "transcript") return getSegments(audioPath, od);
+      if (resolved.step === "corrected") return getCorrectSegments(audioPath, od);
+      return getTranslateSegments(audioPath, resolved.lang, od);
     },
     enabled: !!selectedVersion,
   });
@@ -156,32 +171,32 @@ export default function SourceSegmentPicker({
   // Default-all-selected whenever the underlying source changes. Stamp
   // combines editorKey, version id, and segment count so a fresh source
   // resets scope to "all kept" without clobbering the user's unchecks on
-  // a same-source revalidation.
-  const lastInitStamp = useRef<string>("");
+  // a same-source revalidation. Stamp lives on a parent-owned ref so it
+  // survives this component unmounting while a pipeline task runs.
   useEffect(() => {
     if (!segments) return;
     const stamp = `${editorKey}|${sourceVersionId ?? "latest"}|${segments.length}`;
-    if (lastInitStamp.current === stamp) return;
-    lastInitStamp.current = stamp;
+    if (selectionStampRef.current === stamp) return;
+    selectionStampRef.current = stamp;
     const all = new Set<string>();
     for (const s of segments) {
-      if (s.speaker === "[BREAK]") continue;
+      if (s.speaker === BREAK_SPEAKER) continue;
       all.add(segKey(s));
     }
     setSelectedKeys(all);
-  }, [segments, editorKey, sourceVersionId, setSelectedKeys]);
+  }, [segments, editorKey, sourceVersionId, selectionStampRef, setSelectedKeys]);
 
+  // Same predicate as the default-seed loop above: non-BREAK rows are
+  // candidate segments. Empty-speaker rows count (narrator fallback handles
+  // them at synth time); excluding them here would silently drop their keys
+  // from selectAll/None/invert despite being seeded into selectedKeys.
   const visibleSegments = useMemo(
-    () => (segments ?? []).filter((s) => s.speaker && s.speaker !== "[BREAK]"),
+    () => (segments ?? []).filter((s) => s.speaker !== BREAK_SPEAKER),
     [segments],
   );
 
   // Records the most recent plain toggle — origin of a shift-click range.
   const lastToggleRef = useRef<{ index: number; checked: boolean } | null>(null);
-  // onMouseDown fires before onChange and is where we can observe the
-  // shift-key state. onChange carries the authoritative checked value for
-  // both mouse and keyboard, so toggles stay accessible via spacebar.
-  const shiftDownRef = useRef(false);
 
   const applyToggle = (index: number, nextChecked: boolean, shiftHeld: boolean) => {
     if (shiftHeld && lastToggleRef.current) {
@@ -322,15 +337,11 @@ export default function SourceSegmentPicker({
                         type="checkbox"
                         checked={isKept}
                         onClick={(e) => e.stopPropagation()}
-                        onMouseDown={(e) => {
-                          shiftDownRef.current = e.shiftKey;
-                        }}
-                        onKeyDown={() => {
-                          shiftDownRef.current = false;
-                        }}
                         onChange={(e) => {
-                          applyToggle(index, e.target.checked, shiftDownRef.current);
-                          shiftDownRef.current = false;
+                          // nativeEvent carries shiftKey for both mouse
+                          // (MouseEvent) and keyboard (KeyboardEvent) toggles.
+                          const native = e.nativeEvent as MouseEvent | KeyboardEvent;
+                          applyToggle(index, e.target.checked, !!native.shiftKey);
                         }}
                         className="w-3 h-3 accent-primary cursor-pointer"
                         aria-label={isKept ? "Drop this segment" : "Keep this segment"}
@@ -338,7 +349,7 @@ export default function SourceSegmentPicker({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          seekTo(audioPath, seg.start);
+                          if (audioPath) seekTo(audioPath, seg.start);
                         }}
                         className="shrink-0 p-0.5 rounded hover:bg-accent transition"
                         title="Play from here"

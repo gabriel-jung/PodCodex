@@ -22,7 +22,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 import soundfile as sf
@@ -34,8 +34,10 @@ from podcodex.core._utils import (
     UNKNOWN_SPEAKERS,
     AudioPaths,
     group_by_speaker,
+    tts_segment_filename,
     wav_duration,
 )
+from podcodex.core.constants import AssembleStrategy
 
 
 # Qwen3-TTS validates input languages against this lowercase set and rejects
@@ -396,7 +398,7 @@ def extract_voice_samples(
     logger.info(
         f"Extracting voice samples from {p.audio_path.name} — {len(segments)} segments, top_k={top_k}"
     )
-    samples_dir = p.voice_samples_dir
+    samples_dir = p.ensure_voice_samples_dir()
 
     # Group by speaker, add duration, select candidates, build extraction plan
     by_speaker = {
@@ -462,7 +464,7 @@ def extract_selected_samples(
         {speaker: [{"file", "start", "end", "duration", "text"}, ...]}
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    samples_dir = p.voice_samples_dir
+    samples_dir = p.ensure_voice_samples_dir()
 
     # Build extraction plan grouped by speaker
     by_speaker: dict[str, list[dict]] = {}
@@ -476,9 +478,13 @@ def extract_selected_samples(
         for i, seg in enumerate(segs):
             plan.append((speaker, seg, samples_dir / f"{speaker}_{i:02d}.wav"))
 
-    # Clear old samples for these speakers
+    # Clear old samples for these speakers. Preserve uploaded files
+    # (suffixed with ``_custom_``) so a Re-extract doesn't wipe the user's
+    # manual uploads — same filter ``load_voice_samples`` applies.
     for speaker in by_speaker:
         for old in samples_dir.glob(f"{speaker}_*.wav"):
+            if "_custom_" in old.name:
+                continue
             old.unlink()
 
     results: dict[str, list[dict]] = {}
@@ -769,7 +775,7 @@ def generate_segments(
     logger.info(
         f"Generating TTS for {len(segments)} segments — model={model_size}, language={language}"
     )
-    segments_dir = p.tts_segments_dir
+    segments_dir = p.ensure_tts_segments_dir()
 
     # Load manifest for incremental generation
     manifest = (
@@ -786,7 +792,7 @@ def generate_segments(
     for i, seg in enumerate(segments):
         speaker = seg.get("speaker", "UNK")
         text = seg.get("text", "").strip()
-        filename = f"{i:04d}_{speaker}.wav"
+        filename = tts_segment_filename(seg)
         output_path = segments_dir / filename
 
         # Skip if only regenerating specific speakers
@@ -855,9 +861,9 @@ def generate_segments(
 
 def assemble_episode(
     generated: list[dict],
-    audio_path: Path | str,
+    audio_path: Path | str | None,
     output_dir: str | Path | None = None,
-    strategy: Literal["silence", "original_timing"] = "original_timing",
+    strategy: AssembleStrategy = "original_timing",
     silence_duration: float = 0.5,
     output_path: Path | None = None,
 ) -> Path:
@@ -960,17 +966,11 @@ def load_voice_samples(
 
     result: dict[str, list[dict]] = {}
     for speaker in speakers:
-        files = sorted(
-            f for f in samples_dir.glob(f"{speaker}_*.wav") if "_custom_" not in f.name
-        )
+        files = sorted(samples_dir.glob(f"{speaker}_*.wav"))
         if not files:
             speaker_id = reverse_map.get(speaker)
             if speaker_id:
-                files = sorted(
-                    f
-                    for f in samples_dir.glob(f"{speaker_id}_*.wav")
-                    if "_custom_" not in f.name
-                )
+                files = sorted(samples_dir.glob(f"{speaker_id}_*.wav"))
         if files:
             result[speaker] = [
                 {"file": f, "duration": wav_duration(f), "text": ""} for f in files
@@ -1008,9 +1008,8 @@ def load_generated_segments(
 
     result = []
     missing = 0
-    for i, seg in enumerate(segments):
-        speaker = seg.get("speaker", "UNK")
-        filename = f"{i:04d}_{speaker}.wav"
+    for seg in segments:
+        filename = tts_segment_filename(seg)
         wav_path = segments_dir / filename
         if not wav_path.exists():
             missing += 1

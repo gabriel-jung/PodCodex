@@ -34,9 +34,14 @@ async def get_translated_segments(
     lang: str = Query(...),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
-    """Load translated segments from the version DB."""
+    """Load translated segments from the version DB.
+
+    Re-applies the latest speaker map on the way out so renames performed
+    after the translation was generated (e.g. SPEAKER_00 → Chris Fisher)
+    show through. The saved translation file is untouched.
+    """
     from podcodex.api.routes._helpers import annotate_flags
-    from podcodex.core.versions import load_latest
+    from podcodex.core.versions import load_latest, load_latest_speaker_map
 
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
@@ -44,6 +49,12 @@ async def get_translated_segments(
     segments = load_latest(p.base, lang_norm)
     if segments is None:
         raise HTTPException(404, f"No translation found for '{lang}'")
+    mapping = load_latest_speaker_map(p.base)
+    if mapping:
+        segments = [
+            {**s, "speaker": mapping.get(s.get("speaker", ""), s.get("speaker", ""))}
+            for s in segments
+        ]
     return annotate_flags(segments)
 
 

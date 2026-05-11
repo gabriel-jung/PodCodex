@@ -8,6 +8,8 @@ so the React frontend can display them without duplicating any text.
 
 from __future__ import annotations
 
+from typing import Literal
+
 
 # ── Whisper transcription models ─────────────────────────────────────────────
 #
@@ -60,6 +62,8 @@ DEFAULT_TTS_MODEL_SIZE = "1.7B"
 #
 # After TTS generates each segment, the assembler stitches them into one
 # audio file.  These strategies control how timing gaps are handled.
+
+AssembleStrategy = Literal["silence", "original_timing"]
 
 ASSEMBLE_STRATEGIES: dict[str, str] = {
     "original_timing": "Keep the original pause lengths between speakers",

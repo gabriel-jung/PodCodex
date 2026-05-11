@@ -309,7 +309,12 @@ export default function EpisodePage({
 function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError, onNavigateStep }: { step: ActiveStep; episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string; onNavigateStep: (step: ActiveStep) => void }) {
   if (step === "search") return <SearchPanel scope="episode" />;
   const def = STEP_BY_KEY[step as PipelineStepKey];
-  if (def) return def.component();
+  if (def) {
+    // Force remount on episode change so per-episode UI state (selection,
+    // expansion, in-flight task ids, etc.) cannot bleed across episodes.
+    const Panel = def.component;
+    return <Panel key={`${step}|${episode.id}`} />;
+  }
   return (
     <OverviewTab
       episode={episode}

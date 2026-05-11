@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Segment } from "@/api/types";
+import type { AssembleStrategy, Segment } from "@/api/types";
 import { useEpisodeStore, useAudioStore } from "@/stores";
 import {
   getSynthesisStatus,
@@ -23,12 +23,14 @@ import MissingDependency from "@/components/common/MissingDependency";
 import ProgressBar from "@/components/editor/ProgressBar";
 import PipelinePanel from "@/components/common/PipelinePanel";
 import { segKey } from "@/lib/segKey";
+import { resolveSynthSpeaker } from "@/lib/speakers";
 import { versionDate } from "@/lib/utils";
 import SourceSegmentPicker, { type ResolvedSource } from "./SourceSegmentPicker";
 import VoiceExtractionSection from "./VoiceExtractionSection";
 import TTSGenerationSection from "./TTSGenerationSection";
 import AssemblySection from "./AssemblySection";
 import { plainStatus } from "@/lib/stepStatus";
+import { getEpisodeSourceRef } from "@/lib/episodeRef";
 
 export default function SynthesizePanel() {
   const episode = useEpisodeStore((s) => s.episode);
@@ -39,12 +41,21 @@ export default function SynthesizePanel() {
 
   const [extractTaskId, setExtractTaskId] = useState<string | null>(null);
   const [generateTaskId, setGenerateTaskId] = useState<string | null>(null);
+  // Seed language from showMeta on first render; if showMeta arrives later
+  // (panel mounts before the meta query resolves), sync via the effect below.
   const [language, setLanguage] = useState(showMeta?.language || "English");
+  const languageInitRef = useRef(!!showMeta?.language);
+  useEffect(() => {
+    if (!languageInitRef.current && showMeta?.language) {
+      setLanguage(showMeta.language);
+      languageInitRef.current = true;
+    }
+  }, [showMeta?.language]);
   const [modelSize, setModelSize] = useState("1.7B");
   const [maxChunkDuration, setMaxChunkDuration] = useState(20);
   const [force, setForce] = useState(false);
   const [onlySpeakers, setOnlySpeakers] = useState<string[]>([]);
-  const [assembleStrategy, setAssembleStrategy] = useState("original_timing");
+  const [assembleStrategy, setAssembleStrategy] = useState<AssembleStrategy>("original_timing");
   const [silenceDuration, setSilenceDuration] = useState(0.2);
   const [expanded, setExpanded] = useState(!episode?.synthesized);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -63,8 +74,25 @@ export default function SynthesizePanel() {
     sourceVersionId: null,
   });
   const [sourceSelection, setSourceSelection] = useState<Set<string>>(() => new Set());
+  const sourceSelectionStampRef = useRef<string>("");
   const [sourceSegments, setSourceSegments] = useState<Segment[]>([]);
   const [selectedSynthVersionId, setSelectedSynthVersionId] = useState<string | null>(null);
+
+  // Selection / overrides / per-speaker UI state are keyed by segKey, which
+  // depends on speaker + timestamps of the CURRENT source. Switching the
+  // source (different version or step) silently invalidates every key —
+  // wipe them so stale entries don't disable the Extract button or attribute
+  // segments to dead speakers.
+  const sourceFingerprint = `${resolvedSource.step}|${resolvedSource.lang}|${resolvedSource.sourceVersionId ?? "latest"}`;
+  const lastSourceFingerprintRef = useRef<string>(sourceFingerprint);
+  useEffect(() => {
+    if (lastSourceFingerprintRef.current === sourceFingerprint) return;
+    lastSourceFingerprintRef.current = sourceFingerprint;
+    setSelected(new Set());
+    setSpeakerOverrides({});
+    setShowCount({});
+    setExpandedSeg(null);
+  }, [sourceFingerprint]);
 
   const { data: pipelineConfig } = useQuery({
     queryKey: queryKeys.pipelineConfig(),
@@ -72,61 +100,96 @@ export default function SynthesizePanel() {
     staleTime: Infinity,
   });
 
+  const { audioPath, outputDir, sourceRef, hasSourceRef, noAudio } = getEpisodeSourceRef(episode);
+
   const { data: status, refetch: refetchStatus } = useQuery({
-    queryKey: queryKeys.synthesizeStatus(episode?.audio_path),
-    queryFn: () => getSynthesisStatus(episode!.audio_path!),
-    enabled: !!episode?.audio_path,
+    queryKey: queryKeys.synthesizeStatus(sourceRef),
+    queryFn: () => getSynthesisStatus(audioPath, outputDir),
+    enabled: hasSourceRef,
   });
 
-  // All speakers that appear in the currently loaded source version.
-  const allSpeakers = useMemo(() => {
-    const set = new Set<string>();
-    for (const seg of sourceSegments) {
-      const sp = seg.speaker || "";
-      if (sp && sp !== "[BREAK]" && sp !== "UNKNOWN" && sp !== "UNK") set.add(sp);
-    }
-    return [...set].sort();
-  }, [sourceSegments]);
-
-  // Group the FULL source by OUTPUT speaker (after applying reassignments)
-  // for voice sample extraction / clip browsing. Independent of the source
-  // picker's checkbox scope — narrowing synthesis shouldn't starve the
-  // cloned voice of source clips. The narrowed scope is sent to the backend
-  // separately as `keep_segment_keys` for the generation step only.
-  const segmentsBySpeaker = useMemo(() => {
+  // Single pass over sourceSegments. Empty/unknown speakers route to
+  // NARRATOR_SPEAKER so legacy transcripts can still upload one voice
+  // sample without renaming in the editor first.
+  //   - allSpeakers: pre-override names (drives the reassignment dropdown
+  //     options and TTS "only-speakers" filter)
+  //   - segmentsBySpeaker: post-override grouping (drives the voice-sample
+  //     UI — narrowing synthesis must not starve voice clips, so this is
+  //     independent of the source picker's checkbox scope)
+  const { allSpeakers, segmentsBySpeaker } = useMemo(() => {
     const grouped: Record<string, Segment[]> = {};
+    const original = new Set<string>();
+    const hasOverrides = Object.keys(speakerOverrides).length > 0;
     for (const seg of sourceSegments) {
-      const sp = seg.speaker || "";
-      if (!sp || sp === "[BREAK]" || sp === "UNKNOWN" || sp === "UNK") continue;
-      const effectiveSpeaker = speakerOverrides[segKey(seg)] || sp;
+      const sp = resolveSynthSpeaker(seg.speaker ?? "");
+      if (!sp) continue;
+      original.add(sp);
+      const effectiveSpeaker = hasOverrides ? speakerOverrides[segKey(seg)] || sp : sp;
       (grouped[effectiveSpeaker] ??= []).push(seg);
     }
-    return grouped;
+    return { allSpeakers: [...original].sort(), segmentsBySpeaker: grouped };
   }, [sourceSegments, speakerOverrides]);
 
-  const { data: voiceSamples, refetch: refetchVoiceSamples } = useQuery({
-    queryKey: queryKeys.synthesizeVoices(episode?.audio_path),
-    queryFn: () => getVoiceSamples(episode!.audio_path!),
-    enabled: !!episode?.audio_path && !!status?.voice_samples_extracted,
+  const resolvedVersionId = resolvedSource.sourceVersionId ?? null;
+
+  const { data: voiceSamples } = useQuery({
+    queryKey: queryKeys.synthesizeVoices(sourceRef, resolvedVersionId),
+    queryFn: () => getVoiceSamples(audioPath, outputDir, resolvedVersionId),
+    enabled: hasSourceRef && !!status?.voice_samples_extracted,
   });
 
   const { data: generatedSegments } = useQuery({
-    queryKey: queryKeys.synthesizeGenerated(episode?.audio_path),
-    queryFn: () => getGeneratedSegments(episode!.audio_path!),
-    enabled: !!episode?.audio_path && !!status?.tts_segments_generated,
+    queryKey: queryKeys.synthesizeGenerated(sourceRef, resolvedVersionId),
+    queryFn: () => getGeneratedSegments(audioPath, outputDir, resolvedVersionId),
+    enabled: hasSourceRef && !!status?.tts_segments_generated,
   });
+
+  // Speakers in the active scope that lack any voice sample on disk.
+  // Honors `onlySpeakers` if the user narrowed generation. Generation
+  // would silently skip these segments without a sample to clone from.
+  const speakersMissingSamples = useMemo(() => {
+    const active = onlySpeakers.length > 0 ? onlySpeakers : allSpeakers;
+    const have = voiceSamples ?? {};
+    return active.filter((sp) => !(sp in have)).sort();
+  }, [allSpeakers, onlySpeakers, voiceSamples]);
+
+  // Segments in the current scope that have no TTS audio yet. Drives the
+  // assemble-time warning: partial generations (only_speakers, errors,
+  // cancellation) would otherwise produce a silently-shortened podcast.
+  const missingGeneratedCount = useMemo(() => {
+    if (sourceSelection.size === 0) return 0;
+    return Math.max(0, sourceSelection.size - (generatedSegments?.length ?? 0));
+  }, [sourceSelection, generatedSegments]);
 
   const { data: synthVersions } = useQuery({
-    queryKey: queryKeys.synthesizeVersions(episode?.audio_path ?? episode?.output_dir),
-    queryFn: () => getSynthesizeVersions(episode?.audio_path, episode?.output_dir),
-    enabled: (!!episode?.audio_path || !!episode?.output_dir) && !!status?.synthesized,
+    queryKey: queryKeys.synthesizeVersions(sourceRef),
+    queryFn: () => getSynthesizeVersions(audioPath, outputDir),
+    enabled: hasSourceRef && !!status?.synthesized,
   });
 
-  const activeSynthVersion = synthVersions?.find((v) => v.id === selectedSynthVersionId) ?? synthVersions?.[0];
+  const activeSynthVersion = useMemo(
+    () => synthVersions?.find((v) => v.id === selectedSynthVersionId) ?? synthVersions?.[0],
+    [synthVersions, selectedSynthVersionId],
+  );
+
+  const synthVersionOptions = useMemo(() => {
+    if (!synthVersions) return [];
+    return synthVersions.map((v, i) => {
+      const params = (v.params ?? {}) as { strategy?: string; language?: string; duration_s?: number };
+      const parts = [
+        i === 0 ? "Latest" : null,
+        versionDate(v),
+        params.language,
+        params.strategy,
+        params.duration_s ? `${(params.duration_s / 60).toFixed(1)}m` : null,
+      ].filter(Boolean);
+      return { id: v.id, label: parts.join(" · ") };
+    });
+  }, [synthVersions]);
 
   const deleteSynthVersionMutation = useMutation({
     mutationFn: (versionId: string) =>
-      deleteSynthesizeVersion(episode?.audio_path, versionId, episode?.output_dir),
+      deleteSynthesizeVersion(audioPath, versionId, outputDir),
     onSuccess: () => {
       setSelectedSynthVersionId(null);
       refreshQueries();
@@ -136,9 +199,9 @@ export default function SynthesizePanel() {
   const refreshQueries = useCallback(() => {
     refetchStatus();
     queryClient.invalidateQueries({ queryKey: queryKeys.synthesizeAll() });
-    queryClient.invalidateQueries({ queryKey: queryKeys.synthesizeVersions(episode?.audio_path) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.synthesizeVersions(sourceRef) });
     queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-  }, [queryClient, refetchStatus, episode?.audio_path]);
+  }, [queryClient, refetchStatus, sourceRef]);
 
   const extractMutation = useMutation({
     mutationFn: () => {
@@ -150,27 +213,26 @@ export default function SynthesizePanel() {
           end: seg.end,
           text: seg.text,
         }));
-      return extractSelectedSamples(episode!.audio_path!, selections);
+      return extractSelectedSamples(audioPath, selections, outputDir);
     },
     onSuccess: () => {
       refreshQueries();
-      refetchVoiceSamples();
     },
   });
 
   const uploadMutation = useMutation({
     mutationFn: ({ speaker, file }: { speaker: string; file: File }) =>
-      uploadVoiceSample(episode!.audio_path!, speaker, file),
+      uploadVoiceSample(audioPath, speaker, file, outputDir),
     onSuccess: () => {
       refreshQueries();
-      refetchVoiceSamples();
     },
   });
 
   const generateMutation = useMutation({
     mutationFn: () =>
       startGenerateTTS({
-        audio_path: episode!.audio_path!,
+        audio_path: audioPath ?? undefined,
+        output_dir: outputDir ?? undefined,
         model_size: modelSize,
         language,
         source_lang: resolvedSource.sourceLang,
@@ -186,12 +248,14 @@ export default function SynthesizePanel() {
   const assembleMutation = useMutation({
     mutationFn: () =>
       assembleEpisode({
-        audio_path: episode!.audio_path!,
+        audio_path: audioPath ?? undefined,
+        output_dir: outputDir ?? undefined,
         strategy: assembleStrategy,
         silence_duration: silenceDuration,
         language,
         model_size: modelSize,
         source_version_id: resolvedSource.sourceVersionId ?? undefined,
+        keep_segment_keys: Array.from(sourceSelection),
       }),
     onSuccess: (data) => {
       refreshQueries();
@@ -215,8 +279,8 @@ export default function SynthesizePanel() {
 
   if (!episode) return null;
 
-  const prereq = !episode.audio_path
-    ? "Download the audio file first before synthesizing."
+  const prereq = !hasSourceRef
+    ? "No episode source on disk yet."
     : !episode.transcribed
       ? "You need a transcript first. Go to the Transcribe tab to create one."
       : undefined;
@@ -252,7 +316,8 @@ export default function SynthesizePanel() {
       controls={!isRunning ? (
         <div className="px-4 pb-3 space-y-4">
           <SourceSegmentPicker
-            audioPath={episode.audio_path!}
+            audioPath={audioPath}
+            outputDir={outputDir}
             episode={episode}
             sourceVersionId={sourceVersionId}
             setSourceVersionId={setSourceVersionId}
@@ -260,6 +325,7 @@ export default function SynthesizePanel() {
             onSegmentsChange={setSourceSegments}
             selectedKeys={sourceSelection}
             setSelectedKeys={setSourceSelection}
+            selectionStampRef={sourceSelectionStampRef}
             seekTo={seekTo}
           />
 
@@ -279,7 +345,8 @@ export default function SynthesizePanel() {
             status={status}
             voiceSamples={voiceSamples}
             seekTo={seekTo}
-            audioPath={episode.audio_path!}
+            audioPath={audioPath}
+            noAudio={noAudio}
           />
 
           <TTSGenerationSection
@@ -294,6 +361,7 @@ export default function SynthesizePanel() {
             onlySpeakers={onlySpeakers}
             setOnlySpeakers={setOnlySpeakers}
             allSpeakers={allSpeakers}
+            speakersMissingSamples={speakersMissingSamples}
             sourceSummary={sourceSummary}
             pipelineConfig={pipelineConfig}
             status={status}
@@ -308,6 +376,7 @@ export default function SynthesizePanel() {
             setSilenceDuration={setSilenceDuration}
             pipelineConfig={pipelineConfig}
             status={status}
+            missingGeneratedCount={missingGeneratedCount}
             assembleMutation={assembleMutation}
           />
         </div>
@@ -326,7 +395,14 @@ export default function SynthesizePanel() {
       {generateTaskId && (
         <ProgressBar
           taskId={generateTaskId}
-          onComplete={() => { refreshQueries(); setGenerateTaskId(null); }}
+          onComplete={() => {
+            refreshQueries();
+            setGenerateTaskId(null);
+            // Transient run flags — clear so the next click doesn't silently
+            // re-apply the previous run's overrides.
+            setForce(false);
+            setOnlySpeakers([]);
+          }}
           onRetry={() => { setGenerateTaskId(null); generateMutation.mutate(); }}
           onDismiss={() => { cancelTask(generateTaskId).catch(() => {}); setGenerateTaskId(null); }}
           onCancel={() => { cancelTask(generateTaskId).catch(() => {}); setGenerateTaskId(null); }}
@@ -345,21 +421,9 @@ export default function SynthesizePanel() {
                 onChange={(e) => setSelectedSynthVersionId(e.target.value)}
                 className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border max-w-[18rem]"
               >
-                {synthVersions.map((v, i) => {
-                  const params = (v.params ?? {}) as { strategy?: string; language?: string; duration_s?: number };
-                  const parts = [
-                    i === 0 ? "Latest" : null,
-                    versionDate(v),
-                    params.language,
-                    params.strategy,
-                    params.duration_s ? `${(params.duration_s / 60).toFixed(1)}m` : null,
-                  ].filter(Boolean);
-                  return (
-                    <option key={v.id} value={v.id}>
-                      {parts.join(" · ")}
-                    </option>
-                  );
-                })}
+                {synthVersionOptions.map(({ id, label }) => (
+                  <option key={id} value={id}>{label}</option>
+                ))}
               </select>
               {activeSynthVersion && synthVersions.length > 1 && (
                 <button
@@ -386,13 +450,14 @@ export default function SynthesizePanel() {
               let synthPath: string | null = null;
               if (activeSynthVersion) {
                 try {
-                  const v = await getSynthesizeVersionPath(episode.audio_path, activeSynthVersion.id, episode.output_dir);
+                  const v = await getSynthesizeVersionPath(audioPath, activeSynthVersion.id, outputDir);
                   synthPath = v.path;
                 } catch {
                   return;
                 }
               } else {
-                synthPath = assembleMutation.data?.path ?? episode.audio_path!.replace(/\.[^.]+$/, ".synthesized.wav");
+                const legacyFallback = audioPath ? audioPath.replace(/\.[^.]+$/, ".synthesized.wav") : null;
+                synthPath = assembleMutation.data?.path ?? legacyFallback;
               }
               if (!synthPath) return;
               setAudioMeta(synthPath, { title: `${episode.title} (Synthesized)`, showName: showMeta?.name });
