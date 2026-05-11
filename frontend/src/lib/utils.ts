@@ -85,6 +85,20 @@ export function isStale(date: string | number | null | undefined, thresholdMs = 
   return Date.now() - d.getTime() > thresholdMs;
 }
 
+/** Human-readable byte size: 12345678 → "11.8 MB". Returns "—" for invalid. */
+export function formatBytes(n: number | null | undefined): string {
+  if (!Number.isFinite(n) || n == null || n < 0) return "—";
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
+
 /** Strip HTML tags and decode common entities. */
 export function stripHtml(html: string): string {
   const text = html.replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ");
@@ -218,6 +232,7 @@ export const STEP_LABELS: Record<string, string> = {
   diarization: "Diarization",
   diarized_segments: "Diarized segments",
   speaker_map: "Speaker map",
+  synthesize: "Synthesize",
 };
 
 /** True when a version should be labelled "edited" in the UI — covers both

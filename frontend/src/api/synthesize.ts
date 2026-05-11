@@ -5,6 +5,7 @@ import type {
   GeneratedSegment,
   SynthesisStatus,
   TaskResponse,
+  VersionEntry,
   VoiceSample,
 } from "./types";
 import { json, rawFetch } from "./client";
@@ -55,8 +56,29 @@ export const getGeneratedSegments = (audioPath: string) =>
   json<GeneratedSegment[]>(`/api/synthesize/generated-segments?audio_path=${encodeURIComponent(audioPath)}`);
 
 export const assembleEpisode = (req: AssembleRequest) =>
-  json<{ path: string; duration: number }>("/api/synthesize/assemble", {
+  json<{ path: string; duration: number; version_id: string }>("/api/synthesize/assemble", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
+
+function synthVersionsQuery(audioPath: string | null | undefined, outputDir?: string | null): string {
+  const params = new URLSearchParams();
+  if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
+  return params.toString();
+}
+
+export const getSynthesizeVersions = (audioPath: string | null | undefined, outputDir?: string | null) =>
+  json<VersionEntry[]>(`/api/synthesize/versions?${synthVersionsQuery(audioPath, outputDir)}`);
+
+export const getSynthesizeVersionPath = (audioPath: string | null | undefined, versionId: string, outputDir?: string | null) =>
+  json<{ path: string; duration: number; version_id: string }>(
+    `/api/synthesize/versions/${encodeURIComponent(versionId)}?${synthVersionsQuery(audioPath, outputDir)}`,
+  );
+
+export const deleteSynthesizeVersion = (audioPath: string | null | undefined, versionId: string, outputDir?: string | null) =>
+  json<{ status: string; version_id: string }>(
+    `/api/synthesize/versions/${encodeURIComponent(versionId)}?${synthVersionsQuery(audioPath, outputDir)}`,
+    { method: "DELETE" },
+  );

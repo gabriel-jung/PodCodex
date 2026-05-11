@@ -57,7 +57,7 @@ export default function AssemblySection({
 
       <AdvancedToggle className="space-y-3">
         <FormGrid className="pl-3 border-l-2 border-border">
-          <HelpLabel label="Silence (s)" help="Pause inserted between segments when the strategy stitches them back-to-back." />
+          <HelpLabel label="Pause on turn change (s)" help="Pause inserted between segments when the speaker changes. Same-speaker pauses are auto-scaled to ~40% of this value (min 0.05s) so a turn feels continuous." />
           <input
             type="number"
             value={silenceDuration}
@@ -75,8 +75,13 @@ export default function AssemblySection({
           onClick={() => assembleMutation.mutate()}
           disabled={!status?.tts_segments_generated || assembleMutation.isPending}
           size="sm"
+          variant={status?.synthesized ? "outline" : "default"}
         >
-          {assembleMutation.isPending ? "Assembling..." : "Assemble"}
+          {assembleMutation.isPending
+            ? "Assembling..."
+            : status?.synthesized
+              ? "Re-assemble"
+              : "Assemble"}
         </Button>
         {!status?.tts_segments_generated && (
           <span className="text-xs text-muted-foreground">Generate TTS segments first</span>

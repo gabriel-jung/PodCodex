@@ -54,6 +54,8 @@ export const queryKeys = {
     ["synthesize", "voices", audioPath] as const,
   synthesizeGenerated: (audioPath: AudioPath) =>
     ["synthesize", "generated", audioPath] as const,
+  synthesizeVersions: (audioPath: AudioPath) =>
+    ["synthesize", "versions", audioPath] as const,
 
   // ── Index & search ─────────────────────────────────────
   searchConfig: () => ["search", "config"] as const,

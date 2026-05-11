@@ -552,6 +552,17 @@ async def unified_episodes(
     if indexed_updates:
         db.mark_indexed_bulk(indexed_updates)
 
+    # Reconcile synthesized flag against the versions DB: an episode with
+    # any registered synthesize version is synthesized, regardless of what
+    # populate_from_scan stored initially (which is only re-run when the
+    # DB is empty). Without this, the overview StageCard stays "not started"
+    # for any episode whose first sync happened before our first assemble.
+    stems_with_synth = set(db.stems_with_step("synthesize"))
+    for stem, row in status_map.items():
+        if stem in stems_with_synth and not row.get("synthesized", False):
+            row["synthesized"] = True
+            db.mark(stem, synthesized=True)
+
     local_audio = _scan_audio_files(path)
     episode_files = _scan_episode_files(path, local_audio)
 
@@ -962,12 +973,19 @@ async def list_all_versions(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
-    """List versions across all pipeline steps for an episode, newest first."""
+    """List versions across all pipeline steps for an episode, newest first.
+
+    Backfills ``params.file_size_bytes`` for every version (persisted on
+    first call) so the "All other files" UI can show real sizes without
+    forcing a re-run of each step.
+    """
     from podcodex.core._utils import AudioPaths
-    from podcodex.core.versions import list_all_versions
+    from podcodex.core.versions import backfill_version_sizes, list_all_versions
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    return list_all_versions(p.base)
+    versions = list_all_versions(p.base)
+    backfill_version_sizes(p.base, versions)
+    return versions
 
 
 @router.delete("/versions/{version_id}")

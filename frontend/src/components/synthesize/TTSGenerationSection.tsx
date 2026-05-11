@@ -153,6 +153,7 @@ export default function TTSGenerationSection({
           onClick={() => generateMutation.mutate()}
           disabled={!status?.voice_samples_extracted || generateMutation.isPending}
           size="sm"
+          variant={status?.tts_segments_generated ? "outline" : "default"}
         >
           {status?.tts_segments_generated ? "Re-generate" : "Generate"}
         </Button>

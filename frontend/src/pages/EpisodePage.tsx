@@ -34,7 +34,7 @@ const SegmentContextDialog = lazy(() => import("@/components/search/SegmentConte
 const IndexInspectorModal = lazy(() => import("@/components/index/IndexInspectorModal"));
 import IndexRow from "@/components/index/IndexRow";
 import { STAGE_CLASSES, type StageKey } from "@/lib/stageClasses";
-import { formatDuration, formatDate, formatTime, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, splitPath, STEP_LABELS } from "@/lib/utils";
+import { formatDuration, formatDate, formatTime, formatBytes, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, splitPath, STEP_LABELS } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import {
   Play,
@@ -334,6 +334,7 @@ interface VersionGroups {
   transcript: VersionEntry[];
   corrected: VersionEntry[];
   translations: Record<string, VersionEntry[]>;
+  synthesize: VersionEntry[];
   other: VersionEntry[];
 }
 
@@ -341,12 +342,13 @@ function groupVersions(
   versions: VersionEntry[] | undefined,
   languages: string[],
 ): VersionGroups {
-  const groups: VersionGroups = { transcript: [], corrected: [], translations: {}, other: [] };
+  const groups: VersionGroups = { transcript: [], corrected: [], translations: {}, synthesize: [], other: [] };
   for (const lang of languages) groups.translations[lang] = [];
   if (!versions) return groups;
   for (const v of versions) {
     if (v.step === "transcript") groups.transcript.push(v);
     else if (v.step === "corrected") groups.corrected.push(v);
+    else if (v.step === "synthesize") groups.synthesize.push(v);
     else if (v.step && languages.includes(v.step)) {
       (groups.translations[v.step] ??= []).push(v);
     } else {
@@ -474,6 +476,7 @@ const TRANSCRIBE_INTERMEDIATE_STEPS = new Set(["segments", "diarization", "diari
 function stepDisplay(step: string | undefined): { stage: StageColor; label: string; editorStep: ActiveStep } {
   if (step === "transcript") return { stage: "transcribe", label: "Transcribe", editorStep: "transcribe" };
   if (step === "corrected") return { stage: "correct", label: "Correct", editorStep: "correct" };
+  if (step === "synthesize") return { stage: "synth", label: "Synthesize", editorStep: "synthesize" };
   if (step && TRANSCRIBE_INTERMEDIATE_STEPS.has(step)) {
     return { stage: "transcribe", label: STEP_LABELS[step], editorStep: "transcribe" };
   }
@@ -539,7 +542,7 @@ function ActivityLog({ versions, onPreview }: {
   );
 }
 
-function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPreview, onDelete, showEdited = true }: {
+function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPreview, onDelete, showEdited = true, sizeColumn = false }: {
   /** Already sorted desc by timestamp by the caller. */
   versions: VersionEntry[] | undefined;
   heading: string;
@@ -548,6 +551,9 @@ function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPrev
   onPreview?: (previewKey: string) => void;
   onDelete: (step: string, id: string) => void;
   showEdited?: boolean;
+  /** Render the last column as formatted file size from params.file_size_bytes
+   *  instead of segment_count. */
+  sizeColumn?: boolean;
 }) {
   if (!versions || versions.length === 0) return null;
   const clickable = !!onPreview;
@@ -591,7 +597,9 @@ function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPrev
                     {versionDate(v)}
                   </td>
                   <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                    {v.segment_count}
+                    {sizeColumn
+                      ? formatBytes((v.params as { file_size_bytes?: number } | undefined)?.file_size_bytes)
+                      : v.segment_count}
                   </td>
                   <td className="px-3 py-2 text-right whitespace-nowrap">
                     <button
@@ -867,6 +875,15 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
     [versionGroups],
   );
 
+  // Activity feed shows all step events, including synth. The "All transcript
+  // versions" table uses transcriptVersions (no synth).
+  const recentActivityVersions = useMemo(
+    () => [...transcriptVersions, ...versionGroups.synthesize].sort(
+      (a, b) => b.timestamp.localeCompare(a.timestamp),
+    ),
+    [transcriptVersions, versionGroups.synthesize],
+  );
+
   const indexSummary = useMemo(() => {
     if (!episode.indexed) return undefined;
     if (!indexEntries || indexEntries.length === 0) return "indexed";
@@ -1063,7 +1080,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
       </div>
 
       <ActivityLog
-        versions={transcriptVersions}
+        versions={recentActivityVersions}
         onPreview={openPreview}
       />
 
@@ -1099,11 +1116,14 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
       )}
 
       <VersionsTable
-        versions={versionGroups.other}
+        versions={[...versionGroups.synthesize, ...versionGroups.other].sort(
+          (a, b) => b.timestamp.localeCompare(a.timestamp),
+        )}
         heading="All other files"
         firstColLabel="File"
-        countColLabel="Entries"
+        countColLabel="Size"
         showEdited={false}
+        sizeColumn
         onDelete={(step, id) => deleteVersionMutation.mutate({ step, id })}
       />
 

@@ -38,6 +38,76 @@ from podcodex.core._utils import (
 )
 
 
+# Qwen3-TTS validates input languages against this lowercase set and rejects
+# everything else (incl. ISO 639-1 codes like "en"/"fr"). Convert frontend or
+# RSS feed values to the expected English noun before handing off.
+_QWEN_LANG_ALIASES: dict[str, str] = {
+    "en": "English",
+    "eng": "English",
+    "english": "English",
+    "fr": "French",
+    "fra": "French",
+    "fre": "French",
+    "french": "French",
+    "français": "French",
+    "francais": "French",
+    "de": "German",
+    "deu": "German",
+    "ger": "German",
+    "german": "German",
+    "deutsch": "German",
+    "es": "Spanish",
+    "spa": "Spanish",
+    "spanish": "Spanish",
+    "español": "Spanish",
+    "espanol": "Spanish",
+    "it": "Italian",
+    "ita": "Italian",
+    "italian": "Italian",
+    "italiano": "Italian",
+    "pt": "Portuguese",
+    "por": "Portuguese",
+    "portuguese": "Portuguese",
+    "português": "Portuguese",
+    "portugues": "Portuguese",
+    "ru": "Russian",
+    "rus": "Russian",
+    "russian": "Russian",
+    "русский": "Russian",
+    "ja": "Japanese",
+    "jpn": "Japanese",
+    "japanese": "Japanese",
+    "日本語": "Japanese",
+    "ko": "Korean",
+    "kor": "Korean",
+    "korean": "Korean",
+    "한국어": "Korean",
+    "zh": "Chinese",
+    "zho": "Chinese",
+    "chi": "Chinese",
+    "chinese": "Chinese",
+    "中文": "Chinese",
+    "auto": "auto",
+}
+
+
+def _normalize_qwen_language(lang: str) -> str:
+    """Map ISO codes / native names / casings to Qwen3-TTS-accepted form.
+
+    Raises a friendly ValueError instead of qwen_tts's opaque list dump when
+    the language isn't supported.
+    """
+    if not lang:
+        return "auto"
+    key = lang.strip().lower()
+    if key in _QWEN_LANG_ALIASES:
+        return _QWEN_LANG_ALIASES[key]
+    raise ValueError(
+        f"Voice synthesis doesn't support language {lang!r}. "
+        f"Supported: {sorted(set(v for v in _QWEN_LANG_ALIASES.values() if v != 'auto'))}."
+    )
+
+
 # ──────────────────────────────────────────────
 # Generation manifest — tracks what produced each segment
 # ──────────────────────────────────────────────
@@ -638,10 +708,11 @@ def generate_segment(
 
     audio_parts = []
     sr = None
+    qwen_language = _normalize_qwen_language(language)
     for i, chunk in enumerate(chunks):
         wavs, chunk_sr = model.generate_voice_clone(
             text=chunk,
-            language=language,
+            language=qwen_language,
             voice_clone_prompt=clone_prompts[speaker],
             instruct=instruct or None,
         )
@@ -788,6 +859,7 @@ def assemble_episode(
     output_dir: str | Path | None = None,
     strategy: Literal["silence", "original_timing"] = "original_timing",
     silence_duration: float = 0.5,
+    output_path: Path | None = None,
 ) -> Path:
     """
     Assemble generated TTS segments into a final episode audio file.
@@ -803,6 +875,7 @@ def assemble_episode(
         output_dir       : directory relative to audio_path for outputs
         strategy         : assembly strategy
         silence_duration : silence in seconds between segments (strategy="silence" only)
+        output_path      : explicit destination; defaults to p.synthesized (legacy single-file)
 
     Returns:
         Path to the final .wav file
@@ -810,7 +883,7 @@ def assemble_episode(
 
     logger.info(f"Assembling {len(generated)} segments — strategy={strategy}")
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    out_path = p.synthesized
+    out_path = output_path if output_path is not None else p.synthesized
 
     if not generated:
         raise ValueError("No generated segments to assemble.")
@@ -819,12 +892,20 @@ def assemble_episode(
     chunks = []
 
     if strategy == "silence":
-        silence = np.zeros(int(silence_duration * sr), dtype=np.float32)
+        # Speaker-aware pause: short within a turn, longer at speaker changes.
+        # Approximates natural conversational rhythm without the cumulative
+        # bloat a single fixed gap produces.
+        within_pause = max(silence_duration * 0.4, 0.05)
+        across_pause = silence_duration
+        within_silence = np.zeros(int(within_pause * sr), dtype=np.float32)
+        across_silence = np.zeros(int(across_pause * sr), dtype=np.float32)
         for i, seg in enumerate(generated):
             audio, _ = sf.read(str(seg["audio_file"]), dtype="float32")
             chunks.append(audio)
             if i < len(generated) - 1:
-                chunks.append(silence)
+                next_speaker = generated[i + 1].get("speaker") or ""
+                same_speaker = (seg.get("speaker") or "") == next_speaker
+                chunks.append(within_silence if same_speaker else across_silence)
 
     elif strategy == "original_timing":
         cursor = 0.0

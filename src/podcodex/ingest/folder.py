@@ -88,7 +88,16 @@ def _episode_status(
         )
     transcribed = transcript_raw or transcript_val or has_version_transcript
 
-    synthesized = f"{stem}.synthesized.wav" in existing
+    # Match both shapes ({stem}.synthesized.wav legacy + {stem}.synthesized.{id}.wav
+    # versioned), in the show root (existing) and in the nested output dir.
+    prefix = f"{stem}.synthesized."
+    synthesized = any(
+        f.startswith(prefix) and f.endswith(".wav") for f in existing
+    ) or (
+        output_dir is not None
+        and output_dir.is_dir()
+        and any(output_dir.glob(f"{prefix}*.wav"))
+    )
     has_subtitles = any(f.endswith(".vtt") for f in existing)
 
     return {

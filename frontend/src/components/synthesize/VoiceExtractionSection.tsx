@@ -105,10 +105,13 @@ export default function VoiceExtractionSection({
           onClick={() => extractMutation.mutate()}
           disabled={selected.size === 0 || extractMutation.isPending}
           size="sm"
+          variant={status?.voice_samples_extracted ? "outline" : "default"}
         >
           {extractMutation.isPending
             ? "Extracting..."
-            : `Extract ${selected.size} sample${selected.size !== 1 ? "s" : ""}`}
+            : status?.voice_samples_extracted
+              ? `Re-extract ${selected.size} sample${selected.size !== 1 ? "s" : ""}`
+              : `Extract ${selected.size} sample${selected.size !== 1 ? "s" : ""}`}
         </Button>
         {status?.voice_samples_extracted && (
           <span className="text-xs text-success">Samples on disk</span>

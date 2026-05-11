@@ -283,6 +283,161 @@ def save_version(
     return version_id
 
 
+def new_version_id(vtype: str = "raw") -> tuple[datetime, str]:
+    """Return (now, version_id) for a fresh version using the canonical format."""
+    now = datetime.now(timezone.utc)
+    ts_str = now.strftime("%Y%m%dT%H%M%S") + f"{now.microsecond:06d}Z"
+    return now, f"{ts_str}_{vtype}"
+
+
+def save_synthesize_version(
+    base: Path,
+    audio_file: Path,
+    *,
+    version_id: str,
+    now: datetime,
+    strategy: str,
+    silence_duration: float,
+    source_version_id: str | None,
+    language: str,
+    model_size: str | None,
+    segment_count: int,
+    duration_s: float,
+) -> str:
+    """Register an assembled .wav as a synthesize-step version.
+
+    The audio bytes already live on disk at ``audio_file`` (the route writes
+    them via assemble_episode before calling us). Caller pre-allocates
+    ``version_id`` / ``now`` so the filename's id and the DB row's id stay
+    in sync (the file path encodes the id; computing a second timestamp here
+    would silently drift them apart).
+
+    Content hash is `size:<bytes>` rather than a sha256 of the audio — synth
+    rows are addressed by version_id and never deduped against other rows,
+    so a full-file hash would just burn I/O on every Assemble for no signal.
+    """
+    stat = audio_file.stat()
+    file_size_bytes = stat.st_size
+    content_hash = f"size:{file_size_bytes}"
+    meta = VersionMeta(
+        step="synthesize",
+        type="raw",
+        model=model_size,
+        params={
+            "strategy": strategy,
+            "silence_duration": silence_duration,
+            "source_version_id": source_version_id,
+            "language": language,
+            "duration_s": round(duration_s, 2),
+            "file_size_bytes": file_size_bytes,
+            "filename": audio_file.name,
+        },
+        manual_edit=False,
+        input_hash=None,
+        id=version_id,
+        timestamp=now.isoformat(),
+        content_hash=content_hash,
+        segment_count=segment_count,
+    )
+    _get_db(base).insert_version(base.name, "synthesize", asdict(meta))
+    logger.debug("Saved synthesize version {} ({})", version_id, audio_file.name)
+    return version_id
+
+
+def synthesize_version_path(base: Path, version_id: str) -> Path | None:
+    """Resolve a synthesize version's on-disk .wav path from its DB row.
+
+    Returns None if no DB row, or the filename can't be located.
+    """
+    row = _get_db(base).get_version(version_id)
+    if not row or row.get("step") != "synthesize":
+        return None
+    params = row.get("params") or {}
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except Exception:
+            params = {}
+    filename = params.get("filename")
+    if not filename:
+        return None
+    candidate = base.parent / filename
+    return candidate if candidate.is_file() else None
+
+
+def delete_synthesize_version(base: Path, version_id: str) -> bool:
+    """Delete a synthesize version's .wav file + DB row.
+
+    Returns True if either was removed.
+    """
+    p = synthesize_version_path(base, version_id)
+    removed_file = False
+    if p is not None:
+        try:
+            p.unlink()
+            removed_file = True
+        except FileNotFoundError:
+            pass
+    try:
+        removed_row = (
+            _get_db(base).delete_versions(base.name, "synthesize", [version_id]) > 0
+        )
+    except Exception:
+        removed_row = False
+    return removed_file or removed_row
+
+
+def backfill_version_sizes(base: Path, versions: list[dict]) -> None:
+    """Mutate ``versions`` in place to add ``params.file_size_bytes``.
+
+    Stats each backing file once and persists the result back into the DB so
+    subsequent reads skip the stat call. Silently leaves params untouched
+    when the file is missing or stat fails.
+    """
+    db = None
+    for v in versions:
+        params = v.get("params") or {}
+        if not isinstance(params, dict):
+            continue
+        if params.get("file_size_bytes"):
+            v["params"] = params
+            continue
+        step = v.get("step") or ""
+        if step == "synthesize":
+            path = synthesize_version_path(base, v["id"])
+        else:
+            path = _version_path(base, step, v["id"])
+        if path is None or not path.is_file():
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        params["file_size_bytes"] = size
+        v["params"] = params
+        if db is None:
+            db = _get_db(base)
+        # Persist so future list calls don't re-stat; insert_version uses
+        # INSERT OR REPLACE keyed on id, so this just updates the params blob.
+        meta = {
+            "id": v["id"],
+            "timestamp": v["timestamp"],
+            "type": v.get("type", "raw"),
+            "model": v.get("model"),
+            "params": params,
+            "manual_edit": v.get("manual_edit", False),
+            "content_hash": v.get("content_hash"),
+            "segment_count": v.get("segment_count", 0),
+            "input_hash": v.get("input_hash"),
+        }
+        try:
+            db.insert_version(base.name, step, meta)
+        except Exception:
+            logger.opt(exception=True).debug(
+                "file_size_bytes backfill DB write failed for {}", v["id"]
+            )
+
+
 def load_version(base: Path, step: str, version_id: str) -> list[dict]:
     """Load segments for a specific version.
 
@@ -514,6 +669,8 @@ def delete_version_by_id(base: Path, version_id: str) -> bool:
     meta = _get_db(base).get_version(version_id)
     if not meta:
         return False
+    if meta["step"] == "synthesize":
+        return delete_synthesize_version(base, version_id)
     return delete_version(base, meta["step"], version_id)
 
 

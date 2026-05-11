@@ -11,6 +11,10 @@ import {
   getGeneratedSegments,
   assembleEpisode,
   getPipelineConfig,
+  cancelTask,
+  getSynthesizeVersions,
+  getSynthesizeVersionPath,
+  deleteSynthesizeVersion,
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -19,6 +23,7 @@ import MissingDependency from "@/components/common/MissingDependency";
 import ProgressBar from "@/components/editor/ProgressBar";
 import PipelinePanel from "@/components/common/PipelinePanel";
 import { segKey } from "@/lib/segKey";
+import { versionDate } from "@/lib/utils";
 import SourceSegmentPicker, { type ResolvedSource } from "./SourceSegmentPicker";
 import VoiceExtractionSection from "./VoiceExtractionSection";
 import TTSGenerationSection from "./TTSGenerationSection";
@@ -40,7 +45,7 @@ export default function SynthesizePanel() {
   const [force, setForce] = useState(false);
   const [onlySpeakers, setOnlySpeakers] = useState<string[]>([]);
   const [assembleStrategy, setAssembleStrategy] = useState("original_timing");
-  const [silenceDuration, setSilenceDuration] = useState(0.5);
+  const [silenceDuration, setSilenceDuration] = useState(0.2);
   const [expanded, setExpanded] = useState(!episode?.synthesized);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [expandedSeg, setExpandedSeg] = useState<string | null>(null);
@@ -59,6 +64,7 @@ export default function SynthesizePanel() {
   });
   const [sourceSelection, setSourceSelection] = useState<Set<string>>(() => new Set());
   const [sourceSegments, setSourceSegments] = useState<Segment[]>([]);
+  const [selectedSynthVersionId, setSelectedSynthVersionId] = useState<string | null>(null);
 
   const { data: pipelineConfig } = useQuery({
     queryKey: queryKeys.pipelineConfig(),
@@ -82,25 +88,21 @@ export default function SynthesizePanel() {
     return [...set].sort();
   }, [sourceSegments]);
 
-  // Effective working set: only segments the user kept checked in the
-  // source picker. Unchecked rows are dropped from voice sampling AND
-  // from the generated output.
-  const workingSegments = useMemo(
-    () => sourceSegments.filter((seg) => sourceSelection.has(segKey(seg))),
-    [sourceSegments, sourceSelection],
-  );
-
-  // Group the working set by OUTPUT speaker (after applying reassignments).
+  // Group the FULL source by OUTPUT speaker (after applying reassignments)
+  // for voice sample extraction / clip browsing. Independent of the source
+  // picker's checkbox scope — narrowing synthesis shouldn't starve the
+  // cloned voice of source clips. The narrowed scope is sent to the backend
+  // separately as `keep_segment_keys` for the generation step only.
   const segmentsBySpeaker = useMemo(() => {
     const grouped: Record<string, Segment[]> = {};
-    for (const seg of workingSegments) {
+    for (const seg of sourceSegments) {
       const sp = seg.speaker || "";
       if (!sp || sp === "[BREAK]" || sp === "UNKNOWN" || sp === "UNK") continue;
       const effectiveSpeaker = speakerOverrides[segKey(seg)] || sp;
       (grouped[effectiveSpeaker] ??= []).push(seg);
     }
     return grouped;
-  }, [workingSegments, speakerOverrides]);
+  }, [sourceSegments, speakerOverrides]);
 
   const { data: voiceSamples, refetch: refetchVoiceSamples } = useQuery({
     queryKey: queryKeys.synthesizeVoices(episode?.audio_path),
@@ -114,15 +116,33 @@ export default function SynthesizePanel() {
     enabled: !!episode?.audio_path && !!status?.tts_segments_generated,
   });
 
+  const { data: synthVersions } = useQuery({
+    queryKey: queryKeys.synthesizeVersions(episode?.audio_path ?? episode?.output_dir),
+    queryFn: () => getSynthesizeVersions(episode?.audio_path, episode?.output_dir),
+    enabled: (!!episode?.audio_path || !!episode?.output_dir) && !!status?.synthesized,
+  });
+
+  const activeSynthVersion = synthVersions?.find((v) => v.id === selectedSynthVersionId) ?? synthVersions?.[0];
+
+  const deleteSynthVersionMutation = useMutation({
+    mutationFn: (versionId: string) =>
+      deleteSynthesizeVersion(episode?.audio_path, versionId, episode?.output_dir),
+    onSuccess: () => {
+      setSelectedSynthVersionId(null);
+      refreshQueries();
+    },
+  });
+
   const refreshQueries = useCallback(() => {
     refetchStatus();
     queryClient.invalidateQueries({ queryKey: queryKeys.synthesizeAll() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.synthesizeVersions(episode?.audio_path) });
     queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-  }, [queryClient, refetchStatus]);
+  }, [queryClient, refetchStatus, episode?.audio_path]);
 
   const extractMutation = useMutation({
     mutationFn: () => {
-      const selections = workingSegments
+      const selections = sourceSegments
         .filter((seg) => selected.has(segKey(seg)))
         .map((seg) => ({
           speaker: speakerOverrides[segKey(seg)] || seg.speaker || "",
@@ -169,10 +189,14 @@ export default function SynthesizePanel() {
         audio_path: episode!.audio_path!,
         strategy: assembleStrategy,
         silence_duration: silenceDuration,
+        language,
+        model_size: modelSize,
+        source_version_id: resolvedSource.sourceVersionId ?? undefined,
       }),
-    onSuccess: () => {
+    onSuccess: (data) => {
       refreshQueries();
       setExpanded(false);
+      setSelectedSynthVersionId(data.version_id);
     },
   });
 
@@ -218,14 +242,13 @@ export default function SynthesizePanel() {
           description="Voice cloning and TTS generation require soundfile, qwen-tts, and other dependencies from the pipeline extra."
         />
       ) : undefined}
-      status={plainStatus(!!episode.synthesized)}
+      status={plainStatus(!!episode.synthesized || !!status?.synthesized)}
       expanded={expanded && !isRunning}
       onToggle={() => setExpanded(!expanded)}
       rerunLabel="Re-run synthesis"
       taskId={null}
       onRetry={handleRetry}
       onDismiss={handleDismiss}
-      emptyMessage="Synthesis pipeline not yet run for this episode."
       controls={!isRunning ? (
         <div className="px-4 pb-3 space-y-4">
           <SourceSegmentPicker
@@ -296,7 +319,8 @@ export default function SynthesizePanel() {
           taskId={extractTaskId}
           onComplete={() => { refreshQueries(); setExtractTaskId(null); }}
           onRetry={() => { setExtractTaskId(null); extractMutation.mutate(); }}
-          onDismiss={() => setExtractTaskId(null)}
+          onDismiss={() => { cancelTask(extractTaskId).catch(() => {}); setExtractTaskId(null); }}
+          onCancel={() => { cancelTask(extractTaskId).catch(() => {}); setExtractTaskId(null); }}
         />
       )}
       {generateTaskId && (
@@ -304,23 +328,73 @@ export default function SynthesizePanel() {
           taskId={generateTaskId}
           onComplete={() => { refreshQueries(); setGenerateTaskId(null); }}
           onRetry={() => { setGenerateTaskId(null); generateMutation.mutate(); }}
-          onDismiss={() => setGenerateTaskId(null)}
+          onDismiss={() => { cancelTask(generateTaskId).catch(() => {}); setGenerateTaskId(null); }}
+          onCancel={() => { cancelTask(generateTaskId).catch(() => {}); setGenerateTaskId(null); }}
         />
       )}
 
-      {/* Result — shown when synthesized and controls collapsed */}
-      {status?.synthesized && !expanded && !isRunning && (
+      {/* Result — visible whenever synthesized, regardless of whether
+          re-run controls are expanded above. */}
+      {status?.synthesized && !isRunning && (
         <div className="p-4 space-y-3">
-          {assembleMutation.data && (
-            <p className="text-xs text-success">
-              Assembled ({(assembleMutation.data.duration / 60).toFixed(1)} min)
-            </p>
+          {synthVersions && synthVersions.length > 0 && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">Version</span>
+              <select
+                value={activeSynthVersion?.id ?? ""}
+                onChange={(e) => setSelectedSynthVersionId(e.target.value)}
+                className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border max-w-[18rem]"
+              >
+                {synthVersions.map((v, i) => {
+                  const params = (v.params ?? {}) as { strategy?: string; language?: string; duration_s?: number };
+                  const parts = [
+                    i === 0 ? "Latest" : null,
+                    versionDate(v),
+                    params.language,
+                    params.strategy,
+                    params.duration_s ? `${(params.duration_s / 60).toFixed(1)}m` : null,
+                  ].filter(Boolean);
+                  return (
+                    <option key={v.id} value={v.id}>
+                      {parts.join(" · ")}
+                    </option>
+                  );
+                })}
+              </select>
+              {activeSynthVersion && synthVersions.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm("Delete this synthesized version?")) {
+                      deleteSynthVersionMutation.mutate(activeSynthVersion.id);
+                    }
+                  }}
+                  className="text-xs text-muted-foreground hover:text-destructive transition px-1"
+                  title="Delete this version"
+                  disabled={deleteSynthVersionMutation.isPending}
+                >
+                  Delete
+                </button>
+              )}
+            </div>
           )}
           <Button
             variant="outline"
             size="sm"
-            onClick={() => {
-              const synthPath = assembleMutation.data?.path || episode.audio_path!.replace(/\.[^.]+$/, ".synthesized.wav");
+            disabled={!activeSynthVersion && !assembleMutation.data}
+            onClick={async () => {
+              let synthPath: string | null = null;
+              if (activeSynthVersion) {
+                try {
+                  const v = await getSynthesizeVersionPath(episode.audio_path, activeSynthVersion.id, episode.output_dir);
+                  synthPath = v.path;
+                } catch {
+                  return;
+                }
+              } else {
+                synthPath = assembleMutation.data?.path ?? episode.audio_path!.replace(/\.[^.]+$/, ".synthesized.wav");
+              }
+              if (!synthPath) return;
               setAudioMeta(synthPath, { title: `${episode.title} (Synthesized)`, showName: showMeta?.name });
               seekTo(synthPath, 0);
             }}

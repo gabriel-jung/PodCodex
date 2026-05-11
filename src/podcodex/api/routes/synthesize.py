@@ -25,13 +25,18 @@ async def synthesis_status(
     output_dir: str | None = Query(None),
 ) -> dict:
     """Check which synthesis artifacts exist on disk."""
+    from podcodex.core.versions import list_versions
+
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     voice_dir = p.voice_samples_dir
     tts_dir = p.tts_segments_dir
+    # Synthesized if either the legacy single-file path exists OR any
+    # versioned synth row is registered in the DB.
+    synthesized = p.synthesized.exists() or bool(list_versions(p.base, "synthesize"))
     return {
         "voice_samples_extracted": voice_dir.is_dir() and any(voice_dir.glob("*.wav")),
         "tts_segments_generated": tts_dir.is_dir() and any(tts_dir.glob("*.wav")),
-        "synthesized": p.synthesized.exists(),
+        "synthesized": synthesized,
     }
 
 
@@ -307,6 +312,9 @@ class AssembleRequest(BaseModel):
     output_dir: str | None = None
     strategy: str = "original_timing"
     silence_duration: float = 0.5
+    language: str = ""
+    model_size: str | None = None
+    source_version_id: str | None = None
 
     @field_validator("silence_duration")
     @classmethod
@@ -317,10 +325,71 @@ class AssembleRequest(BaseModel):
         return v
 
 
+def _versioned_synth_path(base, version_id: str):
+    """Versioned filename next to the legacy single-file synthesized path."""
+    return base.parent / f"{base.name}.synthesized.{version_id}.wav"
+
+
+@router.get("/versions")
+async def list_synthesize_versions(
+    audio_path: str | None = Query(None),
+    output_dir: str | None = Query(None),
+) -> list[dict]:
+    """List all assembled synthesis versions for an episode (newest first)."""
+    from podcodex.api.routes._helpers import require_audio_or_output
+    from podcodex.core.versions import backfill_version_sizes, list_versions
+
+    require_audio_or_output(audio_path, output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    versions = list_versions(p.base, "synthesize")
+    backfill_version_sizes(p.base, versions)
+    return versions
+
+
+@router.get("/versions/{version_id}")
+async def get_synthesize_version(
+    version_id: str,
+    audio_path: str | None = Query(None),
+    output_dir: str | None = Query(None),
+) -> dict:
+    """Return the on-disk path + duration for a specific synth version."""
+    from podcodex.api.routes._helpers import require_audio_or_output
+    from podcodex.core.versions import synthesize_version_path
+
+    require_audio_or_output(audio_path, output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    path = synthesize_version_path(p.base, version_id)
+    if path is None:
+        raise HTTPException(404, f"Synthesize version {version_id} not found")
+    import soundfile as sf
+
+    info = sf.info(str(path))
+    return {"path": str(path), "duration": info.duration, "version_id": version_id}
+
+
+@router.delete("/versions/{version_id}")
+async def remove_synthesize_version(
+    version_id: str,
+    audio_path: str | None = Query(None),
+    output_dir: str | None = Query(None),
+) -> dict:
+    """Delete a synth version (.wav + DB row)."""
+    from podcodex.api.routes._helpers import require_audio_or_output
+    from podcodex.core.versions import delete_synthesize_version
+
+    require_audio_or_output(audio_path, output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    removed = delete_synthesize_version(p.base, version_id)
+    if not removed:
+        raise HTTPException(404, f"Synthesize version {version_id} not found")
+    return {"status": "deleted", "version_id": version_id}
+
+
 @router.post("/assemble")
 async def assemble(req: AssembleRequest) -> dict:
-    """Assemble generated TTS segments into a final episode audio file."""
+    """Assemble generated TTS segments into a versioned final episode audio file."""
     from podcodex.core.synthesize import assemble_episode, load_generated_segments
+    from podcodex.core.versions import new_version_id, save_synthesize_version
 
     p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
 
@@ -333,6 +402,9 @@ async def assemble(req: AssembleRequest) -> dict:
     if not generated:
         raise HTTPException(404, "No generated TTS segments found")
 
+    now, version_id = new_version_id("raw")
+    versioned_path = _versioned_synth_path(p.base, version_id)
+
     try:
         out_path = assemble_episode(
             generated,
@@ -340,6 +412,7 @@ async def assemble(req: AssembleRequest) -> dict:
             output_dir=req.output_dir,
             strategy=req.strategy,
             silence_duration=req.silence_duration,
+            output_path=versioned_path,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -347,7 +420,35 @@ async def assemble(req: AssembleRequest) -> dict:
     import soundfile as sf
 
     info = sf.info(str(out_path))
+    save_synthesize_version(
+        p.base,
+        out_path,
+        version_id=version_id,
+        now=now,
+        strategy=req.strategy,
+        silence_duration=req.silence_duration,
+        source_version_id=req.source_version_id,
+        language=req.language,
+        model_size=req.model_size,
+        segment_count=len(generated),
+        duration_s=info.duration,
+    )
+    # Flip the per-show pipeline DB flag. The /unified episodes route reads
+    # synthesized from this table (not from disk on every request), so without
+    # an explicit mark here the overview StageCard stays stuck on "not started"
+    # forever after the first populate_from_scan.
+    from podcodex.core.pipeline_db import get_pipeline_db
+
+    show_folder = Path(req.audio_path).parent
+    get_pipeline_db(show_folder).mark(p.base.name, synthesized=True)
+
+    # Drop folder scan cache so any disk-based fallback also reflects the
+    # fresh state on the next read.
+    from podcodex.ingest.folder import invalidate_scan_cache
+
+    invalidate_scan_cache(show_folder)
     return {
         "path": str(out_path),
         "duration": info.duration,
+        "version_id": version_id,
     }

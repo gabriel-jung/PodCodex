@@ -42,8 +42,15 @@ def _wire_ml_caches() -> None:
     models_dir = Path(data_dir) / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
 
+    hub_cache = str(models_dir / "huggingface" / "hub")
     os.environ.setdefault("HF_HOME", str(models_dir / "huggingface"))
-    os.environ.setdefault("HF_HUB_CACHE", str(models_dir / "huggingface" / "hub"))
+    os.environ.setdefault("HF_HUB_CACHE", hub_cache)
+    # transformers.utils.hub.cached_file() in some library code paths (e.g.
+    # qwen_tts.from_pretrained) looks up via TRANSFORMERS_CACHE and falls back
+    # to HF_HOME/transformers when unset — a stub dir that misses the files
+    # snapshot_download placed under HF_HUB_CACHE. Point both at the same dir
+    # so library halves can't disagree on where the cache lives.
+    os.environ.setdefault("TRANSFORMERS_CACHE", hub_cache)
     os.environ.setdefault("TORCH_HOME", str(models_dir / "torch"))
     os.environ.setdefault(
         "SENTENCE_TRANSFORMERS_HOME", str(models_dir / "sentence-transformers")

@@ -398,6 +398,9 @@ export interface AssembleRequest {
   output_dir?: string | null;
   strategy?: string;
   silence_duration?: number;
+  language?: string;
+  model_size?: string | null;
+  source_version_id?: string | null;
 }
 
 export interface YouTubeDownloadRequest {
