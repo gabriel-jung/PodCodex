@@ -513,6 +513,9 @@ function PluginsPanel() {
       setPendingAction(null);
       qc.invalidateQueries({ queryKey: queryKeys.capabilities() });
       qc.invalidateQueries({ queryKey: queryKeys.health() });
+      // Extras gate which whisper / embedding models pipelineConfig serves.
+      qc.invalidateQueries({ queryKey: queryKeys.pipelineConfig() });
+      qc.invalidateQueries({ queryKey: queryKeys.models() });
     },
   });
 
@@ -523,6 +526,8 @@ function PluginsPanel() {
       setPendingAction(null);
       qc.invalidateQueries({ queryKey: queryKeys.capabilities() });
       qc.invalidateQueries({ queryKey: queryKeys.health() });
+      qc.invalidateQueries({ queryKey: queryKeys.pipelineConfig() });
+      qc.invalidateQueries({ queryKey: queryKeys.models() });
     },
   });
 

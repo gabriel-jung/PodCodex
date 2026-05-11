@@ -36,7 +36,7 @@ Point it at audio. Six steps, all on your machine:
 
 4. **Index & search**
    - Search across your whole library by meaning or exact phrase.
-   - Split each transcript into smaller pieces using [Chonkie](https://github.com/chonkie-inc/chonkie), and vectorize with [BGE-M3](https://huggingface.co/BAAI/bge-m3), [E5](https://huggingface.co/collections/intfloat/multilingual-e5-text-embeddings) or [Perplexity](https://huggingface.co/collections/perplexity-ai/pplx-embed) embedder models for semantic retrieval.
+   - Split each transcript into smaller pieces using [Chonkie](https://github.com/chonkie-inc/chonkie), and vectorize with [BGE-M3](https://huggingface.co/BAAI/bge-m3), [E5 (small / large)](https://huggingface.co/collections/intfloat/multilingual-e5-text-embeddings) or [Perplexity (0.6B / 4B)](https://huggingface.co/collections/perplexity-ai/pplx-embed) embedder models for semantic retrieval.
    - Local [LanceDB](https://github.com/lancedb/lancedb) index on your disk: stores the vectors and powers fast search.
 
 5. **Translate** *(optional)*
@@ -57,20 +57,20 @@ Each step is saved with its model and settings to a SQLite database. Roll back a
 
 Direct download (latest):
 
-- **macOS (Apple Silicon)**: [PodCodex-macos-arm64.dmg](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-macos-arm64.dmg)
-- **Windows x64**: [PodCodex-windows-x64.msi](https://github.com/gabriel-jung/podcodex/releases/latest/download/PodCodex-windows-x64.msi)
+- **macOS (Apple Silicon)**: [PodCodex-macos-arm64.dmg](https://github.com/gabriel-jung/PodCodex/releases/latest/download/PodCodex-macos-arm64.dmg)
+- **Windows x64**: [PodCodex-windows-x64.msi](https://github.com/gabriel-jung/PodCodex/releases/latest/download/PodCodex-windows-x64.msi)
 
-All assets + checksums on the [Releases](https://github.com/gabriel-jung/podcodex/releases) page.
+All assets + checksums on the [Releases](https://github.com/gabriel-jung/PodCodex/releases) page.
 
 PodCodex shells out to a system [FFmpeg](https://ffmpeg.org/download.html) install for transcription, clip extraction, and synthesis. Install it before first launch (the app's first-run check surfaces a dialog if missing).
 
-**macOS quarantine on first launch.** The DMG is not yet signed/notarized, so Gatekeeper will say *"PodCodex.app is damaged and can't be opened"*. The app is fine. Drag it to `/Applications`, then once:
+**macOS quarantine on first launch.** The DMG ships unsigned, so Gatekeeper will say *"PodCodex.app is damaged and can't be opened"*. The app is fine. Drag it to `/Applications`, then once:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/PodCodex.app
 ```
 
-Subsequent launches don't need it. Signing + notarization is a v0.1.0 blocker.
+Subsequent launches don't need it.
 
 ### Local LLM *(optional)*
 
@@ -88,7 +88,7 @@ You'll need:
 **Install:**
 
 ```bash
-git clone https://github.com/gabriel-jung/podcodex && cd podcodex
+git clone https://github.com/gabriel-jung/PodCodex && cd PodCodex
 make setup          # uv sync + npm install
 ```
 

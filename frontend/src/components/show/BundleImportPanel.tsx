@@ -1,9 +1,10 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { FolderOpen, Loader2, Package, AlertTriangle } from "lucide-react";
 
 import { getConfig, importBundle, previewBundle } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
+import { removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import type { ImportRequest, ImportResult } from "@/api/generated-types";
 import { Button } from "@/components/ui/button";
 import FolderPicker from "@/components/common/FolderPicker";
@@ -17,6 +18,7 @@ interface Props {
 }
 
 export default function BundleImportPanel({ onImported }: Props) {
+  const queryClient = useQueryClient();
   const { data: config } = useQuery({
     queryKey: queryKeys.config(),
     queryFn: getConfig,
@@ -57,6 +59,12 @@ export default function BundleImportPanel({ onImported }: Props) {
     },
     onSuccess: (res: ImportResult) => {
       const finalFolder = res.shows_imported[0] ?? null;
+      // Import can replace the show at the same folder path — drop any
+      // pre-import cache entries pointing under it.
+      if (finalFolder) removeQueriesUnderPath(queryClient, finalFolder);
+      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+      queryClient.invalidateQueries({ queryKey: ["search"] });
       onImported(res.shows_dir, finalFolder);
     },
   });

@@ -37,7 +37,7 @@ If you cloned the repo and run from source, add the `gpu-pascal` extra
 instead of `gpu`:
 
 ```bash
-git clone https://github.com/gabriel-jung/podcodex && cd podcodex
+git clone https://github.com/gabriel-jung/PodCodex && cd PodCodex
 uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp --extra gpu-pascal
 ```
 
@@ -50,14 +50,15 @@ add both.
 ## Install path B — pre-built bundle + manual swap
 
 If you installed the `.dmg` / `.msi` and don't want to clone the repo,
-swap torch in the bundled venv after install. Bundled venv path per OS:
+swap torch in the GPU backend's pip target after the in-app GPU
+activation completes. GPU backend install path per OS:
 
-- **macOS:** N/A — Apple Silicon doesn't have CUDA. Pascal is x86 NVIDIA only.
-- **Linux:** `~/.local/share/PodCodex/server-core/_internal/` (PyInstaller `--onedir` GPU sidecar).
-- **Windows:** `%LOCALAPPDATA%\PodCodex\server-core\_internal\` (same layout).
+- **macOS:** N/A, Apple Silicon doesn't have CUDA. Pascal is x86 NVIDIA only.
+- **Linux:** `~/.local/share/podcodex/backends/gpu/`
+- **Windows:** `%APPDATA%\podcodex\backends\gpu\`
 
 ```bash
-# from the bundle's _internal directory
+# from the GPU backend directory shown above
 uv pip install torch torchaudio \
     --index-url https://download.pytorch.org/whl/cu126 \
     --reinstall --no-deps

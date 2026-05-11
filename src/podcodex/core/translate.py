@@ -37,7 +37,7 @@ from podcodex.core.versions import _get_db, save_version
 
 
 def _build_prompt(
-    context: str = "", source_lang: str = "French", target_lang: str = "English"
+    context: str = "", source_lang: str = "English", target_lang: str = "French"
 ) -> str:
     """Build the system prompt for transcript translation."""
     return build_llm_prompt(
@@ -68,8 +68,8 @@ Output format — CRITICAL RULES:
 def build_manual_prompt(
     segments: list[dict],
     context: str = "",
-    source_lang: str = "French",
-    target_lang: str = "English",
+    source_lang: str = "English",
+    target_lang: str = "French",
     start_index: int = 0,
 ) -> str:
     """Generate a prompt to paste into a LLM UI for manual translation."""
@@ -86,8 +86,8 @@ def build_manual_prompts_batched(
     segments: list[dict],
     batch_minutes: float = DEFAULT_BATCH_MINUTES,
     context: str = "",
-    source_lang: str = "French",
-    target_lang: str = "English",
+    source_lang: str = "English",
+    target_lang: str = "French",
 ) -> list[tuple[list[dict], str]]:
     """Split segments into time-based batches and return one prompt per batch."""
     return build_batched_manual_prompts(
@@ -112,8 +112,8 @@ def translate_segments(
     segments: list[dict],
     mode: str = "ollama",
     context: str = "",
-    source_lang: str = "French",
-    target_lang: str = "English",
+    source_lang: str = "English",
+    target_lang: str = "French",
     model: str = "",
     api_base_url: str = "",
     api_key: str | None = None,

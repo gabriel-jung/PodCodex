@@ -31,6 +31,7 @@ import {
   Play,
   Pause,
   Trash2,
+  RotateCcw,
   Merge,
   Scissors,
   Search,
@@ -209,6 +210,7 @@ interface SegmentViewRowProps {
   flagReasonText: string | null;
   isChanged: boolean;
   isPendingRemoval?: boolean;
+  isDeleted?: boolean;
   selected: boolean;
   onToggleSelect: (origIdx: number) => void;
   audioPath?: string;
@@ -219,6 +221,7 @@ interface SegmentViewRowProps {
   onSpeakerChange: (origIdx: number, speaker: string) => void;
   onTimestampChange: (origIdx: number, field: "start" | "end", value: number) => void;
   onDelete: (origIdx: number) => void;
+  onRestore?: (origIdx: number) => void;
   onDismissFlag?: (origIdx: number) => void;
   onInsertBefore?: (origIdx: number, segment: Segment) => void;
   onInsertAfter?: (origIdx: number, segment: Segment) => void;
@@ -238,6 +241,7 @@ const SegmentViewRow = memo(function SegmentViewRow({
   flagReasonText,
   isChanged,
   isPendingRemoval,
+  isDeleted,
   audioPath,
   speakers,
   showSpeaker,
@@ -246,6 +250,7 @@ const SegmentViewRow = memo(function SegmentViewRow({
   onSpeakerChange,
   onTimestampChange,
   onDelete,
+  onRestore,
   onDismissFlag,
   onInsertBefore,
   onInsertAfter,
@@ -535,13 +540,23 @@ const SegmentViewRow = memo(function SegmentViewRow({
         {showDelete && (
           <>
             <span className="mx-1 h-3 w-px bg-border/60" aria-hidden />
-            <button
-              onClick={() => onDelete(originalIndex)}
-              className="text-muted-foreground hover:text-destructive p-1 rounded hover:bg-destructive/10 transition"
-              title="Delete segment"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
+            {isDeleted && onRestore ? (
+              <button
+                onClick={() => onRestore(originalIndex)}
+                className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
+                title="Restore segment"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <button
+                onClick={() => onDelete(originalIndex)}
+                className="text-muted-foreground hover:text-destructive p-1 rounded hover:bg-destructive/10 transition"
+                title="Delete segment"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
           </>
         )}
       </div>
@@ -788,6 +803,13 @@ export default function TranscriptViewer({
       queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments(editorKey, audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.stepVersions(editorKey, audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+      // An edited segment fans out to every cross-step view of this episode.
+      queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.speakerMap(audioPath) });
+      queryClient.invalidateQueries({ queryKey: ["speakerRoster"] });
+      queryClient.invalidateQueries({ queryKey: ["search"] });
+      queryClient.invalidateQueries({ queryKey: ["index"] });
     },
   });
 
@@ -797,6 +819,8 @@ export default function TranscriptViewer({
       queryClient.invalidateQueries({ queryKey: queryKeys.stepVersions(editorKey, audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments(editorKey, audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
     },
   });
 
@@ -1051,15 +1075,20 @@ export default function TranscriptViewer({
     setRecentlyEdited((prev) => (prev.size === 0 ? prev : new Set()));
   }, [filters.page, filters.showFlaggedOnly, filters.showChangedOnly, filters.showRemovedOnly, filters.speakerFilter, filters.searchQuery]);
 
+  const deletedSet = editor.deletedSet;
   const isPendingRemovalSeg = useCallback(
-    (seg: Segment) => pendingRemovals.has(seg.speaker),
-    [pendingRemovals],
+    (seg: Segment, origIdx: number) =>
+      pendingRemovals.has(seg.speaker) || deletedSet.has(origIdx),
+    [pendingRemovals, deletedSet],
   );
 
-  const pendingRemovalCount = useMemo(
-    () => editor.editedSegments.filter(isPendingRemovalSeg).length,
-    [editor.editedSegments, isPendingRemovalSeg],
-  );
+  const pendingRemovalCount = useMemo(() => {
+    let n = 0;
+    for (let i = 0; i < editor.allEditedSegments.length; i++) {
+      if (isPendingRemovalSeg(editor.allEditedSegments[i], editor.allOriginalIndices[i])) n++;
+    }
+    return n;
+  }, [editor.allEditedSegments, editor.allOriginalIndices, isPendingRemovalSeg]);
 
   // Stable row callbacks — keyed by originalIndex so each row's props stay
   // reference-equal across renders. Paired with React.memo on SegmentViewRow
@@ -1070,6 +1099,7 @@ export default function TranscriptViewer({
   const editorUpdateSpeaker = editor.updateSpeaker;
   const editorUpdateTimestamp = editor.updateTimestamp;
   const editorDeleteSegment = editor.deleteSegment;
+  const editorRestoreSegment = editor.restoreSegment;
   const editorInsertAfter = editor.insertAfter;
   const editorSplitAt = editor.splitAt;
   const handleRowTextChange = useCallback((idx: number, text: string) => {
@@ -1090,6 +1120,9 @@ export default function TranscriptViewer({
   const handleRowDelete = useCallback((idx: number) => {
     editorDeleteSegment(idx);
   }, [editorDeleteSegment]);
+  const handleRowRestore = useCallback((idx: number) => {
+    editorRestoreSegment(idx);
+  }, [editorRestoreSegment]);
   const handleRowInsertBefore = useCallback((idx: number, seg: Segment) => {
     editorInsertAfter(idx - 1, {
       speaker: seg.speaker,
@@ -1116,8 +1149,8 @@ export default function TranscriptViewer({
   );
 
   const { displaySegments, pageSegments, totalPages, flaggedCount } = useFilteredSegments(
-    editor.editedSegments,
-    editor.originalIndices,
+    editor.allEditedSegments,
+    editor.allOriginalIndices,
     filters,
     { dismissedFlags, isChanged, recentlyEdited, customPatterns, isPendingRemoval: isPendingRemovalSeg },
   );
@@ -1691,7 +1724,8 @@ export default function TranscriptViewer({
                   isFlagged={flagged}
                   flagReasonText={flagged ? reason : null}
                   isChanged={isChanged(segment, originalIndex)}
-                  isPendingRemoval={pendingRemovals.has(segment.speaker)}
+                  isPendingRemoval={pendingRemovals.has(segment.speaker) || deletedSet.has(originalIndex)}
+                  isDeleted={deletedSet.has(originalIndex)}
                   selected={selectedIndices.has(originalIndex)}
                   onToggleSelect={toggleSelect}
                   audioPath={audioPath}
@@ -1702,6 +1736,7 @@ export default function TranscriptViewer({
                   onSpeakerChange={handleRowSpeakerChange}
                   onTimestampChange={handleRowTimestampChange}
                   onDelete={handleRowDelete}
+                  onRestore={handleRowRestore}
                   onDismissFlag={showFlags ? dismissFlag : undefined}
                   onInsertBefore={handleRowInsertBefore}
                   onInsertAfter={handleRowInsertAfter}

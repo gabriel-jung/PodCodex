@@ -72,7 +72,7 @@ Follow the official install guide: <https://docs.astral.sh/uv/getting-started/in
 ### 2. Clone and sync
 
 ```bash
-git clone https://github.com/<you>/PodCodex.git
+git clone https://github.com/gabriel-jung/PodCodex.git
 cd PodCodex
 uv sync --extra bot --extra rag
 ```
@@ -157,7 +157,7 @@ sudo journalctl -u podcodex-bot -f
 Assumes Docker Engine with the compose plugin is installed.
 
 ```bash
-git clone https://github.com/<you>/PodCodex.git
+git clone https://github.com/gabriel-jung/PodCodex.git
 cd PodCodex/deploy
 cp .env.example .env           # edit: DISCORD_TOKEN, optional provider key
 docker compose up -d --build bot
@@ -307,17 +307,22 @@ Bundle format records each collection's embedding model + chunker in a manifest 
 
 | Command                              | Who      | Description                                      |
 | ------------------------------------ | -------- | ------------------------------------------------ |
-| `/search question [show] [...]`      | Everyone | Hybrid keyword + semantic search                 |
-| `/exact query [show] [...]`          | Everyone | Literal substring match (+ accent variants, 1-edit typos) |
-| `/random [show] [...]`               | Everyone | Random quote                                     |
-| `/stats [show]`                      | Everyone | Index overview                                   |
-| `/episodes show`                     | Everyone | List episodes for a show                         |
+| `/search question`                   | Everyone | Hybrid keyword + semantic search (server defaults) |
+| `/search-advanced question […]`      | Everyone | Search with full control over retrieval tuning   |
+| `/exact query`                       | Everyone | Literal substring match (case-insensitive, like Ctrl+F) |
+| `/exact-advanced query […]`          | Everyone | Literal match with source and date filters       |
+| `/random`                            | Everyone | Random quote                                     |
+| `/random-advanced […]`               | Everyone | Random quote with source and date filters        |
+| `/stats [show]`                      | Everyone | Index overview: shows, episodes, segments, duration |
+| `/episodes show`                     | Everyone | List episodes for a show with segment count + duration |
+| `/speakers [show]`                   | Everyone | Chunk count and airtime per speaker              |
 | `/help`                              | Everyone | Show available commands                          |
 | `/setup [model] [top_k] …`           | Admin    | Configure server defaults                        |
 | `/unlock password`                   | Admin    | Unlock a show (password identifies the show)     |
 | `/lock show`                         | Admin    | Remove a show from this server                   |
 | `/changepassword show`               | Admin    | Rotate password for an unlocked show             |
 | `/sync`                              | Admin    | Manually re-sync slash commands                  |
+| `/admin-reload`                      | Admin    | Reconnect to the index and reload show passwords |
 
 ---
 

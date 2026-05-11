@@ -17,6 +17,7 @@ type EditorAction =
   | { type: "SET_TIMESTAMP"; index: number; field: "start" | "end"; value: number }
   | { type: "DELETE"; index: number }
   | { type: "DELETE_FLAGGED"; indices: number[] }
+  | { type: "RESTORE"; index: number }
   | { type: "INSERT"; afterIndex: number; segment: Segment }
   | { type: "RESET"; segments: Segment[] }
   | { type: "UNDO" }
@@ -65,6 +66,13 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
       const history = pushHistory(state);
       const deleted = new Set(state.deleted);
       for (const idx of action.indices) deleted.add(idx);
+      return { ...state, history, deleted };
+    }
+    case "RESTORE": {
+      if (!state.deleted.has(action.index)) return state;
+      const history = pushHistory(state);
+      const deleted = new Set(state.deleted);
+      deleted.delete(action.index);
       return { ...state, history, deleted };
     }
     case "INSERT": {
@@ -173,6 +181,12 @@ export interface UseSegmentsReturn {
   editedSegments: Segment[];
   /** Maps each editedSegments index to its original index in the source array. */
   originalIndices: number[];
+  /** Every segment, including ones pending removal. Save-side still uses editedSegments. */
+  allEditedSegments: Segment[];
+  /** Original index per entry in allEditedSegments. */
+  allOriginalIndices: number[];
+  /** Direct read access to the pending-delete set — for predicates that key by originalIndex. */
+  deletedSet: ReadonlySet<number>;
   isDirty: boolean;
   deletedCount: number;
   canUndo: boolean;
@@ -182,6 +196,7 @@ export interface UseSegmentsReturn {
   updateTimestamp: (index: number, field: "start" | "end", value: number) => void;
   deleteSegment: (index: number) => void;
   deleteFlagged: () => void;
+  restoreSegment: (index: number) => void;
   insertAfter: (index: number, segment: Segment) => void;
   mergeWithNext: (index: number, speaker?: string) => void;
   /** Returns the next non-deleted segment's data (for merge dialog). */
@@ -201,17 +216,27 @@ export function useSegments(
     history: [],
   });
 
-  const { editedSegments, originalIndices } = useMemo(() => {
+  const { editedSegments, originalIndices, allEditedSegments, allOriginalIndices } = useMemo(() => {
     const segs: Segment[] = [];
     const indices: number[] = [];
+    const allSegs: Segment[] = [];
+    const allIndices: number[] = [];
     for (let i = 0; i < state.original.length; i++) {
-      if (state.deleted.has(i)) continue;
       const seg = state.original[i];
       const edit = state.edits.get(i);
-      segs.push(edit ? { ...seg, ...edit } : seg);
+      const merged = edit ? { ...seg, ...edit } : seg;
+      allSegs.push(merged);
+      allIndices.push(i);
+      if (state.deleted.has(i)) continue;
+      segs.push(merged);
       indices.push(i);
     }
-    return { editedSegments: segs, originalIndices: indices };
+    return {
+      editedSegments: segs,
+      originalIndices: indices,
+      allEditedSegments: allSegs,
+      allOriginalIndices: allIndices,
+    };
   }, [state.original, state.edits, state.deleted]);
 
   const isDirty = state.edits.size > 0 || state.deleted.size > 0
@@ -256,6 +281,9 @@ export function useSegments(
   const deleteFlagged = useCallback(() => {
     dispatch({ type: "DELETE_FLAGGED", indices: flaggedRef.current });
   }, []);
+  const restoreSegment = useCallback((index: number) => {
+    dispatch({ type: "RESTORE", index });
+  }, []);
   const insertAfter = useCallback((index: number, segment: Segment) => {
     dispatch({ type: "INSERT", afterIndex: index, segment });
   }, []);
@@ -287,6 +315,9 @@ export function useSegments(
   return {
     editedSegments,
     originalIndices,
+    allEditedSegments,
+    allOriginalIndices,
+    deletedSet: state.deleted,
     isDirty,
     deletedCount: state.deleted.size,
     canUndo: state.history.length > 0,
@@ -296,6 +327,7 @@ export function useSegments(
     updateTimestamp,
     deleteSegment,
     deleteFlagged,
+    restoreSegment,
     insertAfter,
     mergeWithNext,
     getNextSegment,

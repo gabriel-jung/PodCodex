@@ -269,7 +269,7 @@ export default function HomePage() {
               setAddOpen(false);
               goToShow(folder);
             }}
-            onImported={(_folder) => {
+            onImported={() => {
               queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
               setAddOpen(false);
             }}

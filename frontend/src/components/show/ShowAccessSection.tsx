@@ -40,6 +40,7 @@ export default function ShowAccessSection({ show }: Props) {
 
   function invalidate() {
     qc.invalidateQueries({ queryKey: queryKeys.showAccess(show) });
+    qc.invalidateQueries({ queryKey: queryKeys.showAccessList() });
   }
 
   const generateMut = useMutation({

@@ -32,7 +32,7 @@ when iterating on a single layer.
 brew install node rust uv ffmpeg
 cargo install tauri-cli --version "^2"
 
-git clone https://github.com/gabriel-jung/podcodex && cd podcodex
+git clone https://github.com/gabriel-jung/PodCodex && cd PodCodex
 make setup                # uv sync + npm install
 make setup-pyinstaller    # uv pip install pyinstaller into .venv
 make bundle               # ~5 min total, produces .app + .dmg
@@ -87,7 +87,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo install tauri-cli --version "^2"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-git clone https://github.com/gabriel-jung/podcodex && cd podcodex
+git clone https://github.com/gabriel-jung/PodCodex && cd PodCodex
 make setup
 make dev                  # FastAPI + Vite + Tauri, hot-reload
 ```
@@ -108,8 +108,8 @@ winget install --id=astral-sh.uv
 rustup target add x86_64-pc-windows-msvc
 cargo install tauri-cli --version "^2"
 
-git clone https://github.com/gabriel-jung/podcodex
-cd podcodex
+git clone https://github.com/gabriel-jung/PodCodex
+cd PodCodex
 make setup
 make setup-pyinstaller
 make bundle               # produces .msi
@@ -194,7 +194,7 @@ The bundled sidecar logs to `<data_dir>/logs/server.log`
 `%APPDATA%\podcodex\` on Windows,
 `~/.local/share/podcodex/` on Linux).
 
-Report build issues at <https://github.com/gabriel-jung/podcodex/issues>. Include:
+Report build issues at <https://github.com/gabriel-jung/PodCodex/issues>. Include:
 
 - OS + version (`uname -a`, `sw_vers`, or `winver`).
 - Tool versions: `python --version`, `node --version`, `rustc --version`, `cargo tauri --version`.

@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
 import { updateShowMeta, moveShow, deleteShow } from "@/api/client";
+import { removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useEpisodeStore } from "@/stores";
 import { Button } from "@/components/ui/button";
@@ -99,6 +100,13 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+      // Showname is the cache key for search/index/bot-access namespaces;
+      // a rename strands those entries under the old name.
+      if (name !== meta.name) {
+        queryClient.invalidateQueries({ queryKey: ["search"] });
+        queryClient.invalidateQueries({ queryKey: ["index"] });
+        queryClient.invalidateQueries({ queryKey: ["bot-access"] });
+      }
     },
   });
 
@@ -122,6 +130,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
       moveShow(folder, newPath, mf),
     onSuccess: (data) => {
+      removeQueriesUnderPath(queryClient, folder);
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
       navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(data.new_path) } });
     },
@@ -131,7 +140,11 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const deleteMutation = useMutation({
     mutationFn: (deleteFiles: boolean) => deleteShow(folder, deleteFiles),
     onSuccess: () => {
+      // Re-adding a show at the same folder path would otherwise hit stale
+      // per-folder caches (episodes, versions, roster, ...) before refetch.
+      removeQueriesUnderPath(queryClient, folder);
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
       navigate({ to: "/" });
     },
   });

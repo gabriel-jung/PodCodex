@@ -46,8 +46,8 @@ class BatchRequest(BaseModel):
     llm_key_name: str | None = None
     llm_model: str = ""
     context: str = ""
-    source_lang: str = "French"
-    target_lang: str = "English"
+    source_lang: str = "English"
+    target_lang: str = "French"
     llm_batch_minutes: float = 15.0
     engine: str = "whisper"
     force: bool = False

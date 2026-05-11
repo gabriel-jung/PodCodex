@@ -42,15 +42,22 @@ export function usePipelineTask(
   }, [setResumedTaskId]);
 
   const refreshQueries = useCallback(() => {
+    // Translate's editor keys are language-suffixed (`translate-en`, …) so
+    // `stepAll("translate")` can't prefix-match — tanstack uses strict ===
+    // on key elements.
+    if (stepKey === "translate") {
+      queryClient.invalidateQueries({
+        predicate: (q) =>
+          typeof q.queryKey[0] === "string" && q.queryKey[0].startsWith("translate-"),
+      });
+    }
     queryClient.invalidateQueries({ queryKey: queryKeys.stepAll(stepKey) });
     queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-    // Unified versions endpoint feeds cross-step input-version selectors
-    // (e.g. Translate can read both corrected and transcript versions).
     queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
-    // Indexing populates LanceDB — search panel reads its own ["search", …]
-    // namespace (stats, indexed-episodes, …), so the ["index", …] sweep above
-    // doesn't reach it. Without this, the SearchPanel keeps showing
-    // "No indexed episodes yet" until the user manually reloads.
+    queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.speakerMap(audioPath) });
+    // SearchPanel reads its own ["search", …] namespace which the
+    // ["index", …] sweep above doesn't reach.
     if (stepKey === "index") {
       queryClient.invalidateQueries({ queryKey: ["search"] });
     }

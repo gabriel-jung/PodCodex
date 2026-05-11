@@ -90,8 +90,8 @@ LLM_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
 
 DEFAULT_OLLAMA_MODEL = "qwen3.5:27B"  # default model when running locally via Ollama
 
-DEFAULT_SOURCE_LANG = "French"
-DEFAULT_TARGET_LANG = "English"
+DEFAULT_SOURCE_LANG = "English"
+DEFAULT_TARGET_LANG = "French"
 
 # ── Supported audio file formats ─────────────────────────────────────────────
 
@@ -101,6 +101,13 @@ DEFAULT_TARGET_LANG = "English"
 # misses those files and the episode summary shows no audio_path even
 # though the file is on disk and playable.
 AUDIO_EXTENSIONS = {
-    ".mp3", ".wav", ".m4a", ".ogg", ".flac",
-    ".opus", ".webm", ".aac", ".wma",
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".ogg",
+    ".flac",
+    ".opus",
+    ".webm",
+    ".aac",
+    ".wma",
 }

@@ -346,6 +346,27 @@ function BatchStrip() {
       successCount: batchEpisodes.length - failed.length,
       status: isDone ? "completed" : isFailed ? "failed" : "cancelled",
     });
+    // Batch run touches every step + every audio path in the folder, so
+    // sweep all pipeline namespaces rather than enumerate per-episode keys.
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(batchFolder) });
+    queryClient.invalidateQueries({
+      predicate: (q) => {
+        const first = q.queryKey[0];
+        if (typeof first !== "string") return false;
+        return (
+          first === "versions" ||
+          first === "transcribe" ||
+          first === "correct" ||
+          first === "index" ||
+          first === "search" ||
+          first === "best-source-segments" ||
+          first === "speaker-map" ||
+          first === "synthesize" ||
+          first.startsWith("translate-")
+        );
+      },
+    });
   }, [isFinished, isDone, isFailed, batchTaskId, batchFolder, batchStep, batchEpisodes, episodeStatuses, queryClient]);
 
   if (!batchTaskId) return null;

@@ -1,12 +1,6 @@
 # Roadmap
 
-Forward-looking only. Shipped features live in the README. Per-change history will live in `CHANGELOG.md` once 0.2.0 is cut.
-
-## v0.1.0 release blockers
-
-Tag when all items are done.
-
-- [ ] **Next up:** license updates for clean MIT redistribution (some bundled deps are GPL-licensed)
+Forward-looking only. Shipped features live in [CHANGELOG.md](CHANGELOG.md).
 
 ## Next
 
@@ -17,6 +11,7 @@ Auto-generate `speaker_map.json` for new episodes via voice embeddings. Show-lev
 ### Onboarding follow-ups
 
 The wizard + home empty-state ship. Remaining:
+
 - Hardware auto-detection (GPU / CPU / VRAM) to pick the default Whisper preset
 - ShowPage empty-state CTA into the pipeline preset flow
 - Replay wizard from Settings for users who dismissed it

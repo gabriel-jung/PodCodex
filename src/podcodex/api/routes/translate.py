@@ -83,7 +83,7 @@ async def list_languages(
 
 
 class TranslateRequest(LLMRequest):
-    target_lang: str = "English"
+    target_lang: str = "French"
 
 
 @router.post("/start", response_model=TaskResponse)

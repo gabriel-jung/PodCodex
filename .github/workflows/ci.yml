@@ -56,16 +56,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Baseline: the frontend currently has ~190 strict-TS errors and ~40
-      # ESLint errors accumulated before CI existed. Both steps run for
-      # visibility but do not fail the job yet. Flip `continue-on-error: false`
-      # once the baselines are clean.
-      - name: Typecheck (non-blocking)
-        continue-on-error: true
+      # Strict TS is clean; ESLint is at 0 errors + a small warning baseline.
+      # Both steps are blocking so regressions surface as red CI rather than
+      # silently piling up.
+      - name: Typecheck
         run: npx tsc -b
 
-      - name: Lint (non-blocking)
-        continue-on-error: true
+      - name: Lint
         run: npm run lint
 
   tauri:

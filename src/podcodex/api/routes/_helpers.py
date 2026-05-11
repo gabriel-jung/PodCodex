@@ -509,7 +509,7 @@ class LLMRequest(BaseModel):
     key_name: str | None = None
     model: str = ""
     context: str = ""
-    source_lang: str = "French"
+    source_lang: str = "English"
     batch_minutes: float = 15.0
     source_version_id: str | None = None
 
@@ -527,8 +527,8 @@ class ManualPromptsRequest(BaseModel):
     audio_path: str | None = None
     output_dir: str | None = None
     context: str = ""
-    source_lang: str = "French"
-    target_lang: str = "English"
+    source_lang: str = "English"
+    target_lang: str = "French"
     batch_minutes: float = 15.0
     source_version_id: str | None = None
 

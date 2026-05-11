@@ -144,7 +144,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
         model: "",
         modelsByMode: { api: "", ollama: "", manual: "" },
         context: "",
-        sourceLang: "French",
+        sourceLang: "English",
         batchMinutes: 15,
       },
       setLLM: (patch) =>
@@ -174,7 +174,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()(
       engine: "",
       setEngine: (engine) => set({ engine }),
 
-      targetLang: "English",
+      targetLang: "French",
       setTargetLang: (targetLang) => set({ targetLang }),
 
       indexModel: "bge-m3",

@@ -82,7 +82,7 @@ def processing_status(
 def transcribe_file(
     audio_path: Path | str,
     model_size: str = "large-v3",
-    language: str = "fr",
+    language: str = "en",
     batch_size: int = 4,
     compute_type: str | None = None,
     device: str | None = None,
@@ -96,7 +96,7 @@ def transcribe_file(
     Args:
         audio_path   : source audio file
         model_size   : Whisper model size (default "large-v3")
-        language     : ISO language code (default "fr")
+        language     : ISO language code (default "en")
         batch_size   : transcription batch size (default 4)
         compute_type : "float16", "int8", etc. (auto-detected if None)
         device       : "cuda" or "cpu" (auto-detected if None)

@@ -11,12 +11,15 @@ Two install paths — pick whichever fits your setup:
 
 ## Tools
 
-Both paths expose the same four tools:
+Both paths expose the same seven tools:
 
+- `list_shows()` — catalog of shows indexed with the default model + chunker.
+- `list_episodes(show, date_from?, date_to?, title_contains?)` — per-episode metadata with date/title filters.
+- `get_episode(show, episode)` — metadata card for a single episode.
 - `search(query, show?, top_k?, episode?, speaker?)` — hybrid semantic + FTS.
 - `exact(query, show?, episode?, speaker?)` — literal phrase, every match (no cap).
-- `list_shows()` — shows indexed with the default model + chunker.
 - `get_context(show, episode, chunk_index, window?)` — expand a hit with neighbouring chunks.
+- `speaker_stats(show?)` — chunk count and airtime per speaker.
 
 Plus user-managed **prompts** that appear in Claude Desktop's `/` slash menu — see [Prompts](#prompts) below.
 

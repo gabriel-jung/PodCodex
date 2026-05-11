@@ -784,6 +784,8 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
     queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
     queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("transcribe", audioPath) });
     queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", audioPath) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.speakerMap(audioPath) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
   }, [audioPath, outputDir, showName, queryClient]);
 
   const translations = episode.translations ?? EMPTY_LANGS;
@@ -796,13 +798,35 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
       if (translations.includes(step)) return deleteTranslateVersion(audioPath, step, id, od);
       return deleteAnyVersion(audioPath, id, od);
     },
+    onMutate: async ({ id }) => {
+      // Optimistic remove so the trash click feels instant; rollback below
+      // restores the prior list if the server rejects the delete.
+      const key = audioPath ?? outputDir;
+      const qk = queryKeys.allVersions(key);
+      await queryClient.cancelQueries({ queryKey: qk });
+      const prev = queryClient.getQueryData<VersionEntry[]>(qk);
+      if (prev) {
+        queryClient.setQueryData<VersionEntry[]>(qk, prev.filter((v) => v.id !== id));
+      }
+      return { prev, qk };
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.prev && ctx.qk) {
+        queryClient.setQueryData(ctx.qk, ctx.prev);
+      }
+      console.error("Delete version failed:", err);
+    },
     onSuccess: invalidateAll,
   });
 
   const deleteCollectionMutation = useMutation({
     mutationFn: (collection: string) =>
       deleteEpisodeCollection(audioPath, showName, collection, outputDir),
-    onSuccess: invalidateAll,
+    onSuccess: () => {
+      invalidateAll();
+      queryClient.invalidateQueries({ queryKey: ["search"] });
+      queryClient.invalidateQueries({ queryKey: ["index"] });
+    },
   });
 
   const deleteFileMutation = useMutation({

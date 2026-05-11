@@ -98,18 +98,18 @@ export function useFilteredSegments(
     isChanged: (seg: Segment, origIdx: number) => boolean;
     recentlyEdited?: Set<number>;
     customPatterns?: string[];
-    isPendingRemoval?: (seg: Segment) => boolean;
+    isPendingRemoval?: (seg: Segment, origIdx: number) => boolean;
   },
 ): FilteredResult {
   const { speakerFilter, showFlaggedOnly, showChangedOnly, showRemovedOnly, searchQuery, page, pageSize, densityThreshold, maxDensityThreshold } = filters;
   const { dismissedFlags, isChanged, recentlyEdited, customPatterns = [], isPendingRemoval } = opts;
   const searchLower = searchQuery.toLowerCase().trim();
 
-  const isFlaggedSeg = (seg: Segment, origIdx?: number): boolean => {
-    if (origIdx != null && dismissedFlags.has(origIdx)) return false;
-    // Segments whose speaker is already marked for removal have been
-    // triaged — don't nag the user with them in the flagged review.
-    if (isPendingRemoval?.(seg)) return false;
+  const isFlaggedSeg = (seg: Segment, origIdx: number): boolean => {
+    if (dismissedFlags.has(origIdx)) return false;
+    // Segments already pending removal have been triaged — don't surface
+    // them in the flagged review.
+    if (isPendingRemoval?.(seg, origIdx)) return false;
     return flagReason(seg, densityThreshold, maxDensityThreshold, customPatterns) !== null;
   };
 
@@ -126,7 +126,7 @@ export function useFilteredSegments(
         if (speakerFilter && seg.speaker !== speakerFilter && seg.speaker !== "[BREAK]") continue;
         if (showFlaggedOnly && !isFlaggedSeg(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
         if (showChangedOnly && !isChanged(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
-        if (showRemovedOnly && !(isPendingRemoval?.(seg) ?? false) && seg.speaker !== "[BREAK]") continue;
+        if (showRemovedOnly && !(isPendingRemoval?.(seg, origIdx) ?? false) && seg.speaker !== "[BREAK]") continue;
         if (searchLower && !seg.text.toLowerCase().includes(searchLower) && seg.speaker !== "[BREAK]") continue;
       }
       if (seg.speaker === "[BREAK]" && result.length > 0 && result[result.length - 1].segment.speaker === "[BREAK]") continue;

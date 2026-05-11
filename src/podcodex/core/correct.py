@@ -67,7 +67,7 @@ def transcript_provenance_info(provenance: dict | None) -> dict:
 
 def _build_prompt(
     context: str = "",
-    source_lang: str = "French",
+    source_lang: str = "English",
     engine: str = "whisper",
     engine_model: str | None = None,
 ) -> str:
@@ -115,7 +115,7 @@ output:
 def build_manual_prompt(
     segments: list[dict],
     context: str = "",
-    source_lang: str = "French",
+    source_lang: str = "English",
     engine: str = "whisper",
     engine_model: str | None = None,
     start_index: int = 0,
@@ -137,7 +137,7 @@ def build_manual_prompts_batched(
     segments: list[dict],
     batch_minutes: float = DEFAULT_BATCH_MINUTES,
     context: str = "",
-    source_lang: str = "French",
+    source_lang: str = "English",
     engine: str = "whisper",
     engine_model: str | None = None,
 ) -> list[tuple[list[dict], str]]:
@@ -165,7 +165,7 @@ def correct_segments(
     segments: list[dict],
     mode: str = "ollama",
     context: str = "",
-    source_lang: str = "French",
+    source_lang: str = "English",
     model: str = "",
     api_base_url: str = "",
     api_key: str | None = None,

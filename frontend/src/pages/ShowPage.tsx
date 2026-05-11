@@ -10,6 +10,7 @@ import {
   startBatch,
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
+import { removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import { artworkUrl } from "@/api/filesystem";
 import type { Episode } from "@/api/types";
 import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
@@ -125,7 +126,12 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const deleteMutation = useMutation({
     mutationFn: (audioPath: string) => deleteAudioFile(audioPath),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(folder) }),
+    onSuccess: (_data, audioPath) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(folder) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+      // Drop every per-audioPath cache entry tied to the now-missing file.
+      removeQueriesUnderPath(queryClient, audioPath);
+    },
   });
 
   const batchableSelectedRef = useRef<Episode[]>([]);

@@ -5,7 +5,7 @@ Quick orientation for human contributors. AI assistant context lives in [CLAUDE.
 ## Setup
 
 ```bash
-git clone https://github.com/gabriel-jung/podcodex && cd podcodex
+git clone https://github.com/gabriel-jung/PodCodex && cd PodCodex
 make setup                # uv sync + npm install
 make dev                  # FastAPI + Vite + Tauri, hot-reload
 ```
