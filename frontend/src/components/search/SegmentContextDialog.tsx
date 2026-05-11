@@ -8,6 +8,7 @@ import { getAllVersions } from "@/api/search";
 import { queryKeys } from "@/api/queryKeys";
 import { formatDate, formatDuration, formatTime, errorMessage, versionLabel, versionDate, isEdited } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
+import { BREAK_SPEAKER } from "@/lib/speakers";
 import { useAudioStore } from "@/stores";
 import { getIndexedEpisode } from "@/api/episodes";
 import {
@@ -248,7 +249,7 @@ export default function SegmentContextDialog({
               {segments.map((seg, i) => {
                 const isMatch = matchIndices.has(i);
                 const speaker = seg.speaker || "";
-                const isBreak = speaker === "[BREAK]";
+                const isBreak = speaker === BREAK_SPEAKER;
                 return (
                   <li
                     key={i}

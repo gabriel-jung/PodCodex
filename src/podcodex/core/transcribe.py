@@ -23,6 +23,7 @@ from loguru import logger
 from podcodex.core._utils import (
     BREAK_SPEAKER,
     NARRATOR_SPEAKER,
+    REMOVE_SPEAKER,
     SAMPLE_RATE,
     UNKNOWN_SPEAKERS,
     AudioPaths,
@@ -645,7 +646,7 @@ def load_transcript(
 
 
 # Segments assigned to this name are excluded by clean_transcript().
-REMOVE_SPEAKERS = {"[remove]"}
+REMOVE_SPEAKERS = {REMOVE_SPEAKER}
 
 # Speech density thresholds (chars/s) for flagging hallucinations.
 MIN_DENSITY = 2.0

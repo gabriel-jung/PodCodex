@@ -1,8 +1,7 @@
 import { useMemo, useRef, useState, useEffect } from "react";
 import type { Segment } from "@/api/types";
 import { matchFlagPattern } from "@/stores/flagPatternsStore";
-
-const UNKNOWN_SPEAKERS = new Set(["UNKNOWN", "UNK", "None", "none", ""]);
+import { BREAK_SPEAKER, REMOVE_SPEAKER, UNKNOWN_SPEAKERS } from "@/lib/speakers";
 /** Matches any letter (Unicode) or digit. Segments with none = punctuation/symbols only. */
 const HAS_WORD_CHAR = /[\p{L}\p{N}]/u;
 
@@ -47,16 +46,17 @@ export function flagReason(
   maxDensityThreshold: number,
   customPatterns: string[] = [],
 ): string | null {
-  if (seg.speaker === "[BREAK]") return null;
+  if (seg.speaker === BREAK_SPEAKER) return null;
   if (UNKNOWN_SPEAKERS.has(seg.speaker)) return "Unknown speaker";
-  if (seg.speaker === "[remove]") return "Marked for removal";
-  const text = seg.text.trim();
+  if (seg.speaker === REMOVE_SPEAKER) return "Marked for removal";
+  const rawText = seg.text ?? "";
+  const text = rawText.trim();
   if (text && !HAS_WORD_CHAR.test(text)) return "Punctuation/symbols only";
   const matched = matchFlagPattern(text, customPatterns);
   if (matched) return `Matches pattern: ${matched}`;
   const dur = seg.end - seg.start;
   if (dur > 0) {
-    const density = seg.text.length / dur;
+    const density = rawText.length / dur;
     if (density < densityThreshold) return "Too little text for duration (sparse)";
     if (density > maxDensityThreshold) return "Too much text for duration (dense)";
   }
@@ -123,20 +123,20 @@ export function useFilteredSegments(
       const sticky = recentlyEdited?.has(origIdx) ?? false;
 
       if (!sticky) {
-        if (speakerFilter && seg.speaker !== speakerFilter && seg.speaker !== "[BREAK]") continue;
-        if (showFlaggedOnly && !isFlaggedSeg(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
-        if (showChangedOnly && !isChanged(seg, origIdx) && seg.speaker !== "[BREAK]") continue;
-        if (showRemovedOnly && !(isPendingRemoval?.(seg, origIdx) ?? false) && seg.speaker !== "[BREAK]") continue;
-        if (searchLower && !seg.text.toLowerCase().includes(searchLower) && seg.speaker !== "[BREAK]") continue;
+        if (speakerFilter && seg.speaker !== speakerFilter && seg.speaker !== BREAK_SPEAKER) continue;
+        if (showFlaggedOnly && !isFlaggedSeg(seg, origIdx) && seg.speaker !== BREAK_SPEAKER) continue;
+        if (showChangedOnly && !isChanged(seg, origIdx) && seg.speaker !== BREAK_SPEAKER) continue;
+        if (showRemovedOnly && !(isPendingRemoval?.(seg, origIdx) ?? false) && seg.speaker !== BREAK_SPEAKER) continue;
+        if (searchLower && !(seg.text ?? "").toLowerCase().includes(searchLower) && seg.speaker !== BREAK_SPEAKER) continue;
       }
-      if (seg.speaker === "[BREAK]" && result.length > 0 && result[result.length - 1].segment.speaker === "[BREAK]") continue;
+      if (seg.speaker === BREAK_SPEAKER && result.length > 0 && result[result.length - 1].segment.speaker === BREAK_SPEAKER) continue;
 
       result.push({ segment: seg, originalIndex: origIdx, displayIndex: idx });
       idx++;
     }
 
-    while (result.length > 0 && result[0].segment.speaker === "[BREAK]") result.shift();
-    while (result.length > 0 && result[result.length - 1].segment.speaker === "[BREAK]") result.pop();
+    while (result.length > 0 && result[0].segment.speaker === BREAK_SPEAKER) result.shift();
+    while (result.length > 0 && result[result.length - 1].segment.speaker === BREAK_SPEAKER) result.pop();
 
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps

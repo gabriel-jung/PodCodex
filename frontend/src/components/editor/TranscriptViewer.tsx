@@ -18,6 +18,7 @@ import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/us
 import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
 import { formatTime, versionOption, versionInfo, selectClass } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
+import { BREAK_SPEAKER } from "@/lib/speakers";
 import { computeWordDiff } from "@/lib/diffUtils";
 import { Button } from "@/components/ui/button";
 import Pagination, { PAGE_SIZE_ALL } from "./Pagination";
@@ -42,6 +43,8 @@ import {
   Activity,
   Timer,
   Locate,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 // ── SVG icons for insert-before / insert-after ────────────────────────────────
@@ -228,6 +231,7 @@ interface SegmentViewRowProps {
   onMergeNext?: (origIdx: number, speaker: string) => void;
   onSplit?: (origIdx: number, cursorPos: number, explicitTime?: number) => void;
   referenceText?: string;
+  showDiff?: boolean;
 }
 
 const SegmentViewRow = memo(function SegmentViewRow({
@@ -257,6 +261,7 @@ const SegmentViewRow = memo(function SegmentViewRow({
   onMergeNext,
   onSplit,
   referenceText,
+  showDiff = true,
 }: SegmentViewRowProps) {
   const [editingSpeaker, setEditingSpeaker] = useState(false);
   const [tsExpanded, setTsExpanded] = useState(false);
@@ -316,10 +321,10 @@ const SegmentViewRow = memo(function SegmentViewRow({
     return { pos, t: splitT };
   };
 
-  const hasDiff = hasRef && referenceText !== segment.text;
+  const hasDiff = hasRef && referenceText !== segment.text && showDiff;
 
   // [BREAK] divider
-  if (segment.speaker === "[BREAK]") {
+  if (segment.speaker === BREAK_SPEAKER) {
     const gap = segment.end - segment.start;
     return (
       <div className="py-2 flex items-center gap-2 text-muted-foreground/40 px-2">
@@ -628,6 +633,10 @@ export interface TranscriptViewerProps {
   // Reference segments (for correction diff)
   referenceSegments?: Segment[];
   referenceLabel?: string;
+  /** Initial state for the diff highlight toggle. Defaults to true (red/green
+   *  word-level diff visible). Translate panels pass false so source-vs-target
+   *  doesn't paint every line as "changed". */
+  defaultShowDiff?: boolean;
   // Source label fallback when no versions
   sourceLabel?: string;
   /** Fires whenever the set of row-checkbox-selected segments changes.
@@ -688,6 +697,7 @@ export default function TranscriptViewer({
   speakers: externalSpeakers,
   referenceSegments,
   referenceLabel = "Original",
+  defaultShowDiff = true,
   sourceLabel,
   onSelectionChange,
 }: TranscriptViewerProps) {
@@ -711,6 +721,7 @@ export default function TranscriptViewer({
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [expandedInfo, setExpandedInfo] = useState(false);
   const [showFlagSettings, setShowFlagSettings] = useState(false);
+  const [showDiff, setShowDiff] = useState(defaultShowDiff);
   const customPatterns = useFlagPatternsStore((s) => s.patterns);
   const setFlagPatterns = useFlagPatternsStore((s) => s.setPatterns);
   const [patternDraft, setPatternDraft] = useState(customPatterns.join("\n"));
@@ -829,7 +840,7 @@ export default function TranscriptViewer({
   const speakers = useMemo(() => {
     const set = new Set<string>(externalSpeakers ?? []);
     for (const seg of sourceSegments ?? []) {
-      if (seg.speaker && seg.speaker !== "[BREAK]") set.add(seg.speaker);
+      if (seg.speaker && seg.speaker !== BREAK_SPEAKER) set.add(seg.speaker);
     }
     for (const name of addedSpeakers) set.add(name);
     for (const target of Object.values(pendingRenames)) set.add(target);
@@ -931,7 +942,7 @@ export default function TranscriptViewer({
   };
 
   const isChanged = (seg: Segment, origIdx: number) => {
-    if (!effectiveReference || seg.speaker === "[BREAK]") return false;
+    if (!effectiveReference || seg.speaker === BREAK_SPEAKER) return false;
     const editedIdx = origToEditedIdx.get(origIdx) ?? origIdx;
     const ref = getRef(editedIdx);
     return ref != null && ref.text !== seg.text;
@@ -1007,7 +1018,7 @@ export default function TranscriptViewer({
       const editedPos = origToEditedIdx.get(origIdx);
       if (editedPos == null) continue;
       const seg = editedSegments[editedPos];
-      if (!seg || seg.speaker === "[BREAK]") continue;
+      if (!seg || seg.speaker === BREAK_SPEAKER) continue;
       out.push(seg);
       sigParts.push(`${seg.speaker}:${seg.start}:${seg.end}`);
     }
@@ -1456,15 +1467,15 @@ export default function TranscriptViewer({
           {/* Select all checkbox */}
           <input
             type="checkbox"
-            checked={selectedIndices.size > 0 && selectedIndices.size === pageSegments.filter((s) => s.segment.speaker !== "[BREAK]").length}
+            checked={selectedIndices.size > 0 && selectedIndices.size === pageSegments.filter((s) => s.segment.speaker !== BREAK_SPEAKER).length}
             ref={(el) => {
               if (el) {
-                const nonBreak = pageSegments.filter((s) => s.segment.speaker !== "[BREAK]");
+                const nonBreak = pageSegments.filter((s) => s.segment.speaker !== BREAK_SPEAKER);
                 el.indeterminate = selectedIndices.size > 0 && selectedIndices.size < nonBreak.length;
               }
             }}
             onChange={() => {
-              const nonBreak = pageSegments.filter((s) => s.segment.speaker !== "[BREAK]");
+              const nonBreak = pageSegments.filter((s) => s.segment.speaker !== BREAK_SPEAKER);
               if (selectedIndices.size === nonBreak.length) {
                 clearSelection();
               } else {
@@ -1583,6 +1594,19 @@ export default function TranscriptViewer({
               </div>
             )}
           </div>
+          {/* Diff highlight toggle (red/green word-level diff in the reference column) */}
+          {effectiveReference && (
+            <button
+              onClick={() => setShowDiff((v) => !v)}
+              className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border transition ${
+                showDiff ? "border-info/50 text-info" : "border-border text-muted-foreground hover:text-foreground"
+              }`}
+              title={showDiff ? "Hide word-level diff" : "Show word-level diff"}
+            >
+              {showDiff ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+              Diff
+            </button>
+          )}
           {/* Changed badge */}
           {effectiveReference && changedCount > 0 && (
             <button
@@ -1692,7 +1716,7 @@ export default function TranscriptViewer({
             const { segment, originalIndex } = item;
             const editedIdx = origToEditedIdx.get(originalIndex) ?? originalIndex;
             const ref = getRef(editedIdx);
-            const isBreak = segment.speaker === "[BREAK]";
+            const isBreak = segment.speaker === BREAK_SPEAKER;
             const reason = showFlags
               ? flagReason(segment, filters.densityThreshold, filters.maxDensityThreshold, customPatterns)
               : null;
@@ -1743,6 +1767,7 @@ export default function TranscriptViewer({
                   onMergeNext={handleMerge}
                   onSplit={handleRowSplit}
                   referenceText={ref && !isBreak ? ref.text : undefined}
+                  showDiff={showDiff}
                 />
               </div>
             );

@@ -211,13 +211,19 @@ class AudioPaths:
 
     @property
     def voice_samples_dir(self) -> Path:
-        d = self.base.parent / VOICE_SAMPLES_DIR
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        return self.base.parent / VOICE_SAMPLES_DIR
 
     @property
     def tts_segments_dir(self) -> Path:
-        d = self.base.parent / TTS_SEGMENTS_DIR
+        return self.base.parent / TTS_SEGMENTS_DIR
+
+    def ensure_voice_samples_dir(self) -> Path:
+        d = self.voice_samples_dir
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def ensure_tts_segments_dir(self) -> Path:
+        d = self.tts_segments_dir
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -233,13 +239,16 @@ class AudioPaths:
 
 # Speaker labels that don't represent a real person (unresolved diarization placeholders).
 # Used by transcribe.py (filtering) and synthesize.py (voice sample extraction).
-UNKNOWN_SPEAKERS = frozenset({"UNKNOWN", "UNK", "None", "none"})
+UNKNOWN_SPEAKERS = frozenset({"UNKNOWN", "UNK", "None", "none", ""})
 
 # Default speaker label when diarization is skipped.
 NARRATOR_SPEAKER = "Narrator"
 
 # Segment inserted by merge_consecutive_segments when gap > max_gap.
 BREAK_SPEAKER = "[BREAK]"
+
+# Sentinel for segments the user marked for removal in the editor.
+REMOVE_SPEAKER = "[remove]"
 
 # Audio sample rate used by Whisper / TTS pipeline (16 kHz mono).
 SAMPLE_RATE = 16000
@@ -471,6 +480,24 @@ def check_vram(label: str = "model", min_mb: int = 512) -> None:
 # ──────────────────────────────────────────────
 
 
+def tts_segment_filename(seg: dict) -> str:
+    """Stable on-disk filename for a TTS segment's .wav.
+
+    Keyed by start/end timestamps (millisecond integers) only — independent
+    of the segment's position in the source list AND of the speaker label.
+    That way the file survives:
+      * narrowing the source picker (indices shift after filtering),
+      * the narrator-speaker fallback (speakers can be remapped at synth
+        time but timestamps don't move),
+      * later re-runs that touch only a subset of speakers / segments.
+    Filenames sort chronologically, so a plain ``sorted(glob("*.wav"))``
+    yields playback order.
+    """
+    start_ms = int(round((seg.get("start") or 0) * 1000))
+    end_ms = int(round((seg.get("end") or 0) * 1000))
+    return f"{start_ms:010d}_{end_ms:010d}.wav"
+
+
 def seg_key(seg: dict) -> str:
     """Canonical segment identity shared with the frontend.
 
@@ -493,8 +520,28 @@ def real_speakers(segments: list[dict]) -> list[str]:
     placeholders in :data:`UNKNOWN_SPEAKERS`. Single source of truth for
     "which speakers count" across synthesis / voice-sample extraction.
     """
-    skip = UNKNOWN_SPEAKERS | {BREAK_SPEAKER, ""}
+    skip = UNKNOWN_SPEAKERS | {BREAK_SPEAKER}
     return sorted({s.get("speaker", "") for s in segments} - skip)
+
+
+def fill_narrator_speaker(segments: list[dict]) -> list[dict]:
+    """Return ``segments`` with empty/unknown speakers relabelled to :data:`NARRATOR_SPEAKER`.
+
+    Used at synth time so legacy transcripts (e.g. YouTube subtitle imports
+    saved before the parser default landed) can still feed a single
+    voice-clone bucket without forcing the user to rename through the editor.
+
+    Returns the input list unchanged when no segment needs remapping; only
+    segments that actually change get a shallow-copied dict, others share refs.
+    """
+    if not any(seg.get("speaker", "") in UNKNOWN_SPEAKERS for seg in segments):
+        return segments
+    return [
+        {**seg, "speaker": NARRATOR_SPEAKER}
+        if seg.get("speaker", "") in UNKNOWN_SPEAKERS
+        else seg
+        for seg in segments
+    ]
 
 
 def group_by_speaker(segments: list[dict]) -> dict[str, list[dict]]:
@@ -827,7 +874,14 @@ def srt_to_segments(srt_text: str) -> list[dict]:
                 speaker = maybe_speaker
                 text = rest
         if text:
-            cues.append({"speaker": speaker, "text": text, "start": start, "end": end})
+            cues.append(
+                {
+                    "speaker": speaker or NARRATOR_SPEAKER,
+                    "text": text,
+                    "start": start,
+                    "end": end,
+                }
+            )
 
     return _merge_parsed_cues(cues)
 
@@ -878,7 +932,14 @@ def vtt_to_segments(vtt_text: str) -> list[dict]:
         # Strip remaining HTML-like tags
         text = re.sub(r"<[^>]+>", "", text).strip()
         if text:
-            cues.append({"speaker": speaker, "text": text, "start": start, "end": end})
+            cues.append(
+                {
+                    "speaker": speaker or NARRATOR_SPEAKER,
+                    "text": text,
+                    "start": start,
+                    "end": end,
+                }
+            )
 
     return _merge_parsed_cues(cues)
 
@@ -1034,7 +1095,7 @@ def build_llm_prompt(
 
 def _is_break(seg: dict) -> bool:
     """Return True for [BREAK] segments (music/jingle markers)."""
-    return seg.get("speaker") == "[BREAK]"
+    return seg.get("speaker") == BREAK_SPEAKER
 
 
 def _separate_breaks(

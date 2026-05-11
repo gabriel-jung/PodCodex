@@ -24,6 +24,7 @@ import { useAudioStore } from "@/stores";
 import { formatTime } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import { MIN_DENSITY } from "@/hooks/useSegmentFiltering";
+import { BREAK_SPEAKER } from "@/lib/speakers";
 import SectionHeader from "@/components/common/SectionHeader";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 
@@ -55,7 +56,7 @@ function computeSpeakerInfos(segments: Segment[]): SpeakerInfo[] {
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     const sp = seg.speaker || "";
-    if (sp === "[BREAK]") continue;
+    if (sp === BREAK_SPEAKER) continue;
     if (!bySpeaker.has(sp)) bySpeaker.set(sp, []);
     const dur = (seg.end || 0) - (seg.start || 0);
     const text = seg.text || "";
@@ -120,7 +121,7 @@ export default function SpeakerStrip({
   const addInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (editingFor) editInputRef.current?.select();
+    if (editingFor !== null) editInputRef.current?.select();
   }, [editingFor]);
   useEffect(() => {
     if (adding) addInputRef.current?.focus();
@@ -162,7 +163,7 @@ export default function SpeakerStrip({
   };
 
   const commitEdit = () => {
-    if (!editingFor) return;
+    if (editingFor === null) return;
     const from = editingFor;
     const to = renameDraft.trim();
     if (!to || to === from) {

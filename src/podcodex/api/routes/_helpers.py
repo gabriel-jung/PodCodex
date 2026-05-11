@@ -12,7 +12,7 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.schemas import TaskResponse
-from podcodex.core._utils import UNKNOWN_SPEAKERS
+from podcodex.core._utils import BREAK_SPEAKER, REMOVE_SPEAKER, UNKNOWN_SPEAKERS
 from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.ingest.rss import RSSEpisode, episode_stem
 from podcodex.rag.index_store import get_index_store  # re-export
@@ -346,10 +346,6 @@ def submit_subprocess_task(
     return submit_task(step, audio_path, _run, req)
 
 
-# Extend the core set with empty string (relevant for flagging UI segments).
-_UNKNOWN_SPEAKERS = UNKNOWN_SPEAKERS | {""}
-
-
 def read_segments(path: Path) -> list[dict] | None:
     """Read segments from a JSON file.
 
@@ -375,11 +371,11 @@ def read_segments(path: Path) -> list[dict] | None:
 def is_flagged(seg: dict) -> bool:
     """Determine whether a segment should be flagged for review."""
     speaker = seg.get("speaker", "")
-    if speaker == "[BREAK]":
+    if speaker == BREAK_SPEAKER:
         return False
-    if speaker in _UNKNOWN_SPEAKERS:
+    if speaker in UNKNOWN_SPEAKERS:
         return True
-    if speaker == "[remove]":
+    if speaker == REMOVE_SPEAKER:
         return True
     # Low speech density: < 2 chars/s
     dur = seg.get("end", 0) - seg.get("start", 0)
