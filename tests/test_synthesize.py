@@ -98,7 +98,9 @@ def make_generated(tmp_path, segments_data):
     return result
 
 
-def test_assemble_silence_strategy(tmp_path):
+def test_assemble_silence_strategy_same_speaker(tmp_path):
+    # Speaker-aware silence: within-turn pause = max(silence_duration * 0.4,
+    # 0.05). Two Alice segments → 2s + 0.2s + 2s = 4.2s.
     generated = make_generated(tmp_path, [(0, 2), (5, 7)])
     audio_path = tmp_path / "episode.mp3"
     out = assemble_episode(
@@ -106,7 +108,20 @@ def test_assemble_silence_strategy(tmp_path):
     )
     assert out.exists()
     audio, sr = sf.read(str(out))
-    # 2s + 0.5s silence + 2s = 4.5s
+    assert abs(len(audio) / sr - 4.2) < 0.1
+
+
+def test_assemble_silence_strategy_cross_speaker(tmp_path):
+    # Different speakers → full silence_duration between turns.
+    # 2s + 0.5s + 2s = 4.5s.
+    generated = make_generated(tmp_path, [(0, 2), (5, 7)])
+    generated[1]["speaker"] = "Bob"
+    audio_path = tmp_path / "episode.mp3"
+    out = assemble_episode(
+        generated, audio_path, output_dir="", strategy="silence", silence_duration=0.5
+    )
+    assert out.exists()
+    audio, sr = sf.read(str(out))
     assert abs(len(audio) / sr - 4.5) < 0.1
 
 
