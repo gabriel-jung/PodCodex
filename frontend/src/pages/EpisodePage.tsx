@@ -757,13 +757,16 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
   });
   const previewStep = episode.corrected ? "correct" : "transcribe";
   const PREVIEW_LIMIT = 5;
+  const outputDir = episode.output_dir;
   const { data: previewSegments } = useQuery({
-    queryKey: [...queryKeys.stepSegments(previewStep, audioPath), "preview"],
-    queryFn: () => (previewStep === "correct" ? getCorrectPreview(audioPath!, PREVIEW_LIMIT) : getTranscribePreview(audioPath!, PREVIEW_LIMIT)),
-    enabled: !!audioPath && hasTranscript,
+    queryKey: [...queryKeys.stepSegments(previewStep, audioPath ?? outputDir), "preview"],
+    queryFn: () =>
+      previewStep === "correct"
+        ? getCorrectPreview(audioPath, PREVIEW_LIMIT, outputDir ?? undefined)
+        : getTranscribePreview(audioPath, PREVIEW_LIMIT, outputDir ?? undefined),
+    enabled: (!!audioPath || !!outputDir) && hasTranscript,
   });
 
-  const outputDir = episode.output_dir;
   const { data: allVersions } = useQuery({
     queryKey: queryKeys.allVersions(audioPath ?? outputDir),
     queryFn: () => getAllVersions(audioPath, outputDir),
