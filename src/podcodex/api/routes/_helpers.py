@@ -405,7 +405,6 @@ def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
         segs = load_latest(p.base, "corrected")
         if segs:
             return segs, "corrected"
-        # load_transcript checks version DB then falls back to legacy files
         segs = load_transcript(str(p.audio_path))
         if segs:
             return segs, "transcript"

@@ -361,3 +361,11 @@ Single-consumer patterns introduced by the Episode → Overview tab. Read the co
 - **Don't double-encode review state** — when a row already shows an `edited` marker (`text-2xs text-success`), keep the adjacent stage dot in the stage hue. Two greens means two signals, not one.
 
 Promote to shared utilities when a second hub adopts these.
+
+## 11. Per-episode panel state
+
+Pipeline panels (`TranscribePanel`, `SynthesizePanel`, etc.) carry per-episode local state that must not bleed across episodes.
+
+- **Remount on episode switch.** `EpisodePage` mounts each step's component with `<Panel key={"${step}|${episode.id}"} />`. The composite key forces React to unmount and re-init when either the active step or the active episode changes. Don't try to sync this with effects; the key is the single source of truth.
+- **Parent-owned refs survive panel unmount.** If a panel hides while a background job runs (e.g. assemble running while the user looks elsewhere), state local to the panel is lost on remount. Anything that must persist through a panel unmount — current source-segment selection, in-flight job stamps, scroll-restore anchors — lives in a `useRef` owned by the parent page and passed in as a prop. `SynthesizePanel`'s `selectionStampRef` is the canonical example.
+- **Source-aware queries.** Synth queries (`voice-samples`, `generated-segments`, `versions`, `status`) cache-key on the value returned by `getEpisodeSourceRef` (`frontend/src/lib/episodeRef.ts`): `audio_path` when present, else `output_dir`. YouTube subtitle-only episodes have no source audio, so keying on `audio_path` alone makes their cache invalidation silently miss. Always destructure through `getEpisodeSourceRef`; never reach for `episode.audio_path` directly in a query key.

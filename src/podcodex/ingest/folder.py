@@ -26,13 +26,6 @@ from podcodex.ingest.rss import EPISODE_META_FILE
 _scan_cache: dict[str, tuple[float, list["EpisodeInfo"]]] = {}
 _CACHE_TTL = 10.0  # seconds
 
-_TRANSCRIPT_MARKERS = frozenset(
-    {
-        "transcript.json",
-        "transcript.raw.json",
-    }
-)
-
 
 @dataclass
 class EpisodeInfo:
@@ -59,6 +52,19 @@ class EpisodeInfo:
         return self.audio_path
 
 
+def _step_has_versions(output_dir: Path | None, step: str, ext: str) -> bool:
+    """Return True if ``output_dir/step/`` exists and holds any ``*{ext}`` file.
+
+    Used to derive ``transcribed`` / ``synthesized`` flags from the version
+    storage layout (``{ep_dir}/{step}/{id}.{json|wav}``). Mirrors the layout
+    owned by ``core/versions.py:version_path``; if the layout changes there,
+    update this resolver too.
+    """
+    if output_dir is None:
+        return False
+    return next((output_dir / step).glob(f"*{ext}"), None) is not None
+
+
 def _episode_status(
     stem: str, existing: set[str], output_dir: Path | None = None
 ) -> dict:
@@ -77,27 +83,8 @@ def _episode_status(
     )
     assigned = f"{stem}.diarized_segments.parquet" in existing
 
-    transcript_raw = f"{stem}.transcript.raw.json" in existing
-    transcript_val = f"{stem}.transcript.json" in existing
-    has_version_transcript = False
-    if output_dir and (output_dir / "transcript").is_dir():
-        has_version_transcript = any(
-            f.suffix == ".json"
-            for f in (output_dir / "transcript").iterdir()
-            if f.is_file()
-        )
-    transcribed = transcript_raw or transcript_val or has_version_transcript
-
-    # Match both shapes ({stem}.synthesized.wav legacy + {stem}.synthesized.{id}.wav
-    # versioned), in the show root (existing) and in the nested output dir.
-    prefix = f"{stem}.synthesized."
-    synthesized = any(
-        f.startswith(prefix) and f.endswith(".wav") for f in existing
-    ) or (
-        output_dir is not None
-        and output_dir.is_dir()
-        and any(output_dir.glob(f"{prefix}*.wav"))
-    )
+    transcribed = _step_has_versions(output_dir, "transcript", ".json")
+    synthesized = _step_has_versions(output_dir, "synthesize", ".wav")
     has_subtitles = any(f.endswith(".vtt") for f in existing)
 
     return {
@@ -252,10 +239,7 @@ def _scan_folder_uncached(
         if name in episodes:
             continue
         existing = subdir_files[name]
-        has_transcript = (
-            any(f"{name}.{m}" in existing for m in _TRANSCRIPT_MARKERS)
-            or "transcript" in existing
-        )
+        has_transcript = "transcript" in existing
         has_meta = EPISODE_META_FILE in existing
         if has_transcript or has_meta:
             episodes[name] = _make_episode(name, show_folder / name, existing)

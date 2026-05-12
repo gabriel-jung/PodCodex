@@ -41,21 +41,19 @@ from loguru import logger
 # These are nested under transcript/ on disk.
 PARQUET_STEPS = frozenset({"segments", "diarization", "diarized_segments"})
 
+# Steps that store data as audio. Only synth currently; kept as a frozenset
+# so future audio steps (e.g. per-segment TTS archive) plug in without
+# touching the dispatch in _step_ext.
+WAV_STEPS = frozenset({"synthesize"})
 
-def _unwrap_legacy_segments(data) -> list[dict]:
-    """Normalize legacy on-disk transcript JSON to a flat segment list.
-
-    Legacy ``*.transcript.raw.json`` / ``*.transcript.json`` files come in
-    two shapes: a bare list of segment dicts (oldest format), or a wrapper
-    ``{"meta": {...}, "segments": [...]}`` (post-meta-introduction). The
-    version DB stores only the segment list, so backfill paths must
-    unwrap before re-saving — without this, the wrapped dict is written
-    under ``transcript/<id>.json``, ``load_version`` returns it instead
-    of a list, and the chunker iterates the dict's keys (strings).
-    """
-    if isinstance(data, dict):
-        return data.get("segments", [])
-    return data
+# Map of stem-level pipeline_db boolean flag per versioned step. Used by
+# _refresh_status_after_delete to demote the flag when the last version
+# is removed, and by status reconcile in shows.py.
+STEP_FLAG = {
+    "transcript": "transcribed",
+    "corrected": "corrected",
+    "synthesize": "synthesized",
+}
 
 
 # ------------------------------------------------------------------
@@ -122,10 +120,23 @@ def _step_dir(base: Path, step: str) -> Path:
     return root / step
 
 
-def _version_path(base: Path, step: str, version_id: str) -> Path:
-    """Return the path to a version file (.json or .parquet)."""
-    ext = ".parquet" if step in PARQUET_STEPS else ".json"
-    return _step_dir(base, step) / f"{version_id}{ext}"
+def _step_ext(step: str) -> str:
+    """Return the on-disk file extension for a step's version files."""
+    if step in WAV_STEPS:
+        return ".wav"
+    if step in PARQUET_STEPS:
+        return ".parquet"
+    return ".json"
+
+
+def version_path(base: Path, step: str, version_id: str) -> Path:
+    """Return the canonical on-disk path for a step version file.
+
+    Public entry point for callers that need the destination of a future
+    save (assemble_episode) or the resolved location of an existing
+    version (existence-checking helpers).
+    """
+    return _step_dir(base, step) / f"{version_id}{_step_ext(step)}"
 
 
 def _get_db(base: Path):
@@ -134,78 +145,6 @@ def _get_db(base: Path):
 
     show_dir = base.parent.parent
     return get_pipeline_db(show_dir)
-
-
-def backfill_versions(show_dir: Path) -> int:
-    """Create version entries for legacy transcript files missing from the DB.
-
-    Scans episode directories for ``*.transcript.json`` or
-    ``*.transcript.raw.json`` files that have no corresponding version in
-    the DB.  Reuses the existing provenance from the episodes table so
-    labels (e.g. "YouTube subtitles") are preserved.
-
-    Returns the number of versions created.
-    """
-    from podcodex.core.pipeline_db import get_pipeline_db
-
-    db = get_pipeline_db(show_dir)
-    count = 0
-
-    # Build provenance lookup from episodes table
-    ep_provenance: dict[str, dict] = {}
-    for row in db.all_episodes():
-        prov = row.get("provenance") or {}
-        if isinstance(prov, str):
-            try:
-                prov = json.loads(prov)
-            except Exception:
-                prov = {}
-        ep_provenance[row["stem"]] = prov
-
-    for ep_dir in sorted(show_dir.iterdir()):
-        if not ep_dir.is_dir() or ep_dir.name.startswith("."):
-            continue
-        stem = ep_dir.name
-        # Skip if transcript version already exists
-        if db.list_versions(stem, "transcript"):
-            continue
-
-        # Look for legacy transcript files
-        candidates = [
-            ep_dir / f"{stem}.transcript.json",
-            ep_dir / f"{stem}.transcript.raw.json",
-        ]
-        seg_file = next((f for f in candidates if f.exists()), None)
-        if not seg_file:
-            continue
-
-        try:
-            segments = _unwrap_legacy_segments(
-                json.loads(seg_file.read_text(encoding="utf-8"))
-            )
-        except Exception:
-            continue
-
-        # Reuse existing provenance from the episodes table
-        existing_prov = ep_provenance.get(stem, {}).get("transcript", {})
-        vtype = existing_prov.get(
-            "type", "validated" if seg_file.name.endswith(".transcript.json") else "raw"
-        )
-        base = ep_dir / stem
-        save_version(
-            base=base,
-            step="transcript",
-            segments=segments,
-            provenance=existing_prov
-            or {
-                "step": "transcript",
-                "type": vtype,
-            },
-        )
-        count += 1
-        logger.debug("Backfilled transcript version for {}", stem)
-
-    return count
 
 
 # ------------------------------------------------------------------
@@ -330,7 +269,6 @@ def save_synthesize_version(
             "language": language,
             "duration_s": round(duration_s, 2),
             "file_size_bytes": file_size_bytes,
-            "filename": audio_file.name,
         },
         manual_edit=False,
         input_hash=None,
@@ -345,46 +283,12 @@ def save_synthesize_version(
 
 
 def synthesize_version_path(base: Path, version_id: str) -> Path | None:
-    """Resolve a synthesize version's on-disk .wav path from its DB row.
+    """Resolve a synthesize version's on-disk .wav path.
 
-    Returns None if no DB row, or the filename can't be located.
+    Returns ``None`` if no file exists at the canonical version location.
     """
-    row = _get_db(base).get_version(version_id)
-    if not row or row.get("step") != "synthesize":
-        return None
-    params = row.get("params") or {}
-    if isinstance(params, str):
-        try:
-            params = json.loads(params)
-        except Exception:
-            params = {}
-    filename = params.get("filename")
-    if not filename:
-        return None
-    candidate = base.parent / filename
-    return candidate if candidate.is_file() else None
-
-
-def delete_synthesize_version(base: Path, version_id: str) -> bool:
-    """Delete a synthesize version's .wav file + DB row.
-
-    Returns True if either was removed.
-    """
-    p = synthesize_version_path(base, version_id)
-    removed_file = False
-    if p is not None:
-        try:
-            p.unlink()
-            removed_file = True
-        except FileNotFoundError:
-            pass
-    try:
-        removed_row = (
-            _get_db(base).delete_versions(base.name, "synthesize", [version_id]) > 0
-        )
-    except Exception:
-        removed_row = False
-    return removed_file or removed_row
+    path = version_path(base, "synthesize", version_id)
+    return path if path.is_file() else None
 
 
 def backfill_version_sizes(base: Path, versions: list[dict]) -> None:
@@ -403,11 +307,8 @@ def backfill_version_sizes(base: Path, versions: list[dict]) -> None:
             v["params"] = params
             continue
         step = v.get("step") or ""
-        if step == "synthesize":
-            path = synthesize_version_path(base, v["id"])
-        else:
-            path = _version_path(base, step, v["id"])
-        if path is None or not path.is_file():
+        path = version_path(base, step, v["id"])
+        if not path.is_file():
             continue
         try:
             size = path.stat().st_size
@@ -449,7 +350,7 @@ def load_version(base: Path, step: str, version_id: str) -> list[dict]:
     Raises:
         FileNotFoundError: file missing on disk, or payload unreadable.
     """
-    seg_path = _version_path(base, step, version_id)
+    seg_path = version_path(base, step, version_id)
     if not seg_path.exists():
         raise FileNotFoundError(
             f"Version {version_id} missing on disk for step '{step}'"
@@ -459,10 +360,7 @@ def load_version(base: Path, step: str, version_id: str) -> list[dict]:
             from podcodex.core._utils import read_parquet
 
             return read_parquet(seg_path)
-        # Defensive: an earlier (buggy) backfill could have written the
-        # wrapped {"meta", "segments"} shape into a version file. Unwrap
-        # transparently so callers never see the malformed payload.
-        return _unwrap_legacy_segments(json.loads(seg_path.read_text(encoding="utf-8")))
+        return json.loads(seg_path.read_text(encoding="utf-8"))
     except Exception as e:
         raise FileNotFoundError(
             f"Version {version_id} unreadable for step '{step}': {e}"
@@ -545,69 +443,9 @@ def list_versions(base: Path, step: str) -> list[dict]:
     return db.list_versions(base.name, step)
 
 
-def _backfill_episode(base: Path, db) -> None:
-    """Lazily backfill version entries for a single episode if legacy files exist.
-
-    Called when list_all_versions returns empty for an episode that may have been
-    transcribed before the versioning DB was introduced.
-    """
-    stem = base.name
-    ep_dir = base.parent
-
-    steps_to_check = [
-        (
-            "transcript",
-            [
-                ep_dir / f"{stem}.transcript.json",
-                ep_dir / f"{stem}.transcript.raw.json",
-            ],
-        ),
-        (
-            "corrected",
-            [
-                ep_dir / f"{stem}.corrected.json",
-            ],
-        ),
-    ]
-
-    for step, candidates in steps_to_check:
-        if db.list_versions(stem, step):
-            continue
-        seg_file = next((f for f in candidates if f.exists()), None)
-        if not seg_file:
-            continue
-        try:
-            segments = _unwrap_legacy_segments(
-                json.loads(seg_file.read_text(encoding="utf-8"))
-            )
-        except Exception:
-            continue
-        vtype = (
-            "validated"
-            if step == "transcript" and seg_file.name.endswith(".transcript.json")
-            else "raw"
-        )
-        save_version(
-            base=base,
-            step=step,
-            segments=segments,
-            provenance={"step": step, "type": vtype},
-        )
-        logger.debug("Lazy-backfilled {} version for {}", step, stem)
-
-
 def list_all_versions(base: Path) -> list[dict]:
-    """List all versions across all steps for an episode (newest first).
-
-    If the DB is empty for this episode but legacy transcript files exist on
-    disk, performs a one-time lazy backfill before returning.
-    """
-    db = _get_db(base)
-    versions = db.list_all_versions(base.name)
-    if not versions:
-        _backfill_episode(base, db)
-        versions = db.list_all_versions(base.name)
-    return versions
+    """List all versions across all steps for an episode (newest first)."""
+    return _get_db(base).list_all_versions(base.name)
 
 
 def version_count(base: Path, step: str) -> int:
@@ -669,8 +507,6 @@ def delete_version_by_id(base: Path, version_id: str) -> bool:
     meta = _get_db(base).get_version(version_id)
     if not meta:
         return False
-    if meta["step"] == "synthesize":
-        return delete_synthesize_version(base, version_id)
     return delete_version(base, meta["step"], version_id)
 
 
@@ -679,10 +515,12 @@ def delete_version(base: Path, step: str, version_id: str) -> bool:
 
     Returns ``True`` if the version was found and deleted.
     """
-    seg_path = _version_path(base, step, version_id)
-    found = seg_path.exists()
-    if found:
-        seg_path.unlink()
+    found = False
+    try:
+        version_path(base, step, version_id).unlink()
+        found = True
+    except FileNotFoundError:
+        pass
 
     try:
         db = _get_db(base)
@@ -707,24 +545,16 @@ def _refresh_status_after_delete(base: Path, step: str) -> None:
         if db.list_versions(stem, step):
             return
 
-        if step == "transcript":
-            for legacy in (
-                base.parent / f"{stem}.transcript.json",
-                base.parent / f"{stem}.transcript.raw.json",
-            ):
-                if legacy.exists():
-                    legacy.unlink()
-                    logger.info("Removed legacy transcript file {}", legacy.name)
-            db.mark(stem, transcribed=False)
-        elif step == "corrected":
-            db.mark(stem, corrected=False)
-        else:
-            row = db.get_episode(stem)
-            if row:
-                translations = list(row.get("translations") or [])
-                if step in translations:
-                    translations.remove(step)
-                    db.mark(stem, translations=translations)
+        flag = STEP_FLAG.get(step)
+        if flag is not None:
+            db.mark(stem, **{flag: False})
+            return
+        row = db.get_episode(stem)
+        if row:
+            translations = list(row.get("translations") or [])
+            if step in translations:
+                translations.remove(step)
+                db.mark(stem, translations=translations)
     except Exception:
         logger.opt(exception=True).warning(
             "Failed to refresh status after delete (step={})", step
@@ -804,7 +634,7 @@ def prune_versions(base: Path, step: str, keep: int) -> int:
 
     # Delete files
     for vid in ids:
-        seg_path = _version_path(base, step, vid)
+        seg_path = version_path(base, step, vid)
         if seg_path.exists():
             seg_path.unlink()
 

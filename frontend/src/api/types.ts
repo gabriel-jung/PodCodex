@@ -6,10 +6,15 @@
  */
 
 // ── Re-export all generated types ────────────────────────
+// AssembleStrategy is a bare ``Literal`` alias on the Python side, not a
+// Pydantic model. The schema generator only emits BaseModel-derived
+// interfaces, so we mirror the alias here. Keep in sync with
+// ``src/podcodex/core/constants.py:AssembleStrategy``.
+export type AssembleStrategy = "silence" | "original_timing";
+
 export type {
   AppConfig,
   AssembleRequest,
-  AssembleStrategy,
   BatchRequest,
   CreateFromRSSRequest,
   CreateFromRSSResponse,

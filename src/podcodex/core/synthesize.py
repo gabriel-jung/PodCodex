@@ -7,10 +7,10 @@ Steps:
     3. assemble_episode()      — merge all segments into a final podcast audio file
 
 Files produced in output_dir:
-    voice_samples/{speaker}.wav         — reference clips for voice cloning
-    tts_segments/{index:04d}_{speaker}.wav  — generated audio per segment
-    tts_segments/manifest.json          — generation metadata for incremental re-runs
-    {stem}.synthesized.wav              — final merged podcast
+    voice_samples/{speaker}.wav            — reference clips for voice cloning
+    tts_segments/{start_ms}_{end_ms}.wav   — generated audio per segment
+    tts_segments/manifest.json             — generation metadata for incremental re-runs
+    synthesize/{version_id}.wav            — final merged podcast (versioned)
 """
 
 import hashlib
@@ -541,6 +541,8 @@ def load_tts_model(model_size: str = "1.7B"):
     device = device_str()
     dtype = torch_dtype()
 
+    _patch_sdpa_mask_for_mimi_vmap_bug()
+
     with timed_load(f"Qwen3-TTS {model_size} on {device} ({dtype})"):
         model = Qwen3TTSModel.from_pretrained(
             f"Qwen/Qwen3-TTS-12Hz-{model_size}-Base",
@@ -549,6 +551,64 @@ def load_tts_model(model_size: str = "1.7B"):
             attn_implementation="sdpa",
         )
     return model
+
+
+_SDPA_MASK_PATCHED = False
+
+
+def _patch_sdpa_mask_for_mimi_vmap_bug() -> None:
+    """Replace transformers' vmap-based mask builder with a broadcast one.
+
+    transformers 4.57.3's ``sdpa_mask_recent_torch`` (and ``eager_mask``,
+    which internally delegates to it) builds the 4D causal mask by
+    composing per-cell ``mask_function`` calls under ``torch.vmap``
+    (``masking_utils.py:392``). MiMi's encoder feeds in a
+    ``packed_sequence_mask`` whose inner mask_function indexes a 2D tensor
+    by scalar tensor indices and compares the results. Under vmap that
+    path triggers ``.item()`` internally, which vmap can't trace, raising
+    ``RuntimeError: vmap: ... .item() ...`` on CPU.
+
+    Swap ``_vmap_for_bhqkv`` for a no-vmap implementation that broadcasts
+    the four index aranges to a single ``(B, H, Q, KV)`` shape and calls
+    the mask_function exactly once. All shipping mask_functions (causal,
+    padding, packed_sequence, sliding/chunked window, offsets, and_masks,
+    or_masks) are already pure tensor ops that broadcast cleanly, so the
+    result is identical to the vmap'd version. The small memory bump
+    (materialising the full 4D index grid) is negligible at MiMi's 12 Hz
+    frame rate.
+
+    Called only from ``load_tts_model`` (the synth subprocess entry) on
+    purpose: ``bootstrap.py:_install_transformers_torch_check_patch`` runs
+    in every subprocess and pins sdpa to ``sdpa_mask_recent_torch`` to
+    dodge a *different* vmap NameError in Pplx's ``or_masks`` path.
+    Replacing ``_vmap_for_bhqkv`` globally would still produce correct
+    masks for that path (broadcasting handles ``or_masks`` the same way),
+    but we keep the scope narrow to avoid affecting unrelated subprocesses
+    until needed. Idempotent for the lifetime of the Python (sub)process.
+    """
+    global _SDPA_MASK_PATCHED
+    if _SDPA_MASK_PATCHED:
+        return
+    import transformers.masking_utils as _mu
+
+    def _no_vmap_for_bhqkv(mask_function: Any, bh_indices: bool = True) -> Any:
+        def wrapped(batch_arange, head_arange, q_arange, kv_arange):
+            if bh_indices:
+                b = batch_arange[:, None, None, None]
+                h = head_arange[None, :, None, None]
+                q = q_arange[None, None, :, None]
+                kv = kv_arange[None, None, None, :]
+            else:
+                b = batch_arange  # caller passes None when bh_indices=False
+                h = head_arange
+                q = q_arange[:, None]
+                kv = kv_arange[None, :]
+            return mask_function(b, h, q, kv)
+
+        return wrapped
+
+    _mu._vmap_for_bhqkv = _no_vmap_for_bhqkv
+    _SDPA_MASK_PATCHED = True
 
 
 def build_clone_prompts(
@@ -861,11 +921,9 @@ def generate_segments(
 
 def assemble_episode(
     generated: list[dict],
-    audio_path: Path | str | None,
-    output_dir: str | Path | None = None,
-    strategy: AssembleStrategy = "original_timing",
+    output_path: Path,
+    strategy: AssembleStrategy = "silence",
     silence_duration: float = 0.5,
-    output_path: Path | None = None,
 ) -> Path:
     """
     Assemble generated TTS segments into a final episode audio file.
@@ -877,19 +935,17 @@ def assemble_episode(
 
     Args:
         generated        : output of generate_segments()
-        audio_path       : source audio file (used to resolve output path)
-        output_dir       : directory relative to audio_path for outputs
+        output_path      : destination .wav file (parent dir must exist)
         strategy         : assembly strategy
         silence_duration : silence in seconds between segments (strategy="silence" only)
-        output_path      : explicit destination; defaults to p.synthesized (legacy single-file)
 
     Returns:
         Path to the final .wav file
     """
 
     logger.info(f"Assembling {len(generated)} segments — strategy={strategy}")
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    out_path = output_path if output_path is not None else p.synthesized
+    out_path = output_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not generated:
         raise ValueError("No generated segments to assemble.")
@@ -914,7 +970,12 @@ def assemble_episode(
                 chunks.append(within_silence if same_speaker else across_silence)
 
     elif strategy == "original_timing":
-        cursor = 0.0
+        # Anchor at the first selected segment's start so a narrowed
+        # selection (e.g. only segments 12-14 of an episode) doesn't open
+        # with a long blank lead-in equal to the first start time. Within
+        # the selection, inter-segment gaps still reflect the original
+        # podcast's rhythm.
+        cursor = generated[0]["start"]
         for seg in generated:
             gap = seg["start"] - cursor
             if gap > 0:

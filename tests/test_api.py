@@ -159,24 +159,6 @@ def test_get_transcript_segments_404_when_missing(client, tmp_path):
     assert r.status_code == 404
 
 
-def test_get_transcript_segments_reads_legacy_file(client, tmp_path):
-    """When no version exists, the route falls back to {stem}.transcript.json."""
-    audio, ep_dir = _make_audio_dir(tmp_path)
-    segs = [
-        {"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "hello world"},
-        {"speaker": "Bob", "start": 2.0, "end": 4.0, "text": "hi there"},
-    ]
-    (tmp_path / "s" / "ep" / "ep.transcript.json").write_text(json.dumps(segs))
-
-    r = client.get("/api/transcribe/segments", params={"audio_path": audio})
-    assert r.status_code == 200
-    body = r.json()
-    assert len(body) == 2
-    assert body[0]["text"] == "hello world"
-    # annotate_flags adds a "flagged" key
-    assert "flagged" in body[0]
-
-
 # ──────────────────────────────────────────────
 # Export endpoints (pure formatters)
 # ──────────────────────────────────────────────

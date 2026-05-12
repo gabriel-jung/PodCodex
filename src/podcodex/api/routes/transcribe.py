@@ -33,17 +33,13 @@ async def get_segments(
     output_dir: str | None = Query(None),
     limit: int | None = Query(None, ge=1, description="Max segments to return"),
 ) -> list[dict]:
-    """Load transcript segments (latest version, falls back to legacy files)."""
+    """Load transcript segments (latest version)."""
     from podcodex.api.routes._helpers import annotate_flags
     from podcodex.core.versions import load_latest
 
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     segments = load_latest(p.base, "transcript")
-    if segments is None:
-        from podcodex.api.routes._helpers import read_segments
-
-        segments = read_segments(p.transcript_best)
     if segments is None:
         raise HTTPException(404, "No transcript found")
     if limit is not None:

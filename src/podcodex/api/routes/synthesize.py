@@ -36,9 +36,7 @@ async def synthesis_status(
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     voice_dir = p.voice_samples_dir
     tts_dir = p.tts_segments_dir
-    # Synthesized if either the legacy single-file path exists OR any
-    # versioned synth row is registered in the DB.
-    synthesized = p.synthesized.exists() or bool(list_versions(p.base, "synthesize"))
+    synthesized = bool(list_versions(p.base, "synthesize"))
     return {
         "voice_samples_extracted": voice_dir.is_dir() and any(voice_dir.glob("*.wav")),
         "tts_segments_generated": tts_dir.is_dir() and any(tts_dir.glob("*.wav")),
@@ -358,7 +356,7 @@ async def get_generated_segments(
 class AssembleRequest(BaseModel):
     audio_path: str | None = None
     output_dir: str | None = None
-    strategy: AssembleStrategy = "original_timing"
+    strategy: AssembleStrategy = "silence"
     silence_duration: float = 0.5
     language: str = ""
     model_size: str | None = None
@@ -376,11 +374,6 @@ class AssembleRequest(BaseModel):
         if v < 0:
             raise ValueError("silence_duration must be non-negative")
         return v
-
-
-def _versioned_synth_path(base, version_id: str):
-    """Versioned filename next to the legacy single-file synthesized path."""
-    return base.parent / f"{base.name}.synthesized.{version_id}.wav"
 
 
 @router.get("/versions")
@@ -428,11 +421,11 @@ async def remove_synthesize_version(
 ) -> dict:
     """Delete a synth version (.wav + DB row)."""
     from podcodex.api.routes._helpers import require_audio_or_output
-    from podcodex.core.versions import delete_synthesize_version
+    from podcodex.core.versions import delete_version
 
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    removed = delete_synthesize_version(p.base, version_id)
+    removed = delete_version(p.base, "synthesize", version_id)
     if not removed:
         raise HTTPException(404, f"Synthesize version {version_id} not found")
     return {"status": "deleted", "version_id": version_id}
@@ -442,7 +435,11 @@ async def remove_synthesize_version(
 async def assemble(req: AssembleRequest) -> dict:
     """Assemble generated TTS segments into a versioned final episode audio file."""
     from podcodex.core.synthesize import assemble_episode, load_generated_segments
-    from podcodex.core.versions import new_version_id, save_synthesize_version
+    from podcodex.core.versions import (
+        version_path,
+        new_version_id,
+        save_synthesize_version,
+    )
 
     from podcodex.core._utils import seg_key
 
@@ -465,16 +462,14 @@ async def assemble(req: AssembleRequest) -> dict:
         raise HTTPException(404, "No generated TTS segments found")
 
     now, version_id = new_version_id("raw")
-    versioned_path = _versioned_synth_path(p.base, version_id)
+    versioned_path = version_path(p.base, "synthesize", version_id)
 
     try:
         out_path = assemble_episode(
             generated,
-            req.audio_path,
-            output_dir=req.output_dir,
+            versioned_path,
             strategy=req.strategy,
             silence_duration=req.silence_duration,
-            output_path=versioned_path,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))

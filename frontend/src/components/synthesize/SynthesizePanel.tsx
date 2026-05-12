@@ -55,7 +55,7 @@ export default function SynthesizePanel() {
   const [maxChunkDuration, setMaxChunkDuration] = useState(20);
   const [force, setForce] = useState(false);
   const [onlySpeakers, setOnlySpeakers] = useState<string[]>([]);
-  const [assembleStrategy, setAssembleStrategy] = useState<AssembleStrategy>("original_timing");
+  const [assembleStrategy, setAssembleStrategy] = useState<AssembleStrategy>("silence");
   const [silenceDuration, setSilenceDuration] = useState(0.2);
   const [expanded, setExpanded] = useState(!episode?.synthesized);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -456,8 +456,7 @@ export default function SynthesizePanel() {
                   return;
                 }
               } else {
-                const legacyFallback = audioPath ? audioPath.replace(/\.[^.]+$/, ".synthesized.wav") : null;
-                synthPath = assembleMutation.data?.path ?? legacyFallback;
+                synthPath = assembleMutation.data?.path ?? null;
               }
               if (!synthPath) return;
               setAudioMeta(synthPath, { title: `${episode.title} (Synthesized)`, showName: showMeta?.name });

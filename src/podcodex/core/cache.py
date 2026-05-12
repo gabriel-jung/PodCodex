@@ -43,15 +43,23 @@ def get_cache_dir() -> Path:
 def get_hf_cache_dir() -> Path:
     """Return the HuggingFace-style cache dir inside the PodCodex cache.
 
-    Also sets ``HF_HOME`` so libraries that don't accept an explicit
-    ``cache_dir`` parameter still download into PodCodex's controlled
-    directory.  This covers pyannote (diarization) and BGEM3 (embeddings)
-    which only respect the env var.  Call this function early in any
-    pipeline path that loads models.
+    Sets ``HF_HOME``, ``HF_HUB_CACHE`` and ``TRANSFORMERS_CACHE`` to the
+    same ``<hf_dir>/hub`` location so libraries that don't accept an
+    explicit ``cache_dir`` parameter still resolve to PodCodex's
+    controlled directory. Pyannote (diarization) and BGEM3 (embeddings)
+    only respect ``HF_HOME``; ``transformers.utils.hub.cached_file`` and
+    qwen_tts's ``from_pretrained`` look up via ``TRANSFORMERS_CACHE`` and
+    fall back to ``HF_HOME/transformers`` (a stub dir distinct from where
+    ``snapshot_download`` actually writes), so all three must be aligned
+    or the loader/downloader halves split-brain. Call this function
+    early in any pipeline path that loads models.
     """
     hf_dir = get_cache_dir() / "huggingface"
     hf_dir.mkdir(parents=True, exist_ok=True)
+    hub_cache = str(hf_dir / "hub")
     os.environ.setdefault("HF_HOME", str(hf_dir))
+    os.environ.setdefault("HF_HUB_CACHE", hub_cache)
+    os.environ.setdefault("TRANSFORMERS_CACHE", hub_cache)
     return hf_dir
 
 

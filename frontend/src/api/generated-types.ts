@@ -374,10 +374,17 @@ export interface ExtractVoicesRequest {
   top_k?: number;
 }
 
+export interface VoiceSelection {
+  speaker: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
 export interface ExtractSelectedRequest {
-  audio_path: string;
+  audio_path?: string | null;
   output_dir?: string | null;
-  selections: Record<string, unknown>[];
+  selections: VoiceSelection[];
 }
 
 export interface GenerateRequest {
@@ -393,12 +400,10 @@ export interface GenerateRequest {
   keep_segment_keys?: string[] | null;
 }
 
-export type AssembleStrategy = "silence" | "original_timing";
-
 export interface AssembleRequest {
   audio_path?: string | null;
   output_dir?: string | null;
-  strategy?: AssembleStrategy;
+  strategy?: "silence" | "original_timing";
   silence_duration?: number;
   language?: string;
   model_size?: string | null;

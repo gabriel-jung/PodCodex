@@ -1,7 +1,5 @@
 """Tests for podcodex.core.transcribe — pure functions only (no GPU, no models)."""
 
-import json
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -31,10 +29,6 @@ _NEW_FORMAT = {
     },
     "segments": _SEGMENTS,
 }
-
-
-def _write_transcript(path: Path, data) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
 def _save_parquet_version(
@@ -114,43 +108,42 @@ def test_simplify_strips_whitespace_from_text():
 
 
 # ──────────────────────────────────────────────
-# load_transcript — backward compat
+# load_transcript / load_transcript_full
 # ──────────────────────────────────────────────
 
 
-def test_load_transcript_new_format_returns_segments():
-    with tempfile.TemporaryDirectory() as tmp:
-        f = Path(tmp) / "ep.transcript.json"
-        _write_transcript(f, _NEW_FORMAT)
-        # We need a fake audio path whose stem matches the transcript stem
-        audio = Path(tmp) / "ep.mp3"
-        result = load_transcript(audio, output_dir=tmp)
+def _save_transcript_version(
+    base: Path, segments: list[dict], meta: dict | None = None
+) -> None:
+    from podcodex.core.versions import save_version
+
+    provenance = {"step": "transcript", "type": "raw", "params": {"meta": meta or {}}}
+    save_version(base, "transcript", segments, provenance)
+
+
+def test_load_transcript_returns_segments(tmp_path):
+    audio = tmp_path / "ep.mp3"
+    audio.touch()
+    base = tmp_path / "ep" / "ep"
+    base.parent.mkdir()
+    _save_transcript_version(base, _SEGMENTS)
+
+    result = load_transcript(audio)
+
     assert isinstance(result, list)
     assert len(result) == 2
     assert result[0]["speaker"] == "Alice"
 
 
-def test_load_transcript_old_format_returns_list():
-    with tempfile.TemporaryDirectory() as tmp:
-        audio = Path(tmp) / "ep.mp3"
-        f = Path(tmp) / "ep.transcript.json"
-        _write_transcript(f, _SEGMENTS)
-        result = load_transcript(audio, output_dir=tmp)
-    assert isinstance(result, list)
-    assert result[0]["speaker"] == "Alice"
+def test_load_transcript_full_includes_meta(tmp_path):
+    audio = tmp_path / "ep.mp3"
+    audio.touch()
+    base = tmp_path / "ep" / "ep"
+    base.parent.mkdir()
+    _save_transcript_version(base, _SEGMENTS, meta=_NEW_FORMAT["meta"])
 
+    result = load_transcript_full(audio)
 
-# ──────────────────────────────────────────────
-# load_transcript_full
-# ──────────────────────────────────────────────
-
-
-def test_load_transcript_full_new_format():
-    with tempfile.TemporaryDirectory() as tmp:
-        audio = Path(tmp) / "ep.mp3"
-        f = Path(tmp) / "ep.transcript.json"
-        _write_transcript(f, _NEW_FORMAT)
-        result = load_transcript_full(audio, output_dir=tmp)
     assert "meta" in result
     assert "segments" in result
     assert result["meta"]["show"] == "My Show"
@@ -161,14 +154,12 @@ def test_load_transcript_full_new_format():
     assert len(result["segments"]) == 2
 
 
-def test_load_transcript_full_old_format_wraps_with_empty_meta():
-    with tempfile.TemporaryDirectory() as tmp:
-        audio = Path(tmp) / "ep.mp3"
-        f = Path(tmp) / "ep.transcript.json"
-        _write_transcript(f, _SEGMENTS)
-        result = load_transcript_full(audio, output_dir=tmp)
-    assert result["meta"] == {}
-    assert len(result["segments"]) == 2
+def test_load_transcript_full_empty_when_missing(tmp_path):
+    audio = tmp_path / "ep.mp3"
+    audio.touch()
+    (tmp_path / "ep").mkdir()
+    result = load_transcript_full(audio)
+    assert result == {"meta": {}, "segments": []}
 
 
 # ──────────────────────────────────────────────
@@ -415,9 +406,9 @@ def test_export_transcript_clean_nodiarize_only_density(tmp_path):
 
 
 def test_audio_paths_naming():
-    """AudioPaths produces consistent file names for all pipeline steps."""
+    """AudioPaths produces consistent file paths for synth dirs."""
     from podcodex.core._utils import AudioPaths
 
     p = AudioPaths(audio_path=Path("/tmp/ep.mp3"), base=Path("/tmp/ep/ep"))
-    assert p.transcript_raw.name == "ep.transcript.raw.json"
-    assert p.transcript.name == "ep.transcript.json"
+    assert p.voice_samples_dir.name == "voice_samples"
+    assert p.tts_segments_dir.name == "tts_segments"

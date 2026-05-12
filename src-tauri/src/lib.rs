@@ -316,12 +316,16 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
         // is the macOS/Linux escape hatch.
         .env("PODCODEX_PARENT_PID", std::process::id().to_string())
         // HF_HUB_CACHE is the canonical env var huggingface_hub respects for
-        // its model cache. We don't set HF_HOME — that would tell HF Hub to
-        // also look in <HF_HOME>/hub/, splitting the cache across two layouts
-        // depending on which library entry-point downloaded.
+        // its model cache. TRANSFORMERS_CACHE must point at the same dir or
+        // transformers.from_pretrained (and qwen_tts internals via that code
+        // path) read from <hf_home>/transformers/ while snapshot_download
+        // writes to <hf_home>/hub/ — split-brain that fails on
+        // preprocessor_config.json lookups. We don't set HF_HOME — that would
+        // tell HF Hub to also look in <HF_HOME>/hub/, splitting the cache
+        // across two layouts depending on which library entry-point downloaded.
         .env("HF_HUB_CACHE", hf_home.join("hub"))
         .env("TORCH_HOME", &torch_home)
-        .env("TRANSFORMERS_CACHE", hf_home.join("transformers"))
+        .env("TRANSFORMERS_CACHE", hf_home.join("hub"))
         .env(
             "SENTENCE_TRANSFORMERS_HOME",
             models_dir.join("sentence-transformers"),

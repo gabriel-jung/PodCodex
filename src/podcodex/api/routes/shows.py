@@ -559,9 +559,10 @@ async def unified_episodes(
     # for any episode whose first sync happened before our first assemble.
     stems_with_synth = set(db.stems_with_step("synthesize"))
     for stem, row in status_map.items():
-        if stem in stems_with_synth and not row.get("synthesized", False):
-            row["synthesized"] = True
-            db.mark(stem, synthesized=True)
+        desired = stem in stems_with_synth
+        if row.get("synthesized", False) != desired:
+            row["synthesized"] = desired
+            db.mark(stem, synthesized=desired)
 
     local_audio = _scan_audio_files(path)
     episode_files = _scan_episode_files(path, local_audio)

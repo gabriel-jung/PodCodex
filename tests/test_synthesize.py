@@ -102,9 +102,9 @@ def test_assemble_silence_strategy_same_speaker(tmp_path):
     # Speaker-aware silence: within-turn pause = max(silence_duration * 0.4,
     # 0.05). Two Alice segments → 2s + 0.2s + 2s = 4.2s.
     generated = make_generated(tmp_path, [(0, 2), (5, 7)])
-    audio_path = tmp_path / "episode.mp3"
+    out_path = tmp_path / "out.wav"
     out = assemble_episode(
-        generated, audio_path, output_dir="", strategy="silence", silence_duration=0.5
+        generated, out_path, strategy="silence", silence_duration=0.5
     )
     assert out.exists()
     audio, sr = sf.read(str(out))
@@ -116,9 +116,9 @@ def test_assemble_silence_strategy_cross_speaker(tmp_path):
     # 2s + 0.5s + 2s = 4.5s.
     generated = make_generated(tmp_path, [(0, 2), (5, 7)])
     generated[1]["speaker"] = "Bob"
-    audio_path = tmp_path / "episode.mp3"
+    out_path = tmp_path / "out.wav"
     out = assemble_episode(
-        generated, audio_path, output_dir="", strategy="silence", silence_duration=0.5
+        generated, out_path, strategy="silence", silence_duration=0.5
     )
     assert out.exists()
     audio, sr = sf.read(str(out))
@@ -127,29 +127,39 @@ def test_assemble_silence_strategy_cross_speaker(tmp_path):
 
 def test_assemble_original_timing_strategy(tmp_path):
     generated = make_generated(tmp_path, [(0, 2), (5, 7)])
-    audio_path = tmp_path / "episode.mp3"
-    out = assemble_episode(
-        generated, audio_path, output_dir="", strategy="original_timing"
-    )
+    out_path = tmp_path / "out.wav"
+    out = assemble_episode(generated, out_path, strategy="original_timing")
     assert out.exists()
     audio, sr = sf.read(str(out))
     # Should be at least as long as the last segment's generated audio end
     assert len(audio) / sr > 0
 
 
-def test_assemble_empty_raises():
+def test_assemble_original_timing_no_blank_lead_in_for_narrowed_selection(tmp_path):
+    # First segment starts at t=12s but selection is narrow. Output should
+    # anchor at 12s, not pad 12s of silence at the front. Two segments at
+    # (12,14) and (15,17) → 2s + 1s gap + 2s = 5s, not 17s.
+    generated = make_generated(tmp_path, [(12.0, 14.0), (15.0, 17.0)])
+    out_path = tmp_path / "out.wav"
+    out = assemble_episode(generated, out_path, strategy="original_timing")
+    audio, sr = sf.read(str(out))
+    assert abs(len(audio) / sr - 5.0) < 0.1
+
+
+def test_assemble_empty_raises(tmp_path):
     with pytest.raises(ValueError, match="No generated segments"):
-        assemble_episode([], "episode.mp3", strategy="silence")
+        assemble_episode([], tmp_path / "out.wav", strategy="silence")
 
 
 def test_assemble_unknown_strategy_raises(tmp_path):
     generated = make_generated(tmp_path, [(0, 2)])
     with pytest.raises(ValueError, match="Unknown strategy"):
-        assemble_episode(generated, tmp_path / "episode.mp3", strategy="invalid")
+        assemble_episode(generated, tmp_path / "out.wav", strategy="invalid")
 
 
-def test_assemble_output_path_uses_stem(tmp_path):
+def test_assemble_writes_to_output_path(tmp_path):
     generated = make_generated(tmp_path, [(0, 2)])
-    audio_path = tmp_path / "my_episode.mp3"
-    out = assemble_episode(generated, audio_path, strategy="silence")
-    assert out.name == "my_episode.synthesized.wav"
+    out_path = tmp_path / "custom_name.wav"
+    out = assemble_episode(generated, out_path, strategy="silence")
+    assert out == out_path
+    assert out.is_file()

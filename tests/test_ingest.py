@@ -71,20 +71,8 @@ def test_scan_folder_transcribed_true(tmp_path):
     (tmp_path / "ep01.mp3").touch()
     ep_dir = tmp_path / "ep01"
     ep_dir.mkdir()
-    (ep_dir / "ep01.transcript.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert result[0].transcribed is True
-
-
-def test_scan_folder_transcribed_via_raw(tmp_path):
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / "ep01.transcript.raw.json").touch()
+    (ep_dir / "transcript").mkdir()
+    (ep_dir / "transcript" / "v1.json").touch()
 
     result = scan_folder(tmp_path)
 
@@ -99,19 +87,6 @@ def test_scan_folder_transcribed_false(tmp_path):
     result = scan_folder(tmp_path)
 
     assert result[0].transcribed is False
-
-
-def test_scan_folder_validated_transcript(tmp_path):
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / "ep01.transcript.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert result[0].transcribed is True
 
 
 # ──────────────────────────────────────────────
@@ -189,12 +164,13 @@ def test_scan_folder_no_output_dir_yet(tmp_path):
 
 
 def test_scan_folder_transcript_only_episode(tmp_path):
-    """A subdir with a transcript but no audio file is discovered."""
+    """A subdir with a transcript version but no audio file is discovered."""
     from podcodex.ingest.folder import scan_folder
 
     ep_dir = tmp_path / "ep_rss"
     ep_dir.mkdir()
-    (ep_dir / "ep_rss.transcript.json").touch()
+    (ep_dir / "transcript").mkdir()
+    (ep_dir / "transcript" / "v1.json").touch()
 
     result = scan_folder(tmp_path)
 
@@ -203,21 +179,6 @@ def test_scan_folder_transcript_only_episode(tmp_path):
     assert ep.stem == "ep_rss"
     assert ep.audio_path is None
     assert ep.transcribed is True
-
-
-def test_scan_folder_transcript_only_raw(tmp_path):
-    """Transcript-only episode discovered via raw transcript file."""
-    from podcodex.ingest.folder import scan_folder
-
-    ep_dir = tmp_path / "ep02"
-    ep_dir.mkdir()
-    (ep_dir / "ep02.transcript.raw.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert len(result) == 1
-    assert result[0].audio_path is None
-    assert result[0].transcribed is True
 
 
 def test_scan_folder_audio_takes_priority(tmp_path):
@@ -244,12 +205,14 @@ def test_scan_folder_mixed_audio_and_transcript_only(tmp_path):
     (tmp_path / "ep01.mp3").touch()
     ep1 = tmp_path / "ep01"
     ep1.mkdir()
-    (ep1 / "ep01.transcript.json").touch()
+    (ep1 / "transcript").mkdir()
+    (ep1 / "transcript" / "v1.json").touch()
 
     # Transcript-only episode
     ep2 = tmp_path / "ep02"
     ep2.mkdir()
-    (ep2 / "ep02.transcript.json").touch()
+    (ep2 / "transcript").mkdir()
+    (ep2 / "transcript" / "v1.json").touch()
 
     result = scan_folder(tmp_path)
 

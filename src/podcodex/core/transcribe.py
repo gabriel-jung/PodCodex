@@ -29,7 +29,6 @@ from podcodex.core._utils import (
     AudioPaths,
     check_vram,
     free_vram,
-    read_json,
 )
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import (
@@ -582,21 +581,11 @@ def export_transcript(
     return resolved
 
 
-def _load_transcript_file(path: Path) -> dict:
-    """Load a transcript JSON file, normalizing old (list) and new (dict) formats."""
-    data = read_json(path)
-    if isinstance(data, dict):
-        return data
-    return {"meta": {}, "segments": data}
-
-
 def load_transcript_full(
     audio_path: Path | str | None = None,
     output_dir: str | Path | None = None,
 ) -> dict:
-    """Load the final transcript with metadata.
-
-    Tries the version DB first, then falls back to legacy files.
+    """Load the latest transcript version with metadata.
 
     Args:
         audio_path: Source audio file.
@@ -605,18 +594,16 @@ def load_transcript_full(
 
     Returns:
         Dict with keys ``meta`` (show, episode, speakers, duration,
-        word_count) and ``segments`` (list of segment dicts).  If loaded
-        from an old list-format file, ``meta`` will be an empty dict.
+        word_count) and ``segments`` (list of segment dicts), or
+        ``{"meta": {}, "segments": []}`` if no transcript version exists.
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    # Try version DB
     segments = load_latest(p.base, "transcript")
-    if segments is not None:
-        prov = get_latest_provenance(p.base, "transcript") or {}
-        meta = prov.get("params", {}).get("meta", {})
-        return {"meta": meta, "segments": segments}
-    # Legacy fallback
-    return _load_transcript_file(p.transcript_best)
+    if segments is None:
+        return {"meta": {}, "segments": []}
+    prov = get_latest_provenance(p.base, "transcript") or {}
+    meta = prov.get("params", {}).get("meta", {})
+    return {"meta": meta, "segments": segments}
 
 
 def load_transcript(

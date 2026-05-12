@@ -66,6 +66,7 @@ from podcodex.api.routes.synthesize import (  # noqa: E402
     ExtractSelectedRequest,
     ExtractVoicesRequest,
     GenerateRequest,
+    VoiceSelection,
 )
 from podcodex.api.routes.transcribe import TranscribeRequest  # noqa: E402
 from podcodex.api.routes.youtube import (  # noqa: E402
@@ -129,6 +130,7 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, RandomRequest),
     (None, IndexRequest),
     (None, ExtractVoicesRequest),
+    (None, VoiceSelection),
     (None, ExtractSelectedRequest),
     (None, GenerateRequest),
     (None, AssembleRequest),

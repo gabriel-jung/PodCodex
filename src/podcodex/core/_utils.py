@@ -134,8 +134,8 @@ class AudioPaths:
     translate, synthesize).  Create via the ``from_audio`` classmethod::
 
         p = AudioPaths.from_audio("episode.mp3")
-        p.transcript        # → …/episode/episode.transcript.json
-        p.synthesized       # → …/episode/episode.synthesized.wav
+        p.voice_samples_dir # → …/episode/voice_samples/
+        p.show_dir          # → …/{show}/
     """
 
     audio_path: Path  # resolved source audio file
@@ -192,21 +192,6 @@ class AudioPaths:
         """Show-level directory (parent of the episode output dir)."""
         return self.base.parent.parent
 
-    # — Transcription —
-
-    @property
-    def transcript_raw(self) -> Path:
-        return self.base.with_suffix(".transcript.raw.json")
-
-    @property
-    def transcript(self) -> Path:
-        return self.base.with_suffix(".transcript.json")
-
-    @property
-    def transcript_best(self) -> Path:
-        """Validated transcript if it exists, else raw."""
-        return self.transcript if self.transcript.exists() else self.transcript_raw
-
     # — Synthesis —
 
     @property
@@ -226,10 +211,6 @@ class AudioPaths:
         d = self.tts_segments_dir
         d.mkdir(parents=True, exist_ok=True)
         return d
-
-    @property
-    def synthesized(self) -> Path:
-        return self.base.with_suffix(".synthesized.wav")
 
 
 # ──────────────────────────────────────────────
