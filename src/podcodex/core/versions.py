@@ -55,6 +55,11 @@ STEP_FLAG = {
     "synthesize": "synthesized",
 }
 
+# Steps whose content_hash can serve as a speaker_map ``input_hash`` (the
+# IDs a speaker map references come from one of these). Order is the
+# bucket-hash preference: diarized_segments wins when both exist.
+SPEAKER_LABEL_SOURCE_STEPS = ("diarized_segments", "segments")
+
 
 # ------------------------------------------------------------------
 # Data types
@@ -514,6 +519,11 @@ def delete_version(base: Path, step: str, version_id: str) -> bool:
     """Delete a single version (file + DB row).
 
     Returns ``True`` if the version was found and deleted.
+
+    Cascades: deleting a ``diarized_segments`` or ``segments`` version also
+    drops any ``speaker_map`` versions whose ``input_hash`` matches the
+    deleted version's ``content_hash``, since the SPEAKER_XX (or imported
+    label) IDs those maps reference no longer exist.
     """
     found = False
     try:
@@ -524,9 +534,13 @@ def delete_version(base: Path, step: str, version_id: str) -> bool:
 
     try:
         db = _get_db(base)
+        deleted_meta = (
+            db.get_version(version_id) if step in SPEAKER_LABEL_SOURCE_STEPS else None
+        )
         count = db.delete_versions(base.name, step, [version_id])
         found = found or count > 0
     except Exception:
+        deleted_meta = None
         logger.opt(exception=True).warning(
             "Failed to delete version {} from DB", version_id
         )
@@ -534,7 +548,41 @@ def delete_version(base: Path, step: str, version_id: str) -> bool:
     if found:
         logger.info("Deleted version {} for step '{}'", version_id, step)
         _refresh_status_after_delete(base, step)
+        if deleted_meta:
+            deleted_hash = deleted_meta.get("content_hash")
+            if deleted_hash:
+                _delete_speaker_maps_where(base, input_hash=deleted_hash)
     return found
+
+
+def _delete_speaker_maps_where(
+    base: Path,
+    *,
+    input_hash: str | None,
+    exclude_id: str | None = None,
+) -> None:
+    """Delete every ``speaker_map`` version with the given ``input_hash``.
+
+    Single-source pruner used both for bucket-scoped saves (drop siblings
+    in the same bucket) and for cascade deletes (drop orphans when their
+    label-source version is removed). Routes through ``delete_version`` so
+    file + DB stay in sync and the standard status refresh fires.
+    """
+    try:
+        db = _get_db(base)
+        targets = [
+            v["id"]
+            for v in db.list_versions(base.name, "speaker_map")
+            if v.get("input_hash") == input_hash and v["id"] != exclude_id
+        ]
+    except Exception:
+        logger.opt(exception=True).warning(
+            "Failed to list speaker_map versions for prune (input_hash={})",
+            input_hash,
+        )
+        return
+    for vid in targets:
+        delete_version(base, "speaker_map", vid)
 
 
 def _refresh_status_after_delete(base: Path, step: str) -> None:
@@ -567,18 +615,63 @@ def _latest_content_hash(base: Path, step: str) -> str | None:
     return meta["content_hash"] if meta else None
 
 
+def diarized_segments_input_hash(base: Path) -> str | None:
+    """Combined lineage hash for the diarized_segments step.
+
+    ``diarized_segments`` is derived from both ``segments`` (WhisperX) and
+    ``diarization`` (pyannote). Returns the sha256 of the two source
+    content_hashes so the value shape matches other ``input_hash`` fields
+    (``sha256:...``). Returns ``None`` if either source is missing.
+    """
+    seg_h = _latest_content_hash(base, "segments")
+    diar_h = _latest_content_hash(base, "diarization")
+    if not seg_h or not diar_h:
+        return None
+    return compute_hash([{"seg": seg_h, "diar": diar_h}])
+
+
+def diarized_segments_is_fresh(base: Path) -> bool:
+    """True when the latest diarized_segments was built from the latest
+    segments + diarization.
+    """
+    expected = diarized_segments_input_hash(base)
+    if not expected:
+        return False
+    latest = _get_db(base).get_latest_version(base.name, "diarized_segments")
+    return bool(latest and latest.get("input_hash") == expected)
+
+
+def _speaker_map_bucket_hash(base: Path) -> str | None:
+    """Return the content_hash that defines the current speaker label set.
+
+    Speaker IDs come from ``diarized_segments`` for the diarized pipeline,
+    and from ``segments`` for subtitle-imported transcripts (YouTube ``<v>``
+    tags). Walks ``SPEAKER_LABEL_SOURCE_STEPS`` in preference order and
+    returns the first available content_hash, or ``None`` if neither step
+    has a version.
+    """
+    for step in SPEAKER_LABEL_SOURCE_STEPS:
+        h = _latest_content_hash(base, step)
+        if h is not None:
+            return h
+    return None
+
+
 def save_speaker_map_version(base: Path, mapping: dict[str, str]) -> str:
     """Save a speaker map as a versioned ``speaker_map`` entry.
 
     The map is encoded as a sorted list of ``{"id", "name"}`` dicts to fit
-    the ``save_version`` segment-list schema. Lineage to the diarization
-    that produced the SPEAKER_XX IDs is tracked via ``input_hash`` (the
-    latest diarization version's ``content_hash``, or ``None`` if no
-    diarization version exists yet).
+    the ``save_version`` segment-list schema. ``input_hash`` records the
+    source of the speaker labels (``diarized_segments`` content_hash for
+    the diarized flow, ``segments`` content_hash for subtitle-imported
+    transcripts) so each map stays bound to the diarization/import that
+    produced its IDs.
 
-    Only one speaker_map version is retained per episode — prior versions
-    are pruned after the new one is safely saved.
+    Bucket semantics: one map per ``input_hash``. Saving replaces any
+    existing map in the same bucket but leaves maps for other source
+    hashes intact, so re-diarize / re-import does not destroy old maps.
     """
+    bucket_hash = _speaker_map_bucket_hash(base)
     entries = [{"id": k, "name": v} for k, v in sorted(mapping.items())]
     vid = save_version(
         base=base,
@@ -588,31 +681,38 @@ def save_speaker_map_version(base: Path, mapping: dict[str, str]) -> str:
             "step": "speaker_map",
             "type": "validated",
             "manual_edit": True,
-            "input_hash": _latest_content_hash(base, "diarization"),
+            "input_hash": bucket_hash,
         },
     )
-    prune_versions(base, "speaker_map", keep=1)
+    _delete_speaker_maps_where(base, input_hash=bucket_hash, exclude_id=vid)
     return vid
 
 
 def load_latest_speaker_map(base: Path) -> dict[str, str]:
-    """Load the latest speaker map if it still matches the current diarization.
+    """Load the speaker map bound to the current speaker-label source.
 
-    Returns an empty dict if no speaker_map version exists, or if the
-    stored ``input_hash`` does not match the latest diarization's
-    ``content_hash`` (indicating the map is stale after re-diarization).
+    Walks speaker_map versions newest-first and returns the first one
+    whose ``input_hash`` matches the current bucket hash (see
+    ``_speaker_map_bucket_hash``). Returns an empty dict when no matching
+    map exists, so re-diarization or re-import never silently misapplies
+    a stale mapping.
     """
-    latest = _get_db(base).get_latest_version(base.name, "speaker_map")
-    if not latest:
+    bucket_hash = _speaker_map_bucket_hash(base)
+    if bucket_hash is None:
         return {}
-    if latest.get("input_hash") != _latest_content_hash(base, "diarization"):
-        return {}
-
     try:
-        entries = load_version(base, "speaker_map", latest["id"])
-    except FileNotFoundError:
+        versions = _get_db(base).list_versions(base.name, "speaker_map")
+    except Exception:
         return {}
-    return {e["id"]: e["name"] for e in entries}
+    for v in versions:
+        if v.get("input_hash") != bucket_hash:
+            continue
+        try:
+            entries = load_version(base, "speaker_map", v["id"])
+        except FileNotFoundError:
+            continue
+        return {e["id"]: e["name"] for e in entries}
+    return {}
 
 
 def prune_versions(base: Path, step: str, keep: int) -> int:

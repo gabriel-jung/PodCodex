@@ -255,8 +255,12 @@ def diarize_file(
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    if not force and has_version(p.base, "diarization"):
-        logger.info("[SKIP] Diarization version already exists")
+    diar_match_params = {"num_speakers": num_speakers}
+    if not force and has_matching_version(p.base, "diarization", diar_match_params):
+        logger.info(
+            "[SKIP] Diarization version with num_speakers={} already exists",
+            num_speakers,
+        )
         return load_diarization(audio_path, output_dir=output_dir)
 
     token = hf_token or os.environ.get("HF_TOKEN")
@@ -378,10 +382,17 @@ def assign_speakers(
     import pandas as pd
     import whisperx
 
+    from podcodex.core.versions import (
+        diarized_segments_input_hash,
+        diarized_segments_is_fresh,
+    )
+
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    if not force and has_version(p.base, "diarized_segments"):
-        logger.info("[SKIP] Diarized segments version already exists")
+    if not force and diarized_segments_is_fresh(p.base):
+        logger.info(
+            "[SKIP] Diarized segments already match current segments + diarization"
+        )
         return load_diarized_segments(audio_path, output_dir=output_dir)
 
     def _has_timestamps(d: dict) -> bool:
@@ -404,6 +415,7 @@ def assign_speakers(
         "step": "diarized_segments",
         "type": "raw",
         "model": "whisperx.assign_word_speakers",
+        "input_hash": diarized_segments_input_hash(p.base),
     }
     save_version(p.base, "diarized_segments", segments, provenance)
     logger.success(f"Assignment done — {len(segments)} segments")
@@ -440,9 +452,11 @@ def load_speaker_map(
 ) -> dict[str, str]:
     """Load SPEAKER_XX → name mapping from the version DB.
 
-    Returns the latest speaker map whose ``input_hash`` matches the current
-    diarization version. Returns ``{}`` if no map has been saved yet or if
-    the stored map is stale relative to the current diarization.
+    Returns the speaker map whose ``input_hash`` matches the current
+    speaker-label source (``diarized_segments`` for the diarized flow,
+    ``segments`` for subtitle-imported transcripts). Returns ``{}`` when
+    no matching map exists, so a stale mapping is never silently applied
+    after re-diarization or re-import.
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     return load_latest_speaker_map(p.base)
@@ -455,9 +469,12 @@ def save_speaker_map(
 ) -> None:
     """Save SPEAKER_XX → human name mapping as a versioned entry.
 
-    The map is linked to the current diarization via ``input_hash``, so it
-    will automatically be considered stale if diarization is re-run with
-    different output. Only one speaker_map version is retained per episode.
+    The map is linked to its label source via ``input_hash`` (the latest
+    ``diarized_segments`` content_hash, or ``segments`` for subtitle-only
+    transcripts). One map is retained per source bucket: re-saving for the
+    same diarization/import replaces the prior map, but maps for older
+    diarizations/imports are preserved so re-running upstream steps never
+    destroys previously curated mappings.
 
     Example::
 

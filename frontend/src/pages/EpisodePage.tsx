@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getEpisodes, getShowMeta, openFolder } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { artworkUrl, deleteFile, saveExportFile } from "@/api/filesystem";
@@ -52,6 +52,7 @@ import {
   Captions,
   CloudOff,
   LayoutGrid,
+  ChevronRight,
 } from "lucide-react";
 import {
   PIPELINE_STEPS,
@@ -547,7 +548,7 @@ function ActivityLog({ versions, onPreview }: {
   );
 }
 
-function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPreview, onDelete, showEdited = true, sizeColumn = false }: {
+function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPreview, onDelete, showEdited = true, sizeColumn = false, childrenByVersionId }: {
   /** Already sorted desc by timestamp by the caller. */
   versions: VersionEntry[] | undefined;
   heading: string;
@@ -559,9 +560,78 @@ function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPrev
   /** Render the last column as formatted file size from params.file_size_bytes
    *  instead of segment_count. */
   sizeColumn?: boolean;
+  /** Optional child versions keyed by parent version id. When a parent has
+   *  children, its row gains a disclosure chevron; expanded children render
+   *  indented underneath. */
+  childrenByVersionId?: Map<string, VersionEntry[]>;
 }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   if (!versions || versions.length === 0) return null;
   const clickable = !!onPreview;
+
+  const toggleExpanded = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const renderRow = (v: VersionEntry, isChild: boolean) => {
+    const { stage, label } = stepDisplay(v.step);
+    const c = STAGE_CLASSES[stage];
+    const edited = showEdited && isEdited(v);
+    const kids = childrenByVersionId?.get(v.id);
+    const hasKids = !!kids && kids.length > 0;
+    const open = expanded.has(v.id);
+    return (
+      <tr
+        key={v.id}
+        onClick={clickable ? () => onPreview!(v.step ?? "") : undefined}
+        className={`group/vrow border-b border-border/40 last:border-b-0 hover:bg-accent/30 transition${clickable ? " cursor-pointer" : ""}${isChild ? " bg-background/30" : ""}`}
+      >
+        <td className="px-3 py-2">
+          <span className={`inline-flex items-center gap-1.5${isChild ? " pl-5" : ""}`}>
+            {hasKids ? (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); toggleExpanded(v.id); }}
+                className="text-muted-foreground/60 hover:text-foreground transition shrink-0"
+                title={open ? "Hide intermediates" : "Show intermediates"}
+              >
+                <ChevronRight className={`w-3 h-3 transition-transform ${open ? "rotate-90" : ""}`} />
+              </button>
+            ) : null}
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.dot}`} />
+            <span className="text-foreground">{label}</span>
+            {edited && <span className="ml-1 text-2xs text-success">edited</span>}
+          </span>
+        </td>
+        <td className="px-3 py-2 text-muted-foreground truncate max-w-[320px]" title={versionLabel(v)}>
+          {versionLabel(v)}
+        </td>
+        <td className="px-3 py-2 font-mono text-2xs text-muted-foreground/70 tabular-nums whitespace-nowrap">
+          {versionDate(v)}
+        </td>
+        <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+          {sizeColumn
+            ? formatBytes((v.params as { file_size_bytes?: number } | undefined)?.file_size_bytes)
+            : v.segment_count}
+        </td>
+        <td className="px-3 py-2 text-right whitespace-nowrap">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onDelete(v.step ?? "", v.id); }}
+            className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover/vrow:opacity-100 transition"
+            title="Delete this version"
+          >
+            <Trash2 className="w-3 h-3 inline-block" />
+          </button>
+        </td>
+      </tr>
+    );
+  };
 
   return (
     <section className="space-y-2">
@@ -579,44 +649,13 @@ function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPrev
           </thead>
           <tbody>
             {versions.map((v) => {
-              const { stage, label } = stepDisplay(v.step);
-              const c = STAGE_CLASSES[stage];
-              const edited = showEdited && isEdited(v);
+              const kids = childrenByVersionId?.get(v.id);
+              const open = expanded.has(v.id);
               return (
-                <tr
-                  key={v.id}
-                  onClick={clickable ? () => onPreview!(v.step ?? "") : undefined}
-                  className={`group/vrow border-b border-border/40 last:border-b-0 hover:bg-accent/30 transition${clickable ? " cursor-pointer" : ""}`}
-                >
-                  <td className="px-3 py-2">
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.dot}`} />
-                      <span className="text-foreground">{label}</span>
-                      {edited && <span className="ml-1 text-2xs text-success">edited</span>}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-muted-foreground truncate max-w-[320px]" title={versionLabel(v)}>
-                    {versionLabel(v)}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-2xs text-muted-foreground/70 tabular-nums whitespace-nowrap">
-                    {versionDate(v)}
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                    {sizeColumn
-                      ? formatBytes((v.params as { file_size_bytes?: number } | undefined)?.file_size_bytes)
-                      : v.segment_count}
-                  </td>
-                  <td className="px-3 py-2 text-right whitespace-nowrap">
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); onDelete(v.step ?? "", v.id); }}
-                      className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover/vrow:opacity-100 transition"
-                      title="Delete this version"
-                    >
-                      <Trash2 className="w-3 h-3 inline-block" />
-                    </button>
-                  </td>
-                </tr>
+                <Fragment key={v.id}>
+                  {renderRow(v, false)}
+                  {open && kids?.map((child) => renderRow(child, true))}
+                </Fragment>
               );
             })}
           </tbody>
@@ -880,6 +919,46 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
     [versionGroups],
   );
 
+  // Each intermediate parquet (segments / diarization / diarized_segments /
+  // speaker_map) is the by-product of one transcribe run. Pair each with the
+  // closest later raw transcript version: the one whose timestamp is >= the
+  // intermediate's. Orphans (no later transcript) stay in "All other files".
+  const { childrenByTranscriptId, orphanIntermediates } = useMemo(() => {
+    const intermediates = versionGroups.other.filter(
+      (v) => v.step && TRANSCRIBE_INTERMEDIATE_STEPS.has(v.step),
+    );
+    const transcriptsAsc = [...versionGroups.transcript].sort(
+      (a, b) => a.timestamp.localeCompare(b.timestamp),
+    );
+    const map = new Map<string, VersionEntry[]>();
+    const orphans: VersionEntry[] = [];
+    for (const inter of intermediates) {
+      const parent = transcriptsAsc.find((t) => t.timestamp >= inter.timestamp);
+      if (parent) {
+        const arr = map.get(parent.id) ?? [];
+        arr.push(inter);
+        map.set(parent.id, arr);
+      } else {
+        orphans.push(inter);
+      }
+    }
+    for (const arr of map.values()) {
+      arr.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    }
+    return { childrenByTranscriptId: map, orphanIntermediates: orphans };
+  }, [versionGroups.transcript, versionGroups.other]);
+
+  const otherFilesVersions = useMemo(
+    () => [
+      ...versionGroups.synthesize,
+      ...versionGroups.other.filter(
+        (v) => !v.step || !TRANSCRIBE_INTERMEDIATE_STEPS.has(v.step),
+      ),
+      ...orphanIntermediates,
+    ].sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
+    [versionGroups.synthesize, versionGroups.other, orphanIntermediates],
+  );
+
   // Activity feed shows all step events, including synth. The "All transcript
   // versions" table uses transcriptVersions (no synth).
   const recentActivityVersions = useMemo(
@@ -1096,6 +1175,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
         countColLabel="Segments"
         onPreview={openPreview}
         onDelete={(step, id) => deleteVersionMutation.mutate({ step, id })}
+        childrenByVersionId={childrenByTranscriptId}
       />
 
       {episode.indexed && indexEntries && indexEntries.length > 0 && (
@@ -1121,9 +1201,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
       )}
 
       <VersionsTable
-        versions={[...versionGroups.synthesize, ...versionGroups.other].sort(
-          (a, b) => b.timestamp.localeCompare(a.timestamp),
-        )}
+        versions={otherFilesVersions}
         heading="All other files"
         firstColLabel="File"
         countColLabel="Size"

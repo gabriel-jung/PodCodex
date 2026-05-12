@@ -151,7 +151,8 @@ def run_for_batch(
 
     new_diarization = False
     if not cancelled() and diarize:
-        if force or not has_version(p.base, "diarization"):
+        diar_match_params = {"num_speakers": num_speakers}
+        if force or not has_matching_version(p.base, "diarization", diar_match_params):
             new_diarization = True
             did_work = True
             progress_cb(0.4, "Diarizing...")
