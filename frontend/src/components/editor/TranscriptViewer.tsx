@@ -1301,6 +1301,14 @@ export default function TranscriptViewer({
     return () => window.removeEventListener("keydown", handler);
   }, [isDirty, editor.canUndo, saveMutation]);
 
+  const compareExtras = useMemo(
+    () => [
+      { value: REF_NONE, label: "None" },
+      ...(referenceSegments ? [{ value: REF_DEFAULT, label: referenceLabel ?? "Original" }] : []),
+    ],
+    [referenceSegments, referenceLabel],
+  );
+
   // ── Loading state ─────────────────────────────────────────────────────────
 
   if (!sourceSegments) {
@@ -1319,14 +1327,6 @@ export default function TranscriptViewer({
 
   const infoVersion = selectedVersion ?? (versions && versions.length > 0 ? versions[0] : null);
   const infoItems = infoVersion ? versionInfo(infoVersion) : [];
-
-  const compareExtras = useMemo(
-    () => [
-      { value: REF_NONE, label: "None" },
-      ...(referenceSegments ? [{ value: REF_DEFAULT, label: referenceLabel ?? "Original" }] : []),
-    ],
-    [referenceSegments, referenceLabel],
-  );
 
   // ── Render ────────────────────────────────────────────────────────────────
 
