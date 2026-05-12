@@ -3,6 +3,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useActiveTask } from "@/hooks/useActiveTask";
 import { cancelTask } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
+import { useEpisodeStore, useTaskStore } from "@/stores";
+import { getEpisodeStem } from "@/lib/episodeRef";
 import type { Episode } from "@/api/types";
 
 /**
@@ -96,7 +98,16 @@ export function usePipelineTask(
 
   const startTask = useCallback((taskId: string) => {
     setTaskId(taskId);
-  }, []);
+    const { episode: ep, folder } = useEpisodeStore.getState();
+    if (ep && folder) {
+      useTaskStore.getState().setEpisodeTask(taskId, {
+        stem: getEpisodeStem(ep),
+        folder,
+        title: ep.title,
+        step: stepKey,
+      });
+    }
+  }, [stepKey]);
 
   return {
     activeTaskId,

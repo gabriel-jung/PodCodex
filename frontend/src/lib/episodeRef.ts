@@ -22,3 +22,10 @@ export function getEpisodeSourceRef(episode: Episode | null | undefined): Episod
     noAudio: !audioPath && !!outputDir,
   };
 }
+
+/** Stable on-disk stem identifier for an episode. Falls back to ``id`` when
+ *  ``stem`` is empty or absent (some legacy entries pre-date the stem field
+ *  being populated; treating ``""`` as falsy is intentional). */
+export function getEpisodeStem(episode: Episode): string {
+  return episode.stem || episode.id;
+}

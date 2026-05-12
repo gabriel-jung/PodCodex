@@ -463,12 +463,16 @@ def extract_selected_samples(
     Returns:
         {speaker: [{"file", "start", "end", "duration", "text"}, ...]}
     """
+    from podcodex.core._utils import fill_narrator_speaker
+
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     samples_dir = p.ensure_voice_samples_dir()
 
-    # Build extraction plan grouped by speaker
+    # Empty / placeholder labels (subtitle-imported segments without `<v>`
+    # tags carry speaker="") must collapse to NARRATOR_SPEAKER so the on-disk
+    # filename matches what ``load_voice_samples`` later globs for in the UI.
     by_speaker: dict[str, list[dict]] = {}
-    for sel in selections:
+    for sel in fill_narrator_speaker(selections):
         speaker = sel["speaker"]
         seg = {**sel, "duration": sel["end"] - sel["start"]}
         by_speaker.setdefault(speaker, []).append(seg)

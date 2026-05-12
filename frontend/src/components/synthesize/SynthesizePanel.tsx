@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AssembleStrategy, Segment } from "@/api/types";
-import { useEpisodeStore, useAudioStore } from "@/stores";
+import { useEpisodeStore, useAudioStore, useTaskStore } from "@/stores";
 import {
   getSynthesisStatus,
   getVoiceSamples,
@@ -30,11 +30,13 @@ import VoiceExtractionSection from "./VoiceExtractionSection";
 import TTSGenerationSection from "./TTSGenerationSection";
 import AssemblySection from "./AssemblySection";
 import { plainStatus } from "@/lib/stepStatus";
-import { getEpisodeSourceRef } from "@/lib/episodeRef";
+import { getEpisodeSourceRef, getEpisodeStem } from "@/lib/episodeRef";
 
 export default function SynthesizePanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
+  const folder = useEpisodeStore((s) => s.folder);
+  const setEpisodeTask = useTaskStore((s) => s.setEpisodeTask);
   const queryClient = useQueryClient();
   const seekTo = useAudioStore((s) => s.seekTo);
   const setAudioMeta = useAudioStore((s) => s.setAudioMeta);
@@ -207,12 +209,16 @@ export default function SynthesizePanel() {
     mutationFn: () => {
       const selections = sourceSegments
         .filter((seg) => selected.has(segKey(seg)))
-        .map((seg) => ({
-          speaker: speakerOverrides[segKey(seg)] || seg.speaker || "",
-          start: seg.start,
-          end: seg.end,
-          text: seg.text,
-        }));
+        .map((seg) => {
+          const override = speakerOverrides[segKey(seg)];
+          const resolved = override || resolveSynthSpeaker(seg.speaker ?? "") || "";
+          return {
+            speaker: resolved,
+            start: seg.start,
+            end: seg.end,
+            text: seg.text,
+          };
+        });
       return extractSelectedSamples(audioPath, selections, outputDir);
     },
     onSuccess: () => {
@@ -242,7 +248,17 @@ export default function SynthesizePanel() {
         only_speakers: onlySpeakers.length > 0 ? onlySpeakers : undefined,
         keep_segment_keys: Array.from(sourceSelection),
       }),
-    onSuccess: (data) => setGenerateTaskId(data.task_id),
+    onSuccess: (data) => {
+      setGenerateTaskId(data.task_id);
+      if (episode && folder) {
+        setEpisodeTask(data.task_id, {
+          stem: getEpisodeStem(episode),
+          folder,
+          title: episode.title,
+          step: "synthesize",
+        });
+      }
+    },
   });
 
   const assembleMutation = useMutation({
@@ -267,11 +283,13 @@ export default function SynthesizePanel() {
   const handleRetry = () => {
     setExtractTaskId(null);
     setGenerateTaskId(null);
+    setEpisodeTask(null);
     setExpanded(true);
   };
   const handleDismiss = () => {
     setExtractTaskId(null);
     setGenerateTaskId(null);
+    setEpisodeTask(null);
   };
 
   const { has: hasCap } = useCapabilities();
@@ -398,14 +416,15 @@ export default function SynthesizePanel() {
           onComplete={() => {
             refreshQueries();
             setGenerateTaskId(null);
+            setEpisodeTask(null);
             // Transient run flags — clear so the next click doesn't silently
             // re-apply the previous run's overrides.
             setForce(false);
             setOnlySpeakers([]);
           }}
-          onRetry={() => { setGenerateTaskId(null); generateMutation.mutate(); }}
-          onDismiss={() => { cancelTask(generateTaskId).catch(() => {}); setGenerateTaskId(null); }}
-          onCancel={() => { cancelTask(generateTaskId).catch(() => {}); setGenerateTaskId(null); }}
+          onRetry={() => { setGenerateTaskId(null); setEpisodeTask(null); generateMutation.mutate(); }}
+          onDismiss={() => { cancelTask(generateTaskId).catch(() => {}); setGenerateTaskId(null); setEpisodeTask(null); }}
+          onCancel={() => { cancelTask(generateTaskId).catch(() => {}); setGenerateTaskId(null); setEpisodeTask(null); }}
         />
       )}
 

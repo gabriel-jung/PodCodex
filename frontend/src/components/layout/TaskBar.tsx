@@ -180,6 +180,21 @@ const STATUS_COLOR: Record<EpStatus, string> = {
   failed: "text-destructive",
 };
 
+function progressBarColor({
+  isFailed,
+  isCancelled,
+  isDone,
+}: {
+  isFailed: boolean;
+  isCancelled: boolean;
+  isDone: boolean;
+}): string {
+  if (isFailed) return "bg-destructive";
+  if (isCancelled) return "bg-warning";
+  if (isDone) return "bg-success";
+  return "bg-primary";
+}
+
 /* ── Batch results summary (shown after completion) ── */
 
 interface BatchResult {
@@ -386,15 +401,7 @@ function BatchStrip() {
           <span className="text-foreground font-medium shrink-0">{stepLabel}</span>
           <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
             <div
-              className={`h-full rounded-full transition-all duration-300 ${
-                isFailed
-                  ? "bg-destructive"
-                  : isCancelled
-                    ? "bg-warning"
-                    : isDone
-                      ? "bg-success"
-                      : "bg-primary"
-              }`}
+              className={`h-full rounded-full transition-all duration-300 ${progressBarColor({ isFailed, isCancelled, isDone })}`}
               style={{ width: `${pct}%` }}
             />
           </div>
@@ -503,15 +510,108 @@ function BatchStrip() {
   );
 }
 
+// EpisodeStrip: single-episode pipeline progress that survives panel unmount.
+
+function EpisodeStrip() {
+  const taskId = useTaskStore((s) => s.episodeTaskId);
+  const stem = useTaskStore((s) => s.episodeStem);
+  const folder = useTaskStore((s) => s.episodeFolder);
+  const title = useTaskStore((s) => s.episodeTitle);
+  const step = useTaskStore((s) => s.episodeStep);
+  const setEpisodeTask = useTaskStore((s) => s.setEpisodeTask);
+  const progress = useProgress(taskId);
+  const navigate = useNavigate();
+
+  const pct = progress ? Math.round(progress.progress * 100) : 0;
+  const isDone = progress?.status === "completed";
+  const isFailed = progress?.status === "failed";
+  const isCancelled = progress?.status === "cancelled";
+  const isFinished = isDone || isFailed || isCancelled;
+
+  useEffect(() => {
+    if (!taskId || progress) return;
+    const t = setTimeout(() => setEpisodeTask(null), 12_000);
+    return () => clearTimeout(t);
+  }, [taskId, progress, setEpisodeTask]);
+
+  useEffect(() => {
+    if (!isFinished) return;
+    const t = setTimeout(() => setEpisodeTask(null), 5_000);
+    return () => clearTimeout(t);
+  }, [isFinished, setEpisodeTask]);
+
+  if (!taskId) return null;
+
+  const stepLabel = step ? capitalize(step) : "Episode";
+  const onRowClick = () => {
+    if (!folder || !stem) return;
+    navigate({
+      to: "/show/$folder/episode/$stem",
+      params: { folder: encodeURIComponent(folder), stem: encodeURIComponent(stem) },
+    });
+  };
+
+  return (
+    <div
+      className="px-4 py-2 flex items-center gap-3 text-xs cursor-pointer hover:bg-accent/30 transition"
+      onClick={onRowClick}
+    >
+      <Loader2
+        className={`w-3.5 h-3.5 shrink-0 ${isFinished ? "text-muted-foreground" : "text-primary animate-spin"}`}
+      />
+      <span className="text-foreground font-medium shrink-0">{stepLabel}</span>
+      {title && (
+        <span className="text-muted-foreground truncate min-w-0 max-w-[40%]" title={title}>
+          {title}
+        </span>
+      )}
+      <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-300 ${progressBarColor({ isFailed, isCancelled, isDone })}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {progress?.message && !isFinished && (
+        <span className="text-muted-foreground/70 shrink-0 truncate max-w-[30%]" title={progress.message}>
+          {progress.message}
+        </span>
+      )}
+      {!isFinished ? (
+        <Button
+          onClick={(e) => { e.stopPropagation(); cancelTask(taskId).catch(() => {}); setEpisodeTask(null); }}
+          variant="ghost"
+          size="sm"
+          className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
+          title="Cancel task"
+        >
+          <X className="w-3 h-3" />
+        </Button>
+      ) : (
+        <Button
+          onClick={(e) => { e.stopPropagation(); setEpisodeTask(null); }}
+          variant="ghost"
+          size="sm"
+          className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
+          title="Dismiss"
+        >
+          <X className="w-3 h-3" />
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export default function TaskBar() {
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
   const batchTaskId = useTaskStore((s) => s.batchTaskId);
-  if (!downloadTaskId && !batchTaskId) return null;
+  const episodeTaskId = useTaskStore((s) => s.episodeTaskId);
+  if (!downloadTaskId && !batchTaskId && !episodeTaskId) return null;
 
   return (
     <div className="border-t border-border bg-background divide-y divide-border/50">
       <DownloadStrip />
       <BatchStrip />
+      <EpisodeStrip />
     </div>
   );
 }
