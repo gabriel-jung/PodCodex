@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 
 from podcodex.api.routes._helpers import (
+    counted_progress,
     is_downloaded,
     list_show_stems,
     require_show_folder,
@@ -138,13 +139,14 @@ async def rss_download(
                 parts.append(f"{failed} failed")
             return " · ".join(parts) if parts else ""
 
+        report = counted_progress(progress_cb, total)
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
                 progress_cb(i / total, f"Cancelled — {_summary()}")
                 break
 
             stem = episode_stem(ep, show_path)
-            progress_cb(i / total, f"[{i + 1}/{total}] Downloading…")
+            report(i, "Downloading…")
 
             if not force_dl and is_downloaded(show_path, stem):
                 skipped += 1
@@ -184,7 +186,7 @@ async def rss_download(
                     )
                     break
 
-            progress_cb((i + 1) / total, f"[{i + 1}/{total}] {_summary()}")
+            report(i, _summary(), frac=(i + 1) / total)
 
             # Delay between actual downloads to be respectful to servers
             if total > 1:

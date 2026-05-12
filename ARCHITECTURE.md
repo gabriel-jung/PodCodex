@@ -7,24 +7,24 @@ Non-obvious wiring. For folder layout and what each module contains, run `ls src
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Tauri shell (Rust, src-tauri/)                         │
-│  ─ Native window, file dialogs, IPC                     │
-│  ─ Spawns sidecar in a process group (command-group)    │
+│  - Native window, file dialogs, IPC                     │
+│  - Spawns sidecar in a process group (command-group)    │
 └────────────────┬────────────────────────────────────────┘
                  │ stdout/stderr + HTTP :18811
                  ▼
 ┌─────────────────────────────────────────────────────────┐
 │  FastAPI sidecar (PyInstaller-frozen `podcodex-server`) │
-│  ─ Routes (api/), WebSocket progress channel            │
-│  ─ Owns pipeline DB, version archive, Lance index       │
-│  ─ Forks subprocesses for heavy steps                   │
+│  - Routes (api/), WebSocket progress channel            │
+│  - Owns pipeline DB, version archive, Lance index       │
+│  - Forks subprocesses for heavy steps                   │
 └────────────────┬────────────────────────────────────────┘
                  │ multiprocessing.Queue (prog_q)
                  ▼
 ┌─────────────────────────────────────────────────────────┐
 │  Step worker subprocesses                               │
-│  ─ transcribe / diarize / correct / translate / synth   │
-│  ─ Re-exec into a fresh Python so torch state is clean  │
-│  ─ Loguru lines forwarded to parent via prog_q          │
+│  - transcribe / diarize / correct / translate / synth   │
+│  - Re-exec into a fresh Python so torch state is clean  │
+│  - Loguru lines forwarded to parent via prog_q          │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -48,22 +48,24 @@ Each show is a self-contained folder under a user-chosen root:
 
 ```
 <show_root>/<show>/
-├── .feed_cache.json             RSS / YouTube feed metadata (all known episodes)
-├── <stem>/                      One folder per episode
-│   ├── <stem>.mp3               Source audio (may live here or alongside)
-│   ├── .episode_meta.json       Per-episode RSSEpisode (indexer's RSS source)
-│   ├── voice_samples/           Reference clips per speaker (for TTS cloning)
-│   ├── tts_segments/            Per-segment generated audio + manifest.json
-│   ├── transcript/<id>.json     Every transcript save (raw ASR or validated export)
-│   ├── corrected/<id>.json      Every LLM-corrected save
-│   ├── <lang>/<id>.json         Every translation save per language (e.g. english/)
-│   ├── synthesize/<id>.wav      Every assembled episode synthesis
-│   └── transcript/{segments,diarization,diarized_segments}/<id>.parquet
-├── pipeline.db                  Per-show SQLite (episodes + versions)
-└── show.json                    Show config (RSS URL, defaults)
+├── .feed_cache.json                       RSS / YouTube feed metadata (all known episodes)
+├── <stem>/                                One folder per episode
+│   ├── <stem>.mp3                         Source audio (may live here or alongside)
+│   ├── .episode_meta.json                 Per-episode RSSEpisode (indexer's RSS source)
+│   ├── voice_samples/                     Reference clips per speaker (for TTS cloning)
+│   ├── tts_segments/                      Per-segment generated audio + manifest.json (scratch dir during assemble)
+│   ├── transcript/<id>.json               Every transcript save (raw ASR or validated export)
+│   ├── segments/<id>.parquet              Word-level ASR segments (parquet substep)
+│   ├── diarization/<id>.parquet           Pyannote diarization output (parquet substep)
+│   ├── diarized_segments/<id>.parquet     Segments + speaker assignment merged (parquet substep)
+│   ├── corrected/<id>.json                Every LLM-corrected save
+│   ├── <lang>/<id>.json                   Every translation save per language (e.g. english/)
+│   └── synthesize/<id>.wav                Every assembled episode synthesis
+├── pipeline.db                            Per-show SQLite (episodes + versions)
+└── show.json                              Show config (RSS URL, defaults)
 ```
 
-Every step uses the same storage layout: `{ep_dir}/{step}/{version_id}.{json|parquet|wav}` resolved by `_version_path(base, step, id)` in `core/versions.py`. Versions are content-hashed; metadata (model, params, timestamp, segment count, input hash for lineage) lives in the `versions` table of `pipeline.db`. The `versions` table is the truth — the directory listing is incidental.
+Every step uses the same storage layout: `{ep_dir}/{step}/{version_id}.{json|parquet|wav}` resolved by `version_path(base, step, id)` in `core/versions.py`. Versions are content-hashed; metadata (model, params, timestamp, segment count, input hash for lineage) lives in the `versions` table of `pipeline.db`. The `versions` table is the truth; the directory listing is incidental.
 
 `.episode_meta.json` is the indexer's RSS-metadata source (title, pub_date, description, episode_number, artwork_url). It mirrors a single `RSSEpisode` from `.feed_cache.json`. Whenever a richer extraction lands (per-video YouTube call, RSS refetch, one-shot backfill), the merge goes through `fill_empty_fields()` in `ingest/rss.py`. Three call sites pre-consolidation each rolled their own and drifted on which keys counted. Don't add a fourth.
 
@@ -92,7 +94,7 @@ versions (
 
 Step status (`transcribed`, `corrected`, `synthesized`, and entries in the `translations` JSON array) is a boolean flag derived from the presence of versions for that step. `versions.input_hash` chains a step to the version it was derived from, enabling the version tree UI.
 
-**Version lifecycle is symmetric across all steps.** Every save flows through `save_version` (or `save_synthesize_version` for the `.wav` content-hash variant); every delete flows through `delete_version`. `delete_version` removes the on-disk file at `_version_path`, removes the DB row via `pipeline_db.delete_versions`, then runs `_refresh_status_after_delete` which demotes the matching boolean flag (or trims the `translations` array) once no versions remain for that step. The `shows.py` `unified_episodes` reconcile pass also demotes a stale `synthesized=True` if the versions table reports no rows, guarding against any path that bypassed the helper. Status flags promote AND demote — adding a new step means wiring all four touchpoints (path, save, delete, status refresh), nothing more.
+**Version lifecycle is symmetric across all steps.** Every save flows through `save_version` (or `save_synthesize_version` for the `.wav` content-hash variant); every delete flows through `delete_version`. `delete_version` removes the on-disk file at `version_path`, removes the DB row via `pipeline_db.delete_versions`, then runs `_refresh_status_after_delete` which demotes the matching boolean flag (or trims the `translations` array) once no versions remain for that step. The `shows.py` `unified_episodes` reconcile pass also demotes a stale `synthesized=True` if the versions table reports no rows, guarding against any path that bypassed the helper. Status flags promote AND demote: adding a new step means wiring all four touchpoints (path, save, delete, status refresh), nothing more.
 
 ## RAG layer
 
@@ -114,7 +116,7 @@ This means changing the embedding model or chunker creates a new collection rath
 
 Pydantic request/response models in `src/podcodex/api/` are the source of truth. Run `make types` to regenerate `frontend/src/api/types.ts`. The frontend's API client (`createVersionApi`, `createLLMPipelineApi`) consumes these types.
 
-Don't hand-edit `frontend/src/api/types.ts` — it's overwritten by `make types`. Pydantic models inherit from `LLMRequest` for any endpoint that talks to an LLM; that base carries model, params, and provider routing.
+Don't hand-edit `frontend/src/api/types.ts`; it's overwritten by `make types`. Pydantic models inherit from `LLMRequest` for any endpoint that talks to an LLM; that base carries model, params, and provider routing.
 
 ## Bot and MCP
 

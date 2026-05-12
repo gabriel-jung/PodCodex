@@ -12,7 +12,7 @@ The flow is the same on every shipped target:
 
 1. **Freeze the Python backend** with PyInstaller → single
    `podcodex-server` binary (CPU-only).
-2. **Fetch the `yt-dlp` static binary** for the host triple. ffmpeg is **not** bundled — the app shells out to the user's system install (see [LICENSE_AUDIT.md](../LICENSE_AUDIT.md)).
+2. **Fetch the `yt-dlp` static binary** for the host triple. ffmpeg is **not** bundled; the app shells out to the user's system install (see [LICENSE_AUDIT.md](../LICENSE_AUDIT.md)).
 3. **Build the frontend** (`npm run build`).
 4. **Bundle with Tauri** (`cargo tauri build`) → native installer.
 
@@ -21,7 +21,7 @@ when iterating on a single layer.
 
 > **GPU acceleration:** the bundled installer is CPU-only. NVIDIA users
 > activate an in-app CUDA backend (~2.4 GB download) from the GPU panel
-> in settings. Pascal cards (sm_60–62) need the source-build path
+> in settings. Pascal cards (sm_60-62) need the source-build path
 > (`--extra gpu-pascal`); see [`PASCAL.md`](PASCAL.md).
 
 ---
@@ -132,7 +132,7 @@ builds need an explicit extra:
 
 ```bash
 uv sync --extra gpu          # cu128 wheels: Turing, Ampere, Ada, Blackwell (sm_75+)
-uv sync --extra gpu-pascal   # cu126 wheels: Pascal only (sm_60–62), see PASCAL.md
+uv sync --extra gpu-pascal   # cu126 wheels: Pascal only (sm_60-62), see PASCAL.md
 ```
 
 Mutually exclusive; never enable both.

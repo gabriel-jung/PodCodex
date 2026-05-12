@@ -2,9 +2,35 @@
   <img src="assets/icon.png" alt="PodCodex" width="160" />
 </p>
 
-# PodCodex
+<h1 align="center">PodCodex</h1>
 
-**Turn podcasts into a searchable knowledge base.**
+<p align="center">
+  <strong>Turn podcasts into a searchable knowledge base.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/gabriel-jung/PodCodex/releases/latest">
+    <img src="https://img.shields.io/github/v/release/gabriel-jung/PodCodex?style=flat-square&color=f59e0b" alt="Release" />
+  </a>
+  <a href="https://github.com/gabriel-jung/PodCodex/releases">
+    <img src="https://img.shields.io/github/downloads/gabriel-jung/PodCodex/total?style=flat-square&color=f59e0b" alt="Downloads" />
+  </a>
+  <a href="https://github.com/gabriel-jung/PodCodex/stargazers">
+    <img src="https://img.shields.io/github/stars/gabriel-jung/PodCodex?style=flat-square&color=f59e0b" alt="Stars" />
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/github/license/gabriel-jung/PodCodex?style=flat-square&color=f59e0b" alt="License" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="#screenshots">Screenshots</a> •
+  <a href="#what-it-does">Features</a> •
+  <a href="#get-it">Download</a> •
+  <a href="#integrations">Discord &amp; MCP</a> •
+  <a href="ROADMAP.md">Roadmap</a> •
+  <a href="CONTRIBUTING.md">Contribute</a>
+</p>
 
 With PodCodex you can produce high-quality transcriptions from any audio source, whether podcasts, YouTube channels, or your own recordings, and turn them into a local and searchable archive.
 
@@ -12,7 +38,48 @@ Plug it into a Discord bot or an MCP-compatible chat (Claude Desktop, Cursor, et
 
 You can also translate the results into other languages, or synthesize dubbed audio through voice cloning.
 
-> **Screenshots and a 30-second demo are landing with v0.2.0.** Tracked in [ROADMAP.md](ROADMAP.md).
+---
+
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/home.png" alt="Library view" width="800" />
+</p>
+
+*Library view: every podcast and YouTube channel you follow. Pipeline progress visible on each tile.*
+
+<p align="center">
+  <img src="screenshots/show-index.png" alt="Show episode index" width="800" />
+</p>
+
+*Every episode of a show in one list. Select any subset and run a pipeline step on the batch.*
+
+<p align="center">
+  <img src="screenshots/show.png" alt="Episode page" width="800" />
+</p>
+
+*Per-episode pipeline state. Activity log records every run with its model and settings.*
+
+<p align="center">
+  <img src="screenshots/editor.png" alt="Correct editor" width="800" />
+</p>
+
+*Correct with AI editor: side-by-side diff between original and LLM corrected transcripts, inline edits, undo, export.*
+
+<p align="center">
+  <img src="screenshots/search.png" alt="Semantic search" width="800" />
+</p>
+
+*Semantic search across the full library, with timestamps and episode context.*
+
+Podcasts shown:
+
+- [DataGen](https://www.datageneration.co/)
+- [Houston We Have a Podcast](https://www.nasa.gov/podcasts/houston-we-have-a-podcast/)
+- [Le rendez-vous Tech](https://frenchspin.fr/category/le-rdv-tech/)
+- [LINUX Unplugged](https://linuxunplugged.com/)
+- [MIT 6.S191: Introduction to Deep Learning](http://introtodeeplearning.com/)
+- [This Week in Tech](https://twit.tv/shows/this-week-in-tech)
 
 ---
 
@@ -28,7 +95,7 @@ Point it at audio. Six steps, all on your machine:
 2. **Transcribe**
    - Turn audio into a transcript using [WhisperX](https://github.com/m-bain/whisperX), with optional speaker labels from [pyannote-audio](https://github.com/pyannote/pyannote-audio).
    - Different model sizes depending on your hardware (CPU or GPU) and speed-versus-quality needs.
-   - Already have subtitles? Import them (.srt, .vtt) and skip transcription entirely.
+   - Already have subtitles? Import them (.srt, .vtt), or pull YouTube auto-subtitles directly, and skip transcription entirely.
 
 3. **Correct**
    - Fix errors (text, speakers, timestamps) by hand in the transcript editor, with synced audio playback.
@@ -76,46 +143,16 @@ Subsequent launches don't need it.
 
 "Local" correct/translate requires the [Ollama](https://ollama.com) app installed and running; models you pull there show up automatically in PodCodex. `qwen3.5:9b` ran fine on a laptop with acceptable quality; larger models produce better results.
 
-### Build from source
-
-You'll need:
-
-- **[uv](https://docs.astral.sh/uv/)**: handles Python 3.12 install + dependencies.
-- **[Node.js](https://nodejs.org/) LTS**: frontend (or via nvm, Homebrew, winget, etc.).
-- **[FFmpeg](https://ffmpeg.org/download.html)**: system install on PATH (used for transcription, clip extraction, voice synthesis).
-- **[Rust](https://www.rust-lang.org/)** *(optional)*: for the native Tauri window.
-
-**Install:**
-
-```bash
-git clone https://github.com/gabriel-jung/PodCodex && cd PodCodex
-make setup          # uv sync + npm install
-```
-
-**Run the app:**
-
-Browser only (no Rust, faster to try):
-```bash
-make dev-no-tauri
-```
-
-Native Tauri window (needs Rust):
-```bash
-make dev
-```
-
-More on building and signing in [`deploy/BUILD.md`](deploy/BUILD.md).
-
 ### Hardware support
 
-| Hardware                       | GPU support                                              |
-|--------------------------------|----------------------------------------------------------|
-| NVIDIA RTX 20xx or newer       | Bundled installer, or `--extra gpu` from source          |
-| NVIDIA Pascal (GTX 10xx, P40)  | `--extra gpu-pascal` only, see [PASCAL.md](deploy/PASCAL.md) |
-| Apple Silicon                  | CPU only, no GPU/MPS path yet                            |
-| Other / no GPU                 | CPU only                                                 |
+| Hardware                       | GPU support                                                                          |
+|--------------------------------|--------------------------------------------------------------------------------------|
+| NVIDIA RTX 20xx or newer       | Bundled installer (in-app CUDA activation, ~2.4 GB), or `--extra gpu` from source    |
+| NVIDIA Pascal (GTX 10xx, P40)  | `--extra gpu-pascal` from source only, see [PASCAL.md](deploy/PASCAL.md)             |
+| Apple Silicon                  | CPU only, no GPU/MPS path yet                                                        |
+| Other / no GPU                 | CPU only                                                                             |
 
-Force CPU at runtime via **Settings → GPU acceleration → Force CPU** (useful when the GPU build mismatches your card or for ad-hoc CPU testing).
+The bundled installer ships CPU-only. NVIDIA users activate the in-app CUDA backend from **Settings → GPU acceleration**; it downloads a CUDA-enabled torch build (~2.4 GB) on first activation. Force CPU at any time from the same panel.
 
 ---
 
@@ -142,7 +179,52 @@ PodCodex ships a Model Context Protocol server, so any MCP-compatible client (Cl
 
 ---
 
-## Tech stack
+## Notes & caveats
+
+- YouTube auto-generated subtitles need [deno](https://deno.com/) installed (yt-dlp hands the JS challenge off to it). Manual subtitles work fine without.
+- Ollama correct/translate needs a model with reliable structured-output support; small models tend to break the JSON format.
+- Qwen3-TTS needs CUDA for reasonable synthesis speed.
+
+---
+
+## For contributors
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). System wiring in [ARCHITECTURE.md](ARCHITECTURE.md). AI assistant context in [CLAUDE.md](CLAUDE.md). Frontend design rules in [DESIGN.md](DESIGN.md). ML stack pins, cache layout, and runtime patches in [ML_RUNTIME.md](ML_RUNTIME.md).
+
+### Build from source
+
+You'll need:
+
+- **[uv](https://docs.astral.sh/uv/)**: handles Python 3.12 install + dependencies.
+- **[Node.js](https://nodejs.org/) LTS**: frontend (or via nvm, Homebrew, winget, etc.).
+- **[Rust](https://www.rust-lang.org/)** *(optional)*: for the native Tauri window.
+
+Plus the same runtime prerequisites as [Get it](#get-it).
+
+**Install:**
+
+```bash
+git clone https://github.com/gabriel-jung/PodCodex && cd PodCodex
+make setup          # uv sync + npm install
+```
+
+**Run the app:**
+
+Browser only (no Rust, faster to try):
+
+```bash
+make dev-no-tauri
+```
+
+Native Tauri window (needs Rust):
+
+```bash
+make dev
+```
+
+More on building and signing in [`deploy/BUILD.md`](deploy/BUILD.md).
+
+### Tech stack
 
 | Layer          | Technology                                                                                                |
 |----------------|-----------------------------------------------------------------------------------------------------------|
@@ -158,21 +240,11 @@ PodCodex ships a Model Context Protocol server, so any MCP-compatible client (Cl
 
 ---
 
-## Notes & caveats
-
-- YouTube auto-generated subtitles need [deno](https://deno.com/) installed (yt-dlp hands the JS challenge off to it). Manual subtitles work fine without.
-- Ollama correct/translate needs a model with reliable structured-output support; small models tend to break the JSON format.
-- Qwen3-TTS needs CUDA for reasonable synthesis speed.
-
----
-
-## Develop / contribute
-
-Start with [CONTRIBUTING.md](CONTRIBUTING.md). System wiring in [ARCHITECTURE.md](ARCHITECTURE.md). AI assistant context in [CLAUDE.md](CLAUDE.md). Frontend design rules in [DESIGN.md](DESIGN.md).
-
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for v0.1.0 blockers and longer-term plans.
+See [ROADMAP.md](ROADMAP.md) for what's next and longer-term plans. Shipped features live in [CHANGELOG.md](CHANGELOG.md).
+
+---
 
 ## License
 

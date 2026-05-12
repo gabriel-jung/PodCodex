@@ -22,9 +22,9 @@ import { useCapabilities } from "@/hooks/useCapabilities";
 import MissingDependency from "@/components/common/MissingDependency";
 import ProgressBar from "@/components/editor/ProgressBar";
 import PipelinePanel from "@/components/common/PipelinePanel";
+import VersionPicker from "@/components/common/VersionPicker";
 import { segKey } from "@/lib/segKey";
 import { resolveSynthSpeaker } from "@/lib/speakers";
-import { versionDate } from "@/lib/utils";
 import SourceSegmentPicker, { type ResolvedSource } from "./SourceSegmentPicker";
 import VoiceExtractionSection from "./VoiceExtractionSection";
 import TTSGenerationSection from "./TTSGenerationSection";
@@ -173,21 +173,6 @@ export default function SynthesizePanel() {
     () => synthVersions?.find((v) => v.id === selectedSynthVersionId) ?? synthVersions?.[0],
     [synthVersions, selectedSynthVersionId],
   );
-
-  const synthVersionOptions = useMemo(() => {
-    if (!synthVersions) return [];
-    return synthVersions.map((v, i) => {
-      const params = (v.params ?? {}) as { strategy?: string; language?: string; duration_s?: number };
-      const parts = [
-        i === 0 ? "Latest" : null,
-        versionDate(v),
-        params.language,
-        params.strategy,
-        params.duration_s ? `${(params.duration_s / 60).toFixed(1)}m` : null,
-      ].filter(Boolean);
-      return { id: v.id, label: parts.join(" · ") };
-    });
-  }, [synthVersions]);
 
   const deleteSynthVersionMutation = useMutation({
     mutationFn: (versionId: string) =>
@@ -435,15 +420,11 @@ export default function SynthesizePanel() {
           {synthVersions && synthVersions.length > 0 && (
             <div className="flex items-center gap-2 text-xs">
               <span className="text-muted-foreground">Version</span>
-              <select
-                value={activeSynthVersion?.id ?? ""}
-                onChange={(e) => setSelectedSynthVersionId(e.target.value)}
-                className="bg-secondary text-secondary-foreground rounded px-2 py-1 border border-border max-w-[18rem]"
-              >
-                {synthVersionOptions.map(({ id, label }) => (
-                  <option key={id} value={id}>{label}</option>
-                ))}
-              </select>
+              <VersionPicker
+                versions={synthVersions}
+                value={selectedSynthVersionId}
+                onChange={setSelectedSynthVersionId}
+              />
               {activeSynthVersion && synthVersions.length > 1 && (
                 <button
                   type="button"

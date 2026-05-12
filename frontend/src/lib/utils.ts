@@ -52,6 +52,21 @@ export function formatDuration(seconds: number | undefined | null): string {
   return `${m}m`;
 }
 
+/** Compact H/M/S formatter: "1h20m5s", "20m5s", "5s". Used where sub-minute
+ *  precision matters (e.g. synth output where short clips are common). */
+export function formatDurationHMS(seconds: number | undefined | null): string {
+  if (!seconds || seconds <= 0) return "";
+  const total = Math.round(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const parts: string[] = [];
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  if (s > 0 || parts.length === 0) parts.push(`${s}s`);
+  return parts.join("");
+}
+
 /** Format an ISO date string as a short locale date. */
 export function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "";
@@ -289,9 +304,25 @@ export function versionLabel(v: VersionEntry): string {
 }
 
 /** Full single-line label for a version: "[Transcript · edited] 9 Apr, 10:37 — base (21 seg)".
- *  Use this in every dropdown / picker so the format stays identical everywhere. */
+ *  Use this in every dropdown / picker so the format stays identical everywhere.
+ *  Synth versions are audio files with no segment list; render their assembly
+ *  params (language, strategy, duration) instead of the "(N seg)" suffix. */
 export function versionOption(v: VersionEntry): string {
   const step = v.step ? `[${stepTag(v.step, isEdited(v))}] ` : "";
+  if (v.step === "synthesize") {
+    const p = v.params as {
+      language?: string;
+      strategy?: string;
+      duration_s?: number;
+    };
+    const parts = [
+      versionDate(v),
+      p.language,
+      p.strategy,
+      formatDurationHMS(p.duration_s) || null,
+    ].filter(Boolean);
+    return `${step}${parts.join(" · ")}`;
+  }
   return `${step}${versionDate(v)} — ${versionLabel(v)} (${v.segment_count} seg)`;
 }
 

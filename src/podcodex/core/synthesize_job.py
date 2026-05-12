@@ -220,6 +220,7 @@ def run_generate(
             out_path,
             language=language,
             max_chunk_duration=max_chunk_duration,
+            cancelled=cancelled,
         )
         if result:
             generated.append((i, result))
@@ -234,9 +235,11 @@ def run_generate(
     manifest["language"] = language
     save_manifest(segments_dir, manifest)
 
-    progress_cb(0.98, "Releasing GPU memory...")
-    del model
-    free_vram()
+    # Skip cleanup on cancel: del model + gc can stall 30-60s; OS reaps faster.
+    if not cancelled():
+        progress_cb(0.98, "Releasing GPU memory...")
+        del model
+        free_vram()
 
     new_count = len(to_generate)
     return {"count": new_count, "reused": reused, "skipped": total - len(generated)}

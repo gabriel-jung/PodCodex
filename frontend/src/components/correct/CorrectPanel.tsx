@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath } from "@/stores";
 import {
   deleteCorrectVersion,
@@ -38,6 +38,7 @@ export default function CorrectPanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const audioPath = useAudioPath();
+  const queryClient = useQueryClient();
 
   const task = usePipelineTask(audioPath, "correct", {
     targetStem: episode?.stem,
@@ -168,14 +169,19 @@ export default function CorrectPanel() {
           referenceSegments={transcriptSegments}
           referenceLabel="Input transcript"
           speakers={showMeta?.speakers}
-          loadVersions={async () => {
-            // Corrected versions + transcript versions so user can compare
-            // against any earlier transcript, not just the latest. Each entry
-            // keeps its `step` so loadVersion can route to the right API.
-            const [corrected, transcripts] = await Promise.all([
-              getCorrectVersions(audioPath!),
-              getTranscribeVersions(audioPath!),
-            ]);
+          loadVersions={() => getCorrectVersions(audioPath!)}
+          loadCompareVersions={async () => {
+            // Broader list for the compare ("vs") picker so the user can diff
+            // against any earlier transcript, not just the latest. Reuse the
+            // primary query's cache for the corrected slice (TranscriptViewer
+            // already fetched it via loadVersions) and only hit the network for
+            // transcripts. Each entry keeps its `step` so loadVersion routes
+            // to the right API.
+            const corrected = await queryClient.ensureQueryData({
+              queryKey: queryKeys.stepVersions("correct", audioPath ?? undefined),
+              queryFn: () => getCorrectVersions(audioPath!),
+            });
+            const transcripts = await getTranscribeVersions(audioPath!);
             return [...corrected, ...transcripts];
           }}
           loadVersion={(id, v) =>

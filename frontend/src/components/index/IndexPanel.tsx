@@ -7,7 +7,7 @@ import {
   startIndex,
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
-import { getShowName, selectClass, versionOption } from "@/lib/utils";
+import { getShowName } from "@/lib/utils";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useInputVersions } from "@/hooks/useLLMPipeline";
 import { useCapabilities } from "@/hooks/useCapabilities";
@@ -18,6 +18,7 @@ import MissingDependency from "@/components/common/MissingDependency";
 import PipelinePanel from "@/components/common/PipelinePanel";
 import PipelineRunFooter from "@/components/common/PipelineRunFooter";
 import Segmented from "@/components/common/Segmented";
+import VersionPicker from "@/components/common/VersionPicker";
 import IndexInspectorModal from "@/components/index/IndexInspectorModal";
 import IndexRow from "@/components/index/IndexRow";
 import { plainStatus } from "@/lib/stepStatus";
@@ -124,16 +125,11 @@ export default function IndexPanel() {
             {inputVersions && inputVersions.length > 0 && (
               <>
                 <HelpLabel label="Source" help="Which transcript version to index. Corrected transcripts give better search results." />
-                <select
-                  value={sourceVersionId ?? ""}
-                  onChange={(e) => setSourceVersionId(e.target.value || null)}
-                  className={`${selectClass} text-xs max-w-full min-w-0`}
-                >
-                  <option value="">Latest — {versionOption(inputVersions[0])}</option>
-                  {inputVersions.slice(1).map((v) => (
-                    <option key={v.id} value={v.id}>{versionOption(v)}</option>
-                  ))}
-                </select>
+                <VersionPicker
+                  versions={inputVersions}
+                  value={sourceVersionId}
+                  onChange={setSourceVersionId}
+                />
               </>
             )}
 

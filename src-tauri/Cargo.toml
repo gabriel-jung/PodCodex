@@ -1,6 +1,6 @@
 [package]
 name = "podcodex-app"
-version = "0.1.38"
+version = "0.1.39"
 description = "PodCodex desktop app"
 authors = ["Gabriel Jung"]
 license = "MIT"

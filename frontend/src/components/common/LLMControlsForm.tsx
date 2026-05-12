@@ -2,7 +2,7 @@ import { useId, useMemo } from "react";
 import type { Episode, VersionEntry } from "@/api/types";
 import type { LLMConfig, LLMPresetKey } from "@/stores/pipelineConfigStore";
 import { LLM_PRESETS } from "@/stores/pipelineConfigStore";
-import { formatDuration, selectClass, versionOption } from "@/lib/utils";
+import { formatDuration, selectClass } from "@/lib/utils";
 import { modelPlaceholderFor, modelsFor } from "@/lib/providerModels";
 import { useApiKeys } from "@/hooks/useApiKeys";
 import { useProviderProfiles } from "@/hooks/useProviderProfiles";
@@ -13,6 +13,7 @@ import FormGrid from "./FormGrid";
 import HelpLabel from "./HelpLabel";
 import OllamaStatus from "./OllamaStatus";
 import Segmented from "./Segmented";
+import VersionPicker from "./VersionPicker";
 import { NumberInput } from "@/components/ui/number-input";
 
 interface LLMControlsFormProps {
@@ -93,16 +94,11 @@ export default function LLMControlsForm({
         {inputVersions && inputVersions.length > 0 && (
           <>
             <HelpLabel label={sourceLabel} help={sourceHelp} />
-            <select
-              value={sourceVersionId ?? ""}
-              onChange={(e) => onSourceVersionChange(e.target.value || null)}
-              className={`${selectClass} text-xs max-w-full min-w-0`}
-            >
-              <option value="">Latest: {versionOption(inputVersions[0])}</option>
-              {inputVersions.slice(1).map((v) => (
-                <option key={v.id} value={v.id}>{versionOption(v)}</option>
-              ))}
-            </select>
+            <VersionPicker
+              versions={inputVersions}
+              value={sourceVersionId}
+              onChange={onSourceVersionChange}
+            />
           </>
         )}
 

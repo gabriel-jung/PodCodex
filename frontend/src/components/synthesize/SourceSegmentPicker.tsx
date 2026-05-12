@@ -24,7 +24,8 @@ import {
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import SectionHeader from "@/components/common/SectionHeader";
-import { formatTime, selectClass, versionOption } from "@/lib/utils";
+import VersionPicker from "@/components/common/VersionPicker";
+import { formatTime, isEdited } from "@/lib/utils";
 import { segKey } from "@/lib/segKey";
 import { speakerColor } from "@/lib/speakerColor";
 import { BREAK_SPEAKER } from "@/lib/speakers";
@@ -97,11 +98,27 @@ export default function SourceSegmentPicker({
 
   const inputVersions = useMemo<VersionEntry[]>(() => {
     if (!allVersions) return [];
-    return allVersions.filter((v) => {
-      if (!v.step) return false;
-      if (v.step === "transcript" || v.step === "corrected") return true;
-      return translationSet.has(v.step);
-    });
+    // Ordering: translation > corrected > transcript; edited before raw
+    // within each step; newest first within each (step, edited) bucket.
+    const stepRank = (step: string | undefined): number => {
+      if (!step) return 3;
+      if (step === "transcript") return 2;
+      if (step === "corrected") return 1;
+      return 0;
+    };
+    return allVersions
+      .filter((v) => {
+        if (!v.step) return false;
+        if (v.step === "transcript" || v.step === "corrected") return true;
+        return translationSet.has(v.step);
+      })
+      .sort((a, b) => {
+        const sr = stepRank(a.step) - stepRank(b.step);
+        if (sr !== 0) return sr;
+        const er = (isEdited(a) ? 0 : 1) - (isEdited(b) ? 0 : 1);
+        if (er !== 0) return er;
+        return b.timestamp.localeCompare(a.timestamp);
+      });
   }, [allVersions, translationSet]);
 
   const selectedVersion = useMemo<VersionEntry | null>(() => {
@@ -251,25 +268,13 @@ export default function SourceSegmentPicker({
         1. Source
       </SectionHeader>
 
-      {inputVersions.length > 0 ? (
-        <select
-          value={sourceVersionId ?? ""}
-          onChange={(e) => setSourceVersionId(e.target.value || null)}
-          title="Which version of the episode the cloned voices will read aloud."
-          className={`${selectClass} text-xs max-w-full min-w-0`}
-        >
-          <option value="">Latest, {versionOption(inputVersions[0])}</option>
-          {inputVersions.map((v) => (
-            <option key={v.id} value={v.id}>
-              {versionOption(v)}
-            </option>
-          ))}
-        </select>
-      ) : (
-        <p className="text-xs text-muted-foreground italic">
-          No transcript, correction, or translation versions available yet.
-        </p>
-      )}
+      <VersionPicker
+        versions={inputVersions}
+        value={sourceVersionId}
+        onChange={setSourceVersionId}
+        title="Which version of the episode the cloned voices will read aloud."
+        emptyMessage="No transcript, correction, or translation versions available yet."
+      />
 
       {selectedVersion && (
         <div className="space-y-1.5">

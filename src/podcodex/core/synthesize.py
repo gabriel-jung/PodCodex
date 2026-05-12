@@ -725,6 +725,7 @@ def generate_segment(
     instruct: str | None = None,
     max_chunk_duration: float = 20.0,
     on_chunk: Callable[[int, int], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict | None:
     """
     Generate TTS audio for a single segment.
@@ -780,6 +781,9 @@ def generate_segment(
     sr = None
     qwen_language = _normalize_qwen_language(language)
     for i, chunk in enumerate(chunks):
+        # Cancel between chunks: a 30-60s segment can dominate wall-clock cost.
+        if cancelled and cancelled():
+            return None
         wavs, chunk_sr = model.generate_voice_clone(
             text=chunk,
             language=qwen_language,
@@ -790,6 +794,8 @@ def generate_segment(
         sr = chunk_sr
         if on_chunk:
             on_chunk(i + 1, n_chunks)
+    if cancelled and cancelled():
+        return None
 
     audio = np.concatenate(audio_parts) if len(audio_parts) > 1 else audio_parts[0]
     sf.write(str(output_path), audio, sr)

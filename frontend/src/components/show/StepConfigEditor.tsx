@@ -21,12 +21,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Mic, Sparkles, Languages, Database, ChevronDown, Play, Copy, Check, Settings as SettingsIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
-import { languageToISO, errorMessage, selectClass, cn, versionLabel, versionOption, stepTag, SUB_LANGUAGES } from "@/lib/utils";
+import { languageToISO, errorMessage, selectClass, cn, versionLabel, stepTag, SUB_LANGUAGES } from "@/lib/utils";
 import { modelPlaceholderFor, modelsFor } from "@/lib/providerModels";
 import { INPUT_STEPS, filterVersionsForStep, sortVersionsForDefault, type PipelineInputStep } from "@/lib/pipelineInputs";
 import PresetCards from "@/components/common/PresetCards";
 import SectionHeader from "@/components/common/SectionHeader";
 import HelpLabel from "@/components/common/HelpLabel";
+import VersionPicker from "@/components/common/VersionPicker";
 import { getCorrectManualPrompts, applyCorrectManual } from "@/api/correct";
 import { getTranslateManualPrompts, applyTranslateManual } from "@/api/translate";
 
@@ -545,21 +546,15 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                   return (
                     <div key={ek} className="border border-border/50 rounded px-3 py-2 space-y-1.5">
                       <div className="text-sm font-medium truncate" title={ep.title}>{ep.title}</div>
-                      {versions.length > 0 ? (
-                        <select
-                          value={sel}
-                          onChange={(e) => setCustomVersions((prev) => ({ ...prev, [ek]: e.target.value }))}
-                          className={cn(selectClass, "text-xs w-full")}
-                        >
-                          {versions.map((v, i) => (
-                            <option key={v.id} value={i === 0 ? "" : v.id}>
-                              {versionOption(v)}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <p className="text-2xs text-muted-foreground italic">No versions available</p>
-                      )}
+                      <VersionPicker
+                        versions={versions}
+                        value={sel || null}
+                        onChange={(v) =>
+                          setCustomVersions((prev) => ({ ...prev, [ek]: v ?? "" }))
+                        }
+                        emptyMessage="No versions available"
+                        className={cn(selectClass, "text-xs w-full")}
+                      />
                     </div>
                   );
                 })}

@@ -16,7 +16,15 @@ import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
 import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
 import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
-import { formatTime, versionOption, versionInfo, selectClass } from "@/lib/utils";
+import { formatTime, versionInfo, selectClass } from "@/lib/utils";
+import VersionPicker from "@/components/common/VersionPicker";
+
+/** Sentinel values for the compare ("vs") picker. `REF_NONE` = no diff,
+ *  `REF_DEFAULT` = original/reference segments passed by the parent panel.
+ *  Anything else is a version id. */
+const REF_NONE = "none";
+const REF_DEFAULT = "default";
+type RefChoice = typeof REF_NONE | typeof REF_DEFAULT | string;
 import { speakerColor } from "@/lib/speakerColor";
 import { BREAK_SPEAKER } from "@/lib/speakers";
 import { computeWordDiff } from "@/lib/diffUtils";
@@ -620,6 +628,11 @@ export interface TranscriptViewerProps {
   saveSpeakerMap?: (mapping: Record<string, string>) => Promise<unknown>;
   // Version support
   loadVersions?: () => Promise<VersionEntry[]>;
+  /** Optional broader list shown only in the compare ("vs") picker. Defaults
+   *  to `loadVersions` when omitted. CorrectPanel uses this so the primary
+   *  picker stays scoped to corrected versions while the compare picker can
+   *  also show upstream transcript versions. */
+  loadCompareVersions?: () => Promise<VersionEntry[]>;
   loadVersion?: (id: string, version?: VersionEntry) => Promise<Segment[]>;
   deleteVersion?: (id: string) => Promise<unknown>;
   // Export
@@ -646,40 +659,6 @@ export interface TranscriptViewerProps {
   onSelectionChange?: (selected: Segment[]) => void;
 }
 
-/** Native <select> that sizes to its currently-selected label, not to its
- *  longest option. An invisible mirror span with the selected label defines
- *  the container's intrinsic width; the real select is absolutely positioned
- *  over it so its own longest-option measurement doesn't leak into layout. */
-function AutoWidthSelect({
-  value,
-  onChange,
-  selectedLabel,
-  children,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  selectedLabel: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="relative shrink-0 max-w-[18rem]">
-      <span
-        aria-hidden
-        className={`${selectClass} text-xs invisible block whitespace-nowrap pr-7`}
-      >
-        {selectedLabel}
-      </span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className={`${selectClass} text-xs absolute inset-0 w-full`}
-      >
-        {children}
-      </select>
-    </div>
-  );
-}
-
 export default function TranscriptViewer({
   editorKey,
   audioPath,
@@ -687,6 +666,7 @@ export default function TranscriptViewer({
   saveSegments,
   saveSpeakerMap,
   loadVersions,
+  loadCompareVersions,
   loadVersion,
   deleteVersion,
   exportSource,
@@ -715,6 +695,13 @@ export default function TranscriptViewer({
     queryFn: loadVersions!,
     enabled: !!loadVersions,
   });
+
+  const { data: compareVersionsExtra } = useQuery({
+    queryKey: queryKeys.stepVersions(`${editorKey}__compare`, audioPath),
+    queryFn: loadCompareVersions!,
+    enabled: !!loadCompareVersions,
+  });
+  const compareVersions = compareVersionsExtra ?? versions ?? [];
 
   // ── Version selector state ────────────────────────────────────────────────
 
@@ -872,19 +859,19 @@ export default function TranscriptViewer({
 
   // ── Compare-with selector ─────────────────────────────────────────────────
 
-  const [refChoice, setRefChoice] = useState<"default" | "none" | string>(
-    referenceSegments ? "default" : "none",
+  const [refChoice, setRefChoice] = useState<RefChoice>(
+    referenceSegments ? REF_DEFAULT : REF_NONE,
   );
 
   useEffect(() => {
-    setRefChoice(referenceSegments ? "default" : "none");
+    setRefChoice(referenceSegments ? REF_DEFAULT : REF_NONE);
   }, [referenceSegments]);
 
   const [versionRefSegments, setVersionRefSegments] = useState<Segment[] | null>(null);
 
-  const handleRefChoiceChange = async (choice: string) => {
+  const handleRefChoiceChange = async (choice: RefChoice) => {
     setRefChoice(choice);
-    if (choice === "default" || choice === "none") {
+    if (choice === REF_DEFAULT || choice === REF_NONE) {
       setVersionRefSegments(null);
       return;
     }
@@ -895,14 +882,14 @@ export default function TranscriptViewer({
         setVersionRefSegments(data);
       } catch {
         setVersionRefSegments(null);
-        setRefChoice("none");
+        setRefChoice(REF_NONE);
       }
     }
   };
 
   const effectiveReference =
-    refChoice === "default" ? referenceSegments :
-    refChoice === "none" ? undefined :
+    refChoice === REF_DEFAULT ? referenceSegments :
+    refChoice === REF_NONE ? undefined :
     versionRefSegments ?? undefined;
   // Map originalIndex → position in editedSegments
   const origToEditedIdx = useMemo(() => {
@@ -1333,16 +1320,13 @@ export default function TranscriptViewer({
   const infoVersion = selectedVersion ?? (versions && versions.length > 0 ? versions[0] : null);
   const infoItems = infoVersion ? versionInfo(infoVersion) : [];
 
-  const selectedVersionLabel = selectedVersion ? versionOption(selectedVersion) : "Latest";
-  const refVersion = versions?.find((v) => v.id === refChoice) ?? null;
-  const refSelectedLabel =
-    refChoice === "none"
-      ? "None"
-      : refChoice === "default"
-        ? referenceLabel ?? "Original"
-        : refVersion
-          ? versionOption(refVersion)
-          : "None";
+  const compareExtras = useMemo(
+    () => [
+      { value: REF_NONE, label: "None" },
+      ...(referenceSegments ? [{ value: REF_DEFAULT, label: referenceLabel ?? "Original" }] : []),
+    ],
+    [referenceSegments, referenceLabel],
+  );
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -1352,36 +1336,23 @@ export default function TranscriptViewer({
         {versions && versions.length > 0 ? (
           <div className="flex items-center gap-2 flex-wrap">
             <SectionHeader className="shrink-0 w-20">Version</SectionHeader>
-            <AutoWidthSelect
-              value={selectedVersionId ?? ""}
-              onChange={(v) => setSelectedVersionId(v || null)}
-              selectedLabel={selectedVersionLabel}
-            >
-              <option value="">Latest</option>
-              {versions.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {versionOption(v)}
-                </option>
-              ))}
-            </AutoWidthSelect>
+            <VersionPicker
+              versions={versions}
+              value={selectedVersionId}
+              onChange={setSelectedVersionId}
+              widthFit
+            />
             {hasCompareOptions && (
               <>
                 <span className="text-xs text-muted-foreground/60">vs</span>
-                <AutoWidthSelect
+                <VersionPicker
+                  versions={compareVersions}
                   value={refChoice}
-                  onChange={handleRefChoiceChange}
-                  selectedLabel={refSelectedLabel}
-                >
-                  <option value="none">None</option>
-                  {referenceSegments && (
-                    <option value="default">{referenceLabel}</option>
-                  )}
-                  {versions.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {versionOption(v)}
-                    </option>
-                  ))}
-                </AutoWidthSelect>
+                  onChange={(v) => handleRefChoiceChange(v ?? REF_NONE)}
+                  showLatest={false}
+                  prependOptions={compareExtras}
+                  widthFit
+                />
               </>
             )}
             <div className="flex-1" />
@@ -1420,16 +1391,13 @@ export default function TranscriptViewer({
         {hasCompareOptions && (!versions || versions.length === 0) && (
           <div className="flex items-center gap-2">
             <SectionHeader className="shrink-0 w-20">Compare</SectionHeader>
-            <select
+            <VersionPicker
+              versions={[]}
               value={refChoice}
-              onChange={(e) => handleRefChoiceChange(e.target.value)}
-              className={`${selectClass} text-xs`}
-            >
-              <option value="none">None</option>
-              {referenceSegments && (
-                <option value="default">{referenceLabel}</option>
-              )}
-            </select>
+              onChange={(v) => handleRefChoiceChange(v ?? "none")}
+              showLatest={false}
+              prependOptions={compareExtras}
+            />
           </div>
         )}
 

@@ -1,6 +1,6 @@
 # Contributing
 
-Quick orientation for human contributors. AI assistant context lives in [CLAUDE.md](CLAUDE.md); design rules in [DESIGN.md](DESIGN.md); system wiring in [ARCHITECTURE.md](ARCHITECTURE.md).
+Quick orientation for human contributors. AI assistant context lives in [CLAUDE.md](CLAUDE.md); design rules in [DESIGN.md](DESIGN.md); system wiring in [ARCHITECTURE.md](ARCHITECTURE.md); ML stack pins and runtime patches in [ML_RUNTIME.md](ML_RUNTIME.md); build / packaging in [deploy/BUILD.md](deploy/BUILD.md).
 
 ## Setup
 
@@ -16,15 +16,13 @@ make dev                  # FastAPI + Vite + Tauri, hot-reload
 
 - **Run a single test:** `.venv/bin/python -m pytest tests/test_foo.py::test_bar -xvs`
 - **Run all Python tests:** `make test`
-- **Regenerate frontend types:** `make types`. Required after editing any Pydantic model in `src/podcodex/api/`. The generated `frontend/src/api/types.ts` is checked in; never hand-edit.
-- **Regenerate app icons:** `make icons` after replacing `assets/icon.png` (canonical 1024×1024 source). Rebuilds `frontend/public/icon.png` and the desktop sizes + `.icns`/`.ico` under `src-tauri/icons/`; iOS/Android trees emitted by the Tauri CLI are stripped. Requires ImageMagick + `npx`.
+- **Regenerate frontend types / icons:** see [deploy/BUILD.md § Regenerated artifacts](deploy/BUILD.md#regenerated-artifacts). `make types` after editing Pydantic models in `src/podcodex/api/`; `make icons` after replacing `assets/icon.png` (1024x1024 canonical).
 - **Lint frontend:** `cd frontend && npm run lint` (currently non-blocking)
 - **Type-check frontend:** `cd frontend && npx tsc -b` (strict mode is on and clean; non-blocking in CI)
 
 ## Conventions
 
-- **Branches:** `phase-X-short-description` for feature work, `fix-short-description` for bug fixes
-- **Commits:** conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`); imperative mood; concise; no trial-and-error context
+- **Commits:** conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`); imperative mood; concise; no trial-and-error context.
 - **Versioning:** bump `pyproject.toml` + `src-tauri/Cargo.toml` together on every Windows MSI release (WiX skips same-version replace). See [CLAUDE.md § Versioning](CLAUDE.md#versioning-bump-on-every-windows-msi-release).
 - **Terminology:** the LLM-correction step is **correct** (or "AI correct"), never "polish". See [CLAUDE.md § Terminology](CLAUDE.md#terminology).
 

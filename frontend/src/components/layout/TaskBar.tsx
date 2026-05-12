@@ -9,21 +9,26 @@ import { queryKeys } from "@/api/queryKeys";
 import { useProgress } from "@/hooks/useProgress";
 import { capitalize } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import CopyButton from "@/components/common/CopyButton";
+import LogSection from "@/components/common/LogSection";
 import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
-  ChevronRight,
   ChevronUp,
   Circle,
   Download,
   Loader2,
-  Terminal,
   X,
   XCircle,
 } from "lucide-react";
-import { countByStatus, deriveEpisodeStatuses, parseProgressCount, type EpStatus } from "@/lib/batchUtils";
+import {
+  countByStatus,
+  deriveEpisodeStatuses,
+  parseProgressCount,
+  STATUS_ICON,
+  STATUS_COLOR,
+  type EpStatus,
+} from "@/lib/batchUtils";
 
 function DownloadStrip() {
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
@@ -166,20 +171,6 @@ function DownloadStrip() {
   );
 }
 
-const STATUS_ICON: Record<EpStatus, typeof Circle> = {
-  pending: Circle,
-  running: Loader2,
-  done: CheckCircle2,
-  failed: XCircle,
-};
-
-const STATUS_COLOR: Record<EpStatus, string> = {
-  pending: "text-muted-foreground",
-  running: "text-primary animate-spin",
-  done: "text-success",
-  failed: "text-destructive",
-};
-
 function progressBarColor({
   isFailed,
   isCancelled,
@@ -284,9 +275,7 @@ function BatchStrip() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
-  const [showLog, setShowLog] = useState(false);
   const [showResult, setShowResult] = useState(false);
-  const logEndRef = useRef<HTMLDivElement>(null);
   const savedRef = useRef<string | null>(null);
 
   const log = progress?.log ?? [];
@@ -331,11 +320,6 @@ function BatchStrip() {
     const timer = setTimeout(() => setBatchTask(null), 12_000);
     return () => clearTimeout(timer);
   }, [batchTaskId, progress, setBatchTask]);
-
-  // Auto-scroll log
-  useEffect(() => {
-    if (showLog) logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [log.length, showLog]);
 
   // Auto-dismiss after completion (30s to give time to review)
   useEffect(() => {
@@ -474,29 +458,7 @@ function BatchStrip() {
         )}
 
         {/* Collapsible log */}
-        {expanded && log.length > 0 && (
-          <div className="px-4 pb-2">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={(e) => { e.stopPropagation(); setShowLog(!showLog); }}
-                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition"
-              >
-                <Terminal className="w-3 h-3" />
-                {showLog ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                Logs ({log.length})
-              </button>
-              <CopyButton value={log.join("\n")} title="Copy log" />
-            </div>
-            {showLog && (
-              <pre className="mt-1.5 p-2 bg-muted rounded text-3xs leading-normal text-muted-foreground max-h-80 overflow-auto font-mono">
-                {log.map((line, i) => (
-                  <div key={i}>{line}</div>
-                ))}
-                <div ref={logEndRef} />
-              </pre>
-            )}
-          </div>
-        )}
+        {expanded && <LogSection log={log} />}
       </div>
 
       {/* Results summary dialog */}
@@ -521,12 +483,23 @@ function EpisodeStrip() {
   const setEpisodeTask = useTaskStore((s) => s.setEpisodeTask);
   const progress = useProgress(taskId);
   const navigate = useNavigate();
+  const [expanded, setExpanded] = useState(false);
 
+  const log = progress?.log ?? [];
   const pct = progress ? Math.round(progress.progress * 100) : 0;
-  const isDone = progress?.status === "completed";
-  const isFailed = progress?.status === "failed";
-  const isCancelled = progress?.status === "cancelled";
-  const isFinished = isDone || isFailed || isCancelled;
+  const runStatus: EpStatus =
+    progress?.status === "completed"
+      ? "done"
+      : progress?.status === "failed"
+        ? "failed"
+        : progress?.status === "cancelled"
+          ? "cancelled"
+          : "running";
+  const isDone = runStatus === "done";
+  const isFailed = runStatus === "failed";
+  const isCancelled = runStatus === "cancelled";
+  const isFinished = runStatus !== "running";
+  const StatusIcon = STATUS_ICON[runStatus];
 
   useEffect(() => {
     if (!taskId || progress) return;
@@ -543,59 +516,104 @@ function EpisodeStrip() {
   if (!taskId) return null;
 
   const stepLabel = step ? capitalize(step) : "Episode";
-  const onRowClick = () => {
+  const goToEpisode = () => {
     if (!folder || !stem) return;
     navigate({
       to: "/show/$folder/episode/$stem",
       params: { folder: encodeURIComponent(folder), stem: encodeURIComponent(stem) },
     });
   };
+  const canExpand = log.length > 0 || !!progress?.message;
 
   return (
-    <div
-      className="px-4 py-2 flex items-center gap-3 text-xs cursor-pointer hover:bg-accent/30 transition"
-      onClick={onRowClick}
-    >
-      <Loader2
-        className={`w-3.5 h-3.5 shrink-0 ${isFinished ? "text-muted-foreground" : "text-primary animate-spin"}`}
-      />
-      <span className="text-foreground font-medium shrink-0">{stepLabel}</span>
-      {title && (
-        <span className="text-muted-foreground truncate min-w-0 max-w-[40%]" title={title}>
-          {title}
-        </span>
-      )}
-      <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all duration-300 ${progressBarColor({ isFailed, isCancelled, isDone })}`}
-          style={{ width: `${pct}%` }}
+    <div>
+      <div
+        className="px-4 py-2 flex items-center gap-3 text-xs cursor-pointer hover:bg-accent/30 transition"
+        onClick={() => (canExpand ? setExpanded(!expanded) : goToEpisode())}
+      >
+        <Loader2
+          className={`w-3.5 h-3.5 shrink-0 ${isFinished ? "text-muted-foreground" : "text-primary animate-spin"}`}
         />
+        <span className="text-foreground font-medium shrink-0">{stepLabel}</span>
+        {title && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              goToEpisode();
+            }}
+            className="text-muted-foreground truncate min-w-0 max-w-[40%] hover:text-foreground transition text-left"
+            title={`Go to ${title}`}
+          >
+            {title}
+          </button>
+        )}
+        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all duration-300 ${progressBarColor({ isFailed, isCancelled, isDone })}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        {progress?.message && !isFinished && (
+          <span className="text-muted-foreground/70 shrink-0 truncate max-w-[30%]" title={progress.message}>
+            {progress.message}
+          </span>
+        )}
+        {canExpand && (
+          expanded ? (
+            <ChevronUp className="w-3 h-3 text-muted-foreground shrink-0" />
+          ) : (
+            <ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
+          )
+        )}
+        {!isFinished ? (
+          <Button
+            onClick={(e) => { e.stopPropagation(); cancelTask(taskId).catch(() => {}); setEpisodeTask(null); }}
+            variant="ghost"
+            size="sm"
+            className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
+            title="Cancel task"
+          >
+            <X className="w-3 h-3" />
+          </Button>
+        ) : (
+          <Button
+            onClick={(e) => { e.stopPropagation(); setEpisodeTask(null); }}
+            variant="ghost"
+            size="sm"
+            className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
+            title="Dismiss"
+          >
+            <X className="w-3 h-3" />
+          </Button>
+        )}
       </div>
-      {progress?.message && !isFinished && (
-        <span className="text-muted-foreground/70 shrink-0 truncate max-w-[30%]" title={progress.message}>
-          {progress.message}
-        </span>
-      )}
-      {!isFinished ? (
-        <Button
-          onClick={(e) => { e.stopPropagation(); cancelTask(taskId).catch(() => {}); setEpisodeTask(null); }}
-          variant="ghost"
-          size="sm"
-          className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
-          title="Cancel task"
-        >
-          <X className="w-3 h-3" />
-        </Button>
-      ) : (
-        <Button
-          onClick={(e) => { e.stopPropagation(); setEpisodeTask(null); }}
-          variant="ghost"
-          size="sm"
-          className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
-          title="Dismiss"
-        >
-          <X className="w-3 h-3" />
-        </Button>
+
+      {/* Expanded: status row mirroring BatchStrip's per-episode list, plus log. */}
+      {expanded && (
+        <>
+          {(title || progress?.message) && (
+            <div className="px-4 pb-1">
+              <div className="flex items-center gap-2 py-0.5 text-xs">
+                <StatusIcon className={`w-3 h-3 shrink-0 ${STATUS_COLOR[runStatus]}`} />
+                <span
+                  className={`truncate shrink-0 max-w-[40%] ${runStatus === "running" ? "text-foreground font-medium" : "text-muted-foreground"}`}
+                >
+                  {title ?? stepLabel}
+                </span>
+                {progress?.message && (
+                  <span
+                    className="text-muted-foreground/70 truncate flex-1 min-w-0"
+                    title={progress.message}
+                  >
+                    {progress.message}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+          <LogSection log={log} />
+        </>
       )}
     </div>
   );

@@ -8,6 +8,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from podcodex.api.routes._helpers import (
+    counted_progress,
     is_downloaded,
     list_show_stems,
     require_show_folder,
@@ -156,6 +157,7 @@ async def youtube_download(
         results = []
         consecutive_fails = 0
         total = len(episodes)
+        report = counted_progress(progress_cb, total)
         existing_stems = list_show_stems(show_path)
         reset_pace()
         for i, ep in enumerate(episodes):
@@ -164,7 +166,7 @@ async def youtube_download(
                 break
 
             stem = episode_stem(ep, show_path, existing_stems=existing_stems)
-            progress_cb(i / total, f"Downloading {i + 1}/{total}: {ep.title[:40]}")
+            report(i, f"Downloading: {ep.title[:40]}")
 
             if not force and is_downloaded(show_path, stem):
                 results.append({"stem": stem, "status": "exists"})
@@ -265,6 +267,7 @@ async def youtube_import_subs(
         failed = 0
         consecutive_fails = 0
         total = len(episodes)
+        report = counted_progress(progress_cb, total)
         existing_stems = list_show_stems(show_path)
         results: list[dict] = []
         reset_pace()
@@ -274,7 +277,7 @@ async def youtube_import_subs(
                 break
 
             stem = episode_stem(ep, show_path, existing_stems=existing_stems)
-            progress_cb(i / total, f"Downloading subs {i + 1}/{total}: {ep.title[:40]}")
+            report(i, f"Downloading subs: {ep.title[:40]}")
             episode_dir = show_path / stem
             episode_dir.mkdir(parents=True, exist_ok=True)
             save_episode_meta(episode_dir, ep)

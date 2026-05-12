@@ -250,8 +250,11 @@ class TestStepStatuses:
     @staticmethod
     def _step_statuses(st, provenance, effective):
         from podcodex.api.routes.shows import _step_statuses
+        from podcodex.core.translate import clean_translations
 
-        return _step_statuses(st, provenance, effective)
+        return _step_statuses(
+            st, provenance, effective, clean_translations(st.get("translations", []))
+        )
 
     def test_none_when_not_done(self):
         st = _make_status_row()

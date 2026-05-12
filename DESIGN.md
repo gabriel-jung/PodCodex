@@ -3,15 +3,15 @@
 > Warm editorial aesthetic for a podcast pipeline desktop app. Cream paper canvas with sepia ink and a gold-leaf accent. Reads like an oil-printed catalogue raisonné under tungsten light. Built on shadcn/ui + Tailwind 4 + React 19, packaged in a Tauri shell.
 
 **Canonical references** (when in doubt, model new components on these):
-- `frontend/src/components/index/IndexInspectorModal.tsx` — dense list dialog with mono timestamps, IDs, opacity-de-emphasized values
-- `frontend/src/components/search/SegmentContextDialog.tsx` — same idiom, search-context variant
-- `frontend/src/components/show/ShowProgressStrip.tsx` — text-only stage-hued ledger; reuse pattern for any per-stage breakdown
-- `frontend/src/components/index/IndexRow.tsx` — shared collection row (whole-row click + optional `deletion` bundle)
+- `frontend/src/components/index/IndexInspectorModal.tsx`: dense list dialog with mono timestamps, IDs, opacity-de-emphasized values
+- `frontend/src/components/search/SegmentContextDialog.tsx`: same idiom, search-context variant
+- `frontend/src/components/show/ShowProgressStrip.tsx`: text-only stage-hued ledger; reuse pattern for any per-stage breakdown
+- `frontend/src/components/index/IndexRow.tsx`: shared collection row (whole-row click + optional `deletion` bundle)
 
 **Single facilities** (never reroll inline; extend if missing):
-- `frontend/src/lib/stageClasses.ts` — stage palette (`STAGE_CLASSES[stage]`: `bg`, `text`, `border`, `borderL`, `dot`)
-- `frontend/src/lib/stepStatus.ts` — `PanelStatus` (`"ready"|"review"|"none"`) + `reviewStatus` / `plainStatus` / `translationsStatus` / `isEdited`
-- `frontend/src/lib/showCounts.ts` — episode count label formatting
+- `frontend/src/lib/stageClasses.ts`: stage palette (`STAGE_CLASSES[stage]`: `bg`, `text`, `border`, `borderL`, `dot`)
+- `frontend/src/lib/stepStatus.ts`: `PanelStatus` (`"ready"|"review"|"none"`) + `reviewStatus` / `plainStatus` / `translationsStatus` / `isEdited`
+- `frontend/src/lib/showCounts.ts`: episode count label formatting
 
 ## 1. Visual Theme & Atmosphere
 
@@ -96,7 +96,7 @@ bg (canvas)  →  card  →  popover  →  (elevated dialog uses popover + ring 
 | Display | Fraunces | `text-3xl`–`text-5xl` | 500–600 | `-0.015em` | Hero, page titles |
 | H1 | Fraunces | `text-3xl` | 600 | `-0.015em` | Page title (one per page, via `EditorialHeader`) |
 | H2 (prose) | Fraunces | `text-2xl` | 600 | `-0.015em` | Section landmarks on prose pages |
-| H2 (dense) | Inter | `text-base` | 600 | normal | Subsection in settings/forms (Fraunces stacked 8+ times reads as title duplication — demote, drop `font-display`, shrink icons to `w-4 h-4`) |
+| H2 (dense) | Inter | `text-base` | 600 | normal | Subsection in settings/forms (Fraunces stacked 8+ times reads as title duplication, so demote: drop `font-display`, shrink icons to `w-4 h-4`) |
 | H3 | Inter | `text-xl` | 600 | normal | Card titles, modal headers |
 | H3 (dense) | Inter | `text-sm` | 600 | normal | Sub-subsection inside dense panels |
 | H4 | Inter | `text-lg` | 600 | normal | Group headers |
@@ -251,7 +251,7 @@ Shadow used only on dialog level; `shadow-lg` is the cap. Never `shadow-2xl`. To
 - Use `oklch()` when introducing new color tokens; match perceptual luminance steps of the existing scale
 - Two-column settings: label left, control right
 - Hover with `hover:bg-accent` (warm tint), not with shadow or scale
-- Omit defaults and absent values in labels (don't render "Speaker: —" when there's no speaker)
+- Omit defaults and absent values in labels (don't render "Speaker: -" when there's no speaker)
 
 ### Don't
 - Don't use pure white (`#ffffff`) or pure black (`#000000`); both fight the warm canvas
@@ -261,7 +261,7 @@ Shadow used only on dialog level; `shadow-lg` is the cap. Never `shadow-2xl`. To
 - Don't use Fraunces in body text, buttons, captions, or labels
 - Don't elevate cards with `shadow-md`/`shadow-lg` on the canvas; use `border` + `bg-card` instead
 - Don't apply zebra-striped lists; rows separate by border or hover only
-- Don't introduce em dashes liberally; use sparingly, where the prose needs the pause
+- Don't use em dashes; reach for commas, colons, periods, or parentheses instead
 - Don't bypass the token system with literal hex/oklch values in component code
 - Don't disable the paper-grain overlay; it's load-bearing for the editorial feel
 
@@ -276,7 +276,7 @@ Pipeline stages get distinct hues for quick recognition. Tokens defined in `inde
 | Synthesized | `--stage-synth` | `bg-stage-synth`, `text-stage-synth` | 50° (orange) |
 | Indexed | `--warning` | `bg-warning/15 text-warning` | 82° (amber, reuses semantic token) |
 
-Each stage chip uses the `bg-{stage}/15 text-{stage}` pattern. **Always read tokens through `STAGE_CLASSES` from `lib/stageClasses.ts`** — never hand-roll `text-stage-*` strings in components. If new stages are added, extend `index.css`, `STAGE_CLASSES`, and this table; don't reach for raw Tailwind colors.
+Each stage chip uses the `bg-{stage}/15 text-{stage}` pattern. **Always read tokens through `STAGE_CLASSES` from `lib/stageClasses.ts`**; never hand-roll `text-stage-*` strings in components. If new stages are added, extend `index.css`, `STAGE_CLASSES`, and this table; don't reach for raw Tailwind colors.
 
 ### Pipeline status vocabulary
 Three review states are surfaced consistently across StageCard (Overview hub), `PipelinePanel` headers, and `StatusChips` suffix copy. Derive via `reviewStatus` / `plainStatus` / `translationsStatus` from `lib/stepStatus.ts`; never hand-roll the present+edited check.
@@ -287,7 +287,7 @@ Three review states are surfaced consistently across StageCard (Overview hub), `
 | `review` | "needs review" | `text-info` | Output present but raw (awaiting human review) |
 | `none` | "not started" | `text-muted-foreground/60` | No output yet |
 
-Synth + index have no review concept — `plainStatus` collapses them to `ready` / `none`.
+Synth + index have no review concept; `plainStatus` collapses them to `ready` / `none`.
 
 ### Exception: media scrims
 Elements rendered **on top of artwork or video** (episode card overlays, play buttons, image badges) need contrast against arbitrary image content, not against the theme. The token system would flip in dark mode and break legibility on bright images. Allowed only on top of media:
@@ -345,7 +345,7 @@ These never appear on theme surfaces. If you find one on a card or panel without
 
 ### Iteration guide
 1. If colors feel cold or harsh, the warm hue (`oklch H ≈ 55–80`) was lost; re-derive from the existing oklch scale, don't add raw hex
-2. If a page-level heading feels generic, you forgot `font-display` (Fraunces) or `font-feature-settings: 'ss01', 'onum'`. Dense subsection headings (settings, forms) stay Inter `text-base font-semibold` — don't reach for Fraunces there
+2. If a page-level heading feels generic, you forgot `font-display` (Fraunces) or `font-feature-settings: 'ss01', 'onum'`. Dense subsection headings (settings, forms) stay Inter `text-base font-semibold`; don't reach for Fraunces there
 3. If lists feel cluttered, drop a font size (`text-base` → `text-sm`) before adding spacing
 4. If a CTA isn't standing out, check that you used `bg-primary` and that no other element on the view is also primary
 5. If something looks "AI-generic SaaS," check for: uppercase labels, `tracking-wider`, gradient buttons, drop shadows on cards, waveform in audio player
@@ -354,11 +354,11 @@ These never appear on theme surfaces. If you find one on a card or panel without
 
 Single-consumer patterns introduced by the Episode → Overview tab. Read the components in `frontend/src/pages/EpisodePage.tsx` for the actual classes; the rules below are the *why*, not the CSS.
 
-- **Stage card** (`StageCard`) — represents a pipeline stage as a clickable card. Stage hue used for the icon tile and a `border-l-2` accent when content exists; empty stages use a dashed border and no accent. The card itself is the hit target — no inline "Open" CTA. Click opens the read-only viewer when content exists, otherwise navigates to the stage editor.
-- **Activity log row** (`ActivityLog`) — two-line clickable row: stage chip + `versionLabel` on top, `versionDate · {n} seg [· edited]` underneath. Caller pre-sorts desc by timestamp; component slices to a small cap. Click opens the viewer.
-- **Flat versions table** (`VersionsTable`) — when a hub aggregates artifacts from multiple stages, prefer one flat table over per-stage accordions. Plain-language headers ("Made with", not "Model · chain"). Whole row opens the viewer; only a hover-revealed trash icon stays on the row, with `e.stopPropagation()` so the row click still fires.
-- **Click semantics across the hub** — stage cards, version rows, and activity rows all open `SegmentContextDialog` (read-only viewer). The viewer exposes "Open editor" so the editor surface is one extra click away. Don't add inline editor links to the hub.
-- **Don't double-encode review state** — when a row already shows an `edited` marker (`text-2xs text-success`), keep the adjacent stage dot in the stage hue. Two greens means two signals, not one.
+- **Stage card** (`StageCard`): represents a pipeline stage as a clickable card. Stage hue used for the icon tile and a `border-l-2` accent when content exists; empty stages use a dashed border and no accent. The card itself is the hit target, no inline "Open" CTA. Click opens the read-only viewer when content exists, otherwise navigates to the stage editor.
+- **Activity log row** (`ActivityLog`): two-line clickable row: stage chip + `versionLabel` on top, `versionDate · {n} seg [· edited]` underneath. Caller pre-sorts desc by timestamp; component slices to a small cap. Click opens the viewer.
+- **Flat versions table** (`VersionsTable`): when a hub aggregates artifacts from multiple stages, prefer one flat table over per-stage accordions. Plain-language headers ("Made with", not "Model · chain"). Whole row opens the viewer; only a hover-revealed trash icon stays on the row, with `e.stopPropagation()` so the row click still fires.
+- **Click semantics across the hub:** stage cards, version rows, and activity rows all open `SegmentContextDialog` (read-only viewer). The viewer exposes "Open editor" so the editor surface is one extra click away. Don't add inline editor links to the hub.
+- **Don't double-encode review state:** when a row already shows an `edited` marker (`text-2xs text-success`), keep the adjacent stage dot in the stage hue. Two greens means two signals, not one.
 
 Promote to shared utilities when a second hub adopts these.
 
@@ -367,5 +367,5 @@ Promote to shared utilities when a second hub adopts these.
 Pipeline panels (`TranscribePanel`, `SynthesizePanel`, etc.) carry per-episode local state that must not bleed across episodes.
 
 - **Remount on episode switch.** `EpisodePage` mounts each step's component with `<Panel key={"${step}|${episode.id}"} />`. The composite key forces React to unmount and re-init when either the active step or the active episode changes. Don't try to sync this with effects; the key is the single source of truth.
-- **Parent-owned refs survive panel unmount.** If a panel hides while a background job runs (e.g. assemble running while the user looks elsewhere), state local to the panel is lost on remount. Anything that must persist through a panel unmount — current source-segment selection, in-flight job stamps, scroll-restore anchors — lives in a `useRef` owned by the parent page and passed in as a prop. `SynthesizePanel`'s `selectionStampRef` is the canonical example.
+- **Parent-owned refs survive panel unmount.** If a panel hides while a background job runs (e.g. assemble running while the user looks elsewhere), state local to the panel is lost on remount. Anything that must persist through a panel unmount (current source-segment selection, in-flight job stamps, scroll-restore anchors) lives in a `useRef` owned by the parent page and passed in as a prop. `SynthesizePanel`'s `selectionStampRef` is the canonical example.
 - **Source-aware queries.** Synth queries (`voice-samples`, `generated-segments`, `versions`, `status`) cache-key on the value returned by `getEpisodeSourceRef` (`frontend/src/lib/episodeRef.ts`): `audio_path` when present, else `output_dir`. YouTube subtitle-only episodes have no source audio, so keying on `audio_path` alone makes their cache invalidation silently miss. Always destructure through `getEpisodeSourceRef`; never reach for `episode.audio_path` directly in a query key.

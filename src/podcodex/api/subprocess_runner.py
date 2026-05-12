@@ -34,6 +34,12 @@ _CTX = mp.get_context("spawn")
 # Most steps finish in minutes; 4 hours is a very loose ceiling.
 _HARD_TIMEOUT_SEC = 4 * 60 * 60
 
+# Seconds the parent waits after cancel_event is set before breaking the
+# polling loop and letting the finally block SIGTERM the child. Bounds the
+# worst-case cancel latency when the child is stuck inside an uninterruptible
+# native call (long model.generate, etc.).
+_CANCEL_GRACE_SEC = 5.0
+
 
 def _early_child_log(message: str) -> None:
     """Append a line to the persistent server.log without going through
@@ -187,6 +193,8 @@ def run_in_subprocess(
 
     poll_ms = 250
     deadline = time.monotonic() + _HARD_TIMEOUT_SEC
+    cancel_deadline: float | None = None
+    grace_expired = False
     try:
         while True:
             if (
@@ -195,7 +203,16 @@ def run_in_subprocess(
                 and not cancel_ev.is_set()
             ):
                 cancel_ev.set()
+                cancel_deadline = time.monotonic() + _CANCEL_GRACE_SEC
                 logger.info("subprocess_runner: cancel requested for pid={}", proc.pid)
+
+            if cancel_deadline is not None and time.monotonic() > cancel_deadline:
+                grace_expired = True
+                logger.warning(
+                    "subprocess_runner: cancel grace expired, forcing exit for pid={}",
+                    proc.pid,
+                )
+                break
 
             if time.monotonic() > deadline:
                 logger.error("subprocess_runner: hard timeout pid={}", proc.pid)
@@ -242,6 +259,9 @@ def run_in_subprocess(
                 except Exception:
                     pass
 
+        # Grace expired: skip the result wait; finally block will SIGTERM.
+        if grace_expired:
+            raise RuntimeError("Cancelled")
         try:
             outcome = result_q.get(timeout=5)
         except _queue.Empty:
@@ -256,9 +276,9 @@ def run_in_subprocess(
 
     finally:
         if proc.is_alive():
-            # Give a graceful window only if we actually asked to stop.
-            if cancel_ev.is_set():
-                proc.join(timeout=10)
+            # Grace expired: SIGTERM immediately. Else give 2s cooperative window.
+            if cancel_ev.is_set() and not grace_expired:
+                proc.join(timeout=2)
             if proc.is_alive():
                 logger.warning("subprocess_runner: terminating pid={}", proc.pid)
                 proc.terminate()

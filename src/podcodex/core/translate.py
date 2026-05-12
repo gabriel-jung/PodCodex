@@ -28,7 +28,7 @@ from podcodex.core._utils import (
     run_llm_pipeline,
 )
 from podcodex.core.pipeline_db import mark_step
-from podcodex.core.versions import _get_db, save_version
+from podcodex.core.versions import PIPELINE_STEPS, _get_db, save_version
 
 
 # ──────────────────────────────────────────────
@@ -190,5 +190,15 @@ def list_translations(
     except Exception:
         logger.opt(exception=True).debug("list_translations: DB error for {}", p.base)
         return []
-    non_translation = {"transcript", "corrected", "indexed", "speaker_map"}
-    return sorted(s for s in steps if s not in non_translation)
+    return clean_translations(steps)
+
+
+def clean_translations(translations: list[str]) -> list[str]:
+    """Strip pipeline-step names from a `translations` list.
+
+    Legacy DBs (pre-PIPELINE_STEPS fix) leaked step names like ``segments`` or
+    ``diarization`` into the pipeline_db `translations` array. Filter on read so
+    stale rows don't surface as fake languages in the UI; new writes are
+    already clean.
+    """
+    return [t for t in translations if t not in PIPELINE_STEPS]

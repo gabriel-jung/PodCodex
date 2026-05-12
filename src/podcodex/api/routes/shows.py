@@ -48,6 +48,7 @@ from podcodex.ingest.rss import (
     load_feed_cache,
     save_feed_cache,
 )
+from podcodex.core.translate import clean_translations
 from podcodex.ingest.show import PipelineDefaults as _PipelineDefaults
 from podcodex.ingest.show import ShowMeta as _ShowMeta
 from podcodex.ingest.show import load_show_meta, save_show_meta
@@ -601,6 +602,7 @@ async def unified_episodes(
                 "manual_edit": True,
             }
         seg_count = seg_counts.get(stem) if stem else None
+        cleaned_translations = clean_translations(st.get("translations", []))
         return {
             "id": ep_id,
             "title": title,
@@ -620,14 +622,14 @@ async def unified_episodes(
             "indexed": st.get("indexed", False),
             "synthesized": st.get("synthesized", False),
             "has_subtitles": any(f.endswith(".vtt") for f in ep_files),
-            "translations": st.get("translations", []),
+            "translations": cleaned_translations,
             "artwork_url": artwork_url,
             "removed": removed,
             "feed_order": feed_order,
             "segment_count": seg_count,
             "files": ep_files,
             "provenance": prov,
-            **_step_statuses(st, prov, effective),
+            **_step_statuses(st, prov, effective, cleaned_translations),
         }
 
     # Pass the set of stems already on disk so episode_stem can match a
@@ -778,12 +780,17 @@ def _llm_outdated(prov: dict, effective: dict) -> bool:
     return False
 
 
-def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
+def _step_statuses(
+    st: dict, provenance: dict, effective: dict, translations: list[str]
+) -> dict:
     """Compute per-step status: 'none' | 'outdated' | 'done'.
 
     Compares the episode's provenance against the effective defaults.
     User-validated versions short-circuit to 'done': re-running would
     discard the edits, so 'outdated' is misleading.
+
+    `translations` is the pre-cleaned languages list (see clean_translations);
+    callers pass it through so the scrub runs once per episode, not twice.
     """
 
     def _check_transcribe() -> str:
@@ -807,7 +814,6 @@ def _step_statuses(st: dict, provenance: dict, effective: dict) -> dict:
         return "outdated" if _llm_outdated(prov, effective) else "done"
 
     def _check_translate() -> str:
-        translations = st.get("translations", [])
         if not translations:
             return "none"
         target = effective.get("target_lang", "").strip().lower()

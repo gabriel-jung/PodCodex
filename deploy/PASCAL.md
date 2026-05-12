@@ -1,7 +1,7 @@
 # Pascal GPU support (GTX 10xx, Titan Xp, P40, P100)
 
 The default PodCodex bundle ships PyTorch built against CUDA 12.8 (cu128).
-Those wheels were compiled for **Turing (sm_75) and newer GPUs only** —
+Those wheels were compiled for **Turing (sm_75) and newer GPUs only**;
 NVIDIA dropped Pascal kernels from the cu128 build matrix. If you have a
 Pascal card, the bundle will start, the Tauri shell will appear, and the
 first transcription run will crash inside torch with:
@@ -11,7 +11,7 @@ CUDA error: no kernel image is available for execution on the device
 ```
 
 PodCodex's bootstrap kernel guard catches this on startup, sets
-`PODCODEX_DEVICE=cpu`, and logs a warning — so the app stays usable in
+`PODCODEX_DEVICE=cpu`, and logs a warning, so the app stays usable in
 CPU mode without manual intervention. To actually use the GPU, follow
 one of the install paths below.
 
@@ -31,7 +31,7 @@ Anyone with Turing (RTX 20xx / GTX 16xx) or newer does not need this doc.
 
 ---
 
-## Install path A — dev install via uv (recommended)
+## Install path A: dev install via uv (recommended)
 
 If you cloned the repo and run from source, add the `gpu-pascal` extra
 instead of `gpu`:
@@ -42,12 +42,12 @@ uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp
 ```
 
 `gpu-pascal` pulls torch + torchaudio from PyTorch's `cu126` index, which
-still ships sm_60 + sm_61 kernels. Mutually exclusive with `gpu` — never
+still ships sm_60 + sm_61 kernels. Mutually exclusive with `gpu`; never
 add both.
 
 ---
 
-## Install path B — pre-built bundle + manual swap
+## Install path B: pre-built bundle + manual swap
 
 If you installed the `.dmg` / `.msi` and don't want to clone the repo,
 swap torch in the GPU backend's pip target after the in-app GPU
@@ -74,7 +74,7 @@ uv run python -c "import torch; print(torch.cuda.get_arch_list()); print(torch.c
 
 Expected output includes `sm_60` (P100) or `sm_61` (everything else
 listed above), and your GPU's name. If `sm_61` is missing, the install
-didn't take — re-run with `--reinstall --force-reinstall`.
+didn't take; re-run with `--reinstall --force-reinstall`.
 
 PodCodex's own diagnostic endpoint also reports it:
 
@@ -95,7 +95,7 @@ curl http://localhost:18811/api/system/device
 }
 ```
 
-`compute_type: int8_float32` is correct for Pascal — CTranslate2
+`compute_type: int8_float32` is correct for Pascal: CTranslate2
 (faster-whisper backend) refuses `float16` on Pascal because FP16 matmul
 runs at 1/64 of FP32 speed there. INT8 matmul uses Pascal's DP4A
 instructions (~native FP32 speed) and uses half the VRAM of FP32. For a

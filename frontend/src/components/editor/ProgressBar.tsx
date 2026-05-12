@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useProgress } from "@/hooks/useProgress";
-import { ChevronDown, ChevronRight, Check, Loader2, AlertCircle, Terminal, RotateCcw, X } from "lucide-react";
+import { Check, Loader2, AlertCircle, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import CopyButton from "@/components/common/CopyButton";
+import LogSection from "@/components/common/LogSection";
 
 interface ProgressBarProps {
   taskId: string | null;
@@ -26,8 +26,6 @@ function formatElapsed(seconds: number): string {
 export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, onCancel }: ProgressBarProps) {
   const progress = useProgress(taskId);
   const completeCalled = useRef(false);
-  const [showLog, setShowLog] = useState(false);
-  const logEndRef = useRef<HTMLDivElement>(null);
   const [staleElapsed, setStaleElapsed] = useState(0);
   const lastUpdateRef = useRef<number>(0);
 
@@ -40,7 +38,6 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
 
   useEffect(() => {
     completeCalled.current = false;
-    setShowLog(false);
     setStaleElapsed(0);
     lastUpdateRef.current = Date.now();
   }, [taskId]);
@@ -61,11 +58,6 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
     }, 1000);
     return () => clearInterval(interval);
   }, [taskId, progress?.status]);
-
-  // Auto-scroll log when open
-  useEffect(() => {
-    if (showLog) logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [progress?.log?.length, showLog]);
 
   if (!taskId) return null;
 
@@ -136,12 +128,12 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
         <div className="space-y-1">
           {steps.map((step, i) => {
             const isLast = i === steps.length - 1;
-            const isActive = isLast && !isDone && !isFailed;
+            const isActive = isLast && isRunning;
             return (
               <div key={i} className="flex items-center gap-2 text-xs">
                 {isActive ? (
                   <Loader2 className="w-3 h-3 text-primary animate-spin shrink-0" />
-                ) : isFailed && isLast ? (
+                ) : (isFailed || isCancelled) && isLast ? (
                   <AlertCircle className="w-3 h-3 text-destructive shrink-0" />
                 ) : (
                   <Check className="w-3 h-3 text-success shrink-0" />
@@ -184,29 +176,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
       )}
 
       {/* Debug log — expandable */}
-      {log.length > 0 && (
-        <div className="border-t border-border/50 pt-2">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowLog(!showLog)}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition"
-            >
-              <Terminal className="w-3 h-3" />
-              {showLog ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-              Logs ({log.length})
-            </button>
-            <CopyButton value={log.join("\n")} title="Copy log" />
-          </div>
-          {showLog && (
-            <pre className="mt-2 p-2 bg-muted rounded text-3xs leading-normal text-muted-foreground max-h-80 overflow-auto font-mono">
-              {log.map((line, i) => (
-                <div key={i}>{line}</div>
-              ))}
-              <div ref={logEndRef} />
-            </pre>
-          )}
-        </div>
-      )}
+      <LogSection log={log} className="border-t border-border/50 pt-2" />
     </div>
   );
 }

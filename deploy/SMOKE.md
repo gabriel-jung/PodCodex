@@ -14,8 +14,8 @@ Record outcomes in the PR description, linking to logs where relevant.
 
 ## Before you start
 
-- Fresh user account or wiped `~/.config/podcodex/`, `~/.local/share/podcodex/` (Linux), `~/Library/Application Support/podcodex/` (macOS), and `%APPDATA%\podcodex\` (Windows) — onboarding has to behave like a true first launch.
-- Ensure `ffmpeg` on PATH. Ensure Rust toolchain for Tauri native window.
+- Fresh user account or wiped `~/.config/podcodex/`, `~/.local/share/podcodex/` (Linux), `~/Library/Application Support/podcodex/` (macOS), and `%APPDATA%\podcodex\` (Windows) so onboarding behaves like a true first launch.
+- Ensure `ffmpeg` is on PATH. For `make dev` / native window, Rust toolchain is required; `make dev-no-tauri` (browser only) does not need Rust.
 - Record: OS version, Node version, Python version, GPU (if any), `make dev` vs `make bundle`.
 
 ## Smoke run
@@ -44,8 +44,8 @@ Start with `make dev` on the host platform (or `make dev-no-tauri` for WSL / bro
 
 ### 4. Pipeline
 
-- [ ] Transcribe one short episode on CPU preset with diarize off — no HF token needed, no warning shown.
-- [ ] Toggle Speaker identification → banner "HuggingFace token needed — set it up in Credentials" appears.
+- [ ] Transcribe one short episode on CPU preset with diarize off: no HF token needed, no warning shown.
+- [ ] Toggle Speaker identification → banner "HuggingFace token needed, set it up in Credentials" appears.
 - [ ] Click the link → Settings opens on Credentials tab, HF_TOKEN card scrolled into view.
 - [ ] Save a valid token → badge flips to "Stored · hf_…" and Transcribe dialog banner disappears.
 - [ ] Batch transcribe → task bar shows per-episode progress, cancellation works.

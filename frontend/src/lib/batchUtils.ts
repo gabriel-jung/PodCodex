@@ -1,7 +1,27 @@
+import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
 import type { TaskProgress } from "@/hooks/useProgress";
 import type { BatchEpisode } from "@/stores/taskStore";
 
-export type EpStatus = "pending" | "running" | "done" | "failed";
+export type EpStatus = "pending" | "running" | "done" | "failed" | "cancelled";
+
+/** Shared icon + color tables for any task-status display (batch list rows,
+ *  single-episode strip headers, future per-step trackers). Keyed by EpStatus
+ *  so adding a new state means one entry per map, nothing else. */
+export const STATUS_ICON: Record<EpStatus, typeof Circle> = {
+  pending: Circle,
+  running: Loader2,
+  done: CheckCircle2,
+  failed: XCircle,
+  cancelled: XCircle,
+};
+
+export const STATUS_COLOR: Record<EpStatus, string> = {
+  pending: "text-muted-foreground",
+  running: "text-primary animate-spin",
+  done: "text-success",
+  failed: "text-destructive",
+  cancelled: "text-warning",
+};
 
 interface EpisodeStatus {
   title: string;
@@ -26,7 +46,13 @@ export function parseProgressCount(
 export function countByStatus(
   statuses: EpisodeStatus[],
 ): Record<EpStatus, number> {
-  const out: Record<EpStatus, number> = { pending: 0, running: 0, done: 0, failed: 0 };
+  const out: Record<EpStatus, number> = {
+    pending: 0,
+    running: 0,
+    done: 0,
+    failed: 0,
+    cancelled: 0,
+  };
   for (const s of statuses) out[s.status]++;
   return out;
 }

@@ -226,6 +226,28 @@ def batch_progress(progress_cb, start: float = 0.1, end: float = 0.9):
     return on_batch
 
 
+def counted_progress(progress_cb, total: int):
+    """Return a `(index, message="", *, frac=None)` reporter that emits the
+    canonical ``[i+1/total] message`` format consumed by the frontend's
+    `parseProgressCount` regex. Standardizes the prefix so individual routes
+    can't drift from the contract (a missing bracket silently kills the
+    ``1/N`` counter in the TaskBar progress strip).
+
+    Defaults the fraction to ``index / total`` (ticks while the item is in
+    flight); pass ``frac`` to override (e.g. ``(i + 1) / total`` for "done"
+    ticks, or any custom interpolation).
+    """
+
+    def report(index: int, message: str = "", *, frac: float | None = None) -> None:
+        body = f" {message}" if message else ""
+        progress_cb(
+            index / total if frac is None else frac,
+            f"[{index + 1}/{total}]{body}",
+        )
+
+    return report
+
+
 # ── Path helpers ────────────────────────────────
 
 

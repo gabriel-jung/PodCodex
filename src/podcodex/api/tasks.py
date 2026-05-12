@@ -243,6 +243,10 @@ class TaskManager:
                     info.status = "failed"
                     info.error = str(exc)
             finally:
+                # Overwrite the "Cancelling..." placeholder set by
+                # TaskManager.cancel once the subprocess actually exits.
+                if info.cancel_event.is_set():
+                    info.message = "Cancelled"
                 root.removeHandler(log_handler)
                 _remove_loguru_sink(loguru_sink_id)
                 if info.finished_at is None:

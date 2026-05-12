@@ -60,6 +60,23 @@ STEP_FLAG = {
 # bucket-hash preference: diarized_segments wins when both exist.
 SPEAKER_LABEL_SOURCE_STEPS = ("diarized_segments", "segments")
 
+# Canonical pipeline step names. Anything stored under ``versions.step`` that
+# is NOT in this set is treated as a translation language code. Single source
+# of truth for list_translations() and any read-side scrub: adding a new
+# pipeline step means appending one entry here.
+PIPELINE_STEPS = frozenset(
+    {
+        "transcript",
+        "corrected",
+        "indexed",
+        "speaker_map",
+        "segments",
+        "diarization",
+        "diarized_segments",
+        "synthesize",
+    }
+)
+
 
 # ------------------------------------------------------------------
 # Data types

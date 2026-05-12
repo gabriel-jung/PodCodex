@@ -10,6 +10,7 @@ from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
     build_provenance,
+    counted_progress,
     enrich_correct_kwargs,
     llm_prov_params,
     submit_task,
@@ -385,12 +386,13 @@ def _run_batch(progress_cb, req: BatchRequest):
     # transcribe/diarize/index sub-runs feed the in-app log expander.
     _cancelled.log_cb = getattr(progress_cb, "log_cb", None)  # type: ignore[attr-defined]
 
+    report = counted_progress(progress_cb, total)
+
     def ep_progress(
         ep_idx: int, step_offset: float, step_weight: float, frac: float, msg: str
     ):
         ep_frac = (step_offset + frac * step_weight) / weight
-        overall = (ep_idx + ep_frac) / total
-        progress_cb(overall, f"[{ep_idx + 1}/{total}] {msg}")
+        report(ep_idx, msg, frac=(ep_idx + ep_frac) / total)
 
     for i, audio_path in enumerate(req.audio_paths):
         if _cancelled():
@@ -400,12 +402,12 @@ def _run_batch(progress_cb, req: BatchRequest):
         stem = Path(audio_path).stem
 
         if task_manager.get_active(audio_path):
-            progress_cb((i + 1) / total, f"[{i + 1}/{total}] Skipped (task running)")
+            report(i, "Skipped (task running)", frac=(i + 1) / total)
             skipped += 1
             continue
 
         task_manager.lock(audio_path, batch_task_id)
-        progress_cb(i / total, f"[{i + 1}/{total}] Starting...")
+        report(i, "Starting...")
         ep_had_work = False
         ep_version_id = (req.source_version_ids or {}).get(audio_path)
 
@@ -489,22 +491,20 @@ def _run_batch(progress_cb, req: BatchRequest):
             if _cancelled():
                 if ep_had_work:
                     completed += 1
-                progress_cb((i + 1) / total, f"[{i + 1}/{total}] Cancelled")
+                report(i, "Cancelled", frac=(i + 1) / total)
                 break
             elif not ep_had_work:
                 skipped += 1
-                progress_cb(
-                    (i + 1) / total, f"[{i + 1}/{total}] Skipped (already done)"
-                )
+                report(i, "Skipped (already done)", frac=(i + 1) / total)
             else:
                 completed += 1
-                progress_cb((i + 1) / total, f"[{i + 1}/{total}] Done")
+                report(i, "Done", frac=(i + 1) / total)
 
         except Exception as exc:
             logger.exception("Batch: episode {} failed", stem)
             failed += 1
             errors.append({"episode": stem, "error": str(exc)})
-            progress_cb((i + 1) / total, f"[{i + 1}/{total}] Failed: {exc}")
+            report(i, f"Failed: {exc}", frac=(i + 1) / total)
 
         finally:
             task_manager.unlock(audio_path)

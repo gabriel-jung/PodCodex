@@ -2,13 +2,13 @@
 
 Two install paths. Pick whichever fits your setup:
 
-- [Path A — uv (native)](#path-a--uv-native) — lightweight, good for a dedicated VPS or running alongside the desktop app
-- [Path B — Docker](#path-b--docker) — isolated runtime, good for multi-service hosts
+- [Path A: uv (native)](#path-a-uv-native): lightweight, good for a dedicated VPS or running alongside the desktop app
+- [Path B: Docker](#path-b-docker): isolated runtime, good for multi-service hosts
 
 After either path, see:
 
-- [Access control](#access-control-passwords) — optional; only if you host multiple shows and want each Discord server to see a different one
-- [Transferring the index](#transferring-the-index) — only if the bot runs on a different machine than the desktop app
+- [Access control](#access-control-passwords): optional; only if you host multiple shows and want each Discord server to see a different one
+- [Transferring the index](#transferring-the-index): only if the bot runs on a different machine than the desktop app
 
 ---
 
@@ -23,7 +23,7 @@ You need four things before either install path:
 3. Leave **Privileged Gateway Intents** off. The bot uses only default intents.
 4. Under **OAuth2 → URL Generator**, select:
    - Scopes: `bot` and `applications.commands`
-   - Bot Permissions: `Send Messages`, `Embed Links`, `Read Message History`, `Use Slash Commands`
+   - Bot Permissions: `Send Messages`, `Embed Links`, `Read Message History`
 5. Visit the generated URL and invite the bot to each Discord server you want it in.
 
 **If the token ever leaks**, click **Reset Token** to invalidate it; the old one stops working immediately.
@@ -38,15 +38,15 @@ Requirements:
 
 The bot is a read-only frontend over an existing index, so it does **not** need:
 
-- `ffmpeg` — only needed during transcription (desktop app)
-- A GPU or `CUDA` — only needed for local transcription/indexing (desktop app)
-- `HF_TOKEN` — only needed for speaker diarization (desktop app)
+- `ffmpeg`: only needed during transcription (desktop app)
+- A GPU or `CUDA`: only needed for local transcription/indexing (desktop app)
+- `HF_TOKEN`: only needed for speaker diarization (desktop app)
 
 ### 3. An index to serve
 
 The bot is read-only and doesn't build indexes itself. You need an existing LanceDB index, produced by the desktop app's **Index** step on any show.
 
-The desktop app writes to its platform `<data_dir>/index/` — `~/.local/share/podcodex/index/` on Linux, `~/Library/Application Support/podcodex/index/` on macOS, `%APPDATA%\podcodex\index\` on Windows. The bot resolves the same path and looks there first, so in most setups there is nothing to configure. If it doesn't find an index there, it also checks `./deploy/index/` and `./index/` relative to its working directory. Set `PODCODEX_INDEX=/abs/path` to override explicitly.
+The desktop app writes to its platform `<data_dir>/index/`: `~/.local/share/podcodex/index/` on Linux, `~/Library/Application Support/podcodex/index/` on macOS, `%APPDATA%\podcodex\index\` on Windows. The bot resolves the same path and looks there first, so in most setups there is nothing to configure. If it doesn't find an index there, it also checks `./deploy/index/` and `./index/` relative to its working directory. Set `PODCODEX_INDEX=/abs/path` to override explicitly.
 
 - **Bot on the same machine as the desktop app** → nothing to do. The bot finds the desktop's index automatically.
 - **Bot on a different machine (VPS, server)** → rsync the index over, see [Transferring the index](#transferring-the-index).
@@ -55,7 +55,7 @@ The bot logs the resolved path and the reason on startup (`IndexStore opened: <p
 
 ### 4. About slash command sync
 
-Discord propagates globally-scoped slash commands lazily — commands may take up to an hour to appear in servers after the bot's first start. They're available instantly in the Discord client's command picker once propagated.
+Discord propagates globally-scoped slash commands lazily; commands may take up to an hour to appear in servers after the bot's first start. They're available instantly in the Discord client's command picker once propagated.
 
 For faster iteration during testing, start the bot with `--dev-guild <GUILD_ID>`; commands sync instantly to that one guild.
 
@@ -63,7 +63,7 @@ Once propagated, commands stay registered; restarts don't re-trigger the wait.
 
 ---
 
-## Path A — uv (native)
+## Path A: uv (native)
 
 ### 1. Install uv
 
@@ -87,7 +87,7 @@ The bot's `load_dotenv` searches from the current working directory upward, so t
 cat > .env <<'EOF'
 DISCORD_TOKEN=your-bot-token
 
-# Optional — only if you want to point the bot at an index that is neither
+# Optional, only if you want to point the bot at an index that is neither
 # at <data_dir>/index (e.g. ~/.local/share/podcodex/index on
 # Linux) nor at ./deploy/index / ./index.
 # PODCODEX_INDEX=/absolute/path/to/index
@@ -98,9 +98,9 @@ Then open `.env` and fill in `DISCORD_TOKEN`. `.env` is gitignored.
 
 **How the bot finds the index** (logged at startup):
 
-1. `PODCODEX_INDEX` env var if set — always wins.
-2. `<data_dir>/index/` if it exists with data — desktop app default (Linux: `~/.local/share/podcodex/index/`).
-3. `./deploy/index/` or `./index/` relative to the bot's working directory — repo-local fallback.
+1. `PODCODEX_INDEX` env var if set: always wins.
+2. `<data_dir>/index/` if it exists with data: desktop app default (Linux: `~/.local/share/podcodex/index/`).
+3. `./deploy/index/` or `./index/` relative to the bot's working directory: repo-local fallback.
 4. Else: creates an empty `<data_dir>/index/`.
 
 Check the startup log line (`IndexStore opened: <path> (<reason>)`) to confirm which one was picked.
@@ -152,7 +152,7 @@ sudo journalctl -u podcodex-bot -f
 
 ---
 
-## Path B — Docker
+## Path B: Docker
 
 Assumes Docker Engine with the compose plugin is installed.
 
@@ -174,7 +174,7 @@ Notes:
 
 - The host's `~/.local/share/podcodex/index/` is mounted into the container at `/root/.local/share/podcodex/index/`, matching the bot's default, so no `PODCODEX_INDEX` override is needed.
 - To serve an index at a different host location, set `PODCODEX_INDEX_HOST=/abs/path` in `deploy/.env` before `docker compose up`.
-- BGE-M3 lives in the `model_cache` named volume — survives rebuilds.
+- BGE-M3 lives in the `model_cache` named volume; survives rebuilds.
 - `restart: unless-stopped` handles crashes and host reboots.
 - Logs rotate at 50 MB × 3 files via the json-file driver.
 
@@ -200,7 +200,7 @@ uv run podcodex-bot --manage-passwords
 docker compose run --rm bot --manage-passwords
 ```
 
-Interactive prompt lists all indexed shows and lets you set, generate (`g`), or remove passwords. Generated passwords print once — copy them before dismissing.
+Interactive prompt lists all indexed shows and lets you set, generate (`g`), or remove passwords. Generated passwords print once; copy them before dismissing.
 
 Restart the bot so it picks up the new password map:
 
@@ -254,7 +254,7 @@ ssh user@host 'mkdir -p ~/.local/share/podcodex/index'
 From Linux desktop:
 
 ```bash
-# Dry run first — prints what would transfer or delete, changes nothing
+# Dry run first: prints what would transfer or delete, changes nothing
 rsync -avn --delete --progress ~/.local/share/podcodex/index/ user@host:~/.local/share/podcodex/index/
 
 # Real copy
@@ -287,7 +287,7 @@ wsl rsync -av --delete --progress /mnt/c/Users/<you>/AppData/Roaming/podcodex/in
 When you don't have rsync access (no SSH symmetry, restricted firewall, web upload, USB) or want to deploy a *subset* of shows, use the `.podcodex` bundle format:
 
 ```bash
-# Indexing machine — pick specific shows or use --all for parity with rsync
+# Indexing machine: pick specific shows or use --all for parity with rsync
 podcodex-export "Show A" "Show B" --index-only -o shows-index.podcodex
 # or every show:
 podcodex-export --all --index-only -o shows-index.podcodex
@@ -295,7 +295,7 @@ podcodex-export --all --index-only -o shows-index.podcodex
 # Transfer (any path: scp, web, S3)
 scp shows-index.podcodex user@host:/tmp/
 
-# Bot host — replaces existing collections atomically
+# Bot host: replaces existing collections atomically
 podcodex-import /tmp/shows-index.podcodex --on-conflict replace
 ```
 
