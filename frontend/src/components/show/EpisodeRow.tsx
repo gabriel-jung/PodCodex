@@ -45,7 +45,7 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
           className={`text-left text-sm hover:text-primary cursor-pointer flex items-center gap-1.5 max-w-full ${ep.removed ? "text-muted-foreground" : "text-foreground"}`}
         >
           {ep.removed && (
-            <span title="No longer in the live feed — kept locally" className="shrink-0">
+            <span title="No longer in the live feed, kept locally" className="shrink-0">
               <CloudOff className="w-3 h-3 text-muted-foreground" />
             </span>
           )}

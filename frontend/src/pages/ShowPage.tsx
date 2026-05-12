@@ -39,14 +39,13 @@ import CompactToggle from "@/components/show/CompactToggle";
 import SearchPanel from "@/components/search/SearchPanel";
 import PipelineButtons from "@/components/show/PipelineButtons";
 import FilterDropdown from "@/components/show/FilterDropdown";
-import SortHeader from "@/components/show/SortHeader";
+import SortDropdown, { type SortKey } from "@/components/show/SortDropdown";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
 
 type ShowTab = "episodes" | "search" | "speakers" | "settings";
 const TABS: ShowTab[] = ["episodes", "search", "speakers", "settings"];
 type ViewMode = "list" | "card";
 type StatusFilter = "all" | "ready" | "transcribed" | "corrected" | "translated" | "indexed" | "outdated";
-type SortKey = "date_desc" | "date_asc" | "title_asc" | "title_desc" | "duration_desc" | "duration_asc" | "number_desc" | "number_asc";
 
 const SIDEBAR_SECTIONS: SidebarSection[] = [
   {
@@ -304,20 +303,6 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     });
   }, []);
 
-  const toggleSort = (col: "date" | "title" | "duration" | "number") => {
-    const pairs: Record<string, [SortKey, SortKey]> = {
-      date: ["date_desc", "date_asc"],
-      title: ["title_asc", "title_desc"],
-      duration: ["duration_desc", "duration_asc"],
-      number: ["number_desc", "number_asc"],
-    };
-    const [primary, alt] = pairs[col];
-    setSort(sort === primary ? alt : primary);
-  };
-
-  const sortCol = sort.replace(/_(?:asc|desc)$/, "");
-  const sortDir = sort.endsWith("_asc") ? "asc" : "desc";
-
   const goEpisode = useCallback((stem: string) =>
     navigate({ to: "/show/$folder/episode/$stem", params: { folder: encodeURIComponent(folder), stem: encodeURIComponent(stem) } }),
   [navigate, folder]);
@@ -481,6 +466,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           <input type="range" min={2} max={8} value={cardSize} onChange={(e) => setCardSize(Number(e.target.value))} className="w-20 accent-primary shrink-0" />
         )}
         <CompactToggle />
+        <SortDropdown sort={sort} setSort={setSort} />
         <div className="flex border border-border rounded overflow-hidden shrink-0">
           <button onClick={() => setView("list")} className={`px-1.5 py-1 transition ${view === "list" ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground"}`} title="List view">
             <List className="w-3.5 h-3.5" />
@@ -503,20 +489,6 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       <div className="flex-1 overflow-y-auto">
         {view === "list" ? (
           <div className="divide-y divide-border/50">
-            {/* Column headers */}
-            <div className="flex items-center gap-3 px-6 py-1.5 text-2xs text-muted-foreground select-none border-b border-border">
-              <div className="w-4 shrink-0" />
-              <SortHeader col="number" label="#" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-8 text-right shrink-0" />
-              <SortHeader col="title" label="Title" current={sortCol} dir={sortDir} onSort={toggleSort} className="flex-1 min-w-0" />
-              {!compact && <div className="w-16 shrink-0" />}
-              {!compact && (
-                <SortHeader col="date" label="Date" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-20 text-right shrink-0" />
-              )}
-              {!compact && (
-                <SortHeader col="duration" label="Duration" current={sortCol} dir={sortDir} onSort={toggleSort} className="w-12 text-right shrink-0" />
-              )}
-              <span className={`${compact ? "w-12" : "w-20"} text-right shrink-0`}>Audio</span>
-            </div>
             {filtered.map((ep, i) => {
               const isCurrent = !!ep.audio_path && ep.audio_path === audioPath;
               return (
