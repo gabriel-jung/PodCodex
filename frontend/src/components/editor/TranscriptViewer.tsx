@@ -16,7 +16,7 @@ import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
 import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
 import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
-import { formatTime, versionInfo, selectClass } from "@/lib/utils";
+import { formatTime, versionInfo, versionOption, selectClass } from "@/lib/utils";
 import VersionPicker from "@/components/common/VersionPicker";
 
 /** Sentinel values for the compare ("vs") picker. `REF_NONE` = no diff,
