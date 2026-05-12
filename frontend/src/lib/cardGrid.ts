@@ -1,12 +1,14 @@
 /**
  * Card-grid template helpers.
  *
- * Per DESIGN.md §5 Grid: card grids use `repeat(auto-fill, <px>)` so wider
- * viewports add columns instead of stretching the cards the user picked.
+ * Per DESIGN.md §5 Grid: card grids use `repeat(auto-fill, minmax(<min>, 1fr))`
+ * so wider viewports add columns instead of growing cards into billboards,
+ * while leftover width between thresholds is absorbed by mild stretch (no
+ * empty right-edge gap).
  */
 
-/** Library tiles (HomePage). Slider 1 (big) → 5 (small). */
-const SHOW_CARD_WIDTHS: Record<number, string> = {
+/** Library tiles (HomePage). Slider 1 (big) to 5 (small). */
+const SHOW_CARD_MIN_WIDTHS: Record<number, string> = {
   1: "1000px",
   2: "580px",
   3: "390px",
@@ -14,8 +16,8 @@ const SHOW_CARD_WIDTHS: Record<number, string> = {
   5: "230px",
 };
 
-/** Episode tiles (ShowPage). Slider 2 (big) → 8 (small). */
-const EPISODE_CARD_WIDTHS: Record<number, string> = {
+/** Episode tiles (ShowPage). Slider 2 (big) to 8 (small). */
+const EPISODE_CARD_MIN_WIDTHS: Record<number, string> = {
   2: "560px",
   3: "380px",
   4: "290px",
@@ -26,9 +28,11 @@ const EPISODE_CARD_WIDTHS: Record<number, string> = {
 };
 
 export function showCardGridTemplate(size: number): string {
-  return `repeat(auto-fill, ${SHOW_CARD_WIDTHS[size] ?? SHOW_CARD_WIDTHS[3]})`;
+  const min = SHOW_CARD_MIN_WIDTHS[size] ?? SHOW_CARD_MIN_WIDTHS[3];
+  return `repeat(auto-fill, minmax(${min}, 1fr))`;
 }
 
 export function episodeCardGridTemplate(size: number): string {
-  return `repeat(auto-fill, ${EPISODE_CARD_WIDTHS[size] ?? EPISODE_CARD_WIDTHS[4]})`;
+  const min = EPISODE_CARD_MIN_WIDTHS[size] ?? EPISODE_CARD_MIN_WIDTHS[4];
+  return `repeat(auto-fill, minmax(${min}, 1fr))`;
 }

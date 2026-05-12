@@ -218,7 +218,7 @@ Don't pair `text-2xs` with `w-3.5 h-3.5` icons or `text-xs` with `w-4 h-4` icons
 - Main column: flexible, `max-w-5xl` for content-heavy pages (transcript reader); full-width for data tables
 - Settings: two columns at `md:` breakpoint, single column on mobile
 - Episode lists: full-width single column with right-aligned metadata
-- Card grids (library, episode tiles): fixed card width via `repeat(auto-fill, <px>)`, NOT `repeat(N, 1fr)` or `minmax(MIN, 1fr)`. Wider viewports add columns; cards stay the size the user picked. `1fr` stretches cards on wide screens, which the user explicitly rejected for the library view.
+- Card grids (library, episode tiles): `repeat(auto-fill, minmax(<min>, 1fr))`, NOT `repeat(N, 1fr)`. Wider viewports add columns once a full new column fits; leftover width between thresholds is absorbed by mild stretch so the grid never leaves an empty right-edge gap. Plain `repeat(N, 1fr)` (no min) lets cards grow into billboards on wide screens, which the user explicitly rejected.
 
 ### Border radius scale
 - `rounded` (4px): inline list rows, tags, badges, micro-elements
