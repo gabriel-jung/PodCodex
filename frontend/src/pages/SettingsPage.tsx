@@ -125,7 +125,7 @@ export default function SettingsPage() {
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <EditorialHeader title="Settings" fallbackIcon={Settings} />
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden">
         <AppSidebar
           pageSections={sections}
           activeItem={tab}

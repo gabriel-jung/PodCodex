@@ -27,6 +27,7 @@ export const getCorrectManualPrompts = (params: {
   context?: string;
   source_lang?: string;
   batch_minutes?: number;
+  batch_count?: number;
   source_version_id?: string;
 }) => api.getManualPrompts(params);
 

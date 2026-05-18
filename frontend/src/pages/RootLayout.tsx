@@ -6,6 +6,7 @@ import { getHealth } from "@/api/client";
 import PanelLoading from "@/components/common/PanelLoading";
 import { queryKeys } from "@/api/queryKeys";
 import AudioBar from "@/components/layout/AudioBar";
+import { sidebarPad } from "@/components/layout/AppSidebar";
 import TaskBar from "@/components/layout/TaskBar";
 import CommandPalette from "@/components/CommandPalette";
 import ShortcutsHelp from "@/components/ShortcutsHelp";
@@ -13,6 +14,7 @@ import BatchHistoryModal from "@/components/BatchHistoryModal";
 import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
 import { PlatformProvider } from "@/platform";
 import { useGlobalShortcuts } from "@/hooks/useGlobalShortcuts";
+import { useLayoutStore } from "@/stores";
 
 // Boot phases shown while waiting on /api/health. Times are best-effort
 // guesses tuned for the PyInstaller onefile cold-start (Tauri release build);
@@ -46,6 +48,9 @@ function pickPhaseLabel(elapsedMs: number): string {
 
 export default function RootLayout() {
   useGlobalShortcuts();
+  // Sidebar is fixed full-window-height; the rest of the shell sits in the
+  // column to its right so AudioBar/TaskBar growth never reflows the sidebar.
+  const sidebarExpanded = useLayoutStore((s) => s.sidebarExpanded);
   // PyInstaller-bundled sidecar can take 10-30 s to extract + boot uvicorn on
   // the first launch each session, so we retry generously before surrendering.
   const { data: health, error } = useQuery({
@@ -94,7 +99,9 @@ export default function RootLayout() {
 
   return (
     <PlatformProvider>
-      <div className="flex flex-col h-screen overflow-hidden bg-background text-foreground">
+      <div
+        className={`flex flex-col h-screen overflow-hidden bg-background text-foreground transition-[padding] duration-200 ${sidebarPad(sidebarExpanded)}`}
+      >
         <main className="flex-1 overflow-hidden">
           <Suspense fallback={<PanelLoading />}>
             <Outlet />

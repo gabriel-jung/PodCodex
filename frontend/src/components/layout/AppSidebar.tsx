@@ -10,6 +10,14 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
+// Sidebar is fixed-positioned; RootLayout offsets its content column by the
+// matching padding. Both derive the width here so they never drift — keep the
+// literal class names so Tailwind's JIT picks all four up.
+export const sidebarWidth = (expanded: boolean): string =>
+  expanded ? "w-48" : "w-14";
+export const sidebarPad = (expanded: boolean): string =>
+  expanded ? "pl-48" : "pl-14";
+
 export interface SidebarItem {
   key: string;
   label: string;
@@ -39,9 +47,7 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
 
   return (
     <div
-      className={`border-r border-border flex flex-col shrink-0 transition-all duration-200 ${
-        expanded ? "w-48" : "w-14"
-      }`}
+      className={`fixed top-0 bottom-0 left-0 z-20 border-r border-border flex flex-col transition-all duration-200 ${sidebarWidth(expanded)}`}
     >
       <nav className="flex-1 py-2 flex flex-col overflow-y-auto no-scrollbar">
         {/* Back + Home + Parent — Home stays fixed above Parent so its position

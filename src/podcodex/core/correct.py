@@ -25,6 +25,7 @@ from podcodex.core._utils import (
     format_segments,
     run_llm_pipeline,
 )
+from podcodex.core.llm_failures import record_run
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import save_version
 
@@ -140,6 +141,7 @@ def build_manual_prompts_batched(
     source_lang: str = "English",
     engine: str = "whisper",
     engine_model: str | None = None,
+    batch_count: int | None = None,
 ) -> list[tuple[list[dict], str]]:
     """Split segments into time-based batches and return one prompt per batch."""
     return build_batched_manual_prompts(
@@ -153,6 +155,7 @@ def build_manual_prompts_batched(
             start_index=start,
         ),
         batch_minutes,
+        batch_count,
     )
 
 
@@ -177,12 +180,20 @@ def correct_segments(
     engine: str = "whisper",
     engine_model: str | None = None,
     on_batch: Callable[[int, int], None] | None = None,
+    audio_path: str | None = None,
+    output_dir: str | None = None,
 ) -> list[dict]:
-    """Correct transcription errors in segments."""
+    """Correct transcription errors in segments.
+
+    When *audio_path*/*output_dir* identify an episode, each batch's LLM
+    outcome (ollama/api modes) is recorded to ``llm_failures.json`` so a
+    silently-rejected batch can be reviewed afterwards.
+    """
     logger.info(f"Correcting {len(segments)} segments — mode={mode}")
     system_prompt = _build_prompt(
         context, source_lang=source_lang, engine=engine, engine_model=engine_model
     )
+    batch_sink: list[dict] = []
     result = run_llm_pipeline(
         segments,
         system_prompt,
@@ -198,8 +209,12 @@ def correct_segments(
         merge=merge,
         max_gap=max_gap,
         on_batch=on_batch,
+        batch_sink=batch_sink,
     )
     logger.success(f"Correct done — {len(result)} segments")
+    record_run(
+        audio_path, output_dir, "corrected", model=model, mode=mode, records=batch_sink
+    )
     return result
 
 

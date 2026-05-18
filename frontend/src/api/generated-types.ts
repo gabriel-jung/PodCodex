@@ -94,6 +94,7 @@ export interface UnifiedEpisodeOut {
   transcribe_status: string;
   correct_status: string;
   translate_status: string;
+  llm_failed_steps: string[];
 }
 
 export interface CreateFromRSSRequest {
@@ -200,6 +201,7 @@ export interface CorrectManualPromptsRequest {
   source_lang?: string;
   target_lang?: string;
   batch_minutes?: number;
+  batch_count?: number | null;
   source_version_id?: string | null;
 }
 
@@ -252,6 +254,7 @@ export interface TranslateManualPromptsRequest {
   source_lang?: string;
   target_lang?: string;
   batch_minutes?: number;
+  batch_count?: number | null;
   source_version_id?: string | null;
 }
 

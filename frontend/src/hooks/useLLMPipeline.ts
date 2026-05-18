@@ -90,6 +90,19 @@ export function buildLLMRequest(audioPath: string, config: LLMConfig) {
 }
 
 /**
+ * Convert `batch_minutes` to a batch count for an episode of known duration.
+ * Returns null when the duration is unknown, in which case callers should
+ * fall back to passing raw minutes to the backend.
+ */
+export function batchCountFor(
+  episode: Episode,
+  batchMinutes: number,
+): number | null {
+  if (!episode.duration || batchMinutes <= 0) return null;
+  return Math.max(1, Math.round(episode.duration / 60 / batchMinutes));
+}
+
+/**
  * Derive batch count from episode duration. The underlying store field is
  * `batchMinutes` (minutes per batch), but users think in "how many batches" —
  * this hook translates between the two. Falls back to raw minutes when
@@ -101,9 +114,7 @@ export function useBatchCount(
   patch: (p: Partial<LLMConfig>) => void,
 ) {
   const episodeMinutes = episode.duration ? episode.duration / 60 : null;
-  const batchCount = episodeMinutes && config.batchMinutes > 0
-    ? Math.max(1, Math.round(episodeMinutes / config.batchMinutes))
-    : 1;
+  const batchCount = batchCountFor(episode, config.batchMinutes) ?? 1;
   const setBatchCount = (count: number) => {
     if (!episodeMinutes) return;
     const n = Math.max(1, Math.floor(count) || 1);

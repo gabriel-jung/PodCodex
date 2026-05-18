@@ -290,6 +290,7 @@ def _batch_llm_step(
         api_key=resolved.api_key if resolved else None,
         original_segments=segments,
         merge=False,
+        audio_path=audio_path,
     )
 
     prov_params = llm_prov_params(

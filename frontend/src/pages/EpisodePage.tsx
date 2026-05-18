@@ -53,6 +53,7 @@ import {
   CloudOff,
   LayoutGrid,
   ChevronRight,
+  AlertTriangle,
 } from "lucide-react";
 import {
   PIPELINE_STEPS,
@@ -275,7 +276,7 @@ export default function EpisodePage({
         }
       />
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden">
         <AppSidebar
           parentLabel={!isStandalone ? (meta?.name ?? "Show") : undefined}
           onParent={!isStandalone && folder ? () => navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } }) : undefined}
@@ -479,6 +480,11 @@ function StageCard({
 
 const TRANSCRIBE_INTERMEDIATE_STEPS = new Set(["segments", "diarization", "diarized_segments", "speaker_map"]);
 
+// A diarized run writes its two transcript versions back-to-back (seconds
+// apart). Two transcripts further apart than this belong to separate runs —
+// catches a json/subtitle import, which has no intermediates to split runs.
+const RUN_GAP_MS = 2 * 60 * 1000;
+
 function stepDisplay(step: string | undefined): { stage: StageColor; label: string; editorStep: ActiveStep } {
   if (step === "transcript") return { stage: "transcribe", label: "Transcribe", editorStep: "transcribe" };
   if (step === "corrected") return { stage: "correct", label: "Correct", editorStep: "correct" };
@@ -592,20 +598,20 @@ function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPrev
         className={`group/vrow border-b border-border/40 last:border-b-0 hover:bg-accent/30 transition${clickable ? " cursor-pointer" : ""}${isChild ? " bg-background/30" : ""}`}
       >
         <td className="px-3 py-2">
-          <span className={`inline-flex items-center gap-1.5${isChild ? " pl-5" : ""}`}>
-            {hasKids ? (
+          <span className={`flex items-center gap-1.5${isChild ? " pl-5" : ""}`}>
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.dot}`} />
+            <span className="text-foreground flex-1 min-w-0 truncate">{label}</span>
+            {edited && <span className="ml-1 text-2xs text-success shrink-0">edited</span>}
+            {hasKids && (
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); toggleExpanded(v.id); }}
-                className="text-muted-foreground/60 hover:text-foreground transition shrink-0"
+                className="ml-0.5 p-1 -my-1 text-muted-foreground/60 hover:text-foreground transition shrink-0"
                 title={open ? "Hide intermediates" : "Show intermediates"}
               >
-                <ChevronRight className={`w-3 h-3 transition-transform ${open ? "rotate-90" : ""}`} />
+                <ChevronRight className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-90" : ""}`} />
               </button>
-            ) : null}
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.dot}`} />
-            <span className="text-foreground">{label}</span>
-            {edited && <span className="ml-1 text-2xs text-success">edited</span>}
+            )}
           </span>
         </td>
         <td className="px-3 py-2 text-muted-foreground truncate max-w-[320px]" title={versionLabel(v)}>
@@ -637,13 +643,15 @@ function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPrev
     <section className="space-y-2">
       <h4 className="text-sm font-medium px-1">{heading}</h4>
       <div className="rounded-lg border border-border bg-card overflow-x-auto">
-        <table className="w-full text-xs">
+        {/* table-fixed: column widths stay put when expanding a row exposes
+            wider child labels (otherwise the longer names push every column). */}
+        <table className="w-full text-xs table-fixed">
           <thead className="bg-background/40 border-b border-border">
             <tr className="text-muted-foreground">
-              <th className="text-left px-3 py-2 font-medium">{firstColLabel}</th>
+              <th className="text-left px-3 py-2 font-medium w-52">{firstColLabel}</th>
               <th className="text-left px-3 py-2 font-medium">Made with</th>
-              <th className="text-left px-3 py-2 font-medium">Created</th>
-              <th className="text-right px-3 py-2 font-medium">{countColLabel}</th>
+              <th className="text-left px-3 py-2 font-medium w-28">Created</th>
+              <th className="text-right px-3 py-2 font-medium w-20">{countColLabel}</th>
               <th className="px-3 py-2 w-8"></th>
             </tr>
           </thead>
@@ -920,28 +928,66 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
   );
 
   // Each intermediate parquet (segments / diarization / diarized_segments /
-  // speaker_map) is the by-product of one transcribe run. Pair each with the
-  // closest later raw transcript version: the one whose timestamp is >= the
-  // intermediate's. Orphans (no later transcript) stay in "All other files".
+  // speaker_map) is a by-product of one transcribe run. A diarized batch run
+  // emits TWO transcript versions (undiarized + diarized) from a single set
+  // of intermediates, so a plain "closest later transcript" pairing files the
+  // diarization intermediates under the undiarized transcript. Group by run
+  // instead: raw whisper `segments` belong under every transcript of the run;
+  // diarization-derived intermediates belong under the diarized transcript(s).
+  // Orphans (no later transcript) stay in "All other files".
   const { childrenByTranscriptId, orphanIntermediates } = useMemo(() => {
-    const intermediates = versionGroups.other.filter(
-      (v) => v.step && TRANSCRIBE_INTERMEDIATE_STEPS.has(v.step),
-    );
-    const transcriptsAsc = [...versionGroups.transcript].sort(
-      (a, b) => a.timestamp.localeCompare(b.timestamp),
-    );
+    const stream = [
+      ...versionGroups.transcript.map((v) => ({ v, inter: false })),
+      ...versionGroups.other
+        .filter((v) => v.step && TRANSCRIBE_INTERMEDIATE_STEPS.has(v.step))
+        .map((v) => ({ v, inter: true })),
+    ].sort((a, b) => a.v.timestamp.localeCompare(b.v.timestamp));
+
     const map = new Map<string, VersionEntry[]>();
     const orphans: VersionEntry[] = [];
-    for (const inter of intermediates) {
-      const parent = transcriptsAsc.find((t) => t.timestamp >= inter.timestamp);
-      if (parent) {
-        const arr = map.get(parent.id) ?? [];
-        arr.push(inter);
-        map.set(parent.id, arr);
+    let pending: VersionEntry[] = [];
+    let runTx: VersionEntry[] = [];
+
+    const flush = () => {
+      const diarizedTx = runTx.filter(
+        (t) => (t.params as { diarize?: unknown } | undefined)?.diarize === true,
+      );
+      for (const inter of pending) {
+        // Whisper `segments` → every transcript of the run; diarization data
+        // → the diarized transcript(s), falling back to all when untagged.
+        const targets =
+          inter.step !== "segments" && diarizedTx.length > 0 ? diarizedTx : runTx;
+        if (targets.length === 0) {
+          orphans.push(inter);
+          continue;
+        }
+        for (const t of targets) {
+          const arr = map.get(t.id) ?? [];
+          arr.push(inter);
+          map.set(t.id, arr);
+        }
+      }
+      pending = [];
+      runTx = [];
+    };
+
+    for (const { v, inter } of stream) {
+      if (inter) {
+        if (runTx.length > 0) flush(); // an intermediate after a run begins the next
+        pending.push(v);
       } else {
-        orphans.push(inter);
+        // A transcript far in time from the current run's transcripts is a
+        // separate run — a json/subtitle import emits no intermediates, so
+        // without this it would absorb the previous run's intermediates.
+        const prev = runTx[runTx.length - 1];
+        if (prev && Date.parse(v.timestamp) - Date.parse(prev.timestamp) > RUN_GAP_MS) {
+          flush();
+        }
+        runTx.push(v);
       }
     }
+    flush();
+
     for (const arr of map.values()) {
       arr.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     }
@@ -1177,6 +1223,27 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
         onDelete={(step, id) => deleteVersionMutation.mutate({ step, id })}
         childrenByVersionId={childrenByTranscriptId}
       />
+
+      {(episode.llm_failed_steps?.length ?? 0) > 0 && (
+        <section className="space-y-2">
+          <h4 className="text-sm font-medium px-1">Rejected LLM batches</h4>
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 divide-y divide-destructive/10">
+            {episode.llm_failed_steps!.map((step) => (
+              <button
+                key={step}
+                onClick={() => onNavigateStep(stepDisplay(step).editorStep)}
+                className="w-full flex items-center gap-2 px-4 py-2 text-left text-xs hover:bg-destructive/10 transition"
+              >
+                <AlertTriangle className="w-3.5 h-3.5 text-destructive shrink-0" />
+                <span className="text-destructive flex-1">
+                  {stepDisplay(step).label} — some batches were rejected in the last auto run
+                </span>
+                <span className="text-2xs text-muted-foreground">Open &rarr;</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       {episode.indexed && indexEntries && indexEntries.length > 0 && (
         <section className="space-y-2">

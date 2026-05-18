@@ -13,16 +13,26 @@ interface Entry {
   verb: string;
   hue: string;
   needsReview: boolean;
+  partial: boolean;
   title: string;
 }
 
-function entry(status: PanelStatus, verb: string, stage: StageKey, title?: string): Entry | null {
+function entry(
+  status: PanelStatus,
+  verb: string,
+  stage: StageKey,
+  title?: string,
+  partial = false,
+): Entry | null {
   if (status === "none") return null;
   return {
     verb,
     hue: STAGE_CLASSES[stage].text,
     needsReview: status === "review",
-    title: title ?? (status === "ready" ? verb : `${verb} · awaiting review`),
+    partial,
+    title: partial
+      ? `${verb} · some batches were rejected by the LLM`
+      : (title ?? (status === "ready" ? verb : `${verb} · awaiting review`)),
   };
 }
 
@@ -33,6 +43,9 @@ function EntrySpan({ entry }: { entry: Entry }) {
       {entry.needsReview && (
         <span className="opacity-70"> (needs review)</span>
       )}
+      {entry.partial && (
+        <span className="text-destructive"> (partially failed)</span>
+      )}
     </span>
   );
 }
@@ -42,19 +55,26 @@ function translationsEntry(ep: Episode): Entry | null {
   const status = translationsStatus(langs, ep.provenance);
   if (status === "none") return null;
   const someEdited = langs.some((l) => isEdited(ep.provenance?.[l]));
+  const partial = langs.some((l) => ep.llm_failed_steps?.includes(l));
   const title =
     status === "ready"
       ? `translated (${langs.join(", ")})`
       : someEdited
         ? `translated (${langs.join(", ")}) · some awaiting review`
         : `translated (${langs.join(", ")}) · awaiting review`;
-  return entry(status, "translated", "translate", title);
+  return entry(status, "translated", "translate", title, partial);
 }
 
 export function StatusChips({ ep }: { ep: Episode }) {
   const entries: Entry[] = [
     entry(reviewStatus(!!ep.transcribed, ep.provenance?.transcript), "transcribed", "transcribe"),
-    entry(reviewStatus(!!ep.corrected, ep.provenance?.corrected), "corrected", "correct"),
+    entry(
+      reviewStatus(!!ep.corrected, ep.provenance?.corrected),
+      "corrected",
+      "correct",
+      undefined,
+      !!ep.llm_failed_steps?.includes("corrected"),
+    ),
     translationsEntry(ep),
     entry(plainStatus(!!ep.synthesized), "synthesized", "synth"),
     entry(plainStatus(!!ep.indexed), "indexed", "index"),

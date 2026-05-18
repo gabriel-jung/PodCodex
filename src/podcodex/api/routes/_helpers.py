@@ -12,7 +12,12 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.schemas import TaskResponse
-from podcodex.core._utils import BREAK_SPEAKER, REMOVE_SPEAKER, UNKNOWN_SPEAKERS
+from podcodex.core._utils import (
+    BREAK_SPEAKER,
+    REMOVE_SPEAKER,
+    UNKNOWN_SPEAKERS,
+    _separate_breaks,
+)
 from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.ingest.rss import RSSEpisode, episode_stem
 from podcodex.rag.index_store import get_index_store  # re-export
@@ -547,6 +552,9 @@ class ManualPromptsRequest(BaseModel):
     source_lang: str = "English"
     target_lang: str = "French"
     batch_minutes: float = 15.0
+    # When set, overrides batch_minutes and produces exactly this many
+    # batches. The frontend sends this whenever episode.duration is known.
+    batch_count: int | None = None
     source_version_id: str | None = None
 
 
@@ -560,8 +568,19 @@ class ApplyManualRequest(BaseModel):
 
 
 def format_prompt_batches(batches: list) -> list[dict]:
-    """Format build_manual_prompts_batched output into API response dicts."""
+    """Format build_manual_prompts_batched output into API response dicts.
+
+    ``segment_count`` is the real (non-[BREAK]) segment count, matching the
+    prompt's "Output MUST contain exactly N entries" line and the apply-path
+    count check (validate_manual). Counting [BREAK] markers here would make
+    the per-batch validation reject a correct LLM response by the number of
+    breaks in the batch.
+    """
     return [
-        {"batch_index": i, "prompt": prompt, "segment_count": len(batch_segs)}
+        {
+            "batch_index": i,
+            "prompt": prompt,
+            "segment_count": len(_separate_breaks(batch_segs)[1]),
+        }
         for i, (batch_segs, prompt) in enumerate(batches)
     ]

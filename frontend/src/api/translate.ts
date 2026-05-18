@@ -26,6 +26,7 @@ export const getTranslateManualPrompts = (params: {
   source_lang?: string;
   target_lang?: string;
   batch_minutes?: number;
+  batch_count?: number;
   source_version_id?: string;
 }) => api.getManualPrompts(params);
 

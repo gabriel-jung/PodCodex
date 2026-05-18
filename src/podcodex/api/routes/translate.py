@@ -17,6 +17,7 @@ from podcodex.api.routes._helpers import (
     require_audio_or_output,
     submit_task,
 )
+from podcodex.core.llm_failures import clear_step_for, get_step
 from podcodex.api.routes._versions import register_version_routes
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths, normalize_lang
@@ -145,6 +146,8 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
             original_segments=segments,
             merge=False,  # source segments are already merged on load/upload
             on_batch=batch_progress(progress_cb),
+            audio_path=req_data.audio_path,
+            output_dir=req_data.output_dir,
         )
 
         progress_cb(0.95, "Saving...")
@@ -200,11 +203,34 @@ async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     batches = build_manual_prompts_batched(
         segments,
         batch_minutes=req.batch_minutes,
+        batch_count=req.batch_count,
         context=req.context,
         source_lang=req.source_lang,
         target_lang=req.target_lang,
     )
     return format_prompt_batches(batches)
+
+
+@router.get("/llm-failures")
+async def get_translate_failures(
+    audio_path: str | None = Query(None),
+    output_dir: str | None = Query(None),
+    lang: str = Query(..., description="Target language of the translation"),
+) -> dict | None:
+    """Per-batch records of the last auto translation run, or None if none."""
+    require_audio_or_output(audio_path, output_dir)
+    return get_step(audio_path, output_dir, normalize_lang(lang))
+
+
+@router.delete("/llm-failures")
+async def dismiss_translate_failures(
+    audio_path: str | None = Query(None),
+    output_dir: str | None = Query(None),
+    lang: str = Query(..., description="Target language of the translation"),
+) -> dict:
+    """Dismiss the recorded translation batch results for this language."""
+    require_audio_or_output(audio_path, output_dir)
+    return {"cleared": clear_step_for(audio_path, output_dir, normalize_lang(lang))}
 
 
 @router.post("/apply-manual")

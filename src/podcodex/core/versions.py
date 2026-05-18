@@ -415,18 +415,32 @@ def sort_versions_for_default(versions: list[dict]) -> list[dict]:
     return sorted(versions, key=lambda v: not is_edited(v))
 
 
+# The transcript step's default pick is strictly newest: a fresh transcribe
+# supersedes an older hand-edited transcript (segment structure can differ
+# entirely, e.g. a partial json import). Other steps stay edited-first.
+_STRICT_NEWEST_STEPS = {"transcript"}
+
+
+def _default_ordered_versions(base: Path, step: str) -> list[dict]:
+    """Versions ordered so index 0 is the default pick for *step*."""
+    versions = _get_db(base).list_versions(base.name, step)
+    if step in _STRICT_NEWEST_STEPS:
+        return versions  # list_versions is already newest-first
+    return sort_versions_for_default(versions)
+
+
 def load_latest(base: Path, step: str) -> list[dict] | None:
     """Load segments from the best available version of a step.
 
-    Prefers hand-edited / validated versions over more recent model output
-    (per the "edited beats freshness" rule). Within each tier walks
-    newest-first and returns the first one that loads cleanly — a missing
-    or corrupt file falls through to the next candidate.
+    Most steps prefer hand-edited / validated versions over more recent
+    model output (the "edited beats freshness" rule); the ``transcript``
+    step takes the strictly-newest version instead. Walks the resulting
+    order and returns the first version that loads cleanly — a missing or
+    corrupt file falls through to the next candidate.
 
     Returns None if no version exists or all versions are unreadable.
     """
-    db = _get_db(base)
-    versions = sort_versions_for_default(db.list_versions(base.name, step))
+    versions = _default_ordered_versions(base, step)
     if not versions:
         return None
     for meta in versions:
@@ -440,11 +454,10 @@ def load_latest(base: Path, step: str) -> list[dict] | None:
 def get_latest_provenance(base: Path, step: str) -> dict | None:
     """Return the provenance dict of the default-pick version, or None.
 
-    Uses the same edited-first ordering as ``load_latest`` so status
-    surfaces and pipeline defaults agree on which version is "current".
+    Uses the same ordering as ``load_latest`` so status surfaces and
+    pipeline defaults agree on which version is "current".
     """
-    db = _get_db(base)
-    versions = sort_versions_for_default(db.list_versions(base.name, step))
+    versions = _default_ordered_versions(base, step)
     if not versions:
         return None
     meta = versions[0]

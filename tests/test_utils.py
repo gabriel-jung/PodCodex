@@ -192,6 +192,44 @@ def test_batch_empty():
     assert batch_segments_by_duration([], batch_minutes=15) == []
 
 
+def test_batch_count_produces_exact_count():
+    # 100 segments spanning ~50 min. Request 4 batches → exactly 4, even
+    # though batch_minutes is left at the default. No spurious extra batch.
+    segments = [
+        {
+            "speaker": "A",
+            "start": float(i * 30),
+            "end": float(i * 30) + 1,
+            "text": f"s{i}",
+        }
+        for i in range(100)
+    ]
+    batches = batch_segments_by_duration(segments, batch_count=4)
+    assert len(batches) == 4
+    assert sum(len(b) for b in batches) == 100
+
+
+def test_batch_count_overrides_minutes():
+    # batch_minutes alone would split these into 10 batches; batch_count wins.
+    segments = [
+        {
+            "speaker": "A",
+            "start": float(i * 600),
+            "end": float(i * 600) + 1,
+            "text": f"s{i}",
+        }
+        for i in range(10)
+    ]
+    batches = batch_segments_by_duration(segments, batch_minutes=15, batch_count=2)
+    assert len(batches) == 2
+    assert sum(len(b) for b in batches) == 10
+
+
+def test_batch_count_one_is_single_batch():
+    segments = make_segments("a", "b", "c")
+    assert len(batch_segments_by_duration(segments, batch_count=1)) == 1
+
+
 # ──────────────────────────────────────────────
 # segments_to_text / _srt / _vtt formatters
 # ──────────────────────────────────────────────

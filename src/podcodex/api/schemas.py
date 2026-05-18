@@ -103,6 +103,9 @@ class UnifiedEpisodeOut(BaseModel):
     transcribe_status: str = "none"
     correct_status: str = "none"
     translate_status: str = "none"
+    # Steps ("corrected" / a lang key) whose last auto LLM run had a rejected
+    # batch — drives the "partially failed" marker in episode rows.
+    llm_failed_steps: list[str] = []
 
 
 class SpeakerEpisodeEntry(BaseModel):

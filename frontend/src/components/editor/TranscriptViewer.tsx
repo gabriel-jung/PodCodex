@@ -16,7 +16,7 @@ import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
 import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
 import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
-import { formatTime, versionInfo, versionOption, selectClass } from "@/lib/utils";
+import { formatTime, versionInfo, versionOption, selectClass, isEdited } from "@/lib/utils";
 import VersionPicker from "@/components/common/VersionPicker";
 
 /** Sentinel values for the compare ("vs") picker. `REF_NONE` = no diff,
@@ -36,6 +36,7 @@ import SectionHeader from "@/components/common/SectionHeader";
 import {
   Download,
   Save,
+  CheckCheck,
   Undo2,
   Play,
   Pause,
@@ -171,19 +172,17 @@ function DiffView({ original, current }: { original: string; current: string }) 
   return (
     <div className="text-sm leading-relaxed py-0">
       {diff.map((part, i) => (
-        <span key={`${i}:${part.type}:${part.text}`}>
-          {i > 0 && " "}
-          <span
-            className={
-              part.type === "removed"
-                ? "bg-destructive/20 text-destructive line-through"
-                : part.type === "added"
-                  ? "bg-success/20 text-success"
-                  : "text-muted-foreground/70"
-            }
-          >
-            {part.text}
-          </span>
+        <span
+          key={`${i}:${part.type}:${part.text}`}
+          className={
+            part.type === "removed"
+              ? "bg-destructive/20 text-destructive line-through"
+              : part.type === "added"
+                ? "bg-success/20 text-success"
+                : "text-muted-foreground/70"
+          }
+        >
+          {part.text}
         </span>
       ))}
     </div>
@@ -657,6 +656,10 @@ export interface TranscriptViewerProps {
    *  currently checked rows, excluding [BREAK] markers. Callers use this to
    *  drive downstream scope filters (e.g. synthesis). */
   onSelectionChange?: (selected: Segment[]) => void;
+  /** Fires after a version is saved (a real edit, a "Mark reviewed", or a
+   *  "Save as latest"). Lets the panel react — e.g. offer to clear recorded
+   *  LLM batch failures now that a new version supersedes them. */
+  onSaved?: () => void;
 }
 
 export default function TranscriptViewer({
@@ -680,6 +683,7 @@ export default function TranscriptViewer({
   defaultShowDiff = true,
   sourceLabel,
   onSelectionChange,
+  onSaved,
 }: TranscriptViewerProps) {
   const queryClient = useQueryClient();
 
@@ -777,15 +781,16 @@ export default function TranscriptViewer({
   const saveMutation = useMutation({
     mutationFn: async () => {
       const writes: Promise<unknown>[] = [];
-      if (editor.isDirty || hasPendingStripChanges) {
-        const finalSegments = editor.editedSegments
-          .filter((seg) => !pendingRemovals.has(seg.speaker))
-          .map((seg) => {
-            const renamed = pendingRenames[seg.speaker];
-            return renamed && renamed !== seg.speaker ? { ...seg, speaker: renamed } : seg;
-          });
-        writes.push(saveSegments(finalSegments));
-      }
+      // Always write the segments: a dirty save persists the edits, a clean
+      // save ("Mark reviewed") persists an unchanged copy whose provenance is
+      // flagged manual_edit so the version reads as reviewed.
+      const finalSegments = editor.editedSegments
+        .filter((seg) => !pendingRemovals.has(seg.speaker))
+        .map((seg) => {
+          const renamed = pendingRenames[seg.speaker];
+          return renamed && renamed !== seg.speaker ? { ...seg, speaker: renamed } : seg;
+        });
+      writes.push(saveSegments(finalSegments));
       if (hasPendingStripChanges && saveSpeakerMap) {
         const mapping: Record<string, string> = {};
         for (const [from, to] of Object.entries(pendingRenames)) {
@@ -798,6 +803,9 @@ export default function TranscriptViewer({
       await Promise.all(writes);
     },
     onSuccess: () => {
+      // The save is the new latest version — snap the picker back to "Latest"
+      // so the editor tracks it (matters when an older version was promoted).
+      setSelectedVersionId(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments(editorKey, audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.stepVersions(editorKey, audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
@@ -808,6 +816,7 @@ export default function TranscriptViewer({
       queryClient.invalidateQueries({ queryKey: ["speakerRoster"] });
       queryClient.invalidateQueries({ queryKey: ["search"] });
       queryClient.invalidateQueries({ queryKey: ["index"] });
+      onSaved?.();
     },
   });
 
@@ -1270,6 +1279,25 @@ export default function TranscriptViewer({
   const searchRef = useRef<HTMLInputElement>(null);
 
   const isDirty = editor.isDirty || hasPendingStripChanges;
+  // When nothing is dirty the Save button instead re-saves an unchanged copy.
+  // Showing the latest version → "Mark reviewed" (flag it edited); showing an
+  // older version → "Save as latest" (re-stamps it as the newest version, the
+  // way the user promotes a version by hand). Disabled only when the latest
+  // is already on screen and already edited — nothing left to do.
+  const latest = versions && versions.length > 0 ? versions[0] : undefined;
+  const showingLatest = selectedVersionId == null || selectedVersionId === latest?.id;
+  const canMarkReviewed = !isDirty && !(showingLatest && !!latest && isEdited(latest));
+  const saveButton = isDirty
+    ? { label: "Save", title: "Save (Cmd+S)", Icon: Save }
+    : canMarkReviewed
+      ? {
+          label: showingLatest ? "Mark reviewed" : "Save as latest",
+          title: showingLatest
+            ? "Mark this version as reviewed without changes (Cmd+S)"
+            : "Re-save this version so it becomes the latest (Cmd+S)",
+          Icon: CheckCheck,
+        }
+      : { label: "Reviewed", title: "Latest version is already marked as reviewed", Icon: CheckCheck };
 
   useEffect(() => {
     if (!isDirty) return;
@@ -1286,7 +1314,7 @@ export default function TranscriptViewer({
       if (!mod) return;
       if (e.key === "s") {
         e.preventDefault();
-        if (isDirty && !saveMutation.isPending) saveMutation.mutate();
+        if ((isDirty || canMarkReviewed) && !saveMutation.isPending) saveMutation.mutate();
       } else if (e.key === "z" && !e.shiftKey) {
         if ((e.target as HTMLElement)?.tagName !== "TEXTAREA" && editor.canUndo) {
           e.preventDefault();
@@ -1299,7 +1327,7 @@ export default function TranscriptViewer({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [isDirty, editor.canUndo, saveMutation]);
+  }, [isDirty, canMarkReviewed, editor.canUndo, saveMutation]);
 
   const compareExtras = useMemo(
     () => [
@@ -1632,15 +1660,15 @@ export default function TranscriptViewer({
             <ExportDropdown audioPath={audioPath} source={exportSource} filename={exportFilename} />
           )}
           <Button
-            variant={isDirty ? "default" : "outline"}
+            variant={isDirty || canMarkReviewed ? "default" : "outline"}
             size="sm"
             className="text-xs h-7"
             onClick={() => saveMutation.mutate()}
-            disabled={saveMutation.isPending || !isDirty}
-            title="Save (Cmd+S)"
+            disabled={saveMutation.isPending || (!isDirty && !canMarkReviewed)}
+            title={saveButton.title}
           >
-            <Save className="w-3 h-3 mr-1" />
-            {saveMutation.isPending ? "Saving..." : "Save"}
+            <saveButton.Icon className="w-3 h-3 mr-1" />
+            {saveMutation.isPending ? "Saving..." : saveButton.label}
           </Button>
         </div>
 

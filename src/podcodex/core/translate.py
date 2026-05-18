@@ -27,6 +27,7 @@ from podcodex.core._utils import (
     normalize_lang,
     run_llm_pipeline,
 )
+from podcodex.core.llm_failures import record_run
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import PIPELINE_STEPS, _get_db, save_version
 
@@ -88,6 +89,7 @@ def build_manual_prompts_batched(
     context: str = "",
     source_lang: str = "English",
     target_lang: str = "French",
+    batch_count: int | None = None,
 ) -> list[tuple[list[dict], str]]:
     """Split segments into time-based batches and return one prompt per batch."""
     return build_batched_manual_prompts(
@@ -100,6 +102,7 @@ def build_manual_prompts_batched(
             start_index=start,
         ),
         batch_minutes,
+        batch_count,
     )
 
 
@@ -123,14 +126,22 @@ def translate_segments(
     max_gap: float = 10.0,
     provider: str | None = None,
     on_batch: Callable[[int, int], None] | None = None,
+    audio_path: str | None = None,
+    output_dir: str | None = None,
 ) -> list[dict]:
-    """Translate transcript segments to the target language."""
+    """Translate transcript segments to the target language.
+
+    When *audio_path*/*output_dir* identify an episode, each batch's LLM
+    outcome (ollama/api modes) is recorded to ``llm_failures.json`` so a
+    silently-rejected batch can be reviewed afterwards.
+    """
     logger.info(
         f"Translating {len(segments)} segments — mode={mode}, {source_lang} → {target_lang}"
     )
     system_prompt = _build_prompt(
         context, source_lang=source_lang, target_lang=target_lang
     )
+    batch_sink: list[dict] = []
     result = run_llm_pipeline(
         segments,
         system_prompt,
@@ -146,8 +157,17 @@ def translate_segments(
         merge=merge,
         max_gap=max_gap,
         on_batch=on_batch,
+        batch_sink=batch_sink,
     )
     logger.success(f"Translation done — {len(result)} segments")
+    record_run(
+        audio_path,
+        output_dir,
+        normalize_lang(target_lang),
+        model=model,
+        mode=mode,
+        records=batch_sink,
+    )
     return result
 
 

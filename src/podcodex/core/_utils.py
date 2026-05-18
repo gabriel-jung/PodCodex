@@ -545,6 +545,7 @@ def build_batched_manual_prompts(
     segments: list[dict],
     build_prompt_fn,
     batch_minutes: float = DEFAULT_BATCH_MINUTES,
+    batch_count: int | None = None,
 ) -> list[tuple[list[dict], str]]:
     """Split *segments* into batches and build one prompt per batch.
 
@@ -553,8 +554,11 @@ def build_batched_manual_prompts(
     consumed by prior batches, so each batch's [N] markers are unique
     across the whole transcript — concatenated LLM responses then keep
     distinct positions.
+
+    When *batch_count* is given it overrides *batch_minutes* and produces
+    exactly that many batches (see batch_segments_by_duration).
     """
-    batches = batch_segments_by_duration(segments, batch_minutes)
+    batches = batch_segments_by_duration(segments, batch_minutes, batch_count)
     out: list[tuple[list[dict], str]] = []
     offset = 0
     for batch in batches:
@@ -564,8 +568,15 @@ def build_batched_manual_prompts(
     return out
 
 
+def _segment_end(seg: dict) -> float:
+    """Best-effort end timestamp for a segment (falls back to start, then 0)."""
+    return float(seg.get("end", seg.get("start", 0)) or 0)
+
+
 def batch_segments_by_duration(
-    segments: list[dict], batch_minutes: float = DEFAULT_BATCH_MINUTES
+    segments: list[dict],
+    batch_minutes: float = DEFAULT_BATCH_MINUTES,
+    batch_count: int | None = None,
 ) -> list[list[dict]]:
     """Split segments into time-based batches.
 
@@ -577,13 +588,22 @@ def batch_segments_by_duration(
     Args:
         segments      : transcript segments to batch
         batch_minutes : maximum duration per batch in minutes (default 15)
+        batch_count   : when set, overrides batch_minutes and sizes batches
+                        off the transcript's real span so the count tracks
+                        the request without overshooting (a large silence
+                        gap straddling a cutoff can still yield one fewer).
 
     Returns:
         List of non-empty segment batches (each batch is a list of segment dicts).
     """
     if not segments:
         return []
-    max_seconds = batch_minutes * 60
+    if batch_count is not None and batch_count >= 1:
+        if batch_count == 1:
+            return [list(segments)]
+        max_seconds = max(_segment_end(s) for s in segments) / batch_count
+    else:
+        max_seconds = batch_minutes * 60
     if max_seconds <= 0:
         return [list(segments)]
 
@@ -609,9 +629,7 @@ def batch_segments_by_duration(
     # gain a spurious extra batch containing only the last few seconds.
     if len(batches) >= 2:
         last_batch_start = cutoff - max_seconds
-        last_seg = batches[-1][-1]
-        last_end = float(last_seg.get("end", last_seg.get("start", 0)))
-        span = last_end - last_batch_start
+        span = _segment_end(batches[-1][-1]) - last_batch_start
         if 0 <= span < max_seconds * 0.15:
             batches[-2].extend(batches.pop())
 
@@ -1254,6 +1272,7 @@ def call_and_parse(
     instruction: str = "Process",
     min_length_ratio: float = 0.7,
     start_index: int = 0,
+    on_outcome: Callable[[str, int, int, str, str], None] | None = None,
 ) -> list[dict]:
     """Call the LLM for one batch and parse the response.
 
@@ -1263,6 +1282,10 @@ def call_and_parse(
 
     ``start_index`` shifts the displayed ``[N]`` markers in the prompt so
     log lines and the LLM see absolute positions across batches.
+
+    ``on_outcome``, when given, is called once with
+    ``(raw, expected, got, status, reason)`` — ``status`` is ``"ok"`` or
+    ``"rejected"`` — so a caller can record per-batch results.
     """
     _, real_segs = _separate_breaks(batch)
     if not real_segs:
@@ -1280,12 +1303,20 @@ def call_and_parse(
     logger.debug(f"LLM response: {len(raw)} chars")
     by_index = parse_llm_response(raw)
 
-    # LLM count drift detection: if the response has fewer items than the
-    # input batch, indices likely got renumbered, which would silently
-    # misalign corrections. Reject the whole batch and keep originals.
-    if by_index and len(by_index) != len(real_segs):
+    expected = len(real_segs)
+    got = len(by_index)
+    status, reason = "ok", ""
+
+    if not by_index:
+        # parse_llm_response already logged the parse error; flag the batch
+        # so the run's failure record shows it produced no corrections.
+        status, reason = "rejected", "parse failure"
+    elif got != expected:
+        # LLM count drift: a response with fewer/more items than the input
+        # batch means indices got renumbered, which would silently misalign
+        # corrections. Reject the whole batch and keep originals.
         logger.warning(
-            f"LLM returned {len(by_index)} items for {len(real_segs)} segments, "
+            f"LLM returned {got} items for {expected} segments, "
             "rejecting batch to avoid index drift; keeping original text."
         )
         # Surface enough of the raw response to diagnose the shape mismatch
@@ -1296,9 +1327,68 @@ def call_and_parse(
         logger.warning(
             f"Rejected first item shape: {type(sample).__name__}={sample!r:.300}"
         )
+        status, reason = "rejected", "count drift"
         by_index = {}
 
+    if on_outcome is not None:
+        on_outcome(raw, expected, got, status, reason)
+
     return apply_corrections(batch, by_index, min_length_ratio=min_length_ratio)
+
+
+def _append_batch_record(
+    batch_sink: list[dict] | None,
+    *,
+    batch_num: int,
+    real_segs: list[dict],
+    offset: int,
+    raw: str,
+    expected: int,
+    got: int,
+    status: str,
+    reason: str,
+) -> None:
+    """Append one batch's LLM outcome to *batch_sink* (no-op when None)."""
+    if batch_sink is None:
+        return
+    batch_sink.append(
+        {
+            "batch": batch_num,
+            "status": status,
+            "reason": reason,
+            "expected": expected,
+            "got": got,
+            "raw": raw,
+            "input": [
+                {"index": offset + i, "text": s.get("text", "")}
+                for i, s in enumerate(real_segs)
+            ],
+        }
+    )
+
+
+def _outcome_recorder(
+    batch_sink: list[dict] | None,
+    batch_num: int,
+    real_segs: list[dict],
+    offset: int,
+) -> Callable[[str, int, int, str, str], None]:
+    """Build a ``call_and_parse`` on_outcome callback bound to one batch."""
+
+    def record(raw: str, expected: int, got: int, status: str, reason: str) -> None:
+        _append_batch_record(
+            batch_sink,
+            batch_num=batch_num,
+            real_segs=real_segs,
+            offset=offset,
+            raw=raw,
+            expected=expected,
+            got=got,
+            status=status,
+            reason=reason,
+        )
+
+    return record
 
 
 def run_ollama(
@@ -1310,6 +1400,7 @@ def run_ollama(
     min_length_ratio: float = 0.7,
     label: str = "",
     on_batch: Callable[[int, int], None] | None = None,
+    batch_sink: list[dict] | None = None,
 ) -> list[dict]:
     """Run segments through a local Ollama model.
 
@@ -1408,6 +1499,7 @@ def run_ollama(
                 instruction=instruction,
                 min_length_ratio=min_length_ratio,
                 start_index=offset,
+                on_outcome=_outcome_recorder(batch_sink, batch_num, real_segs, offset),
             )
         )
         offset += n_items
@@ -1429,6 +1521,7 @@ def run_api(
     min_length_ratio: float = 0.7,
     label: str = "",
     on_batch: Callable[[int, int], None] | None = None,
+    batch_sink: list[dict] | None = None,
 ) -> list[dict]:
     """Run segments through an OpenAI-compatible API.
 
@@ -1476,6 +1569,7 @@ def run_api(
 
     for batch_num, batch in enumerate(batches, 1):
         logger.info(f"{label} batch {batch_num}/{n_batches} via API ({model})")
+        _, real_segs = _separate_breaks(batch)
 
         def call_fn(messages):
             response = client.chat.completions.create(
@@ -1491,10 +1585,10 @@ def run_api(
                 instruction=instruction,
                 min_length_ratio=min_length_ratio,
                 start_index=offset,
+                on_outcome=_outcome_recorder(batch_sink, batch_num, real_segs, offset),
             )
         )
-        _, real = _separate_breaks(batch)
-        offset += len(real)
+        offset += len(real_segs)
         if on_batch:
             on_batch(batch_num, n_batches)
 
@@ -1560,10 +1654,13 @@ def run_llm_pipeline(
     merge: bool = True,
     max_gap: float = DEFAULT_MAX_GAP,
     on_batch: Callable[[int, int], None] | None = None,
+    batch_sink: list[dict] | None = None,
 ) -> list[dict]:
     """Run an LLM pipeline (correct or translate) on segments.
 
     Handles manual/ollama/api modes, optional merge, and progress callbacks.
+    When *batch_sink* is given, each batch's LLM outcome is appended to it
+    (ollama/api modes only).
     """
     if mode == "manual":
         orig = original_segments if original_segments is not None else segments
@@ -1584,6 +1681,7 @@ def run_llm_pipeline(
             instruction=instruction,
             label=label,
             on_batch=on_batch,
+            batch_sink=batch_sink,
         )
     elif mode == "api":
         return run_api(
@@ -1597,6 +1695,7 @@ def run_llm_pipeline(
             instruction=instruction,
             label=label,
             on_batch=on_batch,
+            batch_sink=batch_sink,
         )
     else:
         raise ValueError(

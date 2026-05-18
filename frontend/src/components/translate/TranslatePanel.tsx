@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
   deleteTranslateVersion,
@@ -20,6 +20,7 @@ import {
   useBestSourceSegments,
   useLLMBackendStatus,
   useInputVersions,
+  batchCountFor,
 } from "@/hooks/useLLMPipeline";
 import { modeToPreset } from "@/stores/pipelineConfigStore";
 import type { LLMConfig } from "@/stores/pipelineConfigStore";
@@ -28,6 +29,9 @@ import PipelinePanel from "@/components/common/PipelinePanel";
 import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
 import ManualModePanel from "@/components/common/ManualModePanel";
+import LlmFailuresBanner from "@/components/common/LlmFailuresBanner";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
+import { getTranslateFailures, dismissTranslateFailures } from "@/api/llmFailures";
 import LanguageChipRack from "@/components/common/LanguageChipRack";
 import LLMControlsForm from "@/components/common/LLMControlsForm";
 import PipelineRunFooter from "@/components/common/PipelineRunFooter";
@@ -40,6 +44,7 @@ export default function TranslatePanel() {
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const audioPath = useAudioPath();
 
+  const queryClient = useQueryClient();
   const targetLang = usePipelineConfigStore((s) => s.targetLang);
   const setTargetLang = usePipelineConfigStore((s) => s.setTargetLang);
   const [editingLang, setEditingLang] = useState("");
@@ -81,6 +86,34 @@ export default function TranslatePanel() {
       }),
     onSuccess: (data) => task.startTask(data.task_id),
   });
+
+  const { data: translateFailures } = useQuery({
+    queryKey: ["llmFailures", "translate", audioPath, editingLang],
+    queryFn: () => getTranslateFailures(audioPath!, editingLang),
+    enabled: !!audioPath && !!editingLang,
+  });
+  const dismissFailures = useMutation({
+    mutationFn: () => dismissTranslateFailures(audioPath!, editingLang),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["llmFailures", "translate", audioPath, editingLang],
+      }),
+  });
+
+  // Saving a new version supersedes the recorded batch failures — offer to
+  // clear them so the warning banner doesn't linger after a hand-fix.
+  const handleSaved = () => {
+    if (!translateFailures || translateFailures.rejected === 0) return;
+    confirmDialog.open({
+      title: "Clear rejected-batch records?",
+      description:
+        `The last translation run had ${translateFailures.rejected} rejected ` +
+        "batch(es). You just saved a new version — clear those records?",
+      confirmLabel: "Clear records",
+      cancelLabel: "Keep",
+      onConfirm: async () => { await dismissFailures.mutateAsync(); },
+    });
+  };
 
   // Sync editingLang from episode on first load
   const hasTranslations = (episode?.translations.length ?? 0) > 0;
@@ -182,6 +215,7 @@ export default function TranslatePanel() {
                         source_lang: config.sourceLang,
                         target_lang: targetLang,
                         batch_minutes: batchMinutes,
+                        batch_count: batchCountFor(episode, batchMinutes) ?? undefined,
                         source_version_id: sourceVersionId ?? undefined,
                       })
                     }
@@ -205,12 +239,23 @@ export default function TranslatePanel() {
         </>
       }
     >
+      {hasTranslations && editingLang && !task.activeTaskId && !expanded &&
+        translateFailures && translateFailures.rejected > 0 && (
+        <div className="px-4 pt-3">
+          <LlmFailuresBanner
+            failures={translateFailures}
+            onDismiss={() => dismissFailures.mutate()}
+            dismissing={dismissFailures.isPending}
+          />
+        </div>
+      )}
       {hasTranslations && editingLang && !task.activeTaskId && !expanded && (
         <TranscriptViewer
           editorKey={`translate-${editingLang}`}
           audioPath={audioPath ?? undefined}
           loadSegments={() => getTranslateSegments(audioPath!, editingLang)}
           saveSegments={(segs) => saveTranslateSegments(audioPath!, editingLang, segs)}
+          onSaved={handleSaved}
           exportSource={`translated_${editingLang}`}
           exportFilename={episode.stem ? `${episode.stem}_${editingLang}` : undefined}
           showDelete

@@ -33,6 +33,7 @@ from podcodex.api.schemas import (
     UnifiedEpisodeOut,
 )
 from podcodex.core.constants import AUDIO_EXTENSIONS
+from podcodex.core.llm_failures import rejected_steps
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
 from podcodex.core.versions import is_edited
 from podcodex.ingest.folder import (
@@ -603,6 +604,7 @@ async def unified_episodes(
             }
         seg_count = seg_counts.get(stem) if stem else None
         cleaned_translations = clean_translations(st.get("translations", []))
+        out_dir_exists = bool(output_dir and output_dir.is_dir())
         return {
             "id": ep_id,
             "title": title,
@@ -613,9 +615,7 @@ async def unified_episodes(
             "duration": duration,
             "episode_number": episode_number,
             "audio_path": str(audio_path) if audio_path else None,
-            "output_dir": str(output_dir)
-            if output_dir and output_dir.is_dir()
-            else None,
+            "output_dir": str(output_dir) if out_dir_exists else None,
             "downloaded": audio_path is not None,
             "transcribed": st.get("transcribed", False),
             "corrected": st.get("corrected", False),
@@ -629,6 +629,7 @@ async def unified_episodes(
             "segment_count": seg_count,
             "files": ep_files,
             "provenance": prov,
+            "llm_failed_steps": rejected_steps(output_dir) if out_dir_exists else [],
             **_step_statuses(st, prov, effective, cleaned_translations),
         }
 

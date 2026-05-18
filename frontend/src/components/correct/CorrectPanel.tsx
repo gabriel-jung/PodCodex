@@ -14,13 +14,17 @@ import {
   getCorrectManualPrompts,
   applyCorrectManual,
 } from "@/api/client";
+import { getCorrectFailures, dismissCorrectFailures } from "@/api/llmFailures";
 import { queryKeys } from "@/api/queryKeys";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
+import LlmFailuresBanner from "@/components/common/LlmFailuresBanner";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
 import {
   useLLMConfig,
   buildLLMRequest,
   useLLMBackendStatus,
   useInputVersions,
+  batchCountFor,
 } from "@/hooks/useLLMPipeline";
 import { modeToPreset } from "@/stores/pipelineConfigStore";
 import type { LLMConfig } from "@/stores/pipelineConfigStore";
@@ -61,6 +65,32 @@ export default function CorrectPanel() {
   });
 
   const inputVersions = useInputVersions(audioPath, "correct", !!episode?.transcribed && expanded);
+
+  const { data: correctFailures } = useQuery({
+    queryKey: ["llmFailures", "correct", audioPath],
+    queryFn: () => getCorrectFailures(audioPath!),
+    enabled: !!audioPath && !!episode?.corrected,
+  });
+  const dismissFailures = useMutation({
+    mutationFn: () => dismissCorrectFailures(audioPath!),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["llmFailures", "correct", audioPath] }),
+  });
+
+  // Saving a new version supersedes the recorded batch failures — offer to
+  // clear them so the warning banner doesn't linger after a hand-fix.
+  const handleSaved = () => {
+    if (!correctFailures || correctFailures.rejected === 0) return;
+    confirmDialog.open({
+      title: "Clear rejected-batch records?",
+      description:
+        `The last correction run had ${correctFailures.rejected} rejected ` +
+        "batch(es). You just saved a new version — clear those records?",
+      confirmLabel: "Clear records",
+      cancelLabel: "Keep",
+      onConfirm: async () => { await dismissFailures.mutateAsync(); },
+    });
+  };
 
   const startMutation = useMutation({
     mutationFn: () =>
@@ -140,6 +170,7 @@ export default function CorrectPanel() {
                     context: config.context,
                     source_lang: config.sourceLang,
                     batch_minutes: batchMinutes,
+                    batch_count: batchCountFor(episode, batchMinutes) ?? undefined,
                     source_version_id: sourceVersionId ?? undefined,
                   })
                 }
@@ -156,12 +187,22 @@ export default function CorrectPanel() {
         </div>
       }
     >
+      {episode.corrected && !task.activeTaskId && correctFailures && correctFailures.rejected > 0 && (
+        <div className="px-4 pt-3">
+          <LlmFailuresBanner
+            failures={correctFailures}
+            onDismiss={() => dismissFailures.mutate()}
+            dismissing={dismissFailures.isPending}
+          />
+        </div>
+      )}
       {episode.corrected && !task.activeTaskId && (
         <TranscriptViewer
           editorKey="correct"
           audioPath={audioPath ?? undefined}
           loadSegments={() => getCorrectSegments(audioPath!)}
           saveSegments={(segs) => saveCorrectSegments(audioPath!, segs)}
+          onSaved={handleSaved}
           exportSource="corrected"
           exportFilename={episode.stem ? `${episode.stem}_corrected` : undefined}
           showDelete

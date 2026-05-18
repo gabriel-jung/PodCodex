@@ -57,14 +57,18 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
           {!compact && <StatusChips ep={ep} />}
         </div>
       </div>
-      <div className="w-24 flex justify-end items-center gap-2.5 shrink-0">
-        {ep.has_subtitles && (
-          <span title="Subtitles cached" aria-label="Subtitles cached" className="text-muted-foreground/70">
-            <Captions className="w-3.5 h-3.5" />
-          </span>
-        )}
-        {ep.audio_path ? (
-          <>
+      {/* Fixed-width slots so each action keeps its column whether or not the
+          icon is present (subtitles / play vs download / delete all vary). */}
+      <div className="flex items-center gap-1.5 shrink-0">
+        <span className="w-5 flex justify-center">
+          {ep.has_subtitles && (
+            <span title="Subtitles cached" aria-label="Subtitles cached" className="text-muted-foreground/70">
+              <Captions className="w-3.5 h-3.5" />
+            </span>
+          )}
+        </span>
+        <span className="w-5 flex justify-center">
+          {ep.audio_path ? (
             <button
               onClick={handlePlay}
               title={isPlaying ? "Pause" : isCurrent ? "Resume" : "Play"}
@@ -73,6 +77,14 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
             >
               {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
             </button>
+          ) : handleDownload ? (
+            <button onClick={handleDownload} disabled={downloading} title="Download audio" aria-label="Download audio" className="text-muted-foreground hover:text-foreground transition disabled:opacity-50">
+              <Download className="w-3.5 h-3.5" />
+            </button>
+          ) : null}
+        </span>
+        <span className="w-5 flex justify-center">
+          {ep.audio_path && (
             <button
               onClick={handleDelete}
               title="Delete audio"
@@ -81,12 +93,8 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
-          </>
-        ) : handleDownload && (
-          <button onClick={handleDownload} disabled={downloading} title="Download audio" aria-label="Download audio" className="text-muted-foreground hover:text-foreground transition disabled:opacity-50">
-            <Download className="w-3.5 h-3.5" />
-          </button>
-        )}
+          )}
+        </span>
       </div>
     </div>
   );
