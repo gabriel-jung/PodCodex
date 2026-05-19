@@ -81,5 +81,10 @@ export function createLLMPipelineApi(step: string) {
 
     applyManual: (params: Record<string, unknown>) =>
       post<{ status: string; count: number }>("apply-manual", params),
+
+    applyBatches: (params: Record<string, unknown>) =>
+      post<{ status: string; count: number; rejected: number }>(
+        "apply-batches", params,
+      ),
   };
 }

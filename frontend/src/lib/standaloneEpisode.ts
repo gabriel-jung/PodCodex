@@ -28,5 +28,6 @@ export function standaloneEpisode(audioFilePath: string): Episode {
     transcribe_status: "none",
     correct_status: "none",
     translate_status: "none",
+    llm_failed_steps: [],
   };
 }

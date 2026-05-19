@@ -1,79 +1,71 @@
 /** Warning banner for batches an auto correct/translate run silently
- *  rejected (count drift / parse failure). Expandable to the raw LLM
- *  response + input segments so the user can fix the batch by hand. */
+ *  rejected (count drift / parse failure). Each rejected batch is hand-fixed
+ *  in the reconcile modal; fixes accumulate and apply together as one new
+ *  version, so fixing N batches does not create N versions. */
 
 import { useState } from "react";
-import { AlertTriangle, ChevronRight } from "lucide-react";
+import { AlertTriangle, ChevronRight, Wrench, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { errorMessage } from "@/lib/utils";
+import BatchReconcileModal from "@/components/common/BatchReconcileModal";
 import type { LlmBatchRecord, LlmFailures } from "@/api/llmFailures";
-
-function BatchDetail({ record }: { record: LlmBatchRecord }) {
-  const [showRaw, setShowRaw] = useState(false);
-  return (
-    <div className="px-3 py-2 space-y-1">
-      <div className="text-muted-foreground">
-        Batch {record.batch} — {record.reason} (expected {record.expected}, got {record.got})
-      </div>
-      <button
-        onClick={() => setShowRaw(!showRaw)}
-        className="text-2xs text-muted-foreground/80 underline"
-      >
-        {showRaw ? "Hide" : "Show"} raw response &amp; input
-      </button>
-      {showRaw && (
-        <div className="grid grid-cols-2 gap-2 pt-1">
-          <div>
-            <div className="text-2xs text-muted-foreground mb-1">
-              Input segments ({record.input.length})
-            </div>
-            <div className="max-h-48 overflow-y-auto text-2xs leading-relaxed bg-background/50 rounded p-2">
-              {record.input.map((s) => (
-                <div key={s.index}>
-                  <span className="font-mono text-muted-foreground/60 mr-1">[{s.index}]</span>
-                  {s.text}
-                </div>
-              ))}
-            </div>
-          </div>
-          <div>
-            <div className="text-2xs text-muted-foreground mb-1">Raw LLM response</div>
-            <pre className="max-h-48 overflow-auto text-2xs bg-background/50 rounded p-2 whitespace-pre-wrap">
-              {record.raw}
-            </pre>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+import type { BatchFix } from "@/api/types";
 
 export default function LlmFailuresBanner({
   failures,
+  stepLabel,
   onDismiss,
   dismissing,
+  onApplyFixes,
 }: {
   failures: LlmFailures | null | undefined;
+  /** "correction" or "translation" — names the run in the banner copy. */
+  stepLabel: string;
   onDismiss: () => void;
   dismissing?: boolean;
+  /** Apply the accumulated batch fixes. Resolves once the new version saves. */
+  onApplyFixes: (fixes: BatchFix[]) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const [fixRecord, setFixRecord] = useState<LlmBatchRecord | null>(null);
+  const [fixes, setFixes] = useState<BatchFix[]>([]);
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   if (!failures || failures.rejected === 0) return null;
   const rejected = failures.batches.filter((b) => b.status === "rejected");
+  const editingFix = fixRecord
+    ? fixes.find((f) => f.batch === fixRecord.batch)
+    : undefined;
+
+  const handleApply = async () => {
+    setApplying(true);
+    setError(null);
+    try {
+      await onApplyFixes(fixes);
+      setFixes([]);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setApplying(false);
+    }
+  };
 
   return (
     <div className="rounded border border-destructive/30 bg-destructive/10 text-xs">
       <div className="flex items-center gap-2 px-3 py-2">
-        <AlertTriangle className="w-3.5 h-3.5 text-destructive shrink-0" />
+        <AlertTriangle className="w-3 h-3 text-destructive shrink-0" />
         <span className="text-destructive flex-1">
           {failures.rejected} of {failures.total_batches} batches rejected in the
-          last {failures.mode} run — those segments kept their original text.
+          last {stepLabel} run ({failures.mode}); those segments kept their
+          original text.
         </span>
         <button
           onClick={() => setOpen(!open)}
           className="text-destructive/80 hover:text-destructive shrink-0"
           title={open ? "Hide details" : "Show details"}
         >
-          <ChevronRight className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-90" : ""}`} />
+          <ChevronRight className={`w-3 h-3 transition-transform ${open ? "rotate-90" : ""}`} />
         </button>
         <Button
           onClick={onDismiss}
@@ -86,11 +78,74 @@ export default function LlmFailuresBanner({
         </Button>
       </div>
       {open && (
-        <div className="border-t border-destructive/20 divide-y divide-destructive/10">
-          {rejected.map((b) => (
-            <BatchDetail key={b.batch} record={b} />
-          ))}
+        <div className="border-t border-destructive/20">
+          <div className="divide-y divide-destructive/10">
+            {rejected.map((b) => {
+              const fixed = fixes.some((f) => f.batch === b.batch);
+              return (
+                <div key={b.batch} className="flex items-center gap-2 px-3 py-2">
+                  {fixed ? (
+                    <Check className="w-3 h-3 text-success shrink-0" />
+                  ) : (
+                    <span className="w-3 shrink-0" aria-hidden />
+                  )}
+                  <span className="flex-1 text-muted-foreground">
+                    Batch {b.batch}: {b.reason} (expected {b.expected}, got {b.got})
+                  </span>
+                  <Button
+                    onClick={() => setFixRecord(b)}
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs shrink-0"
+                  >
+                    {fixed ? (
+                      "Edit"
+                    ) : (
+                      <><Wrench className="w-3 h-3 mr-1" /> Fix</>
+                    )}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-2 px-3 py-2 border-t border-destructive/20">
+            <span className="flex-1 text-muted-foreground">
+              {fixes.length} of {rejected.length} fixed
+            </span>
+            {error && <span className="text-destructive shrink-0">{error}</span>}
+            <Button
+              onClick={handleApply}
+              disabled={fixes.length === 0 || applying}
+              size="sm"
+              className="h-6 px-2 text-xs shrink-0"
+            >
+              {applying
+                ? "Applying…"
+                : `Apply ${fixes.length} fix${fixes.length === 1 ? "" : "es"}`}
+            </Button>
+          </div>
         </div>
+      )}
+      {fixRecord && (
+        <BatchReconcileModal
+          open
+          onOpenChange={(o) => { if (!o) setFixRecord(null); }}
+          title={`Fix batch ${fixRecord.batch}`}
+          inputEntries={fixRecord.input}
+          initialResponse={
+            editingFix
+              ? JSON.stringify(editingFix.corrections, null, 2)
+              : fixRecord.raw
+          }
+          onResolve={(objs) => {
+            setFixes((prev) => [
+              ...prev.filter((f) => f.batch !== fixRecord.batch),
+              { batch: fixRecord.batch, corrections: objs },
+            ]);
+            setFixRecord(null);
+          }}
+          applyLabel="Save fix"
+        />
       )}
     </div>
   );

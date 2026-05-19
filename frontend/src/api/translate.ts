@@ -32,3 +32,10 @@ export const getTranslateManualPrompts = (params: {
 
 export const applyTranslateManual = (params: { audio_path?: string; output_dir?: string; lang: string; corrections: unknown[] }) =>
   api.applyManual(params);
+
+export const applyTranslateBatches = (params: {
+  audio_path?: string;
+  output_dir?: string;
+  lang: string;
+  fixes: { batch: number; corrections: unknown[] }[];
+}) => api.applyBatches(params);

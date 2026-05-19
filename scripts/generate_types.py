@@ -43,6 +43,8 @@ from podcodex.api.routes.batch import BatchRequest  # noqa: E402
 from podcodex.api.routes.config import AppConfig  # noqa: E402
 from podcodex.api.routes.index import IndexRequest  # noqa: E402
 from podcodex.api.routes._helpers import (  # noqa: E402
+    ApplyBatchesRequest,
+    BatchFix,
     ApplyManualRequest as CorrectApplyManualRequest,
     LLMRequest as CorrectRequest,
     ManualPromptsRequest as CorrectManualPromptsRequest,
@@ -118,11 +120,14 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     ("CorrectRequest", CorrectRequest),
     ("CorrectManualPromptsRequest", CorrectManualPromptsRequest),
     ("CorrectApplyManualRequest", CorrectApplyManualRequest),
+    (None, BatchFix),
+    ("CorrectApplyBatchesRequest", ApplyBatchesRequest),
     (None, EpisodeListItem),
     (None, EpisodeMeta),
     (None, TranslateRequest),
     ("TranslateManualPromptsRequest", TranslateManualPromptsRequest),
     ("TranslateApplyManualRequest", TranslateApplyManualRequest),
+    ("TranslateApplyBatchesRequest", ApplyBatchesRequest),
     (None, BatchRequest),
     (None, SearchRequest),
     ("SearchResultSchema", SearchResultSchema),

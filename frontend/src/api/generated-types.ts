@@ -212,6 +212,18 @@ export interface CorrectApplyManualRequest {
   lang?: string;
 }
 
+export interface BatchFix {
+  batch: number;
+  corrections: Record<string, unknown>[];
+}
+
+export interface CorrectApplyBatchesRequest {
+  audio_path?: string | null;
+  output_dir?: string | null;
+  fixes: BatchFix[];
+  lang?: string;
+}
+
 export interface EpisodeListItem {
   episode: string;
   episode_title: string;
@@ -262,6 +274,13 @@ export interface TranslateApplyManualRequest {
   audio_path?: string | null;
   output_dir?: string | null;
   corrections: Record<string, unknown>[];
+  lang?: string;
+}
+
+export interface TranslateApplyBatchesRequest {
+  audio_path?: string | null;
+  output_dir?: string | null;
+  fixes: BatchFix[];
   lang?: string;
 }
 

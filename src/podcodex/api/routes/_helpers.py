@@ -16,6 +16,7 @@ from podcodex.core._utils import (
     BREAK_SPEAKER,
     REMOVE_SPEAKER,
     UNKNOWN_SPEAKERS,
+    AudioPaths,
     _separate_breaks,
 )
 from podcodex.core.constants import AUDIO_EXTENSIONS
@@ -565,6 +566,75 @@ class ApplyManualRequest(BaseModel):
     output_dir: str | None = None
     corrections: list[dict]
     lang: str = ""
+
+
+class BatchFix(BaseModel):
+    """One hand-reconciled batch: `batch` selects the recorded batch in
+    ``llm_failures.json``, `corrections` is the reconciled response in batch
+    order, one entry per input segment."""
+
+    batch: int
+    corrections: list[dict]
+
+
+class ApplyBatchesRequest(BaseModel):
+    """Request for applying hand-reconciled batches from a failed auto run.
+
+    All fixes are patched into one new version. Shared by correct & translate.
+    """
+
+    audio_path: str | None = None
+    output_dir: str | None = None
+    fixes: list[BatchFix]
+    lang: str = ""
+
+
+def reconcile_batches(
+    req: ApplyBatchesRequest, step: str
+) -> tuple[AudioPaths, list[dict], dict]:
+    """Patch every fix's batch into the latest version of *step*.
+
+    Looks each batch up in ``llm_failures.json``, checks its correction count,
+    loads the latest version, and applies all fixes in one pass. Returns
+    ``(paths, patched_segments, failures_section)``; raises HTTPException on a
+    missing episode, missing batch, count mismatch, or missing version.
+    """
+    from podcodex.core._utils import apply_corrections
+    from podcodex.core.llm_failures import get_step
+    from podcodex.core.versions import load_latest
+
+    require_audio_or_output(req.audio_path, req.output_dir)
+    p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
+
+    section = get_step(req.audio_path, req.output_dir, step)
+    if not section:
+        raise HTTPException(404, "No recorded batch failures for this episode")
+    if not req.fixes:
+        raise HTTPException(400, "No fixes provided")
+
+    records = {b.get("batch"): b for b in section.get("batches", [])}
+    # Flattened across all fixes — batches never share a segment index.
+    by_index: dict[int, dict] = {}
+    for fix in req.fixes:
+        record = records.get(fix.batch)
+        if record is None:
+            raise HTTPException(404, f"Batch {fix.batch} not found")
+        indices = [s["index"] for s in record.get("input", [])]
+        if len(fix.corrections) != len(indices):
+            raise HTTPException(
+                400,
+                f"Batch {fix.batch} expects {len(indices)} entries, "
+                f"got {len(fix.corrections)}",
+            )
+        for i, idx in enumerate(indices):
+            by_index[idx] = fix.corrections[i]
+
+    segments = load_latest(p.base, step)
+    if segments is None:
+        raise HTTPException(404, "No segments found for this step")
+
+    patched = apply_corrections(segments, by_index, min_length_ratio=0)
+    return p, patched, section
 
 
 def format_prompt_batches(batches: list) -> list[dict]:

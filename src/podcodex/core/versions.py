@@ -623,6 +623,12 @@ def _refresh_status_after_delete(base: Path, step: str) -> None:
         if db.list_versions(stem, step):
             return
 
+        # No versions left for this step — drop any recorded LLM batch
+        # failures too, which referenced the now-deleted versions.
+        from podcodex.core.llm_failures import clear_step
+
+        clear_step(base, step)
+
         flag = STEP_FLAG.get(step)
         if flag is not None:
             db.mark(stem, **{flag: False})

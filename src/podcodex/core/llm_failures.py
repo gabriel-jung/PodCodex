@@ -45,6 +45,14 @@ def _has_rejects(section: Any) -> bool:
     return isinstance(section, dict) and section.get("rejected", 0) > 0
 
 
+def _persist(path: Path, data: dict[str, Any]) -> None:
+    """Write the failures file, or remove it when no sections remain."""
+    if data:
+        write_json(path, data)
+    else:
+        path.unlink(missing_ok=True)
+
+
 def _base_for(audio_path: str | Path | None, output_dir: str | Path | None) -> Path:
     from podcodex.core._utils import AudioPaths
 
@@ -86,11 +94,7 @@ def clear_step(base: Path, step: str) -> bool:
     if step not in data:
         return False
     del data[step]
-    path = failures_path(base)
-    if data:
-        write_json(path, data)
-    else:
-        path.unlink(missing_ok=True)
+    _persist(failures_path(base), data)
     return True
 
 
@@ -142,3 +146,28 @@ def clear_step_for(audio_path: str | None, output_dir: str | None, step: str) ->
     if not (audio_path or output_dir):
         return False
     return clear_step(_base_for(audio_path, output_dir), step)
+
+
+def resolve_batches(base: Path, step: str, batches: list[int]) -> int:
+    """Mark the given batches in the *step* section as resolved (status ``ok``).
+
+    Recomputes the section's ``rejected`` count. When no rejected batch
+    remains the whole section is dropped (and the file removed if empty),
+    matching ``clear_step``. Returns the new rejected count.
+    """
+    data = load_failures(base)
+    section = data.get(step)
+    if not isinstance(section, dict):
+        return 0
+    target = set(batches)
+    for record in section.get("batches", []):
+        if record.get("batch") in target:
+            record["status"] = "ok"
+    rejected = sum(
+        1 for r in section.get("batches", []) if r.get("status") == "rejected"
+    )
+    section["rejected"] = rejected
+    if rejected == 0:
+        del data[step]
+    _persist(failures_path(base), data)
+    return rejected

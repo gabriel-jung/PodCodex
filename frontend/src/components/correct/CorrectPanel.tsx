@@ -13,6 +13,7 @@ import {
   startCorrect,
   getCorrectManualPrompts,
   applyCorrectManual,
+  applyCorrectBatches,
 } from "@/api/client";
 import { getCorrectFailures, dismissCorrectFailures } from "@/api/llmFailures";
 import { queryKeys } from "@/api/queryKeys";
@@ -73,8 +74,11 @@ export default function CorrectPanel() {
   });
   const dismissFailures = useMutation({
     mutationFn: () => dismissCorrectFailures(audioPath!),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["llmFailures", "correct", audioPath] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["llmFailures", "correct", audioPath] });
+      // Overview's "Rejected batches" section reads episode.llm_failed_steps.
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+    },
   });
 
   // Saving a new version supersedes the recorded batch failures — offer to
@@ -191,8 +195,14 @@ export default function CorrectPanel() {
         <div className="px-4 pt-3">
           <LlmFailuresBanner
             failures={correctFailures}
+            stepLabel="correction"
             onDismiss={() => dismissFailures.mutate()}
             dismissing={dismissFailures.isPending}
+            onApplyFixes={async (fixes) => {
+              await applyCorrectBatches({ audio_path: audioPath!, fixes });
+              queryClient.invalidateQueries({ queryKey: ["llmFailures", "correct", audioPath] });
+              task.refreshQueries();
+            }}
           />
         </div>
       )}

@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 
 from podcodex.api.routes._helpers import (
+    ApplyBatchesRequest,
     ApplyManualRequest,
     LLMRequest,
     ManualPromptsRequest,
@@ -14,6 +15,7 @@ from podcodex.api.routes._helpers import (
     enrich_correct_kwargs,
     format_prompt_batches,
     llm_prov_params,
+    reconcile_batches,
     require_audio_or_output,
     submit_task,
 )
@@ -237,3 +239,30 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
         provenance=provenance,
     )
     return {"status": "saved", "count": len(corrected)}
+
+
+@router.post("/apply-batches")
+async def apply_batches_correction(req: ApplyBatchesRequest) -> dict:
+    """Apply hand-reconciled batches from a failed auto correction run.
+
+    One new version for all fixes (not one per batch); provenance keeps the
+    original run's model so the version does not read as a manual edit.
+    """
+    from podcodex.core.correct import save_corrected
+    from podcodex.core.llm_failures import resolve_batches
+
+    p, patched, section = reconcile_batches(req, "corrected")
+    provenance = build_provenance(
+        "corrected",
+        model=section.get("model"),
+        params=llm_prov_params(
+            section.get("mode", "manual"), batch_fixes=len(req.fixes)
+        ),
+        audio_path=req.audio_path,
+        output_dir=req.output_dir,
+    )
+    save_corrected(
+        req.audio_path, patched, output_dir=req.output_dir, provenance=provenance
+    )
+    rejected = resolve_batches(p.base, "corrected", [fix.batch for fix in req.fixes])
+    return {"status": "saved", "count": len(patched), "rejected": rejected}

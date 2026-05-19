@@ -29,6 +29,14 @@ import { speakerColor } from "@/lib/speakerColor";
 import { BREAK_SPEAKER } from "@/lib/speakers";
 import { computeWordDiff } from "@/lib/diffUtils";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
 import Pagination, { PAGE_SIZE_ALL } from "./Pagination";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import SpeakerStrip from "./SpeakerStrip";
@@ -49,12 +57,54 @@ import {
   Diff,
   Filter,
   AlertTriangle,
-  Activity,
+  SlidersHorizontal,
   Timer,
   Locate,
   Eye,
   EyeOff,
+  type LucideIcon,
 } from "lucide-react";
+
+// ── Toolbar filter chip ───────────────────────────────────────────────────────
+
+// Active classes are full literal strings so Tailwind keeps them; a templated
+// `bg-${color}/15` would be purged at build.
+const CHIP_ACTIVE: Record<"warning" | "info" | "destructive", string> = {
+  warning: "bg-warning/15 text-warning",
+  info: "bg-info/15 text-info",
+  destructive: "bg-destructive/15 text-destructive",
+};
+
+/** A toolbar toggle showing an icon + count. Active = filled tint, inactive =
+ *  quiet ghost. Used for the flagged / changed / pending-removal filters. */
+function FilterChip({
+  active,
+  color,
+  icon: Icon,
+  count,
+  title,
+  onClick,
+}: {
+  active: boolean;
+  color: "warning" | "info" | "destructive";
+  icon: LucideIcon;
+  count: number;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition ${
+        active ? CHIP_ACTIVE[color] : "text-muted-foreground hover:text-foreground hover:bg-accent"
+      }`}
+    >
+      <Icon className="w-3 h-3" />
+      {count}
+    </button>
+  );
+}
 
 // ── SVG icons for insert-before / insert-after ────────────────────────────────
 
@@ -350,7 +400,7 @@ const SegmentViewRow = memo(function SegmentViewRow({
         isPendingRemoval ? "opacity-50 line-through bg-destructive/5 border-l-2 border-l-destructive/50" :
         isActive ? "bg-accent/60" :
         isFlagged ? "border-l-2 border-l-warning" :
-        isChanged ? "border-l-2 border-l-blue-500/50" :
+        isChanged ? "border-l-2 border-l-info/50" :
         "hover:bg-accent/20"
       }`}
     >
@@ -367,10 +417,7 @@ const SegmentViewRow = memo(function SegmentViewRow({
               selected ? "opacity-100" : "opacity-40 hover:opacity-100 group-hover:opacity-100"
             }`}
           />
-          <div
-            className="font-mono text-muted-foreground/40 tabular-nums select-none"
-            style={{ fontSize: "0.55rem" }}
-          >
+          <div className="font-mono text-3xs text-muted-foreground/40 tabular-nums select-none">
             {originalIndex + 1}
           </div>
         </div>
@@ -909,32 +956,15 @@ export default function TranscriptViewer({
     return map;
   }, [editor.originalIndices]);
 
-  // Reference mapping: align reference to edited positions, skipping deletes
-  const refMapping = useMemo(() => {
-    if (!effectiveReference) return null;
-    const deletedOriginals = new Set<number>();
-    const survivingSet = new Set(editor.originalIndices);
-    const maxOrig = editor.originalIndices.length > 0
-      ? Math.max(...editor.originalIndices, effectiveReference.length - 1)
-      : effectiveReference.length - 1;
-    for (let i = 0; i <= maxOrig; i++) {
-      if (!survivingSet.has(i)) deletedOriginals.add(i);
-    }
-    const activeRefIndices: number[] = [];
-    for (let i = 0; i < effectiveReference.length; i++) {
-      if (!deletedOriginals.has(i)) activeRefIndices.push(i);
-    }
-    const map = new Map<number, number>();
-    for (let e = 0; e < editor.editedSegments.length && e < activeRefIndices.length; e++) {
-      map.set(e, activeRefIndices[e]);
-    }
-    return map;
-  }, [effectiveReference, editor.editedSegments, editor.originalIndices]);
-
+  // Reference lookup keyed by each edited segment's source index. A segment
+  // inserted this session has sourceIndex null → no reference (renders as
+  // added). Deleted segments are already absent from editedSegments, and
+  // survivors keep their source index, so an insert no longer shifts every
+  // later row out of alignment.
   const getRef = (editedIdx: number) => {
-    if (!effectiveReference || !refMapping) return undefined;
-    const refIdx = refMapping.get(editedIdx);
-    return refIdx != null ? effectiveReference[refIdx] : undefined;
+    if (!effectiveReference) return undefined;
+    const srcIdx = editor.sourceIndices[editedIdx];
+    return srcIdx == null ? undefined : effectiveReference[srcIdx];
   };
 
   const isChanged = (seg: Segment, origIdx: number) => {
@@ -1398,11 +1428,19 @@ export default function TranscriptViewer({
                   const targetId = selectedVersionId ?? versions[0].id;
                   const target = versions.find((v) => v.id === targetId);
                   if (!target) return;
-                  if (!window.confirm(`Delete this version?\n\n${versionOption(target)}\n\nThis removes both the file and the database entry and cannot be undone.`)) return;
-                  deleteVersionMutation.mutate(targetId);
-                  setSelectedVersionId(null);
+                  confirmDialog.open({
+                    title: "Delete this version?",
+                    description: `${versionOption(target)}. Removes both the file and the database entry, and cannot be undone.`,
+                    confirmLabel: "Delete",
+                    variant: "destructive",
+                    onConfirm: () => {
+                      deleteVersionMutation.mutate(targetId);
+                      setSelectedVersionId(null);
+                    },
+                  });
                 }}
                 className="p-1 rounded text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10 transition shrink-0"
+                aria-label="Delete version"
                 title="Delete current version (file + db entry)"
               >
                 <Trash2 className="w-3 h-3" />
@@ -1496,6 +1534,7 @@ export default function TranscriptViewer({
               <button
                 onClick={() => { filters.setSearchQuery(""); filters.setPage(0); }}
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                aria-label="Clear search"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -1521,34 +1560,38 @@ export default function TranscriptViewer({
           )}
           {/* Flagged toggle */}
           {showFlags && (
-            <button
+            <FilterChip
+              active={filters.showFlaggedOnly}
+              color="warning"
+              icon={AlertTriangle}
+              count={flaggedCount}
+              title="Show flagged segments"
               onClick={() => { filters.setShowFlaggedOnly(!filters.showFlaggedOnly); filters.setPage(0); }}
-              className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border transition ${
-                filters.showFlaggedOnly ? "border-warning/50 text-warning" : "border-border text-muted-foreground hover:text-foreground"
-              }`}
-              title="Show flagged only"
-            >
-              <AlertTriangle className="w-3 h-3" />
-              {flaggedCount}
-            </button>
+            />
           )}
           {/* Flag settings popover (density thresholds + custom patterns) */}
           <div className="relative">
             <button
               onClick={() => setShowFlagSettings(!showFlagSettings)}
-              className={`p-1 rounded border transition ${
-                showFlagSettings ? "border-primary/50 text-foreground" : "border-border text-muted-foreground hover:text-foreground"
+              className={`p-1 rounded transition ${
+                showFlagSettings ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent"
               }`}
-              title="Flag settings — density thresholds and custom patterns"
+              aria-label="Flag rules"
+              title="Flag rules: speech speed and word list"
             >
-              <Activity className="w-3 h-3" />
+              <SlidersHorizontal className="w-3 h-3" />
             </button>
             {showFlagSettings && (
-              <div className="absolute left-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg p-3 space-y-3 min-w-64 text-xs">
+              <div className="absolute left-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg p-3 space-y-3 w-80 text-xs">
                 <div className="space-y-2">
-                  <p className="text-2xs text-muted-foreground font-medium">Speech density thresholds</p>
+                  <p className="text-xs font-medium">Flagged segments</p>
+                  <p className="text-2xs text-muted-foreground">
+                    Segments that may need a look are flagged automatically: odd
+                    speech speed, or words you list below.
+                  </p>
+                  <p className="text-2xs text-muted-foreground pt-0.5">Flag speech that is:</p>
                   <label className="flex items-center gap-2">
-                    <span className="shrink-0">{">"} </span>
+                    <span className="shrink-0 w-16">Too sparse</span>
                     <input
                       type="range"
                       min={1}
@@ -1557,10 +1600,12 @@ export default function TranscriptViewer({
                       onChange={(e) => filters.setDensityThreshold(Number(e.target.value))}
                       className="flex-1"
                     />
-                    <span className="text-muted-foreground w-20 text-right">{filters.densityThreshold} char/s</span>
+                    <span className="text-muted-foreground w-24 text-right tabular-nums">
+                      under {filters.densityThreshold} char/s
+                    </span>
                   </label>
                   <label className="flex items-center gap-2">
-                    <span className="shrink-0">{"<"} </span>
+                    <span className="shrink-0 w-16">Too dense</span>
                     <input
                       type="range"
                       min={20}
@@ -1569,11 +1614,15 @@ export default function TranscriptViewer({
                       onChange={(e) => filters.setMaxDensityThreshold(Number(e.target.value))}
                       className="flex-1"
                     />
-                    <span className="text-muted-foreground w-20 text-right">{filters.maxDensityThreshold} char/s</span>
+                    <span className="text-muted-foreground w-24 text-right tabular-nums">
+                      over {filters.maxDensityThreshold} char/s
+                    </span>
                   </label>
                 </div>
                 <div className="space-y-1 pt-1.5 border-t border-border/50">
-                  <p className="text-2xs text-muted-foreground font-medium">Custom patterns (one per line)</p>
+                  <p className="text-2xs text-muted-foreground">
+                    Flag text containing these words (one per line):
+                  </p>
                   <textarea
                     value={patternDraft}
                     onChange={(e) => setPatternDraft(e.target.value)}
@@ -1590,44 +1639,43 @@ export default function TranscriptViewer({
               </div>
             )}
           </div>
-          {/* Diff highlight toggle (red/green word-level diff in the reference column) */}
-          {effectiveReference && (
-            <button
-              onClick={() => setShowDiff((v) => !v)}
-              className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border transition ${
-                showDiff ? "border-info/50 text-info" : "border-border text-muted-foreground hover:text-foreground"
-              }`}
-              title={showDiff ? "Hide word-level diff" : "Show word-level diff"}
-            >
-              {showDiff ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-              Diff
-            </button>
-          )}
-          {/* Changed badge */}
-          {effectiveReference && changedCount > 0 && (
-            <button
-              onClick={() => { filters.setShowChangedOnly(!filters.showChangedOnly); filters.setPage(0); }}
-              className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border transition ${
-                filters.showChangedOnly ? "border-info/50 text-info" : "border-border text-muted-foreground hover:text-foreground"
-              }`}
-              title="Show changed only"
-            >
-              <Diff className="w-3 h-3" />
-              {changedCount}
-            </button>
-          )}
           {/* Pending-removal badge */}
           {pendingRemovalCount > 0 && (
-            <button
+            <FilterChip
+              active={filters.showRemovedOnly}
+              color="destructive"
+              icon={Trash2}
+              count={pendingRemovalCount}
+              title="Show segments pending removal; review before saving"
               onClick={() => { filters.setShowRemovedOnly(!filters.showRemovedOnly); filters.setPage(0); }}
-              className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border transition ${
-                filters.showRemovedOnly ? "border-destructive/50 text-destructive" : "border-border text-muted-foreground hover:text-foreground"
-              }`}
-              title="Show segments pending removal — review before saving"
-            >
-              <Trash2 className="w-3 h-3" />
-              {pendingRemovalCount}
-            </button>
+            />
+          )}
+          {/* Comparison group: diff highlight + changed filter. Both exist only
+              when a reference is selected. */}
+          {effectiveReference && (
+            <>
+              <span className="h-4 w-px bg-border mx-0.5" aria-hidden />
+              <button
+                onClick={() => setShowDiff((v) => !v)}
+                className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition hover:bg-accent ${
+                  showDiff ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+                }`}
+                title={showDiff ? "Hide word-level diff" : "Show word-level diff"}
+              >
+                {showDiff ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                Diff
+              </button>
+              {changedCount > 0 && (
+                <FilterChip
+                  active={filters.showChangedOnly}
+                  color="info"
+                  icon={Diff}
+                  count={changedCount}
+                  title="Show changed only"
+                  onClick={() => { filters.setShowChangedOnly(!filters.showChangedOnly); filters.setPage(0); }}
+                />
+              )}
+            </>
           )}
           <div className="flex-1" />
           {/* manual re-sync — auto-follow would disrupt editing */}
@@ -1793,9 +1841,12 @@ export default function TranscriptViewer({
 
       {/* ── Merge speaker dialog ── */}
       {mergeDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-popover border border-border rounded-lg p-4 shadow-lg space-y-3 max-w-xs">
-            <p className="text-sm font-medium">Which speaker for the merged segment?</p>
+        <Dialog open onOpenChange={(o) => { if (!o) setMergeDialog(null); }}>
+          <DialogContent className="sm:max-w-xs bg-popover">
+            <DialogHeader>
+              <DialogTitle>Merge segments</DialogTitle>
+              <DialogDescription>Which speaker for the merged segment?</DialogDescription>
+            </DialogHeader>
             <div className="flex flex-col gap-2">
               {mergeDialog.speakers.map((s) => (
                 <button
@@ -1804,20 +1855,14 @@ export default function TranscriptViewer({
                     editor.mergeWithNext(mergeDialog.index, s);
                     setMergeDialog(null);
                   }}
-                  className="px-3 py-2 text-sm rounded border border-border bg-secondary hover:bg-accent transition text-left"
+                  className="px-3 py-2 text-sm rounded-md border border-border bg-secondary hover:bg-accent transition text-left"
                 >
                   {s}
                 </button>
               ))}
             </div>
-            <button
-              onClick={() => setMergeDialog(null)}
-              className="text-xs text-muted-foreground hover:text-foreground transition"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

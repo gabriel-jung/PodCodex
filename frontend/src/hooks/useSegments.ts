@@ -5,6 +5,11 @@ type Snapshot = {
   original: Segment[];
   edits: Map<number, Partial<Segment>>;
   deleted: Set<number>;
+  // Index into the source array each segment came from, parallel to `original`.
+  // null marks a segment inserted this session — it has no counterpart in the
+  // diff reference, so the reference column must skip a row for it instead of
+  // shifting every later row out of alignment.
+  sourceIndices: (number | null)[];
 };
 
 type EditorState = Snapshot & {
@@ -27,12 +32,23 @@ type EditorAction =
 const MAX_HISTORY = 50;
 
 function snap(state: EditorState): Snapshot {
-  return { original: state.original, edits: state.edits, deleted: state.deleted };
+  return {
+    original: state.original,
+    edits: state.edits,
+    deleted: state.deleted,
+    sourceIndices: state.sourceIndices,
+  };
 }
 
 function pushHistory(state: EditorState): Snapshot[] {
   const h = [...state.history, snap(state)];
   return h.length > MAX_HISTORY ? h.slice(-MAX_HISTORY) : h;
+}
+
+/** Insert a null at `at` in a parallel source-index array, marking a segment
+ *  inserted this session (no diff-reference counterpart). */
+function insertNullAt(arr: (number | null)[], at: number): (number | null)[] {
+  return [...arr.slice(0, at), null, ...arr.slice(at)];
 }
 
 function reducer(state: EditorState, action: EditorAction): EditorState {
@@ -91,7 +107,13 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
       for (const d of state.deleted) {
         newDeleted.add(d >= insertAt ? d + 1 : d);
       }
-      return { original: newOriginal, edits: newEdits, deleted: newDeleted, history };
+      return {
+        original: newOriginal,
+        edits: newEdits,
+        deleted: newDeleted,
+        sourceIndices: insertNullAt(state.sourceIndices, insertAt),
+        history,
+      };
     }
     case "RESET": {
       const history = pushHistory(state);
@@ -99,6 +121,7 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
         original: action.segments,
         edits: new Map(),
         deleted: new Set<number>(),
+        sourceIndices: action.segments.map((_, i) => i),
         history,
       };
     }
@@ -172,7 +195,13 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
       for (const d of state.deleted) {
         newDeleted.add(d >= insertAt ? d + 1 : d);
       }
-      return { original: newOriginal, edits: newEdits, deleted: newDeleted, history };
+      return {
+        original: newOriginal,
+        edits: newEdits,
+        deleted: newDeleted,
+        sourceIndices: insertNullAt(state.sourceIndices, insertAt),
+        history,
+      };
     }
   }
 }
@@ -181,10 +210,16 @@ export interface UseSegmentsReturn {
   editedSegments: Segment[];
   /** Maps each editedSegments index to its original index in the source array. */
   originalIndices: number[];
+  /** Source-array index per editedSegments entry; null for segments inserted
+   *  this session. Used to align the diff reference column so an insert does
+   *  not shift every later row. */
+  sourceIndices: (number | null)[];
   /** Every segment, including ones pending removal. Save-side still uses editedSegments. */
   allEditedSegments: Segment[];
   /** Original index per entry in allEditedSegments. */
   allOriginalIndices: number[];
+  /** Source index per allEditedSegments entry; null for inserted segments. */
+  allSourceIndices: (number | null)[];
   /** Direct read access to the pending-delete set — for predicates that key by originalIndex. */
   deletedSet: ReadonlySet<number>;
   isDirty: boolean;
@@ -213,31 +248,45 @@ export function useSegments(
     original: initialSegments,
     edits: new Map(),
     deleted: new Set<number>(),
+    sourceIndices: initialSegments.map((_, i) => i),
     history: [],
   });
 
-  const { editedSegments, originalIndices, allEditedSegments, allOriginalIndices } = useMemo(() => {
+  const {
+    editedSegments,
+    originalIndices,
+    sourceIndices,
+    allEditedSegments,
+    allOriginalIndices,
+    allSourceIndices,
+  } = useMemo(() => {
     const segs: Segment[] = [];
     const indices: number[] = [];
+    const srcIdx: (number | null)[] = [];
     const allSegs: Segment[] = [];
     const allIndices: number[] = [];
+    const allSrcIdx: (number | null)[] = [];
     for (let i = 0; i < state.original.length; i++) {
       const seg = state.original[i];
       const edit = state.edits.get(i);
       const merged = edit ? { ...seg, ...edit } : seg;
       allSegs.push(merged);
       allIndices.push(i);
+      allSrcIdx.push(state.sourceIndices[i] ?? null);
       if (state.deleted.has(i)) continue;
       segs.push(merged);
       indices.push(i);
+      srcIdx.push(state.sourceIndices[i] ?? null);
     }
     return {
       editedSegments: segs,
       originalIndices: indices,
+      sourceIndices: srcIdx,
       allEditedSegments: allSegs,
       allOriginalIndices: allIndices,
+      allSourceIndices: allSrcIdx,
     };
-  }, [state.original, state.edits, state.deleted]);
+  }, [state.original, state.edits, state.deleted, state.sourceIndices]);
 
   const isDirty = state.edits.size > 0 || state.deleted.size > 0
     || state.original.length !== initialSegments.length;
@@ -315,8 +364,10 @@ export function useSegments(
   return {
     editedSegments,
     originalIndices,
+    sourceIndices,
     allEditedSegments,
     allOriginalIndices,
+    allSourceIndices,
     deletedSet: state.deleted,
     isDirty,
     deletedCount: state.deleted.size,

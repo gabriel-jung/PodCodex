@@ -10,8 +10,10 @@ import {
   startTranslate,
   getTranslateManualPrompts,
   applyTranslateManual,
+  applyTranslateBatches,
 } from "@/api/client";
 import { selectClass } from "@/lib/utils";
+import { queryKeys } from "@/api/queryKeys";
 import { translationsStatus } from "@/lib/stepStatus";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import {
@@ -94,10 +96,13 @@ export default function TranslatePanel() {
   });
   const dismissFailures = useMutation({
     mutationFn: () => dismissTranslateFailures(audioPath!, editingLang),
-    onSuccess: () =>
+    onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ["llmFailures", "translate", audioPath, editingLang],
-      }),
+      });
+      // Overview's "Rejected batches" section reads episode.llm_failed_steps.
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+    },
   });
 
   // Saving a new version supersedes the recorded batch failures — offer to
@@ -244,8 +249,14 @@ export default function TranslatePanel() {
         <div className="px-4 pt-3">
           <LlmFailuresBanner
             failures={translateFailures}
+            stepLabel="translation"
             onDismiss={() => dismissFailures.mutate()}
             dismissing={dismissFailures.isPending}
+            onApplyFixes={async (fixes) => {
+              await applyTranslateBatches({ audio_path: audioPath!, lang: editingLang, fixes });
+              queryClient.invalidateQueries({ queryKey: ["llmFailures", "translate", audioPath, editingLang] });
+              task.refreshQueries();
+            }}
           />
         </div>
       )}

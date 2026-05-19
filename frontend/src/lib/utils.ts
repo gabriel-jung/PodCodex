@@ -274,33 +274,44 @@ export function versionLabel(v: VersionEntry): string {
   const p = v.params as Record<string, unknown>;
   if (p.skipped) return "Skipped (copy)";
 
-  // Source chain: "Whisper/base, diarized → ollama → openai"
-  const chain = p.source_chain as string[] | undefined;
-  if (chain && chain.length > 0) {
-    return chain.map((s) => {
-      // Split "whisper/base, diarized" → map source part, keep rest
-      const [main, ...rest] = s.split(", ");
-      const [source, ...model] = main.split("/");
-      const label = [SOURCE_LABELS[source] || source, ...model].join(" ");
-      return rest.length > 0 ? `${label}, ${rest.join(", ")}` : label;
-    }).join(" → ");
-  }
+  const core = (): string => {
+    // Source chain: "Whisper/base, diarized → ollama → openai"
+    const chain = p.source_chain as string[] | undefined;
+    if (chain && chain.length > 0) {
+      return chain.map((s) => {
+        // Split "whisper/base, diarized" → map source part, keep rest
+        const [main, ...rest] = s.split(", ");
+        const [source, ...model] = main.split("/");
+        const label = [SOURCE_LABELS[source] || source, ...model].join(" ");
+        return rest.length > 0 ? `${label}, ${rest.join(", ")}` : label;
+      }).join(" → ");
+    }
 
-  // Legacy / transcript: flat label from individual params
-  const parts: string[] = [];
-  if (p.source) parts.push(SOURCE_LABELS[String(p.source)] || String(p.source));
-  if (v.model) parts.push(v.model);
-  if (p.llm_provider_profile) parts.push(String(p.llm_provider_profile));
-  else if (p.llm_provider) parts.push(String(p.llm_provider));
-  else if (p.llm_mode === "manual") parts.push("Manual");
-  else if (p.llm_mode) parts.push(String(p.llm_mode));
-  if (p.language) parts.push(String(p.language));
-  else if (p.source_lang && p.target_lang) parts.push(`${p.source_lang} → ${p.target_lang}`);
-  else if (p.source_lang) parts.push(String(p.source_lang));
-  if (p.diarize === true) parts.push("diarized");
-  if (parts.length > 0) return parts.join(", ");
-  if (v.manual_edit) return "Manual";
-  return "Unknown";
+    // Legacy / transcript: flat label from individual params
+    const parts: string[] = [];
+    if (p.source) parts.push(SOURCE_LABELS[String(p.source)] || String(p.source));
+    if (v.model) parts.push(v.model);
+    if (p.llm_provider_profile) parts.push(String(p.llm_provider_profile));
+    else if (p.llm_provider) parts.push(String(p.llm_provider));
+    else if (p.llm_mode === "manual") parts.push("Manual");
+    else if (p.llm_mode) parts.push(String(p.llm_mode));
+    if (p.language) parts.push(String(p.language));
+    else if (p.source_lang && p.target_lang) parts.push(`${p.source_lang} → ${p.target_lang}`);
+    else if (p.source_lang) parts.push(String(p.source_lang));
+    if (p.diarize === true) parts.push("diarized");
+    if (parts.length > 0) return parts.join(", ");
+    if (v.manual_edit) return "Manual";
+    return "Unknown";
+  };
+
+  // Versions produced by hand-fixing rejected LLM batches keep the original
+  // model label and add this marker so they read as "<model> (N batch fixes)".
+  const n = p.batch_fixes;
+  const fixes =
+    typeof n === "number" && n > 0
+      ? ` (${n} batch fix${n === 1 ? "" : "es"})`
+      : "";
+  return core() + fixes;
 }
 
 /** Full single-line label for a version: "[Transcript · edited] 9 Apr, 10:37 — base (21 seg)".

@@ -1226,7 +1226,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
 
       {(episode.llm_failed_steps?.length ?? 0) > 0 && (
         <section className="space-y-2">
-          <h4 className="text-sm font-medium px-1">Rejected LLM batches</h4>
+          <h4 className="text-sm font-medium px-1">Rejected correction &amp; translation batches</h4>
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 divide-y divide-destructive/10">
             {episode.llm_failed_steps!.map((step) => (
               <button
@@ -1236,7 +1236,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
               >
                 <AlertTriangle className="w-3.5 h-3.5 text-destructive shrink-0" />
                 <span className="text-destructive flex-1">
-                  {stepDisplay(step).label} — some batches were rejected in the last auto run
+                  {stepDisplay(step).label}: some batches were rejected in the last auto run
                 </span>
                 <span className="text-2xs text-muted-foreground">Open &rarr;</span>
               </button>

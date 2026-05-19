@@ -15,6 +15,7 @@ export type AssembleStrategy = "silence" | "original_timing";
 export type {
   AppConfig,
   AssembleRequest,
+  BatchFix,
   BatchRequest,
   CreateFromRSSRequest,
   CreateFromRSSResponse,
