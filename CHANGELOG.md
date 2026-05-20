@@ -1,6 +1,24 @@
 # Changelog
 
-## [0.2.0] - 2026-05-13
+## [0.2.1] - 2026-05-20
+
+### Settings rework
+
+Every show now has its own pipeline settings in its Settings tab:
+transcription model, speakers, AI provider/key/model, show context,
+translation language, search-index model and chunker. Each field falls
+back to the app-wide default, so existing shows keep working unchanged.
+
+Episode panels show a small banner when a setting diverges from the
+show's saved values, with **Save to show** and **Reset** buttons. Panel
+edits stay per-run unless you push them.
+
+### Fixes
+
+- MCP / AI search now finds shows indexed under a non-default embedding
+  model. Each show resolves to a single collection from its own setting.
+- Discord bot passwords can be configured on registered shows before
+  they are indexed.
 
 First public release. PodCodex turns podcasts (and any audio source: YouTube
 channels, local recordings) into a local, searchable knowledge base. Everything
