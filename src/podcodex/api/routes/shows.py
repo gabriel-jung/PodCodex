@@ -447,11 +447,15 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
         pipeline=PipelineDefaultsSchema(
             model_size=meta.pipeline.model_size,
             diarize=meta.pipeline.diarize,
+            num_speakers=meta.pipeline.num_speakers,
             llm_mode=meta.pipeline.llm_mode,
             llm_provider_profile=meta.pipeline.llm_provider_profile,
             llm_key_name=meta.pipeline.llm_key_name,
             llm_model=meta.pipeline.llm_model,
+            context=meta.pipeline.context,
             target_lang=meta.pipeline.target_lang,
+            rag_model=meta.pipeline.rag_model,
+            rag_chunker=meta.pipeline.rag_chunker,
         ),
         last_feed_update=last_feed_update,
     )
@@ -474,11 +478,15 @@ async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
             pipeline=_PipelineDefaults(
                 model_size=p.model_size,
                 diarize=p.diarize,
+                num_speakers=p.num_speakers,
                 llm_mode=p.llm_mode,
                 llm_provider_profile=p.llm_provider_profile,
                 llm_key_name=p.llm_key_name,
                 llm_model=p.llm_model,
+                context=p.context,
                 target_lang=p.target_lang,
+                rag_model=p.rag_model,
+                rag_chunker=p.rag_chunker,
             ),
         ),
     )

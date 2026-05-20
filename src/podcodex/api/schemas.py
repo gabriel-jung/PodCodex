@@ -10,11 +10,15 @@ class PipelineDefaultsSchema(BaseModel):
 
     model_size: str = ""
     diarize: bool | None = None
+    num_speakers: str = ""
     llm_mode: str = ""
     llm_provider_profile: str = ""
     llm_key_name: str = ""
     llm_model: str = ""
+    context: str = ""
     target_lang: str = ""
+    rag_model: str = ""
+    rag_chunker: str = ""
 
 
 class ShowMeta(BaseModel):

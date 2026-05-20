@@ -28,13 +28,19 @@ class PipelineDefaults:
     # Transcribe
     model_size: str = ""
     diarize: bool | None = None
+    num_speakers: str = ""  # expected speaker count; "" = auto-detect
     # Correct / Translate (LLM)
     llm_mode: str = ""  # "ollama" | "api"
     llm_provider_profile: str = ""  # name of a profile from the catalog
     llm_key_name: str = ""  # name of an entry in the api key pool
     llm_model: str = ""
+    context: str = ""  # show description fed to the LLM for accuracy
     # Translate
     target_lang: str = ""
+    # RAG indexing: embedding model + chunker this show is indexed under.
+    # Drives the index UI defaults and which collection the MCP server queries.
+    rag_model: str = ""  # key from rag.defaults.MODELS
+    rag_chunker: str = ""  # key from rag.defaults.CHUNKING_STRATEGIES
 
 
 @dataclass
@@ -81,11 +87,15 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
     pipeline = PipelineDefaults(
         model_size=pipe_raw.get("model_size", ""),
         diarize=pipe_raw.get("diarize"),
+        num_speakers=pipe_raw.get("num_speakers", ""),
         llm_mode=pipe_raw.get("llm_mode", ""),
         llm_provider_profile=pipe_raw.get("llm_provider_profile", ""),
         llm_key_name=pipe_raw.get("llm_key_name", ""),
         llm_model=pipe_raw.get("llm_model", ""),
+        context=pipe_raw.get("context", ""),
         target_lang=pipe_raw.get("target_lang", ""),
+        rag_model=pipe_raw.get("rag_model", ""),
+        rag_chunker=pipe_raw.get("rag_chunker", ""),
     )
     meta = ShowMeta(
         name=raw.get("name", ""),
@@ -138,6 +148,8 @@ def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
         pipe_lines.append(f'model_size = "{_toml_string(p.model_size)}"')
     if p.diarize is not None:
         pipe_lines.append(f"diarize = {'true' if p.diarize else 'false'}")
+    if p.num_speakers:
+        pipe_lines.append(f'num_speakers = "{_toml_string(p.num_speakers)}"')
     if p.llm_mode:
         pipe_lines.append(f'llm_mode = "{_toml_string(p.llm_mode)}"')
     if p.llm_provider_profile:
@@ -148,8 +160,14 @@ def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
         pipe_lines.append(f'llm_key_name = "{_toml_string(p.llm_key_name)}"')
     if p.llm_model:
         pipe_lines.append(f'llm_model = "{_toml_string(p.llm_model)}"')
+    if p.context:
+        pipe_lines.append(f'context = "{_toml_string(p.context)}"')
     if p.target_lang:
         pipe_lines.append(f'target_lang = "{_toml_string(p.target_lang)}"')
+    if p.rag_model:
+        pipe_lines.append(f'rag_model = "{_toml_string(p.rag_model)}"')
+    if p.rag_chunker:
+        pipe_lines.append(f'rag_chunker = "{_toml_string(p.rag_chunker)}"')
     if pipe_lines:
         lines.append("")
         lines.append("[pipeline]")

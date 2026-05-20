@@ -10,11 +10,15 @@ export type Mode = "full" | "index-only";
 export interface PipelineDefaultsSchema {
   model_size: string;
   diarize?: boolean | null;
+  num_speakers: string;
   llm_mode: string;
   llm_provider_profile: string;
   llm_key_name: string;
   llm_model: string;
+  context: string;
   target_lang: string;
+  rag_model: string;
+  rag_chunker: string;
 }
 
 export interface ShowMeta {
