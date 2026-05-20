@@ -394,14 +394,26 @@ def _rank_normalize(results: list[dict]) -> list[dict]:
 
 
 @lru_cache(maxsize=4)
+def _get_retriever_cached(model: str) -> Retriever:
+    return Retriever(model=model, local=get_index_store())
+
+
 def get_retriever(model: str = DEFAULT_MODEL) -> Retriever:
     """Process-wide cached Retriever for a given model.
 
     Shared by the desktop API, MCP server, and anything else that wants a
     hybrid retriever against the default IndexStore. Bot instances that need
     a custom index path keep their own Retriever cache.
+
+    The model is resolved before the cache lookup so ``get_retriever()`` and
+    ``get_retriever(DEFAULT_MODEL)`` hit the same entry (a bare ``lru_cache``
+    keys on the literal call args and would build two embedders).
     """
-    return Retriever(model=model, local=get_index_store())
+    return _get_retriever_cached(model)
+
+
+# Tests and reindex flows clear the embedder cache through this name.
+get_retriever.cache_clear = _get_retriever_cached.cache_clear  # type: ignore[attr-defined]
 
 
 def merge_results(

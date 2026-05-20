@@ -23,6 +23,10 @@ Environment:
 
 from __future__ import annotations
 
+from collections import defaultdict
+from pathlib import Path
+from typing import NamedTuple
+
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
@@ -36,7 +40,6 @@ from podcodex.rag.defaults import (
 )
 from podcodex.rag.index_store import get_index_store
 from podcodex.rag.retriever import get_retriever, merge_results
-from podcodex.rag.store import collection_name
 
 mcp = FastMCP("podcodex")
 # Internal HTTP route is "/" so when the sub-app is mounted at /mcp by
@@ -44,25 +47,86 @@ mcp = FastMCP("podcodex")
 mcp.settings.streamable_http_path = "/"
 
 
-def _default_collections_meta() -> list[tuple[str, dict]]:
-    """(name, meta) pairs for collections indexed under the default model+chunker."""
-    info = get_index_store().get_all_collection_info()
-    return [
-        (name, meta)
-        for name, meta in info.items()
-        if meta.get("model") == DEFAULT_MODEL
-        and meta.get("chunker") == DEFAULT_CHUNKING
-    ]
+class _Col(NamedTuple):
+    """A resolved collection the MCP tools query: its name, embedding model
+    (needed to build the right retriever), and human-readable show name."""
+
+    name: str
+    model: str
+    show: str
 
 
-def _resolve_collections(show: str | None) -> list[str]:
-    """Collection names for default model+chunker, optionally filtered by show (case-insensitive)."""
+def _show_rag_prefs() -> dict[str, tuple[str, str]]:
+    """Lowercased show name -> (rag_model, rag_chunker) from each ``show.toml``.
+
+    Shows with no RAG preference set are omitted so the resolver falls
+    through to the global default. The MCP process never runs
+    ``create_app()``, so this reads ``config.json`` directly rather than
+    through the IndexStore show-folder resolver.
+    """
+    prefs: dict[str, tuple[str, str]] = {}
+    try:
+        from podcodex.core.app_config import load_config
+        from podcodex.ingest.show import load_show_meta
+
+        folders = load_config().show_folders
+    except Exception:
+        return prefs
+    for folder_path in folders:
+        folder = Path(folder_path)
+        if not folder.is_dir():
+            continue
+        meta = load_show_meta(folder)
+        if meta is None:
+            continue
+        model = meta.pipeline.rag_model
+        chunker = meta.pipeline.rag_chunker
+        if model or chunker:
+            name = (meta.name or folder.name).strip().lower()
+            prefs[name] = (model or DEFAULT_MODEL, chunker or DEFAULT_CHUNKING)
+    return prefs
+
+
+def _pick_collection(
+    cols: list[tuple[str, dict]], pref: tuple[str, str] | None
+) -> _Col | None:
+    """Choose one collection for a show from its available collections.
+
+    Priority: the show's ``show.toml`` RAG preference, then the global
+    default (bge-m3 + semantic), then the first remaining collection by
+    name so a show indexed only under a non-default model stays reachable.
+    """
+    for model, chunker in [p for p in (pref,) if p] + [
+        (DEFAULT_MODEL, DEFAULT_CHUNKING)
+    ]:
+        for name, meta in cols:
+            if meta.get("model") == model and meta.get("chunker") == chunker:
+                return _Col(name, model, meta.get("show", ""))
+    for name, meta in sorted(cols, key=lambda c: c[0]):
+        return _Col(name, meta.get("model", DEFAULT_MODEL), meta.get("show", ""))
+    return None
+
+
+def _resolve_collections(show: str | None) -> list[_Col]:
+    """Collections the MCP tools should query, one per show.
+
+    Each show resolves to the single collection named by its ``show.toml``
+    RAG preference (falling back to the default model+chunker). Optionally
+    filtered to a single show (case-insensitive name match).
+    """
     target = (show or "").lower().strip()
-    return [
-        name
-        for name, meta in _default_collections_meta()
-        if not target or meta.get("show", "").lower() == target
-    ]
+    by_show: dict[str, list[tuple[str, dict]]] = defaultdict(list)
+    for name, meta in get_index_store().get_all_collection_info().items():
+        by_show[meta.get("show", "").lower()].append((name, meta))
+    prefs = _show_rag_prefs()
+    out: list[_Col] = []
+    for show_key in sorted(by_show):
+        if target and show_key != target:
+            continue
+        chosen = _pick_collection(by_show[show_key], prefs.get(show_key))
+        if chosen is not None:
+            out.append(chosen)
+    return out
 
 
 # Cache for ``list_shows`` date ranges. Keyed by (collection_name,
@@ -145,14 +209,14 @@ def list_shows() -> list[dict]:
 
     Call this first when the user asks what is indexed, or to discover
     valid ``show`` values for ``search`` / ``exact`` / ``get_context``.
-    Only shows built with the default model (bge-m3) and chunker
-    (semantic) are returned — other combinations are invisible to the
-    other tools.
+    Each show resolves to one collection: the embedding model and chunker
+    set in its PodCodex settings, or the default (bge-m3 + semantic) when
+    unset, so every indexed show is reachable.
 
     Returns:
         A list of ``{"show", "episodes", "first_pub_date", "last_pub_date"}``
         entries (the date fields are omitted when no episode carries a
-        publication date). Empty if no qualifying shows are indexed.
+        publication date). Empty if no shows are indexed.
     """
     store = get_index_store()
     try:
@@ -160,15 +224,14 @@ def list_shows() -> list[dict]:
     except Exception:
         mtime = 0.0
     out: list[dict] = []
-    for name, meta in _default_collections_meta():
-        show_name = meta.get("show", "")
-        entry: dict = {"show": show_name, "episodes": store.episode_count(name)}
-        key = (name, mtime)
+    for c in _resolve_collections(None):
+        entry: dict = {"show": c.show, "episodes": store.episode_count(c.name)}
+        key = (c.name, mtime)
         if key in _SHOW_DATE_CACHE:
             range_ = _SHOW_DATE_CACHE[key]
         else:
             try:
-                items = store.list_episodes_filtered(name)
+                items = store.list_episodes_filtered(c.name)
             except Exception:
                 items = []
             dates = sorted(i.get("pub_date", "") for i in items if i.get("pub_date"))
@@ -215,21 +278,19 @@ def list_episodes(
     if not collections:
         return []
     store = get_index_store()
-    meta_by_col = {name: meta for name, meta in _default_collections_meta()}
     out: list[dict] = []
-    for col in collections:
+    for c in collections:
         items = store.list_episodes_filtered(
-            col,
+            c.name,
             pub_date_min=pub_date_min,
             pub_date_max=pub_date_max,
             title_contains=title_contains,
             with_detail=True,
         )
-        show_name = meta_by_col.get(col, {}).get("show", "")
         for item in items:
             out.append(
                 {
-                    "show": show_name,
+                    "show": c.show,
                     "episode": item["episode"],
                     "episode_title": episode_display(item),
                     "pub_date": item.get("pub_date", ""),
@@ -262,9 +323,11 @@ def get_episode(show: str, episode: str) -> dict | None:
         description, source, chunk_count, duration, speakers}`` — or
         ``None`` if the episode is not indexed.
     """
-    col = collection_name(show, DEFAULT_MODEL, DEFAULT_CHUNKING)
+    collections = _resolve_collections(show)
+    if not collections:
+        return None
     store = get_index_store()
-    rec = store.get_episode(col, episode)
+    rec = store.get_episode(collections[0].name, episode)
     if rec is None:
         return None
     return {
@@ -348,32 +411,37 @@ def search(
     collections = _resolve_collections(show)
     if not collections:
         return []
-    ret = get_retriever()
-    # Encode the query once across all collections — BGE-M3 encode is the
-    # dominant cost per call.
-    qv = ret.encode_query(query)
+    # Group by embedding model: each model needs its own retriever, and the
+    # query is encoded once per model (encoding is the dominant cost). Shows
+    # may resolve to different models, so a single query vector won't do.
+    by_model: dict[str, list[str]] = defaultdict(list)
+    for c in collections:
+        by_model[c.model].append(c.name)
     hits_by_col: dict[str, list[dict]] = {}
-    for col in collections:
-        try:
-            hits = ret.retrieve(
-                query,
-                col,
-                top_k=top_k,
-                alpha=ALPHA,
-                episode=episode,
-                episodes=episodes,
-                speaker=speaker,
-                pub_date_min=pub_date_min,
-                pub_date_max=pub_date_max,
-                query_vector=qv,
-            )
-        except ValueError:
-            raise
-        except Exception:
-            logger.exception(f"search: collection {col!r} failed; skipping")
-            continue
-        if hits:
-            hits_by_col[col] = hits
+    for model, cols in by_model.items():
+        ret = get_retriever(model)
+        qv = ret.encode_query(query)
+        for col in cols:
+            try:
+                hits = ret.retrieve(
+                    query,
+                    col,
+                    top_k=top_k,
+                    alpha=ALPHA,
+                    episode=episode,
+                    episodes=episodes,
+                    speaker=speaker,
+                    pub_date_min=pub_date_min,
+                    pub_date_max=pub_date_max,
+                    query_vector=qv,
+                )
+            except ValueError:
+                raise
+            except Exception:
+                logger.exception(f"search: collection {col!r} failed; skipping")
+                continue
+            if hits:
+                hits_by_col[col] = hits
     merged = merge_results(hits_by_col, top_k=top_k)
     return [_trim(chunk) for chunk, _col in merged]
 
@@ -431,13 +499,12 @@ def exact(
     collections = _resolve_collections(show)
     if not collections:
         return []
-    ret = get_retriever()
     out: list[dict] = []
-    for col in collections:
+    for c in collections:
         try:
-            matches = ret.exact(
+            matches = get_retriever(c.model).exact(
                 query,
-                col,
+                c.name,
                 episode=episode,
                 episodes=episodes,
                 speaker=speaker,
@@ -447,7 +514,7 @@ def exact(
         except ValueError:
             raise
         except Exception:
-            logger.exception(f"exact: collection {col!r} failed; skipping")
+            logger.exception(f"exact: collection {c.name!r} failed; skipping")
             continue
         for match in matches:
             out.append(_trim(match))
@@ -494,9 +561,11 @@ def get_context(
         and ``episode_number``). Empty list if the episode or
         ``chunk_index`` is not found.
     """
-    col = collection_name(show, DEFAULT_MODEL, DEFAULT_CHUNKING)
+    collections = _resolve_collections(show)
+    if not collections:
+        return []
     chunks = get_index_store().get_chunk_window(
-        col, episode, chunk_index, window=window
+        collections[0].name, episode, chunk_index, window=window
     )
     return [_trim(c) for c in chunks]
 
@@ -526,7 +595,7 @@ def speaker_stats(show: str | None = None) -> list[dict]:
     collections = _resolve_collections(show)
     if not collections:
         return []
-    return get_index_store().speaker_stats_multi(collections)
+    return get_index_store().speaker_stats_multi([c.name for c in collections])
 
 
 def main() -> None:

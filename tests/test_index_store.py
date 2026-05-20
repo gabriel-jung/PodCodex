@@ -237,6 +237,21 @@ def test_search_vector_returns_self_first(tmp_path):
     assert hits[0]["text"] == "first"
 
 
+def test_search_vector_rejects_dim_mismatch(tmp_path):
+    """A query vector whose width differs from the collection raises rather
+    than failing silently into empty results or wrong rankings."""
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=4)
+    s.save_chunks(
+        "c",
+        "e",
+        [{"text": "x", "episode": "e", "start": 0.0, "end": 1.0}],
+        _rng_embeddings(1, dim=4),
+    )
+    with pytest.raises(ValueError, match="dim"):
+        s.search_vector("c", np.zeros(8, dtype=np.float32), top_k=1)
+
+
 def test_search_vector_episode_filter(tmp_path):
     s = _store(tmp_path)
     s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=4)

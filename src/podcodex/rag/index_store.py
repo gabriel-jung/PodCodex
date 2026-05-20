@@ -336,6 +336,9 @@ class IndexStore:
         self._fts_ready: set[str] = set()
         self._pub_date_ready: set[str] = set()
         self._episode_title_ready: set[str] = set()
+        # (index_mtime, collection-info); collection metadata is read on
+        # every MCP tool call, bot-access request, and vector search.
+        self._collection_info_cache: tuple[float, dict[str, dict]] | None = None
 
     @property
     def path(self) -> Path:
@@ -710,9 +713,18 @@ class IndexStore:
         return self.get_all_collection_info().get(name)
 
     def get_all_collection_info(self) -> dict[str, dict]:
-        """Return ``{collection_name: {show, model, chunker, dim}}`` in one scan."""
+        """Return ``{collection_name: {show, model, chunker, dim}}``.
+
+        Cached against ``index_mtime`` so the table scan runs once per
+        on-disk change rather than once per caller (hot path: MCP tools,
+        bot-access, the ``search_vector`` dim guard).
+        """
+        mtime = self.index_mtime()
+        cached = self._collection_info_cache
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
         rows = self._collections_table().search().limit(10_000).to_list()
-        return {
+        info = {
             r["name"]: {
                 "show": r["show"],
                 "model": r["model"],
@@ -722,6 +734,8 @@ class IndexStore:
             for r in rows
             if r.get("name")
         }
+        self._collection_info_cache = (mtime, info)
+        return info
 
     def count_rows(self, collection: str) -> int:
         """Total chunk count for a collection. 0 if the collection is empty/unknown."""
@@ -1109,6 +1123,16 @@ class IndexStore:
         """
         if not self.collection_exists(collection):
             return []
+        # Guard against an embedder/collection mismatch: a wrong-dim vector
+        # raises a raw LanceDB error (swallowed upstream into empty results),
+        # and a same-dim wrong-model vector silently ranks nonsense. Fail loud.
+        info = self.get_collection_info(collection)
+        if info is not None and query_vec.shape[-1] != info["dim"]:
+            raise ValueError(
+                f"query vector dim {query_vec.shape[-1]} does not match "
+                f"collection '{collection}' dim {info['dim']} "
+                f"(model {info.get('model')!r}): embedder/collection mismatch"
+            )
         t = self._table(collection)
         # ``metric="cosine"`` matters for unnormalized embedders (Perplexity's
         # context model emits int8-quantized unnormalized vectors with

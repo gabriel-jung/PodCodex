@@ -66,7 +66,10 @@ def test_list_shows_returns_indexed_shows():
     assert shows == [{"show": "My Show", "episodes": 1}]
 
 
-def test_list_shows_skips_non_default_combos(tmp_path):
+def test_list_shows_includes_non_default_combo_shows(tmp_path):
+    """A show indexed only under a non-default model still resolves: with no
+    default-model collection and no show.toml preference, the resolver falls
+    back to the show's sole collection."""
     store = rag_index_store.get_index_store()
     store.ensure_collection(
         "other__e5-small__semantic",
@@ -76,21 +79,56 @@ def test_list_shows_skips_non_default_combos(tmp_path):
         dim=DIM,
     )
     shows = mcp_server.list_shows()
-    assert [s["show"] for s in shows] == ["My Show"]
+    assert sorted(s["show"] for s in shows) == ["My Show", "Other"]
 
 
 def test_resolve_collections_empty_show_returns_all_defaults():
     cols = mcp_server._resolve_collections(None)
-    assert cols == [collection_name("My Show", "bge-m3", "semantic")]
+    assert [c.name for c in cols] == [collection_name("My Show", "bge-m3", "semantic")]
 
 
 def test_resolve_collections_case_insensitive():
     cols = mcp_server._resolve_collections("my show")
-    assert cols == [collection_name("My Show", "bge-m3", "semantic")]
+    assert [c.name for c in cols] == [collection_name("My Show", "bge-m3", "semantic")]
 
 
 def test_resolve_collections_unknown_show_returns_empty():
     assert mcp_server._resolve_collections("Nope") == []
+
+
+def _meta(model: str, chunker: str = "semantic", show: str = "S") -> dict:
+    return {"model": model, "chunker": chunker, "show": show}
+
+
+def test_pick_collection_prefers_show_preference():
+    cols = [
+        ("s__bge-m3__semantic", _meta("bge-m3")),
+        ("s__e5-large__speaker", _meta("e5-large", "speaker")),
+    ]
+    chosen = mcp_server._pick_collection(cols, pref=("e5-large", "speaker"))
+    assert (chosen.name, chosen.model) == ("s__e5-large__speaker", "e5-large")
+
+
+def test_pick_collection_falls_back_to_default_when_pref_absent():
+    cols = [
+        ("s__bge-m3__semantic", _meta("bge-m3")),
+        ("s__e5-large__speaker", _meta("e5-large", "speaker")),
+    ]
+    chosen = mcp_server._pick_collection(cols, pref=None)
+    assert chosen.model == "bge-m3"
+
+
+def test_pick_collection_falls_back_to_first_when_no_default():
+    cols = [
+        ("s__e5-large__speaker", _meta("e5-large", "speaker")),
+        ("s__e5-small__semantic", _meta("e5-small")),
+    ]
+    chosen = mcp_server._pick_collection(cols, pref=None)
+    assert chosen.name == "s__e5-large__speaker"  # first by name
+
+
+def test_pick_collection_empty_returns_none():
+    assert mcp_server._pick_collection([], pref=None) is None
 
 
 def test_trim_shape_prefers_rss_title():
