@@ -120,16 +120,25 @@ export function stripHtml(html: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/** Build a default LLM context string from show metadata and episode info. */
+/** Build the LLM context for a run by merging the show-level description with
+ *  the current episode's title and description. The show side prefers an
+ *  explicit ``pipeline.context`` from show.toml; if absent, a short summary is
+ *  built from show metadata. The episode side is always appended fresh, so
+ *  per-episode info (title + description) never leaks back into the show
+ *  config when the user saves run settings to the show. */
 export function buildDefaultContext(episode: Episode, showMeta: ShowMeta | null | undefined): string {
-  const parts: string[] = [];
-  if (showMeta?.name) parts.push(showMeta.name);
-  if (showMeta?.language) parts.push(`${showMeta.language} podcast`);
-  if (showMeta?.speakers?.length) parts.push(`hosted by ${showMeta.speakers.join(" and ")}`);
-  if (episode.title) parts.push(`episode: ${episode.title}`);
-  let ctx = parts.join(", ");
-  if (episode.description) ctx += `\nDescription: ${stripHtml(episode.description)}`;
-  return ctx;
+  const showSummary: string[] = [];
+  if (showMeta?.name) showSummary.push(showMeta.name);
+  if (showMeta?.language) showSummary.push(`${showMeta.language} podcast`);
+  if (showMeta?.speakers?.length) showSummary.push(`hosted by ${showMeta.speakers.join(" and ")}`);
+
+  const showPart = (showMeta?.pipeline?.context || "").trim() || showSummary.join(", ");
+
+  const episodeLines: string[] = [];
+  if (episode.title) episodeLines.push(`Episode: ${episode.title}`);
+  if (episode.description) episodeLines.push(`Description: ${stripHtml(episode.description)}`);
+
+  return [showPart, episodeLines.join("\n")].filter(Boolean).join("\n\n");
 }
 
 /** Derive a show name from metadata or audio path. */

@@ -1,21 +1,22 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
 import { updateShowMeta, moveShow, deleteShow } from "@/api/client";
 import { removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
-import { useEpisodeStore } from "@/stores";
+import { useIndexConfig } from "@/hooks/useIndexConfig";
+import { useLLMProviders } from "@/hooks/useLLMProviders";
+import { useProviderProfiles } from "@/hooks/useProviderProfiles";
+import { useApiKeys } from "@/hooks/useApiKeys";
 import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { errorMessage, inputWidth, selectClass, splitPath } from "@/lib/utils";
 import FolderLocationFields from "@/components/common/FolderLocationFields";
-import PipelineSettings from "./PipelineSettings";
 import ShowAccessSection from "./ShowAccessSection";
 import BundleExportSection from "./BundleExportSection";
 import { StatusDot } from "@/components/ui/status-dot";
-import { AdvancedFieldset } from "@/components/ui/advanced-fieldset";
 import { FolderOpen, Trash2 } from "lucide-react";
 
 interface ShowSettingsProps {
@@ -33,13 +34,25 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const [rssUrl, setRssUrl] = useState(meta.rss_url);
   const [youtubeUrl, setYoutubeUrl] = useState(meta.youtube_url ?? "");
   const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
+  // ── Per-show pipeline config (show.toml [pipeline]) ──
+  // Empty string / null means "inherit the app default" (Settings, Pipeline).
   const [pipeModelSize, setPipeModelSize] = useState(meta.pipeline?.model_size ?? "");
-  const [pipeDiarize, setPipeDiarize] = useState(meta.pipeline?.diarize ?? false);
+  const [pipeDiarize, setPipeDiarize] = useState<boolean | null>(meta.pipeline?.diarize ?? null);
+  const [pipeNumSpeakers, setPipeNumSpeakers] = useState(meta.pipeline?.num_speakers ?? "");
   const [pipeLlmMode, setPipeLlmMode] = useState(meta.pipeline?.llm_mode ?? "");
   const [pipeLlmProviderProfile, setPipeLlmProviderProfile] = useState(meta.pipeline?.llm_provider_profile ?? "");
   const [pipeLlmKeyName, setPipeLlmKeyName] = useState(meta.pipeline?.llm_key_name ?? "");
   const [pipeLlmModel, setPipeLlmModel] = useState(meta.pipeline?.llm_model ?? "");
+  const [pipeContext, setPipeContext] = useState(meta.pipeline?.context ?? "");
   const [pipeTargetLang, setPipeTargetLang] = useState(meta.pipeline?.target_lang ?? "");
+  const [pipeRagModel, setPipeRagModel] = useState(meta.pipeline?.rag_model ?? "");
+  const [pipeRagChunker, setPipeRagChunker] = useState(meta.pipeline?.rag_chunker ?? "");
+
+  const { data: indexConfig } = useIndexConfig();
+  const { whisperModels } = useLLMProviders();
+  const { profiles } = useProviderProfiles();
+  const { keys } = useApiKeys();
+  const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
 
   // ── Move folder ──
   const { parent: folderParentDefault, basename: folderBasename, sep: pathSep } = splitPath(folder);
@@ -56,12 +69,16 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     setYoutubeUrl(meta.youtube_url ?? "");
     setArtworkUrl(meta.artwork_url);
     setPipeModelSize(meta.pipeline?.model_size ?? "");
-    setPipeDiarize(meta.pipeline?.diarize ?? false);
+    setPipeDiarize(meta.pipeline?.diarize ?? null);
+    setPipeNumSpeakers(meta.pipeline?.num_speakers ?? "");
     setPipeLlmMode(meta.pipeline?.llm_mode ?? "");
     setPipeLlmProviderProfile(meta.pipeline?.llm_provider_profile ?? "");
     setPipeLlmKeyName(meta.pipeline?.llm_key_name ?? "");
     setPipeLlmModel(meta.pipeline?.llm_model ?? "");
+    setPipeContext(meta.pipeline?.context ?? "");
     setPipeTargetLang(meta.pipeline?.target_lang ?? "");
+    setPipeRagModel(meta.pipeline?.rag_model ?? "");
+    setPipeRagChunker(meta.pipeline?.rag_chunker ?? "");
   }, [meta]);
 
   const isDirty =
@@ -71,12 +88,16 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     youtubeUrl !== (meta.youtube_url ?? "") ||
     artworkUrl !== meta.artwork_url ||
     pipeModelSize !== (meta.pipeline?.model_size ?? "") ||
-    pipeDiarize !== (meta.pipeline?.diarize ?? false) ||
+    pipeDiarize !== (meta.pipeline?.diarize ?? null) ||
+    pipeNumSpeakers !== (meta.pipeline?.num_speakers ?? "") ||
     pipeLlmMode !== (meta.pipeline?.llm_mode ?? "") ||
     pipeLlmProviderProfile !== (meta.pipeline?.llm_provider_profile ?? "") ||
     pipeLlmKeyName !== (meta.pipeline?.llm_key_name ?? "") ||
     pipeLlmModel !== (meta.pipeline?.llm_model ?? "") ||
-    pipeTargetLang !== (meta.pipeline?.target_lang ?? "");
+    pipeContext !== (meta.pipeline?.context ?? "") ||
+    pipeTargetLang !== (meta.pipeline?.target_lang ?? "") ||
+    pipeRagModel !== (meta.pipeline?.rag_model ?? "") ||
+    pipeRagChunker !== (meta.pipeline?.rag_chunker ?? "");
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -90,11 +111,15 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         pipeline: {
           model_size: pipeModelSize,
           diarize: pipeDiarize,
+          num_speakers: pipeNumSpeakers,
           llm_mode: pipeLlmMode,
           llm_provider_profile: pipeLlmProviderProfile,
           llm_key_name: pipeLlmKeyName,
           llm_model: pipeLlmModel,
+          context: pipeContext,
           target_lang: pipeTargetLang,
+          rag_model: pipeRagModel,
+          rag_chunker: pipeRagChunker,
         },
       }),
     onSuccess: () => {
@@ -124,7 +149,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   useEffect(() => {
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [name, language, rssUrl, youtubeUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeLlmMode, pipeLlmProviderProfile, pipeLlmKeyName, pipeLlmModel, pipeTargetLang]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [name, language, rssUrl, youtubeUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeNumSpeakers, pipeLlmMode, pipeLlmProviderProfile, pipeLlmKeyName, pipeLlmModel, pipeContext, pipeTargetLang, pipeRagModel, pipeRagChunker]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const moveMutation = useMutation({
     mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
@@ -193,14 +218,6 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       onConfirm: () => moveMutation.mutate({ newPath: destPath, moveFiles: moveFilesRef.current }),
     });
   };
-
-  // ── Episode filters ──
-  const {
-    minDurationMinutes, setMinDurationMinutes,
-    maxDurationMinutes, setMaxDurationMinutes,
-    titleInclude, setTitleInclude,
-    titleExclude, setTitleExclude,
-  } = useEpisodeStore();
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -279,121 +296,168 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         )}
       </SettingSection>
 
-      {/* ── Episode Filters ── */}
-      <SettingSection title="Episode Filters" description="Filter which episodes appear in the list.">
-        <SettingRow label="Min duration" help="Hide episodes shorter than this. 0 = no limit.">
-          <div className="flex items-center gap-1.5">
-            <input
-              type="number"
-              min={0}
-              step={5}
-              value={minDurationMinutes || ""}
-              onChange={(e) => setMinDurationMinutes(Math.max(0, Number(e.target.value)))}
-              placeholder="0"
-              className={`input ${inputWidth.numeric} text-center`}
-            />
-            <span className="text-xs text-muted-foreground">min</span>
-          </div>
-        </SettingRow>
-        <SettingRow label="Max duration" help="Hide episodes longer than this. 0 = no limit.">
-          <div className="flex items-center gap-1.5">
-            <input
-              type="number"
-              min={0}
-              step={5}
-              value={maxDurationMinutes || ""}
-              onChange={(e) => setMaxDurationMinutes(Math.max(0, Number(e.target.value)))}
-              placeholder="0"
-              className={`input ${inputWidth.numeric} text-center`}
-            />
-            <span className="text-xs text-muted-foreground">min</span>
-          </div>
-        </SettingRow>
-        <SettingRow label="Title contains" help="Only keep episodes whose title contains this text.">
-          <input
-            value={titleInclude}
-            onChange={(e) => setTitleInclude(e.target.value)}
-            placeholder="filter..."
-            className={`input ${inputWidth.short}`}
-          />
-        </SettingRow>
-        <SettingRow label="Title excludes" help="Hide episodes whose title contains this text.">
-          <input
-            value={titleExclude}
-            onChange={(e) => setTitleExclude(e.target.value)}
-            placeholder="exclude..."
-            className={`input ${inputWidth.short}`}
-          />
-        </SettingRow>
-      </SettingSection>
-
-      <PipelineSettings language={language} />
-
-      {/* ── Show Pipeline Defaults (overrides app-level for status comparison) ── */}
-      <AdvancedFieldset
-        legend="Show pipeline overrides"
-        description="Pin this show to specific pipeline settings. Empty values fall back to the app-level defaults. Episodes run with different settings are flagged as outdated."
+      {/* ── Transcription ── */}
+      <SettingSection
+        title="Transcription"
+        description={'How episodes of this show are turned into text. Each setting overrides the matching app default (Settings → Pipeline); leave it on "App default" to inherit.'}
       >
-        <SettingRow label="Whisper model" help="Expected transcription model. Empty = app default.">
-          <input
+        <SettingRow label="Transcription model" help="Bigger models are more accurate but slower.">
+          <select
             value={pipeModelSize}
             onChange={(e) => setPipeModelSize(e.target.value)}
-            placeholder="(use default)"
-            className={`input ${inputWidth.short}`}
-          />
+            className={selectClass}
+          >
+            <option value="">App default</option>
+            {Object.entries(whisperModels).map(([key, label]) => (
+              <option key={key} value={key}>{label}</option>
+            ))}
+          </select>
         </SettingRow>
-        <SettingRow label="Diarize" help="Detect and label different speakers.">
-          <input
-            type="checkbox"
-            checked={pipeDiarize}
-            onChange={(e) => setPipeDiarize(e.target.checked)}
-            className="accent-primary"
-          />
+        <SettingRow label="Identify speakers" help="Detect who is talking and label each line with a speaker.">
+          <select
+            value={pipeDiarize === null ? "" : pipeDiarize ? "yes" : "no"}
+            onChange={(e) =>
+              setPipeDiarize(e.target.value === "" ? null : e.target.value === "yes")
+            }
+            className={selectClass}
+          >
+            <option value="">App default</option>
+            <option value="yes">On</option>
+            <option value="no">Off</option>
+          </select>
         </SettingRow>
-        <SettingRow label="LLM mode" help="Where the AI runs: Ollama (local) or a cloud API.">
+        {pipeDiarize === true && (
+          <SettingRow label="Speaker count" help="How many people speak in the show. Leave blank to detect automatically.">
+            <input
+              type="number"
+              min={1}
+              value={pipeNumSpeakers}
+              onChange={(e) => setPipeNumSpeakers(e.target.value)}
+              placeholder="Auto"
+              className={`input ${inputWidth.numeric}`}
+            />
+          </SettingRow>
+        )}
+      </SettingSection>
+
+      {/* ── AI correction & translation ── */}
+      <SettingSection
+        title="AI correction & translation"
+        description="The AI that cleans up raw transcripts and translates them."
+      >
+        <SettingRow
+          label="Where the AI runs"
+          help="Ollama runs on your own computer. Cloud API uses a paid online provider. Manual lets you copy the prompts and run them yourself."
+        >
           <select
             value={pipeLlmMode}
             onChange={(e) => setPipeLlmMode(e.target.value)}
             className={selectClass}
           >
-            <option value="">(use default)</option>
-            <option value="ollama">Ollama</option>
-            <option value="api">API</option>
+            <option value="">App default</option>
+            <option value="api">Cloud API</option>
+            <option value="ollama">Ollama (local)</option>
+            <option value="manual">Manual (copy-paste prompts)</option>
           </select>
         </SettingRow>
-        <SettingRow label="LLM provider" help="Profile name from Settings → Credentials (built-in or custom). Empty = app default.">
-          <input
-            value={pipeLlmProviderProfile}
-            onChange={(e) => setPipeLlmProviderProfile(e.target.value)}
-            placeholder="(use default)"
-            className={`input ${inputWidth.short}`}
-          />
-        </SettingRow>
-        <SettingRow label="LLM key" help="API key name from the pool. Empty = app default.">
-          <input
-            value={pipeLlmKeyName}
-            onChange={(e) => setPipeLlmKeyName(e.target.value)}
-            placeholder="(use default)"
-            className={`input ${inputWidth.short}`}
-          />
-        </SettingRow>
-        <SettingRow label="LLM model" help="Specific model name. Empty = app default.">
+        {pipeLlmMode === "api" && (
+          <>
+            <SettingRow label="AI provider" help="Which provider profile to use. Manage profiles in Settings → Credentials.">
+              <select
+                value={pipeLlmProviderProfile}
+                onChange={(e) => setPipeLlmProviderProfile(e.target.value)}
+                className={selectClass}
+              >
+                <option value="">App default</option>
+                {apiProfiles.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.name}{p.builtin ? "" : " (custom)"}
+                  </option>
+                ))}
+              </select>
+            </SettingRow>
+            <SettingRow label="AI API key" help="Which saved API key to use. Add keys in Settings → Credentials.">
+              <select
+                value={pipeLlmKeyName}
+                onChange={(e) => setPipeLlmKeyName(e.target.value)}
+                className={selectClass}
+              >
+                <option value="">App default</option>
+                {keys.map((k) => (
+                  <option key={k.name} value={k.name}>{k.name}</option>
+                ))}
+              </select>
+            </SettingRow>
+          </>
+        )}
+        <SettingRow label="AI model" help="Specific model name. Leave blank to use the provider's default.">
           <input
             value={pipeLlmModel}
             onChange={(e) => setPipeLlmModel(e.target.value)}
-            placeholder="(use default)"
+            placeholder="App default"
             className={`input ${inputWidth.short}`}
           />
         </SettingRow>
-        <SettingRow label="Target language" help="Translation target language. Empty = app default.">
+        <SettingRow
+          label="About this show"
+          help="A short description of the show, its hosts and recurring topics. The AI reads it to make better corrections."
+          below={
+            <textarea
+              value={pipeContext}
+              onChange={(e) => setPipeContext(e.target.value)}
+              placeholder="Describe the show, hosts, recurring topics..."
+              className={`input resize-y ${inputWidth.full} min-h-[4rem]`}
+            />
+          }
+        >
+          <span />
+        </SettingRow>
+        <SettingRow label="Translate into" help="Language episodes are translated into.">
           <input
             value={pipeTargetLang}
             onChange={(e) => setPipeTargetLang(e.target.value)}
-            placeholder="(use default)"
+            placeholder="App default"
             className={`input ${inputWidth.short}`}
           />
         </SettingRow>
-      </AdvancedFieldset>
+      </SettingSection>
+
+      {/* ── Search index ── */}
+      <SettingSection
+        title="Search index"
+        description="The embeddings that make this show searchable, used by AI search and the MCP server."
+      >
+        <SettingRow
+          label="Search: embedding model"
+          help="Model used to make episodes searchable. AI search queries the model set here."
+        >
+          <select
+            value={pipeRagModel}
+            onChange={(e) => setPipeRagModel(e.target.value)}
+            className={selectClass}
+          >
+            <option value="">App default (BGE-M3)</option>
+            {Object.entries(indexConfig?.models ?? {}).map(([key, m]) => (
+              <option key={key} value={key}>{m.label}</option>
+            ))}
+          </select>
+        </SettingRow>
+        <SettingRow
+          label="Search: chunking"
+          help="How transcripts are split into searchable chunks. Pairs with the embedding model above."
+        >
+          <select
+            value={pipeRagChunker}
+            onChange={(e) => setPipeRagChunker(e.target.value)}
+            className={selectClass}
+          >
+            <option value="">App default (semantic)</option>
+            {Object.keys(indexConfig?.chunking_strategies ?? {}).map((key) => (
+              <option key={key} value={key}>{key}</option>
+            ))}
+          </select>
+        </SettingRow>
+      </SettingSection>
 
       {/* ── Discord bot access ── */}
       <ShowAccessSection show={meta.name} />

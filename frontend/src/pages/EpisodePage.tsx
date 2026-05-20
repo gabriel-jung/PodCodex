@@ -25,7 +25,7 @@ import EditorialHeader from "@/components/layout/EditorialHeader";
 import AppSidebar from "@/components/layout/AppSidebar";
 import type { Episode, ShowMeta, VersionEntry } from "@/api/types";
 import { standaloneEpisode } from "@/lib/standaloneEpisode";
-import { useAudioStore, useEpisodeStore, useTaskStore } from "@/stores";
+import { useAudioStore, useEpisodeStore, useTaskStore, useSeedPipelineFromShow } from "@/stores";
 import { Button } from "@/components/ui/button";
 import PanelLoading from "@/components/common/PanelLoading";
 
@@ -121,6 +121,8 @@ export default function EpisodePage({
     queryFn: () => getShowMeta(folder!),
     enabled: !!folder,
   });
+
+  useSeedPipelineFromShow(folder, meta?.pipeline, !!meta);
 
   const { data: episodes } = useQuery({
     queryKey: queryKeys.episodes(folder ?? "", pipelineDefaults),

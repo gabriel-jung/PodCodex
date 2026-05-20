@@ -70,7 +70,7 @@ export default function BundleExportSection({ folder, showName }: Props) {
   return (
     <SettingSection
       title="Sharing"
-      description="Bundle this show into a portable .podcodex archive — full content (transcripts + index) for sharing with another user, or index-only for selective bot deploy."
+      description="Bundle this show into a portable .podcodex archive: full content (transcripts plus index) for sharing with another user, or index-only for selective bot deploy."
     >
       <div className="space-y-3">
         <div>

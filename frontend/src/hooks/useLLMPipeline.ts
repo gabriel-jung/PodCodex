@@ -33,7 +33,10 @@ export function useLLMConfig(
   const applyLLMPreset = usePipelineConfigStore((s) => s.applyLLMPreset);
   const { keys: pooledKeys } = useApiKeys();
 
-  // Sync sourceLang and context when the episode or show changes
+  // Rebuild context on every episode/show change: show description + episode
+  // title/description are merged fresh. The user's per-run edits last until
+  // they switch episodes; the show-level part lives in show.toml and is
+  // edited from ShowSettings, never from here.
   const episodeId = episode?.id;
   const showName = showMeta?.name;
   useEffect(() => {

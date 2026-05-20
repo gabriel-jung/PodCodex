@@ -36,6 +36,7 @@ import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { getTranslateFailures, dismissTranslateFailures } from "@/api/llmFailures";
 import LanguageChipRack from "@/components/common/LanguageChipRack";
 import LLMControlsForm from "@/components/common/LLMControlsForm";
+import RunSettingsBanner from "@/components/common/RunSettingsBanner";
 import PipelineRunFooter from "@/components/common/PipelineRunFooter";
 
 // Backend identifies translations by a normalized filesystem-safe key.
@@ -167,6 +168,7 @@ export default function TranslatePanel() {
           )}
           {expanded && (
             <div className="px-4 pt-3 pb-4 space-y-4">
+              <RunSettingsBanner step="translate" />
               {!hasLLM && (
                 <MissingDependency
                   extra="pipeline"

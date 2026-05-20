@@ -32,6 +32,7 @@ import MissingDependency from "@/components/common/MissingDependency";
 import Segmented from "@/components/common/Segmented";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
 import PipelinePanel from "@/components/common/PipelinePanel";
+import RunSettingsBanner from "@/components/common/RunSettingsBanner";
 
 // The top row of the Language chip rack — these are always visible; anything
 // else falls under "Other" with an ISO-code input.
@@ -227,6 +228,7 @@ export default function TranscribePanel() {
       emptyMessage="No transcript yet."
       controls={
         <div className="px-4 pt-3 pb-4 space-y-4">
+          <RunSettingsBanner step="transcribe" />
           {gpuOutOfDate && (
             <div className="rounded-md border border-warning/40 bg-warning/5 p-2.5 text-xs text-muted-foreground flex items-start gap-2">
               <AlertCircle className="w-3 h-3 text-warning shrink-0 mt-0.5" />

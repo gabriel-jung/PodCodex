@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
-  getIndexConfig,
   getIndexStatus,
   startIndex,
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { getShowName } from "@/lib/utils";
+import { useIndexConfig } from "@/hooks/useIndexConfig";
 import { usePipelineTask } from "@/hooks/usePipelineTask";
 import { useInputVersions } from "@/hooks/useLLMPipeline";
 import { useCapabilities } from "@/hooks/useCapabilities";
@@ -16,6 +16,7 @@ import FormGrid from "@/components/common/FormGrid";
 import HelpLabel from "@/components/common/HelpLabel";
 import MissingDependency from "@/components/common/MissingDependency";
 import PipelinePanel from "@/components/common/PipelinePanel";
+import RunSettingsBanner from "@/components/common/RunSettingsBanner";
 import PipelineRunFooter from "@/components/common/PipelineRunFooter";
 import Segmented from "@/components/common/Segmented";
 import VersionPicker from "@/components/common/VersionPicker";
@@ -34,10 +35,7 @@ export default function IndexPanel() {
     optimisticPatch: () => ({ indexed: true }),
   });
 
-  const { data: config } = useQuery({
-    queryKey: queryKeys.indexConfig(),
-    queryFn: getIndexConfig,
-  });
+  const { data: config } = useIndexConfig();
 
   const { data: status } = useQuery({
     queryKey: queryKeys.indexStatus(audioPath ?? outputDir, showName),
@@ -52,15 +50,14 @@ export default function IndexPanel() {
   const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
   const indexModel = usePipelineConfigStore((s) => s.indexModel);
   const setIndexModel = usePipelineConfigStore((s) => s.setIndexModel);
-  const [chunking, setChunking] = useState("semantic");
+  const chunking = usePipelineConfigStore((s) => s.indexChunker);
+  const setChunking = usePipelineConfigStore((s) => s.setIndexChunker);
   const [chunkSize, setChunkSize] = useState(256);
   const [threshold, setThreshold] = useState(0.5);
   const [overwrite, setOverwrite] = useState(!!episode?.indexed);
   const [inspectTarget, setInspectTarget] = useState<{ model: string; chunking: string } | null>(null);
-  // Reset on episode switch only — preserve user toggle when status refetches.
   useEffect(() => {
     setOverwrite(!!episode?.indexed);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [episode?.id]);
 
   const startMutation = useMutation({
@@ -121,6 +118,7 @@ export default function IndexPanel() {
       emptyMessage="Episode not yet indexed."
       controls={
         <div className="px-4 pt-3 pb-4 space-y-4">
+          <RunSettingsBanner step="index" />
           <FormGrid>
             {inputVersions && inputVersions.length > 0 && (
               <>

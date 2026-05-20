@@ -20,7 +20,7 @@ import type { SecretStatus } from "@/api/config";
 import { Button } from "@/components/ui/button";
 import {
   Trash2, HardDrive, Cpu, RefreshCw, Puzzle, Download, X, Loader2,
-  Sun, Moon, Monitor, Keyboard, Palette, Mic, Sparkles, Database, Languages, Plug,
+  Sun, Moon, Monitor, Keyboard, Palette, Sparkles, Plug,
   KeyRound, Eye, EyeOff, Check, Zap, Plus, Lock, Search, Settings, Wrench,
 } from "lucide-react";
 import AppSidebar from "@/components/layout/AppSidebar";
@@ -33,17 +33,14 @@ import { useEffect, useMemo, useState } from "react";
 import { useTheme } from "@/hooks/useTheme";
 import { SHORTCUTS, Kbd } from "@/components/ShortcutsHelp";
 import { NullableNumberInput } from "@/components/ui/number-input";
-import PresetCards from "@/components/common/PresetCards";
+import { SettingRow, SettingSection } from "@/components/ui/setting-row";
+import { useIndexConfig } from "@/hooks/useIndexConfig";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { useApiKeys } from "@/hooks/useApiKeys";
 import { useProviderProfiles } from "@/hooks/useProviderProfiles";
-import {
-  TRANSCRIBE_PRESETS, LLM_PRESETS, INDEX_PRESETS,
-  CPU_LABELS, GPU_LABELS, CPU_MODELS, GPU_MODELS,
-  usePipelineConfigStore,
-} from "@/stores/pipelineConfigStore";
+import { usePipelineConfigStore } from "@/stores/pipelineConfigStore";
 import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
-import { selectClass } from "@/lib/utils";
+import { inputWidth, selectClass } from "@/lib/utils";
 
 // Plugins panel runs `uv sync --extra X` to install Python extras — only
 // meaningful when a venv exists (dev mode). The bundled sidecar has its
@@ -225,96 +222,60 @@ function ShortcutsPanel() {
 // ── Pipeline defaults ────────────────────────
 
 function PipelineDefaultsPanel() {
-  const { whisperModels, detectedKeys } = useLLMProviders();
+  const { whisperModels, detectedKeys, pipelineConfig } = useLLMProviders();
   const { profiles } = useProviderProfiles();
   const { keys: pooledKeys } = useApiKeys();
   const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
+  const { data: indexConfig } = useIndexConfig();
 
-  const transcribe = usePipelineConfigStore((s) => s.transcribe);
-  const setTranscribe = usePipelineConfigStore((s) => s.setTranscribe);
-  const transcribePreset = usePipelineConfigStore((s) => s.transcribePreset);
-  const applyTranscribePreset = usePipelineConfigStore((s) => s.applyTranscribePreset);
-
-  const llm = usePipelineConfigStore((s) => s.llm);
-  const setLLM = usePipelineConfigStore((s) => s.setLLM);
-  const llmPreset = usePipelineConfigStore((s) => s.llmPreset);
-  const applyLLMPreset = usePipelineConfigStore((s) => s.applyLLMPreset);
-
-  const targetLang = usePipelineConfigStore((s) => s.targetLang);
-  const setTargetLang = usePipelineConfigStore((s) => s.setTargetLang);
-
-  const indexModel = usePipelineConfigStore((s) => s.indexModel);
-  const setIndexModel = usePipelineConfigStore((s) => s.setIndexModel);
-  const indexPreset = usePipelineConfigStore((s) => s.indexPreset);
-  const applyIndexPreset = usePipelineConfigStore((s) => s.applyIndexPreset);
-
-  const cpuEntries = Object.entries(CPU_LABELS);
-  const gpuEntries = Object.entries(GPU_LABELS);
-  const modelHasLabel = CPU_MODELS.has(transcribe.modelSize) || GPU_MODELS.has(transcribe.modelSize);
-  const customModels = modelHasLabel
-    ? []
-    : Object.keys(whisperModels).filter((m) => !CPU_MODELS.has(m) && !GPU_MODELS.has(m));
+  // App-wide defaults. Each show inherits these unless it overrides them in
+  // its own Settings; episode and batch runs start from the show's resolved
+  // values.
+  const transcribe = usePipelineConfigStore((s) => s.appDefaults.transcribe);
+  const setTranscribe = usePipelineConfigStore((s) => s.setAppTranscribe);
+  const llm = usePipelineConfigStore((s) => s.appDefaults.llm);
+  const setLLM = usePipelineConfigStore((s) => s.setAppLLM);
+  const targetLang = usePipelineConfigStore((s) => s.appDefaults.targetLang);
+  const setTargetLang = usePipelineConfigStore((s) => s.setAppTargetLang);
+  const indexModel = usePipelineConfigStore((s) => s.appDefaults.indexModel);
+  const setIndexModel = usePipelineConfigStore((s) => s.setAppIndexModel);
+  const indexChunker = usePipelineConfigStore((s) => s.appDefaults.indexChunker);
+  const setIndexChunker = usePipelineConfigStore((s) => s.setAppIndexChunker);
 
   return (
-    <div className="space-y-10">
-      <div>
-        <p className="text-sm text-muted-foreground">
-          These values prefill every episode panel and the batch modal. Per-show
-          overrides live in each show&apos;s Settings tab; episode panels can
-          still tweak values for a single run.
-        </p>
-      </div>
+    <div className="space-y-8">
+      <p className="text-sm text-muted-foreground">
+        Defaults for every show on this computer. Each show can override these
+        in its own Settings; one-off tweaks made in an episode panel apply to
+        that run only.
+      </p>
 
-      <section className="space-y-3">
-        <h2 className="text-base font-semibold flex items-center gap-2">
-          <Mic className="w-4 h-4" /> Transcribe
-        </h2>
-        <PresetCards
-          presets={TRANSCRIBE_PRESETS}
-          active={transcribePreset}
-          onSelect={applyTranscribePreset}
-        />
-        <label className="block">
-          <span className="text-xs text-muted-foreground">Whisper model</span>
+      <SettingSection
+        title="Transcription"
+        description="How episodes are turned into text."
+      >
+        <SettingRow
+          label="Transcription model"
+          help="Bigger models are more accurate but slower. The CPU options work without a graphics card; the GPU options need one."
+        >
           <select
             value={transcribe.modelSize}
             onChange={(e) => setTranscribe({ modelSize: e.target.value })}
-            className={selectClass + " mt-1"}
+            className={selectClass}
+            disabled={!pipelineConfig}
           >
-            <optgroup label="CPU-friendly">
-              {cpuEntries.map(([key, label]) => (
-                <option key={key} value={key}>{key} — {label}</option>
-              ))}
-            </optgroup>
-            <optgroup label="GPU">
-              {gpuEntries.map(([key, label]) => (
-                <option key={key} value={key}>{key} — {label}</option>
-              ))}
-            </optgroup>
-            {customModels.length > 0 && (
-              <optgroup label="Other">
-                {customModels.map((m) => <option key={m} value={m}>{m}</option>)}
-              </optgroup>
-            )}
+            {pipelineConfig
+              ? Object.entries(whisperModels).map(([key, label]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))
+              : <option>Loading…</option>}
           </select>
-        </label>
-        <div className="space-y-2 text-sm">
-          <label className="flex items-start gap-2">
-            <input
-              type="checkbox"
-              checked={transcribe.diarize}
-              onChange={(e) => setTranscribe({ diarize: e.target.checked })}
-              className="mt-1"
-            />
-            <span>
-              Diarize speakers
-              <span className="block text-xs text-muted-foreground">
-                Detect and label different speakers (requires a Hugging Face token).
-              </span>
-            </span>
-          </label>
-          {transcribe.diarize && !detectedKeys.hf_token && (
-            <p className="pl-6 text-xs text-muted-foreground">
+        </SettingRow>
+        <SettingRow
+          label="Identify speakers"
+          help="Detect who is talking and label each line. Requires a Hugging Face token."
+          below={transcribe.diarize && !detectedKeys.hf_token ? (
+            <p className="text-xs text-muted-foreground">
               Hugging Face token needed.{" "}
               <a
                 href="?tab=credentials#HF_TOKEN"
@@ -329,55 +290,72 @@ function PipelineDefaultsPanel() {
               </a>
               .
             </p>
-          )}
-          <label className="flex items-start gap-2">
-            <input
-              type="checkbox"
-              checked={transcribe.clean}
-              onChange={(e) => setTranscribe({ clean: e.target.checked })}
-              className="mt-1"
-            />
-            <span>
-              Clean low-quality segments
-              <span className="block text-xs text-muted-foreground">
-                Drop garbled or off-mic segments that the model flags as low-confidence.
-              </span>
-            </span>
-          </label>
-        </div>
-        <label className="block">
-          <span className="text-xs text-muted-foreground">Batch size</span>
+          ) : undefined}
+        >
+          <select
+            value={transcribe.diarize ? "yes" : "no"}
+            onChange={(e) => setTranscribe({ diarize: e.target.value === "yes" })}
+            className={selectClass}
+          >
+            <option value="no">Off</option>
+            <option value="yes">On</option>
+          </select>
+        </SettingRow>
+        <SettingRow
+          label="Drop low-quality segments"
+          help="Remove garbled or off-mic lines that the model itself flags as unreliable. Leave off if you'd rather review and delete them by hand in the editor."
+        >
+          <select
+            value={transcribe.clean ? "yes" : "no"}
+            onChange={(e) => setTranscribe({ clean: e.target.value === "yes" })}
+            className={selectClass}
+          >
+            <option value="no">Off</option>
+            <option value="yes">On</option>
+          </select>
+        </SettingRow>
+        <SettingRow
+          label="GPU batch size"
+          help="How many audio chunks WhisperX processes at once on the GPU. Leave blank to auto-pick from VRAM (8 for ≤10 GB, 16 above). Lower it if you hit out-of-memory errors; raise it on big GPUs for more speed."
+        >
           <NullableNumberInput
             value={transcribe.batchSize}
             onChange={(batchSize) => setTranscribe({ batchSize })}
             placeholder="Auto"
             min={1}
-            className="input mt-1 w-24"
+            className={`input ${inputWidth.numeric}`}
           />
-          <span className="block text-xs text-muted-foreground mt-1">
-            Empty = auto-detect from VRAM (8 for ≤10&nbsp;GB, 16 above). Lower
-            if WhisperX runs out of memory; raise on a big GPU for more speed.
-          </span>
-        </label>
-      </section>
+        </SettingRow>
+      </SettingSection>
 
-      <section className="space-y-3">
-        <h2 className="text-base font-semibold flex items-center gap-2">
-          <Sparkles className="w-4 h-4" /> Correct &amp; Translate (LLM)
-        </h2>
-        <PresetCards
-          presets={LLM_PRESETS}
-          active={llmPreset}
-          onSelect={applyLLMPreset}
-        />
+      <SettingSection
+        title="AI correction & translation"
+        description="The AI that cleans up raw transcripts and translates them."
+      >
+        <SettingRow
+          label="Where the AI runs"
+          help="Ollama runs on your own computer. Cloud API uses a paid online provider. Manual lets you copy the prompts and run them yourself."
+        >
+          <select
+            value={llm.mode}
+            onChange={(e) => setLLM({ mode: e.target.value as typeof llm.mode })}
+            className={selectClass}
+          >
+            <option value="api">Cloud API</option>
+            <option value="ollama">Ollama (local)</option>
+            <option value="manual">Manual (copy-paste prompts)</option>
+          </select>
+        </SettingRow>
         {llm.mode === "api" && (
-          <div className="grid grid-cols-3 gap-3">
-            <label className="block">
-              <span className="text-xs text-muted-foreground">Provider</span>
+          <>
+            <SettingRow
+              label="AI provider"
+              help="Which provider profile to use. Manage profiles in Settings → Credentials."
+            >
               <select
                 value={llm.providerProfile}
                 onChange={(e) => setLLM({ providerProfile: e.target.value })}
-                className={selectClass + " mt-1"}
+                className={selectClass}
               >
                 <option value="">Pick…</option>
                 {apiProfiles.map((p) => (
@@ -386,13 +364,15 @@ function PipelineDefaultsPanel() {
                   </option>
                 ))}
               </select>
-            </label>
-            <label className="block">
-              <span className="text-xs text-muted-foreground">LLM API key</span>
+            </SettingRow>
+            <SettingRow
+              label="AI API key"
+              help="Which saved API key to use. Add keys in Settings → Credentials."
+            >
               <select
                 value={llm.keyName}
                 onChange={(e) => setLLM({ keyName: e.target.value })}
-                className={selectClass + " mt-1"}
+                className={selectClass}
               >
                 <option value="">
                   {pooledKeys.length === 0 ? "No keys yet" : "Pick…"}
@@ -400,64 +380,80 @@ function PipelineDefaultsPanel() {
                 {pooledKeys.map((k) => (
                   <option key={k.name} value={k.name}>
                     {k.name}
-                    {k.suggested_provider ? ` — ${k.suggested_provider}` : ""}
+                    {k.suggested_provider ? ` (${k.suggested_provider})` : ""}
                   </option>
                 ))}
               </select>
-            </label>
-            <label className="block">
-              <span className="text-xs text-muted-foreground">Model</span>
-              <input
-                value={llm.model}
-                onChange={(e) => setLLM({ model: e.target.value })}
-                placeholder="e.g. gpt-4o-mini"
-                className="input mt-1"
-              />
-            </label>
-          </div>
+            </SettingRow>
+          </>
         )}
-        {llm.mode === "ollama" && (
-          <label className="block">
-            <span className="text-xs text-muted-foreground">Ollama model</span>
+        {(llm.mode === "api" || llm.mode === "ollama") && (
+          <SettingRow
+            label="AI model"
+            help={llm.mode === "ollama"
+              ? "Model tag served by your local Ollama instance."
+              : "Specific model name. Leave blank to use the provider's default."}
+          >
             <input
               value={llm.model}
               onChange={(e) => setLLM({ model: e.target.value })}
-              placeholder="e.g. llama3.1:8b"
-              className="input mt-1"
+              placeholder={llm.mode === "ollama" ? "e.g. llama3.1:8b" : "e.g. gpt-4o-mini"}
+              className={`input ${inputWidth.medium}`}
             />
-          </label>
+          </SettingRow>
         )}
-        <label className="block">
-          <span className="text-xs text-muted-foreground flex items-center gap-1">
-            <Languages className="w-3 h-3" /> Default target language
-          </span>
+        <SettingRow
+          label="Translate into"
+          help="Language episodes are translated into."
+        >
           <input
             value={targetLang}
             onChange={(e) => setTargetLang(e.target.value)}
             placeholder="English"
-            className="input mt-1"
+            className={`input ${inputWidth.short}`}
           />
-        </label>
-      </section>
+        </SettingRow>
+      </SettingSection>
 
-      <section className="space-y-3">
-        <h2 className="text-base font-semibold flex items-center gap-2">
-          <Database className="w-4 h-4" /> Index (embeddings)
-        </h2>
-        <PresetCards
-          presets={INDEX_PRESETS}
-          active={indexPreset}
-          onSelect={applyIndexPreset}
-        />
-        <label className="block">
-          <span className="text-xs text-muted-foreground">Embedding model</span>
-          <input
+      <SettingSection
+        title="Search index"
+        description="The embeddings that make episodes searchable, used by AI search and the MCP server."
+      >
+        <SettingRow
+          label="Embedding model"
+          help="The model that turns transcript text into vectors so search can find passages by meaning. AI search queries whichever model is set here."
+        >
+          <select
             value={indexModel}
             onChange={(e) => setIndexModel(e.target.value)}
-            className="input mt-1 font-mono text-xs"
-          />
-        </label>
-      </section>
+            className={selectClass}
+            disabled={!indexConfig}
+          >
+            {indexConfig
+              ? Object.entries(indexConfig.models).map(([key, m]) => (
+                  <option key={key} value={key}>{m.label}</option>
+                ))
+              : <option>Loading…</option>}
+          </select>
+        </SettingRow>
+        <SettingRow
+          label="Chunking"
+          help="How transcripts are split before they are embedded. Semantic groups sentences with similar meaning; speaker groups consecutive lines from the same speaker."
+        >
+          <select
+            value={indexChunker}
+            onChange={(e) => setIndexChunker(e.target.value)}
+            className={selectClass}
+            disabled={!indexConfig}
+          >
+            {indexConfig
+              ? Object.keys(indexConfig.chunking_strategies).map((key) => (
+                  <option key={key} value={key}>{key}</option>
+                ))
+              : <option>Loading…</option>}
+          </select>
+        </SettingRow>
+      </SettingSection>
 
       <FlagPatternsSection />
     </div>
@@ -470,28 +466,31 @@ function FlagPatternsSection() {
   const [draft, setDraft] = useState(patterns.join("\n"));
 
   return (
-    <section className="space-y-3">
-      <h2 className="text-base font-semibold flex items-center gap-2">
-        <Sparkles className="w-4 h-4" /> Editor flagging
-      </h2>
-      <p className="text-xs text-muted-foreground">
-        One pattern per line. Segments whose text contains any pattern
-        (case-insensitive substring) are flagged for review. Punctuation-only
-        segments are flagged automatically.
-      </p>
-      <textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => {
-          const list = draft.split("\n").map((p) => p.trim()).filter(Boolean);
-          setPatterns(list);
-          setDraft(list.join("\n"));
-        }}
-        placeholder={"Sous-titres réalisés par\n[Music]\nthanks for watching"}
-        rows={6}
-        className="input w-full font-mono text-xs resize-y"
-      />
-    </section>
+    <SettingSection
+      title="Auto-flag in editor"
+      description="Words or phrases that should be flagged for review when they appear in a transcript, on top of the segments the model already marks as low-confidence."
+    >
+      <SettingRow
+        label="Patterns"
+        help="One per line. Case-insensitive substring match. Punctuation-only segments are flagged automatically."
+        below={
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => {
+              const list = draft.split("\n").map((p) => p.trim()).filter(Boolean);
+              setPatterns(list);
+              setDraft(list.join("\n"));
+            }}
+            placeholder={"Sous-titres réalisés par\n[Music]\nthanks for watching"}
+            rows={6}
+            className="input w-full font-mono text-xs resize-y"
+          />
+        }
+      >
+        <span />
+      </SettingRow>
+    </SettingSection>
   );
 }
 

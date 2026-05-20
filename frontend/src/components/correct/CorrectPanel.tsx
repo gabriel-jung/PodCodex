@@ -36,6 +36,7 @@ import MissingDependency from "@/components/common/MissingDependency";
 import ManualModePanel from "@/components/common/ManualModePanel";
 import LanguageChipRack from "@/components/common/LanguageChipRack";
 import LLMControlsForm from "@/components/common/LLMControlsForm";
+import RunSettingsBanner from "@/components/common/RunSettingsBanner";
 import PipelineRunFooter from "@/components/common/PipelineRunFooter";
 import { reviewStatus } from "@/lib/stepStatus";
 
@@ -131,6 +132,8 @@ export default function CorrectPanel() {
               description="Required for automatic AI processing. Manual mode works without them, and gives you prompts to paste into any chatbot."
             />
           )}
+
+          <RunSettingsBanner step="correct" />
 
           <LLMControlsForm
             episode={episode}

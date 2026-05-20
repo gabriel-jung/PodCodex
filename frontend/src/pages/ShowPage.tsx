@@ -16,7 +16,7 @@ import type { Episode } from "@/api/types";
 import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
 import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
-import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore, useLayoutStore } from "@/stores";
+import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore, useLayoutStore, useSeedPipelineFromShow } from "@/stores";
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useShowActions } from "@/hooks/useShowActions";
 import { episodeCardGridTemplate } from "@/lib/cardGrid";
@@ -100,6 +100,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     queryKey: queryKeys.showMeta(folder),
     queryFn: () => getShowMeta(folder),
   });
+
+  useSeedPipelineFromShow(folder, meta?.pipeline, !!meta);
 
   const isPolling = !!(downloadTaskId || batchTaskId);
   const { data: episodes, isLoading: episodesLoading } = useQuery({
@@ -308,6 +310,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   [navigate, folder]);
 
   const indexModel = usePipelineConfigStore((s) => s.indexModel);
+  const indexChunker = usePipelineConfigStore((s) => s.indexChunker);
 
   const batchMutate = batchMutation.mutate;
   const runStep = useCallback((step: PipelineInputStep, filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: string, force?: boolean) => {
@@ -342,12 +345,13 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       engine,
       show_name: meta?.name || "",
       index_model_keys: step === "index" ? [indexModel] : undefined,
+      index_chunkings: step === "index" ? [indexChunker] : undefined,
       source_version_ids: sourceVersionIds && Object.keys(sourceVersionIds).length > 0 ? sourceVersionIds : undefined,
       force,
     }, {
       onSuccess: (data) => setBatchTask(data.task_id, folder, episodes, step),
     });
-  }, [batchMutate, folder, tc, llm, engine, targetLang, meta?.name, meta?.language, indexModel, setBatchTask]);
+  }, [batchMutate, folder, tc, llm, engine, targetLang, meta?.name, meta?.language, indexModel, indexChunker, setBatchTask]);
 
   const playEpisode = useCallback((ep: Episode) => {
     if (!ep.audio_path) return;
