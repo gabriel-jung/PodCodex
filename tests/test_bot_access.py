@@ -47,6 +47,11 @@ def _seed_store(tmp_path: Path):
 def _isolated_store(tmp_path, monkeypatch):
     _seed_store(tmp_path)
     monkeypatch.setenv("PODCODEX_INDEX", str(tmp_path / "index"))
+    # Isolate from the real config.json: show names come only from the
+    # seeded index, not the developer's registered show folders.
+    import podcodex.core.app_config as app_config
+
+    monkeypatch.setattr(app_config, "load_config", lambda: app_config.AppConfig())
     rag_index_store.get_index_store.cache_clear()
     yield
     rag_index_store.get_index_store.cache_clear()

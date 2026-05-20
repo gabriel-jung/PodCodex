@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from podcodex.api.routes._helpers import get_index_store
@@ -47,11 +49,29 @@ class SetPasswordRequest(BaseModel):
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
-def _all_show_names() -> list[str]:
-    """Every show name known to the IndexStore (from collection metadata)."""
+def _all_show_names() -> set[str]:
+    """Every known show name: registered show folders plus indexed collections.
+
+    Registered (but not-yet-indexed) shows are included so access can be
+    configured before a show is indexed.
+    """
+    names: set[str] = set()
+    try:
+        from podcodex.core.app_config import load_config
+        from podcodex.ingest.show import load_show_meta
+
+        for folder_path in load_config().show_folders:
+            folder = Path(folder_path)
+            if not folder.is_dir():
+                continue
+            meta = load_show_meta(folder)
+            names.add((meta.name if meta else None) or folder.name)
+    except Exception:
+        logger.opt(exception=True).warning("Failed to read registered show folders")
     info = get_index_store().get_all_collection_info()
-    names = {meta.get("show") for meta in info.values() if meta.get("show")}
-    return sorted(names)
+    names.update(meta.get("show", "") for meta in info.values())
+    names.discard("")
+    return names
 
 
 def _hash(password: str) -> str:
@@ -68,7 +88,7 @@ async def list_passwords() -> list[ShowAccess]:
     protected = set(store.get_show_passwords().keys())
     return [
         ShowAccess(show=name, is_protected=name in protected)
-        for name in _all_show_names()
+        for name in sorted(_all_show_names())
     ]
 
 
