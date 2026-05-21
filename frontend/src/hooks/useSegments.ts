@@ -1,42 +1,49 @@
 import { useCallback, useMemo, useReducer, useRef } from "react";
 import type { Segment } from "@/api/types";
 
+/** A row carries its own stable id. Position in `rows` is the current display
+ *  order; the id never changes for the row's lifetime. Inserts/splits add new
+ *  rows with fresh ids, so edits/deleted Sets keyed by id stay valid across
+ *  structural changes (no shifting needed). */
+export interface Row {
+  id: number;
+  base: Segment;
+  /** Index of the source segment this row came from. null for rows inserted
+   *  this session — they have no counterpart in the diff reference. */
+  sourceIndex: number | null;
+}
+
 type Snapshot = {
-  original: Segment[];
+  rows: Row[];
   edits: Map<number, Partial<Segment>>;
   deleted: Set<number>;
-  // Index into the source array each segment came from, parallel to `original`.
-  // null marks a segment inserted this session — it has no counterpart in the
-  // diff reference, so the reference column must skip a row for it instead of
-  // shifting every later row out of alignment.
-  sourceIndices: (number | null)[];
 };
 
 type EditorState = Snapshot & {
   history: Snapshot[];
+  nextId: number;
 };
 
 type EditorAction =
-  | { type: "SET_TEXT"; index: number; text: string }
-  | { type: "SET_SPEAKER"; index: number; speaker: string }
-  | { type: "SET_TIMESTAMP"; index: number; field: "start" | "end"; value: number }
-  | { type: "DELETE"; index: number }
-  | { type: "DELETE_FLAGGED"; indices: number[] }
-  | { type: "RESTORE"; index: number }
-  | { type: "INSERT"; afterIndex: number; segment: Segment }
+  | { type: "SET_TEXT"; id: number; text: string }
+  | { type: "SET_SPEAKER"; id: number; speaker: string }
+  | { type: "SET_TIMESTAMP"; id: number; field: "start" | "end"; value: number }
+  | { type: "DELETE"; id: number }
+  | { type: "DELETE_FLAGGED"; ids: number[] }
+  | { type: "RESTORE"; id: number }
+  | { type: "INSERT"; afterId: number; segment: Segment }
   | { type: "RESET"; segments: Segment[] }
   | { type: "UNDO" }
-  | { type: "MERGE"; index: number; speaker?: string }
-  | { type: "SPLIT"; index: number; cursorPos: number; explicitTime?: number };
+  | { type: "MERGE"; id: number; speaker?: string }
+  | { type: "SPLIT"; id: number; cursorPos: number; explicitTime?: number };
 
 const MAX_HISTORY = 50;
 
 function snap(state: EditorState): Snapshot {
   return {
-    original: state.original,
+    rows: state.rows,
     edits: state.edits,
     deleted: state.deleted,
-    sourceIndices: state.sourceIndices,
   };
 }
 
@@ -45,10 +52,13 @@ function pushHistory(state: EditorState): Snapshot[] {
   return h.length > MAX_HISTORY ? h.slice(-MAX_HISTORY) : h;
 }
 
-/** Insert a null at `at` in a parallel source-index array, marking a segment
- *  inserted this session (no diff-reference counterpart). */
-function insertNullAt(arr: (number | null)[], at: number): (number | null)[] {
-  return [...arr.slice(0, at), null, ...arr.slice(at)];
+function findPos(rows: Row[], id: number): number {
+  return rows.findIndex((r) => r.id === id);
+}
+
+function mergedSeg(row: Row, edits: Map<number, Partial<Segment>>): Segment {
+  const e = edits.get(row.id);
+  return e ? { ...row.base, ...e } : row.base;
 }
 
 function reducer(state: EditorState, action: EditorAction): EditorState {
@@ -57,300 +67,244 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
     case "SET_SPEAKER":
     case "SET_TIMESTAMP": {
       const edits = new Map(state.edits);
-      const existing = edits.get(action.index) || {};
+      const existing = edits.get(action.id) || {};
       if (action.type === "SET_TEXT") {
-        edits.set(action.index, { ...existing, text: action.text });
+        edits.set(action.id, { ...existing, text: action.text });
       } else if (action.type === "SET_SPEAKER") {
-        edits.set(action.index, { ...existing, speaker: action.speaker });
+        edits.set(action.id, { ...existing, speaker: action.speaker });
       } else {
-        edits.set(action.index, { ...existing, [action.field]: action.value });
+        edits.set(action.id, { ...existing, [action.field]: action.value });
       }
-      // Text edits are per-keystroke — don't push history (would flood).
-      // Speaker and timestamp changes are discrete commits — push history so undo works.
-      if (action.type === "SET_TEXT") {
-        return { ...state, edits };
-      }
+      // Per-keystroke text edits don't push history (would flood). Discrete
+      // commits (speaker / timestamp) do.
+      if (action.type === "SET_TEXT") return { ...state, edits };
       return { ...state, history: pushHistory(state), edits };
     }
     case "DELETE": {
       const history = pushHistory(state);
       const deleted = new Set(state.deleted);
-      deleted.add(action.index);
+      deleted.add(action.id);
       return { ...state, history, deleted };
     }
     case "DELETE_FLAGGED": {
       const history = pushHistory(state);
       const deleted = new Set(state.deleted);
-      for (const idx of action.indices) deleted.add(idx);
+      for (const id of action.ids) deleted.add(id);
       return { ...state, history, deleted };
     }
     case "RESTORE": {
-      if (!state.deleted.has(action.index)) return state;
+      if (!state.deleted.has(action.id)) return state;
       const history = pushHistory(state);
       const deleted = new Set(state.deleted);
-      deleted.delete(action.index);
+      deleted.delete(action.id);
       return { ...state, history, deleted };
     }
     case "INSERT": {
+      const pos = findPos(state.rows, action.afterId);
+      if (pos < 0) return state;
       const history = pushHistory(state);
-      const insertAt = action.afterIndex + 1;
-      const newOriginal = [
-        ...state.original.slice(0, insertAt),
-        action.segment,
-        ...state.original.slice(insertAt),
-      ];
-      const newEdits = new Map<number, Partial<Segment>>();
-      for (const [k, v] of state.edits) {
-        newEdits.set(k >= insertAt ? k + 1 : k, v);
-      }
-      const newDeleted = new Set<number>();
-      for (const d of state.deleted) {
-        newDeleted.add(d >= insertAt ? d + 1 : d);
-      }
-      return {
-        original: newOriginal,
-        edits: newEdits,
-        deleted: newDeleted,
-        sourceIndices: insertNullAt(state.sourceIndices, insertAt),
-        history,
-      };
+      const newRow: Row = { id: state.nextId, base: action.segment, sourceIndex: null };
+      const rows = [...state.rows.slice(0, pos + 1), newRow, ...state.rows.slice(pos + 1)];
+      return { ...state, history, rows, nextId: state.nextId + 1 };
     }
     case "RESET": {
-      const history = pushHistory(state);
+      // Monotonic ids across resets — never reuse an id that a stale
+      // React-side Set (selection, dismissed flags, etc.) might still hold.
+      const startId = state.nextId;
+      const rows: Row[] = action.segments.map((seg, i) => ({
+        id: startId + i,
+        base: seg,
+        sourceIndex: i,
+      }));
       return {
-        original: action.segments,
+        rows,
         edits: new Map(),
         deleted: new Set<number>(),
-        sourceIndices: action.segments.map((_, i) => i),
-        history,
+        history: [],
+        nextId: startId + action.segments.length,
       };
     }
     case "UNDO": {
       if (state.history.length === 0) return state;
       const history = [...state.history];
       const prev = history.pop()!;
-      return { ...prev, history };
+      return { ...state, ...prev, history };
     }
     case "MERGE": {
-      // Merge segment at `index` with the next non-deleted segment
-      const seg = state.edits.has(action.index)
-        ? { ...state.original[action.index], ...state.edits.get(action.index) }
-        : state.original[action.index];
-      let nextIdx = action.index + 1;
-      while (nextIdx < state.original.length && state.deleted.has(nextIdx)) nextIdx++;
-      if (nextIdx >= state.original.length) return state;
-      const next = state.edits.has(nextIdx)
-        ? { ...state.original[nextIdx], ...state.edits.get(nextIdx) }
-        : state.original[nextIdx];
+      const pos = findPos(state.rows, action.id);
+      if (pos < 0) return state;
+      let nextPos = pos + 1;
+      while (nextPos < state.rows.length && state.deleted.has(state.rows[nextPos].id)) nextPos++;
+      if (nextPos >= state.rows.length) return state;
+      const row = state.rows[pos];
+      const nextRow = state.rows[nextPos];
+      const seg = mergedSeg(row, state.edits);
+      const next = mergedSeg(nextRow, state.edits);
       const history = pushHistory(state);
       const edits = new Map(state.edits);
-      edits.set(action.index, {
+      edits.set(row.id, {
         text: seg.text + " " + next.text,
         end: next.end,
         ...(action.speaker ? { speaker: action.speaker } : {}),
       });
       const deleted = new Set(state.deleted);
-      deleted.add(nextIdx);
+      deleted.add(nextRow.id);
       return { ...state, history, edits, deleted };
     }
     case "SPLIT": {
-      // Split segment at cursor position into two segments
-      const history = pushHistory(state);
-      const seg = state.edits.has(action.index)
-        ? { ...state.original[action.index], ...state.edits.get(action.index) }
-        : state.original[action.index];
+      const pos = findPos(state.rows, action.id);
+      if (pos < 0) return state;
+      const row = state.rows[pos];
+      const seg = mergedSeg(row, state.edits);
       const textBefore = seg.text.slice(0, action.cursorPos).trimEnd();
       const textAfter = seg.text.slice(action.cursorPos).trimStart();
-      // Explicit timestamp (e.g. current playback position) overrides proportional estimate
+      // Explicit timestamp (e.g. current playback position) overrides
+      // proportional estimate.
       const splitTime = action.explicitTime != null
         ? Math.round(action.explicitTime * 10) / 10
         : (() => {
             const ratio = textBefore.length / Math.max(seg.text.length, 1);
             return Math.round((seg.start + (seg.end - seg.start) * ratio) * 10) / 10;
           })();
-      // Update current segment
+      const history = pushHistory(state);
       const edits = new Map(state.edits);
-      edits.set(action.index, { text: textBefore, end: splitTime });
-      // Insert new segment after
-      const insertAt = action.index + 1;
-      const newSeg: Segment = {
-        speaker: seg.speaker,
-        text: textAfter,
-        start: splitTime,
-        end: seg.end,
-        flagged: false,
+      edits.set(row.id, { ...edits.get(row.id), text: textBefore, end: splitTime });
+      const newRow: Row = {
+        id: state.nextId,
+        base: {
+          speaker: seg.speaker,
+          text: textAfter,
+          start: splitTime,
+          end: seg.end,
+          flagged: false,
+        },
+        sourceIndex: null,
       };
-      const newOriginal = [
-        ...state.original.slice(0, insertAt),
-        newSeg,
-        ...state.original.slice(insertAt),
-      ];
-      // Shift edits/deleted indices after insert point
-      const newEdits = new Map<number, Partial<Segment>>();
-      for (const [k, v] of edits) {
-        newEdits.set(k >= insertAt ? k + 1 : k, v);
-      }
-      // The current segment's edit was at action.index (< insertAt), so it stays
-      const newDeleted = new Set<number>();
-      for (const d of state.deleted) {
-        newDeleted.add(d >= insertAt ? d + 1 : d);
-      }
-      return {
-        original: newOriginal,
-        edits: newEdits,
-        deleted: newDeleted,
-        sourceIndices: insertNullAt(state.sourceIndices, insertAt),
-        history,
-      };
+      const rows = [...state.rows.slice(0, pos + 1), newRow, ...state.rows.slice(pos + 1)];
+      return { ...state, history, rows, edits, nextId: state.nextId + 1 };
     }
   }
 }
 
 export interface UseSegmentsReturn {
+  /** Edited segments, non-deleted, in display order. */
   editedSegments: Segment[];
-  /** Maps each editedSegments index to its original index in the source array. */
-  originalIndices: number[];
-  /** Source-array index per editedSegments entry; null for segments inserted
-   *  this session. Used to align the diff reference column so an insert does
-   *  not shift every later row. */
-  sourceIndices: (number | null)[];
-  /** Every segment, including ones pending removal. Save-side still uses editedSegments. */
+  /** Stable row id per `editedSegments` entry. Use as React/virtualizer key. */
+  ids: number[];
+  /** All rows, including pending-deleted ones (rendered with strike-through). */
   allEditedSegments: Segment[];
-  /** Original index per entry in allEditedSegments. */
-  allOriginalIndices: number[];
-  /** Source index per allEditedSegments entry; null for inserted segments. */
+  allIds: number[];
+  /** Diff-reference index per row in `allEditedSegments`; null for rows
+   *  inserted this session. */
   allSourceIndices: (number | null)[];
-  /** Direct read access to the pending-delete set — for predicates that key by originalIndex. */
+  /** Ids of rows pending deletion. */
   deletedSet: ReadonlySet<number>;
   isDirty: boolean;
   deletedCount: number;
   canUndo: boolean;
-  flaggedIndices: number[];
-  updateText: (index: number, text: string) => void;
-  updateSpeaker: (index: number, speaker: string) => void;
-  updateTimestamp: (index: number, field: "start" | "end", value: number) => void;
-  deleteSegment: (index: number) => void;
+  /** Ids of currently-flagged segments. */
+  flaggedIds: number[];
+  updateText: (id: number, text: string) => void;
+  updateSpeaker: (id: number, speaker: string) => void;
+  updateTimestamp: (id: number, field: "start" | "end", value: number) => void;
+  deleteSegment: (id: number) => void;
   deleteFlagged: () => void;
-  restoreSegment: (index: number) => void;
-  insertAfter: (index: number, segment: Segment) => void;
-  mergeWithNext: (index: number, speaker?: string) => void;
-  /** Returns the next non-deleted segment's data (for merge dialog). */
-  getNextSegment: (index: number) => Segment | null;
-  splitAt: (index: number, cursorPos: number, explicitTime?: number) => void;
+  restoreSegment: (id: number) => void;
+  insertAfter: (id: number, segment: Segment) => void;
+  mergeWithNext: (id: number, speaker?: string) => void;
+  getNextSegment: (id: number) => Segment | null;
+  splitAt: (id: number, cursorPos: number, explicitTime?: number) => void;
   reset: (segments: Segment[]) => void;
   undo: () => void;
 }
 
-export function useSegments(
-  initialSegments: Segment[],
-): UseSegmentsReturn {
-  const [state, dispatch] = useReducer(reducer, {
-    original: initialSegments,
-    edits: new Map(),
+export function useSegments(initialSegments: Segment[]): UseSegmentsReturn {
+  const [state, dispatch] = useReducer(reducer, undefined, () => ({
+    rows: initialSegments.map((seg, i) => ({ id: i, base: seg, sourceIndex: i })),
+    edits: new Map<number, Partial<Segment>>(),
     deleted: new Set<number>(),
-    sourceIndices: initialSegments.map((_, i) => i),
     history: [],
-  });
+    nextId: initialSegments.length,
+  }));
 
-  const {
-    editedSegments,
-    originalIndices,
-    sourceIndices,
-    allEditedSegments,
-    allOriginalIndices,
-    allSourceIndices,
-  } = useMemo(() => {
-    const segs: Segment[] = [];
-    const indices: number[] = [];
-    const srcIdx: (number | null)[] = [];
-    const allSegs: Segment[] = [];
-    const allIndices: number[] = [];
-    const allSrcIdx: (number | null)[] = [];
-    for (let i = 0; i < state.original.length; i++) {
-      const seg = state.original[i];
-      const edit = state.edits.get(i);
-      const merged = edit ? { ...seg, ...edit } : seg;
-      allSegs.push(merged);
-      allIndices.push(i);
-      allSrcIdx.push(state.sourceIndices[i] ?? null);
-      if (state.deleted.has(i)) continue;
-      segs.push(merged);
-      indices.push(i);
-      srcIdx.push(state.sourceIndices[i] ?? null);
+  const derived = useMemo(() => {
+    const editedSegments: Segment[] = [];
+    const ids: number[] = [];
+    const allEditedSegments: Segment[] = [];
+    const allIds: number[] = [];
+    const allSourceIndices: (number | null)[] = [];
+    for (const row of state.rows) {
+      const merged = mergedSeg(row, state.edits);
+      allEditedSegments.push(merged);
+      allIds.push(row.id);
+      allSourceIndices.push(row.sourceIndex);
+      if (state.deleted.has(row.id)) continue;
+      editedSegments.push(merged);
+      ids.push(row.id);
     }
-    return {
-      editedSegments: segs,
-      originalIndices: indices,
-      sourceIndices: srcIdx,
-      allEditedSegments: allSegs,
-      allOriginalIndices: allIndices,
-      allSourceIndices: allSrcIdx,
-    };
-  }, [state.original, state.edits, state.deleted, state.sourceIndices]);
+    return { editedSegments, ids, allEditedSegments, allIds, allSourceIndices };
+  }, [state.rows, state.edits, state.deleted]);
 
   const isDirty = state.edits.size > 0 || state.deleted.size > 0
-    || state.original.length !== initialSegments.length;
+    || state.rows.length !== initialSegments.length;
 
-  const flaggedIndices = useMemo(() => {
-    const indices: number[] = [];
-    for (let i = 0; i < state.original.length; i++) {
-      if (state.deleted.has(i)) continue;
-      const seg = state.edits.has(i)
-        ? { ...state.original[i], ...state.edits.get(i) }
-        : state.original[i];
-      if (seg.flagged) indices.push(i);
+  const flaggedIds = useMemo(() => {
+    const out: number[] = [];
+    for (const row of state.rows) {
+      if (state.deleted.has(row.id)) continue;
+      if (mergedSeg(row, state.edits).flagged) out.push(row.id);
     }
-    return indices;
-  }, [state.original, state.edits, state.deleted]);
+    return out;
+  }, [state.rows, state.edits, state.deleted]);
 
-  // Keep fresh state accessible from stable callbacks (deleteFlagged needs
-  // the current flagged list, getNextSegment scans live state).
+  // Stable callbacks need fresh state for predicates that scan live rows
+  // (`getNextSegment`) or pull a snapshot of flagged ids (`deleteFlagged`).
   const stateRef = useRef(state);
-  const flaggedRef = useRef(flaggedIndices);
+  const flaggedRef = useRef(flaggedIds);
   // eslint-disable-next-line react-hooks/refs
   stateRef.current = state;
   // eslint-disable-next-line react-hooks/refs
-  flaggedRef.current = flaggedIndices;
+  flaggedRef.current = flaggedIds;
 
-  const updateText = useCallback((index: number, text: string) => {
-    dispatch({ type: "SET_TEXT", index, text });
+  const updateText = useCallback((id: number, text: string) => {
+    dispatch({ type: "SET_TEXT", id, text });
   }, []);
-  const updateSpeaker = useCallback((index: number, speaker: string) => {
-    dispatch({ type: "SET_SPEAKER", index, speaker });
+  const updateSpeaker = useCallback((id: number, speaker: string) => {
+    dispatch({ type: "SET_SPEAKER", id, speaker });
   }, []);
   const updateTimestamp = useCallback(
-    (index: number, field: "start" | "end", value: number) => {
-      dispatch({ type: "SET_TIMESTAMP", index, field, value });
+    (id: number, field: "start" | "end", value: number) => {
+      dispatch({ type: "SET_TIMESTAMP", id, field, value });
     },
     [],
   );
-  const deleteSegment = useCallback((index: number) => {
-    dispatch({ type: "DELETE", index });
+  const deleteSegment = useCallback((id: number) => {
+    dispatch({ type: "DELETE", id });
   }, []);
   const deleteFlagged = useCallback(() => {
-    dispatch({ type: "DELETE_FLAGGED", indices: flaggedRef.current });
+    dispatch({ type: "DELETE_FLAGGED", ids: flaggedRef.current });
   }, []);
-  const restoreSegment = useCallback((index: number) => {
-    dispatch({ type: "RESTORE", index });
+  const restoreSegment = useCallback((id: number) => {
+    dispatch({ type: "RESTORE", id });
   }, []);
-  const insertAfter = useCallback((index: number, segment: Segment) => {
-    dispatch({ type: "INSERT", afterIndex: index, segment });
+  const insertAfter = useCallback((id: number, segment: Segment) => {
+    dispatch({ type: "INSERT", afterId: id, segment });
   }, []);
-  const mergeWithNext = useCallback((index: number, speaker?: string) => {
-    dispatch({ type: "MERGE", index, speaker });
+  const mergeWithNext = useCallback((id: number, speaker?: string) => {
+    dispatch({ type: "MERGE", id, speaker });
   }, []);
-  const getNextSegment = useCallback((index: number): Segment | null => {
+  const getNextSegment = useCallback((id: number): Segment | null => {
     const s = stateRef.current;
-    let nextIdx = index + 1;
-    while (nextIdx < s.original.length && s.deleted.has(nextIdx)) nextIdx++;
-    if (nextIdx >= s.original.length) return null;
-    const seg = s.original[nextIdx];
-    const edit = s.edits.get(nextIdx);
-    return edit ? { ...seg, ...edit } : seg;
+    const pos = s.rows.findIndex((r) => r.id === id);
+    if (pos < 0) return null;
+    let nextPos = pos + 1;
+    while (nextPos < s.rows.length && s.deleted.has(s.rows[nextPos].id)) nextPos++;
+    if (nextPos >= s.rows.length) return null;
+    return mergedSeg(s.rows[nextPos], s.edits);
   }, []);
   const splitAt = useCallback(
-    (index: number, cursorPos: number, explicitTime?: number) => {
-      dispatch({ type: "SPLIT", index, cursorPos, explicitTime });
+    (id: number, cursorPos: number, explicitTime?: number) => {
+      dispatch({ type: "SPLIT", id, cursorPos, explicitTime });
     },
     [],
   );
@@ -362,17 +316,12 @@ export function useSegments(
   }, []);
 
   return {
-    editedSegments,
-    originalIndices,
-    sourceIndices,
-    allEditedSegments,
-    allOriginalIndices,
-    allSourceIndices,
+    ...derived,
     deletedSet: state.deleted,
     isDirty,
     deletedCount: state.deleted.size,
     canUndo: state.history.length > 0,
-    flaggedIndices,
+    flaggedIds,
     updateText,
     updateSpeaker,
     updateTimestamp,

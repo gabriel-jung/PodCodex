@@ -28,14 +28,15 @@ export interface FilterState {
   setMaxDensityThreshold: (n: number) => void;
   searchQuery: string;
   setSearchQuery: (q: string) => void;
-  /** The originalIndex of the first segment visible on the current page. */
-  anchorOrigIdx: number | null;
-  setAnchorOrigIdx: (idx: number | null) => void;
+  /** Row id of the first segment visible on the current page. Stable across
+   *  inserts so a filter/length change can re-find the same segment. */
+  anchorId: number | null;
+  setAnchorId: (id: number | null) => void;
 }
 
 export interface FilteredResult {
-  displaySegments: { segment: Segment; originalIndex: number; displayIndex: number }[];
-  pageSegments: { segment: Segment; originalIndex: number; displayIndex: number }[];
+  displaySegments: { segment: Segment; id: number; displayIndex: number }[];
+  pageSegments: { segment: Segment; id: number; displayIndex: number }[];
   totalPages: number;
   flaggedCount: number;
 }
@@ -73,7 +74,7 @@ export function useSegmentFiltering(): FilterState {
   const [densityThreshold, setDensityThreshold] = useState(MIN_DENSITY);
   const [maxDensityThreshold, setMaxDensityThreshold] = useState(MAX_DENSITY);
   const [searchQuery, setSearchQuery] = useState("");
-  const [anchorOrigIdx, setAnchorOrigIdx] = useState<number | null>(null);
+  const [anchorId, setAnchorId] = useState<number | null>(null);
 
   return {
     page, setPage,
@@ -85,53 +86,53 @@ export function useSegmentFiltering(): FilterState {
     densityThreshold, setDensityThreshold,
     maxDensityThreshold, setMaxDensityThreshold,
     searchQuery, setSearchQuery,
-    anchorOrigIdx, setAnchorOrigIdx,
+    anchorId, setAnchorId,
   };
 }
 
 export function useFilteredSegments(
   editedSegments: Segment[],
-  originalIndices: number[],
+  ids: number[],
   filters: FilterState,
   opts: {
     dismissedFlags: Set<number>;
-    isChanged: (seg: Segment, origIdx: number) => boolean;
+    isChanged: (seg: Segment, id: number) => boolean;
     recentlyEdited?: Set<number>;
     customPatterns?: string[];
-    isPendingRemoval?: (seg: Segment, origIdx: number) => boolean;
+    isPendingRemoval?: (seg: Segment, id: number) => boolean;
   },
 ): FilteredResult {
   const { speakerFilter, showFlaggedOnly, showChangedOnly, showRemovedOnly, searchQuery, page, pageSize, densityThreshold, maxDensityThreshold } = filters;
   const { dismissedFlags, isChanged, recentlyEdited, customPatterns = [], isPendingRemoval } = opts;
   const searchLower = searchQuery.toLowerCase().trim();
 
-  const isFlaggedSeg = (seg: Segment, origIdx: number): boolean => {
-    if (dismissedFlags.has(origIdx)) return false;
+  const isFlaggedSeg = (seg: Segment, id: number): boolean => {
+    if (dismissedFlags.has(id)) return false;
     // Segments already pending removal have been triaged — don't surface
     // them in the flagged review.
-    if (isPendingRemoval?.(seg, origIdx)) return false;
+    if (isPendingRemoval?.(seg, id)) return false;
     return flagReason(seg, densityThreshold, maxDensityThreshold, customPatterns) !== null;
   };
 
   const displaySegments = useMemo(() => {
-    const result: { segment: Segment; originalIndex: number; displayIndex: number }[] = [];
+    const result: { segment: Segment; id: number; displayIndex: number }[] = [];
 
     let idx = 0;
     for (let e = 0; e < editedSegments.length; e++) {
       const seg = editedSegments[e];
-      const origIdx = originalIndices[e];
-      const sticky = recentlyEdited?.has(origIdx) ?? false;
+      const id = ids[e];
+      const sticky = recentlyEdited?.has(id) ?? false;
 
       if (!sticky) {
         if (speakerFilter && seg.speaker !== speakerFilter && seg.speaker !== BREAK_SPEAKER) continue;
-        if (showFlaggedOnly && !isFlaggedSeg(seg, origIdx) && seg.speaker !== BREAK_SPEAKER) continue;
-        if (showChangedOnly && !isChanged(seg, origIdx) && seg.speaker !== BREAK_SPEAKER) continue;
-        if (showRemovedOnly && !(isPendingRemoval?.(seg, origIdx) ?? false) && seg.speaker !== BREAK_SPEAKER) continue;
+        if (showFlaggedOnly && !isFlaggedSeg(seg, id) && seg.speaker !== BREAK_SPEAKER) continue;
+        if (showChangedOnly && !isChanged(seg, id) && seg.speaker !== BREAK_SPEAKER) continue;
+        if (showRemovedOnly && !(isPendingRemoval?.(seg, id) ?? false) && seg.speaker !== BREAK_SPEAKER) continue;
         if (searchLower && !(seg.text ?? "").toLowerCase().includes(searchLower) && seg.speaker !== BREAK_SPEAKER) continue;
       }
       if (seg.speaker === BREAK_SPEAKER && result.length > 0 && result[result.length - 1].segment.speaker === BREAK_SPEAKER) continue;
 
-      result.push({ segment: seg, originalIndex: origIdx, displayIndex: idx });
+      result.push({ segment: seg, id, displayIndex: idx });
       idx++;
     }
 
@@ -140,7 +141,7 @@ export function useFilteredSegments(
 
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editedSegments, originalIndices, speakerFilter, showFlaggedOnly, showChangedOnly, showRemovedOnly, searchLower, densityThreshold, maxDensityThreshold, dismissedFlags, recentlyEdited, customPatterns, isPendingRemoval]);
+  }, [editedSegments, ids, speakerFilter, showFlaggedOnly, showChangedOnly, showRemovedOnly, searchLower, densityThreshold, maxDensityThreshold, dismissedFlags, recentlyEdited, customPatterns, isPendingRemoval]);
 
   // Auto-disable filters when they produce no results
   useEffect(() => {
@@ -160,9 +161,9 @@ export function useFilteredSegments(
   useEffect(() => {
     if (displaySegments === prevDisplayRef.current) return;
     prevDisplayRef.current = displaySegments;
-    const anchor = filters.anchorOrigIdx;
+    const anchor = filters.anchorId;
     if (anchor != null) {
-      const pos = displaySegments.findIndex((d) => d.originalIndex === anchor);
+      const pos = displaySegments.findIndex((d) => d.id === anchor);
       if (pos >= 0) {
         filters.setPage(Math.floor(pos / pageSize));
         return;
@@ -171,7 +172,7 @@ export function useFilteredSegments(
     // Fallback: clamp to valid range
     if (totalPages > 0 && page >= totalPages) {
       filters.setPage(totalPages - 1);
-    } else if (page !== 0 && filters.anchorOrigIdx == null) {
+    } else if (page !== 0 && filters.anchorId == null) {
       filters.setPage(0);
     }
   }, [displaySegments, totalPages]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -179,9 +180,9 @@ export function useFilteredSegments(
   const pageSegments = displaySegments.slice(page * pageSize, (page + 1) * pageSize);
 
   const flaggedCount = useMemo(() => {
-    return editedSegments.filter((seg, i) => isFlaggedSeg(seg, originalIndices[i])).length;
+    return editedSegments.filter((seg, i) => isFlaggedSeg(seg, ids[i])).length;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editedSegments, originalIndices, densityThreshold, maxDensityThreshold, dismissedFlags, customPatterns, isPendingRemoval]);
+  }, [editedSegments, ids, densityThreshold, maxDensityThreshold, dismissedFlags, customPatterns, isPendingRemoval]);
 
   return { displaySegments, pageSegments, totalPages, flaggedCount };
 }

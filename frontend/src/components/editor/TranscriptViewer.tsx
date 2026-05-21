@@ -6,7 +6,7 @@
  * read/edit mode toggle.
  */
 
-import { memo, useRef, useEffect, useState, useMemo, useCallback } from "react";
+import { useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment, VersionEntry } from "@/api/types";
 import { saveExportFile } from "@/api/client";
@@ -14,10 +14,9 @@ import { usePlatform } from "@/platform";
 import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
-import { useSegmentFiltering, useFilteredSegments, flagReason } from "@/hooks/useSegmentFiltering";
+import { useSegmentFiltering, useFilteredSegments } from "@/hooks/useSegmentFiltering";
 import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
-import { formatTime, versionInfo, versionOption, selectClass, isEdited } from "@/lib/utils";
-import VersionPicker from "@/components/common/VersionPicker";
+import { versionInfo, isEdited } from "@/lib/utils";
 
 /** Sentinel values for the compare ("vs") picker. `REF_NONE` = no diff,
  *  `REF_DEFAULT` = original/reference segments passed by the parent panel.
@@ -25,9 +24,7 @@ import VersionPicker from "@/components/common/VersionPicker";
 const REF_NONE = "none";
 const REF_DEFAULT = "default";
 type RefChoice = typeof REF_NONE | typeof REF_DEFAULT | string;
-import { speakerColor } from "@/lib/speakerColor";
 import { BREAK_SPEAKER } from "@/lib/speakers";
-import { computeWordDiff } from "@/lib/diffUtils";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -36,115 +33,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { confirmDialog } from "@/components/ui/confirm-dialog";
 import Pagination, { PAGE_SIZE_ALL } from "./Pagination";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import SpeakerStrip from "./SpeakerStrip";
-import SectionHeader from "@/components/common/SectionHeader";
-import {
-  Download,
-  Save,
-  CheckCheck,
-  Undo2,
-  Play,
-  Pause,
-  Trash2,
-  RotateCcw,
-  Merge,
-  Scissors,
-  Search,
-  X,
-  Diff,
-  Filter,
-  AlertTriangle,
-  SlidersHorizontal,
-  Timer,
-  Locate,
-  Eye,
-  EyeOff,
-  type LucideIcon,
-} from "lucide-react";
-
-// ── Toolbar filter chip ───────────────────────────────────────────────────────
-
-// Active classes are full literal strings so Tailwind keeps them; a templated
-// `bg-${color}/15` would be purged at build.
-const CHIP_ACTIVE: Record<"warning" | "info" | "destructive", string> = {
-  warning: "bg-warning/15 text-warning",
-  info: "bg-info/15 text-info",
-  destructive: "bg-destructive/15 text-destructive",
-};
-
-/** A toolbar toggle showing an icon + count. Active = filled tint, inactive =
- *  quiet ghost. Used for the flagged / changed / pending-removal filters. */
-function FilterChip({
-  active,
-  color,
-  icon: Icon,
-  count,
-  title,
-  onClick,
-}: {
-  active: boolean;
-  color: "warning" | "info" | "destructive";
-  icon: LucideIcon;
-  count: number;
-  title: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition ${
-        active ? CHIP_ACTIVE[color] : "text-muted-foreground hover:text-foreground hover:bg-accent"
-      }`}
-    >
-      <Icon className="w-3 h-3" />
-      {count}
-    </button>
-  );
-}
-
-// ── SVG icons for insert-before / insert-after ────────────────────────────────
-
-function InsertBeforeIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <line x1="4" y1="4" x2="12" y2="4" />
-      <line x1="8" y1="8" x2="8" y2="14" />
-      <line x1="5" y1="11" x2="11" y2="11" />
-      <polyline points="5.5,10 8,7.5 10.5,10" />
-    </svg>
-  );
-}
-
-function InsertAfterIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <line x1="4" y1="12" x2="12" y2="12" />
-      <line x1="8" y1="2" x2="8" y2="8" />
-      <line x1="5" y1="5" x2="11" y2="5" />
-      <polyline points="5.5,6 8,8.5 10.5,6" />
-    </svg>
-  );
-}
+import SegmentList, { type SegmentListHandle } from "./SegmentList";
+import EditorToolbar from "./EditorToolbar";
+import VersionControlBar from "./VersionControlBar";
+import { Download, Save, CheckCheck } from "lucide-react";
 
 // ── Export dropdown ───────────────────────────────────────────────────────────
 
@@ -215,454 +109,6 @@ function ExportDropdown({
   );
 }
 
-// ── Word-level diff view ─────────────────────────────────────────────────────
-
-function DiffView({ original, current }: { original: string; current: string }) {
-  const diff = useMemo(() => computeWordDiff(original, current), [original, current]);
-  return (
-    <div className="text-sm leading-relaxed py-0">
-      {diff.map((part, i) => (
-        <span
-          key={`${i}:${part.type}:${part.text}`}
-          className={
-            part.type === "removed"
-              ? "bg-destructive/20 text-destructive line-through"
-              : part.type === "added"
-                ? "bg-success/20 text-success"
-                : "text-muted-foreground/70"
-          }
-        >
-          {part.text}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-// Native auto-sizing textarea (Chrome 123+, Safari 18.4+). When available
-// the browser grows the textarea to its content with zero JS — no per-row
-// ResizeObserver, no forced reflow storm on mount.
-const HAS_FIELD_SIZING =
-  typeof CSS !== "undefined" && CSS.supports("field-sizing", "content");
-
-/** Nearest start-of-word boundary so splits never land mid-token. */
-function snapToWordStart(text: string, target: number): number {
-  if (target <= 0) return 0;
-  if (target >= text.length) return text.length;
-  const isWordStart = (i: number) =>
-    i > 0 && i < text.length && text[i - 1] === " " && text[i] !== " ";
-  if (isWordStart(target)) return target;
-  for (let i = 1; i <= text.length; i++) {
-    if (isWordStart(target - i)) return target - i;
-    if (isWordStart(target + i)) return target + i;
-  }
-  return target;
-}
-
-// ── Inline segment row ────────────────────────────────────────────────────────
-
-interface SegmentViewRowProps {
-  segment: Segment;
-  originalIndex: number;
-  isActive: boolean;
-  isPlayingActive: boolean;
-  isFlagged: boolean;
-  flagReasonText: string | null;
-  isChanged: boolean;
-  isPendingRemoval?: boolean;
-  isDeleted?: boolean;
-  selected: boolean;
-  onToggleSelect: (origIdx: number) => void;
-  audioPath?: string;
-  speakers: string[];
-  showSpeaker: boolean;
-  showDelete: boolean;
-  onTextChange: (origIdx: number, text: string) => void;
-  onSpeakerChange: (origIdx: number, speaker: string) => void;
-  onTimestampChange: (origIdx: number, field: "start" | "end", value: number) => void;
-  onDelete: (origIdx: number) => void;
-  onRestore?: (origIdx: number) => void;
-  onDismissFlag?: (origIdx: number) => void;
-  onInsertBefore?: (origIdx: number, segment: Segment) => void;
-  onInsertAfter?: (origIdx: number, segment: Segment) => void;
-  onMergeNext?: (origIdx: number, speaker: string) => void;
-  onSplit?: (origIdx: number, cursorPos: number, explicitTime?: number) => void;
-  referenceText?: string;
-  showDiff?: boolean;
-}
-
-const SegmentViewRow = memo(function SegmentViewRow({
-  segment,
-  originalIndex,
-  isActive,
-  isPlayingActive,
-  isFlagged,
-  selected,
-  onToggleSelect,
-  flagReasonText,
-  isChanged,
-  isPendingRemoval,
-  isDeleted,
-  audioPath,
-  speakers,
-  showSpeaker,
-  showDelete,
-  onTextChange,
-  onSpeakerChange,
-  onTimestampChange,
-  onDelete,
-  onRestore,
-  onDismissFlag,
-  onInsertBefore,
-  onInsertAfter,
-  onMergeNext,
-  onSplit,
-  referenceText,
-  showDiff = true,
-}: SegmentViewRowProps) {
-  const [editingSpeaker, setEditingSpeaker] = useState(false);
-  const [tsExpanded, setTsExpanded] = useState(false);
-  const textRef = useRef<HTMLTextAreaElement>(null);
-  const speakerInputRef = useRef<HTMLInputElement>(null);
-
-  const getAudioTime = () => useAudioStore.getState().currentTime;
-
-  // Auto-resize textarea. Modern engines handle this via `field-sizing:
-  // content` CSS — zero JS needed. For older engines we fall back to manual
-  // height sync on text change, ref-column toggle, and window resize. No
-  // per-row ResizeObserver (N rows × 1 RO each was a mount-time bottleneck).
-  const hasRef = referenceText != null;
-  useEffect(() => {
-    if (HAS_FIELD_SIZING) return;
-    const el = textRef.current;
-    if (!el) return;
-    const recompute = () => {
-      el.style.height = "0";
-      el.style.height = el.scrollHeight + "px";
-    };
-    const raf = requestAnimationFrame(recompute);
-    window.addEventListener("resize", recompute);
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("resize", recompute);
-    };
-  }, [segment.text, hasRef]);
-
-  // Focus speaker input when entering edit mode
-  useEffect(() => {
-    if (editingSpeaker) speakerInputRef.current?.select();
-  }, [editingSpeaker]);
-
-  const validTime = isFinite(segment.start) && isFinite(segment.end);
-
-  const handleSeek = () => {
-    if (audioPath && validTime) useAudioStore.getState().seekTo(audioPath, segment.start);
-  };
-
-  // Resolve a split point given an optional caret offset. Caret takes priority;
-  // playback-time ratio is used only when no caret is placed. Time stamp comes
-  // from real playback when within range, else proportional from the reducer.
-  const computeSplit = (sel: number | null | undefined): { pos: number; t?: number } | null => {
-    const text = segment.text;
-    if (!text) return null;
-    const playT = audioPath && validTime ? useAudioStore.getState().currentTime : null;
-    const splitT = playT != null && playT > segment.start + 0.05 && playT < segment.end - 0.05
-      ? playT
-      : undefined;
-    let target: number | null = null;
-    if (sel != null && sel > 0 && sel < text.length) target = sel;
-    else if (splitT != null) target = Math.round(((splitT - segment.start) / (segment.end - segment.start)) * text.length);
-    if (target == null) return null;
-    const pos = snapToWordStart(text, target);
-    if (pos <= 0 || pos >= text.length) return null;
-    return { pos, t: splitT };
-  };
-
-  const hasDiff = hasRef && referenceText !== segment.text && showDiff;
-
-  // [BREAK] divider
-  if (segment.speaker === BREAK_SPEAKER) {
-    const gap = segment.end - segment.start;
-    return (
-      <div className="py-2 flex items-center gap-2 text-muted-foreground/40 px-2">
-        <div className="flex-1 border-t border-border" />
-        <span className="text-2xs select-none">
-          {gap > 0 ? `${gap.toFixed(0)}s pause` : "break"}
-        </span>
-        <div className="flex-1 border-t border-border" />
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={`group py-1.5 pl-1 pr-2 rounded transition-colors ${
-        isPendingRemoval ? "opacity-50 line-through bg-destructive/5 border-l-2 border-l-destructive/50" :
-        isActive ? "bg-accent/60" :
-        isFlagged ? "border-l-2 border-l-warning" :
-        isChanged ? "border-l-2 border-l-info/50" :
-        "hover:bg-accent/20"
-      }`}
-    >
-      {/* Main row: [checkbox + segnum stacked] | timestamp | speaker | text */}
-      <div className="flex gap-2">
-        {/* Checkbox + segment number stacked */}
-        <div className="shrink-0 flex flex-col items-center pt-1 gap-0.5" style={{ width: "1.1rem" }}>
-          <input
-            type="checkbox"
-            checked={selected}
-            onChange={() => onToggleSelect(originalIndex)}
-            aria-label="Select segment"
-            className={`w-3 h-3 accent-primary cursor-pointer transition-opacity ${
-              selected ? "opacity-100" : "opacity-40 hover:opacity-100 group-hover:opacity-100"
-            }`}
-          />
-          <div className="font-mono text-3xs text-muted-foreground/40 tabular-nums select-none">
-            {originalIndex + 1}
-          </div>
-        </div>
-        {/* Timestamp — click to toggle editor */}
-        <div className="shrink-0 pt-0.5">
-          <button
-            onClick={() => setTsExpanded(!tsExpanded)}
-            className="text-xs text-muted-foreground hover:text-foreground font-mono text-right leading-tight transition"
-            title="Edit timestamps"
-          >
-            <div className="tabular-nums">{validTime ? formatTime(segment.start) : "--:--"}</div>
-            <div className="tabular-nums text-muted-foreground/40">
-              {validTime ? formatTime(segment.end) : "--:--"}
-            </div>
-          </button>
-        </div>
-
-        {/* Speaker */}
-        {showSpeaker && (
-          <div className="shrink-0 w-16 pt-0.5">
-            {editingSpeaker ? (
-              speakers.length > 0 ? (
-                <select
-                  value={segment.speaker}
-                  onChange={(e) => {
-                    onSpeakerChange(originalIndex, e.target.value);
-                    setEditingSpeaker(false);
-                  }}
-                  onBlur={() => setEditingSpeaker(false)}
-                  autoFocus
-                  className={`${selectClass} w-full text-xs py-0 h-5`}
-                >
-                  {!speakers.includes(segment.speaker) && (
-                    <option value={segment.speaker}>{segment.speaker}</option>
-                  )}
-                  {speakers.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  ref={speakerInputRef}
-                  type="text"
-                  value={segment.speaker}
-                  onChange={(e) => onSpeakerChange(originalIndex, e.target.value)}
-                  onBlur={() => setEditingSpeaker(false)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === "Escape") setEditingSpeaker(false);
-                  }}
-                  className="w-full text-xs bg-secondary border border-border rounded px-1 py-0 h-5 outline-none"
-                />
-              )
-            ) : (
-              <button
-                onClick={() => setEditingSpeaker(true)}
-                className="text-xs font-medium truncate w-full text-left hover:opacity-80 transition"
-                style={{ color: speakerColor(segment.speaker) }}
-                title="Click to edit speaker"
-              >
-                {segment.speaker}
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* Text + reference side-by-side on wide screens, equal height */}
-        <div className={`flex-1 min-w-0 ${hasRef ? "flex flex-col lg:flex-row lg:gap-2" : ""}`}>
-          <div className={hasRef ? "flex-1 min-w-0" : ""}>
-            <textarea
-              ref={textRef}
-              value={segment.text}
-              onChange={(e) => onTextChange(originalIndex, e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && onSplit) {
-                  e.preventDefault();
-                  const split = computeSplit(e.currentTarget.selectionStart);
-                  if (split) onSplit(originalIndex, split.pos, split.t);
-                }
-              }}
-              className="w-full bg-transparent text-sm leading-relaxed resize-none outline-none overflow-hidden rounded border border-transparent hover:border-border focus:border-primary/50 focus:bg-accent/10 px-1.5 py-0 transition [field-sizing:content]"
-              rows={1}
-            />
-          </div>
-          {hasRef && (
-            <div className="flex-1 min-w-0 mt-0.5 lg:mt-0 rounded border border-border/40 bg-secondary/30 px-1.5 py-0.5">
-              {hasDiff
-                ? <DiffView original={referenceText!} current={segment.text} />
-                : <p className="text-sm leading-relaxed text-muted-foreground/50">{referenceText}</p>
-              }
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Flag reason — always visible on flagged segments */}
-      {isFlagged && flagReasonText && (
-        <div className="flex items-center gap-1 mt-0.5 text-2xs leading-none text-warning/80">
-          <AlertTriangle className="w-2.5 h-2.5" />
-          <span>{flagReasonText}</span>
-          {onDismissFlag && (
-            <button
-              onClick={() => onDismissFlag(originalIndex)}
-              className="hover:text-warning transition ml-0.5"
-              title="Dismiss this flag"
-            >
-              <X className="w-2.5 h-2.5" />
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Actions rail — always visible (muted), brighten on row hover */}
-      <div className="flex items-center gap-0.5 mt-1 opacity-30 group-hover:opacity-100 transition-opacity duration-150 w-fit">
-        {audioPath && validTime && (
-          <>
-            {isPlayingActive ? (
-              <button
-                onClick={() => useAudioStore.getState().pauseAudio()}
-                className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
-                title="Pause"
-              >
-                <Pause className="w-3.5 h-3.5" />
-              </button>
-            ) : (
-              <button
-                onClick={handleSeek}
-                className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
-                title="Play from here"
-              >
-                <Play className="w-3.5 h-3.5" />
-              </button>
-            )}
-            {(onInsertBefore || onMergeNext || onSplit || onInsertAfter) && (
-              <span className="mx-1 h-3 w-px bg-border/60" aria-hidden />
-            )}
-          </>
-        )}
-        {onInsertBefore && (
-          <button
-            onClick={() => onInsertBefore(originalIndex, segment)}
-            className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
-            title="Insert segment before"
-          >
-            <InsertBeforeIcon className="w-3.5 h-3.5" />
-          </button>
-        )}
-        {onMergeNext && (
-          <button
-            onClick={() => onMergeNext(originalIndex, segment.speaker)}
-            className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
-            title="Merge with next"
-          >
-            <Merge className="w-3.5 h-3.5" />
-          </button>
-        )}
-        {onSplit && (
-          <button
-            onClick={() => {
-              const split = computeSplit(textRef.current?.selectionStart);
-              if (split) onSplit(originalIndex, split.pos, split.t);
-            }}
-            className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
-            title="Split at current word (text caret) and current playback time"
-          >
-            <Scissors className="w-3.5 h-3.5" />
-          </button>
-        )}
-        {onInsertAfter && (
-          <button
-            onClick={() => onInsertAfter(originalIndex, segment)}
-            className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
-            title="Insert segment after"
-          >
-            <InsertAfterIcon className="w-3.5 h-3.5" />
-          </button>
-        )}
-        {showDelete && (
-          <>
-            <span className="mx-1 h-3 w-px bg-border/60" aria-hidden />
-            {isDeleted && onRestore ? (
-              <button
-                onClick={() => onRestore(originalIndex)}
-                className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
-                title="Restore segment"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-              </button>
-            ) : (
-              <button
-                onClick={() => onDelete(originalIndex)}
-                className="text-muted-foreground hover:text-destructive p-1 rounded hover:bg-destructive/10 transition"
-                title="Delete segment"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Timestamp editor (expandable) */}
-      {tsExpanded && (
-        <div className="flex items-center gap-3 pl-1 text-xs py-1">
-          <label className="flex items-center gap-1">
-            Start:
-            <input
-              type="number"
-              value={segment.start}
-              onChange={(e) => onTimestampChange(originalIndex, "start", Number(e.target.value))}
-              step={0.1}
-              className="w-20 bg-secondary text-secondary-foreground rounded px-1.5 py-0.5 border border-border"
-            />
-            <button
-              onClick={() => onTimestampChange(originalIndex, "start", Math.round(getAudioTime() * 10) / 10)}
-              className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
-              title="Set to current playback time"
-            >
-              <Timer className="w-3.5 h-3.5" />
-            </button>
-          </label>
-          <label className="flex items-center gap-1">
-            End:
-            <input
-              type="number"
-              value={segment.end}
-              onChange={(e) => onTimestampChange(originalIndex, "end", Number(e.target.value))}
-              step={0.1}
-              className="w-20 bg-secondary text-secondary-foreground rounded px-1.5 py-0.5 border border-border"
-            />
-            <button
-              onClick={() => onTimestampChange(originalIndex, "end", Math.round(getAudioTime() * 10) / 10)}
-              className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-secondary transition"
-              title="Set to current playback time"
-            >
-              <Timer className="w-3.5 h-3.5" />
-            </button>
-          </label>
-        </div>
-      )}
-
-    </div>
-  );
-});
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -803,6 +249,11 @@ export default function TranscriptViewer({
       setPendingRenames({});
       setPendingRemovals(new Set());
       setAddedSpeakers([]);
+      // Row ids are reassigned by `editor.reset`; clear id-keyed UI state so
+      // stale entries can't bleed into the fresh transcript.
+      setSelectedIds(new Set());
+      setDismissedFlags(new Set());
+      setRecentlyEdited(new Set());
       // Row list is virtualized, so mount cost is O(visible rows) regardless
       // of total. Default to "All" and only fall back to a cap for truly
       // oversized transcripts (pagination still useful as a navigation aid).
@@ -894,20 +345,20 @@ export default function TranscriptViewer({
   // ── Merge dialog (when speakers differ) ──────────────────────────────────
 
   const [mergeDialog, setMergeDialog] = useState<{
-    index: number;
+    id: number;
     speakers: [string, string];
   } | null>(null);
 
   const editorGetNextSegment = editor.getNextSegment;
   const editorMergeWithNext = editor.mergeWithNext;
   const handleMerge = useCallback(
-    (originalIndex: number, currentSpeaker: string) => {
-      const next = editorGetNextSegment(originalIndex);
+    (id: number, currentSpeaker: string) => {
+      const next = editorGetNextSegment(id);
       if (!next) return;
       if (next.speaker === currentSpeaker) {
-        editorMergeWithNext(originalIndex);
+        editorMergeWithNext(id);
       } else {
-        setMergeDialog({ index: originalIndex, speakers: [currentSpeaker, next.speaker] });
+        setMergeDialog({ id, speakers: [currentSpeaker, next.speaker] });
       }
     },
     [editorGetNextSegment, editorMergeWithNext],
@@ -947,30 +398,33 @@ export default function TranscriptViewer({
     refChoice === REF_DEFAULT ? referenceSegments :
     refChoice === REF_NONE ? undefined :
     versionRefSegments ?? undefined;
-  // Map originalIndex → position in editedSegments
-  const origToEditedIdx = useMemo(() => {
-    const map = new Map<number, number>();
-    for (let i = 0; i < editor.originalIndices.length; i++) {
-      map.set(editor.originalIndices[i], i);
+
+  // Per-row reference index, keyed by row id. null = inserted this session
+  // (no diff-reference counterpart). undefined = unknown row.
+  const sourceIndexById = useMemo(() => {
+    const map = new Map<number, number | null>();
+    for (let i = 0; i < editor.allIds.length; i++) {
+      map.set(editor.allIds[i], editor.allSourceIndices[i]);
     }
     return map;
-  }, [editor.originalIndices]);
+  }, [editor.allIds, editor.allSourceIndices]);
 
-  // Reference lookup keyed by each edited segment's source index. A segment
-  // inserted this session has sourceIndex null → no reference (renders as
-  // added). Deleted segments are already absent from editedSegments, and
-  // survivors keep their source index, so an insert no longer shifts every
-  // later row out of alignment.
-  const getRef = (editedIdx: number) => {
+  /** Reference segment for a row id, or undefined if the row is inserted
+   *  (no counterpart in the diff reference) or no reference is selected. */
+  const getRef = (id: number): Segment | undefined => {
     if (!effectiveReference) return undefined;
-    const srcIdx = editor.sourceIndices[editedIdx];
+    const srcIdx = sourceIndexById.get(id);
     return srcIdx == null ? undefined : effectiveReference[srcIdx];
   };
 
-  const isChanged = (seg: Segment, origIdx: number) => {
+  const isChanged = (seg: Segment, id: number) => {
     if (!effectiveReference || seg.speaker === BREAK_SPEAKER) return false;
-    const editedIdx = origToEditedIdx.get(origIdx) ?? origIdx;
-    const ref = getRef(editedIdx);
+    // Rows inserted this session (split / manual insert) have no source
+    // counterpart. Count them as changed so the "show changed only" filter
+    // keeps them visible.
+    const srcIdx = sourceIndexById.get(id);
+    if (srcIdx == null) return true;
+    const ref = effectiveReference[srcIdx];
     return ref != null && ref.text !== seg.text;
   };
 
@@ -978,11 +432,11 @@ export default function TranscriptViewer({
     if (!effectiveReference) return 0;
     let count = 0;
     for (let e = 0; e < editor.editedSegments.length; e++) {
-      if (isChanged(editor.editedSegments[e], editor.originalIndices[e])) count++;
+      if (isChanged(editor.editedSegments[e], editor.ids[e])) count++;
     }
     return count;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor.editedSegments, editor.originalIndices, effectiveReference]);
+  }, [editor.editedSegments, editor.ids, effectiveReference]);
 
   const hasCompareOptions = !!referenceSegments || (versions && versions.length > 0);
 
@@ -1017,93 +471,108 @@ export default function TranscriptViewer({
 
   // ── Selection ─────────────────────────────────────────────────────────────
 
-  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(() => new Set());
+  // Keyed by stable row id. Insert/split do not invalidate these entries.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
 
-  const toggleSelect = useCallback((origIdx: number) => {
-    setSelectedIndices((prev) => {
+  const toggleSelect = useCallback((id: number) => {
+    setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(origIdx)) next.delete(origIdx);
-      else next.add(origIdx);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }, []);
 
-  const clearSelection = useCallback(() => setSelectedIndices(new Set()), []);
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  // Per-id segment lookup. Built from the current edited list (non-deleted) so
+  // bulkMerge can find positional adjacency and the selection-emit effect can
+  // dereference each selected id.
+  const editedSegments = editor.editedSegments;
+  const editorIds = editor.ids;
+  const segmentById = useMemo(() => {
+    const map = new Map<number, { segment: Segment; position: number }>();
+    for (let i = 0; i < editorIds.length; i++) {
+      map.set(editorIds[i], { segment: editedSegments[i], position: i });
+    }
+    return map;
+  }, [editedSegments, editorIds]);
 
   // Emit selection changes — downstream consumers (e.g. synthesis scope
   // filter) work on the edited segment payloads, not raw indices, so their
   // state survives version switches and pagination. Signature guard keeps
   // per-keystroke edits from re-emitting when the selection hasn't changed.
-  const editedSegments = editor.editedSegments;
   const lastSelectionSigRef = useRef<string>("");
   useEffect(() => {
     if (!onSelectionChange) return;
     const out: Segment[] = [];
     const sigParts: string[] = [];
-    for (const origIdx of selectedIndices) {
-      const editedPos = origToEditedIdx.get(origIdx);
-      if (editedPos == null) continue;
-      const seg = editedSegments[editedPos];
-      if (!seg || seg.speaker === BREAK_SPEAKER) continue;
-      out.push(seg);
-      sigParts.push(`${seg.speaker}:${seg.start}:${seg.end}`);
+    for (const id of selectedIds) {
+      const hit = segmentById.get(id);
+      if (!hit || hit.segment.speaker === BREAK_SPEAKER) continue;
+      out.push(hit.segment);
+      sigParts.push(`${hit.segment.speaker}:${hit.segment.start}:${hit.segment.end}`);
     }
     const sig = sigParts.join("|");
     if (sig === lastSelectionSigRef.current) return;
     lastSelectionSigRef.current = sig;
     onSelectionChange(out);
-  }, [selectedIndices, origToEditedIdx, editedSegments, onSelectionChange]);
+  }, [selectedIds, segmentById, onSelectionChange]);
 
   const bulkDelete = useCallback(() => {
-    // Delete in reverse order so indices stay valid
-    const sorted = Array.from(selectedIndices).sort((a, b) => b - a);
-    for (const idx of sorted) editor.deleteSegment(idx);
+    // Order doesn't matter — ids stay valid across deletes.
+    for (const id of selectedIds) editor.deleteSegment(id);
     clearSelection();
-  }, [selectedIndices, editor, clearSelection]);
+  }, [selectedIds, editor, clearSelection]);
 
   const bulkSpeaker = useCallback((speaker: string) => {
-    for (const idx of selectedIndices) editor.updateSpeaker(idx, speaker);
+    for (const id of selectedIds) editor.updateSpeaker(id, speaker);
     setRecentlyEdited((prev) => {
       const next = new Set(prev);
-      for (const idx of selectedIndices) next.add(idx);
+      for (const id of selectedIds) next.add(id);
       return next;
     });
     clearSelection();
-  }, [selectedIndices, editor, clearSelection]);
+  }, [selectedIds, editor, clearSelection]);
 
   const bulkMerge = useCallback(() => {
-    // Merge consecutive selected segments (sorted ascending)
-    const sorted = Array.from(selectedIndices).sort((a, b) => a - b);
-    if (sorted.length < 2) return;
-    // Merge from last to first to preserve indices
-    for (let i = sorted.length - 1; i > 0; i--) {
-      if (sorted[i] === sorted[i - 1] + 1) {
-        editor.mergeWithNext(sorted[i - 1]);
+    // Adjacency by current position, not by id (ids are not contiguous after
+    // inserts). Sort selected ids by their position, then merge from the
+    // bottom up so the merge index doesn't shift the rest.
+    const positions = Array.from(selectedIds)
+      .map((id) => ({ id, position: segmentById.get(id)?.position ?? -1 }))
+      .filter((p) => p.position >= 0)
+      .sort((a, b) => a.position - b.position);
+    if (positions.length < 2) return;
+    for (let i = positions.length - 1; i > 0; i--) {
+      if (positions[i].position === positions[i - 1].position + 1) {
+        editor.mergeWithNext(positions[i - 1].id);
       }
     }
     clearSelection();
-  }, [selectedIndices, editor, clearSelection]);
+  }, [selectedIds, segmentById, editor, clearSelection]);
 
   // ── Filtering / pagination ────────────────────────────────────────────────
 
   const filters = useSegmentFiltering();
+  // Keyed by stable row id — survive insert/split unchanged.
   const [dismissedFlags, setDismissedFlags] = useState<Set<number>>(() => new Set());
   const [recentlyEdited, setRecentlyEdited] = useState<Set<number>>(() => new Set());
 
-  const dismissFlag = useCallback((origIdx: number) => {
-    setDismissedFlags((prev) => new Set(prev).add(origIdx));
+  const dismissFlag = useCallback((id: number) => {
+    setDismissedFlags((prev) => new Set(prev).add(id));
   }, []);
 
-  const setAnchorOrigIdx = filters.setAnchorOrigIdx;
-  const markEdited = useCallback((origIdx: number) => {
+  const setAnchorId = filters.setAnchorId;
+  const markEdited = useCallback((id: number) => {
     setRecentlyEdited((prev) => {
-      if (prev.has(origIdx)) return prev;
+      if (prev.has(id)) return prev;
       const next = new Set(prev);
-      next.add(origIdx);
+      next.add(id);
       return next;
     });
-    setAnchorOrigIdx(origIdx);
-  }, [setAnchorOrigIdx]);
+    setAnchorId(id);
+  }, [setAnchorId]);
 
   // Clear recentlyEdited on any view change — fresh filter pass should not
   // be subverted by stale sticky entries. With pageSize=All, page never
@@ -1114,24 +583,24 @@ export default function TranscriptViewer({
 
   const deletedSet = editor.deletedSet;
   const isPendingRemovalSeg = useCallback(
-    (seg: Segment, origIdx: number) =>
-      pendingRemovals.has(seg.speaker) || deletedSet.has(origIdx),
+    (seg: Segment, id: number) =>
+      pendingRemovals.has(seg.speaker) || deletedSet.has(id),
     [pendingRemovals, deletedSet],
   );
 
   const pendingRemovalCount = useMemo(() => {
     let n = 0;
     for (let i = 0; i < editor.allEditedSegments.length; i++) {
-      if (isPendingRemovalSeg(editor.allEditedSegments[i], editor.allOriginalIndices[i])) n++;
+      if (isPendingRemovalSeg(editor.allEditedSegments[i], editor.allIds[i])) n++;
     }
     return n;
-  }, [editor.allEditedSegments, editor.allOriginalIndices, isPendingRemovalSeg]);
+  }, [editor.allEditedSegments, editor.allIds, isPendingRemovalSeg]);
 
-  // Stable row callbacks — keyed by originalIndex so each row's props stay
-  // reference-equal across renders. Paired with React.memo on SegmentViewRow
-  // this drops per-keystroke cost from O(visible rows) to O(1). Deps list the
-  // individual editor methods (each wrapped in useCallback inside useSegments)
-  // so a fresh editor return object doesn't invalidate every row.
+  // Stable row callbacks — keyed by id so each row's props stay reference-equal
+  // across renders. Paired with React.memo on SegmentViewRow this drops
+  // per-keystroke cost from O(visible rows) to O(1). Deps list the individual
+  // editor methods (each wrapped in useCallback inside useSegments) so a fresh
+  // editor return object doesn't invalidate every row.
   const editorUpdateText = editor.updateText;
   const editorUpdateSpeaker = editor.updateSpeaker;
   const editorUpdateTimestamp = editor.updateTimestamp;
@@ -1139,29 +608,43 @@ export default function TranscriptViewer({
   const editorRestoreSegment = editor.restoreSegment;
   const editorInsertAfter = editor.insertAfter;
   const editorSplitAt = editor.splitAt;
-  const handleRowTextChange = useCallback((idx: number, text: string) => {
-    editorUpdateText(idx, text);
-    markEdited(idx);
+  // insertBefore needs to know the id of the row preceding the target so it
+  // can re-use insertAfter. We need a stale-free lookup (live rows, not a
+  // snapshot in deps) so the callback identity stays stable.
+  const segmentByIdRef = useRef(segmentById);
+  const editorIdsRef = useRef(editor.ids);
+  segmentByIdRef.current = segmentById;
+  editorIdsRef.current = editor.ids;
+  const handleRowTextChange = useCallback((id: number, text: string) => {
+    editorUpdateText(id, text);
+    markEdited(id);
   }, [editorUpdateText, markEdited]);
-  const handleRowSpeakerChange = useCallback((idx: number, speaker: string) => {
-    editorUpdateSpeaker(idx, speaker);
-    markEdited(idx);
+  const handleRowSpeakerChange = useCallback((id: number, speaker: string) => {
+    editorUpdateSpeaker(id, speaker);
+    markEdited(id);
   }, [editorUpdateSpeaker, markEdited]);
   const handleRowTimestampChange = useCallback(
-    (idx: number, field: "start" | "end", value: number) => {
-      editorUpdateTimestamp(idx, field, value);
-      markEdited(idx);
+    (id: number, field: "start" | "end", value: number) => {
+      editorUpdateTimestamp(id, field, value);
+      markEdited(id);
     },
     [editorUpdateTimestamp, markEdited],
   );
-  const handleRowDelete = useCallback((idx: number) => {
-    editorDeleteSegment(idx);
+  const handleRowDelete = useCallback((id: number) => {
+    editorDeleteSegment(id);
   }, [editorDeleteSegment]);
-  const handleRowRestore = useCallback((idx: number) => {
-    editorRestoreSegment(idx);
+  const handleRowRestore = useCallback((id: number) => {
+    editorRestoreSegment(id);
   }, [editorRestoreSegment]);
-  const handleRowInsertBefore = useCallback((idx: number, seg: Segment) => {
-    editorInsertAfter(idx - 1, {
+  const handleRowInsertBefore = useCallback((id: number, seg: Segment) => {
+    // Find the row preceding `id`. If it's the first row, fall back to
+    // inserting after itself with a duplicated seed and immediately swap
+    // would be ugly — accept that "insert before the first row" inserts
+    // after the first instead; the visible position difference is one slot.
+    const ids = editorIdsRef.current;
+    const pos = segmentByIdRef.current.get(id)?.position ?? -1;
+    const beforeId = pos > 0 ? ids[pos - 1] : id;
+    editorInsertAfter(beforeId, {
       speaker: seg.speaker,
       text: "",
       start: seg.start,
@@ -1169,8 +652,8 @@ export default function TranscriptViewer({
       flagged: false,
     });
   }, [editorInsertAfter]);
-  const handleRowInsertAfter = useCallback((idx: number, seg: Segment) => {
-    editorInsertAfter(idx, {
+  const handleRowInsertAfter = useCallback((id: number, seg: Segment) => {
+    editorInsertAfter(id, {
       speaker: seg.speaker,
       text: "",
       start: seg.end,
@@ -1179,84 +662,70 @@ export default function TranscriptViewer({
     });
   }, [editorInsertAfter]);
   const handleRowSplit = useCallback(
-    (idx: number, cursorPos: number, t?: number) => {
-      editorSplitAt(idx, cursorPos, t);
+    (id: number, cursorPos: number, t?: number) => {
+      editorSplitAt(id, cursorPos, t);
     },
     [editorSplitAt],
   );
 
   const { displaySegments, pageSegments, totalPages, flaggedCount } = useFilteredSegments(
     editor.allEditedSegments,
-    editor.allOriginalIndices,
+    editor.allIds,
     filters,
     { dismissedFlags, isChanged, recentlyEdited, customPatterns, isPendingRemoval: isPendingRemovalSeg },
   );
 
   useEffect(() => {
     if (pageSegments.length > 0) {
-      filters.setAnchorOrigIdx(pageSegments[0].originalIndex);
+      filters.setAnchorId(pageSegments[0].id);
     }
   }, [pageSegments]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: 0 });
-  }, [filters.page]);
-
-  // Virtualizer: only rows visible in the scroll viewport are rendered. Row
-  // heights are measured dynamically (textarea wraps to variable heights).
-  // estimateSize picks a conservative first-paint height; `measureElement`
-  // on each row corrects it once mounted.
-  const rowVirtualizer = useVirtualizer({
-    count: pageSegments.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 72,
-    overscan: 8,
-    getItemKey: (i) => `${editorKey}-${pageSegments[i]?.originalIndex ?? i}`,
-  });
+  // SegmentList owns its scroll container and the virtualizer; this ref
+  // exposes scrollToId so the parent can drive jumps without holding the
+  // virtualizer itself.
+  const listRef = useRef<SegmentListHandle | null>(null);
 
   // ── Active segment tracking ───────────────────────────────────────────────
 
   const storeAudioPath = useAudioStore((s) => s.audioPath);
   const storeIsPlaying = useAudioStore((s) => s.isPlaying);
   const isPlayingThisFile = audioPath != null && storeAudioPath === audioPath;
-  const [activeOrigIdx, setActiveOrigIdx] = useState<number | null>(null);
+  const [activeId, setActiveId] = useState<number | null>(null);
 
   const editedSegmentsRef = useRef(editor.editedSegments);
   editedSegmentsRef.current = editor.editedSegments;
-  const originalIndicesRef = useRef(editor.originalIndices);
-  originalIndicesRef.current = editor.originalIndices;
+  const idsRef = useRef(editor.ids);
+  idsRef.current = editor.ids;
 
   useEffect(() => {
     if (!isPlayingThisFile) {
-      setActiveOrigIdx(null);
+      setActiveId(null);
       return;
     }
     const interval = setInterval(() => {
       const t = useAudioStore.getState().currentTime;
       if (!useAudioStore.getState().isPlaying) return;
       const segs = editedSegmentsRef.current;
-      const indices = originalIndicesRef.current;
+      const ids = idsRef.current;
       for (let e = segs.length - 1; e >= 0; e--) {
         const seg = segs[e];
         if (seg.start <= t && t < seg.end) {
-          const origIdx = indices[e];
-          setActiveOrigIdx((prev) => (prev === origIdx ? prev : origIdx));
+          const id = ids[e];
+          setActiveId((prev) => (prev === id ? prev : id));
           return;
         }
       }
-      setActiveOrigIdx((prev) => (prev == null ? prev : null));
+      setActiveId((prev) => (prev == null ? prev : null));
     }, 250);
     return () => clearInterval(interval);
   }, [isPlayingThisFile]);
 
-  const scrollToOrigIdx = useCallback(
-    (origIdx: number, behavior: ScrollBehavior = "smooth") => {
-      const idx = pageSegments.findIndex((p) => p.originalIndex === origIdx);
-      if (idx >= 0) rowVirtualizer.scrollToIndex(idx, { align: "center", behavior });
-      return idx >= 0;
+  const scrollToId = useCallback(
+    (id: number, behavior: ScrollBehavior = "smooth") => {
+      return listRef.current?.scrollToId(id, behavior) ?? false;
     },
-    [pageSegments, rowVirtualizer],
+    [],
   );
 
   // Scroll to active segment ONCE on first resolve (so the editor opens
@@ -1270,30 +739,30 @@ export default function TranscriptViewer({
     didInitialSyncRef.current = false;
   }
   useEffect(() => {
-    if (activeOrigIdx == null || didInitialSyncRef.current) return;
-    if (scrollToOrigIdx(activeOrigIdx, "auto")) didInitialSyncRef.current = true;
-  }, [activeOrigIdx, scrollToOrigIdx]);
+    if (activeId == null || didInitialSyncRef.current) return;
+    if (scrollToId(activeId, "auto")) didInitialSyncRef.current = true;
+  }, [activeId, scrollToId]);
 
   const jumpToActive = () => {
-    if (activeOrigIdx != null) scrollToOrigIdx(activeOrigIdx);
+    if (activeId != null) scrollToId(activeId);
   };
 
   // Cross-page jump: SpeakerStrip excerpts ask to locate a segment in the
   // editor. If a page flip is needed, the effect picks up the scroll once
   // pageSegments contains the target.
   const pendingJumpRef = useRef<number | null>(null);
-  const jumpToSegmentByOrigIdx = useCallback((origIdx: number) => {
-    const pos = displaySegments.findIndex((d) => d.originalIndex === origIdx);
+  const jumpToSegmentById = useCallback((id: number) => {
+    const pos = displaySegments.findIndex((d) => d.id === id);
     if (pos < 0) return;
     const targetPage = Math.floor(pos / filters.pageSize);
-    filters.setAnchorOrigIdx(origIdx);
+    filters.setAnchorId(id);
     if (targetPage !== filters.page) {
       filters.setPage(targetPage);
-      pendingJumpRef.current = origIdx;
+      pendingJumpRef.current = id;
     } else {
-      scrollToOrigIdx(origIdx);
+      scrollToId(id);
     }
-  }, [displaySegments, filters, scrollToOrigIdx]);
+  }, [displaySegments, filters, scrollToId]);
 
   useEffect(() => {
     const target = pendingJumpRef.current;
@@ -1301,8 +770,42 @@ export default function TranscriptViewer({
     // One-shot: clear regardless so a missing target (filtered out, etc.)
     // can't trigger a stale jump on a later unrelated pageSegments change.
     pendingJumpRef.current = null;
-    scrollToOrigIdx(target);
-  }, [pageSegments, scrollToOrigIdx]);
+    scrollToId(target);
+  }, [pageSegments, scrollToId]);
+
+  // When search empties, the visible list expands but the scroll container's
+  // pixel offset is preserved by the DOM — so the user lands at the top of
+  // the now-bigger list instead of next to the segment they were viewing.
+  // Pin to whichever segment was the anchor when search cleared.
+  const prevSearchRef = useRef(filters.searchQuery);
+  useEffect(() => {
+    const prev = prevSearchRef.current;
+    prevSearchRef.current = filters.searchQuery;
+    if (prev !== "" && filters.searchQuery === "") {
+      // filters.anchorId in this effect is the pre-clear value; the per-page
+      // anchor reset for the expanded list is queued for the next render.
+      const id = filters.anchorId;
+      if (id != null) scrollToId(id, "auto");
+    }
+  }, [filters.searchQuery, filters.anchorId, scrollToId]);
+
+  // SpeakerStrip excerpts identify segments by their position in
+  // `sourceSegments` — the canonical version that drives speaker computation.
+  // Map that source position back to the live row id so jumps work after
+  // edits/inserts.
+  const idBySourceIndex = useMemo(() => {
+    const map = new Map<number, number>();
+    for (let i = 0; i < editor.allIds.length; i++) {
+      const src = editor.allSourceIndices[i];
+      if (src != null) map.set(src, editor.allIds[i]);
+    }
+    return map;
+  }, [editor.allIds, editor.allSourceIndices]);
+
+  const handleStripJump = useCallback((sourceIdx: number) => {
+    const id = idBySourceIndex.get(sourceIdx);
+    if (id != null) jumpToSegmentById(id);
+  }, [idBySourceIndex, jumpToSegmentById]);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
 
@@ -1338,6 +841,8 @@ export default function TranscriptViewer({
     return () => window.removeEventListener("beforeunload", handler);
   }, [isDirty]);
 
+  const canUndo = editor.canUndo;
+  const undo = editor.undo;
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
@@ -1346,9 +851,9 @@ export default function TranscriptViewer({
         e.preventDefault();
         if ((isDirty || canMarkReviewed) && !saveMutation.isPending) saveMutation.mutate();
       } else if (e.key === "z" && !e.shiftKey) {
-        if ((e.target as HTMLElement)?.tagName !== "TEXTAREA" && editor.canUndo) {
+        if ((e.target as HTMLElement)?.tagName !== "TEXTAREA" && canUndo) {
           e.preventDefault();
-          editor.undo();
+          undo();
         }
       } else if (e.key === "f") {
         e.preventDefault();
@@ -1357,7 +862,7 @@ export default function TranscriptViewer({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [isDirty, canMarkReviewed, editor.canUndo, saveMutation]);
+  }, [isDirty, canMarkReviewed, canUndo, undo, saveMutation]);
 
   const compareExtras = useMemo(
     () => [
@@ -1391,81 +896,27 @@ export default function TranscriptViewer({
   return (
     <div className="flex flex-col h-full">
       <div className="px-4 py-2 border-b border-border space-y-1">
-        {versions && versions.length > 0 ? (
-          <div className="flex items-center gap-2 flex-wrap">
-            <SectionHeader className="shrink-0 w-20">Version</SectionHeader>
-            <VersionPicker
-              versions={versions}
-              value={selectedVersionId}
-              onChange={setSelectedVersionId}
-              widthFit
-            />
-            {hasCompareOptions && (
-              <>
-                <span className="text-xs text-muted-foreground/60">vs</span>
-                <VersionPicker
-                  versions={compareVersions}
-                  value={refChoice}
-                  onChange={(v) => handleRefChoiceChange(v ?? REF_NONE)}
-                  showLatest={false}
-                  prependOptions={compareExtras}
-                  widthFit
-                />
-              </>
-            )}
-            <div className="flex-1" />
-            {infoItems.length > 0 && (
-              <button
-                onClick={() => setExpandedInfo(!expandedInfo)}
-                className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition shrink-0"
-              >
-                File details
-              </button>
-            )}
-            {deleteVersion && (
-              <button
-                onClick={() => {
-                  const targetId = selectedVersionId ?? versions[0].id;
-                  const target = versions.find((v) => v.id === targetId);
-                  if (!target) return;
-                  confirmDialog.open({
-                    title: "Delete this version?",
-                    description: `${versionOption(target)}. Removes both the file and the database entry, and cannot be undone.`,
-                    confirmLabel: "Delete",
-                    variant: "destructive",
-                    onConfirm: () => {
-                      deleteVersionMutation.mutate(targetId);
-                      setSelectedVersionId(null);
-                    },
-                  });
-                }}
-                className="p-1 rounded text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10 transition shrink-0"
-                aria-label="Delete version"
-                title="Delete current version (file + db entry)"
-              >
-                <Trash2 className="w-3 h-3" />
-              </button>
-            )}
-          </div>
-        ) : sourceLabel ? (
-          <div className="flex items-center gap-2">
-            <SectionHeader className="shrink-0 w-20">Version</SectionHeader>
-            <span className="text-xs text-muted-foreground font-mono">{sourceLabel}</span>
-          </div>
-        ) : null}
-
-        {hasCompareOptions && (!versions || versions.length === 0) && (
-          <div className="flex items-center gap-2">
-            <SectionHeader className="shrink-0 w-20">Compare</SectionHeader>
-            <VersionPicker
-              versions={[]}
-              value={refChoice}
-              onChange={(v) => handleRefChoiceChange(v ?? "none")}
-              showLatest={false}
-              prependOptions={compareExtras}
-            />
-          </div>
-        )}
+        <VersionControlBar
+          versions={versions}
+          selectedVersionId={selectedVersionId}
+          onSelectVersion={setSelectedVersionId}
+          hasCompareOptions={hasCompareOptions}
+          compareVersions={compareVersions}
+          refChoice={refChoice}
+          onRefChoiceChange={handleRefChoiceChange}
+          compareExtras={compareExtras}
+          refNoneSentinel={REF_NONE}
+          sourceLabel={sourceLabel}
+          infoItems={infoItems}
+          expandedInfo={expandedInfo}
+          setExpandedInfo={setExpandedInfo}
+          onDeleteVersion={deleteVersion
+            ? (id) => {
+                deleteVersionMutation.mutate(id);
+                setSelectedVersionId(null);
+              }
+            : undefined}
+        />
 
         {saveSpeakerMap && (
           <SpeakerStrip
@@ -1479,345 +930,82 @@ export default function TranscriptViewer({
             onToggleRemoved={handleStripToggleRemoved}
             onAddSpeaker={handleStripAddSpeaker}
             onRemoveAdded={handleStripRemoveAdded}
-            onJumpToSegment={jumpToSegmentByOrigIdx}
+            onJumpToSegment={handleStripJump}
           />
         )}
-
-        {infoItems.length > 0 && expandedInfo && (
-          <div className="bg-secondary/50 rounded border border-border/50 px-3 py-2 text-xs space-y-0.5">
-            {infoItems.map(({ key, value }) => (
-              <div key={key} className="flex gap-2">
-                <span className="text-muted-foreground shrink-0 w-20">{key}</span>
-                <span className="truncate">{value}</span>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
 
-      {/* ── Action bar: select-all + search + badges + actions ── */}
-      <div className="px-4 py-1.5 border-b border-border space-y-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Select all checkbox */}
-          <input
-            type="checkbox"
-            checked={selectedIndices.size > 0 && selectedIndices.size === pageSegments.filter((s) => s.segment.speaker !== BREAK_SPEAKER).length}
-            ref={(el) => {
-              if (el) {
-                const nonBreak = pageSegments.filter((s) => s.segment.speaker !== BREAK_SPEAKER);
-                el.indeterminate = selectedIndices.size > 0 && selectedIndices.size < nonBreak.length;
-              }
-            }}
-            onChange={() => {
-              const nonBreak = pageSegments.filter((s) => s.segment.speaker !== BREAK_SPEAKER);
-              if (selectedIndices.size === nonBreak.length) {
-                clearSelection();
-              } else {
-                setSelectedIndices(new Set(nonBreak.map((s) => s.originalIndex)));
-              }
-            }}
-            className="w-3 h-3 accent-primary cursor-pointer"
-            title="Select all"
-          />
-          {/* Search (always visible) */}
-          <div className="relative">
-            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground/50" />
-            <input
-              ref={searchRef}
-              type="text"
-              placeholder="Search…"
-              value={filters.searchQuery}
-              onChange={(e) => { filters.setSearchQuery(e.target.value); filters.setPage(0); }}
-              className="h-6 w-40 text-xs bg-secondary border border-border rounded pl-6 pr-6 outline-none focus:border-primary/50"
-            />
-            {filters.searchQuery && (
-              <button
-                onClick={() => { filters.setSearchQuery(""); filters.setPage(0); }}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                aria-label="Clear search"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            )}
-          </div>
-          {speakers.length > 1 && (
-            <div
-              className={`flex items-center gap-1 rounded border pl-1.5 transition ${
-                filters.speakerFilter ? "border-primary/50 text-foreground" : "border-border text-muted-foreground"
-              }`}
-              title="Filter view by speaker"
-            >
-              <Filter className="w-3 h-3 shrink-0" />
-              <select
-                value={filters.speakerFilter}
-                onChange={(e) => { filters.setSpeakerFilter(e.target.value); filters.setPage(0); }}
-                className="bg-transparent outline-none text-xs py-0.5 pr-5"
-              >
-                <option value="">all</option>
-                {speakers.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-          )}
-          {/* Flagged toggle */}
-          {showFlags && (
-            <FilterChip
-              active={filters.showFlaggedOnly}
-              color="warning"
-              icon={AlertTriangle}
-              count={flaggedCount}
-              title="Show flagged segments"
-              onClick={() => { filters.setShowFlaggedOnly(!filters.showFlaggedOnly); filters.setPage(0); }}
-            />
-          )}
-          {/* Flag settings popover (density thresholds + custom patterns) */}
-          <div className="relative">
-            <button
-              onClick={() => setShowFlagSettings(!showFlagSettings)}
-              className={`p-1 rounded transition ${
-                showFlagSettings ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent"
-              }`}
-              aria-label="Flag rules"
-              title="Flag rules: speech speed and word list"
-            >
-              <SlidersHorizontal className="w-3 h-3" />
-            </button>
-            {showFlagSettings && (
-              <div className="absolute left-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg p-3 space-y-3 w-80 text-xs">
-                <div className="space-y-2">
-                  <p className="text-xs font-medium">Flagged segments</p>
-                  <p className="text-2xs text-muted-foreground">
-                    Segments that may need a look are flagged automatically: odd
-                    speech speed, or words you list below.
-                  </p>
-                  <p className="text-2xs text-muted-foreground pt-0.5">Flag speech that is:</p>
-                  <label className="flex items-center gap-2">
-                    <span className="shrink-0 w-16">Too sparse</span>
-                    <input
-                      type="range"
-                      min={1}
-                      max={40}
-                      value={filters.densityThreshold}
-                      onChange={(e) => filters.setDensityThreshold(Number(e.target.value))}
-                      className="flex-1"
-                    />
-                    <span className="text-muted-foreground w-24 text-right tabular-nums">
-                      under {filters.densityThreshold} char/s
-                    </span>
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <span className="shrink-0 w-16">Too dense</span>
-                    <input
-                      type="range"
-                      min={20}
-                      max={150}
-                      value={filters.maxDensityThreshold}
-                      onChange={(e) => filters.setMaxDensityThreshold(Number(e.target.value))}
-                      className="flex-1"
-                    />
-                    <span className="text-muted-foreground w-24 text-right tabular-nums">
-                      over {filters.maxDensityThreshold} char/s
-                    </span>
-                  </label>
-                </div>
-                <div className="space-y-1 pt-1.5 border-t border-border/50">
-                  <p className="text-2xs text-muted-foreground">
-                    Flag text containing these words (one per line):
-                  </p>
-                  <textarea
-                    value={patternDraft}
-                    onChange={(e) => setPatternDraft(e.target.value)}
-                    onBlur={() => {
-                      const list = patternDraft.split("\n").map((p) => p.trim()).filter(Boolean);
-                      setFlagPatterns(list);
-                      setPatternDraft(list.join("\n"));
-                    }}
-                    rows={4}
-                    placeholder={"um\neuh"}
-                    className="w-full bg-secondary border border-border rounded px-1.5 py-1 outline-none focus:border-primary/50 font-mono"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-          {/* Pending-removal badge */}
-          {pendingRemovalCount > 0 && (
-            <FilterChip
-              active={filters.showRemovedOnly}
-              color="destructive"
-              icon={Trash2}
-              count={pendingRemovalCount}
-              title="Show segments pending removal; review before saving"
-              onClick={() => { filters.setShowRemovedOnly(!filters.showRemovedOnly); filters.setPage(0); }}
-            />
-          )}
-          {/* Comparison group: diff highlight + changed filter. Both exist only
-              when a reference is selected. */}
-          {effectiveReference && (
-            <>
-              <span className="h-4 w-px bg-border mx-0.5" aria-hidden />
-              <button
-                onClick={() => setShowDiff((v) => !v)}
-                className={`flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition hover:bg-accent ${
-                  showDiff ? "text-foreground" : "text-muted-foreground hover:text-foreground"
-                }`}
-                title={showDiff ? "Hide word-level diff" : "Show word-level diff"}
-              >
-                {showDiff ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-                Diff
-              </button>
-              {changedCount > 0 && (
-                <FilterChip
-                  active={filters.showChangedOnly}
-                  color="info"
-                  icon={Diff}
-                  count={changedCount}
-                  title="Show changed only"
-                  onClick={() => { filters.setShowChangedOnly(!filters.showChangedOnly); filters.setPage(0); }}
-                />
-              )}
-            </>
-          )}
-          <div className="flex-1" />
-          {/* manual re-sync — auto-follow would disrupt editing */}
-          {isPlayingThisFile && activeOrigIdx != null && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-xs h-7"
-              onClick={jumpToActive}
-              title="Jump to now-playing segment"
-            >
-              <Locate className="w-3 h-3 mr-1" />
-              Now playing
-            </Button>
-          )}
-          {/* Right: undo, export, save */}
-          {editor.canUndo && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-xs h-7"
-              onClick={editor.undo}
-              title="Undo (Cmd+Z)"
-            >
-              <Undo2 className="w-3 h-3 mr-1" />
-              Undo
-            </Button>
-          )}
-          {exportSource && audioPath && (
-            <ExportDropdown audioPath={audioPath} source={exportSource} filename={exportFilename} />
-          )}
-          <Button
-            variant={isDirty || canMarkReviewed ? "default" : "outline"}
-            size="sm"
-            className="text-xs h-7"
-            onClick={() => saveMutation.mutate()}
-            disabled={saveMutation.isPending || (!isDirty && !canMarkReviewed)}
-            title={saveButton.title}
-          >
-            <saveButton.Icon className="w-3 h-3 mr-1" />
-            {saveMutation.isPending ? "Saving..." : saveButton.label}
-          </Button>
-        </div>
+      <EditorToolbar
+        filters={filters}
+        searchRef={searchRef}
+        selectedIds={selectedIds}
+        setSelectedIds={setSelectedIds}
+        clearSelection={clearSelection}
+        bulkSpeaker={bulkSpeaker}
+        bulkMerge={bulkMerge}
+        bulkDelete={bulkDelete}
+        pageSegments={pageSegments}
+        speakers={speakers}
+        flaggedCount={flaggedCount}
+        pendingRemovalCount={pendingRemovalCount}
+        changedCount={changedCount}
+        showFlags={showFlags}
+        showFlagSettings={showFlagSettings}
+        setShowFlagSettings={setShowFlagSettings}
+        patternDraft={patternDraft}
+        setPatternDraft={setPatternDraft}
+        setFlagPatterns={setFlagPatterns}
+        hasReference={effectiveReference != null}
+        showDiff={showDiff}
+        setShowDiff={setShowDiff}
+        isPlayingThisFile={isPlayingThisFile}
+        activeId={activeId}
+        jumpToActive={jumpToActive}
+        canUndo={editor.canUndo}
+        undo={editor.undo}
+        exportSlot={exportSource && audioPath
+          ? <ExportDropdown audioPath={audioPath} source={exportSource} filename={exportFilename} />
+          : null}
+        isDirty={isDirty}
+        canMarkReviewed={canMarkReviewed}
+        saveButton={saveButton}
+        saveMutation={saveMutation}
+      />
 
-        {/* Selection actions bar */}
-        {selectedIndices.size > 0 && (
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-muted-foreground">{selectedIndices.size} selected</span>
-            <select
-              value=""
-              onChange={(e) => { if (e.target.value) { bulkSpeaker(e.target.value); } }}
-              className={`${selectClass} text-xs`}
-            >
-              <option value="">Set speaker…</option>
-              {speakers.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-            {selectedIndices.size >= 2 && (
-              <Button variant="outline" size="sm" className="text-xs h-6" onClick={bulkMerge}>
-                <Merge className="w-3 h-3 mr-1" />
-                Merge
-              </Button>
-            )}
-            <Button variant="outline" size="sm" className="text-xs h-6 text-destructive hover:text-destructive" onClick={bulkDelete}>
-              <Trash2 className="w-3 h-3 mr-1" />
-              Delete
-            </Button>
-            <button onClick={clearSelection} className="text-xs text-muted-foreground hover:text-foreground transition ml-1" aria-label="Clear selection">
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* ── Segment list (virtualized — only rows in view mount) ── */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto py-2">
-        <div
-          style={{ height: rowVirtualizer.getTotalSize(), position: "relative", width: "100%" }}
-        >
-          {rowVirtualizer.getVirtualItems().map((v) => {
-            const item = pageSegments[v.index];
-            if (!item) return null;
-            const { segment, originalIndex } = item;
-            const editedIdx = origToEditedIdx.get(originalIndex) ?? originalIndex;
-            const ref = getRef(editedIdx);
-            const isBreak = segment.speaker === BREAK_SPEAKER;
-            const reason = showFlags
-              ? flagReason(segment, filters.densityThreshold, filters.maxDensityThreshold, customPatterns)
-              : null;
-            const flagged = reason !== null && !dismissedFlags.has(originalIndex);
-            const renamedTo = pendingRenames[segment.speaker];
-            const displaySegment =
-              renamedTo && renamedTo !== segment.speaker
-                ? { ...segment, speaker: renamedTo }
-                : segment;
-            return (
-              <div
-                key={`${editorKey}-${originalIndex}`}
-                data-orig-idx={originalIndex}
-                data-index={v.index}
-                ref={rowVirtualizer.measureElement}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  transform: `translateY(${v.start}px)`,
-                }}
-              >
-                <SegmentViewRow
-                  segment={displaySegment}
-                  originalIndex={originalIndex}
-                  isActive={activeOrigIdx === originalIndex}
-                  isPlayingActive={activeOrigIdx === originalIndex && storeIsPlaying}
-                  isFlagged={flagged}
-                  flagReasonText={flagged ? reason : null}
-                  isChanged={isChanged(segment, originalIndex)}
-                  isPendingRemoval={pendingRemovals.has(segment.speaker) || deletedSet.has(originalIndex)}
-                  isDeleted={deletedSet.has(originalIndex)}
-                  selected={selectedIndices.has(originalIndex)}
-                  onToggleSelect={toggleSelect}
-                  audioPath={audioPath}
-                  speakers={speakers}
-                  showSpeaker={showSpeaker}
-                  showDelete={showDelete}
-                  onTextChange={handleRowTextChange}
-                  onSpeakerChange={handleRowSpeakerChange}
-                  onTimestampChange={handleRowTimestampChange}
-                  onDelete={handleRowDelete}
-                  onRestore={handleRowRestore}
-                  onDismissFlag={showFlags ? dismissFlag : undefined}
-                  onInsertBefore={handleRowInsertBefore}
-                  onInsertAfter={handleRowInsertAfter}
-                  onMergeNext={handleMerge}
-                  onSplit={handleRowSplit}
-                  referenceText={ref && !isBreak ? ref.text : undefined}
-                  showDiff={showDiff}
-                />
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      <SegmentList
+        ref={listRef}
+        editorKey={editorKey}
+        pageSegments={pageSegments}
+        speakers={speakers}
+        audioPath={audioPath}
+        showFlags={showFlags}
+        showSpeaker={showSpeaker}
+        showDelete={showDelete}
+        showDiff={showDiff}
+        densityThreshold={filters.densityThreshold}
+        maxDensityThreshold={filters.maxDensityThreshold}
+        customPatterns={customPatterns}
+        activeId={activeId}
+        storeIsPlaying={storeIsPlaying}
+        pendingRenames={pendingRenames}
+        pendingRemovals={pendingRemovals}
+        dismissedFlags={dismissedFlags}
+        deletedSet={deletedSet}
+        selectedIds={selectedIds}
+        getRef={getRef}
+        isChanged={isChanged}
+        onToggleSelect={toggleSelect}
+        onTextChange={handleRowTextChange}
+        onSpeakerChange={handleRowSpeakerChange}
+        onTimestampChange={handleRowTimestampChange}
+        onDelete={handleRowDelete}
+        onRestore={handleRowRestore}
+        onDismissFlag={dismissFlag}
+        onInsertBefore={handleRowInsertBefore}
+        onInsertAfter={handleRowInsertAfter}
+        onMergeNext={handleMerge}
+        onSplit={handleRowSplit}
+      />
 
       {/* ── Pagination ── */}
       {displaySegments.length > 10 && (
@@ -1827,10 +1015,10 @@ export default function TranscriptViewer({
           pageSize={filters.pageSize}
           onPageChange={filters.setPage}
           onPageSizeChange={(s) => {
-            const anchor = filters.anchorOrigIdx;
+            const anchor = filters.anchorId;
             filters.setPageSize(s);
             if (anchor != null) {
-              const pos = displaySegments.findIndex((d) => d.originalIndex === anchor);
+              const pos = displaySegments.findIndex((d) => d.id === anchor);
               filters.setPage(pos >= 0 ? Math.floor(pos / s) : 0);
             } else {
               filters.setPage(0);
@@ -1852,7 +1040,7 @@ export default function TranscriptViewer({
                 <button
                   key={s}
                   onClick={() => {
-                    editor.mergeWithNext(mergeDialog.index, s);
+                    editor.mergeWithNext(mergeDialog.id, s);
                     setMergeDialog(null);
                   }}
                   className="px-3 py-2 text-sm rounded-md border border-border bg-secondary hover:bg-accent transition text-left"
