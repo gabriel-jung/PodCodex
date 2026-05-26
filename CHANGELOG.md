@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.2] - 2026-05-26
+
+### Transcript editor polish
+
+- Auto-follow the playing segment; scroll disables, **Now playing** re-engages.
+- `Ctrl+Space` / `Shift+Space` toggle play/pause without leaving the textarea.
+- Gap dividers between segments: subtle (10s+), prominent (60s+).
+- Edited textareas tinted so unsaved changes stand out.
+- Wider speaker dropdown so long names and the menu are not clipped.
+- Split inherits the chip-renamed speaker; merge no longer drops it.
+
 ## [0.2.1] - 2026-05-20
 
 ### Settings rework
