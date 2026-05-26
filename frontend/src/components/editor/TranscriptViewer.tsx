@@ -438,7 +438,7 @@ export default function TranscriptViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor.editedSegments, editor.ids, effectiveReference]);
 
-  const hasCompareOptions = !!referenceSegments || (versions && versions.length > 0);
+  const hasCompareOptions = !!referenceSegments || !!(versions && versions.length > 0);
 
   const handleStripRename = useCallback((from: string, to: string) => {
     setPendingRenames((prev) => {
