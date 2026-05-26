@@ -126,6 +126,9 @@ export interface SegmentRowProps {
   isChanged: boolean;
   isPendingRemoval?: boolean;
   isDeleted?: boolean;
+  /** True when this row's text has been edited or was inserted/split this
+   *  session. Used to tint the textarea so unsaved edits stand out. */
+  isTextEdited?: boolean;
   selected: boolean;
   onToggleSelect: (id: number) => void;
   audioPath?: string;
@@ -159,6 +162,7 @@ const SegmentRow = memo(function SegmentRow({
   isChanged,
   isPendingRemoval,
   isDeleted,
+  isTextEdited,
   audioPath,
   speakers,
   showSpeaker,
@@ -287,41 +291,46 @@ const SegmentRow = memo(function SegmentRow({
         </div>
 
         {showSpeaker && (
-          <div className="shrink-0 w-16 pt-0.5">
+          <div className="shrink-0 w-16 pt-0.5 relative">
             {editingSpeaker ? (
-              speakers.length > 0 ? (
-                <select
-                  value={segment.speaker}
-                  onChange={(e) => {
-                    onSpeakerChange(id, e.target.value);
-                    setEditingSpeaker(false);
-                  }}
-                  onBlur={() => setEditingSpeaker(false)}
-                  autoFocus
-                  className={`${selectClass} w-full text-xs py-0 h-5`}
-                >
-                  {!speakers.includes(segment.speaker) && (
-                    <option value={segment.speaker}>{segment.speaker}</option>
-                  )}
-                  {speakers.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  ref={speakerInputRef}
-                  type="text"
-                  value={segment.speaker}
-                  onChange={(e) => onSpeakerChange(id, e.target.value)}
-                  onBlur={() => setEditingSpeaker(false)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === "Escape") setEditingSpeaker(false);
-                  }}
-                  className="w-full text-xs bg-secondary border border-border rounded px-1 py-0 h-5 outline-none"
-                />
-              )
+              // Float wider than the resting 64px column so long speaker
+              // names aren't truncated and the native dropdown anchor is
+              // tall enough to show full-height items.
+              <div className="absolute left-0 top-0 z-20 min-w-full w-max max-w-48">
+                {speakers.length > 0 ? (
+                  <select
+                    value={segment.speaker}
+                    onChange={(e) => {
+                      onSpeakerChange(id, e.target.value);
+                      setEditingSpeaker(false);
+                    }}
+                    onBlur={() => setEditingSpeaker(false)}
+                    autoFocus
+                    className={`${selectClass} w-full text-xs py-0.5 h-6`}
+                  >
+                    {!speakers.includes(segment.speaker) && (
+                      <option value={segment.speaker}>{segment.speaker}</option>
+                    )}
+                    {speakers.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    ref={speakerInputRef}
+                    type="text"
+                    value={segment.speaker}
+                    onChange={(e) => onSpeakerChange(id, e.target.value)}
+                    onBlur={() => setEditingSpeaker(false)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === "Escape") setEditingSpeaker(false);
+                    }}
+                    className="w-full text-xs bg-secondary border border-border rounded px-1 py-0.5 h-6 outline-none"
+                  />
+                )}
+              </div>
             ) : (
               <button
                 onClick={() => setEditingSpeaker(true)}
@@ -348,7 +357,11 @@ const SegmentRow = memo(function SegmentRow({
                   if (split) onSplit(id, split.pos, split.t);
                 }
               }}
-              className="w-full bg-transparent text-sm leading-relaxed resize-none outline-none overflow-hidden rounded border border-transparent hover:border-border focus:border-primary/50 focus:bg-accent/10 px-1.5 py-0 transition [field-sizing:content]"
+              className={`w-full text-sm leading-relaxed resize-none outline-none overflow-hidden rounded border hover:border-border focus:border-primary/50 focus:bg-accent/10 px-1.5 py-0 transition [field-sizing:content] ${
+                isTextEdited
+                  ? "bg-info/10 border-info/40"
+                  : "bg-transparent border-transparent"
+              }`}
               rows={1}
             />
           </div>

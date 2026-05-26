@@ -35,7 +35,16 @@ type EditorAction =
   | { type: "RESET"; segments: Segment[] }
   | { type: "UNDO" }
   | { type: "MERGE"; id: number; speaker?: string }
-  | { type: "SPLIT"; id: number; cursorPos: number; explicitTime?: number };
+  | {
+      type: "SPLIT";
+      id: number;
+      cursorPos: number;
+      explicitTime?: number;
+      /** Speaker to assign to BOTH halves. Lets the caller pre-resolve any
+       *  staged rename (e.g. from a SpeakerStrip pendingRename) so splits
+       *  inherit the displayed name, not the raw base name. */
+      resolvedSpeaker?: string;
+    };
 
 const MAX_HISTORY = 50;
 
@@ -142,10 +151,15 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
       const next = mergedSeg(nextRow, state.edits);
       const history = pushHistory(state);
       const edits = new Map(state.edits);
+      // Preserve any prior edits on row.id (notably a speaker edit stamped by
+      // a previous SPLIT) — only override text/end and, if requested, speaker.
+      const prior = edits.get(row.id) ?? {};
+      const speakerEdit = action.speaker ? { speaker: action.speaker } : {};
       edits.set(row.id, {
+        ...prior,
+        ...speakerEdit,
         text: seg.text + " " + next.text,
         end: next.end,
-        ...(action.speaker ? { speaker: action.speaker } : {}),
       });
       const deleted = new Set(state.deleted);
       deleted.add(nextRow.id);
@@ -166,13 +180,18 @@ function reducer(state: EditorState, action: EditorAction): EditorState {
             const ratio = textBefore.length / Math.max(seg.text.length, 1);
             return Math.round((seg.start + (seg.end - seg.start) * ratio) * 10) / 10;
           })();
+      const newSpeaker = action.resolvedSpeaker ?? seg.speaker;
       const history = pushHistory(state);
       const edits = new Map(state.edits);
-      edits.set(row.id, { ...edits.get(row.id), text: textBefore, end: splitTime });
+      // Stamp the resolved speaker on the original row too so a later
+      // pendingRename change to the base speaker doesn't desync the two halves.
+      const prior = edits.get(row.id) ?? {};
+      const speakerEdit = newSpeaker !== row.base.speaker ? { speaker: newSpeaker } : {};
+      edits.set(row.id, { ...prior, ...speakerEdit, text: textBefore, end: splitTime });
       const newRow: Row = {
         id: state.nextId,
         base: {
-          speaker: seg.speaker,
+          speaker: newSpeaker,
           text: textAfter,
           start: splitTime,
           end: seg.end,
@@ -204,6 +223,10 @@ export interface UseSegmentsReturn {
   canUndo: boolean;
   /** Ids of currently-flagged segments. */
   flaggedIds: number[];
+  /** Ids of rows whose text differs from the loaded base (per-row text
+   *  edits + freshly inserted/split rows). Used to highlight the textarea
+   *  visually so unsaved edits are easy to spot. */
+  textEditedIds: ReadonlySet<number>;
   updateText: (id: number, text: string) => void;
   updateSpeaker: (id: number, speaker: string) => void;
   updateTimestamp: (id: number, field: "start" | "end", value: number) => void;
@@ -213,7 +236,12 @@ export interface UseSegmentsReturn {
   insertAfter: (id: number, segment: Segment) => void;
   mergeWithNext: (id: number, speaker?: string) => void;
   getNextSegment: (id: number) => Segment | null;
-  splitAt: (id: number, cursorPos: number, explicitTime?: number) => void;
+  splitAt: (
+    id: number,
+    cursorPos: number,
+    explicitTime?: number,
+    resolvedSpeaker?: string,
+  ) => void;
   reset: (segments: Segment[]) => void;
   undo: () => void;
 }
@@ -255,6 +283,19 @@ export function useSegments(initialSegments: Segment[]): UseSegmentsReturn {
       if (mergedSeg(row, state.edits).flagged) out.push(row.id);
     }
     return out;
+  }, [state.rows, state.edits, state.deleted]);
+
+  const textEditedIds = useMemo(() => {
+    const s = new Set<number>();
+    for (const [id, edit] of state.edits) {
+      if (edit.text !== undefined) s.add(id);
+    }
+    // Inserted / split rows have no source counterpart — their text is
+    // user-authored too, so highlight them as edited.
+    for (const row of state.rows) {
+      if (row.sourceIndex == null && !state.deleted.has(row.id)) s.add(row.id);
+    }
+    return s;
   }, [state.rows, state.edits, state.deleted]);
 
   // Stable callbacks need fresh state for predicates that scan live rows
@@ -303,8 +344,8 @@ export function useSegments(initialSegments: Segment[]): UseSegmentsReturn {
     return mergedSeg(s.rows[nextPos], s.edits);
   }, []);
   const splitAt = useCallback(
-    (id: number, cursorPos: number, explicitTime?: number) => {
-      dispatch({ type: "SPLIT", id, cursorPos, explicitTime });
+    (id: number, cursorPos: number, explicitTime?: number, resolvedSpeaker?: string) => {
+      dispatch({ type: "SPLIT", id, cursorPos, explicitTime, resolvedSpeaker });
     },
     [],
   );
@@ -322,6 +363,7 @@ export function useSegments(initialSegments: Segment[]): UseSegmentsReturn {
     deletedCount: state.deleted.size,
     canUndo: state.history.length > 0,
     flaggedIds,
+    textEditedIds,
     updateText,
     updateSpeaker,
     updateTimestamp,

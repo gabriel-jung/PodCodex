@@ -12,6 +12,9 @@ export const SHORTCUTS: ShortcutGroup[] = [
     items: [
       { keys: ["⌘", "K"], label: "Open command palette" },
       { keys: ["Space"], label: "Play / pause current audio" },
+      { keys: ["Ctrl", "Space"], label: "Play / pause without leaving the text field" },
+      { keys: ["Shift", "Space"], label: "Play / pause (alternate; not French AZERTY)" },
+      { keys: ["Esc"], label: "Pause audio and exit the text field" },
       { keys: ["Shift", "?"], label: "Show this shortcuts dialog" },
     ],
   },

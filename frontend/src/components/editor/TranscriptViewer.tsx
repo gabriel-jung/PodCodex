@@ -661,9 +661,19 @@ export default function TranscriptViewer({
       flagged: false,
     });
   }, [editorInsertAfter]);
+  // Resolve a staged SpeakerStrip rename so the split's new row inherits the
+  // currently-displayed speaker name, not the raw base name. Without this,
+  // splitting a row after a chip rename leaves the new row's base.speaker
+  // pointing at the pre-rename name; any later chip change desyncs the halves.
+  const pendingRenamesRef = useRef(pendingRenames);
+  pendingRenamesRef.current = pendingRenames;
   const handleRowSplit = useCallback(
     (id: number, cursorPos: number, t?: number) => {
-      editorSplitAt(id, cursorPos, t);
+      const hit = segmentByIdRef.current.get(id);
+      const baseSpeaker = hit?.segment.speaker;
+      const renamed = baseSpeaker ? pendingRenamesRef.current[baseSpeaker] : undefined;
+      const resolved = renamed && renamed !== baseSpeaker ? renamed : undefined;
+      editorSplitAt(id, cursorPos, t, resolved);
     },
     [editorSplitAt],
   );
@@ -698,11 +708,17 @@ export default function TranscriptViewer({
   const idsRef = useRef(editor.ids);
   idsRef.current = editor.ids;
 
+  // Drop activeId only when the player jumps to a different file. While the
+  // current track is paused we keep the last activeId so the Now-playing
+  // toolbar button still has somewhere to re-center to.
   useEffect(() => {
-    if (!isPlayingThisFile) {
+    if (audioPath == null || storeAudioPath !== audioPath) {
       setActiveId(null);
-      return;
     }
+  }, [audioPath, storeAudioPath]);
+
+  useEffect(() => {
+    if (!isPlayingThisFile) return;
     const interval = setInterval(() => {
       const t = useAudioStore.getState().currentTime;
       if (!useAudioStore.getState().isPlaying) return;
@@ -728,23 +744,53 @@ export default function TranscriptViewer({
     [],
   );
 
-  // Scroll to active segment ONCE on first resolve (so the editor opens
-  // aligned to where the audio is), then never auto-follow — that would
-  // yank the view out from under the user mid-edit. Manual re-sync via
-  // the "jump to now playing" button.
-  const didInitialSyncRef = useRef(false);
+  // Auto-follow: while ON, the list scrolls to the active segment as
+  // playback advances. Any user-initiated scroll (wheel/touchmove) flips it
+  // OFF so the reader can browse without being yanked back. "Now playing"
+  // toolbar button flips it back ON and re-centers.
+  const [followMode, setFollowMode] = useState(true);
   const prevAudioPathRef = useRef(audioPath);
   if (prevAudioPathRef.current !== audioPath) {
     prevAudioPathRef.current = audioPath;
-    didInitialSyncRef.current = false;
+    // Re-engage follow on track change so the new transcript opens aligned.
+    setFollowMode(true);
   }
+  // Set by jumpToActive so the follow effect's first run after the toggle
+  // doesn't re-fire scrollToId on top of the explicit call.
+  const suppressNextFollowScrollRef = useRef(false);
   useEffect(() => {
-    if (activeId == null || didInitialSyncRef.current) return;
-    if (scrollToId(activeId, "auto")) didInitialSyncRef.current = true;
-  }, [activeId, scrollToId]);
+    if (!followMode || activeId == null) return;
+    if (suppressNextFollowScrollRef.current) {
+      suppressNextFollowScrollRef.current = false;
+      return;
+    }
+    // Skip when the user is typing inside the list: an active textarea/input
+    // means they're editing this row (or a nearby one) and the smooth-scroll
+    // would yank the caret offscreen mid-keystroke.
+    const focusTag = (document.activeElement as HTMLElement | null)?.tagName;
+    const focusEditable =
+      focusTag === "TEXTAREA" ||
+      focusTag === "INPUT" ||
+      (document.activeElement as HTMLElement | null)?.isContentEditable;
+    if (focusEditable) return;
+    // 'auto' avoids stacked smooth-scroll animations on the 250ms activeId
+    // polling tick. 'smooth' is reserved for the explicit jumpToActive click.
+    scrollToId(activeId, "auto");
+  }, [followMode, activeId, scrollToId]);
+
+  const handleUserScroll = useCallback(() => {
+    setFollowMode((cur) => (cur ? false : cur));
+  }, []);
 
   const jumpToActive = () => {
-    if (activeId != null) scrollToId(activeId);
+    if (!followMode) {
+      // Effect would scroll on its own once followMode commits — but we want
+      // 'smooth' here (explicit user gesture), so do it manually and ask the
+      // effect to skip its first post-toggle run.
+      suppressNextFollowScrollRef.current = true;
+      setFollowMode(true);
+    }
+    if (activeId != null) scrollToId(activeId, "smooth");
   };
 
   // Cross-page jump: SpeakerStrip excerpts ask to locate a segment in the
@@ -961,6 +1007,7 @@ export default function TranscriptViewer({
         isPlayingThisFile={isPlayingThisFile}
         activeId={activeId}
         jumpToActive={jumpToActive}
+        followMode={followMode}
         canUndo={editor.canUndo}
         undo={editor.undo}
         exportSlot={exportSource && audioPath
@@ -976,6 +1023,13 @@ export default function TranscriptViewer({
         ref={listRef}
         editorKey={editorKey}
         pageSegments={pageSegments}
+        filterActive={
+          !!filters.speakerFilter ||
+          filters.showFlaggedOnly ||
+          filters.showChangedOnly ||
+          filters.showRemovedOnly ||
+          filters.searchQuery.trim() !== ""
+        }
         speakers={speakers}
         audioPath={audioPath}
         showFlags={showFlags}
@@ -991,6 +1045,7 @@ export default function TranscriptViewer({
         pendingRemovals={pendingRemovals}
         dismissedFlags={dismissedFlags}
         deletedSet={deletedSet}
+        textEditedIds={editor.textEditedIds}
         selectedIds={selectedIds}
         getRef={getRef}
         isChanged={isChanged}
@@ -1005,6 +1060,7 @@ export default function TranscriptViewer({
         onInsertAfter={handleRowInsertAfter}
         onMergeNext={handleMerge}
         onSplit={handleRowSplit}
+        onUserScroll={handleUserScroll}
       />
 
       {/* ── Pagination ── */}

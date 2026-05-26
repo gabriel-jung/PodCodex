@@ -110,6 +110,9 @@ export interface EditorToolbarProps {
   isPlayingThisFile: boolean;
   activeId: number | null;
   jumpToActive: () => void;
+  /** True when the editor is auto-scrolling to the active segment. The
+   *  Now-playing button shows filled when ON, ghost when OFF. */
+  followMode: boolean;
   // Editor state
   canUndo: boolean;
   undo: () => void;
@@ -148,6 +151,7 @@ export default function EditorToolbar({
   isPlayingThisFile,
   activeId,
   jumpToActive,
+  followMode,
   canUndo,
   undo,
   exportSlot,
@@ -335,13 +339,23 @@ export default function EditorToolbar({
           </>
         )}
         <div className="flex-1" />
-        {isPlayingThisFile && activeId != null && (
+        {activeId != null && (
           <Button
             variant="ghost"
             size="sm"
-            className="text-xs h-7"
+            className={`text-xs h-7 ${
+              followMode && isPlayingThisFile
+                ? "bg-primary/15 text-primary hover:bg-primary/20"
+                : ""
+            }`}
             onClick={jumpToActive}
-            title="Jump to now-playing segment"
+            title={
+              !isPlayingThisFile
+                ? "Re-engage follow (auto-scroll resumes when you press play)"
+                : followMode
+                  ? "Following playback. Click to re-center."
+                  : "Click to follow playback (auto-scroll resumes)"
+            }
           >
             <Locate className="w-3 h-3 mr-1" />
             Now playing
