@@ -413,6 +413,22 @@ function PipelineDefaultsPanel() {
             className={`input ${inputWidth.short}`}
           />
         </SettingRow>
+        <SettingRow
+          label="Minutes per batch"
+          help="Max audio duration per LLM request. Smaller batches stay within model context windows; larger batches are fewer requests but heavier prompts. Episodes panel can override per-run as a batch count."
+        >
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={llm.batchMinutes}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n) && n > 0) setLLM({ batchMinutes: n });
+            }}
+            className={`input ${inputWidth.numeric}`}
+          />
+        </SettingRow>
       </SettingSection>
 
       <SettingSection

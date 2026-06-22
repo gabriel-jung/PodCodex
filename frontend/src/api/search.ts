@@ -55,6 +55,26 @@ export const deleteAnyVersion = (
   );
 };
 
+/** Set or clear the episode's verified-version pointer. Pass null,null to clear. */
+export const setVerifiedVersion = (
+  audioPath: string | null | undefined,
+  outputDir: string | null | undefined,
+  step: "transcript" | "corrected" | null,
+  versionId: string | null,
+) => {
+  const params = new URLSearchParams();
+  if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
+  return json<{
+    status: string;
+    verified: { step: string; version_id: string } | null;
+  }>(`/api/shows/verified?${params}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ step, version_id: versionId }),
+  });
+};
+
 export interface EpisodeCollection {
   collection: string;
   model: string;

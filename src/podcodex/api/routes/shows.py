@@ -83,6 +83,7 @@ class ShowSummary(BaseModel):
     translated_edited_count: int | None = None
     synthesized_count: int | None = None
     indexed_count: int | None = None
+    verified_count: int | None = None  # episodes with a verified pointer
 
 
 @router.get("/", response_model=list[ShowSummary])
@@ -128,9 +129,11 @@ async def list_shows() -> list[ShowSummary]:
             indexed
         ) = None
         transcribed_edited = corrected_edited = translated_edited = None
+        verified = None
         if (child / "pipeline.db").is_file():
             try:
-                agg = get_pipeline_db(child).aggregate_status()
+                db = get_pipeline_db(child)
+                agg = db.aggregate_status()
                 pipeline_total = agg["total"]
                 transcribed = agg["transcribed"]
                 transcribed_edited = agg["transcribed_edited"]
@@ -140,6 +143,7 @@ async def list_shows() -> list[ShowSummary]:
                 translated_edited = agg["translated_edited"]
                 synthesized = agg["synthesized"]
                 indexed = agg["indexed"]
+                verified = len(db.stems_with_verified())
             except Exception as exc:
                 logger.warning("aggregate_status failed for {}: {}", child, exc)
 
@@ -162,6 +166,7 @@ async def list_shows() -> list[ShowSummary]:
                 translated_edited_count=translated_edited,
                 synthesized_count=synthesized,
                 indexed_count=indexed,
+                verified_count=verified,
             )
         )
     return shows
@@ -451,7 +456,8 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
             llm_mode=meta.pipeline.llm_mode,
             llm_provider_profile=meta.pipeline.llm_provider_profile,
             llm_key_name=meta.pipeline.llm_key_name,
-            llm_model=meta.pipeline.llm_model,
+            llm_models_by_mode=dict(meta.pipeline.llm_models_by_mode or {}),
+            llm_batch_minutes=meta.pipeline.llm_batch_minutes,
             context=meta.pipeline.context,
             target_lang=meta.pipeline.target_lang,
             rag_model=meta.pipeline.rag_model,
@@ -482,7 +488,8 @@ async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
                 llm_mode=p.llm_mode,
                 llm_provider_profile=p.llm_provider_profile,
                 llm_key_name=p.llm_key_name,
-                llm_model=p.llm_model,
+                llm_models_by_mode=dict(p.llm_models_by_mode or {}),
+                llm_batch_minutes=p.llm_batch_minutes,
                 context=p.context,
                 target_lang=p.target_lang,
                 rag_model=p.rag_model,
@@ -522,8 +529,9 @@ async def unified_episodes(
 
     Args:
         defaults: Optional JSON string with app-level pipeline defaults
-                  (model_size, diarize, llm_mode, llm_provider, llm_model,
-                  target_lang). Show-level overrides take precedence.
+                  (model_size, diarize, llm_mode, llm_provider,
+                  llm_models_by_mode, target_lang). Show-level overrides
+                  take precedence.
     """
     import json as _json
 
@@ -573,6 +581,23 @@ async def unified_episodes(
         if row.get("synthesized", False) != desired:
             row["synthesized"] = desired
             db.mark(stem, synthesized=desired)
+
+    # Reconcile verified pointers: a pointer whose target version no longer
+    # exists (out-of-band file deletion, manual DB edit) is stale and must
+    # be cleared so the UI never highlights a missing version.
+    verified_pointers = db.verified_pointers()
+    if verified_pointers:
+        ids_by_step: dict[str, dict[str, set[str]]] = {}
+        for step_name in {p["step"] for p in verified_pointers.values()}:
+            ids_by_step[step_name] = db.version_ids_by_stem(step_name)
+        for stem, ptr in list(verified_pointers.items()):
+            step_ids = ids_by_step.get(ptr["step"], {}).get(stem, set())
+            if ptr["version_id"] not in step_ids:
+                db.clear_verified(stem)
+                verified_pointers.pop(stem, None)
+                row = status_map.get(stem)
+                if row:
+                    row["verified"] = None
 
     local_audio = _scan_audio_files(path)
     episode_files = _scan_episode_files(path, local_audio)
@@ -637,6 +662,7 @@ async def unified_episodes(
             "segment_count": seg_count,
             "files": ep_files,
             "provenance": prov,
+            "verified": st.get("verified"),
             "llm_failed_steps": rejected_steps(output_dir) if out_dir_exists else [],
             **_step_statuses(st, prov, effective, cleaned_translations),
         }
@@ -733,23 +759,32 @@ def _resolve_defaults(app_defaults: dict, show_meta: _ShowMeta | None) -> dict:
     use `""` as the unset sentinel; `diarize` uses `None`.
     """
     effective = dict(app_defaults)
-    if not (show_meta and show_meta.pipeline):
-        return effective
-    p = show_meta.pipeline
-    if p.model_size:
-        effective["model_size"] = p.model_size
-    if p.llm_mode:
-        effective["llm_mode"] = p.llm_mode
-    if p.llm_provider_profile:
-        effective["llm_provider_profile"] = p.llm_provider_profile
-    if p.llm_key_name:
-        effective["llm_key_name"] = p.llm_key_name
-    if p.llm_model:
-        effective["llm_model"] = p.llm_model
-    if p.target_lang:
-        effective["target_lang"] = p.target_lang
-    if p.diarize is not None:
-        effective["diarize"] = p.diarize
+    # Merge per-mode model dicts: app first, show overrides per-mode entries.
+    app_models = dict(effective.get("llm_models_by_mode") or {})
+    effective.pop("llm_models_by_mode", None)
+    show_models: dict[str, str] = {}
+    if show_meta and show_meta.pipeline:
+        p = show_meta.pipeline
+        if p.model_size:
+            effective["model_size"] = p.model_size
+        if p.llm_mode:
+            effective["llm_mode"] = p.llm_mode
+        if p.llm_provider_profile:
+            effective["llm_provider_profile"] = p.llm_provider_profile
+        if p.llm_key_name:
+            effective["llm_key_name"] = p.llm_key_name
+        if p.target_lang:
+            effective["target_lang"] = p.target_lang
+        if p.diarize is not None:
+            effective["diarize"] = p.diarize
+        if p.llm_batch_minutes is not None and p.llm_batch_minutes > 0:
+            effective["llm_batch_minutes"] = p.llm_batch_minutes
+        show_models = {k: v for k, v in (p.llm_models_by_mode or {}).items() if v}
+    merged_models = {**app_models, **show_models}
+    mode = effective.get("llm_mode", "")
+    resolved_model = merged_models.get(mode, "") if mode else ""
+    if resolved_model:
+        effective["llm_model"] = resolved_model
     return effective
 
 
@@ -802,9 +837,16 @@ def _step_statuses(
     callers pass it through so the scrub runs once per episode, not twice.
     """
 
+    verified = st.get("verified") or {}
+    verified_step = verified.get("step") if isinstance(verified, dict) else None
+
     def _check_transcribe() -> str:
         if not st.get("transcribed", False):
             return "none"
+        # Verified pointer is the user's explicit "I'm done with this step"
+        # signal; it outranks model drift just like edited content does.
+        if verified_step == "transcript":
+            return "done"
         prov = provenance.get("transcript")
         if not prov:
             return "done"  # no provenance → legacy, assume done
@@ -815,6 +857,8 @@ def _step_statuses(
     def _check_correct() -> str:
         if not st.get("corrected", False):
             return "none"
+        if verified_step == "corrected":
+            return "done"
         prov = provenance.get("corrected")
         if not prov or not effective:
             return "done"
@@ -984,6 +1028,26 @@ async def resync_pipeline_db(show_folder: str) -> dict:
     return {"status": "resynced", "episode_count": len(episodes)}
 
 
+@router.get("/best-source-segments")
+async def best_source_segments(
+    audio_path: str | None = Query(None),
+    output_dir: str | None = Query(None),
+) -> list[dict]:
+    """Return the verified-first, corrected-next, transcript-last source segments.
+
+    Single facility consumed by both panels (translate reference pane) and
+    the floating audio player so they cannot disagree on which version is
+    the canonical playback source.
+    """
+    from podcodex.api.routes._helpers import load_best_source, require_audio_or_output
+
+    require_audio_or_output(audio_path, output_dir)
+    try:
+        return load_best_source(audio_path=audio_path, output_dir=output_dir)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
 @router.get("/versions")
 async def list_all_versions(
     audio_path: str | None = Query(None),
@@ -1002,6 +1066,67 @@ async def list_all_versions(
     versions = list_all_versions(p.base)
     backfill_version_sizes(p.base, versions)
     return versions
+
+
+class VerifiedRequest(BaseModel):
+    """Payload for setting / clearing the verified pointer on an episode."""
+
+    step: str | None = None
+    version_id: str | None = None
+
+
+@router.put("/verified")
+async def set_verified_version(
+    req: VerifiedRequest,
+    audio_path: str | None = Query(None),
+    output_dir: str | None = Query(None),
+) -> dict:
+    """Set or clear the episode's verified-version pointer.
+
+    Body ``{step, version_id}`` marks that version as verified (canonical
+    source). Body ``{step: null, version_id: null}`` clears the pointer.
+    Singleton: replaces any previous pointer for the episode.
+    """
+    from podcodex.api.routes._helpers import require_audio_or_output
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.versions import VERIFIABLE_STEPS, version_path
+
+    require_audio_or_output(audio_path, output_dir)
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    # PipelineDB lives at the show level. base = <show>/<stem>/<stem>, so
+    # base.parent is the episode dir and base.parent.parent is the show dir.
+    show_dir = p.base.parent.parent
+    db = get_pipeline_db(show_dir)
+
+    if req.step is None and req.version_id is None:
+        db.clear_verified(p.base.name)
+        return {"status": "cleared", "verified": None}
+    if not req.step or not req.version_id:
+        raise HTTPException(
+            400, "step and version_id must both be provided, or both null to clear"
+        )
+    if req.step not in VERIFIABLE_STEPS:
+        raise HTTPException(
+            400,
+            f"step must be one of {sorted(VERIFIABLE_STEPS)}, got {req.step!r}",
+        )
+    if not version_path(p.base, req.step, req.version_id).exists():
+        raise HTTPException(
+            404,
+            f"Version {req.version_id} not found for step {req.step!r}",
+        )
+    # Don't materialize a phantom episode row: aggregate_status would then
+    # count a stem with no real pipeline progress as "verified".
+    if db.get_episode(p.base.name) is None:
+        raise HTTPException(
+            404,
+            f"Episode {p.base.name!r} not registered in pipeline_db",
+        )
+    db.set_verified(p.base.name, req.step, req.version_id)
+    return {
+        "status": "set",
+        "verified": {"step": req.step, "version_id": req.version_id},
+    }
 
 
 @router.delete("/versions/{version_id}")

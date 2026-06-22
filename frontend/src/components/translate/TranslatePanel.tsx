@@ -73,12 +73,22 @@ export default function TranslatePanel() {
 
   const { data: referenceSegments } = useBestSourceSegments(
     audioPath,
-    { enabled: !!episode?.transcribed, corrected: !!episode?.corrected },
+    {
+      enabled: !!episode?.transcribed,
+      verified: episode?.verified ?? null,
+    },
   );
 
   // User can pick any corrected OR transcript version as input —
-  // useInputVersions mirrors the batch pipeline's rules.
-  const inputVersions = useInputVersions(audioPath, "translate", !!episode?.transcribed && expanded);
+  // useInputVersions mirrors the batch pipeline's rules. Verified pointer
+  // (if set) wins the default-pick over the standard cascade.
+  const inputVersions = useInputVersions(
+    audioPath,
+    "translate",
+    !!episode?.transcribed && expanded,
+    undefined,
+    episode?.verified ?? null,
+  );
 
   const startMutation = useMutation({
     mutationFn: () =>

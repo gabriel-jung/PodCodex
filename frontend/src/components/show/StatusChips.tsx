@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import { Star } from "lucide-react";
 import type { Episode } from "@/api/types";
 import {
   isEdited,
@@ -8,12 +9,14 @@ import {
   type PanelStatus,
 } from "@/lib/stepStatus";
 import { STAGE_CLASSES, type StageKey } from "@/lib/stageClasses";
+import { shortVersionId } from "@/lib/utils";
 
 interface Entry {
   verb: string;
   hue: string;
   needsReview: boolean;
   partial: boolean;
+  verified: boolean;
   title: string;
 }
 
@@ -23,6 +26,7 @@ function entry(
   stage: StageKey,
   title?: string,
   partial = false,
+  verified = false,
 ): Entry | null {
   if (status === "none") return null;
   return {
@@ -30,6 +34,7 @@ function entry(
     hue: STAGE_CLASSES[stage].text,
     needsReview: status === "review",
     partial,
+    verified,
     title: partial
       ? `${verb} · some batches were rejected by the LLM`
       : (title ?? (status === "ready" ? verb : `${verb} · awaiting review`)),
@@ -39,6 +44,13 @@ function entry(
 function EntrySpan({ entry }: { entry: Entry }) {
   return (
     <span title={entry.title} className={entry.hue}>
+      {entry.verified && (
+        <Star
+          className="inline w-2.5 h-2.5 mr-0.5 -mt-px"
+          fill="currentColor"
+          aria-hidden="true"
+        />
+      )}
       {entry.verb}
       {entry.needsReview && (
         <span className="opacity-70"> (needs review)</span>
@@ -65,16 +77,35 @@ function translationsEntry(ep: Episode): Entry | null {
   return entry(status, "translated", "translate", title, partial);
 }
 
+// A verified pointer marks one transcript/corrected version as the final
+// source, so the underlying step stops mattering: collapse both the
+// "transcribed" and "corrected" chips into a single "verified" chip.
+function verifiedEntry(ep: Episode): Entry {
+  return {
+    verb: "verified",
+    hue: "text-verified",
+    needsReview: false,
+    partial: false,
+    verified: true,
+    title: `verified version · ${ep.verified!.step} (v${shortVersionId(ep.verified!.version_id)})`,
+  };
+}
+
 export function StatusChips({ ep }: { ep: Episode }) {
+  const sourceEntries: (Entry | null)[] = ep.verified
+    ? [verifiedEntry(ep)]
+    : [
+        entry(reviewStatus(!!ep.transcribed, ep.provenance?.transcript), "transcribed", "transcribe"),
+        entry(
+          reviewStatus(!!ep.corrected, ep.provenance?.corrected),
+          "corrected",
+          "correct",
+          undefined,
+          !!ep.llm_failed_steps?.includes("corrected"),
+        ),
+      ];
   const entries: Entry[] = [
-    entry(reviewStatus(!!ep.transcribed, ep.provenance?.transcript), "transcribed", "transcribe"),
-    entry(
-      reviewStatus(!!ep.corrected, ep.provenance?.corrected),
-      "corrected",
-      "correct",
-      undefined,
-      !!ep.llm_failed_steps?.includes("corrected"),
-    ),
+    ...sourceEntries,
     translationsEntry(ep),
     entry(plainStatus(!!ep.synthesized), "synthesized", "synth"),
     entry(plainStatus(!!ep.indexed), "indexed", "index"),

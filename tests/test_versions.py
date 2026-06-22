@@ -5,16 +5,19 @@ import pytest
 
 from podcodex.core.versions import (
     compute_hash,
+    delete_version,
     has_matching_version,
     has_version,
     list_versions,
     load_latest,
     load_version,
     prune_versions,
+    resolve_verified_source,
     save_version,
     version_count,
     versions_dir,
 )
+from podcodex.core.pipeline_db import get_pipeline_db
 
 
 @pytest.fixture
@@ -378,3 +381,77 @@ class TestSaveAndLoad:
         save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
         loaded = load_latest(episode_dir, "corrected")
         assert loaded == SAMPLE_SEGMENTS
+
+
+class TestResolveVerifiedSource:
+    """Verify resolve_verified_source helper + delete cleanup."""
+
+    def test_returns_none_when_no_pointer(self, episode_dir):
+        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        assert resolve_verified_source(episode_dir) is None
+
+    def test_returns_pointer_when_set(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.set_verified(episode_dir.name, "corrected", vid)
+        resolved = resolve_verified_source(episode_dir)
+        assert resolved is not None
+        step, version_id, path = resolved
+        assert step == "corrected"
+        assert version_id == vid
+        assert path.exists()
+        close_pipeline_db(show_dir)
+
+    def test_returns_none_when_file_missing(self, episode_dir):
+        """Stale pointer (file deleted out-of-band) resolves to None."""
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.set_verified(episode_dir.name, "corrected", vid)
+        # Wipe file behind the pointer; DB still holds the reference.
+        (versions_dir(episode_dir) / "corrected" / f"{vid}.json").unlink()
+        assert resolve_verified_source(episode_dir) is None
+        close_pipeline_db(show_dir)
+
+    def test_returns_none_for_non_verifiable_step(self, episode_dir):
+        """A pointer at e.g. 'synthesize' is not a valid verified source."""
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.set_verified(episode_dir.name, "english", "v-1")
+        assert resolve_verified_source(episode_dir) is None
+        close_pipeline_db(show_dir)
+
+    def test_delete_clears_pointer_when_target_removed(self, episode_dir):
+        """Deleting the verified version clears the pointer via refresh hook."""
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.set_verified(episode_dir.name, "corrected", vid)
+        delete_version(episode_dir, "corrected", vid)
+        assert db.get_verified(episode_dir.name) is None
+        close_pipeline_db(show_dir)
+
+    def test_delete_keeps_pointer_when_other_version_removed(self, episode_dir):
+        """Deleting a non-verified version leaves the pointer intact."""
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        v1 = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        v2 = save_version(
+            episode_dir, "corrected", SAMPLE_SEGMENTS, _prov(model="other")
+        )
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.set_verified(episode_dir.name, "corrected", v1)
+        delete_version(episode_dir, "corrected", v2)
+        ptr = db.get_verified(episode_dir.name)
+        assert ptr == {"step": "corrected", "version_id": v1}
+        close_pipeline_db(show_dir)

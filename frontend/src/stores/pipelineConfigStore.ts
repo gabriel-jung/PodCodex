@@ -208,7 +208,10 @@ export function effectiveBundle(
 ): ConfigBundle {
   if (!p) return app;
   const mode = (p.llm_mode || app.llm.mode) as LLMMode;
-  const model = p.llm_model || app.llm.modelsByMode[mode] || app.llm.model;
+  const showModels = Object.fromEntries(
+    Object.entries(p.llm_models_by_mode ?? {}).filter(([, v]) => !!v),
+  );
+  const model = showModels[mode] || app.llm.modelsByMode[mode] || "";
   const indexModel = p.rag_model || app.indexModel;
   return {
     ...app,
@@ -224,8 +227,14 @@ export function effectiveBundle(
       providerProfile: p.llm_provider_profile || app.llm.providerProfile,
       keyName: p.llm_key_name || app.llm.keyName,
       model,
-      modelsByMode: { ...app.llm.modelsByMode, [mode]: model },
+      // Show's per-mode entries overlay app's so a panel mode switch picks
+      // up the show-saved value instead of the (possibly empty) app default.
+      modelsByMode: { ...app.llm.modelsByMode, ...showModels, [mode]: model },
       context: p.context || app.llm.context,
+      batchMinutes:
+        p.llm_batch_minutes != null && p.llm_batch_minutes > 0
+          ? p.llm_batch_minutes
+          : app.llm.batchMinutes,
     },
     targetLang: p.target_lang || app.targetLang,
     indexModel,

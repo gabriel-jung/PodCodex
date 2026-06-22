@@ -15,6 +15,10 @@ interface PipelineRunFooterProps {
   /** Label for subsequent runs. */
   rerunLabel: string;
 
+  /** True when the episode's verified pointer targets this step. Switches
+   *  the re-run caveat to highlight that the verified version is preserved. */
+  verifiedThisStep?: boolean;
+
   /** Additional disable reason OR'd with pending. Use for backend-missing or
    *  step-specific guards like "target language empty". */
   disabled?: boolean;
@@ -33,6 +37,7 @@ export default function PipelineRunFooter({
   hasExisting,
   initialLabel,
   rerunLabel,
+  verifiedThisStep,
   disabled,
   disabledTitle,
 }: PipelineRunFooterProps) {
@@ -47,7 +52,11 @@ export default function PipelineRunFooter({
         {isPending ? "Starting…" : hasExisting ? rerunLabel : initialLabel}
       </Button>
       {hasExisting && (
-        <span className="text-xs text-muted-foreground">Saves a new version — previous ones stay in History.</span>
+        <span className="text-xs text-muted-foreground">
+          {verifiedThisStep
+            ? "Verified version exists. New run creates a draft alongside; verified unchanged."
+            : "Saves a new version — previous ones stay in History."}
+        </span>
       )}
       {mutationError != null && (
         <p className="text-destructive text-xs w-full">{errorMessage(mutationError)}</p>

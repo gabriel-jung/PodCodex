@@ -423,13 +423,29 @@ def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
     """Resolve source segments from the version DB.
 
     Returns (segments, source_label).  Priority for 'auto':
-    corrected → transcript.  Raises ValueError if nothing found.
+    verified pointer → corrected → transcript.  Raises ValueError if
+    nothing found.
     """
     from podcodex.core._utils import normalize_lang
     from podcodex.core.transcribe import load_transcript
-    from podcodex.core.versions import load_latest
+    from podcodex.core.versions import (
+        load_latest,
+        load_version,
+        resolve_verified_source,
+    )
 
     if source == "auto":
+        # Verified pointer wins when present; downstream consumers honor the
+        # user's canonical pick over the freshest output.
+        verified = resolve_verified_source(p.base)
+        if verified is not None:
+            v_step, v_id, _ = verified
+            try:
+                segs = load_version(p.base, v_step, v_id)
+                if segs:
+                    return segs, v_step
+            except Exception:
+                pass  # stale pointer; reconcile pass clears it asynchronously
         segs = load_latest(p.base, "corrected")
         if segs:
             return segs, "corrected"

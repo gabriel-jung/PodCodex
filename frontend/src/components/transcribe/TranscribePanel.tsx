@@ -33,6 +33,7 @@ import Segmented from "@/components/common/Segmented";
 import TranscriptViewer from "@/components/editor/TranscriptViewer";
 import PipelinePanel from "@/components/common/PipelinePanel";
 import RunSettingsBanner from "@/components/common/RunSettingsBanner";
+import { useSetVerifiedVersion } from "@/hooks/useVerified";
 
 // The top row of the Language chip rack — these are always visible; anything
 // else falls under "Other" with an ISO-code input.
@@ -51,6 +52,7 @@ export default function TranscribePanel() {
     optimisticPatch: () => ({ transcribed: true }),
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const setVerified = useSetVerifiedVersion(audioPath, episode?.output_dir ?? null);
   const { downloadMutation: episodeDownloadMutation } = useShowActions(folder ?? "", showMeta ?? undefined, { withSubs: false });
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
   const downloadDisabled = episodeDownloadMutation.isPending || !!downloadTaskId;
@@ -339,7 +341,11 @@ export default function TranscribePanel() {
                 {startMutation.isPending ? "Starting…" : episode.transcribed ? "Re-transcribe" : "Transcribe"}
               </Button>
               {episode.transcribed && (
-                <span className="text-xs text-muted-foreground">Saves a new version — previous ones stay in History.</span>
+                <span className="text-xs text-muted-foreground">
+                  {episode.verified?.step === "transcript"
+                    ? "Verified version exists. New run creates a draft alongside; verified unchanged."
+                    : "Saves a new version — previous ones stay in History."}
+                </span>
               )}
               {!hasSubs && (
                 <button
@@ -374,6 +380,15 @@ export default function TranscribePanel() {
           sourceLabel={transcriptSourceLabel(episode.provenance)}
           exportSource="transcript"
           exportFilename={episode.stem || undefined}
+          verifiableStep="transcript"
+          verifiedVersionId={episode.verified?.version_id ?? null}
+          verifiedStepMatches={episode.verified?.step === "transcript"}
+          onToggleVerified={(id, isVerified) =>
+            setVerified.mutate({
+              step: isVerified ? null : "transcript",
+              versionId: isVerified ? null : id,
+            })
+          }
           loadVersions={() => getTranscribeVersions(audioPath!)}
           loadVersion={(id) => loadTranscribeVersion(audioPath!, id)}
           deleteVersion={(id) => deleteTranscribeVersion(audioPath!, id)}

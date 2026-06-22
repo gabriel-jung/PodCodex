@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     synthesized           INTEGER DEFAULT 0,
     translations          TEXT DEFAULT '[]',
     provenance            TEXT DEFAULT '{}',
+    verified_step         TEXT,
+    verified_version_id   TEXT,
     updated_at            REAL
 );
 
@@ -87,6 +89,16 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
             """,
             "CREATE INDEX IF NOT EXISTS idx_versions_stem_step ON versions(stem, step)",
         ],
+    ),
+    # Verified pointer: ``(verified_step, verified_version_id)`` marks the
+    # user-reviewed canonical version for the episode. Singleton per episode.
+    (
+        "SELECT 1 FROM pragma_table_info('episodes') WHERE name='verified_step'",
+        ["ALTER TABLE episodes ADD COLUMN verified_step TEXT"],
+    ),
+    (
+        "SELECT 1 FROM pragma_table_info('episodes') WHERE name='verified_version_id'",
+        ["ALTER TABLE episodes ADD COLUMN verified_version_id TEXT"],
     ),
 ]
 
@@ -278,6 +290,71 @@ class PipelineDB:
             self._conn.execute(sql, vals_full)
             self._conn.commit()
 
+    # ── Verified pointer ──────────────────────────────────
+
+    def set_verified(self, stem: str, step: str, version_id: str) -> None:
+        """Mark a specific version as the episode's verified source.
+
+        Singleton: replaces any previous verified pointer for this stem.
+        """
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO episodes (stem, verified_step, verified_version_id, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(stem) DO UPDATE SET
+                    verified_step = excluded.verified_step,
+                    verified_version_id = excluded.verified_version_id,
+                    updated_at = excluded.updated_at
+                """,
+                (stem, step, version_id, time.time()),
+            )
+            self._conn.commit()
+
+    def clear_verified(self, stem: str) -> None:
+        """Clear the verified pointer for an episode."""
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE episodes
+                SET verified_step = NULL, verified_version_id = NULL, updated_at = ?
+                WHERE stem = ?
+                """,
+                (time.time(), stem),
+            )
+            self._conn.commit()
+
+    def get_verified(self, stem: str) -> dict | None:
+        """Return ``{"step", "version_id"}`` for the verified pointer, or None."""
+        row = self._conn.execute(
+            "SELECT verified_step, verified_version_id FROM episodes WHERE stem = ?",
+            (stem,),
+        ).fetchone()
+        if not row or not row["verified_step"] or not row["verified_version_id"]:
+            return None
+        return {"step": row["verified_step"], "version_id": row["verified_version_id"]}
+
+    def stems_with_verified(self) -> set[str]:
+        """Return the set of stems that have a verified pointer set."""
+        rows = self._conn.execute(
+            "SELECT stem FROM episodes WHERE verified_version_id IS NOT NULL"
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def verified_pointers(self) -> dict[str, dict]:
+        """Bulk: ``{stem: {step, version_id}}`` for every episode with a pointer."""
+        rows = self._conn.execute(
+            "SELECT stem, verified_step, verified_version_id "
+            "FROM episodes WHERE verified_version_id IS NOT NULL"
+        ).fetchall()
+        return {
+            r["stem"]: {
+                "step": r["verified_step"],
+                "version_id": r["verified_version_id"],
+            }
+            for r in rows
+        }
+
     def mark_indexed_bulk(self, updates: dict[str, bool]) -> None:
         """Set the ``indexed`` flag for many stems in a single transaction.
 
@@ -405,6 +482,16 @@ class PipelineDB:
             "SELECT DISTINCT stem FROM versions WHERE step = ?", (step,)
         ).fetchall()
         return {r[0] for r in rows}
+
+    def version_ids_by_stem(self, step: str) -> dict[str, set[str]]:
+        """Bulk: ``{stem: {version_id, ...}}`` for one step."""
+        rows = self._conn.execute(
+            "SELECT stem, id FROM versions WHERE step = ?", (step,)
+        ).fetchall()
+        out: dict[str, set[str]] = {}
+        for r in rows:
+            out.setdefault(r["stem"], set()).add(r["id"])
+        return out
 
     def list_all_versions(self, stem: str) -> list[dict]:
         """List all versions across all steps for an episode (newest first)."""
@@ -549,6 +636,15 @@ class PipelineDB:
         # Booleans.
         for key in ("transcribed", "corrected", "indexed", "synthesized"):
             d[key] = bool(d.get(key, 0))
+        # Collapse the two verified-pointer columns into a single dict on the
+        # row so consumers don't have to remember the column split.
+        if d.get("verified_step") and d.get("verified_version_id"):
+            d["verified"] = {
+                "step": d["verified_step"],
+                "version_id": d["verified_version_id"],
+            }
+        else:
+            d["verified"] = None
         return d
 
 

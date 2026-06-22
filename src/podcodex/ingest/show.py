@@ -30,10 +30,16 @@ class PipelineDefaults:
     diarize: bool | None = None
     num_speakers: str = ""  # expected speaker count; "" = auto-detect
     # Correct / Translate (LLM)
-    llm_mode: str = ""  # "ollama" | "api"
+    llm_mode: str = ""  # "ollama" | "api" | "manual"
     llm_provider_profile: str = ""  # name of a profile from the catalog
     llm_key_name: str = ""  # name of an entry in the api key pool
-    llm_model: str = ""
+    # Model name keyed by mode ("ollama"/"api"/"manual"). Empty entry / missing
+    # key means "inherit the app default for that mode". Stored as a per-mode
+    # dict so a value set under one mode never leaks into another.
+    llm_models_by_mode: dict[str, str] = field(default_factory=dict)
+    # Max audio duration per LLM batch in minutes. ``None`` = inherit the app
+    # default (currently 15). Overridden per-episode in the panel as a count.
+    llm_batch_minutes: float | None = None
     context: str = ""  # show description fed to the LLM for accuracy
     # Translate
     target_lang: str = ""
@@ -91,7 +97,12 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
         llm_mode=pipe_raw.get("llm_mode", ""),
         llm_provider_profile=pipe_raw.get("llm_provider_profile", ""),
         llm_key_name=pipe_raw.get("llm_key_name", ""),
-        llm_model=pipe_raw.get("llm_model", ""),
+        llm_models_by_mode={
+            str(k): str(v)
+            for k, v in (pipe_raw.get("llm_models_by_mode") or {}).items()
+            if v
+        },
+        llm_batch_minutes=pipe_raw.get("llm_batch_minutes"),
         context=pipe_raw.get("context", ""),
         target_lang=pipe_raw.get("target_lang", ""),
         rag_model=pipe_raw.get("rag_model", ""),
@@ -158,8 +169,19 @@ def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
         )
     if p.llm_key_name:
         pipe_lines.append(f'llm_key_name = "{_toml_string(p.llm_key_name)}"')
-    if p.llm_model:
-        pipe_lines.append(f'llm_model = "{_toml_string(p.llm_model)}"')
+    models_by_mode = {k: v for k, v in (p.llm_models_by_mode or {}).items() if k and v}
+    if models_by_mode:
+        # Quote both key and value so non-bare-key mode names (hyphen, dot,
+        # whitespace) stay valid TOML across future mode additions.
+        entries = ", ".join(
+            f'"{_toml_string(k)}" = "{_toml_string(v)}"'
+            for k, v in sorted(models_by_mode.items())
+        )
+        pipe_lines.append(f"llm_models_by_mode = {{ {entries} }}")
+    if p.llm_batch_minutes is not None and p.llm_batch_minutes > 0:
+        # `repr` keeps the decimal point so the value round-trips as TOML
+        # float instead of degrading to int for whole numbers.
+        pipe_lines.append(f"llm_batch_minutes = {float(p.llm_batch_minutes)!r}")
     if p.context:
         pipe_lines.append(f'context = "{_toml_string(p.context)}"')
     if p.target_lang:

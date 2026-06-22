@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Segment } from "@/api/types";
-import { getSegments as getTranscribeSegs } from "@/api/transcribe";
-import { getCorrectSegments } from "@/api/correct";
-import { getTranslateSegments } from "@/api/translate";
+import { getSegments as getTranscribeSegs, loadTranscribeVersion } from "@/api/transcribe";
+import { getCorrectSegments, loadCorrectVersion } from "@/api/correct";
+import { getTranslateSegments, loadTranslateVersion } from "@/api/translate";
 import { getAllVersions } from "@/api/search";
 import { queryKeys } from "@/api/queryKeys";
 import { formatDate, formatDuration, formatTime, errorMessage, versionLabel, versionDate, isEdited } from "@/lib/utils";
@@ -11,6 +11,7 @@ import { speakerColor } from "@/lib/speakerColor";
 import { BREAK_SPEAKER } from "@/lib/speakers";
 import { useAudioStore } from "@/stores";
 import { getIndexedEpisode } from "@/api/episodes";
+import { isVerifiedVersion, VERIFIED_CAPTION } from "@/lib/verified";
 import {
   Dialog,
   DialogContent,
@@ -19,7 +20,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Play, Pause } from "lucide-react";
+import { Play, Pause, Star } from "lucide-react";
 
 interface Props {
   open: boolean;
@@ -32,6 +33,10 @@ interface Props {
   outputDir?: string;
   /** Indexed source: "transcript", "corrected", or a language code. */
   source: string;
+  /** Preview a specific version of `source`. Omit to show the step's current
+   *  (active) version. When set, the verified marker and header reflect this
+   *  exact version. */
+  versionId?: string;
   /** Matched chunk range — highlighted and scrolled into view. Omit to show all without highlighting. */
   start?: number;
   end?: number;
@@ -46,6 +51,9 @@ interface Props {
   onSeek: (time: number) => void;
   /** When provided, shows an "Open editor" button in the header. */
   onOpenEditor?: () => void;
+  /** The episode's current verified pointer (any step). When it targets the
+   *  previewed version, a read-only "Verified" marker shows in the header. */
+  verified?: { step: string; version_id: string } | null;
 }
 
 function sourceToStep(source: string): "transcribe" | "correct" | "translate" {
@@ -60,6 +68,7 @@ export default function SegmentContextDialog({
   audioPath,
   outputDir,
   source,
+  versionId,
   start,
   end,
   episodeTitle,
@@ -69,6 +78,7 @@ export default function SegmentContextDialog({
   chunking,
   onSeek,
   onOpenEditor,
+  verified,
 }: Props) {
   const step = sourceToStep(source);
   const lang = step === "translate" ? source : "";
@@ -76,8 +86,13 @@ export default function SegmentContextDialog({
   const sourceKey = audioPath ?? outputDir ?? null;
 
   const { data: segments, isLoading, isError, error } = useQuery({
-    queryKey: queryKeys.stepSegments(editorKey, sourceKey),
+    queryKey: [...queryKeys.stepSegments(editorKey, sourceKey), versionId ?? "active"],
     queryFn: () => {
+      if (versionId) {
+        if (step === "transcribe") return loadTranscribeVersion(audioPath, versionId, outputDir);
+        if (step === "correct") return loadCorrectVersion(audioPath, versionId, outputDir);
+        return loadTranslateVersion(audioPath, lang, versionId, outputDir);
+      }
       if (step === "transcribe") return getTranscribeSegs(audioPath, outputDir);
       if (step === "correct") return getCorrectSegments(audioPath, outputDir);
       return getTranslateSegments(audioPath, lang, outputDir);
@@ -105,12 +120,19 @@ export default function SegmentContextDialog({
     enabled: open && (!!audioPath || !!outputDir),
     staleTime: 30_000,
   });
-  const latestVersion = useMemo(() => {
+  // The version this dialog previews: the explicitly-requested one, else the
+  // step's latest (active) version.
+  const shownVersion = useMemo(() => {
     if (!allVersions) return undefined;
+    if (versionId) return allVersions.find((v) => v.id === versionId);
     return [...allVersions]
       .filter((v) => v.step === source)
       .sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
-  }, [allVersions, source]);
+  }, [allVersions, source, versionId]);
+
+  // Read-only marker: true when the previewed version is the episode's
+  // verified source. Setting/clearing lives in the full editor, not here.
+  const previewIsVerified = isVerifiedVersion(verified, shownVersion?.id, source);
 
   const { matchIndices, firstMatchIdx } = useMemo(() => {
     const set = new Set<number>();
@@ -179,26 +201,37 @@ export default function SegmentContextDialog({
         <DialogHeader>
           <div className="flex items-start justify-between gap-3 pr-8">
             <DialogTitle className="truncate leading-tight">{episodeTitle}</DialogTitle>
-            {onOpenEditor && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-xs h-7 shrink-0"
-                onClick={() => { onOpenChange(false); onOpenEditor(); }}
-              >
-                Open editor
-              </Button>
-            )}
+            <div className="flex items-center gap-2 shrink-0">
+              {previewIsVerified && (
+                <span
+                  className="inline-flex items-center gap-1 text-xs text-verified"
+                  title={`Verified version: ${VERIFIED_CAPTION}.`}
+                >
+                  <Star className="w-3 h-3" fill="currentColor" />
+                  Verified
+                </span>
+              )}
+              {onOpenEditor && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-7"
+                  onClick={() => { onOpenChange(false); onOpenEditor(); }}
+                >
+                  Open editor
+                </Button>
+              )}
+            </div>
           </div>
           <DialogDescription className="flex items-center gap-2 text-xs flex-wrap">
             <span className="italic">{source}</span>
-            {latestVersion && (
+            {shownVersion && (
               <>
                 <span className="text-muted-foreground/40">·</span>
-                <span>{versionLabel(latestVersion)}</span>
+                <span>{versionLabel(shownVersion)}</span>
                 <span className="text-muted-foreground/40">·</span>
-                <span>{versionDate(latestVersion)}</span>
-                {isEdited(latestVersion) && (
+                <span>{versionDate(shownVersion)}</span>
+                {isEdited(shownVersion) && (
                   <>
                     <span className="text-muted-foreground/40">·</span>
                     <span className="text-success">edited</span>

@@ -45,7 +45,7 @@ import DownloadDropdown from "@/components/common/DownloadDropdown";
 type ShowTab = "episodes" | "search" | "speakers" | "settings";
 const TABS: ShowTab[] = ["episodes", "search", "speakers", "settings"];
 type ViewMode = "list" | "card";
-type StatusFilter = "all" | "ready" | "transcribed" | "corrected" | "translated" | "indexed" | "outdated";
+type StatusFilter = "all" | "ready" | "transcribed" | "corrected" | "translated" | "indexed" | "outdated" | "verified";
 
 const SIDEBAR_SECTIONS: SidebarSection[] = [
   {
@@ -151,6 +151,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     translated: all.filter((e) => e.translations.length > 0).length,
     indexed: all.filter((e) => e.indexed).length,
     outdated: all.filter((e) => isOutdated(e)).length,
+    verified: all.filter((e) => !!e.verified).length,
   }), [all]);
 
   const filtered = useMemo(() => {
@@ -181,6 +182,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     if (filter === "translated") list = list.filter((e) => e.translations.length > 0);
     if (filter === "indexed") list = list.filter((e) => e.indexed);
     if (filter === "outdated") list = list.filter((e) => isOutdated(e));
+    if (filter === "verified") list = list.filter((e) => !!e.verified);
     // Sort. Date sorts fall back to feed_order (source-feed position,
     // 0 = newest) when pub_date is missing — important for YouTube where
     // flat extraction often omits upload dates.
@@ -630,6 +632,7 @@ function FilterControls({ hidden, search, setSearch, filter, setFilter, filterCo
         <option value="translated">Translated ({filterCounts.translated})</option>
         <option value="indexed">Indexed ({filterCounts.indexed})</option>
         <option value="outdated">Outdated ({filterCounts.outdated})</option>
+        <option value="verified">Verified ({filterCounts.verified})</option>
       </select>
       <FilterDropdown />
     </div>

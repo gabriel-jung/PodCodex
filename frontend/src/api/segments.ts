@@ -1,17 +1,15 @@
 import type { AudioSegment } from "@/stores";
 import type { Segment } from "./types";
-import { getSegments } from "./transcribe";
-import { getCorrectSegments } from "./correct";
+import { json } from "./client";
 
-/** Fetch the latest reviewed segments for playback surfaces.
- *  Prefers corrected; falls back to transcribed when corrected is
- *  missing or empty. */
+/** Fetch the canonical source segments for playback surfaces.
+ *  Honors the verified pointer (when set) then falls back through
+ *  corrected and transcript. Single facility shared with backend
+ *  `_resolve_source_segments(auto)` so the audio overlay and panels
+ *  cannot disagree. */
 export async function getBestSegments(audioPath: string): Promise<Segment[]> {
-  try {
-    const corrected = await getCorrectSegments(audioPath);
-    if (Array.isArray(corrected) && corrected.length > 0) return corrected;
-  } catch { /* fall through */ }
-  return getSegments(audioPath);
+  const params = new URLSearchParams({ audio_path: audioPath });
+  return json<Segment[]>(`/api/shows/best-source-segments?${params}`);
 }
 
 export function toAudioSegments(segments: Segment[]): AudioSegment[] {

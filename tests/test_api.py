@@ -116,7 +116,7 @@ def test_show_meta_round_trip(client, tmp_path):
             "diarize": True,
             "llm_mode": "ollama",
             "llm_provider": "",
-            "llm_model": "qwen3:4b",
+            "llm_models_by_mode": {"ollama": "qwen3:4b"},
             "target_lang": "",
         },
     }
@@ -129,7 +129,7 @@ def test_show_meta_round_trip(client, tmp_path):
     assert body["name"] == "My Podcast"
     assert body["rss_url"] == "https://example.com/rss"
     assert body["pipeline"]["model_size"] == "large-v3"
-    assert body["pipeline"]["llm_model"] == "qwen3:4b"
+    assert body["pipeline"]["llm_models_by_mode"] == {"ollama": "qwen3:4b"}
 
 
 def test_get_meta_missing_show_returns_404(client):
@@ -157,6 +157,98 @@ def test_get_transcript_segments_404_when_missing(client, tmp_path):
     audio, _ = _make_audio_dir(tmp_path)
     r = client.get("/api/transcribe/segments", params={"audio_path": audio})
     assert r.status_code == 404
+
+
+# ──────────────────────────────────────────────
+# Verified pointer endpoint
+# ──────────────────────────────────────────────
+
+
+def test_verified_set_and_clear(client, tmp_path):
+    from podcodex.core.pipeline_db import get_pipeline_db, close_pipeline_db
+
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    segs = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}]
+    vid = save_version(
+        Path(ep_dir) / "ep",
+        "corrected",
+        segs,
+        {"step": "corrected", "type": "raw", "model": "x"},
+    )
+    # The pipeline routes always populate an episodes row before save_version
+    # via their own provenance writes; the bare save_version in this test
+    # leaves the episode unregistered, so we mark it manually to match the
+    # production invariant the endpoint relies on.
+    show_dir = Path(ep_dir).parent
+    get_pipeline_db(show_dir).mark("ep", transcribed=True, corrected=True)
+
+    r = client.put(
+        "/api/shows/verified",
+        params={"audio_path": audio},
+        json={"step": "corrected", "version_id": vid},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["verified"] == {"step": "corrected", "version_id": vid}
+
+    r = client.put(
+        "/api/shows/verified",
+        params={"audio_path": audio},
+        json={"step": None, "version_id": None},
+    )
+    assert r.status_code == 200
+    assert r.json()["verified"] is None
+    close_pipeline_db(show_dir)
+
+
+def test_verified_rejects_unregistered_episode(client, tmp_path):
+    """Endpoint must refuse to materialize an episode row for an unknown stem."""
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    segs = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}]
+    vid = save_version(
+        Path(ep_dir) / "ep",
+        "corrected",
+        segs,
+        {"step": "corrected", "type": "raw", "model": "x"},
+    )
+    # No mark() / populate_from_scan: episode row absent in pipeline_db.
+    r = client.put(
+        "/api/shows/verified",
+        params={"audio_path": audio},
+        json={"step": "corrected", "version_id": vid},
+    )
+    assert r.status_code == 404
+    assert "not registered" in r.text
+
+
+def test_verified_rejects_invalid_step(client, tmp_path):
+    audio, _ = _make_audio_dir(tmp_path)
+    r = client.put(
+        "/api/shows/verified",
+        params={"audio_path": audio},
+        json={"step": "english", "version_id": "v-1"},
+    )
+    assert r.status_code == 400
+    assert "transcript" in r.text or "corrected" in r.text
+
+
+def test_verified_rejects_missing_version(client, tmp_path):
+    audio, _ = _make_audio_dir(tmp_path)
+    r = client.put(
+        "/api/shows/verified",
+        params={"audio_path": audio},
+        json={"step": "corrected", "version_id": "nonexistent"},
+    )
+    assert r.status_code == 404
+
+
+def test_verified_rejects_partial_body(client, tmp_path):
+    audio, _ = _make_audio_dir(tmp_path)
+    r = client.put(
+        "/api/shows/verified",
+        params={"audio_path": audio},
+        json={"step": "corrected"},
+    )
+    assert r.status_code == 400
 
 
 # ──────────────────────────────────────────────

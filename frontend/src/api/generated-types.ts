@@ -14,7 +14,8 @@ export interface PipelineDefaultsSchema {
   llm_mode: string;
   llm_provider_profile: string;
   llm_key_name: string;
-  llm_model: string;
+  llm_models_by_mode?: Record<string, string>;
+  llm_batch_minutes?: number | null;
   context: string;
   target_lang: string;
   rag_model: string;
@@ -71,6 +72,11 @@ export interface Segment {
   flagged: boolean;
 }
 
+export interface VerifiedPointer {
+  step: string;
+  version_id: string;
+}
+
 export interface UnifiedEpisodeOut {
   id: string;
   title: string;
@@ -93,12 +99,18 @@ export interface UnifiedEpisodeOut {
   translations: string[];
   artwork_url: string;
   provenance: Record<string, unknown>;
+  verified?: VerifiedPointer | null;
   segment_count?: number | null;
   files: string[];
   transcribe_status: string;
   correct_status: string;
   translate_status: string;
   llm_failed_steps: string[];
+}
+
+export interface VerifiedSetRequest {
+  step?: string | null;
+  version_id?: string | null;
 }
 
 export interface CreateFromRSSRequest {
@@ -163,6 +175,7 @@ export interface ShowSummary {
   translated_edited_count?: number | null;
   synthesized_count?: number | null;
   indexed_count?: number | null;
+  verified_count?: number | null;
 }
 
 export interface MoveShowRequest {

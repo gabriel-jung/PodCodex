@@ -36,10 +36,11 @@ function plain(
   total: number | null | undefined,
   verb: string,
   stage: StageKey,
+  hueClass?: string,
 ): Entry | null {
   const t = total ?? 0;
   if (t <= 0) return null;
-  return { count: t, waiting: 0, verb, hue: STAGE_CLASSES[stage].text, title: `${t} ${verb}` };
+  return { count: t, waiting: 0, verb, hue: hueClass ?? STAGE_CLASSES[stage].text, title: `${t} ${verb}` };
 }
 
 function EntrySpan({ entry }: { entry: Entry }) {
@@ -66,6 +67,7 @@ export default function ShowProgressStrip({ show, dense }: Props) {
   const plains = [
     plain(show.synthesized_count, "synthesized", "synth"),
     plain(show.indexed_count, "indexed", "index"),
+    plain(show.verified_count, "verified", "correct", "text-verified"),
   ].filter((x): x is Entry => x !== null);
 
   if (reviewables.length === 0 && plains.length === 0) return null;

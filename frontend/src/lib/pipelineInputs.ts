@@ -33,16 +33,22 @@ export function filterVersionsForStep(
 }
 
 /** Order versions for "default pick" across multiple input steps.
- *  Priority: step rank first, edited-vs-not within each step.
- *  Example for `index` (steps = ["corrected", "transcript"]):
- *    edited corrected > corrected > edited transcript > transcript.
+ *  Priority: verified version first (when present in the list and its step
+ *  is a valid input for `step`), then step rank, then edited-vs-not within
+ *  each step. Example for `index` (steps = ["corrected", "transcript"]):
+ *    verified > edited corrected > corrected > edited transcript > transcript.
  *  Stable — within tier, input order (timestamp DESC) is preserved. */
 export function sortVersionsForDefault(
   versions: VersionEntry[],
   step?: PipelineInputStep,
+  verified?: { step: string; version_id: string } | null,
 ): VersionEntry[] {
   const priority = step ? INPUT_STEPS[step] : [];
+  const validSteps = step ? INPUT_STEP_SETS[step] : null;
+  const verifiedActive =
+    !!verified && (!validSteps || validSteps.has(verified.step));
   const rank = (v: VersionEntry) => {
+    if (verifiedActive && v.id === verified!.version_id) return -1;
     const stepIdx = v.step ? priority.indexOf(v.step) : -1;
     const stepKey = stepIdx === -1 ? priority.length : stepIdx;
     return stepKey * 2 + (isEdited(v) ? 0 : 1);

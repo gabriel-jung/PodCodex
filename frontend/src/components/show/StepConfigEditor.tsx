@@ -541,6 +541,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                   const versions = sortVersionsForDefault(
                     filterVersionsForStep(epVersionsMap[ek] || [], step),
                     step,
+                    ep.verified ?? null,
                   );
                   const sel = customVersions[ek] || "";
                   return (
@@ -1063,6 +1064,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                   const versions = sortVersionsForDefault(
                     filterVersionsForStep(epVersionsMap[epKey(ep)] || [], step),
                     step,
+                    ep.verified ?? null,
                   );
                   const match = isVariant
                     ? versions.find((v) => `${v.step}:${versionLabel(v)}` === selectedSource)

@@ -24,6 +24,13 @@ interface ShowSettingsProps {
   meta: ShowMeta;
 }
 
+function sameModels(a: Record<string, string>, b: Record<string, string>): boolean {
+  const ka = Object.keys(a).filter((k) => a[k]);
+  const kb = Object.keys(b).filter((k) => b[k]);
+  if (ka.length !== kb.length) return false;
+  return ka.every((k) => a[k] === b[k]);
+}
+
 export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -42,7 +49,12 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const [pipeLlmMode, setPipeLlmMode] = useState(meta.pipeline?.llm_mode ?? "");
   const [pipeLlmProviderProfile, setPipeLlmProviderProfile] = useState(meta.pipeline?.llm_provider_profile ?? "");
   const [pipeLlmKeyName, setPipeLlmKeyName] = useState(meta.pipeline?.llm_key_name ?? "");
-  const [pipeLlmModel, setPipeLlmModel] = useState(meta.pipeline?.llm_model ?? "");
+  const [pipeLlmModels, setPipeLlmModels] = useState<Record<string, string>>(
+    meta.pipeline?.llm_models_by_mode ?? {},
+  );
+  const [pipeLlmBatchMinutes, setPipeLlmBatchMinutes] = useState<string>(
+    meta.pipeline?.llm_batch_minutes != null ? String(meta.pipeline.llm_batch_minutes) : "",
+  );
   const [pipeContext, setPipeContext] = useState(meta.pipeline?.context ?? "");
   const [pipeTargetLang, setPipeTargetLang] = useState(meta.pipeline?.target_lang ?? "");
   const [pipeRagModel, setPipeRagModel] = useState(meta.pipeline?.rag_model ?? "");
@@ -74,7 +86,10 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     setPipeLlmMode(meta.pipeline?.llm_mode ?? "");
     setPipeLlmProviderProfile(meta.pipeline?.llm_provider_profile ?? "");
     setPipeLlmKeyName(meta.pipeline?.llm_key_name ?? "");
-    setPipeLlmModel(meta.pipeline?.llm_model ?? "");
+    setPipeLlmModels(meta.pipeline?.llm_models_by_mode ?? {});
+    setPipeLlmBatchMinutes(
+      meta.pipeline?.llm_batch_minutes != null ? String(meta.pipeline.llm_batch_minutes) : "",
+    );
     setPipeContext(meta.pipeline?.context ?? "");
     setPipeTargetLang(meta.pipeline?.target_lang ?? "");
     setPipeRagModel(meta.pipeline?.rag_model ?? "");
@@ -93,7 +108,9 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     pipeLlmMode !== (meta.pipeline?.llm_mode ?? "") ||
     pipeLlmProviderProfile !== (meta.pipeline?.llm_provider_profile ?? "") ||
     pipeLlmKeyName !== (meta.pipeline?.llm_key_name ?? "") ||
-    pipeLlmModel !== (meta.pipeline?.llm_model ?? "") ||
+    !sameModels(pipeLlmModels, meta.pipeline?.llm_models_by_mode ?? {}) ||
+    pipeLlmBatchMinutes !==
+      (meta.pipeline?.llm_batch_minutes != null ? String(meta.pipeline.llm_batch_minutes) : "") ||
     pipeContext !== (meta.pipeline?.context ?? "") ||
     pipeTargetLang !== (meta.pipeline?.target_lang ?? "") ||
     pipeRagModel !== (meta.pipeline?.rag_model ?? "") ||
@@ -115,7 +132,13 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
           llm_mode: pipeLlmMode,
           llm_provider_profile: pipeLlmProviderProfile,
           llm_key_name: pipeLlmKeyName,
-          llm_model: pipeLlmModel,
+          llm_models_by_mode: pipeLlmModels,
+          llm_batch_minutes: (() => {
+            const trimmed = pipeLlmBatchMinutes.trim();
+            if (trimmed === "") return null;
+            const n = Number(trimmed);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
           context: pipeContext,
           target_lang: pipeTargetLang,
           rag_model: pipeRagModel,
@@ -149,7 +172,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   useEffect(() => {
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [name, language, rssUrl, youtubeUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeNumSpeakers, pipeLlmMode, pipeLlmProviderProfile, pipeLlmKeyName, pipeLlmModel, pipeContext, pipeTargetLang, pipeRagModel, pipeRagChunker]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [name, language, rssUrl, youtubeUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeNumSpeakers, pipeLlmMode, pipeLlmProviderProfile, pipeLlmKeyName, pipeLlmModels, pipeLlmBatchMinutes, pipeContext, pipeTargetLang, pipeRagModel, pipeRagChunker]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const moveMutation = useMutation({
     mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
@@ -390,12 +413,30 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             </SettingRow>
           </>
         )}
-        <SettingRow label="AI model" help="Specific model name. Leave blank to use the provider's default.">
+        {(pipeLlmMode === "api" || pipeLlmMode === "ollama") && (
+          <SettingRow label="AI model" help="Specific model name for this mode. Leave blank to inherit the app default for the same mode.">
+            <input
+              value={pipeLlmModels[pipeLlmMode] ?? ""}
+              onChange={(e) =>
+                setPipeLlmModels((prev) => ({ ...prev, [pipeLlmMode]: e.target.value }))
+              }
+              placeholder="App default"
+              className={`input ${inputWidth.short}`}
+            />
+          </SettingRow>
+        )}
+        <SettingRow
+          label="Minutes per batch"
+          help="Max audio duration per LLM request. Smaller batches stay within model context windows; larger batches are fewer requests but heavier prompts. Leave blank to inherit the app default."
+        >
           <input
-            value={pipeLlmModel}
-            onChange={(e) => setPipeLlmModel(e.target.value)}
+            type="number"
+            min={1}
+            step={1}
+            value={pipeLlmBatchMinutes}
+            onChange={(e) => setPipeLlmBatchMinutes(e.target.value)}
             placeholder="App default"
-            className={`input ${inputWidth.short}`}
+            className={`input ${inputWidth.numeric}`}
           />
         </SettingRow>
         <SettingRow

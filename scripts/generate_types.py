@@ -38,7 +38,9 @@ from podcodex.api.schemas import (  # noqa: E402
     ShowMeta,
     TaskResponse,
     UnifiedEpisodeOut,
+    VerifiedPointer,
 )
+from podcodex.api.routes.shows import VerifiedRequest as VerifiedSetRequest  # noqa: E402
 from podcodex.api.routes.batch import BatchRequest  # noqa: E402
 from podcodex.api.routes.config import AppConfig  # noqa: E402
 from podcodex.api.routes.index import IndexRequest  # noqa: E402
@@ -105,7 +107,9 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, EpisodeOut),
     (None, RSSEpisodeOut),
     (None, Segment),
+    (None, VerifiedPointer),
     (None, UnifiedEpisodeOut),
+    ("VerifiedSetRequest", VerifiedSetRequest),
     (None, CreateFromRSSRequest),
     (None, RegisterShowRequest),
     (None, CreateFromRSSResponse),

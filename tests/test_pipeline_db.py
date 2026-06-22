@@ -232,6 +232,7 @@ def _make_status_row(
     corrected=False,
     translations=None,
     provenance=None,
+    verified=None,
 ):
     """Build a minimal status dict like PipelineDB.all_episodes() returns."""
     return {
@@ -241,6 +242,7 @@ def _make_status_row(
         "synthesized": False,
         "translations": translations or [],
         "provenance": provenance or {},
+        "verified": verified,
     }
 
 
@@ -295,6 +297,54 @@ class TestStepStatuses:
         effective = {"model_size": "large-v3", "diarize": True}
         result = self._step_statuses(st, prov, effective)
         assert result["transcribe_status"] == "outdated"
+
+    def test_verified_transcript_overrides_outdated(self):
+        """Verified pointer on transcript forces 'done' regardless of model drift."""
+        prov = {"transcript": {"model": "small", "params": {"diarize": False}}}
+        st = _make_status_row(
+            transcribed=True,
+            provenance=prov,
+            verified={"step": "transcript", "version_id": "v-1"},
+        )
+        effective = {"model_size": "large-v3", "diarize": True}
+        result = self._step_statuses(st, prov, effective)
+        assert result["transcribe_status"] == "done"
+
+    def test_verified_corrected_overrides_outdated(self):
+        prov = {
+            "corrected": {
+                "model": "qwen3:4b",
+                "params": {"llm_mode": "ollama"},
+            }
+        }
+        st = _make_status_row(
+            corrected=True,
+            provenance=prov,
+            verified={"step": "corrected", "version_id": "v-2"},
+        )
+        effective = {"llm_mode": "api", "llm_model": "gpt-4o"}
+        result = self._step_statuses(st, prov, effective)
+        assert result["correct_status"] == "done"
+
+    def test_verified_on_one_step_does_not_affect_other(self):
+        """Verified on transcript leaves the correct step's normal status alone."""
+        prov = {
+            "transcript": {"model": "small", "params": {}},
+            "corrected": {
+                "model": "qwen3:4b",
+                "params": {"llm_mode": "ollama"},
+            },
+        }
+        st = _make_status_row(
+            transcribed=True,
+            corrected=True,
+            provenance=prov,
+            verified={"step": "transcript", "version_id": "v-1"},
+        )
+        effective = {"model_size": "large-v3", "llm_mode": "api", "llm_model": "gpt-4o"}
+        result = self._step_statuses(st, prov, effective)
+        assert result["transcribe_status"] == "done"
+        assert result["correct_status"] == "outdated"
 
     def test_outdated_correct_provider_mismatch(self):
         prov = {
@@ -451,3 +501,142 @@ class TestResolveDefaults:
         show = ShowMeta(name="test", pipeline=PipelineDefaults(diarize=False))
         result = self._resolve_defaults({"diarize": True}, show)
         assert result["diarize"] is False
+
+    def test_llm_model_resolved_per_mode(self):
+        from podcodex.ingest.show import ShowMeta, PipelineDefaults
+
+        show = ShowMeta(
+            name="test",
+            pipeline=PipelineDefaults(
+                llm_mode="ollama",
+                llm_models_by_mode={"ollama": "qwen3:4b", "api": "gpt-4o"},
+            ),
+        )
+        result = self._resolve_defaults({}, show)
+        assert result["llm_mode"] == "ollama"
+        assert result["llm_model"] == "qwen3:4b"
+
+    def test_llm_model_does_not_leak_across_modes(self):
+        """A model set under ollama must not surface when mode is manual."""
+        from podcodex.ingest.show import ShowMeta, PipelineDefaults
+
+        show = ShowMeta(
+            name="test",
+            pipeline=PipelineDefaults(
+                llm_mode="manual",
+                llm_models_by_mode={"ollama": "qwen3:4b"},
+            ),
+        )
+        result = self._resolve_defaults({}, show)
+        assert result["llm_mode"] == "manual"
+        assert "llm_model" not in result or not result["llm_model"]
+
+    def test_app_models_by_mode_used_when_show_unset(self):
+        from podcodex.ingest.show import ShowMeta, PipelineDefaults
+
+        show = ShowMeta(name="test", pipeline=PipelineDefaults(llm_mode="api"))
+        result = self._resolve_defaults(
+            {"llm_models_by_mode": {"api": "gpt-4o", "ollama": "qwen3"}},
+            show,
+        )
+        assert result["llm_mode"] == "api"
+        assert result["llm_model"] == "gpt-4o"
+
+    def test_show_models_override_app_per_mode(self):
+        from podcodex.ingest.show import ShowMeta, PipelineDefaults
+
+        show = ShowMeta(
+            name="test",
+            pipeline=PipelineDefaults(
+                llm_mode="ollama",
+                llm_models_by_mode={"ollama": "show-ollama"},
+            ),
+        )
+        result = self._resolve_defaults(
+            {"llm_models_by_mode": {"ollama": "app-ollama", "api": "app-api"}},
+            show,
+        )
+        assert result["llm_model"] == "show-ollama"
+
+
+# ── Verified pointer ──────────────────────────────────────
+
+
+def test_verified_unset_by_default(db):
+    db.mark("ep1", transcribed=True)
+    assert db.get_verified("ep1") is None
+    row = db.get_episode("ep1")
+    assert row["verified"] is None
+
+
+def test_set_get_clear_verified(db):
+    db.set_verified("ep1", "corrected", "v-123")
+    ptr = db.get_verified("ep1")
+    assert ptr == {"step": "corrected", "version_id": "v-123"}
+    row = db.get_episode("ep1")
+    assert row["verified"] == {"step": "corrected", "version_id": "v-123"}
+
+    db.clear_verified("ep1")
+    assert db.get_verified("ep1") is None
+
+
+def test_set_verified_singleton_replaces(db):
+    db.set_verified("ep1", "transcript", "v-1")
+    db.set_verified("ep1", "corrected", "v-2")
+    ptr = db.get_verified("ep1")
+    assert ptr == {"step": "corrected", "version_id": "v-2"}
+
+
+def test_stems_with_verified(db):
+    db.set_verified("ep1", "transcript", "v-1")
+    db.set_verified("ep2", "corrected", "v-2")
+    db.mark("ep3", transcribed=True)
+    assert db.stems_with_verified() == {"ep1", "ep2"}
+
+
+def test_verified_pointers_bulk(db):
+    db.set_verified("ep1", "transcript", "v-1")
+    db.set_verified("ep2", "corrected", "v-2")
+    pointers = db.verified_pointers()
+    assert pointers == {
+        "ep1": {"step": "transcript", "version_id": "v-1"},
+        "ep2": {"step": "corrected", "version_id": "v-2"},
+    }
+
+
+def test_version_ids_by_stem(db):
+    db.insert_version(
+        "ep1",
+        "transcript",
+        {
+            "id": "v-1",
+            "timestamp": "2026-05-28T10:00:00Z",
+            "type": "raw",
+            "content_hash": "sha256:abc",
+            "segment_count": 5,
+        },
+    )
+    db.insert_version(
+        "ep1",
+        "transcript",
+        {
+            "id": "v-2",
+            "timestamp": "2026-05-28T11:00:00Z",
+            "type": "raw",
+            "content_hash": "sha256:def",
+            "segment_count": 6,
+        },
+    )
+    db.insert_version(
+        "ep2",
+        "transcript",
+        {
+            "id": "v-3",
+            "timestamp": "2026-05-28T12:00:00Z",
+            "type": "raw",
+            "content_hash": "sha256:ghi",
+            "segment_count": 7,
+        },
+    )
+    ids = db.version_ids_by_stem("transcript")
+    assert ids == {"ep1": {"v-1", "v-2"}, "ep2": {"v-3"}}

@@ -45,7 +45,13 @@ export default function IndexPanel() {
 
   const expanded = task.expanded || !episode?.indexed;
 
-  const inputVersions = useInputVersions(audioPath, "index", !!episode?.transcribed && expanded, outputDir);
+  const inputVersions = useInputVersions(
+    audioPath,
+    "index",
+    !!episode?.transcribed && expanded,
+    outputDir,
+    episode?.verified ?? null,
+  );
 
   const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
   const indexModel = usePipelineConfigStore((s) => s.indexModel);

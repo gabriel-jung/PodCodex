@@ -16,6 +16,7 @@ import {
   getEpisodeCollections,
 } from "@/api/search";
 import { useShowActions } from "@/hooks/useShowActions";
+import { isVerifiedVersion, VERIFIED_CAPTION } from "@/lib/verified";
 import { usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
 import InlineConfirm from "@/components/common/InlineConfirm";
@@ -34,7 +35,7 @@ const SegmentContextDialog = lazy(() => import("@/components/search/SegmentConte
 const IndexInspectorModal = lazy(() => import("@/components/index/IndexInspectorModal"));
 import IndexRow from "@/components/index/IndexRow";
 import { STAGE_CLASSES, type StageKey } from "@/lib/stageClasses";
-import { formatDuration, formatDate, formatTime, formatBytes, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, splitPath, STEP_LABELS } from "@/lib/utils";
+import { formatDuration, formatDate, formatTime, formatBytes, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, shortVersionId, splitPath, STEP_LABELS } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import {
   Play,
@@ -54,6 +55,7 @@ import {
   LayoutGrid,
   ChevronRight,
   AlertTriangle,
+  Star,
 } from "lucide-react";
 import {
   PIPELINE_STEPS,
@@ -510,7 +512,7 @@ function StageArrow() {
 function ActivityLog({ versions, onPreview }: {
   /** Already sorted desc by timestamp by the caller. */
   versions: VersionEntry[] | undefined;
-  onPreview: (previewKey: string) => void;
+  onPreview: (previewKey: string, versionId?: string) => void;
 }) {
   if (!versions || versions.length === 0) return null;
   const recent = versions.slice(0, 8);
@@ -526,7 +528,7 @@ function ActivityLog({ versions, onPreview }: {
             <button
               type="button"
               key={v.id}
-              onClick={() => onPreview(v.step ?? "")}
+              onClick={() => onPreview(v.step ?? "", v.id)}
               className="w-full text-left px-3 py-2 border-b border-border/40 last:border-b-0 hover:bg-accent/40 transition space-y-1"
             >
               <div className="flex items-center gap-2 min-w-0">
@@ -556,15 +558,17 @@ function ActivityLog({ versions, onPreview }: {
   );
 }
 
-function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPreview, onDelete, showEdited = true, sizeColumn = false, childrenByVersionId }: {
+function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPreview, onDelete, showEdited = true, sizeColumn = false, childrenByVersionId, verifiedVersionId }: {
   /** Already sorted desc by timestamp by the caller. */
   versions: VersionEntry[] | undefined;
   heading: string;
   firstColLabel: string;
   countColLabel: string;
-  onPreview?: (previewKey: string) => void;
+  onPreview?: (previewKey: string, versionId?: string) => void;
   onDelete: (step: string, id: string) => void;
   showEdited?: boolean;
+  /** When set, the row whose version id matches gets a "verified" star. */
+  verifiedVersionId?: string | null;
   /** Render the last column as formatted file size from params.file_size_bytes
    *  instead of segment_count. */
   sizeColumn?: boolean;
@@ -590,19 +594,26 @@ function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPrev
     const { stage, label } = stepDisplay(v.step);
     const c = STAGE_CLASSES[stage];
     const edited = showEdited && isEdited(v);
+    const isVerified = !!verifiedVersionId && v.id === verifiedVersionId;
     const kids = childrenByVersionId?.get(v.id);
     const hasKids = !!kids && kids.length > 0;
     const open = expanded.has(v.id);
     return (
       <tr
         key={v.id}
-        onClick={clickable ? () => onPreview!(v.step ?? "") : undefined}
+        onClick={clickable ? () => onPreview!(v.step ?? "", v.id) : undefined}
         className={`group/vrow border-b border-border/40 last:border-b-0 hover:bg-accent/30 transition${clickable ? " cursor-pointer" : ""}${isChild ? " bg-background/30" : ""}`}
       >
         <td className="px-3 py-2">
           <span className={`flex items-center gap-1.5${isChild ? " pl-5" : ""}`}>
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.dot}`} />
             <span className="text-foreground flex-1 min-w-0 truncate">{label}</span>
+            {isVerified && (
+              <span className="ml-0.5 inline-flex items-center gap-0.5 text-2xs text-verified shrink-0" title={`Verified version: ${VERIFIED_CAPTION}`}>
+                <Star className="w-2.5 h-2.5" fill="currentColor" />
+                verified
+              </span>
+            )}
             {edited && <span className="ml-1 text-2xs text-success shrink-0">edited</span>}
             {hasKids && (
               <button
@@ -809,6 +820,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
   const hasTranscript = !!episode.transcribed;
   const seekTo = useAudioStore((s) => s.seekTo);
   const [previewSource, setPreviewSource] = useState<string | null>(null);
+  const [previewVersionId, setPreviewVersionId] = useState<string | null>(null);
   const [inspectTarget, setInspectTarget] = useState<{ model: string; chunking: string } | null>(null);
   const queryClient = useQueryClient();
 
@@ -1024,9 +1036,12 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
     return total ? `${total} chunks · ${models}` : models;
   }, [episode.indexed, indexEntries]);
 
-  const openPreview = useCallback((previewKey: string) => {
+  // versionId targets a specific version row; omit it to preview the step's
+  // current (active) version, e.g. from the transcript-preview card.
+  const openPreview = useCallback((previewKey: string, versionId?: string) => {
     if (audioPath || outputDir) {
       setPreviewSource(previewKey);
+      setPreviewVersionId(versionId ?? null);
       return;
     }
     onNavigateStep(stepDisplay(previewKey).editorStep);
@@ -1143,6 +1158,10 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
             const previewStage: StageColor = previewStep === "correct" ? "correct" : "transcribe";
             const previewVersion = previewStep === "correct" ? versionGroups.corrected[0] : versionGroups.transcript[0];
             const c = STAGE_CLASSES[previewStage];
+            // When the previewed (latest) version is the episode's verified
+            // source, the badge becomes the canonical "verified" marker instead
+            // of the plain step name (replaces the old standalone verified pill).
+            const previewVerified = isVerifiedVersion(episode.verified, previewVersion?.id);
             const subline = [
               episode.segment_count != null ? `${episode.segment_count} segments` : null,
               speakers.length > 0 ? speakers.join(", ") : null,
@@ -1156,9 +1175,19 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
                   <div className="flex items-baseline justify-between gap-3">
                     <div className="flex items-baseline gap-2 min-w-0">
                       <h4 className="text-sm font-medium">Transcript preview</h4>
-                      <span className={`text-2xs px-1.5 py-0.5 rounded font-medium shrink-0 ${c.bg} ${c.text}`}>
-                        {previewLabel}
-                      </span>
+                      {previewVerified ? (
+                        <span
+                          className="text-2xs px-1.5 py-0.5 rounded font-medium shrink-0 inline-flex items-center gap-1 bg-verified/15 text-verified"
+                          title={`verified version (v${shortVersionId(episode.verified!.version_id)}) · ${VERIFIED_CAPTION}`}
+                        >
+                          <Star className="w-2.5 h-2.5" fill="currentColor" />
+                          verified
+                        </span>
+                      ) : (
+                        <span className={`text-2xs px-1.5 py-0.5 rounded font-medium shrink-0 ${c.bg} ${c.text}`}>
+                          {previewLabel}
+                        </span>
+                      )}
                       {previewVersion && (
                         <span className="text-2xs text-muted-foreground truncate">
                           {latestSummary(previewVersion)}
@@ -1224,6 +1253,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
         onPreview={openPreview}
         onDelete={(step, id) => deleteVersionMutation.mutate({ step, id })}
         childrenByVersionId={childrenByTranscriptId}
+        verifiedVersionId={episode.verified?.version_id ?? null}
       />
 
       {(episode.llm_failed_steps?.length ?? 0) > 0 && (
@@ -1283,16 +1313,19 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
         <Suspense fallback={null}>
           <SegmentContextDialog
             open={true}
-            onOpenChange={(open) => { if (!open) setPreviewSource(null); }}
+            onOpenChange={(open) => { if (!open) { setPreviewSource(null); setPreviewVersionId(null); } }}
             audioPath={audioPath ?? undefined}
             outputDir={outputDir ?? undefined}
             source={previewSource}
+            versionId={previewVersionId ?? undefined}
             episodeTitle={episode.title}
             onSeek={(t) => audioPath && seekTo(audioPath, t)}
             onOpenEditor={() => {
               setPreviewSource(null);
+              setPreviewVersionId(null);
               onNavigateStep(stepDisplay(previewSource).editorStep);
             }}
+            verified={episode.verified ?? null}
           />
         </Suspense>
       )}

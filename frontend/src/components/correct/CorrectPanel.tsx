@@ -39,6 +39,7 @@ import LLMControlsForm from "@/components/common/LLMControlsForm";
 import RunSettingsBanner from "@/components/common/RunSettingsBanner";
 import PipelineRunFooter from "@/components/common/PipelineRunFooter";
 import { reviewStatus } from "@/lib/stepStatus";
+import { useSetVerifiedVersion } from "@/hooks/useVerified";
 
 export default function CorrectPanel() {
   const episode = useEpisodeStore((s) => s.episode);
@@ -55,6 +56,7 @@ export default function CorrectPanel() {
   const [config, setConfig] = useLLMConfig(episode, showMeta);
   const patch = (p: Partial<LLMConfig>) => setConfig({ ...config, ...p });
   const activePreset = modeToPreset(config.mode);
+  const setVerified = useSetVerifiedVersion(audioPath, episode?.output_dir ?? null);
 
   const { hasLLM, backendMissing, disabledTitle } = useLLMBackendStatus(activePreset);
 
@@ -66,7 +68,13 @@ export default function CorrectPanel() {
     enabled: !!audioPath && !!episode?.transcribed,
   });
 
-  const inputVersions = useInputVersions(audioPath, "correct", !!episode?.transcribed && expanded);
+  const inputVersions = useInputVersions(
+    audioPath,
+    "correct",
+    !!episode?.transcribed && expanded,
+    undefined,
+    episode?.verified ?? null,
+  );
 
   const { data: correctFailures } = useQuery({
     queryKey: ["llmFailures", "correct", audioPath],
@@ -162,6 +170,7 @@ export default function CorrectPanel() {
               hasExisting={episode.corrected}
               initialLabel="Correct with AI"
               rerunLabel="Re-run correction"
+              verifiedThisStep={episode.verified?.step === "corrected"}
               disabled={backendMissing}
               disabledTitle={disabledTitle}
             />
@@ -223,6 +232,15 @@ export default function CorrectPanel() {
           referenceSegments={transcriptSegments}
           referenceLabel="Input transcript"
           speakers={showMeta?.speakers}
+          verifiableStep="corrected"
+          verifiedVersionId={episode.verified?.version_id ?? null}
+          verifiedStepMatches={episode.verified?.step === "corrected"}
+          onToggleVerified={(id, isVerified) =>
+            setVerified.mutate({
+              step: isVerified ? null : "corrected",
+              versionId: isVerified ? null : id,
+            })
+          }
           loadVersions={() => getCorrectVersions(audioPath!)}
           loadCompareVersions={async () => {
             // Broader list for the compare ("vs") picker so the user can diff

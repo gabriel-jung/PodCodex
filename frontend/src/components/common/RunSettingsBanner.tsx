@@ -35,7 +35,10 @@ function stepFields(step: PipelineInputStep, b: ConfigBundle): Partial<PipelineD
     llm_mode: b.llm.mode,
     llm_provider_profile: b.llm.providerProfile,
     llm_key_name: b.llm.keyName,
-    llm_model: b.llm.model,
+    // Only the active mode's model is part of this step's run-config diff;
+    // other modes' stashes are unrelated to what's about to run.
+    llm_models_by_mode: { [b.llm.mode]: b.llm.model },
+    llm_batch_minutes: b.llm.batchMinutes,
   };
   return step === "translate" ? { ...llm, target_lang: b.targetLang } : llm;
 }
@@ -69,11 +72,22 @@ export default function RunSettingsBanner({ step }: { step: PipelineInputStep })
   }), [appDefaults, transcribe, llm, targetLang, indexModel, indexChunker]);
 
   const save = useMutation({
-    mutationFn: () =>
-      updateShowMeta(folder!, {
+    mutationFn: () => {
+      const patch = stepFields(step, workingBundle);
+      // Per-mode model dict must merge with existing entries rather than
+      // clobber them; the patch only carries the active mode.
+      const existingModels = meta!.pipeline?.llm_models_by_mode ?? {};
+      const incomingModels = patch.llm_models_by_mode ?? {};
+      const mergedModels = { ...existingModels, ...incomingModels };
+      return updateShowMeta(folder!, {
         ...meta!,
-        pipeline: { ...meta!.pipeline, ...stepFields(step, workingBundle) },
-      }),
+        pipeline: {
+          ...meta!.pipeline,
+          ...patch,
+          llm_models_by_mode: mergedModels,
+        },
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder ?? "") });
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });

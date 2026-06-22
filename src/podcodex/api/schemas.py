@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PipelineDefaultsSchema(BaseModel):
@@ -14,7 +14,8 @@ class PipelineDefaultsSchema(BaseModel):
     llm_mode: str = ""
     llm_provider_profile: str = ""
     llm_key_name: str = ""
-    llm_model: str = ""
+    llm_models_by_mode: dict[str, str] = Field(default_factory=dict)
+    llm_batch_minutes: float | None = None
     context: str = ""
     target_lang: str = ""
     rag_model: str = ""
@@ -77,6 +78,13 @@ class Segment(BaseModel):
     flagged: bool = False
 
 
+class VerifiedPointer(BaseModel):
+    """Per-episode pointer to the user-verified canonical version."""
+
+    step: str  # "transcript" or "corrected"
+    version_id: str
+
+
 class UnifiedEpisodeOut(BaseModel):
     id: str  # guid or stem
     title: str
@@ -101,6 +109,8 @@ class UnifiedEpisodeOut(BaseModel):
     translations: list[str] = []
     artwork_url: str = ""
     provenance: dict = {}
+    # Singleton pointer to the version the user marked as verified.
+    verified: VerifiedPointer | None = None
     segment_count: int | None = None
     files: list[str] = []
     # Step status: "none" | "outdated" | "done"

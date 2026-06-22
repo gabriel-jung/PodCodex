@@ -620,6 +620,13 @@ def _refresh_status_after_delete(base: Path, step: str) -> None:
     try:
         db = _get_db(base)
         stem = base.name
+        # The verified pointer can reference any version, including one that
+        # was just deleted. Clear the pointer when the target is gone.
+        ptr = db.get_verified(stem)
+        if ptr and ptr["step"] == step:
+            remaining_ids = {v["id"] for v in db.list_versions(stem, step)}
+            if ptr["version_id"] not in remaining_ids:
+                db.clear_verified(stem)
         if db.list_versions(stem, step):
             return
 
@@ -643,6 +650,37 @@ def _refresh_status_after_delete(base: Path, step: str) -> None:
         logger.opt(exception=True).warning(
             "Failed to refresh status after delete (step={})", step
         )
+
+
+# Steps eligible for verification. Verified pointer must reference one of
+# these; downstream consumers (translate / index / synthesize) read from
+# whichever one the user marked.
+VERIFIABLE_STEPS = frozenset({"transcript", "corrected"})
+
+
+def resolve_verified_source(base: Path) -> tuple[str, str, Path] | None:
+    """Return the verified source ``(step, version_id, file_path)`` or None.
+
+    Single facility used by panel source pickers, RAG indexer, translate,
+    synthesize, and bot retrieval to honor the user's canonical pick.
+    Returns None when no pointer is set OR the referenced version no longer
+    exists (stale pointer; reconcile pass clears it asynchronously).
+    """
+    try:
+        db = _get_db(base)
+        ptr = db.get_verified(base.name)
+    except Exception:
+        return None
+    if not ptr:
+        return None
+    step = ptr["step"]
+    vid = ptr["version_id"]
+    if step not in VERIFIABLE_STEPS:
+        return None
+    path = version_path(base, step, vid)
+    if not path.exists():
+        return None
+    return step, vid, path
 
 
 def _latest_content_hash(base: Path, step: str) -> str | None:

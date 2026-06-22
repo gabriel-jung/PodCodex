@@ -153,6 +153,12 @@ export interface TranscriptViewerProps {
    *  "Save as latest"). Lets the panel react — e.g. offer to clear recorded
    *  LLM batch failures now that a new version supersedes them. */
   onSaved?: () => void;
+  /** Forwarded to ``VersionControlBar`` to surface the verified-version star
+   *  toggle in the bar above the segment list. See its prop docs. */
+  verifiableStep?: "transcript" | "corrected";
+  verifiedVersionId?: string | null;
+  verifiedStepMatches?: boolean;
+  onToggleVerified?: (targetId: string, isCurrentlyVerified: boolean) => void;
 }
 
 export default function TranscriptViewer({
@@ -177,6 +183,10 @@ export default function TranscriptViewer({
   sourceLabel,
   onSelectionChange,
   onSaved,
+  verifiableStep,
+  verifiedVersionId,
+  verifiedStepMatches,
+  onToggleVerified,
 }: TranscriptViewerProps) {
   const queryClient = useQueryClient();
 
@@ -962,6 +972,10 @@ export default function TranscriptViewer({
                 setSelectedVersionId(null);
               }
             : undefined}
+          verifiableStep={verifiableStep}
+          verifiedVersionId={verifiedVersionId}
+          verifiedStepMatches={verifiedStepMatches}
+          onToggleVerified={onToggleVerified}
         />
 
         {saveSpeakerMap && (

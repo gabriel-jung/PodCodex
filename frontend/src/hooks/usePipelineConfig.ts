@@ -28,7 +28,8 @@ export function usePipelineDefaults() {
     llm_mode: "",
     llm_provider_profile: "",
     llm_key_name: "",
-    llm_model: "",
+    llm_models_by_mode: app.llm.modelsByMode,
+    llm_batch_minutes: app.llm.batchMinutes,
     context: "",
     target_lang: app.targetLang,
     rag_model: "",  // not part of step-status comparison

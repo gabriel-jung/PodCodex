@@ -242,6 +242,13 @@ export function versionDate(v: VersionEntry): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/** Strip the trailing ``_raw`` / ``_validated`` / ``_edited`` suffix from a
+ *  version id for compact display. Backend convention emits the type as a
+ *  lowercase suffix; ids without one round-trip unchanged. */
+export function shortVersionId(id: string): string {
+  return id.replace(/_[a-z]+$/i, "");
+}
+
 const SOURCE_LABELS: Record<string, string> = {
   whisper: "Whisper",
   "youtube-subtitles": "YouTube subtitles",

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getCorrectSegments, getSegments } from "@/api/client";
 import { getAllVersions } from "@/api/search";
+import { getBestSegments } from "@/api/segments";
 import { queryKeys } from "@/api/queryKeys";
 import { buildDefaultContext } from "@/lib/utils";
 import { filterVersionsForStep, sortVersionsForDefault, type PipelineInputStep } from "@/lib/pipelineInputs";
@@ -155,6 +155,7 @@ export function useInputVersions(
   step: PipelineInputStep,
   enabled: boolean,
   outputDir?: string | null,
+  verified?: { step: string; version_id: string } | null,
 ) {
   const { data: allVersions } = useQuery({
     queryKey: queryKeys.allVersions(audioPath ?? outputDir),
@@ -163,28 +164,34 @@ export function useInputVersions(
   });
   return useMemo(() => {
     if (!allVersions) return undefined;
-    return sortVersionsForDefault(filterVersionsForStep(allVersions, step), step);
-  }, [allVersions, step]);
+    return sortVersionsForDefault(
+      filterVersionsForStep(allVersions, step),
+      step,
+      verified,
+    );
+  }, [allVersions, step, verified]);
 }
 
 /**
- * Load the best available source segments for an episode: tries corrected
- * first, falls back to raw transcribe segments. Used as the reference pane
- * in TranslatePanel.
+ * Load the canonical source segments for an episode. Delegates to the
+ * shared backend resolver (`/api/shows/best-source-segments`) which
+ * honors the verified pointer, then falls back through corrected and
+ * transcript. The `verified` opt is part of the cache key so the result
+ * invalidates the moment the pointer changes.
  */
 export function useBestSourceSegments(
   audioPath: string | null | undefined,
-  opts: { enabled?: boolean; corrected?: boolean },
+  opts: {
+    enabled?: boolean;
+    verified?: { step: string; version_id: string } | null;
+  },
 ) {
+  const verifiedKey = opts.verified
+    ? `${opts.verified.step}:${opts.verified.version_id}`
+    : null;
   return useQuery<Segment[]>({
-    queryKey: queryKeys.bestSourceSegments(audioPath),
-    queryFn: async () => {
-      if (!audioPath) return [];
-      try {
-        if (opts.corrected) return await getCorrectSegments(audioPath);
-      } catch { /* fall through */ }
-      return getSegments(audioPath);
-    },
+    queryKey: [...queryKeys.bestSourceSegments(audioPath), verifiedKey],
+    queryFn: () => (audioPath ? getBestSegments(audioPath) : Promise.resolve([])),
     enabled: !!audioPath && (opts.enabled ?? true),
   });
 }

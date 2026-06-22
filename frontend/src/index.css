@@ -26,6 +26,7 @@
   --color-stage-correct: var(--stage-correct);
   --color-stage-translate: var(--stage-translate);
   --color-stage-synth: var(--stage-synth);
+  --color-verified: var(--verified);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -69,6 +70,9 @@
   --stage-correct:    oklch(0.555 0.155 305);
   --stage-translate:  oklch(0.595 0.110 195);
   --stage-synth:      oklch(0.640 0.160 50);
+  /* Verified pointer — sits off the stage wheel (rose, hue 345) so the
+     "final version" marker never reads as another pipeline step. */
+  --verified:         oklch(0.575 0.175 345);
   --border: oklch(0.855 0.020 75);
   --input: oklch(0.855 0.020 75);
   --ring: oklch(0.595 0.145 68);
@@ -100,6 +104,7 @@
   --stage-correct:    oklch(0.700 0.160 305);
   --stage-translate:  oklch(0.745 0.115 195);
   --stage-synth:      oklch(0.760 0.165 50);
+  --verified:         oklch(0.730 0.170 345);
   --border: oklch(0.275 0.012 55);
   --input: oklch(0.275 0.012 55);
   --ring: oklch(0.745 0.145 72);
