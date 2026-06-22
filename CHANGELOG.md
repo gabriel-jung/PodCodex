@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.2.3] - 2026-06-22
+
+### Verified versions
+
+Mark any transcript or corrected version as the episode's verified (final)
+source. The verified version becomes the canonical input for translate,
+search indexing, and synthesis, ahead of the usual latest-version cascade.
+
+- Set or clear it from the transcript/correct editor's version bar (star).
+- Surfaced read-only everywhere else: a rose "verified" marker on the episode
+  list status, the show progress strip count, the episode overview preview, and
+  the "All transcript versions" table. The transcript preview and version rows
+  now open the exact version you click.
+
+### Per-task AI models
+
+Each show remembers a separate AI model per mode, so correction and translation
+can run on different models without re-picking each time.
+
+### Fixes
+
+- Speakers tab scrolls to the bottom when a show has many speakers.
+
 ## [0.2.2] - 2026-05-26
 
 ### Transcript editor polish
