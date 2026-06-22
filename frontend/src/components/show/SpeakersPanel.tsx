@@ -92,7 +92,8 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
   };
 
   return (
-    <div className="p-6 space-y-6 max-w-4xl">
+    <div className="flex-1 overflow-y-auto">
+      <div className="p-6 space-y-6 max-w-4xl">
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h3 className="text-sm font-medium">Speakers</h3>
@@ -254,6 +255,7 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
           );
         })}
       </ul>
+      </div>
     </div>
   );
 }
