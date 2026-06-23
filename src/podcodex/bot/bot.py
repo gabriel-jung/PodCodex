@@ -66,11 +66,14 @@ from podcodex.bot.formatting import (
     fmt_timestamp,
     format_filter_suffix,
     humanize_stem,
-    score_bar,
-    speaker_lines,
-    truncate_description,
 )
-from podcodex.bot.ui import ExpandView, NoExpandView, PaginatedResultView
+from podcodex.bot.result_store import CachedSearch, ResultRef, SearchCacheStore
+from podcodex.bot.ui import (
+    DYNAMIC_ITEMS,
+    ExpandResult,
+    build_list_view,
+    build_results_view,
+)
 from podcodex.rag.defaults import (
     ALPHA,
     CHUNKING_STRATEGIES,
@@ -204,62 +207,23 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 # ── Embed builder ─────────────────────────────
 
 
-def _result_embed(
-    chunk: dict,
-    rank: int,
-    total: int,
-    collection: str,
-    label: str,
-    query: str = "",
-    question: str = "",
-) -> tuple[discord.Embed, ExpandView]:
-    """Build a Discord embed + context-expand view for a single search result."""
-    show = chunk.get("show", "")
-    episode = chunk.get("episode", "")
-    ep_title = episode_display(chunk)
-    start = chunk.get("start", 0.0)
-    end = chunk.get("end", 0.0)
-    score = chunk.get("score", 0.0)
+def _chunk_to_ref(chunk: dict, collection: str) -> ResultRef:
+    """Distill a search-result chunk into a cacheable :class:`ResultRef`.
 
-    q = question or query
-    description = truncate_description(speaker_lines(chunk, query=query))
-
-    # Highlight non-exact /exact hits: accent-tolerant ("café" ≈ "cafe") and
-    # fuzzy near-typo matches get a distinct color + title badge so users
-    # don't confuse them with literal hits.
-    if chunk.get("fuzzy_match"):
-        color = discord.Color.orange()
-        badge = "〜 near-typo"
-    elif chunk.get("accent_match"):
-        color = discord.Color.gold()
-        badge = "≈ accent variant"
-    else:
-        color = discord.Color.blurple()
-        badge = ""
-
-    embed = discord.Embed(description=description, color=color)
-    if q:
-        embed.set_author(name=f'🔎 "{q}"')
-    title = ep_title or "(untitled)"
-    if show:
-        title += f" ({show})"
-    embed.title = title
-    if badge:
-        embed.add_field(name="Match", value=badge, inline=True)
-    timed = chunk.get("timed", True)
-    ts_label = fmt_timestamp(start, end, timed=timed)
-    if ts_label:
-        embed.add_field(name="Timestamp", value=ts_label, inline=True)
-    pub_date = (chunk.get("pub_date") or "").strip()
-    if pub_date:
-        embed.add_field(name="Published", value=pub_date[:10], inline=True)
-    clamped = max(0.0, min(1.0, score))
-    embed.add_field(
-        name="Relevance", value=f"{score_bar(clamped)} {clamped:.0%}", inline=True
+    Stores only the pointer (``collection``/``episode``/``chunk_index``) plus the
+    search-time scalars LanceDB does not carry; the transcript text is re-fetched
+    on click. See :mod:`podcodex.bot.result_store`.
+    """
+    return ResultRef(
+        collection=collection,
+        episode=chunk.get("episode", ""),
+        chunk_index=int(chunk.get("chunk_index", 0)),
+        score=float(chunk.get("score", 0.0)),
+        fuzzy_match=bool(chunk.get("fuzzy_match")),
+        accent_match=bool(chunk.get("accent_match")),
+        match_text=chunk.get("match_text"),
+        episode_title=episode_display(chunk),
     )
-    embed.set_footer(text=f"#{rank} of {total} • {label}")
-
-    return embed, ExpandView(collection, episode, show, start)
 
 
 # ── Bot ───────────────────────────────────────
@@ -282,6 +246,8 @@ class PodCodexBot(discord.Client):
         self._local: IndexStore | None = None
         self._retrievers: dict[str, Retriever] = {}
         self._server_cfg: dict[int, ServerSettings] = self._load_server_config()
+        # Durable + in-RAM cache backing the persistent pagination buttons.
+        self.results = SearchCacheStore(server_config_path.parent / "search_cache.db")
         self._ac_cache = _AutocompleteCache(
             episodes={}, episode_titles={}, sources={}, speakers={}
         )
@@ -529,6 +495,10 @@ class PodCodexBot(discord.Client):
 
     async def setup_hook(self) -> None:
         loop = asyncio.get_running_loop()
+        # Re-register persistent pagination handlers so buttons on messages from
+        # before a restart keep working.
+        for item in DYNAMIC_ITEMS:
+            self.add_dynamic_items(item)
         await loop.run_in_executor(None, lambda: self.local)
         await loop.run_in_executor(None, self._reload_shows)
         self._index_mtime_seen = await loop.run_in_executor(
@@ -1382,12 +1352,27 @@ class PodCodexBot(discord.Client):
             embed = build_compact_embed(results, label, question=query)
             await interaction.followup.send(embed=embed)
         else:
-            pages = [
-                _result_embed(chunk, rank, len(results), col, label, question=query)
-                for rank, (chunk, col) in enumerate(results, 1)
-            ]
-            view = PaginatedResultView(pages)
-            await interaction.followup.send(embed=view.current_embed, view=view)
+            await self._send_results("search", label, query, results, interaction)
+
+    async def _send_results(
+        self,
+        kind: str,
+        label: str,
+        query: str,
+        results: list[tuple[dict, str]],
+        interaction: discord.Interaction,
+    ) -> None:
+        """Cache result refs and post the first persistent page."""
+        refs = [_chunk_to_ref(chunk, col) for chunk, col in results]
+        sid = self.results.save(CachedSearch(kind, label, query, refs))
+        built = await build_results_view(self, sid, 0)
+        if built is None:  # episode vanished between search and render
+            await interaction.followup.send(
+                "❌ Results could not be loaded — please try again.", ephemeral=True
+            )
+            return
+        embed, view = built
+        await interaction.followup.send(embed=embed, view=view)
 
     def _hybrid_search(
         self,
@@ -1525,12 +1510,7 @@ class PodCodexBot(discord.Client):
             f"in {len(all_results)} chunk{'s' if len(all_results) != 1 else ''}"
         )
         label = " · ".join(label_parts)
-        pages = [
-            _result_embed(chunk, rank, len(all_results), col, label, query=query)
-            for rank, (chunk, col) in enumerate(all_results, 1)
-        ]
-        view = PaginatedResultView(pages)
-        await interaction.followup.send(embed=view.current_embed, view=view)
+        await self._send_results("exact", label, query, all_results, interaction)
 
     # ── /random handler ───────────────────────
 
@@ -1590,7 +1570,6 @@ class PodCodexBot(discord.Client):
             return
 
         show = chunk.get("show", "")
-        ep = chunk.get("episode", "")
         ep_display = episode_display(chunk)
         spk = chunk.get("speaker") or chunk.get("dominant_speaker") or "Unknown"
         start = chunk.get("start", 0.0)
@@ -1616,8 +1595,13 @@ class PodCodexBot(discord.Client):
             footer_text += f" (from {pool:,} segments)"
         embed.set_footer(text=footer_text)
 
-        context_start = chunk.get("_chunk_start", start)
-        view = ExpandView(col, ep, show, context_start)
+        # Cache a one-result search so the "Show context" button is persistent
+        # and survives restarts like the /search and /exact ones.
+        sid = self.results.save(
+            CachedSearch("random", "", "", [_chunk_to_ref(chunk, col)])
+        )
+        view = discord.ui.View(timeout=None)
+        view.add_item(ExpandResult(sid, 0))
         await interaction.followup.send(embed=embed, view=view)
 
     # ── /setup handler ────────────────────────
@@ -2111,9 +2095,15 @@ class PodCodexBot(discord.Client):
         if len(embeds) == 1:
             await interaction.followup.send(embed=embeds[0])
         else:
-            pages = [(e, NoExpandView()) for e in embeds]
-            view = PaginatedResultView(pages)
-            await interaction.followup.send(embed=view.current_embed, view=view)
+            # Self-contained pages: cache the rendered embeds verbatim so the
+            # nav buttons stay persistent and survive restarts.
+            sid = self.results.save(
+                CachedSearch("list", "", "", embeds=[e.to_dict() for e in embeds])
+            )
+            built = await build_list_view(self, sid, 0)
+            assert built is not None  # just saved; cannot miss
+            embed, view = built
+            await interaction.followup.send(embed=embed, view=view)
 
 
 # ── Entrypoint ────────────────────────────────

@@ -29,6 +29,9 @@ pipeline.db-wal
 # Bot runtime state
 # ============================================================================
 server_config.json
+search_cache.db
+search_cache.db-shm
+search_cache.db-wal
 
 # ============================================================================
 # Stray root compose (real one lives in deploy/)

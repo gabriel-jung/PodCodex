@@ -4,7 +4,8 @@ import pytest
 
 pytest.importorskip("discord")
 
-from podcodex.bot.bot import BotConfig, ServerSettings, _result_embed
+from podcodex.bot.bot import BotConfig, ServerSettings
+from podcodex.bot.ui import build_result_embed
 from podcodex.bot.formatting import (
     CooldownManager,
     build_compact_embed,
@@ -121,7 +122,7 @@ def test_score_bar_half_is_mixed():
 
 
 # ──────────────────────────────────────────────
-# _result_embed
+# build_result_embed
 # ──────────────────────────────────────────────
 
 _CHUNK = {
@@ -136,13 +137,12 @@ _CHUNK = {
 
 
 def test_result_embed_show_in_title_query_as_author():
-    embed, _ = _result_embed(
+    embed = build_result_embed(
         _CHUNK,
         rank=1,
         total=5,
-        collection="my_podcast",
         label="α=0.50",
-        question="film music",
+        text="film music",
     )
     assert embed.author.name == '🔎 "film music"'
     assert "Ep01" in embed.title
@@ -150,20 +150,18 @@ def test_result_embed_show_in_title_query_as_author():
 
 
 def test_result_embed_footer_has_rank_and_label():
-    embed, _ = _result_embed(
-        _CHUNK, rank=2, total=5, collection="col", label="exact / BM25"
-    )
+    embed = build_result_embed(_CHUNK, rank=2, total=5, label="exact / BM25")
     assert "#2" in embed.footer.text
     assert "exact / BM25" in embed.footer.text
 
 
 def test_result_embed_description_has_text():
-    embed, _ = _result_embed(_CHUNK, rank=1, total=5, collection="col", label="α=0.50")
+    embed = build_result_embed(_CHUNK, rank=1, total=5, label="α=0.50")
     assert "The composer came in on day one." in embed.description
 
 
 def test_result_embed_fields():
-    embed, _ = _result_embed(_CHUNK, rank=1, total=5, collection="col", label="α=0.50")
+    embed = build_result_embed(_CHUNK, rank=1, total=5, label="α=0.50")
     fields = {f.name: f.value for f in embed.fields}
     assert "01:23" in fields["Timestamp"]
     assert "01:42" in fields["Timestamp"]
@@ -172,7 +170,7 @@ def test_result_embed_fields():
 
 def test_result_embed_no_show_has_no_author():
     chunk = {**_CHUNK, "show": ""}
-    embed, _ = _result_embed(chunk, rank=1, total=5, collection="col", label="α=0.50")
+    embed = build_result_embed(chunk, rank=1, total=5, label="α=0.50")
     assert embed.author.name is None
 
 
@@ -228,16 +226,6 @@ def test_format_context_header_shows_show_and_episode():
     )
     assert "My Podcast" in content
     assert "Ep01" in content
-
-
-def test_result_embed_returns_expand_view():
-    import discord
-
-    _, view = _result_embed(_CHUNK, rank=1, total=5, collection="col", label="α=0.50")
-    assert isinstance(view, discord.ui.View)
-    buttons = [c for c in view.children if isinstance(c, discord.ui.Button)]
-    assert len(buttons) == 1
-    assert "context" in buttons[0].label.lower()
 
 
 # ──────────────────────────────────────────────
