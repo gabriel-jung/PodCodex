@@ -13,8 +13,13 @@ Resolution order for an explicit override (highest priority first):
      Settings → ffmpeg picker; survives restarts independently of env.
   3. ``shutil.which("ffmpeg")``.
   4. Windows-only fallback: live registry PATH + winget/scoop/chocolatey
-     shim dirs. PATH is captured per-process at logon so a winget install
-     during a session is invisible to ``shutil.which`` until reboot.
+     shim dirs + winget ffmpeg package payload dirs. PATH is captured
+     per-process at logon so a winget install during a session is
+     invisible to ``shutil.which`` until reboot. The payload scan covers
+     a half-broken winget state: package present on disk but the Links
+     shim missing and the user-PATH entry lost (installers rewriting the
+     user PATH are a known cause) — winget still reports "installed"
+     while nothing resolves the binary.
 """
 
 from __future__ import annotations
@@ -61,6 +66,25 @@ def _override_from_config() -> str:
         return ""
 
 
+def _winget_ffmpeg_payload_dirs(pkg_root: Path) -> list[str]:
+    """``bin/`` dirs holding ``ffmpeg.exe`` inside winget package payloads.
+
+    Gyan.FFmpeg extracts to ``<pkg_root>/Gyan.FFmpeg[.Full]_<source>/
+    ffmpeg-<ver>-full_build/bin/ffmpeg.exe``. Newest version first so a
+    leftover older payload never shadows the current one.
+    """
+    out: list[str] = []
+    try:
+        for pkg in pkg_root.glob("*FFmpeg*"):
+            for exe in pkg.glob("*/bin/ffmpeg.exe"):
+                out.append(str(exe.parent))
+            if (pkg / "bin" / "ffmpeg.exe").is_file():
+                out.append(str(pkg / "bin"))
+    except OSError:
+        return []
+    return sorted(out, reverse=True)
+
+
 @lru_cache(maxsize=1)
 def _windows_extra_dirs() -> tuple[str, ...]:
     """Windows-only: dirs to scan when in-process PATH misses fresh installs.
@@ -101,7 +125,15 @@ def _windows_extra_dirs() -> tuple[str, ...]:
 
     local = os.environ.get("LOCALAPPDATA", "")
     if local:
-        dirs.append(os.path.join(local, "Microsoft", "WinGet", "Links"))
+        winget_root = Path(local) / "Microsoft" / "WinGet"
+        dirs.append(str(winget_root / "Links"))
+        dirs.extend(_winget_ffmpeg_payload_dirs(winget_root / "Packages"))
+    program_files = os.environ.get("ProgramFiles", "")
+    if program_files:
+        # winget --scope machine payload root
+        dirs.extend(
+            _winget_ffmpeg_payload_dirs(Path(program_files) / "WinGet" / "Packages")
+        )
     user = os.environ.get("USERPROFILE", "")
     if user:
         dirs.append(os.path.join(user, "scoop", "shims"))

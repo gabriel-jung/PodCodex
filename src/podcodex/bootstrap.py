@@ -99,6 +99,30 @@ def bootstrap_for_subprocess_child() -> None:
     """
     _patch_missing_stdio()
     _install_all_patches()
+    _wire_ffmpeg_path()
+
+
+def _wire_ffmpeg_path() -> None:
+    """Prepend the resolved ffmpeg dir to PATH for bare-``"ffmpeg"`` shellouts.
+
+    Spawned children normally inherit the parent's wired PATH, but if the
+    parent failed to resolve ffmpeg at its startup (installed or repaired
+    after launch), the child re-resolves independently here so whisperx /
+    faster-whisper shellouts don't die with WinError 2.
+    """
+    from podcodex.core._ffmpeg import ffmpeg_override_dir
+
+    try:
+        ffmpeg_dir = ffmpeg_override_dir()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ffmpeg wiring: resolution failed: {!r}", exc)
+        return
+    if not ffmpeg_dir:
+        return
+    existing = os.environ.get("PATH", "").split(os.pathsep)
+    if ffmpeg_dir not in existing:
+        os.environ["PATH"] = os.pathsep.join([ffmpeg_dir, *existing])
+        logger.info("ffmpeg wiring: prepended {} to PATH", ffmpeg_dir)
 
 
 def _patch_missing_stdio() -> None:
