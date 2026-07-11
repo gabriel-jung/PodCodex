@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.2.5] - 2026-07-11
+
+### Episode speakers
+
+Speakers are now visible without opening a transcript.
+
+- Episode overview shows the speaker list with per-speaker talk-time share,
+  computed from the canonical transcript (verified version first, then the
+  best corrected, then the newest transcript). Music and gaps are not
+  attributed, so shares can sum to under 100%.
+- The show's episode list gains a speakers column (list and card views),
+  ordered by talk time, fed by one cached roster scan shared with the
+  Speakers tab.
+- Renaming speakers, saving edits, deleting versions, finishing a
+  transcribe/correct run, or moving the verified pointer refreshes every
+  speaker view immediately.
+
+### Episode navigation
+
+Previous/next arrows in the episode page header walk the show's episodes in
+date order, matching the episode list's default ordering.
+
+### Broadcast numbers in the app
+
+The `broadcast_number_pattern` regex is now editable in the show settings,
+with a live preview against the show's latest episode title: extracted
+number, no-match hint, and explicit errors for invalid patterns or a missing
+capture group. Reindex episodes to apply a changed pattern.
+
+### Discord bot
+
+- Lean result cards: quote first, show as author, engine numbers behind an
+  ephemeral Details button; `/exact` opens as a list, `/search` as a card,
+  with a persistent toggle between the two.
+- Media-aware results: cover thumbnails, timestamped YouTube jump links, and
+  RSS listen links (media metadata is baked at index time; reindex to light
+  them up on existing shows).
+- `/announcements`: opt-in channel for new-episode and bot-version
+  announcements, with per-guild access filtering.
+
+### Fixes
+
+- Timestamps (`start_hms`) now truncate to the second instead of rounding,
+  so a citation never points past the passage it marks and matches
+  floor-based external conventions.
+- Speaker aliases (introduced in 0.2.4) are removed: wrong names are fixed
+  at the speaker map step instead of being remapped at read time.
+- The speaker roster resolves each episode's canonical transcript (verified
+  pointer included) via two bulk queries and is cached server-side.
+
 ## [0.2.4] - 2026-07-11
 
 ### MCP retrieval
@@ -19,12 +69,6 @@ chunk text.
 - `list_episodes` gains a `broadcast_number` filter, a `fields` projection to
   skip heavy descriptions, and defaults to sorting by publication date.
 - Every result carries a preformatted `start_hms` timestamp for citation.
-
-### Speaker aliases
-
-Per-show speaker alias table in `show.toml` (`[speaker_aliases]`), applied at
-read time so it fixes an existing index with no reindex. Aliased labels fold
-together in `speaker_stats` and are matched by speaker filters.
 
 ### Broadcast numbers
 
