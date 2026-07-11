@@ -547,11 +547,35 @@ def build_index_transcript(
     return transcript
 
 
+def apply_broadcast_pattern(pattern: str, title: str) -> int | None:
+    """Apply *pattern* to *title*, returning the first capture group as an int.
+
+    Returns ``None`` when the pattern or title is empty, the pattern has no
+    capture group, the pattern does not match, or the captured group is not an
+    integer. Raises ``re.error`` when the pattern itself is invalid, even for
+    an empty title, so callers can always surface a bad regex (e.g. the live
+    preview must not silently accept one on a show with no titled episode).
+    """
+    if not pattern:
+        return None
+    compiled = re.compile(pattern)  # raises re.error on a bad pattern
+    if not title:
+        return None
+    m = compiled.search(title)
+    if not m or not m.lastindex:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
 def _extract_broadcast_number(show_dir: Path, title: str) -> int | None:
     """Apply the show's ``broadcast_number_pattern`` to *title*, if configured.
 
     Returns the first captured group as an int, or ``None`` when the show has
-    no pattern, the title is empty, or the pattern does not match.
+    no pattern, the title is empty, or the pattern does not match. Invalid
+    patterns are swallowed (indexing must never crash on a bad regex).
     """
     if not title:
         return None
@@ -562,18 +586,10 @@ def _extract_broadcast_number(show_dir: Path, title: str) -> int | None:
     except Exception:
         return None
     pattern = meta.broadcast_number_pattern if meta else ""
-    if not pattern:
-        return None
     try:
-        m = re.search(pattern, title)
+        return apply_broadcast_pattern(pattern, title)
     except re.error:
         return None
-    if m and m.group(1):
-        try:
-            return int(m.group(1))
-        except (ValueError, IndexError):
-            return None
-    return None
 
 
 # ── Shared request models ──────────────────────

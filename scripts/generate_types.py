@@ -26,6 +26,7 @@ from pydantic import BaseModel
 # Duplicate class names across modules get a module prefix.
 
 from podcodex.api.schemas import (  # noqa: E402
+    BroadcastPreviewOut,
     CreateFromRSSRequest,
     CreateFromRSSResponse,
     CreateFromYouTubeRequest,
@@ -105,6 +106,7 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, PipelineDefaultsSchema),
     (None, ShowMeta),
     (None, EpisodeOut),
+    (None, BroadcastPreviewOut),
     (None, RSSEpisodeOut),
     (None, Segment),
     (None, VerifiedPointer),

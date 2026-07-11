@@ -29,6 +29,7 @@ export interface ShowMeta {
   language: string;
   speakers: string[];
   artwork_url: string;
+  broadcast_number_pattern: string;
   pipeline: PipelineDefaultsSchema;
   last_feed_update?: string | null;
 }
@@ -46,6 +47,12 @@ export interface EpisodeOut {
   indexed: boolean;
   synthesized: boolean;
   translations: string[];
+}
+
+export interface BroadcastPreviewOut {
+  title?: string | null;
+  number?: number | null;
+  error?: string | null;
 }
 
 export interface RSSEpisodeOut {

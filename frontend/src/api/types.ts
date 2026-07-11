@@ -17,6 +17,7 @@ export type {
   AssembleRequest,
   BatchFix,
   BatchRequest,
+  BroadcastPreviewOut,
   CreateFromRSSRequest,
   CreateFromRSSResponse,
   CreateFromYouTubeRequest,
@@ -202,6 +203,18 @@ export interface SpeakerRosterResponse {
   speakers: SpeakerRosterEntry[];
   episodes_scanned: number;
   episodes_with_transcripts: number;
+}
+
+export interface EpisodeSpeakerEntry {
+  name: string;
+  total_seconds: number;
+  pct: number; // share of episode duration (0-100); may total < 100 (music/gaps)
+}
+
+export interface EpisodeSpeakersResponse {
+  speakers: EpisodeSpeakerEntry[]; // sorted by total_seconds desc
+  episode_seconds: number;
+  has_transcript: boolean;
 }
 
 // ── Filesystem ───────────────────────────────────────────

@@ -152,7 +152,7 @@ def test_trim_shape_prefers_rss_title():
         "episode_title": "Episode one: the beginning",
         "chunk_index": 4,
         "start": 1.5,
-        "start_hms": "0m02",
+        "start_hms": "0m01",  # floored, not rounded (canonical wiki form)
         "end": 3.0,
         "speaker": "Alice",
         "text": "hi",
@@ -552,22 +552,6 @@ def test_get_context_requires_index_or_time():
 def test_trim_adds_start_hms():
     matches = mcp_server.exact(query="chunk 3")
     assert matches[0]["start_hms"] == "0m03"
-
-
-# ── speaker aliasing (#4) ────────────────────────────────────────────────
-
-
-def test_trim_applies_alias(monkeypatch):
-    monkeypatch.setattr(mcp_server, "_speaker_aliases", lambda show: {"sp1": "Rafik"})
-    out = mcp_server.exact(query="chunk 3")  # chunk 3 dominant_speaker == "sp1"
-    assert out[0]["speaker"] == "Rafik"
-
-
-def test_speaker_stats_folds_alias(monkeypatch):
-    monkeypatch.setattr(mcp_server, "_speaker_aliases", lambda show: {"sp1": "sp0"})
-    stats = mcp_server.speaker_stats()
-    labels = {s["speaker"] for s in stats}
-    assert "sp1" not in labels  # folded into sp0
 
 
 # ── list_episodes: broadcast/fields/sort (#5) ────────────────────────────

@@ -16,14 +16,17 @@ from fastapi.responses import FileResponse
 from loguru import logger
 from pydantic import BaseModel
 
-from podcodex.api.routes._helpers import require_show_folder
+from podcodex.api.routes._helpers import apply_broadcast_pattern, require_show_folder
 from podcodex.api.routes.config import _load, _register_folder, _save
 from podcodex.api.schemas import (
+    BroadcastPreviewOut,
     CreateFromRSSRequest,
     CreateFromRSSResponse,
     CreateFromYouTubeRequest,
     CreateFromYouTubeResponse,
     EpisodeOut,
+    EpisodeSpeakerEntry,
+    EpisodeSpeakersResponse,
     PipelineDefaultsSchema,
     RegisterShowRequest,
     ShowMeta,
@@ -449,6 +452,7 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
         language=meta.language,
         speakers=meta.speakers,
         artwork_url=meta.artwork_url,
+        broadcast_number_pattern=meta.broadcast_number_pattern,
         pipeline=PipelineDefaultsSchema(
             model_size=meta.pipeline.model_size,
             diarize=meta.pipeline.diarize,
@@ -481,6 +485,7 @@ async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
             language=meta.language,
             speakers=meta.speakers,
             artwork_url=meta.artwork_url,
+            broadcast_number_pattern=meta.broadcast_number_pattern,
             pipeline=_PipelineDefaults(
                 model_size=p.model_size,
                 diarize=p.diarize,
@@ -498,6 +503,69 @@ async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
         ),
     )
     return {"status": "saved"}
+
+
+def _latest_episode_title(path: Path) -> str | None:
+    """Best-effort title of the show's newest episode, for pattern previews.
+
+    Reads the feed cache (``feed_order`` 0 = newest, matching the episode
+    list's fallback ordering). Returns None when there is no feed cache or no
+    titled entry; the preview then shows nothing rather than testing the
+    pattern against an arbitrary episode.
+    """
+    feed = load_feed_cache(path)
+    if not feed:
+        return None
+    titled = [e for e in feed if e.title]
+    if not titled:
+        return None
+    with_order = [e for e in titled if e.feed_order is not None]
+    if with_order:
+        return min(with_order, key=lambda e: e.feed_order).title
+    return titled[0].title  # cache is written in feed order (newest first)
+
+
+def _compute_broadcast_preview(path: Path, pattern: str) -> dict:
+    """Sync body of ``broadcast_preview``; runs off the event loop."""
+    title = _latest_episode_title(path)
+    if not pattern.strip():
+        return {"title": title, "number": None, "error": None}
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        return {"title": title, "number": None, "error": f"Invalid pattern: {exc}"}
+    if compiled.groups == 0:
+        return {
+            "title": title,
+            "number": None,
+            "error": "Pattern has no capture group: wrap the number in parentheses",
+        }
+    try:
+        number = apply_broadcast_pattern(pattern, title or "")
+    except re.error as exc:
+        return {"title": title, "number": None, "error": f"Invalid pattern: {exc}"}
+    return {"title": title, "number": number, "error": None}
+
+
+@router.get(
+    "/{show_folder:path}/broadcast-preview",
+    response_model=BroadcastPreviewOut,
+)
+async def broadcast_preview(show_folder: str, pattern: str = Query("")) -> dict:
+    """Test a broadcast-number pattern against the latest episode title.
+
+    Uses the same extraction logic as indexing, so the previewed number is
+    exactly what a reindex would store. Returns the tested title, the extracted
+    number (or null), and an error when the regex is invalid or has no capture
+    group. Runs in a worker thread: the pattern is user input typed live, and a
+    backtracking-heavy regex must not stall the event loop.
+    """
+    import asyncio
+
+    path = require_show_folder(show_folder)
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _compute_broadcast_preview, path, pattern
+    )
 
 
 # ── Episode listing ──────────────────────────
@@ -887,11 +955,21 @@ def _step_statuses(
     }
 
 
+# Roster is expensive: it reads every episode's canonical transcript. Cache it
+# keyed on the resolved canonical refs, the known-speaker set, and the episode
+# meta mtimes (titles are baked into the response). All are recomputed from
+# two bulk DB queries plus per-stem stats, so a cache hit skips the N seglist
+# reads. Any version save/delete, verified-pointer change, show.toml speaker
+# edit, or episode-meta (title) refresh shifts the signature.
+_ROSTER_CACHE: dict[str, tuple[object, SpeakerRosterResponse]] = {}
+
+
 def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
     from concurrent.futures import ThreadPoolExecutor
 
-    from podcodex.core._utils import BREAK_SPEAKER, UNKNOWN_SPEAKERS, group_by_speaker
-    from podcodex.core.versions import load_version
+    from podcodex.core._utils import speaker_airtime
+    from podcodex.core.versions import load_version, resolve_canonical_refs
+    from podcodex.ingest.rss import EPISODE_META_FILE
 
     db = get_pipeline_db(path)
     if db.episode_count() == 0:
@@ -904,30 +982,51 @@ def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
 
     totals: dict[str, dict] = {}
     per_episode: dict[str, list[SpeakerEpisodeEntry]] = {}
-    episodes_scanned = 0
     episodes_with_transcripts = 0
 
-    # Single bulk DB query for the latest version per (stem, step). Replaces
-    # 2*N ``list_versions`` round-trips that scaled badly with N episodes.
-    episodes = db.all_episodes()
-    latest_by_step = db.latest_versions_for_steps(["corrected", "transcript"])
+    # Resolve every episode's canonical version ref (verified pointer wins,
+    # same ladder as the per-episode speaker endpoint) via the bulk resolver:
+    # two DB queries total, single-threaded (pipeline_db isn't safe to fan
+    # out). Only the seglist file loads below are parallelized.
+    stems = [ep["stem"] for ep in db.all_episodes()]
+    episodes_scanned = len(stems)
+    refs = resolve_canonical_refs(path, stems)
+
+    def _meta_mtime(stem: str) -> float:
+        try:
+            return (path / stem / EPISODE_META_FILE).stat().st_mtime
+        except OSError:
+            return 0.0
+
+    signature = (
+        frozenset(refs.items()),
+        frozenset(known),
+        frozenset((s, _meta_mtime(s)) for s in stems),
+    )
+    cached = _ROSTER_CACHE.get(str(path))
+    if cached is not None and cached[0] == signature:
+        return cached[1]
 
     def _load_segments(stem: str) -> tuple[str, list[dict] | None]:
-        for step in ("corrected", "transcript"):
-            v = latest_by_step.get((stem, step))
-            if not v:
-                continue
-            try:
-                return stem, load_version(path / stem / stem, step, v["id"])
-            except FileNotFoundError:
-                continue
-        return stem, None
+        ref = refs.get(stem)
+        if not ref:
+            return stem, None
+        step, vid = ref
+        try:
+            return stem, load_version(path / stem / stem, step, vid)
+        except FileNotFoundError:
+            return stem, None
 
-    # JSON reads parallelize well — they're disk-bound, not CPU-bound.
-    stems = [ep["stem"] for ep in episodes]
-    episodes_scanned = len(stems)
+    # JSON reads parallelize well: they're disk-bound, not CPU-bound.
     with ThreadPoolExecutor(max_workers=8) as pool:
         loaded = list(pool.map(_load_segments, stems))
+
+    # A ref that resolved but failed to load (deleted out-of-band, or not yet
+    # visible on a shared mount) must not be frozen into the cache: skip the
+    # cache write below so the miss self-heals on the next request.
+    load_failed = any(
+        segs is None and refs.get(stem) is not None for stem, segs in loaded
+    )
 
     for stem, segments in loaded:
         if not segments:
@@ -937,25 +1036,21 @@ def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
         ep_meta = load_episode_meta(path / stem)
         ep_title = ep_meta.title if ep_meta and ep_meta.title else stem
 
-        for spk, segs in group_by_speaker(segments).items():
-            if not spk or spk == BREAK_SPEAKER or spk in UNKNOWN_SPEAKERS:
-                continue
-            secs = sum(
-                max(0.0, float(s.get("end", 0.0)) - float(s.get("start", 0.0)))
-                for s in segs
-            )
+        for spk, air in speaker_airtime(segments).items():
+            secs = air["total_seconds"]
+            n = air["segment_count"]
             row = totals.setdefault(
                 spk,
                 {"episode_count": 0, "segment_count": 0, "total_seconds": 0.0},
             )
             row["episode_count"] += 1
-            row["segment_count"] += len(segs)
+            row["segment_count"] += n
             row["total_seconds"] += secs
             per_episode.setdefault(spk, []).append(
                 SpeakerEpisodeEntry(
                     stem=stem,
                     title=ep_title,
-                    segment_count=len(segs),
+                    segment_count=n,
                     total_seconds=secs,
                 )
             )
@@ -983,11 +1078,14 @@ def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
     ]
     entries.sort(key=lambda s: (s.total_seconds, s.segment_count), reverse=True)
 
-    return SpeakerRosterResponse(
+    response = SpeakerRosterResponse(
         speakers=entries,
         episodes_scanned=episodes_scanned,
         episodes_with_transcripts=episodes_with_transcripts,
     )
+    if not load_failed:
+        _ROSTER_CACHE[str(path)] = (signature, response)
+    return response
 
 
 @router.get(
@@ -997,17 +1095,74 @@ def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
 async def speakers_roster(show_folder: str) -> SpeakerRosterResponse:
     """Aggregate speaker stats across every transcribed episode in the show.
 
-    For each episode the most recent ``corrected`` segments are preferred,
-    falling back to the latest raw transcript. Placeholder labels from
-    ``UNKNOWN_SPEAKERS`` and the ``[BREAK]`` sentinel are filtered out.
-    Speakers listed in ``show.toml`` that never appear are still returned
-    with zero counts so the UI can surface configured-but-unseen names.
+    Each episode contributes its canonical transcript: the verified version
+    when set, else the best ``corrected`` (hand-edited outranks newer model
+    output), else the newest ``transcript``. There is no fallback when the
+    canonical file is missing; the episode is skipped so the gap is visible.
+    Placeholder labels from ``UNKNOWN_SPEAKERS`` and the ``[BREAK]`` sentinel
+    are filtered out. Speakers listed in ``show.toml`` that never appear are
+    still returned with zero counts so the UI can surface
+    configured-but-unseen names.
     """
     import asyncio
 
     path = require_show_folder(show_folder)
     return await asyncio.get_running_loop().run_in_executor(
         None, _compute_speaker_roster, path
+    )
+
+
+def _compute_episode_speakers(path: Path, stem: str) -> EpisodeSpeakersResponse:
+    """Speakers + per-speaker airtime for one episode's canonical transcript."""
+    from podcodex.core._utils import speaker_airtime
+    from podcodex.core.versions import load_canonical_segments
+
+    base = path / stem / stem
+    segments = load_canonical_segments(base)
+    if not segments:
+        return EpisodeSpeakersResponse(
+            speakers=[], episode_seconds=0.0, has_transcript=False
+        )
+
+    ep_meta = load_episode_meta(path / stem)
+    audio_seconds = float(ep_meta.duration) if ep_meta else 0.0
+    last_end = max((float(s.get("end", 0.0)) for s in segments), default=0.0)
+    # Denominator is the full episode length so unattributed time (music, gaps,
+    # silence) is simply not counted, so the percentages can sum to under 100%.
+    denom = max(audio_seconds, last_end)
+
+    air = speaker_airtime(segments)
+    entries = [
+        EpisodeSpeakerEntry(
+            name=spk,
+            total_seconds=v["total_seconds"],
+            pct=(v["total_seconds"] / denom * 100.0) if denom > 0 else 0.0,
+        )
+        for spk, v in air.items()
+    ]
+    entries.sort(key=lambda e: e.total_seconds, reverse=True)
+    return EpisodeSpeakersResponse(
+        speakers=entries, episode_seconds=denom, has_transcript=True
+    )
+
+
+@router.get(
+    "/{show_folder:path}/episode/{stem}/speakers",
+    response_model=EpisodeSpeakersResponse,
+)
+async def episode_speakers(show_folder: str, stem: str) -> EpisodeSpeakersResponse:
+    """Speakers of one episode's canonical transcript, with airtime shares.
+
+    The canonical transcript is the verified version if set, else the newest
+    ``corrected``, else the newest ``transcript``. Each speaker's ``pct`` is
+    its share of the episode duration; music, gaps, and unlabeled time are not
+    attributed, so the shares may sum to less than 100%.
+    """
+    import asyncio
+
+    path = require_show_folder(show_folder)
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _compute_episode_speakers, path, stem
     )
 
 
@@ -1357,6 +1512,7 @@ async def delete_show(show_folder: str, req: DeleteShowRequest) -> dict:
     # Close DB handles and invalidate caches
     close_pipeline_db(path)
     invalidate_scan_cache(path)
+    _ROSTER_CACHE.pop(str(path), None)
 
     # Remove from config.json
     cfg = _load()

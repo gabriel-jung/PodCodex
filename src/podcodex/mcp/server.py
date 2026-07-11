@@ -64,8 +64,8 @@ class _Col(NamedTuple):
 def _iter_show_metas():
     """Yield ``(lowercased_show_name, ShowMeta)`` for every configured show.
 
-    Single source of the ``config.json`` -> ``show.toml`` walk shared by the
-    RAG-pref and speaker-alias resolvers. The MCP process never runs
+    Single source of the ``config.json`` -> ``show.toml`` walk used by the
+    RAG-pref resolver. The MCP process never runs
     ``create_app()``, so it reads ``config.json`` directly rather than through
     the IndexStore show-folder resolver. ``load_show_meta`` is mtime-cached, so
     repeat walks only re-``stat`` the folders.
@@ -102,111 +102,25 @@ def _show_rag_prefs() -> dict[str, tuple[str, str]]:
     return prefs
 
 
-# All shows' alias maps, cached by ``config.json`` mtime so the folder walk
-# runs once per config change instead of once per alias-touching request.
-_ALIAS_CACHE: dict[float, dict[str, dict[str, str]]] = {}
-
-
-def _all_speaker_aliases() -> dict[str, dict[str, str]]:
-    """Lowercased show name -> alias map, for every show that defines one."""
-    try:
-        from podcodex.core.app_config import CONFIG_PATH
-
-        mtime = CONFIG_PATH.stat().st_mtime
-    except Exception:
-        mtime = 0.0
-    cached = _ALIAS_CACHE.get(mtime)
-    if cached is not None:
-        return cached
-    _ALIAS_CACHE.clear()  # only the current-config generation is worth keeping
-    built = {
-        name: dict(meta.speaker_aliases)
-        for name, meta in _iter_show_metas()
-        if meta.speaker_aliases
-    }
-    _ALIAS_CACHE[mtime] = built
-    return built
-
-
-def _speaker_aliases(show: str) -> dict[str, str]:
-    """Raw-label -> canonical speaker map for a show, from its ``show.toml``.
-
-    Applied at read time so it fixes the existing index with no reindex.
-    Empty when the show has no ``[speaker_aliases]`` table or is unknown.
-    """
-    target = (show or "").strip().lower()
-    if not target:
-        return {}
-    return _all_speaker_aliases().get(target, {})
-
-
-def _retrieve_over_labels(labels, fetch, err_ctx: str) -> list[dict]:
-    """Run ``fetch(label)`` for each label and merge, deduping by position.
-
-    Shared by ``exact`` and ``search`` for the speaker-alias fan-out: a
-    canonical name expands to several raw labels, each queried separately, and
-    the union is deduped by ``(episode, chunk_index)``. ``ValueError`` from
-    ``fetch`` propagates (bad caller input); any other error is logged with
-    ``err_ctx`` and that label is skipped.
-    """
-    seen: set[tuple] = set()
-    out: list[dict] = []
-    for label in labels:
-        try:
-            hits = fetch(label)
-        except ValueError:
-            raise
-        except Exception:
-            logger.exception(err_ctx)
-            continue
-        for h in hits:
-            key = (h.get("episode"), h.get("chunk_index"))
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(h)
-    return out
-
-
-def _alias_expand(show: str, speaker: str) -> list[str]:
-    """Expand a canonical speaker to itself plus every raw label aliasing to it.
-
-    Lets a caller filter by the canonical name (``"Rafik"``) and still match
-    chunks stored under a raw variant (``"Raf"``). Returns ``[speaker]`` when
-    the show has no aliases.
-    """
-    aliases = _speaker_aliases(show)
-    labels = {speaker}
-    labels.update(raw for raw, canon in aliases.items() if canon == speaker)
-    return sorted(labels)
-
-
-def _episode_transcript_text(
-    chunks: list[dict], aliases: dict[str, str] | None = None
-) -> str:
+def _episode_transcript_text(chunks: list[dict]) -> str:
     """Flatten preloaded episode chunks to ``[MmSS] Speaker: text`` lines.
 
     Diarised chunks emit one line per merged turn; untimed/single-speaker
-    chunks emit one line each. Speaker labels are mapped through ``aliases``.
+    chunks emit one line each.
     """
     from podcodex.core._utils import format_hms, merge_display_turns
 
-    aliases = aliases or {}
     lines: list[str] = []
     for c in chunks:
         turns = merge_display_turns(c.get("speakers") or [])
         if turns:
             for t in turns:
                 ts = format_hms(float(t.get("start") or c.get("start", 0.0)))
-                sp = aliases.get(
-                    t.get("speaker", "Unknown"), t.get("speaker", "Unknown")
-                )
+                sp = t.get("speaker", "Unknown")
                 lines.append(f"[{ts}] {sp}: {t.get('text', '')}")
         else:
             ts = format_hms(float(c.get("start", 0.0)))
-            sp = aliases.get(
-                c.get("dominant_speaker", ""), c.get("dominant_speaker", "")
-            )
+            sp = c.get("dominant_speaker", "")
             lines.append(f"[{ts}] {sp}: {c.get('text', '')}")
     return "\n".join(lines)
 
@@ -272,7 +186,7 @@ def _put_show_date_cache(key: tuple[str, float], value: tuple[str, str] | None) 
     _SHOW_DATE_CACHE[key] = value
 
 
-def _trim(chunk: dict, aliases: dict[str, str] | None = None) -> dict:
+def _trim(chunk: dict) -> dict:
     """Compact chunk shape sent to MCP clients.
 
     ``episode_title`` is the human-readable label to cite (RSS title if
@@ -289,16 +203,7 @@ def _trim(chunk: dict, aliases: dict[str, str] | None = None) -> dict:
     flat ``text`` blob — the LLM can cite the right speaker per quote
     instead of guessing from the chunk-level ``dominant_speaker``.
     Consecutive same-speaker turns are merged for compactness.
-
-    ``aliases`` maps raw diarisation labels to canonical speaker names
-    (from the show's ``show.toml``), applied to both the chunk-level
-    ``speaker`` and every per-turn speaker.
     """
-    aliases = aliases or {}
-
-    def _canon(name: str) -> str:
-        return aliases.get(name, name)
-
     start = float(chunk.get("start", 0.0))
     out: dict = {
         "show": chunk.get("show", ""),
@@ -308,13 +213,13 @@ def _trim(chunk: dict, aliases: dict[str, str] | None = None) -> dict:
         "start": start,
         "start_hms": format_hms(start),
         "end": float(chunk.get("end", 0.0)),
-        "speaker": _canon(chunk.get("dominant_speaker", "")),
+        "speaker": chunk.get("dominant_speaker", ""),
     }
     turns = merge_display_turns(chunk.get("speakers") or [])
     if turns:
         out["speakers"] = [
             {
-                "speaker": _canon(t.get("speaker", "Unknown")),
+                "speaker": t.get("speaker", "Unknown"),
                 "start": float(t["start"]) if t.get("start") is not None else 0.0,
                 "start_hms": format_hms(
                     float(t["start"]) if t.get("start") is not None else 0.0
@@ -512,7 +417,6 @@ def get_episode(
     rec = store.get_episode(collections[0].name, episode)
     if rec is None:
         return None
-    aliases = _speaker_aliases(collections[0].show)
     card: dict = {
         "show": show,
         "episode": rec["episode"],
@@ -523,20 +427,16 @@ def get_episode(
         "source": rec.get("source", ""),
         "chunk_count": int(rec.get("chunk_count", 0)),
         "duration": float(rec.get("duration", 0.0)),
-        "speakers": [aliases.get(s, s) for s in rec.get("speakers", [])],
+        "speakers": rec.get("speakers", []),
     }
     want_transcript = include_transcript == "text"
     if include_chunk_map or want_transcript:
         # One episode load feeds both the chunk-map and the transcript.
         chunks = store.load_chunks_no_embeddings(collections[0].name, episode)
         if include_chunk_map:
-            cmap = chunk_map_from_chunks(chunks, text_preview)
-            if aliases:
-                for e in cmap:
-                    e["speakers"] = sorted({aliases.get(s, s) for s in e["speakers"]})
-            card["chunk_map"] = cmap
+            card["chunk_map"] = chunk_map_from_chunks(chunks, text_preview)
         if want_transcript:
-            card["transcript"] = _episode_transcript_text(chunks, aliases)
+            card["transcript"] = _episode_transcript_text(chunks)
     return card
 
 
@@ -612,40 +512,35 @@ def search(
     # query is encoded once per model (encoding is the dominant cost). Shows
     # may resolve to different models, so a single query vector won't do.
     by_model: dict[str, list[str]] = defaultdict(list)
-    show_by_col: dict[str, str] = {}
     for c in collections:
         by_model[c.model].append(c.name)
-        show_by_col[c.name] = c.show
     hits_by_col: dict[str, list[dict]] = {}
     for model, cols in by_model.items():
         ret = get_retriever(model)
         qv = ret.encode_query(query)
         for col in cols:
-            labels = (
-                _alias_expand(show_by_col.get(col, ""), speaker) if speaker else [None]
-            )
-            col_hits = _retrieve_over_labels(
-                labels,
-                lambda label, _col=col: ret.retrieve(
+            try:
+                hits = ret.retrieve(
                     query,
-                    _col,
+                    col,
                     top_k=top_k,
                     alpha=ALPHA,
                     episode=episode,
                     episodes=episodes,
-                    speaker=label,
+                    speaker=speaker,
                     pub_date_min=pub_date_min,
                     pub_date_max=pub_date_max,
                     query_vector=qv,
-                ),
-                f"search: collection {col!r} failed; skipping",
-            )
-            if col_hits:
-                hits_by_col[col] = col_hits
+                )
+            except ValueError:
+                raise
+            except Exception:
+                logger.exception(f"search: collection {col!r} failed; skipping")
+                continue
+            if hits:
+                hits_by_col[col] = hits
     merged = merge_results(hits_by_col, top_k=top_k)
-    return [
-        _trim(chunk, _speaker_aliases(chunk.get("show", ""))) for chunk, _col in merged
-    ]
+    return [_trim(chunk) for chunk, _col in merged]
 
 
 @mcp.tool()
@@ -683,8 +578,8 @@ def exact(
         episode: Restrict to a single episode identifier.
         episodes: Alternative to ``episode`` — restrict to a list of
             episode identifiers.
-        speaker: Restrict to a single speaker (matched against the show's
-            aliases too, so a canonical name catches its raw variants).
+        speaker: Restrict to a single speaker (exact name match on
+            ``dominant_speaker``).
         pub_date_min: Oldest publication date to include, inclusive
             (``YYYY-MM-DD``).
         pub_date_max: Newest publication date to include, inclusive.
@@ -705,22 +600,22 @@ def exact(
         return []
     out: list[dict] = []
     for c in collections:
-        aliases = _speaker_aliases(c.show)
-        labels = _alias_expand(c.show, speaker) if speaker else [None]
-        hits = _retrieve_over_labels(
-            labels,
-            lambda label: get_retriever(c.model).exact(
+        try:
+            matches = get_retriever(c.model).exact(
                 query,
                 c.name,
                 episode=episode,
                 episodes=episodes,
-                speaker=label,
+                speaker=speaker,
                 pub_date_min=pub_date_min,
                 pub_date_max=pub_date_max,
-            ),
-            f"exact: collection {c.name!r} failed; skipping",
-        )
-        out.extend(_trim(h, aliases) for h in hits)
+            )
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception(f"exact: collection {c.name!r} failed; skipping")
+            continue
+        out.extend(_trim(match) for match in matches)
     return out
 
 
@@ -861,8 +756,7 @@ def get_context(
         window=window,
         at_time=resolved_time,
     )
-    aliases = _speaker_aliases(collections[0].show)
-    return [_trim(c, aliases) for c in chunks]
+    return [_trim(c) for c in chunks]
 
 
 @mcp.tool()
@@ -890,23 +784,7 @@ def speaker_stats(show: str | None = None) -> list[dict]:
     collections = _resolve_collections(show)
     if not collections:
         return []
-    raw = get_index_store().speaker_stats_multi([c.name for c in collections])
-    union: dict[str, str] = {}
-    for c in collections:
-        union.update(_speaker_aliases(c.show))
-    if not union:
-        return raw
-    merged: dict[str, dict] = {}
-    for rec in raw:
-        canon = union.get(rec["speaker"], rec["speaker"])
-        acc = merged.setdefault(
-            canon,
-            {"speaker": canon, "chunk_count": 0, "total_duration": 0.0, "episodes": 0},
-        )
-        acc["chunk_count"] += rec.get("chunk_count", 0)
-        acc["total_duration"] += rec.get("total_duration", 0.0)
-        acc["episodes"] = max(acc["episodes"], rec.get("episodes", 0))
-    return sorted(merged.values(), key=lambda r: r["chunk_count"], reverse=True)
+    return get_index_store().speaker_stats_multi([c.name for c in collections])
 
 
 def main() -> None:

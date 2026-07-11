@@ -2,7 +2,7 @@
  *  optional blurred backdrop. Shared by Home, Show, and Episode pages. */
 
 import { Fragment } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export interface Crumb {
@@ -33,6 +33,9 @@ interface Props {
   /** Extra node rendered next to the stats (e.g. pipeline status pills). */
   statusSlot?: React.ReactNode;
   actions?: React.ReactNode;
+  /** Prev/next arrows at the far corners (e.g. episode navigation). Each
+   *  arrow renders disabled when its handler is omitted (list boundary). */
+  nav?: { onPrev?: () => void; onNext?: () => void };
 }
 
 export default function EditorialHeader({
@@ -47,9 +50,14 @@ export default function EditorialHeader({
   stats,
   statusSlot,
   actions,
+  nav,
 }: Props) {
   const hasCrumbs = breadcrumbs && breadcrumbs.length > 0;
   const Artwork = onArtworkClick ? "button" : "div";
+  const navBtn =
+    "shrink-0 grid place-items-center w-9 h-9 rounded-full text-muted-foreground " +
+    "hover:text-foreground hover:bg-muted transition disabled:opacity-25 " +
+    "disabled:pointer-events-none";
 
   return (
     <div className="relative border-b border-border overflow-hidden shrink-0">
@@ -67,6 +75,18 @@ export default function EditorialHeader({
         </>
       )}
       <div className="relative px-6 py-3 flex gap-4 items-center">
+        {nav && (
+          <button
+            type="button"
+            onClick={nav.onPrev}
+            disabled={!nav.onPrev}
+            aria-label="Previous episode"
+            title="Previous episode"
+            className={navBtn}
+          >
+            <ChevronLeft className="w-5 h-5" />
+          </button>
+        )}
         {(artworkUrl || FallbackIcon) && (
           <Artwork
             onClick={onArtworkClick}
@@ -137,6 +157,18 @@ export default function EditorialHeader({
           </div>
         </div>
         {actions && <div className="shrink-0">{actions}</div>}
+        {nav && (
+          <button
+            type="button"
+            onClick={nav.onNext}
+            disabled={!nav.onNext}
+            aria-label="Next episode"
+            title="Next episode"
+            className={navBtn}
+          >
+            <ChevronRight className="w-5 h-5" />
+          </button>
+        )}
       </div>
     </div>
   );

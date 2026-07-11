@@ -4,6 +4,7 @@ import { Play, Pause, Download, Trash2, Captions, CloudOff } from "lucide-react"
 import { formatDuration, formatDate } from "@/lib/utils";
 import { useLayoutStore } from "@/stores";
 import { StatusChips } from "./StatusChips";
+import { SpeakerNames } from "./SpeakerNames";
 
 export interface EpisodeRowProps {
   ep: Episode;
@@ -19,9 +20,11 @@ export interface EpisodeRowProps {
   isPlaying: boolean;
   /** True when this episode is the loaded track, regardless of play/pause. */
   isCurrent: boolean;
+  /** Speakers of the episode's canonical transcript, most-airtime first. */
+  speakers?: string[];
 }
 
-function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying, isCurrent }: EpisodeRowProps) {
+function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying, isCurrent, speakers }: EpisodeRowProps) {
   const compact = useLayoutStore((s) => s.compact);
   const shiftRef = useRef(false);
 
@@ -31,15 +34,17 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
   const handleDelete = () => onDelete(ep);
 
   return (
-    <div className="flex items-center gap-3 px-6 py-3 hover:bg-accent/50 transition group">
+    <div className="flex items-center gap-3 px-6 py-2 hover:bg-accent/50 transition group">
       <input type="checkbox" checked={selected} onMouseDown={(e) => { shiftRef.current = e.shiftKey; }} onChange={() => onToggle(ep.id, index, shiftRef.current)} className="accent-primary cursor-pointer shrink-0" />
-      {ep.artwork_url && (
-        <img src={ep.artwork_url} alt={ep.title} className="w-12 h-12 object-cover rounded shrink-0" loading="lazy" />
-      )}
-      {ep.episode_number != null && (
-        <span className="text-xs text-muted-foreground w-8 text-right shrink-0 tabular-nums">#{ep.episode_number}</span>
-      )}
-      <div className="min-w-0 flex-1 space-y-0.5">
+      <div className="w-10 h-10 shrink-0">
+        {ep.artwork_url && (
+          <img src={ep.artwork_url} alt={ep.title} className="w-10 h-10 object-cover rounded" loading="lazy" />
+        )}
+      </div>
+      <span className="text-xs text-muted-foreground w-8 text-right shrink-0 tabular-nums">
+        {ep.episode_number != null ? `#${ep.episode_number}` : ""}
+      </span>
+      <div className="min-w-0 flex-1 flex flex-col gap-0.5">
         <button
           onClick={handleOpen}
           className={`text-left text-sm hover:text-primary cursor-pointer flex items-center gap-1.5 max-w-full ${ep.removed ? "text-muted-foreground" : "text-foreground"}`}
@@ -51,12 +56,22 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
           )}
           <span className="truncate">{ep.title}</span>
         </button>
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-          {ep.pub_date && <span>{formatDate(ep.pub_date)}</span>}
-          {ep.duration > 0 && <span>{formatDuration(ep.duration)}</span>}
-          {!compact && <StatusChips ep={ep} />}
-        </div>
+        {!compact && <StatusChips ep={ep} />}
       </div>
+      {/* Metadata cluster pinned right: speakers · date · duration, each a
+          fixed-width column so they line up across rows. */}
+      <div
+        className="hidden md:flex items-center gap-1 w-72 shrink-0 text-xs text-muted-foreground"
+        title={speakers?.join(", ")}
+      >
+        {speakers && speakers.length > 0 && <SpeakerNames names={speakers} />}
+      </div>
+      <span className="w-24 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+        {ep.pub_date ? formatDate(ep.pub_date) : ""}
+      </span>
+      <span className="w-14 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+        {ep.duration > 0 ? formatDuration(ep.duration) : ""}
+      </span>
       {/* Fixed-width slots so each action keeps its column whether or not the
           icon is present (subtitles / play vs download / delete all vary). */}
       <div className="flex items-center gap-1.5 shrink-0">

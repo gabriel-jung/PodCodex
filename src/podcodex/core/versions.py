@@ -389,6 +389,82 @@ def load_version(base: Path, step: str, version_id: str) -> list[dict]:
         ) from e
 
 
+def resolve_canonical_ref(base: Path) -> tuple[str, str] | None:
+    """The canonical seglist's ``(step, version_id)``: the single definition.
+
+    The user's verified pick (``resolve_verified_source``) always wins; failing
+    that, the newest ``corrected`` (honoring the "edited beats freshness"
+    ordering), then the newest ``transcript``. DB-only (it does not read the
+    seglist file), so batched callers (e.g. the speaker roster) can resolve
+    every episode's ref single-threaded and then parallelize the file loads.
+    Returns None when the episode has no version of either step.
+    """
+    verified = resolve_verified_source(base)
+    if verified:
+        step, vid, _ = verified
+        return step, vid
+    for step in ("corrected", "transcript"):
+        ordered = _default_ordered_versions(base, step)
+        if ordered:
+            return step, ordered[0]["id"]
+    return None
+
+
+def resolve_canonical_refs(
+    show_dir: Path, stems: list[str]
+) -> dict[str, tuple[str, str] | None]:
+    """Bulk :func:`resolve_canonical_ref` for many stems, O(1) DB queries.
+
+    Same ladder per stem (verified pointer, then edited-first ``corrected``,
+    then newest ``transcript``) but resolved from two bulk queries instead of
+    2-3 per stem, so per-show consumers (speaker roster) scale. The verified
+    pointer's on-disk check mirrors ``resolve_verified_source`` and only costs
+    a stat for episodes that actually have a pointer.
+    """
+    from podcodex.core.pipeline_db import get_pipeline_db
+
+    db = get_pipeline_db(show_dir)
+    verified = db.verified_pointers()
+    by_step = db.versions_for_steps(["corrected", "transcript"])
+    out: dict[str, tuple[str, str] | None] = {}
+    for stem in stems:
+        base = show_dir / stem / stem
+        ref: tuple[str, str] | None = None
+        ptr = verified.get(stem)
+        if (
+            ptr
+            and ptr["step"] in VERIFIABLE_STEPS
+            and version_path(base, ptr["step"], ptr["version_id"]).exists()
+        ):
+            ref = (ptr["step"], ptr["version_id"])
+        if ref is None:
+            for step in ("corrected", "transcript"):
+                versions = by_step.get((stem, step)) or []
+                if step not in _STRICT_NEWEST_STEPS:
+                    versions = sort_versions_for_default(versions)
+                if versions:
+                    ref = (step, versions[0]["id"])
+                    break
+        out[stem] = ref
+    return out
+
+
+def load_canonical_segments(base: Path) -> list[dict] | None:
+    """Load an episode's canonical seglist (see :func:`resolve_canonical_ref`).
+
+    Returns None when the episode has no readable transcript version. ``base``
+    is the ``{show}/{stem}/{stem}`` version root used everywhere else.
+    """
+    ref = resolve_canonical_ref(base)
+    if not ref:
+        return None
+    step, vid = ref
+    try:
+        return load_version(base, step, vid)
+    except FileNotFoundError:
+        return None
+
+
 def load_version_by_id(base: Path, version_id: str) -> tuple[list[dict], str] | None:
     """Resolve a version_id to ``(segments, step)``, or None if unknown.
 

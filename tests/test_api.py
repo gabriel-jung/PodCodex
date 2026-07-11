@@ -132,6 +132,80 @@ def test_show_meta_round_trip(client, tmp_path):
     assert body["pipeline"]["llm_models_by_mode"] == {"ollama": "qwen3:4b"}
 
 
+def test_broadcast_pattern_round_trip(client, tmp_path):
+    show_dir = tmp_path / "show"
+    show_dir.mkdir()
+    client.post("/api/shows/register", json={"path": str(show_dir)})
+
+    updated = {
+        "name": "Total Trax",
+        "broadcast_number_pattern": r"\((\d+)\)",
+        "speakers": [],
+        "pipeline": {},
+    }
+    r = client.put(f"/api/shows/{show_dir}/meta", json=updated)
+    assert r.status_code == 200
+
+    r = client.get(f"/api/shows/{show_dir}/meta")
+    assert r.json()["broadcast_number_pattern"] == r"\((\d+)\)"
+
+
+def test_broadcast_preview(client, tmp_path):
+    from podcodex.ingest.rss import RSSEpisode, save_feed_cache
+
+    show_dir = tmp_path / "show"
+    show_dir.mkdir()
+    client.post("/api/shows/register", json={"path": str(show_dir)})
+    save_feed_cache(
+        show_dir,
+        [
+            RSSEpisode(guid="b", title="(252) John Powell", pub_date="", feed_order=0),
+            RSSEpisode(guid="a", title="(251) Older", pub_date="", feed_order=1),
+        ],
+    )
+
+    # Newest episode title drives the preview; pattern extracts its number.
+    r = client.get(
+        f"/api/shows/{show_dir}/broadcast-preview", params={"pattern": r"\((\d+)\)"}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["title"] == "(252) John Powell"
+    assert body["number"] == 252
+    assert body["error"] is None
+
+    # Invalid regex surfaces an error instead of raising.
+    r = client.get(f"/api/shows/{show_dir}/broadcast-preview", params={"pattern": "("})
+    assert r.status_code == 200
+    assert r.json()["error"]
+    assert r.json()["number"] is None
+
+    # Empty pattern: title still returned, no number, no error.
+    r = client.get(f"/api/shows/{show_dir}/broadcast-preview", params={"pattern": ""})
+    assert r.json()["number"] is None
+    assert r.json()["error"] is None
+
+    # Valid pattern with no capture group: explicit error, not a false
+    # "no match" (the regex matched; it just captures nothing).
+    r = client.get(
+        f"/api/shows/{show_dir}/broadcast-preview", params={"pattern": r"\d+"}
+    )
+    assert "capture group" in (r.json()["error"] or "")
+
+
+def test_broadcast_preview_invalid_pattern_without_title(client, tmp_path):
+    """An invalid regex must be surfaced even when the show has no titled
+    episode (no feed cache): otherwise it autosaves silently."""
+    show_dir = tmp_path / "show"
+    show_dir.mkdir()
+    client.post("/api/shows/register", json={"path": str(show_dir)})
+    r = client.get(f"/api/shows/{show_dir}/broadcast-preview", params={"pattern": "("})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["title"] is None
+    assert body["error"]
+
+
 def test_get_meta_missing_show_returns_404(client):
     r = client.get("/api/shows/nonexistent/meta")
     assert r.status_code == 404
@@ -229,6 +303,93 @@ def test_verified_rejects_invalid_step(client, tmp_path):
     )
     assert r.status_code == 400
     assert "transcript" in r.text or "corrected" in r.text
+
+
+def test_episode_speakers_airtime(client, tmp_path):
+    from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+
+    _, ep_dir = _make_audio_dir(tmp_path)
+    show_dir = Path(ep_dir).parent
+    # Alice 15s, Bob 4s, a [BREAK] gap and an empty-speaker segment (both skipped).
+    segs = [
+        {"speaker": "Alice", "start": 0.0, "end": 10.0, "text": "a"},
+        {"speaker": "Bob", "start": 10.0, "end": 14.0, "text": "b"},
+        {"speaker": "[BREAK]", "start": 14.0, "end": 20.0, "text": ""},
+        {"speaker": "Alice", "start": 20.0, "end": 25.0, "text": "a"},
+        {"speaker": "", "start": 25.0, "end": 26.0, "text": "?"},
+    ]
+    save_version(
+        Path(ep_dir) / "ep",
+        "corrected",
+        segs,
+        {"step": "corrected", "type": "raw", "model": "x"},
+    )
+    get_pipeline_db(show_dir).mark("ep", transcribed=True, corrected=True)
+    client.post("/api/shows/register", json={"path": str(show_dir)})
+
+    r = client.get(f"/api/shows/{show_dir}/episode/ep/speakers")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["has_transcript"] is True
+    assert body["episode_seconds"] == 26.0  # last segment end (no audio duration)
+    names = [s["name"] for s in body["speakers"]]
+    assert names == ["Alice", "Bob"]  # sorted by airtime desc, gaps excluded
+    alice = body["speakers"][0]
+    assert alice["total_seconds"] == 15.0
+    assert round(alice["pct"], 1) == round(15.0 / 26.0 * 100, 1)
+    # Music/gap time is unattributed, so shares sum to under 100%.
+    assert sum(s["pct"] for s in body["speakers"]) < 100
+    close_pipeline_db(show_dir)
+
+
+def test_episode_speakers_no_transcript(client, tmp_path):
+    _, ep_dir = _make_audio_dir(tmp_path)
+    show_dir = Path(ep_dir).parent
+    client.post("/api/shows/register", json={"path": str(show_dir)})
+    r = client.get(f"/api/shows/{show_dir}/episode/ep/speakers")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["has_transcript"] is False
+    assert body["speakers"] == []
+
+
+def test_verified_pointer_wins_for_speakers(client, tmp_path):
+    """The verified version, not the latest, feeds both the episode speaker
+    endpoint and the show roster, and they agree."""
+    from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+
+    _, ep_dir = _make_audio_dir(tmp_path)
+    show_dir = Path(ep_dir).parent
+    base = Path(ep_dir) / "ep"
+    tv = save_version(
+        base,
+        "transcript",
+        [{"speaker": "OldGuest", "start": 0.0, "end": 10.0, "text": "t"}],
+        {"step": "transcript", "type": "raw", "model": "x"},
+    )
+    save_version(
+        base,
+        "corrected",
+        [{"speaker": "NewHost", "start": 0.0, "end": 10.0, "text": "c"}],
+        {"step": "corrected", "type": "raw", "model": "x"},
+    )
+    db = get_pipeline_db(show_dir)
+    db.mark("ep", transcribed=True, corrected=True)
+    client.post("/api/shows/register", json={"path": str(show_dir)})
+
+    # No verified pointer: canonical is the corrected version.
+    r = client.get(f"/api/shows/{show_dir}/episode/ep/speakers")
+    assert [s["name"] for s in r.json()["speakers"]] == ["NewHost"]
+
+    # Verify the older transcript version: it must now win everywhere.
+    db.set_verified("ep", "transcript", tv)
+    r = client.get(f"/api/shows/{show_dir}/episode/ep/speakers")
+    assert [s["name"] for s in r.json()["speakers"]] == ["OldGuest"]
+
+    roster = client.get(f"/api/shows/{show_dir}/speakers/roster").json()
+    names = {sp["name"] for sp in roster["speakers"]}
+    assert "OldGuest" in names and "NewHost" not in names
+    close_pipeline_db(show_dir)
 
 
 def test_verified_rejects_missing_version(client, tmp_path):

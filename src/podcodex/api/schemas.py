@@ -31,10 +31,21 @@ class ShowMeta(BaseModel):
     language: str = ""
     speakers: list[str] = []
     artwork_url: str = ""
+    # Regex (one capture group) applied to episode titles at index time to
+    # extract a broadcast/airing number. Empty = no extraction for this show.
+    broadcast_number_pattern: str = ""
     pipeline: PipelineDefaultsSchema = PipelineDefaultsSchema()
     last_feed_update: str | None = (
         None  # ISO timestamp of last feed cache write (read-only)
     )
+
+
+class BroadcastPreviewOut(BaseModel):
+    """Live preview of a broadcast-number pattern against the latest episode."""
+
+    title: str | None = None  # title the pattern was tested against
+    number: int | None = None  # extracted number, or null if no match
+    error: str | None = None  # regex compile error, if the pattern is invalid
 
 
 class EpisodeOut(BaseModel):
@@ -146,6 +157,27 @@ class SpeakerRosterResponse(BaseModel):
     speakers: list[SpeakerRosterEntry]
     episodes_scanned: int
     episodes_with_transcripts: int
+
+
+class EpisodeSpeakerEntry(BaseModel):
+    """One speaker's airtime in a single episode."""
+
+    name: str
+    total_seconds: float
+    pct: float  # share of episode duration (0-100); total may be < 100 (music/gaps)
+
+
+class EpisodeSpeakersResponse(BaseModel):
+    """Speakers of an episode's canonical transcript, with per-speaker airtime.
+
+    ``episode_seconds`` is the denominator used for ``pct`` (audio duration,
+    or the last segment end when longer). ``has_transcript`` is False when the
+    episode has no readable transcript version yet.
+    """
+
+    speakers: list[EpisodeSpeakerEntry]  # sorted by total_seconds desc
+    episode_seconds: float
+    has_transcript: bool
 
 
 class CreateFromRSSRequest(BaseModel):

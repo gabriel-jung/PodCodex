@@ -1,7 +1,8 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getEpisodes, getShowMeta, openFolder } from "@/api/client";
+import { getEpisodes, getShowMeta, getEpisodeSpeakers, openFolder } from "@/api/client";
+import { invalidateSpeakerViews } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { artworkUrl, deleteFile, saveExportFile } from "@/api/filesystem";
 import { usePlatform } from "@/platform";
@@ -37,12 +38,14 @@ import IndexRow from "@/components/index/IndexRow";
 import { STAGE_CLASSES, type StageKey } from "@/lib/stageClasses";
 import { formatDuration, formatDate, formatTime, formatBytes, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, shortVersionId, splitPath, STEP_LABELS } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
+import { byDefaultOrder } from "@/lib/episodeSort";
 import {
   Play,
   Download,
   Search,
   FolderOpen,
   Mic,
+  Users,
   Sparkles,
   Languages,
   AudioLines,
@@ -153,6 +156,35 @@ export default function EpisodePage({
     ? standaloneEpisode(audioFilePath)
     : episodes?.find((e) => e.stem === stem || e.id === stem);
 
+  // Prev/next navigation walks the sibling list in the show's default order
+  // (newest first). Note: a user-applied sort or filter on the show list does
+  // not change the arrows; they always follow the default date order.
+  const siblings = useMemo(
+    () => (episodes ? [...episodes].sort(byDefaultOrder) : []),
+    [episodes],
+  );
+  const goToEpisode = (ep: Episode) =>
+    navigate({
+      to: "/show/$folder/episode/$stem",
+      params: {
+        folder: encodeURIComponent(folder!),
+        stem: encodeURIComponent(ep.stem || ep.id),
+      },
+    });
+  const navIdx = isStandalone
+    ? -1
+    : siblings.findIndex((e) => e.stem === stem || e.id === stem);
+  const headerNav =
+    isStandalone || !folder || navIdx < 0 || siblings.length < 2
+      ? undefined
+      : {
+          onPrev: navIdx > 0 ? () => goToEpisode(siblings[navIdx - 1]) : undefined,
+          onNext:
+            navIdx < siblings.length - 1
+              ? () => goToEpisode(siblings[navIdx + 1])
+              : undefined,
+        };
+
 
   const artwork = episode?.artwork_url || (meta?.artwork_url && folder ? artworkUrl(folder) : "");
 
@@ -251,6 +283,7 @@ export default function EpisodePage({
           ...(episode.removed ? [{ value: <span title="No longer in the live feed, kept locally" className="inline-flex items-center gap-1 text-muted-foreground"><CloudOff className="w-3.5 h-3.5" /> removed</span> }] : []),
         ]}
         statusSlot={<PipelineStatus episode={episode} />}
+        nav={headerNav}
         actions={
           <div className="flex items-center gap-1.5">
             {!episode.downloaded && (
@@ -829,6 +862,12 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
     queryFn: () => getSpeakerMap(audioPath!),
     enabled: !!audioPath && hasTranscript,
   });
+  // Speakers of the canonical transcript with per-speaker airtime share.
+  const { data: episodeSpeakers } = useQuery({
+    queryKey: queryKeys.episodeSpeakers(folder ?? "", episode.stem),
+    queryFn: () => getEpisodeSpeakers(folder!, episode.stem),
+    enabled: !!folder && !!episode.stem && hasTranscript,
+  });
   const previewStep = episode.corrected ? "correct" : "transcribe";
   const PREVIEW_LIMIT = 5;
   const outputDir = episode.output_dir;
@@ -863,6 +902,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
     queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", audioPath) });
     queryClient.invalidateQueries({ queryKey: queryKeys.speakerMap(audioPath) });
     queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
+    invalidateSpeakerViews(queryClient);
   }, [audioPath, outputDir, showName, queryClient]);
 
   const translations = episode.translations ?? EMPTY_LANGS;
@@ -1079,6 +1119,28 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
             </button>
           )}
         </nav>
+      )}
+
+      {episodeSpeakers && episodeSpeakers.speakers.length > 0 && (
+        <div
+          className="flex items-center gap-x-1.5 gap-y-1 flex-wrap text-xs text-muted-foreground"
+          title="Share of the episode duration spoken by each speaker (music and gaps are not counted)"
+        >
+          <Users className="w-3.5 h-3.5 shrink-0" />
+          {episodeSpeakers.speakers.map((s, i) => (
+            <span key={s.name} className="inline-flex items-center gap-1">
+              <span
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{ background: speakerColor(s.name) }}
+              />
+              <span className="text-foreground/80">{s.name}</span>
+              <span className="tabular-nums">({Math.round(s.pct)}%)</span>
+              {i < episodeSpeakers.speakers.length - 1 && (
+                <span className="opacity-40">,</span>
+              )}
+            </span>
+          ))}
+        </div>
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr_auto_1fr] gap-2 items-stretch">

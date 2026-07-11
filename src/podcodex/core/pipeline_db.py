@@ -476,6 +476,28 @@ class PipelineDB:
             out[(d["stem"], d["step"])] = d
         return out
 
+    def versions_for_steps(self, steps: list[str]) -> dict[tuple[str, str], list[dict]]:
+        """Bulk: all versions per ``(stem, step)``, newest first, one query.
+
+        The per-stem lists match ``list_versions`` ordering so callers can
+        apply the same default-pick rules (e.g. edited-first) without N
+        round-trips.
+        """
+        if not steps:
+            return {}
+        placeholders = ", ".join("?" for _ in steps)
+        rows = self._conn.execute(
+            f"""SELECT * FROM versions
+                WHERE step IN ({placeholders})
+                ORDER BY timestamp DESC""",
+            steps,
+        ).fetchall()
+        out: dict[tuple[str, str], list[dict]] = {}
+        for r in rows:
+            d = self._version_to_dict(r)
+            out.setdefault((d["stem"], d["step"]), []).append(d)
+        return out
+
     def stems_with_step(self, step: str) -> set[str]:
         """Return the set of stems that have at least one version for ``step``."""
         rows = self._conn.execute(

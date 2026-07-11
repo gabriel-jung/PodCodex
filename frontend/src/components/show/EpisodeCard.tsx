@@ -4,6 +4,7 @@ import { Play, Pause, Download, MoreVertical, Captions, CloudOff } from "lucide-
 import { formatDuration, formatDate } from "@/lib/utils";
 import { useLayoutStore } from "@/stores";
 import { StatusChips } from "./StatusChips";
+import { SpeakerNames } from "./SpeakerNames";
 import { EpisodeMenu } from "./EpisodeMenu";
 
 export interface EpisodeCardProps {
@@ -17,9 +18,11 @@ export interface EpisodeCardProps {
   isPlaying: boolean;
   /** True when this episode is the loaded track, regardless of play/pause. */
   isCurrent: boolean;
+  /** Speakers of the episode's canonical transcript, most-airtime first. */
+  speakers?: string[];
 }
 
-function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying, isCurrent }: EpisodeCardProps) {
+function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying, isCurrent, speakers }: EpisodeCardProps) {
   const compact = useLayoutStore((s) => s.compact);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const [isWide, setIsWide] = useState(false);
@@ -168,6 +171,14 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloadin
           {ep.pub_date && ep.duration > 0 && <span className="w-0.5 h-0.5 rounded-full bg-muted-foreground/50" />}
           {ep.duration > 0 && <span>{formatDuration(ep.duration)}</span>}
         </div>
+        {speakers && speakers.length > 0 && (
+          <div
+            className="flex items-center gap-1 text-2xs text-muted-foreground min-w-0"
+            title={speakers.join(", ")}
+          >
+            <SpeakerNames names={speakers} iconClass="w-2.5 h-2.5" />
+          </div>
+        )}
         {!compact && <StatusChips ep={ep} />}
       </div>
     </div>

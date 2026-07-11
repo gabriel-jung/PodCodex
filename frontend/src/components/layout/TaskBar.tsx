@@ -359,6 +359,8 @@ function BatchStrip() {
           first === "search" ||
           first === "best-source-segments" ||
           first === "speaker-map" ||
+          first === "speakerRoster" ||
+          first === "episodeSpeakers" ||
           first === "synthesize" ||
           first.startsWith("translate-")
         );

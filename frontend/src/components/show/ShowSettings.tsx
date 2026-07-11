@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
-import { updateShowMeta, moveShow, deleteShow } from "@/api/client";
+import { updateShowMeta, moveShow, deleteShow, previewBroadcastNumber } from "@/api/client";
 import { removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useIndexConfig } from "@/hooks/useIndexConfig";
@@ -41,6 +41,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const [rssUrl, setRssUrl] = useState(meta.rss_url);
   const [youtubeUrl, setYoutubeUrl] = useState(meta.youtube_url ?? "");
   const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
+  const [broadcastPattern, setBroadcastPattern] = useState(meta.broadcast_number_pattern ?? "");
   // ── Per-show pipeline config (show.toml [pipeline]) ──
   // Empty string / null means "inherit the app default" (Settings, Pipeline).
   const [pipeModelSize, setPipeModelSize] = useState(meta.pipeline?.model_size ?? "");
@@ -80,6 +81,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     setRssUrl(meta.rss_url);
     setYoutubeUrl(meta.youtube_url ?? "");
     setArtworkUrl(meta.artwork_url);
+    setBroadcastPattern(meta.broadcast_number_pattern ?? "");
     setPipeModelSize(meta.pipeline?.model_size ?? "");
     setPipeDiarize(meta.pipeline?.diarize ?? null);
     setPipeNumSpeakers(meta.pipeline?.num_speakers ?? "");
@@ -102,6 +104,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     rssUrl !== meta.rss_url ||
     youtubeUrl !== (meta.youtube_url ?? "") ||
     artworkUrl !== meta.artwork_url ||
+    broadcastPattern !== (meta.broadcast_number_pattern ?? "") ||
     pipeModelSize !== (meta.pipeline?.model_size ?? "") ||
     pipeDiarize !== (meta.pipeline?.diarize ?? null) ||
     pipeNumSpeakers !== (meta.pipeline?.num_speakers ?? "") ||
@@ -125,6 +128,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         youtube_url: youtubeUrl,
         speakers: meta.speakers,
         artwork_url: artworkUrl,
+        broadcast_number_pattern: broadcastPattern,
         pipeline: {
           model_size: pipeModelSize,
           diarize: pipeDiarize,
@@ -172,7 +176,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   useEffect(() => {
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [name, language, rssUrl, youtubeUrl, artworkUrl, pipeModelSize, pipeDiarize, pipeNumSpeakers, pipeLlmMode, pipeLlmProviderProfile, pipeLlmKeyName, pipeLlmModels, pipeLlmBatchMinutes, pipeContext, pipeTargetLang, pipeRagModel, pipeRagChunker]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [name, language, rssUrl, youtubeUrl, artworkUrl, broadcastPattern, pipeModelSize, pipeDiarize, pipeNumSpeakers, pipeLlmMode, pipeLlmProviderProfile, pipeLlmKeyName, pipeLlmModels, pipeLlmBatchMinutes, pipeContext, pipeTargetLang, pipeRagModel, pipeRagChunker]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const moveMutation = useMutation({
     mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
@@ -195,6 +199,19 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
       navigate({ to: "/" });
     },
+  });
+
+  // ── Broadcast-number pattern live preview (tested against latest episode) ──
+  const [debouncedPattern, setDebouncedPattern] = useState(broadcastPattern);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedPattern(broadcastPattern), 400);
+    return () => clearTimeout(t);
+  }, [broadcastPattern]);
+  const { data: broadcastPreview } = useQuery({
+    queryKey: queryKeys.broadcastPreview(folder, debouncedPattern),
+    queryFn: () => previewBroadcastNumber(folder, debouncedPattern),
+    enabled: debouncedPattern.trim().length > 0,
+    staleTime: 60_000,
   });
 
   const handleDelete = () => {
@@ -468,6 +485,43 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         title="Search index"
         description="The embeddings that make this show searchable, used by AI search and the MCP server."
       >
+        <SettingRow
+          label="Broadcast number"
+          help={String.raw`Regex with one capture group, applied to episode titles to pull out an airing number for search filters. Example: \((\d+)\) captures 252 from "(252) John Powell". Leave blank to skip. Reindex episodes to apply a change.`}
+          below={
+            // Only show results matching the current input: during the
+            // debounce window the fetched data describes the previous pattern.
+            broadcastPattern.trim() && broadcastPattern === debouncedPattern ? (
+              <div className="text-xs text-muted-foreground">
+                {broadcastPreview?.error ? (
+                  <span className="text-destructive">{broadcastPreview.error}</span>
+                ) : broadcastPreview?.title ? (
+                  <>
+                    Latest: <span className="text-foreground">{broadcastPreview.title}</span>{" "}
+                    {broadcastPreview.number != null ? (
+                      <>
+                        →{" "}
+                        <span className="text-foreground font-medium">
+                          {broadcastPreview.number}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-warning">no match</span>
+                    )}
+                  </>
+                ) : null}
+              </div>
+            ) : undefined
+          }
+        >
+          <input
+            value={broadcastPattern}
+            onChange={(e) => setBroadcastPattern(e.target.value)}
+            placeholder={String.raw`\((\d+)\)`}
+            spellCheck={false}
+            className={`input ${inputWidth.medium} font-mono`}
+          />
+        </SettingRow>
         <SettingRow
           label="Search: embedding model"
           help="Model used to make episodes searchable. AI search queries the model set here."

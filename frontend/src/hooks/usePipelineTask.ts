@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useActiveTask } from "@/hooks/useActiveTask";
 import { cancelTask } from "@/api/client";
+import { invalidateSpeakerViews } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useEpisodeStore, useTaskStore } from "@/stores";
 import { getEpisodeStem } from "@/lib/episodeRef";
@@ -58,6 +59,9 @@ export function usePipelineTask(
     queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
     queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
     queryClient.invalidateQueries({ queryKey: queryKeys.speakerMap(audioPath) });
+    // A finished transcribe/correct run changes the canonical transcript the
+    // roster and the per-episode airtime views resolve.
+    invalidateSpeakerViews(queryClient);
     // SearchPanel reads its own ["search", …] namespace which the
     // ["index", …] sweep above doesn't reach.
     if (stepKey === "index") {

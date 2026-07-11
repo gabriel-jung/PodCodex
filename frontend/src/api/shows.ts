@@ -1,8 +1,10 @@
 import type {
   AppConfig,
+  BroadcastPreviewOut,
   CreateFromRSSResponse,
   CreateFromYouTubeResponse,
   Episode,
+  EpisodeSpeakersResponse,
   PipelineConfig,
   PipelineDefaults,
   PodcastSearchResult,
@@ -70,6 +72,16 @@ export const getShowMeta = (folder: string) =>
 
 export const getSpeakerRoster = (folder: string) =>
   json<SpeakerRosterResponse>(`/api/shows/${enc(folder)}/speakers/roster`);
+
+export const getEpisodeSpeakers = (folder: string, stem: string) =>
+  json<EpisodeSpeakersResponse>(
+    `/api/shows/${enc(folder)}/episode/${enc(stem)}/speakers`,
+  );
+
+export const previewBroadcastNumber = (folder: string, pattern: string) =>
+  json<BroadcastPreviewOut>(
+    `/api/shows/${enc(folder)}/broadcast-preview?pattern=${enc(pattern)}`,
+  );
 
 export const updateShowMeta = (folder: string, meta: ShowMeta) =>
   json<{ status: string }>(`/api/shows/${enc(folder)}/meta`, {

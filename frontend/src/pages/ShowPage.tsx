@@ -6,6 +6,7 @@ import {
   refreshYouTube,
   getEpisodes,
   getShowMeta,
+  getSpeakerRoster,
   deleteAudioFile,
   startBatch,
 } from "@/api/client";
@@ -14,6 +15,7 @@ import { removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import { artworkUrl } from "@/api/filesystem";
 import type { Episode } from "@/api/types";
 import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
+import { dateCmp } from "@/lib/episodeSort";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
 import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
 import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore, useLayoutStore, useSeedPipelineFromShow } from "@/stores";
@@ -183,26 +185,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     if (filter === "indexed") list = list.filter((e) => e.indexed);
     if (filter === "outdated") list = list.filter((e) => isOutdated(e));
     if (filter === "verified") list = list.filter((e) => !!e.verified);
-    // Sort. Date sorts fall back to feed_order (source-feed position,
-    // 0 = newest) when pub_date is missing — important for YouTube where
-    // flat extraction often omits upload dates.
-    const pubTime = (e: Episode) => {
-      const t = e.pub_date ? new Date(e.pub_date).getTime() : NaN;
-      return isNaN(t) ? null : t;
-    };
-    const dateCmp = (a: Episode, b: Episode, dir: 1 | -1) => {
-      const ta = pubTime(a), tb = pubTime(b);
-      if (ta != null && tb != null) {
-        if (ta !== tb) return (ta - tb) * dir;
-      } else if (ta != null) {
-        return -1;  // undated sorts last regardless of direction
-      } else if (tb != null) {
-        return 1;
-      }
-      const oa = a.feed_order ?? Number.POSITIVE_INFINITY;
-      const ob = b.feed_order ?? Number.POSITIVE_INFINITY;
-      return dir === -1 ? oa - ob : ob - oa;
-    };
+    // Sort. Date sorts fall back to feed_order via the shared comparator
+    // (`lib/episodeSort`), so this list and episode prev/next nav agree.
     list = [...list].sort((a, b) => {
       switch (sort) {
         case "date_asc": return dateCmp(a, b, 1);
@@ -218,6 +202,30 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     });
     return list;
   }, [all, search, filter, sort, minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude]);
+
+  // Speaker names per episode for the list column. One roster fetch (shared,
+  // cached with the Speakers tab) inverted to stem -> names ordered by airtime.
+  const { data: roster } = useQuery({
+    queryKey: queryKeys.speakerRoster(folder),
+    queryFn: () => getSpeakerRoster(folder),
+    enabled: !!folder,
+    staleTime: 5 * 60_000,
+  });
+  const speakersByStem = useMemo(() => {
+    const acc = new Map<string, { name: string; secs: number }[]>();
+    for (const sp of roster?.speakers ?? []) {
+      for (const ep of sp.episodes) {
+        const arr = acc.get(ep.stem) ?? [];
+        arr.push({ name: sp.name, secs: ep.total_seconds });
+        acc.set(ep.stem, arr);
+      }
+    }
+    const out = new Map<string, string[]>();
+    for (const [stem, arr] of acc) {
+      out.set(stem, arr.sort((a, b) => b.secs - a.secs).map((x) => x.name));
+    }
+    return out;
+  }, [roster]);
 
   const showName = meta?.name || splitPath(folder.replace(/[\\/]+$/, "")).basename || "Show";
 
@@ -511,6 +519,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                   downloading={rowDownloading}
                   isPlaying={isCurrent && audioIsPlaying}
                   isCurrent={isCurrent}
+                  speakers={speakersByStem.get(ep.stem)}
                 />
               );
             })}
@@ -533,6 +542,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                   downloading={rowDownloading}
                   isPlaying={isCurrent && audioIsPlaying}
                   isCurrent={isCurrent}
+                  speakers={speakersByStem.get(ep.stem)}
                 />
               );
             })}

@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Segment, VersionEntry } from "@/api/types";
 import { saveExportFile } from "@/api/client";
 import { usePlatform } from "@/platform";
+import { invalidateSpeakerViews } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore } from "@/stores";
 import { useSegments } from "@/hooks/useSegments";
@@ -321,7 +322,7 @@ export default function TranscriptViewer({
       queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.speakerMap(audioPath) });
-      queryClient.invalidateQueries({ queryKey: ["speakerRoster"] });
+      invalidateSpeakerViews(queryClient);
       queryClient.invalidateQueries({ queryKey: ["search"] });
       queryClient.invalidateQueries({ queryKey: ["index"] });
       onSaved?.();
@@ -336,6 +337,8 @@ export default function TranscriptViewer({
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
       queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
+      // Deleting the canonical version shifts what the speaker views resolve.
+      invalidateSpeakerViews(queryClient);
     },
   });
 

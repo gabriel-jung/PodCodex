@@ -9,6 +9,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { setVerifiedVersion } from "@/api/search";
+import { invalidateSpeakerViews } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 
 export type VerifiableStep = "transcript" | "corrected";
@@ -30,6 +31,9 @@ export function useSetVerifiedVersion(
       queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(key) });
       queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+      // The pointer decides the canonical transcript, which is what the
+      // speaker roster and per-episode airtime views resolve.
+      invalidateSpeakerViews(queryClient);
     },
   });
 }

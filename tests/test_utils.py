@@ -346,6 +346,14 @@ def test_format_hms_hour_and_over():
     assert format_hms(4186) == "1h09m46"
 
 
+def test_format_hms_floors_not_rounds():
+    # Fractional seconds truncate down (canonical wiki floor form), never up:
+    # a start timestamp must not point past the passage it marks.
+    assert format_hms(1.5) == "0m01"
+    assert format_hms(292.787) == "4m52"
+    assert format_hms(292.999) == "4m52"
+
+
 def test_parse_time_seconds_forms():
     assert parse_time(4186) == 4186.0
     assert parse_time(4186.0) == 4186.0

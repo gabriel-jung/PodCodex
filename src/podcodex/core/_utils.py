@@ -360,8 +360,13 @@ def format_hms(seconds: float) -> str:
     ``< 3600 s`` gives ``"9m38"`` (minutes unpadded, seconds 2-digit).
     ``>= 3600 s`` gives ``"1h09m46"`` (minutes and seconds 2-digit within
     the hour). Negative inputs clamp to zero.
+
+    Truncates (floors) rather than rounding: a start timestamp must never
+    point past the passage it marks, and the wiki convention treats these
+    strings as identifiers (strict-equality lint, cross-page citations), so
+    a rounded ``,5+`` fraction would break the canonical floor form.
     """
-    total = int(round(float(seconds)))
+    total = int(float(seconds))
     if total < 0:
         total = 0
     hours, rem = divmod(total, 3600)
@@ -586,6 +591,27 @@ def group_by_speaker(segments: list[dict]) -> dict[str, list[dict]]:
         speaker = seg.get("speaker", "UNKNOWN")
         by_speaker.setdefault(speaker, []).append(seg)
     return by_speaker
+
+
+def speaker_airtime(segments: list[dict]) -> dict[str, dict]:
+    """Per-speaker airtime from a seglist.
+
+    Returns ``{speaker: {"segment_count": int, "total_seconds": float}}``,
+    summing ``end - start`` (clamped at 0) over each speaker's segments.
+    Break markers and unnamed/unknown labels are skipped, so the result holds
+    only real, attributable speakers. Shared by the show-wide roster and the
+    per-episode speaker endpoint.
+    """
+    out: dict[str, dict] = {}
+    for spk, segs in group_by_speaker(segments).items():
+        if not spk or spk == BREAK_SPEAKER or spk in UNKNOWN_SPEAKERS:
+            continue
+        secs = sum(
+            max(0.0, float(s.get("end", 0.0)) - float(s.get("start", 0.0)))
+            for s in segs
+        )
+        out[spk] = {"segment_count": len(segs), "total_seconds": secs}
+    return out
 
 
 def build_batched_manual_prompts(
