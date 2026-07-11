@@ -318,11 +318,18 @@ Bundle format records each collection's embedding model + chunker in a manifest 
 | `/speakers [show]`                   | Everyone | Chunk count and airtime per speaker              |
 | `/help`                              | Everyone | Show available commands                          |
 | `/setup [model] [top_k] …`           | Admin    | Configure server defaults                        |
+| `/announcements [channel] [off]`     | Admin    | Channel for new-episode and bot-version updates  |
 | `/unlock password`                   | Admin    | Unlock a show (password identifies the show)     |
 | `/lock show`                         | Admin    | Remove a show from this server                   |
 | `/changepassword show`               | Admin    | Rotate password for an unlocked show             |
 | `/sync`                              | Admin    | Manually re-sync slash commands                  |
 | `/admin-reload`                      | Admin    | Reconnect to the index and reload show passwords |
+
+The bot polls the index for changes (default every 10 min, `--announce-interval`
+to tune) and posts newly indexed episodes to each server's configured channel.
+The first pass after enabling records the existing catalogue silently — only
+episodes added afterwards are announced. Locked shows are only announced on
+servers that unlocked them.
 
 ---
 
