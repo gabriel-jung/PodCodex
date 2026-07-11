@@ -351,6 +351,53 @@ def episode_display(chunk: dict) -> str:
     return chunk.get("episode_title") or humanize_stem(chunk.get("episode", ""))
 
 
+_HMS_RE = re.compile(r"^(?:(\d+)h)?(\d+)m(\d{1,2})$")
+
+
+def format_hms(seconds: float) -> str:
+    """Format a timestamp for citation.
+
+    ``< 3600 s`` gives ``"9m38"`` (minutes unpadded, seconds 2-digit).
+    ``>= 3600 s`` gives ``"1h09m46"`` (minutes and seconds 2-digit within
+    the hour). Negative inputs clamp to zero.
+    """
+    total = int(round(float(seconds)))
+    if total < 0:
+        total = 0
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{secs:02d}"
+    return f"{minutes}m{secs:02d}"
+
+
+def parse_time(value: str | int | float) -> float:
+    """Parse a timestamp into float seconds.
+
+    Accepts raw seconds (``4186`` / ``4186.0`` / ``"4186"``) and the clock
+    forms ``"1h09m46"`` / ``"69m46"`` / ``"9m38"``. Raises ``ValueError`` if
+    a minutes-within-hour or seconds field is >= 60.
+    """
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = value.strip()
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    m = _HMS_RE.match(text)
+    if not m:
+        raise ValueError(f"unrecognized time format: {value!r}")
+    hours = int(m.group(1)) if m.group(1) else 0
+    minutes = int(m.group(2))
+    secs = int(m.group(3))
+    if secs >= 60:
+        raise ValueError(f"seconds field must be < 60: {value!r}")
+    if hours and minutes >= 60:
+        raise ValueError(f"minutes-within-hour field must be < 60: {value!r}")
+    return float(hours * 3600 + minutes * 60 + secs)
+
+
 def atomic_write(
     path: Path,
     writer_fn,

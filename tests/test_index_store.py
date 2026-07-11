@@ -606,3 +606,68 @@ def test_pub_date_migration_backfills_from_meta(tmp_path):
     assert by_ep["ep1"] == "2024-01-15"
     assert by_ep["ep2"] == "2024-02-20"
     assert (db_path / "c.pub_date_col_v1").exists()
+
+
+# ── chunk-map + timestamp resolver ───────────────────────────────────────
+
+
+def _seeded(tmp_path):
+    s = _store(tmp_path)
+    col = "s__bge-m3__semantic"
+    s.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    s.save_chunks(col, "ep1", _chunks(6), _rng_embeddings(6))
+    return s, col
+
+
+def test_get_chunk_map_shape(tmp_path):
+    s, col = _seeded(tmp_path)
+    cmap = s.get_chunk_map(col, "ep1")
+    assert len(cmap) == 6
+    assert cmap[0]["chunk_index"] == 0
+    assert cmap[3]["start_hms"] == "0m03"
+    assert "text_preview" not in cmap[0]
+
+
+def test_get_chunk_map_text_preview(tmp_path):
+    s, col = _seeded(tmp_path)
+    cmap = s.get_chunk_map(col, "ep1", text_preview=4)
+    assert cmap[3]["text_preview"] == "chun"
+
+
+def test_find_chunk_index_at_time_contained(tmp_path):
+    s, col = _seeded(tmp_path)  # chunks span [i, i+1)
+    assert s.find_chunk_index_at_time(col, "ep1", 3.5) == 3
+
+
+def test_find_chunk_index_at_time_gap_nearest(tmp_path):
+    s, col = _seeded(tmp_path)
+    assert s.find_chunk_index_at_time(col, "ep1", 100.0) == 5
+
+
+def test_find_chunk_index_at_time_empty(tmp_path):
+    s, col = _seeded(tmp_path)
+    assert s.find_chunk_index_at_time(col, "missing", 1.0) is None
+
+
+# ── broadcast_number surfacing (#5) ──────────────────────────────────────
+
+
+def test_list_episodes_filtered_surfaces_broadcast(tmp_path):
+    s = _store(tmp_path)
+    col = "s__bge-m3__semantic"
+    s.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    chunks = _chunks(3)
+    for c in chunks:
+        c["broadcast_number"] = 208  # non-reserved key -> lands in meta JSON
+    s.save_chunks(col, "ep1", chunks, _rng_embeddings(3))
+    items = s.list_episodes_filtered(col, with_detail=True)
+    assert items[0]["broadcast_number"] == 208
+
+
+def test_list_episodes_filtered_broadcast_none_when_absent(tmp_path):
+    s = _store(tmp_path)
+    col = "s__bge-m3__semantic"
+    s.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    s.save_chunks(col, "ep1", _chunks(3), _rng_embeddings(3))
+    items = s.list_episodes_filtered(col, with_detail=True)
+    assert items[0]["broadcast_number"] is None

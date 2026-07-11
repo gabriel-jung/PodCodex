@@ -49,6 +49,8 @@ def _meta_fields(transcript: dict) -> tuple[str, str, str, dict]:
         extras["pub_date"] = pub_date
     if meta.get("episode_number") is not None:
         extras["episode_number"] = meta["episode_number"]
+    if meta.get("broadcast_number") is not None:
+        extras["broadcast_number"] = meta["broadcast_number"]
     rss_description = meta.get("rss_description", "")
     if rss_description:
         cleaned = clean_description(rss_description)

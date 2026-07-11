@@ -152,6 +152,7 @@ def test_trim_shape_prefers_rss_title():
         "episode_title": "Episode one: the beginning",
         "chunk_index": 4,
         "start": 1.5,
+        "start_hms": "0m02",
         "end": 3.0,
         "speaker": "Alice",
         "text": "hi",
@@ -194,8 +195,20 @@ def test_trim_emits_speakers_array_and_drops_text_when_diarised():
     assert "text" not in trimmed
     assert trimmed["speaker"] == "Alice"
     assert trimmed["speakers"] == [
-        {"speaker": "Alice", "start": 10.0, "end": 20.0, "text": "hi there"},
-        {"speaker": "Bob", "start": 20.0, "end": 30.0, "text": "yo"},
+        {
+            "speaker": "Alice",
+            "start": 10.0,
+            "start_hms": "0m10",
+            "end": 20.0,
+            "text": "hi there",
+        },
+        {
+            "speaker": "Bob",
+            "start": 20.0,
+            "start_hms": "0m20",
+            "end": 30.0,
+            "text": "yo",
+        },
     ]
 
 
@@ -454,3 +467,149 @@ def test_search_chunks_carry_pub_date(monkeypatch):
     _stub_retriever_encoder(monkeypatch)
     results = mcp_server.search(query="content", episodes=["ep-jun"])
     assert results and all(r.get("pub_date") == "2024-06-01" for r in results)
+
+
+# ── exact_count: count + batch (#1) ──────────────────────────────────────
+
+
+def test_exact_count_batch():
+    out = mcp_server.exact_count(queries=["chunk 3", "chunk 4"])
+    assert out["chunk 3"] == {"ep1": 1}
+    assert out["chunk 4"] == {"ep1": 1}
+
+
+def test_exact_count_omits_empty_groups():
+    out = mcp_server.exact_count(queries=["nonexistent phrase zzz"])
+    assert out["nonexistent phrase zzz"] == {}
+
+
+def test_exact_count_first_hit():
+    out = mcp_server.exact_count(queries=["chunk 3"], first_hit=True)
+    entry = out["chunk 3"]["ep1"]
+    assert entry["count"] == 1
+    assert entry["first"]["chunk_index"] == 3
+    assert entry["first"]["start_hms"] == "0m03"
+
+
+def test_exact_count_requires_queries():
+    with pytest.raises(ValueError):
+        mcp_server.exact_count(queries=[])
+
+
+def test_exact_text_mode_returns_chunks():
+    matches = mcp_server.exact(query="chunk 3")
+    assert isinstance(matches, list)
+    assert matches and matches[0]["episode"] == "ep1"
+
+
+# ── get_episode chunk-map + transcript (#3, #7) ──────────────────────────
+
+
+def test_get_episode_chunk_map():
+    out = mcp_server.get_episode(show="My Show", episode="ep1", include_chunk_map=True)
+    assert "chunk_map" in out
+    assert len(out["chunk_map"]) == 6
+    assert out["chunk_map"][3]["start_hms"] == "0m03"
+
+
+def test_get_episode_transcript_text():
+    out = mcp_server.get_episode(
+        show="My Show", episode="ep1", include_transcript="text"
+    )
+    assert "transcript" in out
+    assert out["transcript"].startswith("[0m00]")
+
+
+def test_get_episode_plain_has_no_extras():
+    out = mcp_server.get_episode(show="My Show", episode="ep1")
+    assert "chunk_map" not in out and "transcript" not in out
+
+
+# ── get_context timestamp lookup (#2) ────────────────────────────────────
+
+
+def test_get_context_at_time_seconds():
+    out = mcp_server.get_context(show="My Show", episode="ep1", at_time=3.5, window=0)
+    assert len(out) == 1
+    assert out[0]["chunk_index"] == 3
+
+
+def test_get_context_at_time_clock_string():
+    out = mcp_server.get_context(
+        show="My Show", episode="ep1", at_time="0m03", window=0
+    )
+    assert out[0]["chunk_index"] == 3
+
+
+def test_get_context_requires_index_or_time():
+    with pytest.raises(ValueError):
+        mcp_server.get_context(show="My Show", episode="ep1")
+
+
+# ── start_hms field (#6) ─────────────────────────────────────────────────
+
+
+def test_trim_adds_start_hms():
+    matches = mcp_server.exact(query="chunk 3")
+    assert matches[0]["start_hms"] == "0m03"
+
+
+# ── speaker aliasing (#4) ────────────────────────────────────────────────
+
+
+def test_trim_applies_alias(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_speaker_aliases", lambda show: {"sp1": "Rafik"})
+    out = mcp_server.exact(query="chunk 3")  # chunk 3 dominant_speaker == "sp1"
+    assert out[0]["speaker"] == "Rafik"
+
+
+def test_speaker_stats_folds_alias(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_speaker_aliases", lambda show: {"sp1": "sp0"})
+    stats = mcp_server.speaker_stats()
+    labels = {s["speaker"] for s in stats}
+    assert "sp1" not in labels  # folded into sp0
+
+
+# ── list_episodes: broadcast/fields/sort (#5) ────────────────────────────
+
+
+def test_list_episodes_fields_projection():
+    out = mcp_server.list_episodes(fields=["episode", "chunk_count"])
+    assert out
+    assert set(out[0].keys()) <= {"episode", "chunk_count"}
+    assert "description" not in out[0]
+
+
+def test_list_episodes_default_sort_pub_date():
+    out = mcp_server.list_episodes()
+    dates = [e["pub_date"] for e in out if e["pub_date"]]
+    assert dates == sorted(dates)
+
+
+def test_list_episodes_broadcast_filter(tmp_path):
+    from podcodex.rag import index_store as ris
+    from podcodex.rag.store import collection_name
+
+    store = ris.get_index_store()
+    col = collection_name("My Show", "bge-m3", "semantic")
+    chunks = [
+        {
+            "text": "airing two oh eight",
+            "episode": "ep_208",
+            "show": "My Show",
+            "source": "transcript",
+            "dominant_speaker": "sp0",
+            "start": 0.0,
+            "end": 1.0,
+            "broadcast_number": 208,
+        }
+    ]
+    store.save_chunks(
+        col,
+        "ep_208",
+        chunks,
+        np.random.default_rng(1).random((1, DIM), dtype=np.float32),
+    )
+    out = mcp_server.list_episodes(broadcast_number=208)
+    assert out and all(e.get("broadcast_number") == 208 for e in out)
+    assert {e["episode"] for e in out} == {"ep_208"}

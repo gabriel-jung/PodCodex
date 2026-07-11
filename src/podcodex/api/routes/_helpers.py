@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -527,7 +528,43 @@ def build_index_transcript(
         if ep_meta.description:
             transcript["meta"].setdefault("rss_description", ep_meta.description)
 
+    # Broadcast (airing) number: extracted from the episode title using the
+    # show's configured regex, when set. Distinct from the per-season
+    # episode_number. Absent for shows with no pattern.
+    bnum = _extract_broadcast_number(p.show_dir, ep_meta.title if ep_meta else "")
+    if bnum is not None:
+        transcript["meta"].setdefault("broadcast_number", bnum)
+
     return transcript
+
+
+def _extract_broadcast_number(show_dir: Path, title: str) -> int | None:
+    """Apply the show's ``broadcast_number_pattern`` to *title*, if configured.
+
+    Returns the first captured group as an int, or ``None`` when the show has
+    no pattern, the title is empty, or the pattern does not match.
+    """
+    if not title:
+        return None
+    try:
+        from podcodex.ingest.show import load_show_meta
+
+        meta = load_show_meta(show_dir)
+    except Exception:
+        return None
+    pattern = meta.broadcast_number_pattern if meta else ""
+    if not pattern:
+        return None
+    try:
+        m = re.search(pattern, title)
+    except re.error:
+        return None
+    if m and m.group(1):
+        try:
+            return int(m.group(1))
+        except (ValueError, IndexError):
+            return None
+    return None
 
 
 # ── Shared request models ──────────────────────

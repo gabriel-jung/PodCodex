@@ -200,6 +200,76 @@ class Retriever:
             + [{**c, "fuzzy_match": True} for c in fuzzy_only]
         )
 
+    def exact_counts(
+        self,
+        queries: list[str],
+        collection: str,
+        *,
+        group_by: str = "episode",
+        first_hit: bool = False,
+        episode: str | None = None,
+        episodes: list[str] | None = None,
+        speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
+    ) -> dict[str, dict[str, dict | int]]:
+        """Count literal matches per query, grouped by episode or show.
+
+        No chunk text is marshalled. ``group_by`` is ``"episode"`` (default)
+        or ``"show"``. Empty groups are omitted, so a query with zero hits
+        yields ``{}``. With ``first_hit`` each group value becomes
+        ``{"count": n, "first": {"chunk_index", "start", "start_hms"}}`` where
+        ``first`` is the earliest hit by ``start``.
+
+        Fuzzy near-typo hits are excluded (accent-variant hits are kept):
+        counts feed recurrence and anti-contamination decisions, where a
+        single-edit collision (``"chunk 0"`` matching ``"chunk 1"``) is noise
+        that would defeat the check.
+
+        Cost is ``O(len(queries))`` full three-tier scans of the collection:
+        distinct phrases share no matching work, so a large ``queries`` batch
+        is not free.
+        """
+        from podcodex.core._utils import format_hms
+
+        key = "episode" if group_by == "episode" else "show"
+        out: dict[str, dict[str, dict | int]] = {}
+        for q in queries:
+            hits = self.exact(
+                q,
+                collection,
+                episode=episode,
+                episodes=episodes,
+                speaker=speaker,
+                pub_date_min=pub_date_min,
+                pub_date_max=pub_date_max,
+            )
+            groups: dict[str, dict | int] = {}
+            for h in hits:
+                if h.get("fuzzy_match"):
+                    continue
+                g = h.get(key, "")
+                if not g:
+                    continue
+                if first_hit:
+                    start = float(h.get("start", 0.0))
+                    entry = {
+                        "chunk_index": int(h.get("chunk_index", -1)),
+                        "start": start,
+                        "start_hms": format_hms(start),
+                    }
+                    cur = groups.get(g)
+                    if cur is None:
+                        groups[g] = {"count": 1, "first": entry}
+                    else:
+                        cur["count"] += 1
+                        if start < cur["first"]["start"]:
+                            cur["first"] = entry
+                else:
+                    groups[g] = int(groups.get(g, 0)) + 1
+            out[q] = groups
+        return out
+
     def random(
         self,
         collection: str,

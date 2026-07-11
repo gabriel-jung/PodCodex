@@ -302,6 +302,10 @@ _RESERVED_META_KEYS = {
     "meta",
 }
 
+# Meta fields whose "unset" is ``None`` (not the empty string), so both their
+# default and their missing-test differ from string-valued meta fields.
+_INT_META_FIELDS = frozenset({"episode_number", "broadcast_number"})
+
 
 class IndexStore:
     """LanceDB-backed store for chunk text, metadata, and embeddings.
@@ -1003,14 +1007,16 @@ class IndexStore:
         self,
         collection: str,
         episode: str,
-        chunk_index: int,
+        chunk_index: int | None = None,
         window: int = 3,
+        at_time: float | None = None,
     ) -> list[dict]:
-        """Return chunks around a center chunk_index, ordered by position.
+        """Return chunks around a center chunk, ordered by position.
 
         Used to expand a retrieved hit with its neighbors so callers
         (MCP ``get_context``) get enough surrounding dialogue for
-        grounded answers.
+        grounded answers. The center is named either by ``chunk_index`` or
+        by ``at_time`` (seconds); both resolve against a single episode load.
 
         Args:
             collection: Collection name.
@@ -1018,26 +1024,70 @@ class IndexStore:
             chunk_index: The center chunk's position in the episode.
             window: Number of chunks to include on each side. Clamped to
                 ``[0, ...]``. ``0`` returns only the center chunk.
+            at_time: Alternative to ``chunk_index``: center on the chunk
+                covering this timestamp (nearest by start when in a gap).
 
         Returns:
             Slice of the episode's chunks covering
-            ``[chunk_index - window, chunk_index + window]``, inclusive,
-            sorted by ``chunk_index``. Empty if the episode or center
-            chunk is not found.
+            ``[center - window, center + window]``, inclusive, sorted by
+            ``chunk_index``. Empty if the episode is empty, neither locator
+            is given, or a ``chunk_index`` is not found.
         """
         window = max(0, window)
         chunks = self.load_chunks_no_embeddings(collection, episode)
         if not chunks:
             return []
-        center = next(
-            (i for i, c in enumerate(chunks) if c.get("chunk_index") == chunk_index),
-            -1,
-        )
+        if chunk_index is not None:
+            center = next(
+                (
+                    i
+                    for i, c in enumerate(chunks)
+                    if c.get("chunk_index") == chunk_index
+                ),
+                -1,
+            )
+        elif at_time is not None:
+            center = _center_pos_by_time(chunks, at_time)
+        else:
+            return []
         if center < 0:
             return []
         lo = max(0, center - window)
         hi = min(len(chunks), center + window + 1)
         return chunks[lo:hi]
+
+    def get_chunk_map(
+        self, collection: str, episode: str, text_preview: int = 0
+    ) -> list[dict]:
+        """Lightweight chunk index for an episode: positions and times, no full text.
+
+        Returns ``[{chunk_index, start, end, start_hms, speakers}]`` ordered by
+        position. ``speakers`` is the distinct turn-speaker list (falling back
+        to ``[dominant_speaker]``). ``text_preview > 0`` adds a ``text_preview``
+        field of the first N characters of the chunk's flat text, enough to
+        title a segment without pulling the whole transcript.
+
+        Callers that also need the raw chunks (e.g. to build a transcript from
+        the same load) should call :func:`chunk_map_from_chunks` directly.
+        """
+        chunks = self.load_chunks_no_embeddings(collection, episode)
+        return chunk_map_from_chunks(chunks, text_preview)
+
+    def find_chunk_index_at_time(
+        self, collection: str, episode: str, at_time: float
+    ) -> int | None:
+        """Return the chunk_index whose ``[start, end)`` contains ``at_time``.
+
+        If ``at_time`` falls in a gap between chunks or past the transcript,
+        returns the chunk with the nearest ``start``. ``None`` when the episode
+        has no chunks. (``get_chunk_window(at_time=...)`` resolves the same
+        center in a single load; this exists for callers that need only the
+        index.)
+        """
+        chunks = self.load_chunks_no_embeddings(collection, episode)
+        if not chunks:
+            return None
+        return int(chunks[_center_pos_by_time(chunks, at_time)].get("chunk_index", -1))
 
     def load_all_chunks(
         self,
@@ -1584,11 +1634,12 @@ class IndexStore:
         """
         clause = _build_where(pub_date_min=pub_date_min, pub_date_max=pub_date_max)
         fields = (
-            ("episode_title", "episode_number", "description")
+            ("episode_title", "episode_number", "broadcast_number", "description")
             if with_detail
             else (
                 "episode_title",
                 "episode_number",
+                "broadcast_number",
             )
         )
         groups = self._aggregate_episodes(
@@ -1608,6 +1659,7 @@ class IndexStore:
                 "episode_title": g["episode_title"],
                 "pub_date": g["pub_date"],
                 "episode_number": g["episode_number"],
+                "broadcast_number": g.get("broadcast_number"),
                 "chunk_count": g["chunk_count"],
                 "duration": g["duration"],
             }
@@ -1653,7 +1705,7 @@ class IndexStore:
         if with_speakers:
             defaults["speakers"] = None  # set() inserted per-group below
         for field in meta_fields:
-            defaults[field] = None if field == "episode_number" else ""
+            defaults[field] = None if field in _INT_META_FIELDS else ""
         groups: dict[str, dict] = {}
         for r in rows:
             ep = r.get("episode")
@@ -1679,7 +1731,7 @@ class IndexStore:
             missing = [
                 f
                 for f in meta_fields
-                if (g[f] is None if f == "episode_number" else not g[f])
+                if (g[f] is None if f in _INT_META_FIELDS else not g[f])
             ]
             if missing:
                 try:
@@ -1688,7 +1740,7 @@ class IndexStore:
                     meta = {}
                 for f in missing:
                     v = meta.get(f)
-                    if f == "episode_number":
+                    if f in _INT_META_FIELDS:
                         if v is not None:
                             g[f] = v
                     elif v:
@@ -1713,6 +1765,54 @@ class IndexStore:
 def _escape(s: str) -> str:
     """Escape single quotes for LanceDB SQL WHERE clauses."""
     return s.replace("'", "''")
+
+
+def chunk_map_from_chunks(chunks: list[dict], text_preview: int = 0) -> list[dict]:
+    """Project loaded chunks into the lightweight chunk-map shape.
+
+    Pure counterpart of :meth:`IndexStore.get_chunk_map` so a caller that has
+    already loaded the episode's chunks (e.g. to also build a transcript) can
+    reuse them instead of reloading.
+    """
+    from podcodex.core._utils import format_hms
+
+    out: list[dict] = []
+    for c in chunks:
+        turns = c.get("speakers") or []
+        speakers = (
+            sorted({t.get("speaker", "") for t in turns if t.get("speaker")})
+            if turns
+            else ([c["dominant_speaker"]] if c.get("dominant_speaker") else [])
+        )
+        start = float(c.get("start", 0.0))
+        entry: dict = {
+            "chunk_index": int(c.get("chunk_index", -1)),
+            "start": start,
+            "end": float(c.get("end", 0.0)),
+            "start_hms": format_hms(start),
+            "speakers": speakers,
+        }
+        if text_preview > 0:
+            entry["text_preview"] = (c.get("text") or "")[:text_preview]
+        out.append(entry)
+    return out
+
+
+def _center_pos_by_time(chunks: list[dict], at_time: float) -> int:
+    """List position of the chunk covering ``at_time`` (nearest by start on a gap).
+
+    Assumes ``chunks`` is non-empty and ordered by position; always returns a
+    valid index.
+    """
+    for i, c in enumerate(chunks):
+        start = float(c.get("start", 0.0))
+        end = float(c.get("end", 0.0))
+        if start <= at_time < end:
+            return i
+    return min(
+        range(len(chunks)),
+        key=lambda i: abs(float(chunks[i].get("start", 0.0)) - at_time),
+    )
 
 
 def _episode_group_to_dict(episode: str, g: dict) -> dict:

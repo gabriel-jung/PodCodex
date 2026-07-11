@@ -59,6 +59,12 @@ class ShowMeta:
     speakers: list[str] = field(default_factory=list)
     language: str = ""
     artwork_url: str = ""
+    # Regex (one capture group) applied to the episode title at index time to
+    # extract a broadcast/diffusion number. Empty = no extraction for this show.
+    broadcast_number_pattern: str = ""
+    # Raw diarisation label -> canonical speaker, applied at read time (e.g.
+    # ``{"Raf": "Rafik"}``). Retroactive: no reindex needed.
+    speaker_aliases: dict[str, str] = field(default_factory=dict)
     pipeline: PipelineDefaults = field(default_factory=PipelineDefaults)
 
 
@@ -115,6 +121,10 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
         speakers=raw.get("speakers", []),
         language=raw.get("language", ""),
         artwork_url=raw.get("artwork_url", ""),
+        broadcast_number_pattern=raw.get("broadcast_number_pattern", ""),
+        speaker_aliases={
+            str(k): str(v) for k, v in (raw.get("speaker_aliases") or {}).items() if v
+        },
         pipeline=pipeline,
     )
     _SHOW_META_CACHE[cache_key] = (mtime, meta)
@@ -151,6 +161,10 @@ def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
     if meta.speakers:
         items = ", ".join(f'"{_toml_string(s)}"' for s in meta.speakers)
         lines.append(f"speakers = [{items}]")
+    if meta.broadcast_number_pattern:
+        lines.append(
+            f'broadcast_number_pattern = "{_toml_string(meta.broadcast_number_pattern)}"'
+        )
 
     # Pipeline defaults section
     p = meta.pipeline
@@ -194,6 +208,14 @@ def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
         lines.append("")
         lines.append("[pipeline]")
         lines.extend(pipe_lines)
+
+    # Speaker alias table. Emitted after [pipeline] so a TOML table header does
+    # not swallow the pipeline scalar keys.
+    if meta.speaker_aliases:
+        lines.append("")
+        lines.append("[speaker_aliases]")
+        for raw_label, canonical in meta.speaker_aliases.items():
+            lines.append(f'"{_toml_string(raw_label)}" = "{_toml_string(canonical)}"')
 
     from podcodex.core._utils import atomic_write
 

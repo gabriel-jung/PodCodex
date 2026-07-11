@@ -12,6 +12,7 @@ Tools:
     - ``get_episode``    — metadata card for a single episode.
     - ``search``         — hybrid semantic + FTS search.
     - ``exact``          — literal phrase match, returns every hit.
+    - ``exact_count``    — literal phrase counts per episode, no text.
     - ``get_context``    — expand a hit with its neighboring chunks.
     - ``speaker_stats``  — aggregate chunk counts / airtime per speaker.
 
@@ -30,7 +31,11 @@ from typing import NamedTuple
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
-from podcodex.core._utils import episode_display, merge_display_turns
+from podcodex.core._utils import (
+    episode_display,
+    format_hms,
+    merge_display_turns,
+)
 from podcodex.rag.defaults import (
     ALPHA,
     CONTEXT_WINDOW,
@@ -38,7 +43,7 @@ from podcodex.rag.defaults import (
     DEFAULT_MODEL,
     TOP_K,
 )
-from podcodex.rag.index_store import get_index_store
+from podcodex.rag.index_store import chunk_map_from_chunks, get_index_store
 from podcodex.rag.retriever import get_retriever, merge_results
 
 mcp = FastMCP("podcodex")
@@ -56,22 +61,22 @@ class _Col(NamedTuple):
     show: str
 
 
-def _show_rag_prefs() -> dict[str, tuple[str, str]]:
-    """Lowercased show name -> (rag_model, rag_chunker) from each ``show.toml``.
+def _iter_show_metas():
+    """Yield ``(lowercased_show_name, ShowMeta)`` for every configured show.
 
-    Shows with no RAG preference set are omitted so the resolver falls
-    through to the global default. The MCP process never runs
-    ``create_app()``, so this reads ``config.json`` directly rather than
-    through the IndexStore show-folder resolver.
+    Single source of the ``config.json`` -> ``show.toml`` walk shared by the
+    RAG-pref and speaker-alias resolvers. The MCP process never runs
+    ``create_app()``, so it reads ``config.json`` directly rather than through
+    the IndexStore show-folder resolver. ``load_show_meta`` is mtime-cached, so
+    repeat walks only re-``stat`` the folders.
     """
-    prefs: dict[str, tuple[str, str]] = {}
     try:
         from podcodex.core.app_config import load_config
         from podcodex.ingest.show import load_show_meta
 
         folders = load_config().show_folders
     except Exception:
-        return prefs
+        return
     for folder_path in folders:
         folder = Path(folder_path)
         if not folder.is_dir():
@@ -79,12 +84,131 @@ def _show_rag_prefs() -> dict[str, tuple[str, str]]:
         meta = load_show_meta(folder)
         if meta is None:
             continue
+        yield (meta.name or folder.name).strip().lower(), meta
+
+
+def _show_rag_prefs() -> dict[str, tuple[str, str]]:
+    """Lowercased show name -> (rag_model, rag_chunker) from each ``show.toml``.
+
+    Shows with no RAG preference set are omitted so the resolver falls
+    through to the global default.
+    """
+    prefs: dict[str, tuple[str, str]] = {}
+    for name, meta in _iter_show_metas():
         model = meta.pipeline.rag_model
         chunker = meta.pipeline.rag_chunker
         if model or chunker:
-            name = (meta.name or folder.name).strip().lower()
             prefs[name] = (model or DEFAULT_MODEL, chunker or DEFAULT_CHUNKING)
     return prefs
+
+
+# All shows' alias maps, cached by ``config.json`` mtime so the folder walk
+# runs once per config change instead of once per alias-touching request.
+_ALIAS_CACHE: dict[float, dict[str, dict[str, str]]] = {}
+
+
+def _all_speaker_aliases() -> dict[str, dict[str, str]]:
+    """Lowercased show name -> alias map, for every show that defines one."""
+    try:
+        from podcodex.core.app_config import CONFIG_PATH
+
+        mtime = CONFIG_PATH.stat().st_mtime
+    except Exception:
+        mtime = 0.0
+    cached = _ALIAS_CACHE.get(mtime)
+    if cached is not None:
+        return cached
+    _ALIAS_CACHE.clear()  # only the current-config generation is worth keeping
+    built = {
+        name: dict(meta.speaker_aliases)
+        for name, meta in _iter_show_metas()
+        if meta.speaker_aliases
+    }
+    _ALIAS_CACHE[mtime] = built
+    return built
+
+
+def _speaker_aliases(show: str) -> dict[str, str]:
+    """Raw-label -> canonical speaker map for a show, from its ``show.toml``.
+
+    Applied at read time so it fixes the existing index with no reindex.
+    Empty when the show has no ``[speaker_aliases]`` table or is unknown.
+    """
+    target = (show or "").strip().lower()
+    if not target:
+        return {}
+    return _all_speaker_aliases().get(target, {})
+
+
+def _retrieve_over_labels(labels, fetch, err_ctx: str) -> list[dict]:
+    """Run ``fetch(label)`` for each label and merge, deduping by position.
+
+    Shared by ``exact`` and ``search`` for the speaker-alias fan-out: a
+    canonical name expands to several raw labels, each queried separately, and
+    the union is deduped by ``(episode, chunk_index)``. ``ValueError`` from
+    ``fetch`` propagates (bad caller input); any other error is logged with
+    ``err_ctx`` and that label is skipped.
+    """
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for label in labels:
+        try:
+            hits = fetch(label)
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception(err_ctx)
+            continue
+        for h in hits:
+            key = (h.get("episode"), h.get("chunk_index"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(h)
+    return out
+
+
+def _alias_expand(show: str, speaker: str) -> list[str]:
+    """Expand a canonical speaker to itself plus every raw label aliasing to it.
+
+    Lets a caller filter by the canonical name (``"Rafik"``) and still match
+    chunks stored under a raw variant (``"Raf"``). Returns ``[speaker]`` when
+    the show has no aliases.
+    """
+    aliases = _speaker_aliases(show)
+    labels = {speaker}
+    labels.update(raw for raw, canon in aliases.items() if canon == speaker)
+    return sorted(labels)
+
+
+def _episode_transcript_text(
+    chunks: list[dict], aliases: dict[str, str] | None = None
+) -> str:
+    """Flatten preloaded episode chunks to ``[MmSS] Speaker: text`` lines.
+
+    Diarised chunks emit one line per merged turn; untimed/single-speaker
+    chunks emit one line each. Speaker labels are mapped through ``aliases``.
+    """
+    from podcodex.core._utils import format_hms, merge_display_turns
+
+    aliases = aliases or {}
+    lines: list[str] = []
+    for c in chunks:
+        turns = merge_display_turns(c.get("speakers") or [])
+        if turns:
+            for t in turns:
+                ts = format_hms(float(t.get("start") or c.get("start", 0.0)))
+                sp = aliases.get(
+                    t.get("speaker", "Unknown"), t.get("speaker", "Unknown")
+                )
+                lines.append(f"[{ts}] {sp}: {t.get('text', '')}")
+        else:
+            ts = format_hms(float(c.get("start", 0.0)))
+            sp = aliases.get(
+                c.get("dominant_speaker", ""), c.get("dominant_speaker", "")
+            )
+            lines.append(f"[{ts}] {sp}: {c.get('text', '')}")
+    return "\n".join(lines)
 
 
 def _pick_collection(
@@ -148,7 +272,7 @@ def _put_show_date_cache(key: tuple[str, float], value: tuple[str, str] | None) 
     _SHOW_DATE_CACHE[key] = value
 
 
-def _trim(chunk: dict) -> dict:
+def _trim(chunk: dict, aliases: dict[str, str] | None = None) -> dict:
     """Compact chunk shape sent to MCP clients.
 
     ``episode_title`` is the human-readable label to cite (RSS title if
@@ -156,29 +280,45 @@ def _trim(chunk: dict) -> dict:
     ``episode`` remains the raw identifier needed for later ``get_context``
     lookups. ``pub_date`` carries the RSS publication date so clients can
     answer date-scoped questions (``"épisodes de février 2026"``) without
-    an extra ``list_episodes`` round-trip.
+    an extra ``list_episodes`` round-trip. ``start_hms`` is the citation-ready
+    form of ``start`` (``"9m38"`` / ``"1h09m46"``) so clients never re-derive
+    it and get the ``HhMMmSS`` boundary wrong.
 
     When the chunk carries per-turn ``speakers`` (semantic chunking on a
     diarised transcript), emit the turn list and omit the redundant
     flat ``text`` blob — the LLM can cite the right speaker per quote
     instead of guessing from the chunk-level ``dominant_speaker``.
     Consecutive same-speaker turns are merged for compactness.
+
+    ``aliases`` maps raw diarisation labels to canonical speaker names
+    (from the show's ``show.toml``), applied to both the chunk-level
+    ``speaker`` and every per-turn speaker.
     """
+    aliases = aliases or {}
+
+    def _canon(name: str) -> str:
+        return aliases.get(name, name)
+
+    start = float(chunk.get("start", 0.0))
     out: dict = {
         "show": chunk.get("show", ""),
         "episode": chunk.get("episode", ""),
         "episode_title": episode_display(chunk),
         "chunk_index": int(chunk.get("chunk_index", -1)),
-        "start": float(chunk.get("start", 0.0)),
+        "start": start,
+        "start_hms": format_hms(start),
         "end": float(chunk.get("end", 0.0)),
-        "speaker": chunk.get("dominant_speaker", ""),
+        "speaker": _canon(chunk.get("dominant_speaker", "")),
     }
     turns = merge_display_turns(chunk.get("speakers") or [])
     if turns:
         out["speakers"] = [
             {
-                "speaker": t.get("speaker", "Unknown"),
+                "speaker": _canon(t.get("speaker", "Unknown")),
                 "start": float(t["start"]) if t.get("start") is not None else 0.0,
+                "start_hms": format_hms(
+                    float(t["start"]) if t.get("start") is not None else 0.0
+                ),
                 "end": float(t["end"]) if t.get("end") is not None else 0.0,
                 "text": t.get("text", ""),
             }
@@ -249,6 +389,8 @@ def list_episodes(
     pub_date_min: str | None = None,
     pub_date_max: str | None = None,
     title_contains: str | None = None,
+    broadcast_number: int | None = None,
+    fields: list[str] | None = None,
 ) -> list[dict]:
     """List episodes in the user's PodCodex index with optional filters.
 
@@ -265,14 +407,24 @@ def list_episodes(
         pub_date_max: Newest publication date, inclusive.
         title_contains: Substring match on episode title or stem
             (case-insensitive).
+        broadcast_number: Restrict to the episode whose broadcast (airing)
+            number matches. Only populated for shows that set a
+            ``broadcast_number_pattern`` in their settings; absent
+            otherwise. This is the airing number in the title, distinct
+            from the per-season ``episode_number``.
+        fields: Restrict each record to these keys (e.g.
+            ``["episode", "chunk_count", "duration"]``) to skip the heavy
+            ``description``. Omit for the full record.
 
     Returns:
         Per-episode records, each ``{show, episode, episode_title,
-        pub_date, episode_number, chunk_count, duration, speakers,
-        description}``. ``speakers`` is a sorted list of the
-        dominant-speaker values that appear in any chunk of the episode;
-        ``description`` is the RSS description truncated at index time.
-        Sorted by episode identifier within a show.
+        pub_date, episode_number, broadcast_number, chunk_count, duration,
+        speakers, description}`` (subset when ``fields`` is given).
+        ``speakers`` is a sorted list of the dominant-speaker values that
+        appear in any chunk of the episode; ``description`` is the RSS
+        description truncated at index time. ``episode_number`` is the
+        per-season index (resets each season); ``broadcast_number`` is the
+        airing number. Sorted by ``pub_date`` (then stem).
     """
     collections = _resolve_collections(show)
     if not collections:
@@ -288,6 +440,11 @@ def list_episodes(
             with_detail=True,
         )
         for item in items:
+            if (
+                broadcast_number is not None
+                and item.get("broadcast_number") != broadcast_number
+            ):
+                continue
             out.append(
                 {
                     "show": c.show,
@@ -295,33 +452,58 @@ def list_episodes(
                     "episode_title": episode_display(item),
                     "pub_date": item.get("pub_date", ""),
                     "episode_number": item.get("episode_number"),
+                    "broadcast_number": item.get("broadcast_number"),
                     "chunk_count": int(item.get("chunk_count", 0)),
                     "duration": float(item.get("duration", 0.0)),
                     "speakers": list(item.get("speakers") or []),
                     "description": item.get("description", ""),
                 }
             )
+    out.sort(key=lambda r: (r.get("pub_date") or "", r.get("episode", "")))
+    if fields:
+        allowed = set(fields)
+        out = [{k: v for k, v in r.items() if k in allowed} for r in out]
     return out
 
 
 @mcp.tool()
-def get_episode(show: str, episode: str) -> dict | None:
+def get_episode(
+    show: str,
+    episode: str,
+    include_chunk_map: bool = False,
+    text_preview: int = 0,
+    include_transcript: str = "",
+) -> dict | None:
     """Return metadata for a single episode in the user's PodCodex index.
 
     Call this when the user asks for the description, pub date,
     duration, speakers, or episode number of a specific episode —
     cheaper and more direct than running a ``search`` for metadata.
 
+    For whole-episode reads, this tool also serves the chunk-map (a light
+    ``chunk_index -> start`` table, no transcript text) and the raw
+    transcript, so a single call can back both timestamp verification and
+    a linear read.
+
     Args:
         show: Show name, as returned by ``list_shows`` or a prior
             result's ``show`` field.
         episode: Episode identifier (stem), e.g. from ``list_episodes``
             or a prior result's ``episode`` field.
+        include_chunk_map: When true, add ``chunk_map``: a list of
+            ``{chunk_index, start, end, start_hms, speakers}`` for every
+            chunk, ordered by position. Few KB even for a long episode.
+        text_preview: With ``include_chunk_map``, add a ``text_preview``
+            of the first N characters to each chunk-map entry (0 = off).
+        include_transcript: ``"text"`` adds a ``transcript`` field of
+            ``[MmSS] Speaker: line`` rows (more compact than per-turn
+            JSON). Empty (default) omits it.
 
     Returns:
         ``{show, episode, episode_title, pub_date, episode_number,
-        description, source, chunk_count, duration, speakers}`` — or
-        ``None`` if the episode is not indexed.
+        description, source, chunk_count, duration, speakers}``, plus
+        ``chunk_map`` and/or ``transcript`` when requested — or ``None``
+        if the episode is not indexed.
     """
     collections = _resolve_collections(show)
     if not collections:
@@ -330,7 +512,8 @@ def get_episode(show: str, episode: str) -> dict | None:
     rec = store.get_episode(collections[0].name, episode)
     if rec is None:
         return None
-    return {
+    aliases = _speaker_aliases(collections[0].show)
+    card: dict = {
         "show": show,
         "episode": rec["episode"],
         "episode_title": episode_display(rec),
@@ -340,8 +523,21 @@ def get_episode(show: str, episode: str) -> dict | None:
         "source": rec.get("source", ""),
         "chunk_count": int(rec.get("chunk_count", 0)),
         "duration": float(rec.get("duration", 0.0)),
-        "speakers": list(rec.get("speakers", [])),
+        "speakers": [aliases.get(s, s) for s in rec.get("speakers", [])],
     }
+    want_transcript = include_transcript == "text"
+    if include_chunk_map or want_transcript:
+        # One episode load feeds both the chunk-map and the transcript.
+        chunks = store.load_chunks_no_embeddings(collections[0].name, episode)
+        if include_chunk_map:
+            cmap = chunk_map_from_chunks(chunks, text_preview)
+            if aliases:
+                for e in cmap:
+                    e["speakers"] = sorted({aliases.get(s, s) for s in e["speakers"]})
+            card["chunk_map"] = cmap
+        if want_transcript:
+            card["transcript"] = _episode_transcript_text(chunks, aliases)
+    return card
 
 
 @mcp.tool()
@@ -366,10 +562,11 @@ def search(
     ``exact`` instead when the user wants to verify a specific wording.
 
     **Cite every fact drawn from the results.** Attribute each claim
-    inline as ``[Show • Episode @ MM:SS]`` using the ``show``,
-    ``episode``, and ``start`` fields of the chunk it came from. When a
-    chunk carries a ``speakers`` array, cite the *turn's* speaker and
-    ``start`` — not the chunk-level ``speaker`` (that field is only the
+    inline as ``[Show • Episode @ <start_hms>]`` using the ``show``,
+    ``episode``, and ``start_hms`` fields of the chunk it came from (the
+    citation-ready ``9m38`` / ``1h09m46`` form). When a chunk carries a
+    ``speakers`` array, cite the *turn's* speaker and ``start_hms`` — not
+    the chunk-level ``speaker`` (that field is only the
     chunk's dominant voice and may not own the quote). Never blend in
     outside information without labeling it ``(outside the transcripts)``.
     Mark inferences or synthesis as ``(inference)``. Users rely on
@@ -415,35 +612,40 @@ def search(
     # query is encoded once per model (encoding is the dominant cost). Shows
     # may resolve to different models, so a single query vector won't do.
     by_model: dict[str, list[str]] = defaultdict(list)
+    show_by_col: dict[str, str] = {}
     for c in collections:
         by_model[c.model].append(c.name)
+        show_by_col[c.name] = c.show
     hits_by_col: dict[str, list[dict]] = {}
     for model, cols in by_model.items():
         ret = get_retriever(model)
         qv = ret.encode_query(query)
         for col in cols:
-            try:
-                hits = ret.retrieve(
+            labels = (
+                _alias_expand(show_by_col.get(col, ""), speaker) if speaker else [None]
+            )
+            col_hits = _retrieve_over_labels(
+                labels,
+                lambda label, _col=col: ret.retrieve(
                     query,
-                    col,
+                    _col,
                     top_k=top_k,
                     alpha=ALPHA,
                     episode=episode,
                     episodes=episodes,
-                    speaker=speaker,
+                    speaker=label,
                     pub_date_min=pub_date_min,
                     pub_date_max=pub_date_max,
                     query_vector=qv,
-                )
-            except ValueError:
-                raise
-            except Exception:
-                logger.exception(f"search: collection {col!r} failed; skipping")
-                continue
-            if hits:
-                hits_by_col[col] = hits
+                ),
+                f"search: collection {col!r} failed; skipping",
+            )
+            if col_hits:
+                hits_by_col[col] = col_hits
     merged = merge_results(hits_by_col, top_k=top_k)
-    return [_trim(chunk) for chunk, _col in merged]
+    return [
+        _trim(chunk, _speaker_aliases(chunk.get("show", ""))) for chunk, _col in merged
+    ]
 
 
 @mcp.tool()
@@ -461,14 +663,15 @@ def exact(
     Case-insensitive, accent-tolerant, no result cap. Behaves like
     Ctrl+F across every indexed episode.
 
-    **Use only when** the user wants to verify a quote, count mentions
-    of specific wording, or explicitly invokes podcodex. Do **not** use
-    for general-knowledge lookups or topics unrelated to the user's
-    transcripts. Choose ``search`` instead for meaning-based questions.
+    **Use only when** the user wants to verify a quote or read the wording
+    around a mention, or explicitly invokes podcodex. To *count* mentions
+    across episodes without pulling text, use ``exact_count`` instead. Do
+    **not** use for general-knowledge lookups or topics unrelated to the
+    user's transcripts. Choose ``search`` for meaning-based questions.
 
     **Cite every quoted or referenced passage** inline as
-    ``[Show • Episode @ MM:SS]`` using the chunk's ``show``,
-    ``episode``, and ``start`` fields. Never supplement with outside
+    ``[Show • Episode @ <start_hms>]`` using the chunk's ``show``,
+    ``episode``, and ``start_hms`` fields. Never supplement with outside
     information unless labeled ``(outside the transcripts)``. Mark
     inferences as ``(inference)``.
 
@@ -480,7 +683,8 @@ def exact(
         episode: Restrict to a single episode identifier.
         episodes: Alternative to ``episode`` — restrict to a list of
             episode identifiers.
-        speaker: Restrict to a single ``dominant_speaker`` value.
+        speaker: Restrict to a single speaker (matched against the show's
+            aliases too, so a canonical name catches its raw variants).
         pub_date_min: Oldest publication date to include, inclusive
             (``YYYY-MM-DD``).
         pub_date_max: Newest publication date to include, inclusive.
@@ -489,11 +693,11 @@ def exact(
         Every matching chunk, ordered by collection then position. Each
         carries the same fields as ``search`` results (``show``,
         ``episode``, ``episode_title``, ``chunk_index``, ``start``,
-        ``end``, ``speaker``, plus a per-turn ``speakers`` array on
-        diarised chunks or a flat ``text`` on untimed/single-speaker
+        ``start_hms``, ``end``, ``speaker``, plus a per-turn ``speakers``
+        array on diarised chunks or a flat ``text`` on untimed/single-speaker
         chunks, and — when present — ``pub_date`` and ``episode_number``).
         Matches that are not perfect string hits additionally carry
-        ``accent_match`` or ``fuzzy_match`` flags. No relevance ranking —
+        ``accent_match`` or ``fuzzy_match`` flags. No relevance ranking;
         results are positional.
     """
     collections = _resolve_collections(show)
@@ -501,10 +705,83 @@ def exact(
         return []
     out: list[dict] = []
     for c in collections:
-        try:
-            matches = get_retriever(c.model).exact(
+        aliases = _speaker_aliases(c.show)
+        labels = _alias_expand(c.show, speaker) if speaker else [None]
+        hits = _retrieve_over_labels(
+            labels,
+            lambda label: get_retriever(c.model).exact(
                 query,
                 c.name,
+                episode=episode,
+                episodes=episodes,
+                speaker=label,
+                pub_date_min=pub_date_min,
+                pub_date_max=pub_date_max,
+            ),
+            f"exact: collection {c.name!r} failed; skipping",
+        )
+        out.extend(_trim(h, aliases) for h in hits)
+    return out
+
+
+@mcp.tool()
+def exact_count(
+    queries: list[str],
+    show: str | None = None,
+    episode: str | None = None,
+    episodes: list[str] | None = None,
+    speaker: str | None = None,
+    pub_date_min: str | None = None,
+    pub_date_max: str | None = None,
+    group_by: str = "episode",
+    first_hit: bool = False,
+) -> dict:
+    """Count literal phrase occurrences per episode, without returning any text.
+
+    The counting counterpart of ``exact``: for each phrase in ``queries``,
+    report how many times it occurs and where, grouped by episode (or show).
+    Built for recurrence and cross-contamination checks over many entities at
+    once, where the chunk text would be pure overhead. Fuzzy near-typo matches
+    are excluded (accent variants are kept) so counts stay trustworthy.
+
+    **Use only when** the user (or a workflow) needs occurrence counts of
+    specific wording, or explicitly invokes podcodex. For the actual passages,
+    use ``exact``; for meaning-based questions, ``search``.
+
+    Args:
+        queries: Phrases to count. Result keys are these strings verbatim.
+        show: Restrict to this show (exact, case-insensitive name). Omit to
+            count across every indexed show.
+        episode: Restrict to a single episode identifier.
+        episodes: Alternative to ``episode`` — restrict to a list.
+        speaker: Restrict to a single ``dominant_speaker`` value.
+        pub_date_min: Oldest publication date to include, inclusive.
+        pub_date_max: Newest publication date to include, inclusive.
+        group_by: ``"episode"`` (default) or ``"show"``.
+        first_hit: Also return the earliest hit per group as
+            ``{"chunk_index", "start", "start_hms"}``.
+
+    Returns:
+        ``{phrase: {group_key: count}}``, or with ``first_hit``
+        ``{phrase: {group_key: {"count", "first"}}}``. Groups with zero hits
+        are omitted, so ``phrase in result and group in result[phrase]`` is a
+        valid "entity present in this episode" check. Cost is ``O(len(queries))``
+        full scans per collection, so a large batch is not free.
+    """
+    valid = [q for q in (queries or []) if q]
+    if not valid:
+        raise ValueError("exact_count: provide a non-empty `queries` list")
+    collections = _resolve_collections(show)
+    if not collections:
+        return {}
+    merged: dict[str, dict] = {q: {} for q in valid}
+    for c in collections:
+        try:
+            counts = get_retriever(c.model).exact_counts(
+                valid,
+                c.name,
+                group_by=group_by,
+                first_hit=first_hit,
                 episode=episode,
                 episodes=episodes,
                 speaker=speaker,
@@ -514,19 +791,20 @@ def exact(
         except ValueError:
             raise
         except Exception:
-            logger.exception(f"exact: collection {c.name!r} failed; skipping")
+            logger.exception(f"exact_count: collection {c.name!r} failed; skipping")
             continue
-        for match in matches:
-            out.append(_trim(match))
-    return out
+        for q, groups in counts.items():
+            merged[q].update(groups)
+    return merged
 
 
 @mcp.tool()
 def get_context(
     show: str,
     episode: str,
-    chunk_index: int,
+    chunk_index: int | None = None,
     window: int = CONTEXT_WINDOW,
+    at_time: str | int | float | None = None,
 ) -> list[dict]:
     """Expand a PodCodex search hit with its neighboring chunks.
 
@@ -536,7 +814,7 @@ def get_context(
     pronoun. The returned window is contiguous and chronological.
 
     **Cite the expanded passage** just like ``search`` / ``exact``
-    results: attribute facts inline as ``[Show • Episode @ MM:SS]``.
+    results: attribute facts inline as ``[Show • Episode @ <start_hms>]``.
     Outside information must be labeled ``(outside the transcripts)``;
     inferences must be labeled ``(inference)``.
 
@@ -546,10 +824,15 @@ def get_context(
         episode: Episode identifier from a prior result's ``episode``
             field (do not invent values).
         chunk_index: ``chunk_index`` of the hit to expand (from a prior
-            result).
+            result). Alternative to ``at_time``; if both are given,
+            ``chunk_index`` wins. Provide exactly one.
         window: Chunks to include on each side of the center (default 3,
             so 7 total). Raise to widen the scene; setting 0 returns
             only the center chunk.
+        at_time: Center the window on the chunk covering this timestamp
+            instead of a ``chunk_index``. Accepts seconds (``4186``) or
+            the clock forms ``"1h09m46"`` / ``"69m46"``. A time in a gap
+            or past the transcript snaps to the nearest chunk.
 
     Returns:
         Chunks covering ``[chunk_index - window, chunk_index + window]``
@@ -561,13 +844,25 @@ def get_context(
         and ``episode_number``). Empty list if the episode or
         ``chunk_index`` is not found.
     """
+    if chunk_index is None and at_time is None:
+        raise ValueError("get_context: provide `chunk_index` or `at_time`")
     collections = _resolve_collections(show)
     if not collections:
         return []
+    resolved_time: float | None = None
+    if chunk_index is None:
+        from podcodex.core._utils import parse_time
+
+        resolved_time = parse_time(at_time)
     chunks = get_index_store().get_chunk_window(
-        collections[0].name, episode, chunk_index, window=window
+        collections[0].name,
+        episode,
+        chunk_index=chunk_index,
+        window=window,
+        at_time=resolved_time,
     )
-    return [_trim(c) for c in chunks]
+    aliases = _speaker_aliases(collections[0].show)
+    return [_trim(c, aliases) for c in chunks]
 
 
 @mcp.tool()
@@ -595,7 +890,23 @@ def speaker_stats(show: str | None = None) -> list[dict]:
     collections = _resolve_collections(show)
     if not collections:
         return []
-    return get_index_store().speaker_stats_multi([c.name for c in collections])
+    raw = get_index_store().speaker_stats_multi([c.name for c in collections])
+    union: dict[str, str] = {}
+    for c in collections:
+        union.update(_speaker_aliases(c.show))
+    if not union:
+        return raw
+    merged: dict[str, dict] = {}
+    for rec in raw:
+        canon = union.get(rec["speaker"], rec["speaker"])
+        acc = merged.setdefault(
+            canon,
+            {"speaker": canon, "chunk_count": 0, "total_duration": 0.0, "episodes": 0},
+        )
+        acc["chunk_count"] += rec.get("chunk_count", 0)
+        acc["total_duration"] += rec.get("total_duration", 0.0)
+        acc["episodes"] = max(acc["episodes"], rec.get("episodes", 0))
+    return sorted(merged.values(), key=lambda r: r["chunk_count"], reverse=True)
 
 
 def main() -> None:

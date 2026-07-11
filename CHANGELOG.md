@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.2.4] - 2026-07-11
+
+### MCP retrieval
+
+New tools and options that cut the cost of programmatic transcript mining
+(entity counts, timestamp lookups, whole-episode reads) without pulling full
+chunk text.
+
+- `exact_count`: count literal phrase occurrences per episode across a batch of
+  queries, with no chunk text. Fuzzy near-typo matches are excluded so counts
+  stay trustworthy; optional `first_hit` returns the earliest occurrence.
+- `get_context` accepts `at_time` (seconds or `1h09m46` / `69m46`) as an
+  alternative to `chunk_index`, resolving to the chunk covering that moment.
+- `get_episode` can return a lightweight `chunk_map` (positions and times, no
+  text) and a raw `transcript` (`[MmSS] Speaker: text` lines), both from a
+  single episode load.
+- `list_episodes` gains a `broadcast_number` filter, a `fields` projection to
+  skip heavy descriptions, and defaults to sorting by publication date.
+- Every result carries a preformatted `start_hms` timestamp for citation.
+
+### Speaker aliases
+
+Per-show speaker alias table in `show.toml` (`[speaker_aliases]`), applied at
+read time so it fixes an existing index with no reindex. Aliased labels fold
+together in `speaker_stats` and are matched by speaker filters.
+
+### Broadcast numbers
+
+Shows can set a `broadcast_number_pattern` regex to extract an airing number
+from the episode title at index time, distinct from the per-season episode
+number.
+
 ## [0.2.3] - 2026-06-22
 
 ### Verified versions

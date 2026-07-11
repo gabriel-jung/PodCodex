@@ -7,6 +7,7 @@ batch_segments_by_duration, segments_to_text).
 
 import json
 
+import pytest
 
 from podcodex.core._utils import (
     batch_segments_by_duration,
@@ -327,3 +328,38 @@ def test_merge_display_turns_skips_empty_and_unknown_speaker():
     assert [m["speaker"] for m in merged] == ["Unknown", "Alice"]
     assert merged[0]["text"] == "ghost line another ghost"
     assert merged[1]["text"] == "real line"
+
+
+# ── Timestamp helpers (format_hms / parse_time) ──────────────────────────
+
+from podcodex.core._utils import format_hms, parse_time  # noqa: E402
+
+
+def test_format_hms_under_hour():
+    assert format_hms(0) == "0m00"
+    assert format_hms(578) == "9m38"
+    assert format_hms(3599) == "59m59"
+
+
+def test_format_hms_hour_and_over():
+    assert format_hms(3600) == "1h00m00"
+    assert format_hms(4186) == "1h09m46"
+
+
+def test_parse_time_seconds_forms():
+    assert parse_time(4186) == 4186.0
+    assert parse_time(4186.0) == 4186.0
+    assert parse_time("4186") == 4186.0
+
+
+def test_parse_time_clock_forms_equivalent():
+    assert parse_time("1h09m46") == 4186.0
+    assert parse_time("69m46") == 4186.0
+    assert parse_time("9m38") == 578.0
+
+
+def test_parse_time_rejects_out_of_range_fields():
+    with pytest.raises(ValueError):
+        parse_time("1h09m60")
+    with pytest.raises(ValueError):
+        parse_time("1h60m00")

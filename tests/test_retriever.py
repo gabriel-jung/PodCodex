@@ -304,3 +304,29 @@ def test_rank_normalize_rank_based_scores():
     normed = _rank_normalize(results)
     assert normed[0]["score"] == pytest.approx(1.0)
     assert normed[1]["score"] == pytest.approx(0.5)
+
+
+# ── exact_counts (count/batch mode) ──────────────────────────────────────
+
+
+def test_exact_counts_group_by_episode(tmp_path):
+    ret, _emb, col = _make_retriever(tmp_path)  # ep1: 3 chunks, ep2: 2 chunks
+    out = ret.exact_counts(["chunk 0", "chunk"], col, group_by="episode")
+    assert out["chunk 0"] == {"ep1": 1, "ep2": 1}
+    assert out["chunk"]["ep1"] == 3
+    assert out["chunk"]["ep2"] == 2
+
+
+def test_exact_counts_empty_group_omitted(tmp_path):
+    ret, _emb, col = _make_retriever(tmp_path)
+    out = ret.exact_counts(["nonexistent phrase zzz"], col)
+    assert out["nonexistent phrase zzz"] == {}
+
+
+def test_exact_counts_first_hit(tmp_path):
+    ret, _emb, col = _make_retriever(tmp_path)
+    out = ret.exact_counts(["chunk 0"], col, group_by="episode", first_hit=True)
+    entry = out["chunk 0"]["ep1"]
+    assert entry["count"] == 1
+    assert entry["first"]["chunk_index"] == 0
+    assert entry["first"]["start_hms"] == "0m00"

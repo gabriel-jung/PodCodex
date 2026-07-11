@@ -26,11 +26,12 @@ LLM-correction pipeline step is **correct** (or "AI correct"). Never "polish"; t
 
 ## Versioning (bump on every Windows MSI release)
 
-WiX skips file replace on same version → silent broken upgrade. Keep three files in sync:
+WiX skips file replace on same version → silent broken upgrade. Keep these files in sync:
 
 1. `pyproject.toml`: `version = "X.Y.Z"`
 2. `src-tauri/Cargo.toml`: `version = "X.Y.Z"`
 3. Refresh `src-tauri/Cargo.lock` (`podcodex-app` entry).
+4. Refresh `uv.lock` (`podcodex` entry). The `uv-lock` pre-commit hook regenerates it automatically and fails the commit if stale, so just re-stage `uv.lock` and recommit (or run `uv lock` first).
 
 Don't add `version` back to `tauri.conf.json` or hardcode `__version__` in `src/podcodex/__init__.py`; both derive from above. `importlib.metadata.version("podcodex")` works in the PyInstaller bundle only because `"podcodex"` is in `COPY_METADATA` in `packaging/build_server.py`. Don't remove.
 
