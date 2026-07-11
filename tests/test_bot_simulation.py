@@ -142,7 +142,7 @@ def test_initial_page_and_paging():
 
     async def go():
         embed, view = await ui.build_results_view(bot, sid, 0)
-        assert "#1 of 13" in _footer(embed)
+        assert "1 of 13" in _footer(embed)
         assert view.children[0].item.disabled  # prev disabled on page 1
         assert any(c.custom_id.startswith("pcx:rx:") for c in view.children)
         assert any(c.custom_id.startswith("pcx:rj:") for c in view.children)
@@ -153,10 +153,10 @@ def test_initial_page_and_paging():
             resp = await _click(bot, next_id)
             assert resp.action == "edit"
             next_id = _cid(resp.view, suffix=":n")
-        assert "#4 of 13" in _footer(resp.embed)
+        assert "4 of 13" in _footer(resp.embed)
 
         resp = await _click(bot, _cid(resp.view, suffix=":p"))
-        assert "#3 of 13" in _footer(resp.embed)
+        assert "3 of 13" in _footer(resp.embed)
 
     _run(go())
 
@@ -168,9 +168,9 @@ def test_jump_crosses_into_other_episode():
         _, view = await ui.build_results_view(bot, sid, 0)
         jump_id = _cid(view, prefix="pcx:rj:")
         resp = await _click(bot, jump_id, select_value=9)  # 0-based -> result #10
-        assert "#10 of 13" in _footer(resp.embed)
+        assert "10 of 13" in _footer(resp.embed)
         # Result #10 lives in the Beta episode: a different LanceDB fetch on click.
-        assert "Beta Show" in (resp.embed.title or "")
+        assert "Beta Show" in (resp.embed.author.name or "")
 
     _run(go())
 
@@ -188,6 +188,19 @@ def test_expand_opens_ephemeral_transcript_and_navigates():
         resp = await _click(bot, _cid(resp.view, suffix=":n"))
         assert resp.action == "edit"
         assert _footer(resp.embed) != before  # segment advanced
+
+    _run(go())
+
+
+def test_details_opens_ephemeral_engine_card():
+    bot, sid = _search_bot()
+
+    async def go():
+        _, view = await ui.build_results_view(bot, sid, 0)
+        resp = await _click(bot, _cid(view, prefix="pcx:rd:"))
+        assert resp.action == "send" and resp.ephemeral
+        names = {f.name for f in resp.embed.fields}
+        assert "Relevance" in names  # engine numbers live here, not on the card
 
     _run(go())
 
@@ -249,6 +262,6 @@ def test_random_expand_opens_at_its_chunk():
         view.add_item(ui.ExpandResult(sid, 0))
         resp = await _click(bot, _cid(view, prefix="pcx:rx:"))
         assert resp.action == "send" and resp.ephemeral
-        assert "Segment 4 of 8" in _footer(resp.embed)
+        assert "4 of 8" in _footer(resp.embed)
 
     _run(go())

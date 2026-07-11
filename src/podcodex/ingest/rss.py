@@ -50,6 +50,7 @@ class RSSEpisode:
     episode_number: int | None = None  # from itunes:episode tag only
     season_number: int | None = None  # from itunes:season tag only
     artwork_url: str = ""  # per-episode itunes:image
+    youtube_id: str = ""  # set explicitly by the YouTube ingest; "" for RSS feeds
     removed: bool = False  # true when episode no longer appears in the live feed
     # Position in the source feed (0 = newest). Used as a sort fallback when
     # pub_date is missing (YouTube flat extraction often omits dates).
@@ -66,6 +67,7 @@ _BACKFILL_FIELDS: tuple[str, ...] = (
     "artwork_url",
     "episode_number",
     "season_number",
+    "youtube_id",
 )
 
 
@@ -164,6 +166,11 @@ def _parse_int_tag(value: str) -> int | None:
         return None
 
 
+# The YouTube video-id shape (11 chars of [\w-]). Single home for the
+# convention shared by stem disambiguation and the legacy-meta bridge below.
+_YT_VIDEO_ID_RE = re.compile(r"[\w-]{11}")
+
+
 def _guid_suffix(guid: str) -> str:
     """Short filesystem-safe suffix derived from a GUID, for stem disambiguation.
 
@@ -172,7 +179,7 @@ def _guid_suffix(guid: str) -> str:
     """
     if not guid:
         return ""
-    if re.fullmatch(r"[\w-]{11}", guid):
+    if _YT_VIDEO_ID_RE.fullmatch(guid):
         return guid
     return hashlib.sha1(guid.encode("utf-8")).hexdigest()[:8]
 
@@ -516,6 +523,22 @@ def save_episode_meta(episode_dir: Path, rss_episode: RSSEpisode) -> Path:
     return path
 
 
+def _bridge_legacy_youtube_id(ep: RSSEpisode) -> RSSEpisode:
+    """Fill ``youtube_id`` on episodes saved before the field existed.
+
+    Pre-field YouTube metas carry the video id in ``guid`` (and no audio
+    enclosure — the YouTube ingest never sets one). Deriving here keeps the
+    guid-shape inference in a single place; new fetches set ``youtube_id``
+    explicitly and skip this. The residual false-positive window (an RSS
+    episode with no enclosure whose guid happens to be 11 ``[\\w-]`` chars)
+    matches the long-standing convention in :func:`_guid_suffix`.
+    """
+    if not ep.youtube_id and not ep.audio_url and ep.guid:
+        if _YT_VIDEO_ID_RE.fullmatch(ep.guid):
+            ep.youtube_id = ep.guid
+    return ep
+
+
 def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
     """Load episode metadata from ``EPISODE_META_FILE``, or None if absent.
 
@@ -534,7 +557,11 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
         return None
     if text:
         try:
-            return RSSEpisode(**json.loads(text))
+            data = json.loads(text)
+            ep = RSSEpisode(**data)
+            # Files written before the field existed need the legacy bridge;
+            # newer files carry an explicit (possibly empty) youtube_id.
+            return ep if "youtube_id" in data else _bridge_legacy_youtube_id(ep)
         except (json.JSONDecodeError, TypeError, KeyError):
             logger.warning(
                 f"Corrupt episode meta: {path}; attempting recovery from feed cache"
@@ -547,6 +574,8 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
     stem = episode_dir.name
     for ep in cached:
         if episode_stem(ep, show_folder) == stem:
+            # Cache entries may predate the youtube_id field too.
+            ep = _bridge_legacy_youtube_id(ep)
             try:
                 save_episode_meta(episode_dir, ep)
                 logger.info(f"Recovered .episode_meta.json for {stem} from feed cache")

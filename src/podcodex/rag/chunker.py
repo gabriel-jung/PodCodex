@@ -56,6 +56,19 @@ def _meta_fields(transcript: dict) -> tuple[str, str, str, dict]:
         cleaned = clean_description(rss_description)
         if cleaned:
             extras["description"] = cleaned
+    # Media pointers for the Discord bot (index-only). YouTube episodes carry
+    # an explicit video id (set by the ingest, never inferred here) → a
+    # timestamped watch link; RSS episodes carry the enclosure → a plain
+    # "listen" link.
+    artwork_url = meta.get("rss_artwork_url", "")
+    if artwork_url:
+        extras["artwork_url"] = artwork_url
+    audio_url = meta.get("rss_audio_url", "")
+    if audio_url:
+        extras["audio_url"] = audio_url
+    youtube_id = (meta.get("youtube_id") or "").strip()
+    if youtube_id:
+        extras["youtube_id"] = youtube_id
     if not meta.get("timed", True):
         extras["timed"] = False
     return meta.get("show", ""), episode, meta.get("source", ""), extras

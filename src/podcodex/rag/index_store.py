@@ -1590,7 +1590,13 @@ class IndexStore:
         groups = self._aggregate_episodes(
             collection,
             with_speakers=True,
-            meta_fields=("episode_title", "episode_number", "description"),
+            meta_fields=(
+                "episode_title",
+                "episode_number",
+                "broadcast_number",
+                "description",
+                "artwork_url",
+            ),
         )
         return [_episode_group_to_dict(ep, g) for ep, g in sorted(groups.items())]
 
@@ -1822,7 +1828,9 @@ def _episode_group_to_dict(episode: str, g: dict) -> dict:
         "episode_title": g.get("episode_title", ""),
         "pub_date": g.get("pub_date", ""),
         "episode_number": g.get("episode_number"),
+        "broadcast_number": g.get("broadcast_number"),
         "description": g.get("description", ""),
+        "artwork_url": g.get("artwork_url", ""),
         "source": g.get("source", ""),
         "chunk_count": g["chunk_count"],
         "duration": g["duration"],

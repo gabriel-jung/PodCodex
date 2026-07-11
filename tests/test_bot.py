@@ -5,10 +5,15 @@ import pytest
 pytest.importorskip("discord")
 
 from podcodex.bot.bot import BotConfig, ServerSettings
-from podcodex.bot.ui import build_result_embed
+from podcodex.bot.ui import (
+    build_details_embed,
+    build_listen_button,
+    build_result_embed,
+)
 from podcodex.bot.formatting import (
     CooldownManager,
     build_compact_embed,
+    display_speaker,
     fmt_time as _fmt_time,
     safe_truncate,
     speaker as _speaker,
@@ -91,12 +96,45 @@ def test_speaker_prefers_speaker_over_dominant():
     assert _speaker({"speaker": "Alice", "dominant_speaker": "Bob"}) == "Alice"
 
 
-def test_speaker_unknown_when_missing():
-    assert _speaker({}) == "Unknown"
+def test_speaker_generic_when_missing():
+    assert _speaker({}) == "Speaker"
 
 
-def test_speaker_unknown_when_none():
-    assert _speaker({"speaker": None, "dominant_speaker": None}) == "Unknown"
+def test_speaker_generic_when_none():
+    assert _speaker({"speaker": None, "dominant_speaker": None}) == "Speaker"
+
+
+def test_pick_show_collection_reachable_regardless_of_model():
+    from podcodex.bot.bot import pick_show_collection
+
+    default = ("s__bge-m3__semantic", {"model": "bge-m3", "chunker": "semantic"})
+    other = ("s__e5-small__semantic", {"model": "e5-small", "chunker": "semantic"})
+
+    # Server preference wins when present.
+    assert pick_show_collection([default, other], "e5-small", "semantic") == (
+        "s__e5-small__semantic",
+        "e5-small",
+    )
+    # Falls back to the global default combo.
+    assert pick_show_collection([default, other], "nope", "semantic") == (
+        "s__bge-m3__semantic",
+        "bge-m3",
+    )
+    # A show indexed only under a non-default model stays reachable (first by name).
+    only = ("z__e5-small__word", {"model": "e5-small", "chunker": "word"})
+    assert pick_show_collection([only], "bge-m3", "semantic") == (
+        "z__e5-small__word",
+        "e5-small",
+    )
+    assert pick_show_collection([], "bge-m3", "semantic") is None
+
+
+def test_display_speaker_maps_raw_diarization_labels():
+    assert display_speaker("SPEAKER_01") == "Speaker 1"
+    assert display_speaker("speaker_12") == "Speaker 12"
+    assert display_speaker("") == "Speaker"
+    assert display_speaker(None) == "Speaker"
+    assert display_speaker("Patrick Beja") == "Patrick Beja"
 
 
 # ──────────────────────────────────────────────
@@ -136,7 +174,7 @@ _CHUNK = {
 }
 
 
-def test_result_embed_show_in_title_query_as_author():
+def test_result_embed_show_as_author_episode_as_title():
     embed = build_result_embed(
         _CHUNK,
         rank=1,
@@ -144,15 +182,17 @@ def test_result_embed_show_in_title_query_as_author():
         label="α=0.50",
         text="film music",
     )
-    assert embed.author.name == '🔎 "film music"'
+    # Show moved to the author line; the episode title no longer repeats it.
+    assert embed.author.name == "My Podcast"
     assert "Ep01" in embed.title
-    assert "My Podcast" in embed.title
+    assert "My Podcast" not in embed.title
 
 
-def test_result_embed_footer_has_rank_and_label():
+def test_result_embed_footer_is_rank_only():
     embed = build_result_embed(_CHUNK, rank=2, total=5, label="exact / BM25")
-    assert "#2" in embed.footer.text
-    assert "exact / BM25" in embed.footer.text
+    assert embed.footer.text == "2 of 5"
+    # The search label is telemetry — it belongs in Details, not the card.
+    assert "exact / BM25" not in embed.footer.text
 
 
 def test_result_embed_description_has_text():
@@ -160,12 +200,50 @@ def test_result_embed_description_has_text():
     assert "The composer came in on day one." in embed.description
 
 
-def test_result_embed_fields():
+def test_result_embed_meta_line_in_description_no_engine_fields():
     embed = build_result_embed(_CHUNK, rank=1, total=5, label="α=0.50")
+    # Start time rides a quiet meta line in the body, not a field.
+    assert "01:23" in embed.description
+    names = {f.name for f in embed.fields}
+    assert "Relevance" not in names
+    assert "Timestamp" not in names
+
+
+def test_details_embed_carries_the_engine_numbers():
+    embed = build_details_embed(_CHUNK, label="α=0.50")
     fields = {f.name: f.value for f in embed.fields}
-    assert "01:23" in fields["Timestamp"]
-    assert "01:42" in fields["Timestamp"]
     assert "87%" in fields["Relevance"]
+    assert "01:23" in fields["Full range"]
+    assert "01:42" in fields["Full range"]
+    assert fields["Search"] == "α=0.50"
+
+
+def test_result_embed_sets_thumbnail_from_artwork():
+    chunk = {**_CHUNK, "artwork_url": "https://cdn.example/art.jpg"}
+    embed = build_result_embed(chunk, rank=1, total=5, label="")
+    assert embed.thumbnail.url == "https://cdn.example/art.jpg"
+    # No artwork → no thumbnail.
+    assert build_result_embed(_CHUNK, rank=1, total=5, label="").thumbnail.url is None
+
+
+def test_listen_button_youtube_jumps_to_timestamp():
+    chunk = {**_CHUNK, "youtube_id": "pqIcoskUuWs", "start": 614.0}
+    btn = build_listen_button(chunk)
+    assert btn is not None
+    assert btn.url == "https://www.youtube.com/watch?v=pqIcoskUuWs&t=614s"
+    assert "YouTube" in btn.label
+
+
+def test_listen_button_rss_links_episode_no_seek():
+    chunk = {**_CHUNK, "audio_url": "https://cdn.example/ep.mp3", "start": 614.0}
+    btn = build_listen_button(chunk)
+    assert btn is not None
+    assert btn.url == "https://cdn.example/ep.mp3"  # no timestamp appended
+    assert "Listen" in btn.label
+
+
+def test_listen_button_none_for_local_import():
+    assert build_listen_button(_CHUNK) is None
 
 
 def test_result_embed_no_show_has_no_author():
@@ -554,3 +632,86 @@ def test_autocomplete_cache_stale_after_ttl():
         ttl=300.0,
     )
     assert cache.is_stale() is True
+
+
+# ──────────────────────────────────────────────
+# _resolve_show_collections — one collection per show, model-agnostic
+# ──────────────────────────────────────────────
+
+
+def _seed_multimodel_index(tmp_path):
+    """Two shows: Alpha under the default model, Beta only under e5-small."""
+    import numpy as np
+
+    from podcodex.rag.index_store import IndexStore
+
+    dim = 8
+    store = IndexStore(tmp_path / "index")
+    for show, model in (("Alpha", "bge-m3"), ("Beta", "e5-small")):
+        col = f"{show.lower()}__{model}__semantic"
+        store.ensure_collection(
+            col, show=show, model=model, chunker="semantic", dim=dim
+        )
+        chunks = [
+            {
+                "text": "x",
+                "episode": "ep1",
+                "show": show,
+                "source": "transcript",
+                "dominant_speaker": "sp",
+                "start": 0.0,
+                "end": 1.0,
+            }
+        ]
+        store.save_chunks(
+            col,
+            "ep1",
+            chunks,
+            np.random.default_rng(0).random((1, dim), dtype=np.float32),
+        )
+    return store
+
+
+def _bot_for(tmp_path, store):
+    from podcodex.bot.bot import PodCodexBot
+
+    bot = PodCodexBot(
+        BotConfig(index_path=str(tmp_path / "index")),
+        server_config_path=tmp_path / "server_config.json",
+    )
+    _ = bot.local
+    return bot
+
+
+def test_resolve_show_collections_reaches_every_show_one_each(tmp_path):
+    from podcodex.bot.bot import ResolvedShows, ShowAccess
+
+    store = _seed_multimodel_index(tmp_path)
+    bot = _bot_for(tmp_path, store)
+    settings = bot._server_settings(None)
+    col_info = bot.local.get_all_collection_info()
+
+    pairs = bot._resolve_show_collections(
+        ResolvedShows(ShowAccess.ALL), settings, col_info
+    )
+    # One collection per show, and Beta is reachable under e5-small without a model arg.
+    assert sorted(pairs) == [
+        ("alpha__bge-m3__semantic", "bge-m3"),
+        ("beta__e5-small__semantic", "e5-small"),
+    ]
+
+
+def test_resolve_show_collections_excludes_locked_show(tmp_path):
+    from podcodex.bot.bot import ResolvedShows, ShowAccess
+
+    store = _seed_multimodel_index(tmp_path)
+    bot = _bot_for(tmp_path, store)
+    store.set_show_password("Beta", "sha256:" + "0" * 64)
+    bot._reload_shows()
+    settings = bot._server_settings(None)
+    col_info = bot.local.get_all_collection_info()
+
+    pairs = bot._resolve_show_collections(
+        ResolvedShows(ShowAccess.ALL), settings, col_info
+    )
+    assert pairs == [("alpha__bge-m3__semantic", "bge-m3")]

@@ -64,8 +64,74 @@ def fmt_timestamp(start: float, end: float, *, timed: bool = True) -> str | None
     return f"{fmt_time(start)} → {fmt_time(end)}"
 
 
+_RAW_SPEAKER_RE = re.compile(r"^SPEAKER_0*(\d+)$", re.IGNORECASE)
+
+
+def display_speaker(name: str | None) -> str:
+    """Render a speaker label for humans, never leaking raw diarization tags.
+
+    ``SPEAKER_01`` becomes ``Speaker 1``; an empty/blank label (YouTube
+    subtitle imports without ``<v>`` tags leave ``""``) becomes ``Speaker``.
+    Any real name passes through unchanged.
+    """
+    name = (name or "").strip()
+    if not name:
+        return "Speaker"
+    m = _RAW_SPEAKER_RE.match(name)
+    if m:
+        return f"Speaker {int(m.group(1))}"
+    return name
+
+
 def speaker(chunk: dict) -> str:
-    return chunk.get("speaker") or chunk.get("dominant_speaker") or "Unknown"
+    return display_speaker(chunk.get("speaker") or chunk.get("dominant_speaker"))
+
+
+def is_http_url(value: str | None) -> bool:
+    """True when *value* is a non-empty http(s) URL (Discord's link requirement)."""
+    return (value or "").strip().startswith(("http://", "https://"))
+
+
+def set_chunk_thumbnail(embed: "discord.Embed", chunk: dict) -> None:
+    """Set the embed thumbnail from a chunk's ``artwork_url`` when it's a real URL."""
+    art = (chunk.get("artwork_url") or "").strip()
+    if is_http_url(art):
+        embed.set_thumbnail(url=art)
+
+
+_MONTHS = (
+    "",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+
+def pub_month(pub_date: str | None) -> str:
+    """Format an ISO ``pub_date`` as ``"Apr 2026"``, or ``""`` when unusable.
+
+    Locale-free: reads the ``YYYY-MM`` prefix directly rather than parsing a
+    full datetime, so it never trips on the timezone/offset tails that ride
+    along on normalized RSS dates.
+    """
+    p = (pub_date or "").strip()
+    if len(p) >= 7 and p[4] == "-":
+        try:
+            month = int(p[5:7])
+        except ValueError:
+            return ""
+        if 1 <= month <= 12:
+            return f"{_MONTHS[month]} {p[:4]}"
+    return ""
 
 
 def count_occurrences(text: str, query: str) -> int:
@@ -105,7 +171,7 @@ def speaker_lines(chunk: dict, query: str = "") -> str:
     merged = merge_display_turns(turns)
     lines = []
     for t in merged:
-        spk = t.get("speaker", "Unknown")
+        spk = display_speaker(t.get("speaker"))
         start = t.get("start", 0)
         ts_part = f"({fmt_time(start)})" if start else ""
         text = highlight(t.get("text", ""), mark) if mark else t.get("text", "")
@@ -162,7 +228,7 @@ def _expand_turns(chunk: dict, bold: bool = False) -> list[str]:
 
     lines: list[str] = []
     for t in turns:
-        spk = t.get("speaker", "Unknown")
+        spk = display_speaker(t.get("speaker"))
         start = t.get("start", 0)
         ts_part = f" · {fmt_time(start)}" if start else ""
         text = t.get("text", "")

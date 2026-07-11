@@ -142,11 +142,12 @@ def test_build_results_view_components_and_clamping():
     assert cids[0] == f"pcx:r:{sid}:0:p"
     assert "pcx:noop" in cids
     assert f"pcx:rx:{sid}:0" in cids  # expand
+    assert f"pcx:rd:{sid}:0" in cids  # details
     assert f"pcx:rj:{sid}" in cids  # jump (n > 1)
-    assert "#1 of 3" in embed.footer.text
+    assert "1 of 3" in embed.footer.text
     # Out-of-range index clamps to the last page.
     embed_last, _ = _run(ui.build_results_view(bot, sid, 99))
-    assert "#3 of 3" in embed_last.footer.text
+    assert "3 of 3" in embed_last.footer.text
     store.close()
 
 
@@ -180,7 +181,7 @@ def test_build_transcript_view_opens_at_match():
     sid = store.save(CachedSearch("search", "lbl", "q", _REFS))
     bot = _FakeBot(store)
     embed, view = _run(ui.build_transcript_view(bot, sid, 0, None))
-    assert "Segment 3 of 5 ◀ matched" in embed.footer.text  # ref.chunk_index == 2
+    assert "3 of 5 ◀ matched" in embed.footer.text  # ref.chunk_index == 2
     assert any(c.custom_id == f"pcx:t:{sid}:0:2:p" for c in view.children)
     store.close()
 

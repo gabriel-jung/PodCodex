@@ -184,6 +184,7 @@ def _entry_to_episode(entry: dict[str, Any], idx: int) -> RSSEpisode:
         episode_number=None,
         season_number=None,
         artwork_url=thumbnail,
+        youtube_id=video_id,  # explicit provenance; downstream never infers
     )
 
 

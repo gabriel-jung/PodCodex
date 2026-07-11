@@ -49,29 +49,40 @@ import os
 import random
 import secrets
 import time
-from dataclasses import asdict, dataclass, field, fields
+from collections import defaultdict
+from dataclasses import asdict, dataclass, field, fields, replace
 from enum import Enum
 from pathlib import Path
 
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from loguru import logger
 
+from podcodex.bot.announce import (
+    AnnounceStore,
+    build_new_episodes_embed,
+    build_version_embed,
+)
 from podcodex.bot.formatting import (
     CooldownManager,
-    build_compact_embed,
     count_occurrences,
+    display_speaker,
     episode_display,
     fmt_time,
     fmt_timestamp,
     format_filter_suffix,
     humanize_stem,
+    pub_month,
+    set_chunk_thumbnail,
 )
 from podcodex.bot.result_store import CachedSearch, ResultRef, SearchCacheStore
 from podcodex.bot.ui import (
     DYNAMIC_ITEMS,
     ExpandResult,
+    build_compact_view,
     build_list_view,
+    build_listen_button,
     build_results_view,
 )
 from podcodex.rag.defaults import (
@@ -180,6 +191,7 @@ class BotConfig:
     merge_strategy: str = "roundrobin"
     cooldown_seconds: float = 5.0
     dev_guild_id: int | None = None
+    announce_interval_minutes: int = 10
 
 
 @dataclass
@@ -192,6 +204,7 @@ class ServerSettings:
     allowed_shows: list[str] = field(default_factory=list)
     default_source: str = ""
     compact: bool = False
+    announce_channel_id: int = 0  # 0 = announcements disabled for this server
 
 
 def _verify_password(password: str, stored_hash: str) -> bool:
@@ -205,6 +218,31 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
 
 # ── Embed builder ─────────────────────────────
+
+
+def pick_show_collection(
+    cols: list[tuple[str, dict]], pref_model: str, pref_chunker: str
+) -> tuple[str, str] | None:
+    """Choose one ``(collection, model)`` for a show from its collections.
+
+    Priority: the server's preferred model+chunker, then the global default
+    combo, then the first remaining collection by name — so a show indexed
+    only under a non-default model stays reachable without the user ever
+    naming a model. Returns ``None`` for a show with no collections.
+    """
+    for name, info in cols:
+        if info.get("model") == pref_model and info.get("chunker") == pref_chunker:
+            return name, info.get("model", pref_model)
+    for name, info in cols:
+        if (
+            info.get("model") == DEFAULT_MODEL
+            and info.get("chunker") == DEFAULT_CHUNKING
+        ):
+            return name, info["model"]
+    if not cols:
+        return None
+    name, info = min(cols, key=lambda c: c[0])
+    return name, info.get("model", DEFAULT_MODEL)
 
 
 def _chunk_to_ref(chunk: dict, collection: str) -> ResultRef:
@@ -248,6 +286,8 @@ class PodCodexBot(discord.Client):
         self._server_cfg: dict[int, ServerSettings] = self._load_server_config()
         # Durable + in-RAM cache backing the persistent pagination buttons.
         self.results = SearchCacheStore(server_config_path.parent / "search_cache.db")
+        # Diff state for new-episode + version announcements.
+        self.announce = AnnounceStore(server_config_path.parent / "announce_state.db")
         self._ac_cache = _AutocompleteCache(
             episodes={}, episode_titles={}, sources={}, speakers={}
         )
@@ -257,6 +297,10 @@ class PodCodexBot(discord.Client):
         # indexed) and bot state must be reloaded.
         self._index_mtime_seen: float = 0.0
         self._last_mtime_check: float = 0.0
+        # The announcer keeps its OWN mtime watermark, separate from
+        # ``_index_mtime_seen`` — otherwise a user command's refresh would
+        # advance the shared value and the loop would never see the change.
+        self._announce_mtime_seen: float = 0.0
 
         self._register_commands()
 
@@ -315,13 +359,11 @@ class PodCodexBot(discord.Client):
     ) -> ServerSettings:
         """Merge per-query overrides with server defaults."""
         base = self._server_settings(guild_id)
-        return ServerSettings(
+        return replace(
+            base,
             model=model or base.model,
             chunker=chunker or base.chunker,
             top_k=top_k or base.top_k,
-            allowed_shows=base.allowed_shows,
-            default_source=base.default_source,
-            compact=base.compact,
         )
 
     # ── Access control helpers ────────────────
@@ -359,9 +401,7 @@ class PodCodexBot(discord.Client):
                 "Add a show in the desktop app and run the **Index** step."
             )
 
-        model_label = (
-            MODELS[settings.model].label if settings.model in MODELS else settings.model
-        )
+        model_label = self._model_label(settings.model)
         same_model = {
             info["model"]
             for info in col_info.values()
@@ -393,6 +433,19 @@ class PodCodexBot(discord.Client):
 
         return "No shows are available to search here."
 
+    @staticmethod
+    def _model_label(model: str) -> str:
+        """Human label for a model key; a stale/unknown key passes through raw
+        instead of raising (server configs can outlive the MODELS registry)."""
+        return MODELS[model].label if model in MODELS else model
+
+    def _show_allowed(self, show_name: str, settings: ServerSettings) -> bool:
+        """Whether this server may see ``show_name``: public, or unlocked here."""
+        return (
+            show_name not in self._locked_show_names
+            or show_name in settings.allowed_shows
+        )
+
     def _filter_collections(
         self,
         collections: list[str],
@@ -414,39 +467,54 @@ class PodCodexBot(discord.Client):
         info_map = (
             col_info if col_info is not None else self.local.get_all_collection_info()
         )
-        allowed = set(settings.allowed_shows)
         return [
             col
             for col in collections
-            if (info_map.get(col) or {}).get("show", "") not in self._locked_show_names
-            or (info_map.get(col) or {}).get("show", "") in allowed
+            if self._show_allowed((info_map.get(col) or {}).get("show", ""), settings)
         ]
 
-    def _resolve_collections(
+    def _resolve_show_collections(
         self,
         shows: ResolvedShows,
         settings: ServerSettings,
         col_info: dict[str, dict],
-    ) -> list[str]:
-        """Collections to query for ``/search``, ``/exact``, ``/random``.
+    ) -> list[tuple[str, str]]:
+        """One ``(collection, model)`` per accessible show.
 
-        ``is_locked`` short-circuits to ``[]`` so no preview leaks; specific
-        shows missing from the index are skipped (downstream retriever errors).
+        The single collection-resolution path for /search, /exact, /random and
+        the stats commands. Each show maps to exactly one collection (see
+        :func:`pick_show_collection`), so a query never needs a model or
+        chunker and a show indexed under any model stays reachable.
+        ``is_locked`` yields ``[]`` (no preview leaks); locked-but-unlocked
+        shows pass the access filter.
         """
-        if shows.is_specific:
-            return [
-                collection_name(s, settings.model, settings.chunker)
-                for s in shows.shows
-                if collection_name(s, settings.model, settings.chunker) in col_info
-            ]
         if shows.is_locked:
             return []
-        collections = [
-            name
-            for name, info in col_info.items()
-            if info["model"] == settings.model and info["chunker"] == settings.chunker
+        by_show: dict[str, list[tuple[str, dict]]] = defaultdict(list)
+        for name, info in col_info.items():
+            by_show[info.get("show", "")].append((name, info))
+
+        if shows.is_specific:
+            wanted = {s.lower() for s in shows.shows}
+            show_keys = [s for s in by_show if s.lower() in wanted]
+        else:
+            show_keys = list(by_show)
+
+        picked: list[tuple[str, str]] = []
+        for show_name in sorted(show_keys):
+            choice = pick_show_collection(
+                by_show[show_name], settings.model, settings.chunker
+            )
+            if choice is not None:
+                picked.append(choice)
+
+        if not self._locked_show_names:
+            return picked
+        return [
+            (col, model)
+            for col, model in picked
+            if self._show_allowed((col_info.get(col) or {}).get("show", ""), settings)
         ]
-        return self._filter_collections(collections, settings, col_info)
 
     async def _refresh_if_stale(self) -> None:
         """Detect external index changes and reload bot state.
@@ -513,11 +581,143 @@ class PodCodexBot(discord.Client):
             await self.tree.sync()
             logger.info("Commands synced globally")
 
+        # Start the announcement poller. before_loop waits until ready.
+        self._announce_loop.change_interval(
+            minutes=self.config.announce_interval_minutes
+        )
+        self._announce_loop.start()
+
     async def on_ready(self) -> None:
         cmds = [c.name for c in self.tree.get_commands()]
         logger.success(
             f"Logged in as {self.user} (id={self.user.id}) — commands: {cmds}"
         )
+        await self._announce_version_if_changed()
+
+    # ── Announcements ─────────────────────────
+
+    @tasks.loop(minutes=10)
+    async def _announce_loop(self) -> None:
+        """Poll the index and announce newly-added episodes. Never raises."""
+        try:
+            await self._run_announce_tick()
+        except Exception:
+            logger.exception("Announce loop tick failed")
+
+    @_announce_loop.before_loop
+    async def _before_announce(self) -> None:
+        await self.wait_until_ready()
+
+    async def _run_announce_tick(self) -> None:
+        """One poll: detect index change, diff episodes, post per guild.
+
+        State (baseline + seen episodes) advances regardless of whether any
+        server has a channel configured, so enabling announcements later never
+        replays the back-catalogue. Posting is best-effort per channel.
+        """
+        loop = asyncio.get_running_loop()
+        current_mtime = await loop.run_in_executor(None, self.local.index_mtime)
+        if current_mtime <= self._announce_mtime_seen:
+            return
+        self._announce_mtime_seen = current_mtime
+        await loop.run_in_executor(None, self.local.reconnect)
+        await loop.run_in_executor(None, self._reload_shows)
+        col_info = await loop.run_in_executor(None, self.local.get_all_collection_info)
+
+        # Diff each collection; observe() advances the seen-state.
+        new_cols: dict[str, list[str]] = {}
+        for col in col_info:
+            stems = await loop.run_in_executor(
+                None, lambda c=col: self.local.list_episodes(c)
+            )
+            new = self.announce.observe(col, set(stems))
+            if new:
+                new_cols[col] = new
+        if not new_cols:
+            return
+
+        # Fetch display rows for the new stems, newest first.
+        per_col_rows: dict[str, list[dict]] = {}
+        for col, new_stems in new_cols.items():
+            stats = await loop.run_in_executor(
+                None, lambda c=col: self.local.get_episode_stats(c)
+            )
+            newset = set(new_stems)
+            rows = [s for s in stats if s.get("episode") in newset]
+            rows.sort(
+                key=lambda e: (e.get("pub_date") or "", e.get("episode", "")),
+                reverse=True,
+            )
+            if rows:
+                per_col_rows[col] = rows
+        if not per_col_rows:
+            return
+
+        async for guild_id, settings, channel in self._iter_announce_channels():
+            accessible = {
+                c
+                for c, _ in self._resolve_show_collections(
+                    ResolvedShows(ShowAccess.ALL), settings, col_info
+                )
+            }
+            for col, rows in per_col_rows.items():
+                if col not in accessible:
+                    continue
+                show = (col_info.get(col, {}) or {}).get("show", "") or col
+                try:
+                    await channel.send(embed=build_new_episodes_embed(show, rows))
+                except discord.HTTPException:
+                    logger.warning(
+                        f"Announce send failed (guild {guild_id}, "
+                        f"channel {settings.announce_channel_id})"
+                    )
+
+    async def _announce_channel(self, channel_id: int):
+        """Resolve a configured channel id to a sendable channel, or None."""
+        channel = self.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return None
+        return channel if hasattr(channel, "send") else None
+
+    async def _iter_announce_channels(self):
+        """Yield ``(guild_id, settings, channel)`` for every server with a
+        configured, resolvable announcement channel."""
+        for guild_id, settings in self._server_cfg.items():
+            if not settings.announce_channel_id:
+                continue
+            channel = await self._announce_channel(settings.announce_channel_id)
+            if channel is not None:
+                yield guild_id, settings, channel
+
+    async def _announce_version_if_changed(self) -> None:
+        """Announce the bot version once when it changes from the last one.
+
+        First ever run baselines silently (no announce). Idempotent across the
+        repeated ``on_ready`` fired on gateway reconnects.
+        """
+        from importlib.metadata import version as _pkg_version
+
+        try:
+            current = _pkg_version("podcodex")
+        except Exception:
+            return
+        if not current:
+            return
+        stored = self.announce.get_meta("announced_version")
+        if stored is None:
+            self.announce.set_meta("announced_version", current)
+            return
+        if stored == current:
+            return
+        async for guild_id, _settings, channel in self._iter_announce_channels():
+            try:
+                await channel.send(embed=build_version_embed(current))
+            except discord.HTTPException:
+                logger.warning(f"Version announce send failed (guild {guild_id})")
+        self.announce.set_meta("announced_version", current)
 
     # ── Cooldown ──────────────────────────────
 
@@ -838,7 +1038,7 @@ class PodCodexBot(discord.Client):
             await self._refresh_if_stale()
             settings = self._effective_settings(interaction.guild_id)
             shows = self._resolve_shows(settings, "")
-            label = f"α={ALPHA:.2f} • {MODELS[settings.model].label}"
+            label = f"α={ALPHA:.2f} • {self._model_label(settings.model)}"
             await self._run_search(
                 interaction,
                 query,
@@ -896,7 +1096,7 @@ class PodCodexBot(discord.Client):
             effective_source = source or settings.default_source or None
             use_compact = compact == "true" if compact else settings.compact
             shows = self._resolve_shows(settings, show)
-            label = f"α={alpha:.2f} • {MODELS[settings.model].label}"
+            label = f"α={alpha:.2f} • {self._model_label(settings.model)}"
             await self._run_search(
                 interaction,
                 query,
@@ -1148,6 +1348,24 @@ class PodCodexBot(discord.Client):
         setup.autocomplete("model")(self._model_autocomplete)
         setup.autocomplete("chunker")(self._chunker_autocomplete)
 
+        # /announcements ──────────────────────
+        @self.tree.command(
+            name="announcements",
+            description="Set the channel for new-episode and version updates (admin)",
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        @app_commands.describe(
+            channel="Channel to post announcements in",
+            off="Turn announcements off for this server",
+        )
+        @app_commands.choices(off=_BOOL_CHOICES)
+        async def announcements(
+            interaction: discord.Interaction,
+            channel: discord.TextChannel | None = None,
+            off: str = "",
+        ) -> None:
+            await self._handle_announcements(interaction, channel, off == "true")
+
         # /sync ───────────────────────────────
         @self.tree.command(
             name="sync",
@@ -1269,6 +1487,14 @@ class PodCodexBot(discord.Client):
                 ),
                 inline=False,
             )
+            embed.add_field(
+                name="/announcements *(admin)*",
+                value=(
+                    "Pick a channel where the bot posts new episodes and version "
+                    "updates. Pass `off:True` to disable."
+                ),
+                inline=False,
+            )
             if self._locked_show_names:
                 embed.add_field(
                     name="/unlock *(admin)*",
@@ -1348,11 +1574,9 @@ class PodCodexBot(discord.Client):
             )
             return
 
-        if compact:
-            embed = build_compact_embed(results, label, question=query)
-            await interaction.followup.send(embed=embed)
-        else:
-            await self._send_results("search", label, query, results, interaction)
+        await self._send_results(
+            "search", label, query, results, interaction, prefer_list=compact
+        )
 
     async def _send_results(
         self,
@@ -1361,11 +1585,22 @@ class PodCodexBot(discord.Client):
         query: str,
         results: list[tuple[dict, str]],
         interaction: discord.Interaction,
+        *,
+        prefer_list: bool = False,
     ) -> None:
-        """Cache result refs and post the first persistent page."""
+        """Cache result refs and post the first persistent page.
+
+        ``prefer_list`` opens on the compact list instead of the paged card
+        (the /exact default, or /search under the server's compact setting);
+        either view can flip to the other via its toggle button.
+        """
         refs = [_chunk_to_ref(chunk, col) for chunk, col in results]
         sid = self.results.save(CachedSearch(kind, label, query, refs))
-        built = await build_results_view(self, sid, 0)
+        built = (
+            await build_compact_view(self, sid)
+            if prefer_list
+            else await build_results_view(self, sid, 0)
+        )
         if built is None:  # episode vanished between search and render
             await interaction.followup.send(
                 "❌ Results could not be loaded — please try again.", ephemeral=True
@@ -1387,30 +1622,38 @@ class PodCodexBot(discord.Client):
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
     ) -> list[tuple[dict, str]]:
-        """Run hybrid retrieval across collections and merge results."""
-        model, chunker = settings.model, settings.chunker
+        """Run hybrid retrieval, one collection per show, and merge results.
+
+        Shows may resolve to collections under different embedding models, so
+        retrievers are grouped by model (each encodes the query once).
+        """
         col_info = self.local.get_all_collection_info()
-        collections = self._resolve_collections(shows, settings, col_info)
-        if not collections:
-            logger.warning(f"No collections for model={model!r} chunker={chunker!r}")
+        pairs = self._resolve_show_collections(shows, settings, col_info)
+        if not pairs:
+            logger.warning("No collections resolved for this query")
             return []
 
-        ret = self.retriever(model)
+        by_model: dict[str, list[str]] = defaultdict(list)
+        for col, model in pairs:
+            by_model[model].append(col)
+
         hits_by_col: dict[str, list[dict]] = {}
-        for col in collections:
-            hits = ret.retrieve(
-                query,
-                col,
-                top_k=settings.top_k,
-                alpha=alpha,
-                source=source,
-                episode=episode,
-                speaker=speaker,
-                pub_date_min=pub_date_min,
-                pub_date_max=pub_date_max,
-            )
-            if hits:
-                hits_by_col[col] = hits
+        for model, cols in by_model.items():
+            ret = self.retriever(model)
+            for col in cols:
+                hits = ret.retrieve(
+                    query,
+                    col,
+                    top_k=settings.top_k,
+                    alpha=alpha,
+                    source=source,
+                    episode=episode,
+                    speaker=speaker,
+                    pub_date_min=pub_date_min,
+                    pub_date_max=pub_date_max,
+                )
+                if hits:
+                    hits_by_col[col] = hits
 
         merged = merge_results(
             hits_by_col,
@@ -1439,8 +1682,8 @@ class PodCodexBot(discord.Client):
 
         try:
             col_info = await self._cached_col_info()
-            collections = self._resolve_collections(shows, settings, col_info)
-            if not collections:
+            pairs = self._resolve_show_collections(shows, settings, col_info)
+            if not pairs:
                 await interaction.followup.send(
                     self._empty_collections_message(col_info, settings, shows),
                     ephemeral=True,
@@ -1448,10 +1691,10 @@ class PodCodexBot(discord.Client):
                 return
 
             all_results: list[tuple[dict, str]] = []
-            for col in collections:
+            for col, model in pairs:
                 hits = await loop.run_in_executor(
                     None,
-                    lambda c=col: self.retriever(settings.model).exact(
+                    lambda c=col, m=model: self.retriever(m).exact(
                         query,
                         c,
                         source=source,
@@ -1490,27 +1733,17 @@ class PodCodexBot(discord.Client):
         )
         all_results = phrase + fuzzy
 
-        n_exact = sum(
-            1
-            for c, _ in all_results
-            if not c.get("accent_match") and not c.get("fuzzy_match")
-        )
-        n_accent = sum(1 for c, _ in all_results if c.get("accent_match"))
-        n_fuzzy = sum(1 for c, _ in all_results if c.get("fuzzy_match"))
         total_mentions = sum(
             count_occurrences(c.get("text", ""), query) for c, _ in all_results
         )
-        label_parts = [f"exact match 🔍 · {n_exact} exact"]
-        if n_accent:
-            label_parts.append(f"{n_accent} variant{'s' if n_accent != 1 else ''}")
-        if n_fuzzy:
-            label_parts.append(f"{n_fuzzy} near-typo{'s' if n_fuzzy != 1 else ''}")
-        label_parts.append(
-            f"{total_mentions} mention{'s' if total_mentions != 1 else ''} "
-            f"in {len(all_results)} chunk{'s' if len(all_results) != 1 else ''}"
+        # Fuzzy-only hits contain no literal occurrence; never show "0 matches"
+        # above a non-empty result list.
+        n = total_mentions or len(all_results)
+        label = f"{n} match{'es' if n != 1 else ''}"
+        # /exact is survey-shaped (many positional hits): open on the list.
+        await self._send_results(
+            "exact", label, query, all_results, interaction, prefer_list=True
         )
-        label = " · ".join(label_parts)
-        await self._send_results("exact", label, query, all_results, interaction)
 
     # ── /random handler ───────────────────────
 
@@ -1531,16 +1764,16 @@ class PodCodexBot(discord.Client):
 
         try:
             col_info = await self._cached_col_info()
-            collections = self._resolve_collections(shows, settings, col_info)
-            if not collections:
+            pairs = self._resolve_show_collections(shows, settings, col_info)
+            if not pairs:
                 await interaction.followup.send(
                     self._empty_collections_message(col_info, settings, shows),
                     ephemeral=True,
                 )
                 return
 
-            col = random.choice(collections)
-            retriever = self.retriever(settings.model)
+            col, model = random.choice(pairs)
+            retriever = self.retriever(model)
             chunk = await loop.run_in_executor(
                 None,
                 lambda: retriever.random(
@@ -1571,7 +1804,7 @@ class PodCodexBot(discord.Client):
 
         show = chunk.get("show", "")
         ep_display = episode_display(chunk)
-        spk = chunk.get("speaker") or chunk.get("dominant_speaker") or "Unknown"
+        spk = display_speaker(chunk.get("speaker") or chunk.get("dominant_speaker"))
         start = chunk.get("start", 0.0)
         end = chunk.get("end", 0.0)
         text = chunk.get("text", "")
@@ -1580,20 +1813,16 @@ class PodCodexBot(discord.Client):
             description=f'"{text}"',
             color=discord.Color.blurple(),
         )
-        title = ep_display or "(untitled)"
         if show:
-            title += f" ({show})"
-        embed.title = title
+            embed.set_author(name=show)
+        embed.title = ep_display or "(untitled)"
+        set_chunk_thumbnail(embed, chunk)
         embed.add_field(name="Speaker", value=spk, inline=True)
         timed = chunk.get("timed", True)
         ts_label = fmt_timestamp(start, end, timed=timed)
         if ts_label:
             embed.add_field(name="Timestamp", value=ts_label, inline=True)
-        pool = chunk.get("_pool_size")
-        footer_text = "🎲 random quote"
-        if pool:
-            footer_text += f" (from {pool:,} segments)"
-        embed.set_footer(text=footer_text)
+        embed.set_footer(text="🎲 Random quote")
 
         # Cache a one-result search so the "Show context" button is persistent
         # and survives restarts like the /search and /exact ones.
@@ -1601,6 +1830,9 @@ class PodCodexBot(discord.Client):
             CachedSearch("random", "", "", [_chunk_to_ref(chunk, col)])
         )
         view = discord.ui.View(timeout=None)
+        listen = build_listen_button(chunk)
+        if listen is not None:
+            view.add_item(listen)
         view.add_item(ExpandResult(sid, 0))
         await interaction.followup.send(embed=embed, view=view)
 
@@ -1675,7 +1907,8 @@ class PodCodexBot(discord.Client):
         if show_remove and show_remove in new_shows:
             new_shows.remove(show_remove)
 
-        updated = ServerSettings(
+        updated = replace(
+            current,
             model=model or current.model,
             chunker=chunker or current.chunker,
             top_k=top_k or current.top_k,
@@ -1700,6 +1933,54 @@ class PodCodexBot(discord.Client):
             f"Compact: `{updated.compact}`",
             ephemeral=True,
         )
+
+    # ── /announcements handler ────────────────
+
+    async def _handle_announcements(
+        self,
+        interaction: discord.Interaction,
+        channel: "discord.TextChannel | None",
+        off: bool,
+    ) -> None:
+        guild_id = interaction.guild_id
+        if guild_id is None:
+            await interaction.response.send_message(
+                "Use this command in a server.", ephemeral=True
+            )
+            return
+        settings = self._server_cfg.get(guild_id) or self._server_settings(guild_id)
+
+        if off:
+            settings.announce_channel_id = 0
+            self._server_cfg[guild_id] = settings
+            self._save_server_config()
+            await interaction.response.send_message(
+                "🔕 Announcements are off for this server.", ephemeral=True
+            )
+            return
+
+        if channel is not None:
+            settings.announce_channel_id = channel.id
+            self._server_cfg[guild_id] = settings
+            self._save_server_config()
+            await interaction.response.send_message(
+                f"📣 New episodes and version updates will post in {channel.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        # No args: report current state.
+        if settings.announce_channel_id:
+            await interaction.response.send_message(
+                f"📣 Announcements post in <#{settings.announce_channel_id}>. "
+                "Pass `off:True` to disable.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "🔕 Announcements are off. Pass a `channel` to enable them.",
+                ephemeral=True,
+            )
 
     # ── /admin-reload handler ─────────────────
 
@@ -1861,16 +2142,17 @@ class PodCodexBot(discord.Client):
 
         try:
             col_info = await self._cached_col_info()
+            resolved = (
+                self._resolve_shows(settings, show)
+                if show
+                else ResolvedShows(ShowAccess.ALL)
+            )
             collections = [
-                name
-                for name, info in col_info.items()
-                if (not show or info["show"] == show)
-                and info["model"] == settings.model
-                and info["chunker"] == settings.chunker
+                c
+                for c, _ in self._resolve_show_collections(resolved, settings, col_info)
             ]
-            collections = self._filter_collections(collections, settings, col_info)
             if not collections:
-                stats_shows = self._resolve_shows(settings, show) if show else None
+                stats_shows = resolved if show else None
                 await interaction.followup.send(
                     self._empty_collections_message(col_info, settings, stats_shows),
                     ephemeral=True,
@@ -1912,7 +2194,6 @@ class PodCodexBot(discord.Client):
             value="\n".join(f"🎙 {s}" for s in show_names) or "—",
             inline=False,
         )
-        embed.set_footer(text=f"Model: {MODELS[settings.model].label}")
 
         await interaction.followup.send(embed=embed)
 
@@ -1931,16 +2212,17 @@ class PodCodexBot(discord.Client):
 
         try:
             col_info = await self._cached_col_info()
+            resolved = (
+                self._resolve_shows(settings, show)
+                if show
+                else ResolvedShows(ShowAccess.ALL)
+            )
             collections = [
-                name
-                for name, info in col_info.items()
-                if (not show or info["show"] == show)
-                and info["model"] == settings.model
-                and info["chunker"] == settings.chunker
+                c
+                for c, _ in self._resolve_show_collections(resolved, settings, col_info)
             ]
-            collections = self._filter_collections(collections, settings, col_info)
             if not collections:
-                speaker_shows = self._resolve_shows(settings, show) if show else None
+                speaker_shows = resolved if show else None
                 await interaction.followup.send(
                     self._empty_collections_message(col_info, settings, speaker_shows),
                     ephemeral=True,
@@ -1974,7 +2256,7 @@ class PodCodexBot(discord.Client):
                 (r["total_duration"] / total_duration * 100) if total_duration else 0
             )
             lines.append(
-                f"`{i:>2}.` **{r['speaker']}** — `{fmt_time(r['total_duration'])}` "
+                f"`{i:>2}.` **{display_speaker(r['speaker'])}** — `{fmt_time(r['total_duration'])}` "
                 f"({share:.0f}%) · {r['chunk_count']} seg · {r['episodes']} ep"
             )
 
@@ -1985,11 +2267,7 @@ class PodCodexBot(discord.Client):
             color=discord.Color.blurple(),
         )
         if len(ranked) > len(top):
-            embed.set_footer(
-                text=f"Showing top {len(top)} of {len(ranked)} · Model: {MODELS[settings.model].label}"
-            )
-        else:
-            embed.set_footer(text=f"Model: {MODELS[settings.model].label}")
+            embed.set_footer(text=f"Showing top {len(top)} of {len(ranked)}")
 
         await interaction.followup.send(embed=embed)
 
@@ -2024,16 +2302,10 @@ class PodCodexBot(discord.Client):
                 show = settings.allowed_shows[0]
             else:
                 col_info = await self._cached_col_info()
-                collections = [
-                    name
-                    for name, info in col_info.items()
-                    if info["model"] == settings.model
-                    and info["chunker"] == settings.chunker
-                ]
-                collections = self._filter_collections(collections, settings, col_info)
-                shows = sorted(
-                    {col_info.get(c, {}).get("show") or c for c in collections}
+                pairs = self._resolve_show_collections(
+                    ResolvedShows(ShowAccess.ALL), settings, col_info
                 )
+                shows = sorted({col_info.get(c, {}).get("show") or c for c, _ in pairs})
                 if len(shows) == 1:
                     show = shows[0]
                 elif not shows:
@@ -2050,7 +2322,16 @@ class PodCodexBot(discord.Client):
                     )
                     return
 
-        col = collection_name(show, settings.model, settings.chunker)
+        col_info = await self._cached_col_info()
+        ep_pairs = self._resolve_show_collections(
+            ResolvedShows(ShowAccess.SPECIFIC, (show,)), settings, col_info
+        )
+        if not ep_pairs:
+            await interaction.followup.send(
+                f"No episodes found for **{show}**.", ephemeral=True
+            )
+            return
+        col = ep_pairs[0][0]
 
         try:
             ep_stats = await loop.run_in_executor(
@@ -2072,6 +2353,11 @@ class PodCodexBot(discord.Client):
             )
             return
 
+        # Newest first: dated episodes descending, undated sink to the bottom.
+        ep_stats.sort(
+            key=lambda e: (e.get("pub_date") or "", e.get("episode", "")), reverse=True
+        )
+
         # Paginate: 10 episodes per embed
         pages_data = [ep_stats[i : i + 10] for i in range(0, len(ep_stats), 10)]
         footer = f"{len(ep_stats)} episodes"
@@ -2082,13 +2368,28 @@ class PodCodexBot(discord.Client):
         for page in pages_data:
             embed = discord.Embed(title=f"🎙 {show}", color=discord.Color.blurple())
             for ep in page:
-                speakers = ", ".join(ep.get("speakers", [])) or "—"
                 ep_display = episode_display(ep)
-                embed.add_field(
-                    name=ep_display,
-                    value=f"{speakers} · `{fmt_time(ep['duration'])}`",
-                    inline=False,
+                number = ep.get("broadcast_number") or ep.get("episode_number")
+                name = f"#{number} · {ep_display}" if number else ep_display
+
+                # Cap the roster so 10 fields stay under Discord's 6000-char
+                # total embed budget even on heavily-diarized episodes.
+                roster = [display_speaker(s) for s in ep.get("speakers", [])]
+                if len(roster) > 5:
+                    roster = roster[:5] + [f"+{len(roster) - 5}"]
+                speakers = ", ".join(roster) or "—"
+                month = pub_month(ep.get("pub_date"))
+                head = " · ".join(
+                    b for b in (month, speakers, f"`{fmt_time(ep['duration'])}`") if b
                 )
+                value = head
+                desc = (ep.get("description") or "").strip()
+                # Skip a description that merely echoes the title.
+                if desc and desc[:40].lower() != ep_display[:40].lower():
+                    snippet = desc if len(desc) <= 140 else desc[:139].rstrip() + "…"
+                    value = f"{head}\n{snippet}"
+
+                embed.add_field(name=name[:120], value=value[:400], inline=False)
             embed.set_footer(text=footer)
             embeds.append(embed)
 
@@ -2209,6 +2510,12 @@ def main() -> None:
         "--dev-guild", default=None, type=int, help="Guild ID for instant dev sync"
     )
     parser.add_argument(
+        "--announce-interval",
+        default=10,
+        type=int,
+        help="Minutes between checks for new episodes to announce",
+    )
+    parser.add_argument(
         "--manage-passwords",
         action="store_true",
         help="Interactively manage show passwords in the index and exit",
@@ -2231,6 +2538,7 @@ def main() -> None:
         merge_strategy=args.merge_strategy,
         cooldown_seconds=args.cooldown,
         dev_guild_id=args.dev_guild,
+        announce_interval_minutes=args.announce_interval,
     )
 
     bot = PodCodexBot(config, server_config_path=Path(args.server_config))

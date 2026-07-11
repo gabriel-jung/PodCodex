@@ -263,3 +263,60 @@ def test_build_episode_context_empty():
     ctx = build_episode_context()
 
     assert ctx == ""
+
+
+# ──────────────────────────────────────────────
+# youtube_id — explicit provenance + legacy bridge
+# ──────────────────────────────────────────────
+
+
+def test_episode_meta_roundtrips_youtube_id(tmp_path):
+    ep = RSSEpisode(
+        guid="pqIcoskUuWs",
+        title="CNN lecture",
+        pub_date="2026-01-01",
+        youtube_id="pqIcoskUuWs",
+    )
+    save_episode_meta(tmp_path, ep)
+    loaded = load_episode_meta(tmp_path)
+    assert loaded.youtube_id == "pqIcoskUuWs"
+
+
+def test_legacy_meta_without_field_bridges_youtube_guid(tmp_path):
+    import json
+
+    # A pre-field .episode_meta.json: video-id guid, no enclosure, no youtube_id key.
+    (tmp_path / ".episode_meta.json").write_text(
+        json.dumps({"guid": "pqIcoskUuWs", "title": "Old YT ep", "pub_date": ""}),
+        encoding="utf-8",
+    )
+    loaded = load_episode_meta(tmp_path)
+    assert loaded.youtube_id == "pqIcoskUuWs"
+
+
+def test_legacy_meta_rss_guid_not_bridged(tmp_path):
+    import json
+
+    # Pre-field RSS meta: URL guid + enclosure → must NOT invent a youtube_id.
+    (tmp_path / ".episode_meta.json").write_text(
+        json.dumps(
+            {
+                "guid": "http://example.com/ep.mp3",
+                "title": "RSS ep",
+                "pub_date": "",
+                "audio_url": "https://cdn.example/ep.mp3",
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_episode_meta(tmp_path)
+    assert loaded.youtube_id == ""
+
+
+def test_new_meta_with_explicit_empty_field_not_bridged(tmp_path):
+    # A post-field RSS episode whose guid happens to look like a video id:
+    # the explicit (empty) youtube_id must win over any guid-shape inference.
+    ep = RSSEpisode(guid="abcdefghij_", title="Odd guid", pub_date="")
+    save_episode_meta(tmp_path, ep)
+    loaded = load_episode_meta(tmp_path)
+    assert loaded.youtube_id == ""

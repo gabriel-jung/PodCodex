@@ -527,6 +527,15 @@ def build_index_transcript(
             transcript["meta"].setdefault("episode_number", ep_meta.episode_number)
         if ep_meta.description:
             transcript["meta"].setdefault("rss_description", ep_meta.description)
+        # Media pointers for the Discord bot (index-only): episode artwork, the
+        # RSS enclosure to link, and the explicit YouTube video id so the bot
+        # can build a timestamped watch link.
+        if ep_meta.artwork_url:
+            transcript["meta"].setdefault("rss_artwork_url", ep_meta.artwork_url)
+        if ep_meta.audio_url:
+            transcript["meta"].setdefault("rss_audio_url", ep_meta.audio_url)
+        if ep_meta.youtube_id:
+            transcript["meta"].setdefault("youtube_id", ep_meta.youtube_id)
 
     # Broadcast (airing) number: extracted from the episode title using the
     # show's configured regex, when set. Distinct from the per-season

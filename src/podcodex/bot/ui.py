@@ -25,9 +25,14 @@ from typing import TYPE_CHECKING
 import discord
 
 from podcodex.bot.formatting import (
+    build_compact_embed,
     episode_display,
+    fmt_time,
     fmt_timestamp,
+    is_http_url,
+    pub_month,
     score_bar,
+    set_chunk_thumbnail,
     speaker_lines,
     truncate_description,
 )
@@ -119,55 +124,124 @@ def build_result_embed(
     *,
     highlight: bool = False,
 ) -> discord.Embed:
-    """Build a single search-result embed.
+    """Build a single search-result embed — lean by default.
 
     Pure: takes a chunk dict already carrying the search-time scalars
     (``score``, ``fuzzy_match``, ``accent_match``, ``match_text``).
 
-    ``text`` is the search/question string shown on the author line.
-    ``highlight`` additionally marks it in-body (set by /exact; /search shows
-    the question but does not highlight).
+    The card leads with the quote and anchors it to the episode (show on the
+    author line, episode title as the title, one quiet ``time · month`` line
+    under the body). The engine numbers — relevance, full range, published
+    date, match tier, search label — all live behind the Details button
+    (:func:`build_details_embed`), so a reader is never shown telemetry.
+
+    ``text`` is the search string; ``highlight`` marks it in-body (set by
+    /exact). /search passes the question through for highlighting context but
+    leaves ``highlight`` off.
+    """
+    show = chunk.get("show", "")
+    start = chunk.get("start", 0.0)
+
+    description = truncate_description(
+        speaker_lines(chunk, query=text if highlight else "")
+    )
+
+    # Match tier only tints the card now; the badge text moved to Details.
+    if chunk.get("fuzzy_match"):
+        color = discord.Color.orange()
+    elif chunk.get("accent_match"):
+        color = discord.Color.gold()
+    else:
+        color = discord.Color.blurple()
+
+    # One quiet meta line under the quote: start time · month. Plain text —
+    # Discord's `-#` subtext markdown does not render inside embeds.
+    meta_bits: list[str] = []
+    if start:
+        meta_bits.append(f"🕐 {fmt_time(start)}")
+    month = pub_month(chunk.get("pub_date"))
+    if month:
+        meta_bits.append(month)
+    if meta_bits:
+        description = f"{description}\n\n{' · '.join(meta_bits)}"
+
+    embed = discord.Embed(description=description, color=color)
+    if show:
+        embed.set_author(name=show)
+    embed.title = episode_display(chunk) or "(untitled)"
+    set_chunk_thumbnail(embed, chunk)
+    embed.set_footer(text=f"{rank} of {total}")
+    return embed
+
+
+def build_listen_button(chunk: dict) -> discord.ui.Button | None:
+    """A source-routed link button to reach the audio, or None when unavailable.
+
+    YouTube episodes (``youtube_id`` present) get a timestamped watch link that
+    jumps to the moment; RSS episodes (``audio_url``) get a plain 'listen to
+    episode' link (raw-audio seek isn't reliable, so no timestamp). Local
+    imports carry neither and get no button.
+    """
+    yt = (chunk.get("youtube_id") or "").strip()
+    start = int(chunk.get("start", 0) or 0)
+    if yt:
+        label = (
+            f"▶ Watch on YouTube · {fmt_time(start)}" if start else "▶ Watch on YouTube"
+        )
+        return discord.ui.Button(
+            style=discord.ButtonStyle.link,
+            url=f"https://www.youtube.com/watch?v={yt}&t={start}s",
+            label=label,
+            row=1,
+        )
+    audio = (chunk.get("audio_url") or "").strip()
+    if is_http_url(audio):
+        return discord.ui.Button(
+            style=discord.ButtonStyle.link,
+            url=audio,
+            label="🎧 Listen to episode",
+            row=1,
+        )
+    return None
+
+
+def build_details_embed(chunk: dict, label: str) -> discord.Embed:
+    """Build the ephemeral 'Details' card — the engine numbers, opt-in.
+
+    Everything the lean result card deliberately drops: relevance score, the
+    full timestamp range, publication date, match tier, and the search label
+    (``α`` / model). Sent per-user so opening it never mutates the shared
+    public result message.
     """
     show = chunk.get("show", "")
     start = chunk.get("start", 0.0)
     end = chunk.get("end", 0.0)
     score = chunk.get("score", 0.0)
 
-    description = truncate_description(
-        speaker_lines(chunk, query=text if highlight else "")
+    embed = discord.Embed(
+        title=episode_display(chunk) or "(untitled)",
+        color=discord.Color.dark_gray(),
     )
-
-    if chunk.get("fuzzy_match"):
-        color = discord.Color.orange()
-        badge = "〜 near-typo"
-    elif chunk.get("accent_match"):
-        color = discord.Color.gold()
-        badge = "≈ accent variant"
-    else:
-        color = discord.Color.blurple()
-        badge = ""
-
-    embed = discord.Embed(description=description, color=color)
-    if text:
-        embed.set_author(name=f'🔎 "{text}"')
-    title = episode_display(chunk) or "(untitled)"
     if show:
-        title += f" ({show})"
-    embed.title = title
-    if badge:
-        embed.add_field(name="Match", value=badge, inline=True)
-    timed = chunk.get("timed", True)
-    ts_label = fmt_timestamp(start, end, timed=timed)
-    if ts_label:
-        embed.add_field(name="Timestamp", value=ts_label, inline=True)
-    pub_date = (chunk.get("pub_date") or "").strip()
-    if pub_date:
-        embed.add_field(name="Published", value=pub_date[:10], inline=True)
+        embed.set_author(name=show)
+
     clamped = max(0.0, min(1.0, score))
     embed.add_field(
         name="Relevance", value=f"{score_bar(clamped)} {clamped:.0%}", inline=True
     )
-    embed.set_footer(text=f"#{rank} of {total} • {label}")
+    timed = chunk.get("timed", True)
+    ts_label = fmt_timestamp(start, end, timed=timed)
+    if ts_label:
+        embed.add_field(name="Full range", value=ts_label, inline=True)
+    pub_date = (chunk.get("pub_date") or "").strip()
+    if pub_date:
+        embed.add_field(name="Published", value=pub_date[:10], inline=True)
+    if chunk.get("fuzzy_match"):
+        embed.add_field(name="Match", value="〜 near-typo", inline=True)
+    elif chunk.get("accent_match"):
+        embed.add_field(name="Match", value="≈ accent variant", inline=True)
+    if label:
+        embed.add_field(name="Search", value=label, inline=True)
     return embed
 
 
@@ -197,7 +271,7 @@ def _transcript_embed(
         embed.add_field(name="Timestamp", value=ts, inline=True)
 
     marker = " ◀ matched" if is_match else ""
-    embed.set_footer(text=f"Segment {pos + 1} of {total}{marker}")
+    embed.set_footer(text=f"{pos + 1} of {total}{marker}")
     return embed
 
 
@@ -352,6 +426,69 @@ class ExpandResult(
         await _render_transcript(interaction, self.sid, self.idx, None, ephemeral=True)
 
 
+class ResultDetails(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"pcx:rd:(?P<sid>[0-9a-f]+):(?P<idx>\d+)$",
+):
+    """Open the engine numbers for result <idx> as an ephemeral card.
+
+    Ephemeral so a viewer opening details never edits the shared public
+    result message for everyone else.
+    """
+
+    def __init__(self, sid: str, idx: int) -> None:
+        super().__init__(
+            discord.ui.Button(
+                label="Details",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"pcx:rd:{sid}:{idx}",
+                row=1,
+            )
+        )
+        self.sid = sid
+        self.idx = idx
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(match["sid"], int(match["idx"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _render_details(interaction, self.sid, self.idx)
+
+
+class ViewSwitch(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"pcx:vs:(?P<sid>[0-9a-f]+):(?P<mode>[cl])$",
+):
+    """Toggle a cached search between the paged card and the compact list.
+
+    ``mode`` is the *target* view: ``c`` renders the card (page 0), ``l`` the
+    list. /search opens on the card, /exact on the list; either can flip.
+    """
+
+    def __init__(self, sid: str, mode: str) -> None:
+        super().__init__(
+            discord.ui.Button(
+                label="Card view" if mode == "c" else "List view",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"pcx:vs:{sid}:{mode}",
+                row=1,
+            )
+        )
+        self.sid = sid
+        self.mode = mode
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(match["sid"], match["mode"])
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if self.mode == "c":
+            await _render_results(interaction, self.sid, 0)
+        else:
+            await _render_list_compact(interaction, self.sid)
+
+
 class TranscriptNav(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"pcx:t:(?P<sid>[0-9a-f]+):(?P<ridx>\d+):(?P<pos>\d+):(?P<act>[pn])$",
@@ -453,10 +590,57 @@ async def build_results_view(
     view.add_item(ResultNav(sid, index, "p", disabled=index == 0))
     view.add_item(_counter_button(index + 1, n))
     view.add_item(ResultNav(sid, index, "n", disabled=index == n - 1))
+    listen = build_listen_button(chunk)
+    if listen is not None:
+        view.add_item(listen)
     if chunk.get("episode"):
         view.add_item(ExpandResult(sid, index))
+    view.add_item(ResultDetails(sid, index))
     if n > 1:
+        view.add_item(ViewSwitch(sid, "l"))
         view.add_item(ResultJump(sid, cached, index))
+    return embed, view
+
+
+async def build_compact_view(
+    client: PodCodexBot, sid: str
+) -> tuple[discord.Embed, discord.ui.View] | None:
+    """Build the single-embed compact list for search ``sid`` (up to 25 rows).
+
+    Re-fetches each ref's chunk text on demand (same path as the card), so the
+    list is persistent and restart-safe like every other view. /exact opens
+    here; a 'Card view' button flips to the paged reader.
+    """
+    cached = client.results.load(sid)
+    if cached is None or not cached.refs:
+        return None
+    chunks: list[dict] = []
+    for ref in cached.refs[:25]:
+        chunk = await _result_chunk(client.local, ref)
+        if chunk is not None:
+            chunks.append(chunk)
+    if not chunks:
+        return None
+
+    # /exact highlights the literal query; /search shows the question, no highlight.
+    is_exact = cached.kind == "exact"
+    # /exact's label is already human ("12 matches"); /search's carries the
+    # α/model telemetry, which belongs in Details — not in the list title.
+    title_label = cached.label if is_exact else "Search"
+    embed = build_compact_embed(
+        [(c, "") for c in chunks],
+        title_label,
+        query=cached.query if is_exact else "",
+        question="" if is_exact else cached.query,
+    )
+    total = len(cached.refs)
+    if total > len(chunks):
+        # Never hide the cap: /exact is uncapped, the list shows 25 at most.
+        embed.set_footer(
+            text=f"Showing {len(chunks)} of {total} — Card view pages through all"
+        )
+    view = discord.ui.View(timeout=None)
+    view.add_item(ViewSwitch(sid, "c"))
     return embed, view
 
 
@@ -521,6 +705,11 @@ async def _render_list(interaction: discord.Interaction, sid: str, index: int) -
     await _respond(interaction, await build_list_view(client, sid, index))
 
 
+async def _render_list_compact(interaction: discord.Interaction, sid: str) -> None:
+    client: PodCodexBot = interaction.client  # type: ignore[assignment]
+    await _respond(interaction, await build_compact_view(client, sid))
+
+
 async def _render_transcript(
     interaction: discord.Interaction,
     sid: str,
@@ -538,5 +727,29 @@ async def _render_transcript(
     )
 
 
+async def _render_details(interaction: discord.Interaction, sid: str, idx: int) -> None:
+    """Send the ephemeral Details card for result ``idx`` of search ``sid``."""
+    client: PodCodexBot = interaction.client  # type: ignore[assignment]
+    cached = client.results.load(sid)
+    if cached is None or not (0 <= idx < len(cached.refs)):
+        await interaction.response.send_message(EXPIRED_MSG, ephemeral=True)
+        return
+    chunk = await _result_chunk(client.local, cached.refs[idx])
+    if chunk is None:
+        await interaction.response.send_message(UNAVAILABLE_MSG, ephemeral=True)
+        return
+    await interaction.response.send_message(
+        embed=build_details_embed(chunk, cached.label), ephemeral=True
+    )
+
+
 # Registered with bot.add_dynamic_items in setup_hook.
-DYNAMIC_ITEMS = (ResultNav, ResultJump, ExpandResult, TranscriptNav, ListNav)
+DYNAMIC_ITEMS = (
+    ResultNav,
+    ResultJump,
+    ExpandResult,
+    ResultDetails,
+    ViewSwitch,
+    TranscriptNav,
+    ListNav,
+)
