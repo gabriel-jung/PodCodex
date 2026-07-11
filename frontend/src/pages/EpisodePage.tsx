@@ -864,8 +864,8 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
   });
   // Speakers of the canonical transcript with per-speaker airtime share.
   const { data: episodeSpeakers } = useQuery({
-    queryKey: queryKeys.episodeSpeakers(folder ?? "", episode.stem),
-    queryFn: () => getEpisodeSpeakers(folder!, episode.stem),
+    queryKey: queryKeys.episodeSpeakers(folder ?? "", episode.stem ?? ""),
+    queryFn: () => getEpisodeSpeakers(folder!, episode.stem!),
     enabled: !!folder && !!episode.stem && hasTranscript,
   });
   const previewStep = episode.corrected ? "correct" : "transcribe";

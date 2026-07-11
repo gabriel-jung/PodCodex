@@ -519,7 +519,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                   downloading={rowDownloading}
                   isPlaying={isCurrent && audioIsPlaying}
                   isCurrent={isCurrent}
-                  speakers={speakersByStem.get(ep.stem)}
+                  speakers={ep.stem ? speakersByStem.get(ep.stem) : undefined}
                 />
               );
             })}
@@ -542,7 +542,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                   downloading={rowDownloading}
                   isPlaying={isCurrent && audioIsPlaying}
                   isCurrent={isCurrent}
-                  speakers={speakersByStem.get(ep.stem)}
+                  speakers={ep.stem ? speakersByStem.get(ep.stem) : undefined}
                 />
               );
             })}
