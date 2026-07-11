@@ -2378,11 +2378,6 @@ class PodCodexBot(discord.Client):
             )
             return
 
-        # Newest first: dated episodes descending, undated sink to the bottom.
-        ep_stats.sort(
-            key=lambda e: (e.get("pub_date") or "", e.get("episode", "")), reverse=True
-        )
-
         footer = f"{len(ep_stats)} episodes"
         if show_auto_resolved:
             footer += f" (auto-selected: {show})"

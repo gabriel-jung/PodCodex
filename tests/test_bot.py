@@ -224,13 +224,51 @@ def _ep_stats(n: int) -> list[dict]:
         {
             "episode": f"ep{i}",
             "episode_title": f"Episode {i}",
-            "pub_date": "2026-01-01",
+            "pub_date": "2026-01-08",
             "duration": 60.0,
             "speakers": [],
             "description": "",
         }
         for i in range(n)
     ]
+
+
+def test_episodes_embeds_sorted_by_number_desc_over_pub_date():
+    eps = _ep_stats(3)
+    # pub_date order contradicts the numbering; the number must win.
+    eps[0].update(broadcast_number=247, episode_title="Ep 247", pub_date="2026-03-03")
+    eps[1].update(broadcast_number=249, episode_title="Ep 249", pub_date="2026-01-01")
+    eps[2].update(broadcast_number=248, episode_title="Ep 248", pub_date="2026-02-02")
+    embeds = build_episodes_embeds("My Show", eps, footer="3 episodes")
+    assert [f.name for f in embeds[0].fields] == ["Ep 249", "Ep 248", "Ep 247"]
+
+
+def test_episodes_embeds_unnumbered_fall_back_to_pub_date_desc():
+    eps = _ep_stats(2)
+    eps[0].update(episode_title="Older", pub_date="2026-01-01")
+    eps[1].update(episode_title="Newer", pub_date="2026-06-01")
+    embeds = build_episodes_embeds("My Show", eps, footer="2 episodes")
+    assert [f.name for f in embeds[0].fields] == ["Newer", "Older"]
+
+
+def test_episodes_embeds_use_plain_title_without_number_prefix():
+    eps = _ep_stats(1)
+    eps[0]["broadcast_number"] = 249
+    eps[0]["episode_title"] = "(249) Isabelle Durin : un Violon au Cinéma"
+    embeds = build_episodes_embeds("My Show", eps, footer="1 episodes")
+    assert embeds[0].fields[0].name == "(249) Isabelle Durin : un Violon au Cinéma"
+
+
+def test_episodes_embeds_show_full_date_with_day():
+    embeds = build_episodes_embeds("My Show", _ep_stats(1), footer="1 episodes")
+    assert "8 Jan 2026" in embeds[0].fields[0].value
+
+
+def test_episodes_embeds_omit_description():
+    eps = _ep_stats(1)
+    eps[0]["description"] = "A long summary that used to weigh the list down."
+    embeds = build_episodes_embeds("My Show", eps, footer="1 episodes")
+    assert "summary" not in embeds[0].fields[0].value
 
 
 def test_episodes_embeds_use_show_artwork():
@@ -262,6 +300,18 @@ def test_episodes_embeds_paginate_ten_per_page():
     # Every page carries the show artwork and footer.
     assert all(e.thumbnail.url == "https://cdn.example/show.jpg" for e in embeds)
     assert all(e.footer.text == "11 episodes" for e in embeds)
+
+
+def test_result_embed_footer_carries_match_total_when_given():
+    embed = build_result_embed(
+        _CHUNK, rank=3, total=1473, label="", footer_extra="2444 matches"
+    )
+    assert embed.footer.text == "3 of 1473 excerpts · 2444 matches"
+
+
+def test_result_embed_footer_plain_without_extra():
+    embed = build_result_embed(_CHUNK, rank=1, total=5, label="")
+    assert embed.footer.text == "1 of 5"
 
 
 def test_result_embed_sets_thumbnail_from_artwork():

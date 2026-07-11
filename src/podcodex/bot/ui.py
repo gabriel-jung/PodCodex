@@ -31,6 +31,7 @@ from podcodex.bot.formatting import (
     fmt_time,
     fmt_timestamp,
     is_http_url,
+    pub_day,
     pub_month,
     score_bar,
     set_chunk_thumbnail,
@@ -124,6 +125,7 @@ def build_result_embed(
     text: str = "",
     *,
     highlight: bool = False,
+    footer_extra: str = "",
 ) -> discord.Embed:
     """Build a single search-result embed — lean by default.
 
@@ -171,7 +173,12 @@ def build_result_embed(
         embed.set_author(name=show)
     embed.title = episode_display(chunk) or "(untitled)"
     set_chunk_thumbnail(embed, chunk)
-    embed.set_footer(text=f"{rank} of {total}")
+    # ``footer_extra`` carries /exact's human total ("2444 matches"); /search
+    # passes nothing (its label is engine telemetry, which lives in Details).
+    if footer_extra:
+        embed.set_footer(text=f"{rank} of {total} excerpts · {footer_extra}")
+    else:
+        embed.set_footer(text=f"{rank} of {total}")
     return embed
 
 
@@ -252,12 +259,26 @@ def build_episodes_embeds(
     footer: str,
     artwork_url: str = "",
 ) -> list[discord.Embed]:
-    """Build the paged `/episodes` embeds: 10 episodes per page.
+    """Build the paged `/episodes` embeds: 10 episodes per page, newest first.
 
-    ``ep_stats`` come from ``IndexStore.get_episode_stats`` in display order.
+    ``ep_stats`` come from ``IndexStore.get_episode_stats``; ordering happens
+    here: broadcast/episode number descending when present (the number is the
+    show's canonical order, even though it is not displayed), ``pub_date``
+    as fallback, unnumbered-undated episodes sink to the bottom.
     ``artwork_url`` is the channel-level show art (from the collection row);
     empty or non-http means no thumbnail, nothing is invented.
     """
+
+    def _order(ep: dict):
+        number = ep.get("broadcast_number") or ep.get("episode_number")
+        return (
+            number is not None,
+            number if number is not None else 0,
+            ep.get("pub_date") or "",
+            ep.get("episode", ""),
+        )
+
+    ep_stats = sorted(ep_stats, key=_order, reverse=True)
     pages_data = [ep_stats[i : i + 10] for i in range(0, len(ep_stats), 10)]
 
     embeds: list[discord.Embed] = []
@@ -266,9 +287,9 @@ def build_episodes_embeds(
         if is_http_url(artwork_url):
             embed.set_thumbnail(url=artwork_url.strip())
         for ep in page:
-            ep_display = episode_display(ep)
-            number = ep.get("broadcast_number") or ep.get("episode_number")
-            name = f"#{number} · {ep_display}" if number else ep_display
+            # Plain RSS title: feeds usually number their titles already, so
+            # a broadcast_number prefix would just duplicate it.
+            name = episode_display(ep)
 
             # Cap the roster so 10 fields stay under Discord's 6000-char
             # total embed budget even on heavily-diarized episodes.
@@ -276,17 +297,10 @@ def build_episodes_embeds(
             if len(roster) > 5:
                 roster = roster[:5] + [f"+{len(roster) - 5}"]
             speakers = ", ".join(roster) or "—"
-            month = pub_month(ep.get("pub_date"))
-            head = " · ".join(
-                b for b in (month, speakers, f"`{fmt_time(ep['duration'])}`") if b
+            date = pub_day(ep.get("pub_date"))
+            value = " · ".join(
+                b for b in (date, speakers, f"`{fmt_time(ep['duration'])}`") if b
             )
-            value = head
-            desc = (ep.get("description") or "").strip()
-            # Skip a description that merely echoes the title.
-            if desc and desc[:40].lower() != ep_display[:40].lower():
-                snippet = desc if len(desc) <= 140 else desc[:139].rstrip() + "…"
-                value = f"{head}\n{snippet}"
-
             embed.add_field(name=name[:120], value=value[:400], inline=False)
         embed.set_footer(text=footer)
         embeds.append(embed)
@@ -632,6 +646,7 @@ async def build_results_view(
         cached.label,
         cached.query,
         highlight=(cached.kind == "exact"),
+        footer_extra=cached.label if cached.kind == "exact" else "",
     )
 
     view = discord.ui.View(timeout=None)
@@ -687,8 +702,12 @@ async def build_compact_view(
     shown = len(embed.fields)
     if total > shown:
         # Never hide the cap: /exact is uncapped, the list shows a page at most.
+        # For /exact, repeat the human match total next to the excerpt count
+        # (the label is telemetry for /search, so it stays out of that footer).
+        extra = f" · {cached.label}" if is_exact and cached.label else ""
         embed.set_footer(
-            text=f"Showing {shown} of {total} — Full view pages through all"
+            text=f"Showing {shown} of {total} excerpts{extra} · "
+            "Full view pages through all"
         )
     view = discord.ui.View(timeout=None)
     view.add_item(ViewSwitch(sid, "c"))

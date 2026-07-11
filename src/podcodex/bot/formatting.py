@@ -134,6 +134,24 @@ def pub_month(pub_date: str | None) -> str:
     return ""
 
 
+def pub_day(pub_date: str | None) -> str:
+    """Format an ISO ``pub_date`` as ``"8 May 2026"``, or fall back.
+
+    Falls back to :func:`pub_month` ("May 2026") when the day part is
+    missing or unparsable, and to ``""`` when even that fails.
+    """
+    p = (pub_date or "").strip()
+    if len(p) >= 10 and p[4] == "-" and p[7] == "-":
+        try:
+            day = int(p[8:10])
+            month = int(p[5:7])
+        except ValueError:
+            return pub_month(p)
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            return f"{day} {_MONTHS[month]} {p[:4]}"
+    return pub_month(p)
+
+
 def count_occurrences(text: str, query: str) -> int:
     """Count accent- and case-insensitive occurrences of *query* in *text*."""
     if not query:
