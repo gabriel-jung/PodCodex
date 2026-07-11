@@ -252,7 +252,7 @@ def format_context(
         None,
     )
     if pos is None:
-        return "Could not locate this chunk in the episode.", False
+        return "Could not locate this excerpt in the episode.", False
 
     lo = max(0, pos - n)
     hi = min(len(neighbors), pos + n + 1)
@@ -313,6 +313,10 @@ class CooldownManager:
 # ──────────────────────────────────────────────
 
 _COMPACT_TEXT_MAX = 200
+# Total-embed character budget: Discord hard-caps an embed at 6000 chars
+# (title + description + all field names/values + footer) and 400s above it.
+# Reserve headroom for the footer, which is set after the field loop.
+_COMPACT_EMBED_BUDGET = 5800
 
 
 def build_compact_embed(
@@ -321,7 +325,14 @@ def build_compact_embed(
     query: str = "",
     question: str = "",
 ) -> "discord.Embed":
-    """Build a single embed with one field per result (max 25)."""
+    """Build a single embed with one field per result.
+
+    Capped at 25 fields (Discord's per-embed field limit) AND at
+    ``_COMPACT_EMBED_BUDGET`` total characters: Discord rejects any message
+    whose embed exceeds 6000 chars with HTTP 400, so rows are dropped from
+    the tail once the budget is reached. Callers can read ``len(.fields)``
+    for the real shown count.
+    """
     import discord
 
     q = question or query
@@ -355,13 +366,15 @@ def build_compact_embed(
             f"{score_bar(score)} {min(1.0, score):.0%}\n"
             f'*"{text}"*'
         )
+        if len(embed) + len(name) + len(value) > _COMPACT_EMBED_BUDGET:
+            break
         embed.add_field(name=name, value=value, inline=False)
 
     n_results = len(results)
     if query:
         total_occ = sum(count_occurrences(c.get("text", ""), query) for c, _ in results)
         footer = (
-            f"{n_results} chunk{'s' if n_results != 1 else ''} · "
+            f"{n_results} excerpt{'s' if n_results != 1 else ''} · "
             f"{total_occ} mention{'s' if total_occ != 1 else ''}"
         )
     else:

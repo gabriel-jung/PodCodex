@@ -15,9 +15,9 @@ Slash commands (user-facing):
     /random   [show] [episode] [speaker] [source]
               Pull a random quote from the transcripts.
     /stats    [show] [model]
-              Index overview: shows, episodes, segments, duration.
+              Index overview: shows, episodes, excerpts, duration.
     /episodes show [model]
-              List episodes for a show with segment counts.
+              List episodes for a show with excerpt counts.
     /speakers [show] [model]
               Per-speaker chunk counts and airtime, ranked.
 
@@ -73,7 +73,6 @@ from podcodex.bot.formatting import (
     fmt_timestamp,
     format_filter_suffix,
     humanize_stem,
-    pub_month,
     set_chunk_thumbnail,
 )
 from podcodex.bot.result_store import CachedSearch, ResultRef, SearchCacheStore
@@ -81,6 +80,7 @@ from podcodex.bot.ui import (
     DYNAMIC_ITEMS,
     ExpandResult,
     build_compact_view,
+    build_episodes_embeds,
     build_list_view,
     build_listen_button,
     build_results_view,
@@ -275,6 +275,7 @@ class PodCodexBot(discord.Client):
         self.config = config
         self.server_config_path = server_config_path
         self.tree = app_commands.CommandTree(self)
+        self.tree.on_error = self._on_app_command_error
         self._cooldown = CooldownManager(seconds=config.cooldown_seconds)
 
         # Shows loaded from IndexStore — {lower(name): ShowEntry}
@@ -560,6 +561,29 @@ class PodCodexBot(discord.Client):
         return self._retrievers[model]
 
     # ── Lifecycle ─────────────────────────────
+
+    async def _on_app_command_error(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ) -> None:
+        """Last-resort handler: never leave an interaction stuck on 'thinking'.
+
+        Any exception that escapes a command handler after ``defer()`` would
+        otherwise keep the 'Bot is thinking…' spinner forever with no reply
+        (e.g. a Discord 400 for an over-limit embed). Log it, tell the user.
+        """
+        logger.opt(exception=error).error(
+            f"Unhandled app-command error ({interaction.command and interaction.command.name})"
+        )
+        msg = "❌ Something went wrong — please try again."
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass  # interaction expired; nothing left to notify
 
     async def setup_hook(self) -> None:
         loop = asyncio.get_running_loop()
@@ -1245,7 +1269,7 @@ class PodCodexBot(discord.Client):
         # /stats ──────────────────────────────
         @self.tree.command(
             name="stats",
-            description="Index overview: shows, episodes, segments, duration",
+            description="Index overview: shows, episodes, excerpts, duration",
         )
         @app_commands.describe(
             show="Pick a show (shows all if empty)",
@@ -1264,7 +1288,7 @@ class PodCodexBot(discord.Client):
         # /episodes ───────────────────────────
         @self.tree.command(
             name="episodes",
-            description="List episodes for a show with segment count and duration",
+            description="List episodes for a show with excerpt count and duration",
         )
         @app_commands.describe(
             show="Pick a show (auto-selected if only one)",
@@ -1283,7 +1307,7 @@ class PodCodexBot(discord.Client):
         # /speakers ───────────────────────────
         @self.tree.command(
             name="speakers",
-            description="Who speaks the most — chunk count and airtime per speaker",
+            description="Who speaks the most — excerpt count and airtime per speaker",
         )
         @app_commands.describe(
             show="Pick a show (aggregates all if empty)",
@@ -1471,12 +1495,12 @@ class PodCodexBot(discord.Client):
             )
             embed.add_field(
                 name="/stats",
-                value="Overview of what's indexed: shows, episodes, segments, duration.",
+                value="Overview of what's indexed: shows, episodes, excerpts, duration.",
                 inline=False,
             )
             embed.add_field(
                 name="/speakers",
-                value="Who speaks the most — chunk counts and airtime per speaker.",
+                value="Who speaks the most — excerpt counts and airtime per speaker.",
                 inline=False,
             )
             embed.add_field(
@@ -1797,7 +1821,7 @@ class PodCodexBot(discord.Client):
                 episode=episode, speaker=speaker, source=source
             )
             await interaction.followup.send(
-                f"No segments found{suffix}. Try without filters.",
+                f"No excerpts found{suffix}. Try without filters.",
                 ephemeral=True,
             )
             return
@@ -2187,7 +2211,7 @@ class PodCodexBot(discord.Client):
         )
         embed.add_field(name="Shows", value=str(len(collections)), inline=True)
         embed.add_field(name="Episodes", value=str(total_eps), inline=True)
-        embed.add_field(name="Segments", value=str(total_chunks), inline=True)
+        embed.add_field(name="Excerpts", value=str(total_chunks), inline=True)
         embed.add_field(name="Duration", value=fmt_time(total_dur), inline=True)
         embed.add_field(
             name="Indexed shows",
@@ -2257,7 +2281,8 @@ class PodCodexBot(discord.Client):
             )
             lines.append(
                 f"`{i:>2}.` **{display_speaker(r['speaker'])}** — `{fmt_time(r['total_duration'])}` "
-                f"({share:.0f}%) · {r['chunk_count']} seg · {r['episodes']} ep"
+                f"({share:.0f}%) · {r['chunk_count']} excerpt{'s' if r['chunk_count'] != 1 else ''} "
+                f"· {r['episodes']} episode{'s' if r['episodes'] != 1 else ''}"
             )
 
         scope = show or f"{len(collections)} show{'s' if len(collections) > 1 else ''}"
@@ -2358,40 +2383,12 @@ class PodCodexBot(discord.Client):
             key=lambda e: (e.get("pub_date") or "", e.get("episode", "")), reverse=True
         )
 
-        # Paginate: 10 episodes per embed
-        pages_data = [ep_stats[i : i + 10] for i in range(0, len(ep_stats), 10)]
         footer = f"{len(ep_stats)} episodes"
         if show_auto_resolved:
             footer += f" (auto-selected: {show})"
 
-        embeds: list[discord.Embed] = []
-        for page in pages_data:
-            embed = discord.Embed(title=f"🎙 {show}", color=discord.Color.blurple())
-            for ep in page:
-                ep_display = episode_display(ep)
-                number = ep.get("broadcast_number") or ep.get("episode_number")
-                name = f"#{number} · {ep_display}" if number else ep_display
-
-                # Cap the roster so 10 fields stay under Discord's 6000-char
-                # total embed budget even on heavily-diarized episodes.
-                roster = [display_speaker(s) for s in ep.get("speakers", [])]
-                if len(roster) > 5:
-                    roster = roster[:5] + [f"+{len(roster) - 5}"]
-                speakers = ", ".join(roster) or "—"
-                month = pub_month(ep.get("pub_date"))
-                head = " · ".join(
-                    b for b in (month, speakers, f"`{fmt_time(ep['duration'])}`") if b
-                )
-                value = head
-                desc = (ep.get("description") or "").strip()
-                # Skip a description that merely echoes the title.
-                if desc and desc[:40].lower() != ep_display[:40].lower():
-                    snippet = desc if len(desc) <= 140 else desc[:139].rstrip() + "…"
-                    value = f"{head}\n{snippet}"
-
-                embed.add_field(name=name[:120], value=value[:400], inline=False)
-            embed.set_footer(text=footer)
-            embeds.append(embed)
+        show_art = col_info.get(col, {}).get("artwork_url", "")
+        embeds = build_episodes_embeds(show, ep_stats, footer, artwork_url=show_art)
 
         if len(embeds) == 1:
             await interaction.followup.send(embed=embeds[0])

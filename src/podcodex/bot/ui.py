@@ -26,6 +26,7 @@ import discord
 
 from podcodex.bot.formatting import (
     build_compact_embed,
+    display_speaker,
     episode_display,
     fmt_time,
     fmt_timestamp,
@@ -243,6 +244,53 @@ def build_details_embed(chunk: dict, label: str) -> discord.Embed:
     if label:
         embed.add_field(name="Search", value=label, inline=True)
     return embed
+
+
+def build_episodes_embeds(
+    show: str,
+    ep_stats: list[dict],
+    footer: str,
+    artwork_url: str = "",
+) -> list[discord.Embed]:
+    """Build the paged `/episodes` embeds: 10 episodes per page.
+
+    ``ep_stats`` come from ``IndexStore.get_episode_stats`` in display order.
+    ``artwork_url`` is the channel-level show art (from the collection row);
+    empty or non-http means no thumbnail, nothing is invented.
+    """
+    pages_data = [ep_stats[i : i + 10] for i in range(0, len(ep_stats), 10)]
+
+    embeds: list[discord.Embed] = []
+    for page in pages_data:
+        embed = discord.Embed(title=f"🎙 {show}", color=discord.Color.blurple())
+        if is_http_url(artwork_url):
+            embed.set_thumbnail(url=artwork_url.strip())
+        for ep in page:
+            ep_display = episode_display(ep)
+            number = ep.get("broadcast_number") or ep.get("episode_number")
+            name = f"#{number} · {ep_display}" if number else ep_display
+
+            # Cap the roster so 10 fields stay under Discord's 6000-char
+            # total embed budget even on heavily-diarized episodes.
+            roster = [display_speaker(s) for s in ep.get("speakers", [])]
+            if len(roster) > 5:
+                roster = roster[:5] + [f"+{len(roster) - 5}"]
+            speakers = ", ".join(roster) or "—"
+            month = pub_month(ep.get("pub_date"))
+            head = " · ".join(
+                b for b in (month, speakers, f"`{fmt_time(ep['duration'])}`") if b
+            )
+            value = head
+            desc = (ep.get("description") or "").strip()
+            # Skip a description that merely echoes the title.
+            if desc and desc[:40].lower() != ep_display[:40].lower():
+                snippet = desc if len(desc) <= 140 else desc[:139].rstrip() + "…"
+                value = f"{head}\n{snippet}"
+
+            embed.add_field(name=name[:120], value=value[:400], inline=False)
+        embed.set_footer(text=footer)
+        embeds.append(embed)
+    return embeds
 
 
 def _transcript_embed(
@@ -469,7 +517,7 @@ class ViewSwitch(
     def __init__(self, sid: str, mode: str) -> None:
         super().__init__(
             discord.ui.Button(
-                label="Card view" if mode == "c" else "List view",
+                label="Full view" if mode == "c" else "List view",
                 style=discord.ButtonStyle.secondary,
                 custom_id=f"pcx:vs:{sid}:{mode}",
                 row=1,
@@ -609,7 +657,7 @@ async def build_compact_view(
 
     Re-fetches each ref's chunk text on demand (same path as the card), so the
     list is persistent and restart-safe like every other view. /exact opens
-    here; a 'Card view' button flips to the paged reader.
+    here; a 'Full view' button flips to the paged reader.
     """
     cached = client.results.load(sid)
     if cached is None or not cached.refs:
@@ -634,10 +682,13 @@ async def build_compact_view(
         question="" if is_exact else cached.query,
     )
     total = len(cached.refs)
-    if total > len(chunks):
-        # Never hide the cap: /exact is uncapped, the list shows 25 at most.
+    # The embed may show fewer rows than fetched: 25-field cap plus the
+    # 6000-char total budget both trim from the tail.
+    shown = len(embed.fields)
+    if total > shown:
+        # Never hide the cap: /exact is uncapped, the list shows a page at most.
         embed.set_footer(
-            text=f"Showing {len(chunks)} of {total} — Card view pages through all"
+            text=f"Showing {shown} of {total} — Full view pages through all"
         )
     view = discord.ui.View(timeout=None)
     view.add_item(ViewSwitch(sid, "c"))

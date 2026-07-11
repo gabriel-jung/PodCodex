@@ -7,6 +7,7 @@ pytest.importorskip("discord")
 from podcodex.bot.bot import BotConfig, ServerSettings
 from podcodex.bot.ui import (
     build_details_embed,
+    build_episodes_embeds,
     build_listen_button,
     build_result_embed,
 )
@@ -216,6 +217,51 @@ def test_details_embed_carries_the_engine_numbers():
     assert "01:23" in fields["Full range"]
     assert "01:42" in fields["Full range"]
     assert fields["Search"] == "α=0.50"
+
+
+def _ep_stats(n: int) -> list[dict]:
+    return [
+        {
+            "episode": f"ep{i}",
+            "episode_title": f"Episode {i}",
+            "pub_date": "2026-01-01",
+            "duration": 60.0,
+            "speakers": [],
+            "description": "",
+        }
+        for i in range(n)
+    ]
+
+
+def test_episodes_embeds_use_show_artwork():
+    embeds = build_episodes_embeds(
+        "My Show",
+        _ep_stats(1),
+        footer="1 episodes",
+        artwork_url="https://cdn.example/show.jpg",
+    )
+    assert len(embeds) == 1
+    assert embeds[0].thumbnail.url == "https://cdn.example/show.jpg"
+
+
+def test_episodes_embeds_without_artwork_have_no_thumbnail():
+    embeds = build_episodes_embeds("My Show", _ep_stats(1), footer="1 episodes")
+    assert embeds[0].thumbnail.url is None
+
+
+def test_episodes_embeds_paginate_ten_per_page():
+    embeds = build_episodes_embeds(
+        "My Show",
+        _ep_stats(11),
+        footer="11 episodes",
+        artwork_url="https://cdn.example/show.jpg",
+    )
+    assert len(embeds) == 2
+    assert len(embeds[0].fields) == 10
+    assert len(embeds[1].fields) == 1
+    # Every page carries the show artwork and footer.
+    assert all(e.thumbnail.url == "https://cdn.example/show.jpg" for e in embeds)
+    assert all(e.footer.text == "11 episodes" for e in embeds)
 
 
 def test_result_embed_sets_thumbnail_from_artwork():
@@ -539,6 +585,32 @@ def test_compact_embed_max_25_fields():
     many = [(_COMPACT_RESULTS[0][0], "col")] * 30
     embed = build_compact_embed(many, "test")
     assert len(embed.fields) == 25
+
+
+def test_compact_embed_stays_under_discord_total_limit():
+    # 25 realistic long-text results burst Discord's 6000-char total embed
+    # cap (observed: 7637 chars for a 1473-hit /exact); Discord then rejects
+    # the message with HTTP 400 and the interaction hangs on "thinking".
+    long_chunk = {
+        "show": "Total Trax",
+        "episode": "21_249_isabelle_durin_un_violon_au_cinema",
+        "episode_title": "Isabelle Durin, un violon au cinéma (excerpt)",
+        "speaker": "Isabelle",
+        "start": 1234.0,
+        "end": 1290.0,
+        "text": (
+            "La musique de film est un art à part entière et la musique "
+            "accompagne chaque scène avec une intensité remarquable, la "
+            "musique soulignant l'émotion du récit à chaque instant du film "
+            "pour le spectateur attentif."
+        ),
+        "score": 1.0,
+    }
+    many = [(dict(long_chunk), "col")] * 30
+    embed = build_compact_embed(many, "1473 matches", query="musique")
+    assert len(embed) <= 6000
+    # Trimmed, not emptied: still shows a useful number of rows.
+    assert len(embed.fields) >= 5
 
 
 def test_compact_embed_footer_shows_count():
