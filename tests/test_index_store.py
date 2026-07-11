@@ -83,7 +83,107 @@ def test_get_collection_info(tmp_path):
         "model": "bge-m3",
         "chunker": "semantic",
         "dim": 1024,
+        "artwork_url": "",
     }
+
+
+def test_ensure_collection_stores_artwork_url(tmp_path):
+    s = _store(tmp_path)
+    s.ensure_collection(
+        "c",
+        show="S",
+        model="m",
+        chunker="semantic",
+        dim=8,
+        artwork_url="https://cdn.example/show.jpg",
+    )
+    assert s.get_collection_info("c")["artwork_url"] == "https://cdn.example/show.jpg"
+
+
+def test_ensure_collection_fills_missing_artwork_on_existing_row(tmp_path):
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    s.ensure_collection(
+        "c",
+        show="S",
+        model="m",
+        chunker="semantic",
+        dim=8,
+        artwork_url="https://cdn.example/show.jpg",
+    )
+    assert s.get_collection_info("c")["artwork_url"] == "https://cdn.example/show.jpg"
+
+
+def test_collection_artwork_backfilled_from_show_meta(tmp_path):
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="My Show", model="m", chunker="semantic", dim=8)
+    show_dir = tmp_path / "showfolder"
+    show_dir.mkdir()
+    (show_dir / "show.toml").write_text(
+        'name = "My Show"\nartwork_url = "https://cdn.example/show.jpg"\n',
+        encoding="utf-8",
+    )
+    IndexStore.set_show_folder_resolver(
+        lambda name: str(show_dir) if name == "My Show" else None
+    )
+    try:
+        info = s.get_all_collection_info()
+        assert info["c"]["artwork_url"] == "https://cdn.example/show.jpg"
+        # Persisted in the _collections table: a fresh store with no resolver
+        # (the bot's situation, reading an rsynced index) still sees it.
+        IndexStore.set_show_folder_resolver(None)
+        s2 = _store(tmp_path)
+        assert (
+            s2.get_collection_info("c")["artwork_url"] == "https://cdn.example/show.jpg"
+        )
+    finally:
+        IndexStore.set_show_folder_resolver(None)
+
+
+def test_legacy_collections_table_gains_artwork_column(tmp_path):
+    import lancedb
+    import pyarrow as pa
+
+    idx = tmp_path / "index"
+    idx.mkdir(parents=True)
+    old_schema = pa.schema(
+        [
+            pa.field("name", pa.string()),
+            pa.field("show", pa.string()),
+            pa.field("model", pa.string()),
+            pa.field("chunker", pa.string()),
+            pa.field("dim", pa.int32()),
+            pa.field("created_at", pa.string()),
+        ]
+    )
+    db = lancedb.connect(str(idx))
+    t = db.create_table("_collections", schema=old_schema)
+    t.add(
+        [
+            {
+                "name": "c",
+                "show": "S",
+                "model": "m",
+                "chunker": "semantic",
+                "dim": 8,
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+        ]
+    )
+    del t, db
+
+    s = _store(tmp_path)
+    assert s.get_collection_info("c")["artwork_url"] == ""
+    # Legacy table accepts new-style writes after migration.
+    s.ensure_collection(
+        "d",
+        show="S2",
+        model="m",
+        chunker="semantic",
+        dim=8,
+        artwork_url="https://cdn.example/s2.jpg",
+    )
+    assert s.get_collection_info("d")["artwork_url"] == "https://cdn.example/s2.jpg"
 
 
 def test_get_collection_info_missing(tmp_path):

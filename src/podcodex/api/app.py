@@ -110,8 +110,10 @@ def _warmup_caches_sync() -> None:
         from podcodex.rag.index_store import get_index_store
 
         store = get_index_store()
-        # Touch the metadata table so the connection actually loads.
-        store.list_collections()
+        # Touch the metadata table so the connection actually loads. Full
+        # info read (not just names) so the artwork_url backfill runs at
+        # startup, with the show-folder resolver already registered.
+        store.get_all_collection_info()
     except Exception:
         logger.opt(exception=True).debug("warmup: index store failed")
 

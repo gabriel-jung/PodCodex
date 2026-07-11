@@ -276,6 +276,9 @@ _COLLECTIONS_SCHEMA = pa.schema(
         pa.field("chunker", pa.string()),
         pa.field("dim", pa.int32()),
         pa.field("created_at", pa.string()),
+        # Channel-level show artwork (from show.toml). The bot only sees the
+        # index, so show art must travel inside it, not in the show folder.
+        pa.field("artwork_url", pa.string()),
     ]
 )
 
@@ -340,6 +343,7 @@ class IndexStore:
         self._fts_ready: set[str] = set()
         self._pub_date_ready: set[str] = set()
         self._episode_title_ready: set[str] = set()
+        self._collections_schema_ready = False
         # (index_mtime, collection-info); collection metadata is read on
         # every MCP tool call, bot-access request, and vector search.
         self._collection_info_cache: tuple[float, dict[str, dict]] | None = None
@@ -408,8 +412,24 @@ class IndexStore:
 
     def _collections_table(self):
         if _COLLECTIONS_TABLE in self._table_names():
-            return self._db.open_table(_COLLECTIONS_TABLE)
+            table = self._db.open_table(_COLLECTIONS_TABLE)
+            self._ensure_collections_schema(table)
+            return table
         return self._db.create_table(_COLLECTIONS_TABLE, schema=_COLLECTIONS_SCHEMA)
+
+    def _ensure_collections_schema(self, table) -> None:
+        """Add ``artwork_url`` to pre-migration ``_collections`` tables."""
+        if self._collections_schema_ready:
+            return
+        try:
+            if "artwork_url" not in set(table.schema.names):
+                table.add_columns({"artwork_url": "CAST('' AS STRING)"})
+        except Exception:
+            logger.opt(exception=True).warning(
+                "Could not add artwork_url column to _collections"
+            )
+            return
+        self._collections_schema_ready = True
 
     def _table(self, name: str):
         """Open an existing collection table; raise if missing."""
@@ -643,7 +663,13 @@ class IndexStore:
         return name in self._table_names()
 
     def ensure_collection(
-        self, name: str, show: str, model: str, chunker: str, dim: int
+        self,
+        name: str,
+        show: str,
+        model: str,
+        chunker: str,
+        dim: int,
+        artwork_url: str = "",
     ) -> None:
         """Create the collection table + metadata row if missing (idempotent).
 
@@ -653,6 +679,8 @@ class IndexStore:
             model: Embedding model key.
             chunker: Chunking strategy key.
             dim: Embedding vector dimensionality.
+            artwork_url: Channel-level show artwork URL ("" = unknown; a
+                later call with a real URL fills it in on the existing row).
         """
         tables = self._table_names()
         if name not in tables:
@@ -670,8 +698,14 @@ class IndexStore:
                         "chunker": chunker,
                         "dim": dim,
                         "created_at": datetime.now(timezone.utc).isoformat(),
+                        "artwork_url": artwork_url,
                     }
                 ]
+            )
+        elif artwork_url and not (existing[0].get("artwork_url") or "").strip():
+            meta.update(
+                where=f"name = '{_escape(name)}'",
+                values={"artwork_url": artwork_url},
             )
 
     def list_collections(
@@ -734,12 +768,52 @@ class IndexStore:
                 "model": r["model"],
                 "chunker": r["chunker"],
                 "dim": int(r["dim"]),
+                "artwork_url": (r.get("artwork_url") or "").strip(),
             }
             for r in rows
             if r.get("name")
         }
+        self._backfill_collection_artwork(info)
         self._collection_info_cache = (mtime, info)
         return info
+
+    def _backfill_collection_artwork(self, info: dict[str, dict]) -> None:
+        """Fill empty ``artwork_url`` rows from each show's ``show.toml``.
+
+        Collections indexed before the artwork column existed (or before the
+        show had artwork configured) carry an empty URL. On the API side the
+        show-folder resolver is registered, so heal the row in place; the bot
+        reads an rsynced index with no show folders and just serves whatever
+        is stored. No resolver, no show meta, or no artwork: leave empty and
+        retry on the next on-disk change (cheap, one cached TOML read).
+        """
+        resolver = type(self)._show_folder_resolver
+        if resolver is None:
+            return
+        pending = {n: d for n, d in info.items() if not d["artwork_url"]}
+        if not pending:
+            return
+        from podcodex.ingest.show import load_show_meta
+
+        for name, entry in pending.items():
+            show_folder = resolver(entry["show"]) if entry["show"] else None
+            if not show_folder:
+                continue
+            meta = load_show_meta(Path(show_folder))
+            url = (meta.artwork_url if meta else "").strip()
+            if not url:
+                continue
+            try:
+                self._collections_table().update(
+                    where=f"name = '{_escape(name)}'",
+                    values={"artwork_url": url},
+                )
+            except Exception:
+                logger.opt(exception=True).warning(
+                    f"artwork_url backfill failed for '{name}'"
+                )
+                continue
+            entry["artwork_url"] = url
 
     def count_rows(self, collection: str) -> int:
         """Total chunk count for a collection. 0 if the collection is empty/unknown."""
