@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.2.6] - 2026-07-12
+
+### One search engine for app, bot, and MCP
+
+The app API, the Discord bot, and the MCP server now resolve shows and run
+searches through a single shared service, so behavior and results match
+across all three surfaces.
+
+- Per-show RAG preferences in `show.toml` (`rag_model`, `rag_chunker`) are
+  honored everywhere; previously only the MCP server read them. Selection
+  order per show: explicit request, show preference, server default, global
+  default, then the first indexed collection, so a show indexed under a
+  non-default model always stays reachable.
+- Requesting a model a show is not indexed under falls back through that
+  chain instead of returning nothing.
+
+### Fuzzy search fix
+
+Exact search was silently incomplete on text indexes built by older
+releases: typo tolerance did nothing, and matches inside longer words were
+missed ("William" returned fewer results than "Williams"). Affected indexes
+are rebuilt once per collection on the first search after upgrading (about a
+second per show, logged); newly indexed collections are unaffected.
+
+### Discord bot: /stats redesign
+
+- Per-show breakdown, newest episode first: episode count, indexed duration,
+  and newest episode date per show, with totals in a single line and
+  humanized durations ("46h 12m").
+- A single-show scope (only one show indexed, or one picked via the show
+  filter) also shows the top speakers with talk time and the show artwork.
+
 ## [0.2.5] - 2026-07-11
 
 ### Episode speakers
