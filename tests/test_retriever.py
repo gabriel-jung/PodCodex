@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from podcodex.rag.index_store import IndexStore
+from podcodex.rag.retriever import merge_results
 
 
 DIM = 4
@@ -330,3 +331,72 @@ def test_exact_counts_first_hit(tmp_path):
     assert entry["count"] == 1
     assert entry["first"]["chunk_index"] == 0
     assert entry["first"]["start_hms"] == "0m00"
+
+
+# ──────────────────────────────────────────────
+# merge_results
+# ──────────────────────────────────────────────
+
+
+def _hits(scores: list[float]) -> list[dict]:
+    return [{"text": f"t{i}", "score": s} for i, s in enumerate(scores)]
+
+
+def test_merge_score_strategy_sorts_globally():
+    hits_by_col = {
+        "a": _hits([0.9, 0.5]),
+        "b": _hits([0.8, 0.6]),
+    }
+    merged = merge_results(hits_by_col, top_k=4, strategy="score")
+    scores = [c.get("score") for c, _ in merged]
+    assert scores == [0.9, 0.8, 0.6, 0.5]
+
+
+def test_merge_score_strategy_respects_top_k():
+    hits_by_col = {"a": _hits([0.9, 0.8, 0.7])}
+    merged = merge_results(hits_by_col, top_k=2, strategy="score")
+    assert len(merged) == 2
+
+
+def test_merge_roundrobin_interleaves():
+    hits_by_col = {
+        "a": _hits([0.9, 0.7]),
+        "b": _hits([0.8, 0.6]),
+    }
+    merged = merge_results(hits_by_col, top_k=4, strategy="roundrobin")
+    collections = [col for _, col in merged]
+    # Round-robin alternates between collections
+    assert collections[0] != collections[1]
+
+
+def test_merge_roundrobin_respects_top_k():
+    hits_by_col = {
+        "a": _hits([0.9, 0.7, 0.5]),
+        "b": _hits([0.8, 0.6, 0.4]),
+    }
+    merged = merge_results(hits_by_col, top_k=3, strategy="roundrobin")
+    assert len(merged) == 3
+
+
+def test_merge_roundrobin_uneven_collections():
+    hits_by_col = {
+        "a": _hits([0.9]),
+        "b": _hits([0.8, 0.6, 0.4]),
+    }
+    merged = merge_results(hits_by_col, top_k=4, strategy="roundrobin")
+    assert len(merged) == 4
+    # "a" exhausted after 1, remaining come from "b"
+    assert sum(1 for _, col in merged if col == "a") == 1
+    assert sum(1 for _, col in merged if col == "b") == 3
+
+
+def test_merge_empty_input():
+    assert merge_results({}, top_k=5, strategy="score") == []
+    assert merge_results({}, top_k=5, strategy="roundrobin") == []
+
+
+def test_merge_single_collection():
+    hits_by_col = {"a": _hits([0.9, 0.5])}
+    merged = merge_results(hits_by_col, top_k=5, strategy="roundrobin")
+    assert len(merged) == 2
+    assert all(col == "a" for _, col in merged)

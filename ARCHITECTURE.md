@@ -112,6 +112,8 @@ This means changing the embedding model or chunker creates a new collection rath
 
 **Hybrid retrieval:** vector ANN (cosine on embeddings) + BM25 full-text on the raw segment text, fused with reciprocal rank. Both indexes are maintained inside the single LanceDB table per collection.
 
+**Shared search service:** all three query surfaces (the desktop app's HTTP API, the Discord bot, the MCP server) resolve shows to collections and fan queries across them through one module, `podcodex.rag.search_service`. Surfaces keep their own transport, access control, and response shaping; the service owns collection picking, per-model query encoding, cross-collection merging, and result ordering. `resolve_collections()` picks one collection per show from `IndexStore.get_all_collection_info()`, in this precedence, each rung skipped when no collection matches: an explicit override (a caller-supplied model/chunker, e.g. a user's request params) beats the show's `show.toml` RAG preference (`load_show_rag_prefs()`) beats a caller-supplied default beats the global `DEFAULT_MODEL`/`DEFAULT_CHUNKING` combo beats the first collection by sorted name. That last rung keeps a show reachable even when it's indexed only under a non-default model. `hybrid_search()`, `exact_search()`, and `random_quote()` then query the resolved collections; a `ValueError` from the retriever (bad filter, dim mismatch) re-raises, any other per-collection failure is logged and skipped so one broken table never blanks the whole answer.
+
 ## Frontend ↔ backend type sync
 
 Pydantic request/response models in `src/podcodex/api/` are the source of truth. Run `make types` to regenerate `frontend/src/api/types.ts`. The frontend's API client (`createVersionApi`, `createLLMPipelineApi`) consumes these types.
@@ -120,6 +122,6 @@ Don't hand-edit `frontend/src/api/types.ts`; it's overwritten by `make types`. P
 
 ## Bot and MCP
 
-Both consume the same shared retriever. They are read-only; neither builds the index. The bot resolves the index path via `_resolve_default_index_path()` in `rag/index_store.py` (PODCODEX_INDEX env > `<data_dir>/index/` > `./deploy/index/` > `./index/`). MCP server runs over stdio for Claude Desktop. The same uvicorn process also exposes HTTP at `/mcp` for other clients.
+Both consume the same shared search service (see **Shared search service** above). They are read-only; neither builds the index. The bot resolves the index path via `_resolve_default_index_path()` in `rag/index_store.py` (PODCODEX_INDEX env > `<data_dir>/index/` > `./deploy/index/` > `./index/`). MCP server runs over stdio for Claude Desktop. The same uvicorn process also exposes HTTP at `/mcp` for other clients.
 
 Detailed deploy guides: `deploy/BOT.md`, `deploy/MCP.md`.

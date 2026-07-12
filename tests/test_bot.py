@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("discord")
 
-from podcodex.bot.bot import BotConfig, ServerSettings
+from podcodex.bot.bot import BotConfig, ResolvedShows, ServerSettings, ShowAccess
 from podcodex.bot.ui import (
     build_details_embed,
     build_episodes_embeds,
@@ -21,9 +21,7 @@ from podcodex.bot.formatting import (
     safe_truncate,
     speaker as _speaker,
     score_bar as _score_bar,
-    format_context as _format_context,
 )
-from podcodex.rag.retriever import merge_results
 
 
 # ──────────────────────────────────────────────
@@ -107,29 +105,68 @@ def test_speaker_generic_when_none():
     assert _speaker({"speaker": None, "dominant_speaker": None}) == "Speaker"
 
 
-def test_pick_show_collection_reachable_regardless_of_model():
-    from podcodex.bot.bot import pick_show_collection
+def test_resolve_show_collections_precedence(monkeypatch):
+    from podcodex.bot.bot import PodCodexBot, ServerSettings
 
-    default = ("s__bge-m3__semantic", {"model": "bge-m3", "chunker": "semantic"})
-    other = ("s__e5-small__semantic", {"model": "e5-small", "chunker": "semantic"})
+    col_info = {
+        "s__aardvark__semantic": {
+            "show": "S",
+            "model": "aardvark",
+            "chunker": "semantic",
+        },
+        "s__bge-m3__semantic": {"show": "S", "model": "bge-m3", "chunker": "semantic"},
+        "s__e5-small__speaker": {
+            "show": "S",
+            "model": "e5-small",
+            "chunker": "speaker",
+        },
+    }
+    bot = PodCodexBot.__new__(PodCodexBot)  # no Discord login needed
+    bot._shows = {}  # nothing protected: _show_allowed always True
 
-    # Server preference wins when present.
-    assert pick_show_collection([default, other], "e5-small", "semantic") == (
-        "s__e5-small__semantic",
-        "e5-small",
+    def resolve(settings, prefs, explicit=None, cols=col_info):
+        monkeypatch.setattr("podcodex.bot.bot.load_show_rag_prefs", lambda: prefs)
+        shows = ResolvedShows(ShowAccess.ALL)
+        return bot._resolve_show_collections(shows, settings, cols, explicit=explicit)
+
+    # guild default wins over global default
+    got = resolve(ServerSettings(model="e5-small", chunker="speaker"), {})
+    assert [(c.name, c.model) for c in got] == [("s__e5-small__speaker", "e5-small")]
+    # show.toml pref wins over guild default
+    got = resolve(
+        ServerSettings(model="bge-m3", chunker="semantic"),
+        {"s": ("e5-small", "speaker")},
     )
-    # Falls back to the global default combo.
-    assert pick_show_collection([default, other], "nope", "semantic") == (
-        "s__bge-m3__semantic",
-        "bge-m3",
+    assert [(c.name, c.model) for c in got] == [("s__e5-small__speaker", "e5-small")]
+    # explicit user pick wins over show pref
+    got = resolve(
+        ServerSettings(),
+        {"s": ("e5-small", "speaker")},
+        explicit=("bge-m3", "semantic"),
     )
-    # A show indexed only under a non-default model stays reachable (first by name).
-    only = ("z__e5-small__word", {"model": "e5-small", "chunker": "word"})
-    assert pick_show_collection([only], "bge-m3", "semantic") == (
-        "z__e5-small__word",
-        "e5-small",
+    assert [(c.name, c.model) for c in got] == [("s__bge-m3__semantic", "bge-m3")]
+    # guild default mismatch falls to the global default rung,
+    # not to alphabetical-first (aardvark)
+    got = resolve(ServerSettings(model="nope", chunker="nope"), {})
+    assert [(c.name, c.model) for c in got] == [("s__bge-m3__semantic", "bge-m3")]
+    # no tier matches at all (no global-default collection either):
+    # first by name keeps the show reachable
+    no_default_cols = {
+        "s__aardvark__semantic": {
+            "show": "S",
+            "model": "aardvark",
+            "chunker": "semantic",
+        },
+        "s__e5-small__speaker": {
+            "show": "S",
+            "model": "e5-small",
+            "chunker": "speaker",
+        },
+    }
+    got = resolve(
+        ServerSettings(model="nope", chunker="nope"), {}, cols=no_default_cols
     )
-    assert pick_show_collection([], "bge-m3", "semantic") is None
+    assert [(c.name, c.model) for c in got] == [("s__aardvark__semantic", "aardvark")]
 
 
 def test_display_speaker_maps_raw_diarization_labels():
@@ -351,60 +388,6 @@ def test_result_embed_no_show_has_no_author():
 
 
 # ──────────────────────────────────────────────
-# _format_context
-# ──────────────────────────────────────────────
-
-_NEIGHBORS = [
-    {"speaker": "Alice", "start": 0.0, "end": 5.0, "text": "First turn"},
-    {"speaker": "Bob", "start": 5.0, "end": 10.0, "text": "Second turn"},
-    {"speaker": "Alice", "start": 10.0, "end": 15.0, "text": "Third turn — matched"},
-    {"speaker": "Bob", "start": 15.0, "end": 20.0, "text": "Fourth turn"},
-    {"speaker": "Alice", "start": 20.0, "end": 25.0, "text": "Fifth turn"},
-]
-
-
-def test_format_context_highlights_matched_chunk():
-    content, _ = _format_context(_NEIGHBORS, start=10.0, n=2, show="S", episode="E")
-    assert "▶ Alice" in content
-    assert "**Third turn — matched**" in content
-
-
-def test_format_context_includes_surrounding_turns():
-    content, _ = _format_context(_NEIGHBORS, start=10.0, n=2, show="S", episode="E")
-    assert "First turn" in content
-    assert "Second turn" in content
-    assert "Fourth turn" in content
-    assert "Fifth turn" in content
-
-
-def test_format_context_has_more_when_window_smaller_than_episode():
-    _, has_more = _format_context(_NEIGHBORS, start=10.0, n=1, show="S", episode="E")
-    assert has_more is True
-
-
-def test_format_context_no_more_at_episode_boundary():
-    # n=2 covers all 5 chunks (2 before + matched + 2 after), nothing beyond
-    _, has_more = _format_context(_NEIGHBORS, start=10.0, n=2, show="S", episode="E")
-    assert has_more is False
-
-
-def test_format_context_chunk_not_found():
-    content, has_more = _format_context(
-        _NEIGHBORS, start=99.0, n=2, show="S", episode="E"
-    )
-    assert "Could not locate" in content
-    assert has_more is False
-
-
-def test_format_context_header_shows_show_and_episode():
-    content, _ = _format_context(
-        _NEIGHBORS, start=10.0, n=2, show="My Podcast", episode="ep01"
-    )
-    assert "My Podcast" in content
-    assert "Ep01" in content
-
-
-# ──────────────────────────────────────────────
 # safe_truncate
 # ──────────────────────────────────────────────
 
@@ -442,75 +425,6 @@ def test_safe_truncate_no_spaces_cuts_at_max():
     result, truncated = safe_truncate(text, max_chars=50)
     assert truncated is True
     assert len(result.split("\n")[0]) == 50
-
-
-# ──────────────────────────────────────────────
-# merge_results
-# ──────────────────────────────────────────────
-
-
-def _hits(scores: list[float]) -> list[dict]:
-    return [{"text": f"t{i}", "score": s} for i, s in enumerate(scores)]
-
-
-def test_merge_score_strategy_sorts_globally():
-    hits_by_col = {
-        "a": _hits([0.9, 0.5]),
-        "b": _hits([0.8, 0.6]),
-    }
-    merged = merge_results(hits_by_col, top_k=4, strategy="score")
-    scores = [c.get("score") for c, _ in merged]
-    assert scores == [0.9, 0.8, 0.6, 0.5]
-
-
-def test_merge_score_strategy_respects_top_k():
-    hits_by_col = {"a": _hits([0.9, 0.8, 0.7])}
-    merged = merge_results(hits_by_col, top_k=2, strategy="score")
-    assert len(merged) == 2
-
-
-def test_merge_roundrobin_interleaves():
-    hits_by_col = {
-        "a": _hits([0.9, 0.7]),
-        "b": _hits([0.8, 0.6]),
-    }
-    merged = merge_results(hits_by_col, top_k=4, strategy="roundrobin")
-    collections = [col for _, col in merged]
-    # Round-robin alternates between collections
-    assert collections[0] != collections[1]
-
-
-def test_merge_roundrobin_respects_top_k():
-    hits_by_col = {
-        "a": _hits([0.9, 0.7, 0.5]),
-        "b": _hits([0.8, 0.6, 0.4]),
-    }
-    merged = merge_results(hits_by_col, top_k=3, strategy="roundrobin")
-    assert len(merged) == 3
-
-
-def test_merge_roundrobin_uneven_collections():
-    hits_by_col = {
-        "a": _hits([0.9]),
-        "b": _hits([0.8, 0.6, 0.4]),
-    }
-    merged = merge_results(hits_by_col, top_k=4, strategy="roundrobin")
-    assert len(merged) == 4
-    # "a" exhausted after 1, remaining come from "b"
-    assert sum(1 for _, col in merged if col == "a") == 1
-    assert sum(1 for _, col in merged if col == "b") == 3
-
-
-def test_merge_empty_input():
-    assert merge_results({}, top_k=5, strategy="score") == []
-    assert merge_results({}, top_k=5, strategy="roundrobin") == []
-
-
-def test_merge_single_collection():
-    hits_by_col = {"a": _hits([0.9, 0.5])}
-    merged = merge_results(hits_by_col, top_k=5, strategy="roundrobin")
-    assert len(merged) == 2
-    assert all(col == "a" for _, col in merged)
 
 
 # ──────────────────────────────────────────────
@@ -815,11 +729,11 @@ def test_resolve_show_collections_reaches_every_show_one_each(tmp_path):
     settings = bot._server_settings(None)
     col_info = bot.local.get_all_collection_info()
 
-    pairs = bot._resolve_show_collections(
+    cols = bot._resolve_show_collections(
         ResolvedShows(ShowAccess.ALL), settings, col_info
     )
     # One collection per show, and Beta is reachable under e5-small without a model arg.
-    assert sorted(pairs) == [
+    assert sorted((c.name, c.model) for c in cols) == [
         ("alpha__bge-m3__semantic", "bge-m3"),
         ("beta__e5-small__semantic", "e5-small"),
     ]
@@ -835,10 +749,10 @@ def test_resolve_show_collections_excludes_locked_show(tmp_path):
     settings = bot._server_settings(None)
     col_info = bot.local.get_all_collection_info()
 
-    pairs = bot._resolve_show_collections(
+    cols = bot._resolve_show_collections(
         ResolvedShows(ShowAccess.ALL), settings, col_info
     )
-    assert pairs == [("alpha__bge-m3__semantic", "bge-m3")]
+    assert [(c.name, c.model) for c in cols] == [("alpha__bge-m3__semantic", "bge-m3")]
 
 
 # ──────────────────────────────────────────────

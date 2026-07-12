@@ -13,6 +13,7 @@ All tests isolate state by redirecting CONFIG_PATH and operating in tmp_path.
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
@@ -475,6 +476,119 @@ def test_export_missing_source_returns_404(client, tmp_path):
         params={"audio_path": audio, "source": "transcript"},
     )
     assert r.status_code == 404
+
+
+# ──────────────────────────────────────────────
+# Search routes (query/exact/random via podcodex.rag.search_service)
+# ──────────────────────────────────────────────
+
+SEARCH_DIM = 8
+
+
+@pytest.fixture
+def seeded_index(tmp_path, monkeypatch):
+    """IndexStore with show "Alpha" indexed only under e5-small/semantic.
+
+    The API's request default is bge-m3/semantic, which this fixture never
+    creates for Alpha. Route tests use this gap to confirm the resolver
+    chain falls through to Alpha's actual collection instead of querying a
+    collection that doesn't exist.
+    """
+    from podcodex.rag import index_store as rag_index_store
+    from podcodex.rag import retriever as rag_retriever
+    from podcodex.rag.index_store import IndexStore
+
+    index_path = tmp_path / "search-index"
+    store = IndexStore(index_path)
+    col = "alpha__e5-small__semantic"
+    store.ensure_collection(
+        col, show="Alpha", model="e5-small", chunker="semantic", dim=SEARCH_DIM
+    )
+    chunks = [
+        {
+            "text": f"hello world chunk {i}",
+            "episode": "ep1",
+            "show": "Alpha",
+            "source": "transcript",
+            "dominant_speaker": "Alice",
+            "start": float(i),
+            "end": float(i + 1),
+        }
+        for i in range(3)
+    ]
+    rng = np.random.default_rng(0)
+    store.save_chunks(col, "ep1", chunks, rng.random((3, SEARCH_DIM), dtype=np.float32))
+
+    monkeypatch.setenv("PODCODEX_INDEX", str(index_path))
+    rag_index_store.get_index_store.cache_clear()
+    rag_retriever.get_retriever.cache_clear()
+    # Stub the embedder so the fallback resolves against e5-small without
+    # pulling live model weights; only encode_query is on the query path.
+    retriever = rag_retriever.get_retriever("e5-small")
+    monkeypatch.setattr(
+        retriever, "encode_query", lambda _q: np.zeros(SEARCH_DIM, dtype=np.float32)
+    )
+    yield store
+    rag_index_store.get_index_store.cache_clear()
+    rag_retriever.get_retriever.cache_clear()
+
+
+def test_search_falls_back_when_requested_combo_missing(client, seeded_index):
+    """Requesting a model/chunking combo a show doesn't have must still
+    return the show's actual results, not an empty/404-ish response."""
+    resp = client.post(
+        "/api/search/query",
+        json={"query": "hello", "show": "Alpha", "model": "bge-m3"},
+        headers={"X-PodCodex": "1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()  # old code: empty (queried a nonexistent collection)
+
+
+def test_exact_endpoint_falls_back_when_requested_combo_missing(client, seeded_index):
+    """/exact must resolve through the same fallback chain as /query: a
+    show indexed only under a non-default model must still be searchable."""
+    resp = client.post(
+        "/api/search/exact",
+        json={"query": "hello world chunk 1", "show": "Alpha", "model": "bge-m3"},
+        headers={"X-PodCodex": "1"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body
+    assert any("hello world chunk 1" in r["text"] for r in body)
+    result = body[0]
+    assert "episode" in result
+    assert "episode_stem" in result
+    assert "score" in result
+    assert "match_text" in result
+
+
+def test_random_endpoint_falls_back_when_requested_combo_missing(client, seeded_index):
+    """/random must resolve through the same fallback chain as the other
+    search routes instead of silently returning None for an indexed show."""
+    resp = client.post(
+        "/api/search/random",
+        json={"show": "Alpha", "model": "bge-m3"},
+        headers={"X-PodCodex": "1"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body is not None
+    assert body["score"] == 1.0
+    assert body["text"]
+
+
+def test_speakers_falls_back_when_requested_combo_missing(client, seeded_index):
+    """/speakers must resolve through the same fallback chain as the other
+    search routes: a wrong model param must not silently return []."""
+    resp = client.get(
+        "/api/search/speakers",
+        params={"show": "Alpha", "model": "bge-m3"},
+        headers={"X-PodCodex": "1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == ["Alice"]
 
 
 # ──────────────────────────────────────────────

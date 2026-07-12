@@ -11,9 +11,32 @@ from pydantic import BaseModel, field_validator
 from podcodex.api.routes._helpers import AUDIO_EXTS, get_index_store
 from podcodex.core._utils import humanize_stem
 from podcodex.rag.index_store import _normalize_pub_date
-from podcodex.rag.retriever import get_retriever
+from podcodex.rag.search_service import (
+    SearchCollection,
+    exact_search as svc_exact_search,
+    hybrid_search as svc_hybrid_search,
+    load_show_rag_prefs,
+    random_quote as svc_random_quote,
+    resolve_collections,
+)
 
 router = APIRouter()
+
+
+def _resolve_req_cols(show: str, model: str, chunking: str) -> list[SearchCollection]:
+    """Resolve a request's show to its collections via the shared resolver.
+
+    Shared by ``search_query``, ``exact_search``, and ``random_quote``: all
+    three pick collections the same way, override-first then falling back
+    through show prefs and defaults so a show indexed only under a
+    non-default model stays reachable.
+    """
+    return resolve_collections(
+        get_index_store().get_all_collection_info(),
+        shows=[show],
+        show_prefs=load_show_rag_prefs(),
+        override=(model, chunking),
+    )
 
 
 # Cache key combines folder mtime + show.toml mtime so that renaming a show
@@ -158,18 +181,23 @@ class SearchResult(BaseModel):
 async def search_query(req: SearchRequest) -> list[dict]:
     """Hybrid search over the global LanceDB index."""
     from podcodex.rag.defaults import MODELS
-    from podcodex.rag.store import collection_name
 
     if req.model not in MODELS:
         raise HTTPException(400, f"Unknown model: {req.model}")
 
-    col = collection_name(req.show, req.model, req.chunking)
-    logger.info("Search: show={!r} col={!r} episode={!r}", req.show, col, req.episode)
+    cols = _resolve_req_cols(req.show, req.model, req.chunking)
+    logger.info(
+        "Search: show={!r} cols={!r} episode={!r}",
+        req.show,
+        [c.name for c in cols],
+        req.episode,
+    )
+    if not cols:
+        return []
     try:
-        retriever = get_retriever(req.model)
-        results = retriever.retrieve(
+        results = svc_hybrid_search(
             req.query,
-            col,
+            cols,
             top_k=req.top_k,
             alpha=req.alpha,
             episode=req.episode,
@@ -182,12 +210,12 @@ async def search_query(req: SearchRequest) -> list[dict]:
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception:
-        logger.opt(exception=True).warning("Search failed for collection {}", col)
+        logger.opt(exception=True).warning("Search failed for show {}", req.show)
         results = []
 
     logger.info("Search: {} result(s)", len(results))
     audio_lookup = _build_audio_lookup()
-    return [_result_to_dict(r, audio_lookup) for r in results]
+    return [_result_to_dict(r, audio_lookup) for r, _col in results]
 
 
 def _result_to_dict(r: dict, audio_lookup: dict[str, dict] | None = None) -> dict:
@@ -243,14 +271,13 @@ class ExactRequest(BaseModel):
 @router.post("/exact", response_model=list[SearchResult])
 async def exact_search(req: ExactRequest) -> list[dict]:
     """Phrase search: returns all exact, accent-variant, and near-typo matches."""
-    from podcodex.rag.store import collection_name
-
-    col = collection_name(req.show, req.model, req.chunking)
-    retriever = get_retriever(req.model)
+    cols = _resolve_req_cols(req.show, req.model, req.chunking)
+    if not cols:
+        return []
     try:
-        hits = retriever.exact(
+        hits = svc_exact_search(
             req.query,
-            col,
+            cols,
             episode=req.episode,
             episodes=req.episodes,
             speaker=req.speaker,
@@ -261,7 +288,7 @@ async def exact_search(req: ExactRequest) -> list[dict]:
     except ValueError as e:
         raise HTTPException(400, str(e))
     audio_lookup = _build_audio_lookup()
-    return [_result_to_dict(h, audio_lookup) for h in hits]
+    return [_result_to_dict(h, audio_lookup) for h, _col in hits]
 
 
 # ── Random quote ─────────────────────────────────────────
@@ -282,13 +309,12 @@ class RandomRequest(BaseModel):
 @router.post("/random", response_model=SearchResult | None)
 async def random_quote(req: RandomRequest) -> dict | None:
     """Pick a random indexed chunk (optionally filtered)."""
-    from podcodex.rag.store import collection_name
-
-    col = collection_name(req.show, req.model, req.chunking)
-    retriever = get_retriever(req.model)
+    cols = _resolve_req_cols(req.show, req.model, req.chunking)
+    if not cols:
+        return None
     try:
-        chunk = retriever.random(
-            col,
+        picked = svc_random_quote(
+            cols,
             episode=req.episode,
             episodes=req.episodes,
             speaker=req.speaker,
@@ -298,8 +324,9 @@ async def random_quote(req: RandomRequest) -> dict | None:
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    if chunk is None:
+    if picked is None:
         return None
+    chunk, _col = picked
     return _result_to_dict({**chunk, "score": 1.0}, _build_audio_lookup())
 
 
@@ -312,11 +339,16 @@ async def list_indexed_speakers(
     model: str = "bge-m3",
     chunking: str = "semantic",
 ) -> list[str]:
-    """Distinct ``dominant_speaker`` values in a show's collection."""
-    from podcodex.rag.store import collection_name
+    """Distinct ``dominant_speaker`` values in a show's collection.
 
-    col = collection_name(show, model, chunking)
-    return get_index_store().list_speakers(col)
+    Resolves through the shared resolver, same as query/exact/random, so a
+    show indexed only under a non-default model still returns its speakers
+    instead of silently missing.
+    """
+    cols = _resolve_req_cols(show, model, chunking)
+    if not cols:
+        return []
+    return get_index_store().list_speakers(cols[0].name)
 
 
 # ── Index stats ──────────────────────────────────────────

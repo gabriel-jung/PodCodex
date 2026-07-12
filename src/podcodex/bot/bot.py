@@ -46,10 +46,8 @@ import hashlib
 import hmac
 import json
 import os
-import random
 import secrets
 import time
-from collections import defaultdict
 from dataclasses import asdict, dataclass, field, fields, replace
 from enum import Enum
 from pathlib import Path
@@ -95,7 +93,15 @@ from podcodex.rag.defaults import (
     TOP_K,
 )
 from podcodex.rag.index_store import IndexStore, _normalize_pub_date, get_index_store
-from podcodex.rag.retriever import Retriever, get_retriever, merge_results
+from podcodex.rag.retriever import Retriever, get_retriever
+from podcodex.rag.search_service import (
+    SearchCollection,
+    exact_search,
+    hybrid_search,
+    load_show_rag_prefs,
+    random_quote,
+    resolve_collections,
+)
 from podcodex.rag.store import collection_name
 
 # Throttle for the per-call mtime check. Discord fires autocomplete on every
@@ -126,10 +132,6 @@ class ShowAccess(Enum):
 class ResolvedShows:
     access: ShowAccess
     shows: tuple[str, ...] = ()
-
-    @property
-    def is_all(self) -> bool:
-        return self.access is ShowAccess.ALL
 
     @property
     def is_locked(self) -> bool:
@@ -219,31 +221,6 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
 
 # ── Embed builder ─────────────────────────────
-
-
-def pick_show_collection(
-    cols: list[tuple[str, dict]], pref_model: str, pref_chunker: str
-) -> tuple[str, str] | None:
-    """Choose one ``(collection, model)`` for a show from its collections.
-
-    Priority: the server's preferred model+chunker, then the global default
-    combo, then the first remaining collection by name — so a show indexed
-    only under a non-default model stays reachable without the user ever
-    naming a model. Returns ``None`` for a show with no collections.
-    """
-    for name, info in cols:
-        if info.get("model") == pref_model and info.get("chunker") == pref_chunker:
-            return name, info.get("model", pref_model)
-    for name, info in cols:
-        if (
-            info.get("model") == DEFAULT_MODEL
-            and info.get("chunker") == DEFAULT_CHUNKING
-        ):
-            return name, info["model"]
-    if not cols:
-        return None
-    name, info = min(cols, key=lambda c: c[0])
-    return name, info.get("model", DEFAULT_MODEL)
 
 
 def _chunk_to_ref(chunk: dict, collection: str) -> ResultRef:
@@ -368,6 +345,22 @@ class PodCodexBot(discord.Client):
             top_k=top_k or base.top_k,
         )
 
+    def _settings_and_explicit(
+        self, guild_id: int | None, model: str | None
+    ) -> tuple[ServerSettings, ServerSettings, tuple[str, str] | None]:
+        """Merged settings, unmerged guild settings, explicit override.
+
+        `settings` (merged) drives messaging so the empty-collections text
+        still names the model the user actually typed. Resolution takes the
+        unmerged `base` as its default tier plus `explicit` on top; feeding
+        the merged settings there would let a failed explicit combo collapse
+        past the guild's real default (see /search-advanced).
+        """
+        settings = self._effective_settings(guild_id, model or "", 0)
+        base = self._server_settings(guild_id)
+        explicit = (model, base.chunker) if model else None
+        return settings, base, explicit
+
     # ── Access control helpers ────────────────
 
     def _resolve_shows(
@@ -480,42 +473,37 @@ class PodCodexBot(discord.Client):
         shows: ResolvedShows,
         settings: ServerSettings,
         col_info: dict[str, dict],
-    ) -> list[tuple[str, str]]:
-        """One ``(collection, model)`` per accessible show.
+        *,
+        explicit: tuple[str, str] | None = None,
+    ) -> list[SearchCollection]:
+        """One :class:`SearchCollection` per accessible show.
 
         The single collection-resolution path for /search, /exact, /random and
-        the stats commands. Each show maps to exactly one collection (see
-        :func:`pick_show_collection`), so a query never needs a model or
-        chunker and a show indexed under any model stays reachable.
-        ``is_locked`` yields ``[]`` (no preview leaks); locked-but-unlocked
-        shows pass the access filter.
+        the stats commands, delegating the picking to the shared
+        :func:`resolve_collections`. Precedence per show: ``explicit`` (a user
+        model+chunker typed on an ``-advanced`` command), the show's
+        ``show.toml`` RAG prefs, this server's default model+chunker, the
+        global default (``DEFAULT_MODEL``/``DEFAULT_CHUNKING``), then the
+        first collection by name so a show indexed only under a non-default
+        model stays reachable. ``is_locked`` yields ``[]`` (no preview leaks);
+        locked-but-unlocked shows pass the access filter.
         """
         if shows.is_locked:
             return []
-        by_show: dict[str, list[tuple[str, dict]]] = defaultdict(list)
-        for name, info in col_info.items():
-            by_show[info.get("show", "")].append((name, info))
-
-        if shows.is_specific:
-            wanted = {s.lower() for s in shows.shows}
-            show_keys = [s for s in by_show if s.lower() in wanted]
-        else:
-            show_keys = list(by_show)
-
-        picked: list[tuple[str, str]] = []
-        for show_name in sorted(show_keys):
-            choice = pick_show_collection(
-                by_show[show_name], settings.model, settings.chunker
-            )
-            if choice is not None:
-                picked.append(choice)
-
-        if not self._locked_show_names:
-            return picked
+        wanted = list(shows.shows) if shows.is_specific else None
         return [
-            (col, model)
-            for col, model in picked
-            if self._show_allowed((col_info.get(col) or {}).get("show", ""), settings)
+            c
+            for c in resolve_collections(
+                col_info,
+                shows=wanted,
+                show_prefs=load_show_rag_prefs(),
+                override=explicit,
+                default=(
+                    settings.model or DEFAULT_MODEL,
+                    settings.chunker or DEFAULT_CHUNKING,
+                ),
+            )
+            if self._show_allowed(c.show, settings)
         ]
 
     async def _refresh_if_stale(self) -> None:
@@ -680,8 +668,8 @@ class PodCodexBot(discord.Client):
 
         async for guild_id, settings, channel in self._iter_announce_channels():
             accessible = {
-                c
-                for c, _ in self._resolve_show_collections(
+                c.name
+                for c in self._resolve_show_collections(
                     ResolvedShows(ShowAccess.ALL), settings, col_info
                 )
             }
@@ -1031,19 +1019,6 @@ class PodCodexBot(discord.Client):
             if current.lower() in s.lower()
         ][:25]
 
-    async def _available_show_autocomplete(
-        self,
-        interaction: discord.Interaction,
-        current: str,
-    ) -> list[app_commands.Choice[str]]:
-        """Autocomplete from password-protected shows in the index (for /unlock)."""
-        available = [entry.name for entry in self._shows.values()]
-        return [
-            app_commands.Choice(name=s, value=s)
-            for s in sorted(available)
-            if current.lower() in s.lower()
-        ][:25]
-
     # ── Command registration ──────────────────
 
     def _register_commands(self) -> None:
@@ -1115,13 +1090,21 @@ class PodCodexBot(discord.Client):
             if await self._reject_bad_date(interaction, after, before):
                 return
             await self._refresh_if_stale()
-            settings = self._effective_settings(
-                interaction.guild_id, model, top_k, chunker
+            # Model/chunker are threaded separately as `explicit` rather than
+            # pre-merged into `settings`, so a typo'd explicit combo still
+            # falls back through show.toml prefs and the server default
+            # instead of collapsing straight to first-by-name.
+            base = self._server_settings(interaction.guild_id)
+            settings = replace(base, top_k=top_k or base.top_k)
+            explicit = (
+                (model or base.model, chunker or base.chunker)
+                if (model or chunker)
+                else None
             )
             effective_source = source or settings.default_source or None
             use_compact = compact == "true" if compact else settings.compact
             shows = self._resolve_shows(settings, show)
-            label = f"α={alpha:.2f} • {self._model_label(settings.model)}"
+            label = f"α={alpha:.2f} • {self._model_label(model or base.model)}"
             await self._run_search(
                 interaction,
                 query,
@@ -1135,6 +1118,7 @@ class PodCodexBot(discord.Client):
                 pub_date_min=after or None,
                 pub_date_max=before or None,
                 compact=use_compact,
+                explicit=explicit,
             )
 
         search_advanced.autocomplete("show")(self._show_autocomplete)
@@ -1562,6 +1546,7 @@ class PodCodexBot(discord.Client):
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
         compact: bool = False,
+        explicit: tuple[str, str] | None = None,
     ) -> None:
         await interaction.response.defer()
         loop = asyncio.get_running_loop()
@@ -1579,6 +1564,7 @@ class PodCodexBot(discord.Client):
                     speaker=speaker,
                     pub_date_min=pub_date_min,
                     pub_date_max=pub_date_max,
+                    explicit=explicit,
                 ),
             )
         except ValueError as e:
@@ -1650,46 +1636,37 @@ class PodCodexBot(discord.Client):
         speaker: str | None = None,
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
+        explicit: tuple[str, str] | None = None,
     ) -> list[tuple[dict, str]]:
         """Run hybrid retrieval, one collection per show, and merge results.
 
-        Shows may resolve to collections under different embedding models, so
-        retrievers are grouped by model (each encodes the query once).
+        Shows may resolve to collections under different embedding models; the
+        shared search service groups retrievers by model so each query is
+        encoded once per model, not once per collection.
         """
         col_info = self.local.get_all_collection_info()
-        pairs = self._resolve_show_collections(shows, settings, col_info)
-        if not pairs:
+        cols = self._resolve_show_collections(
+            shows, settings, col_info, explicit=explicit
+        )
+        if not cols:
             logger.warning("No collections resolved for this query")
             return []
 
-        by_model: dict[str, list[str]] = defaultdict(list)
-        for col, model in pairs:
-            by_model[model].append(col)
-
-        hits_by_col: dict[str, list[dict]] = {}
-        for model, cols in by_model.items():
-            ret = self.retriever(model)
-            for col in cols:
-                hits = ret.retrieve(
-                    query,
-                    col,
-                    top_k=settings.top_k,
-                    alpha=alpha,
-                    source=source,
-                    episode=episode,
-                    speaker=speaker,
-                    pub_date_min=pub_date_min,
-                    pub_date_max=pub_date_max,
-                )
-                if hits:
-                    hits_by_col[col] = hits
-
-        merged = merge_results(
-            hits_by_col,
+        return hybrid_search(
+            query,
+            cols,
             top_k=settings.top_k,
+            alpha=alpha,
             strategy=self.config.merge_strategy,
+            score_floor=0.05,
+            episode=episode,
+            episodes=None,
+            source=source,
+            speaker=speaker,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
+            retriever_factory=self.retriever,
         )
-        return [r for r in merged if r[0].get("score", 0) > 0.05]
 
     # ── /exact handler ────────────────────────
 
@@ -1711,29 +1688,28 @@ class PodCodexBot(discord.Client):
 
         try:
             col_info = await self._cached_col_info()
-            pairs = self._resolve_show_collections(shows, settings, col_info)
-            if not pairs:
+            cols = self._resolve_show_collections(shows, settings, col_info)
+            if not cols:
                 await interaction.followup.send(
                     self._empty_collections_message(col_info, settings, shows),
                     ephemeral=True,
                 )
                 return
 
-            all_results: list[tuple[dict, str]] = []
-            for col, model in pairs:
-                hits = await loop.run_in_executor(
-                    None,
-                    lambda c=col, m=model: self.retriever(m).exact(
-                        query,
-                        c,
-                        source=source,
-                        episode=episode,
-                        speaker=speaker,
-                        pub_date_min=pub_date_min,
-                        pub_date_max=pub_date_max,
-                    ),
-                )
-                all_results.extend((hit, col) for hit in hits)
+            all_results = await loop.run_in_executor(
+                None,
+                lambda: exact_search(
+                    query,
+                    cols,
+                    order="chronological",
+                    source=source,
+                    episode=episode,
+                    speaker=speaker,
+                    pub_date_min=pub_date_min,
+                    pub_date_max=pub_date_max,
+                    retriever_factory=self.retriever,
+                ),
+            )
 
         except Exception:
             logger.exception(f"Exact search error: {query!r}")
@@ -1746,21 +1722,6 @@ class PodCodexBot(discord.Client):
                 ephemeral=True,
             )
             return
-
-        # Phrase results (exact + accent) sorted chronologically; fuzzy by BM25 score
-        phrase = sorted(
-            [r for r in all_results if not r[0].get("fuzzy_match")],
-            key=lambda x: (
-                x[0].get("score", 1.0) < 1.0,
-                x[0].get("episode", ""),
-                x[0].get("start", 0.0),
-            ),
-        )
-        fuzzy = sorted(
-            [r for r in all_results if r[0].get("fuzzy_match")],
-            key=lambda x: -x[0].get("score", 0.6),
-        )
-        all_results = phrase + fuzzy
 
         total_mentions = sum(
             count_occurrences(c.get("text", ""), query) for c, _ in all_results
@@ -1793,25 +1754,24 @@ class PodCodexBot(discord.Client):
 
         try:
             col_info = await self._cached_col_info()
-            pairs = self._resolve_show_collections(shows, settings, col_info)
-            if not pairs:
+            cols = self._resolve_show_collections(shows, settings, col_info)
+            if not cols:
                 await interaction.followup.send(
                     self._empty_collections_message(col_info, settings, shows),
                     ephemeral=True,
                 )
                 return
 
-            col, model = random.choice(pairs)
-            retriever = self.retriever(model)
-            chunk = await loop.run_in_executor(
+            result = await loop.run_in_executor(
                 None,
-                lambda: retriever.random(
-                    col,
+                lambda: random_quote(
+                    cols,
                     episode=episode,
                     source=source,
                     speaker=speaker,
                     pub_date_min=pub_date_min,
                     pub_date_max=pub_date_max,
+                    retriever_factory=self.retriever,
                 ),
             )
         except Exception:
@@ -1821,7 +1781,7 @@ class PodCodexBot(discord.Client):
             )
             return
 
-        if chunk is None:
+        if result is None:
             suffix = format_filter_suffix(
                 episode=episode, speaker=speaker, source=source
             )
@@ -1830,6 +1790,8 @@ class PodCodexBot(discord.Client):
                 ephemeral=True,
             )
             return
+
+        chunk, col = result
 
         show = chunk.get("show", "")
         ep_display = episode_display(chunk)
@@ -2166,7 +2128,9 @@ class PodCodexBot(discord.Client):
     ) -> None:
         await interaction.response.defer()
         await self._refresh_if_stale()
-        settings = self._effective_settings(interaction.guild_id, model or "", 0)
+        settings, base, explicit = self._settings_and_explicit(
+            interaction.guild_id, model
+        )
         loop = asyncio.get_running_loop()
 
         try:
@@ -2176,10 +2140,9 @@ class PodCodexBot(discord.Client):
                 if show
                 else ResolvedShows(ShowAccess.ALL)
             )
-            collections = [
-                c
-                for c, _ in self._resolve_show_collections(resolved, settings, col_info)
-            ]
+            collections = self._resolve_show_collections(
+                resolved, base, col_info, explicit=explicit
+            )
             if not collections:
                 stats_shows = resolved if show else None
                 await interaction.followup.send(
@@ -2192,17 +2155,16 @@ class PodCodexBot(discord.Client):
             for col in collections:
                 stats = await loop.run_in_executor(
                     None,
-                    lambda c=col: self.local.get_episode_stats(c),
+                    lambda c=col: self.local.get_episode_stats(c.name),
                 )
-                name = col_info.get(col, {}).get("show") or col
-                per_show.setdefault(name, []).extend(stats)
+                per_show.setdefault(col.show, []).extend(stats)
 
             # Speaker detail only for a single-show scope; the global
             # overview stays a per-show table (mixing speakers across
             # shows is /speakers' job).
             speakers = (
                 await loop.run_in_executor(
-                    None, self.local.speaker_stats_multi, collections
+                    None, self.local.speaker_stats_multi, [c.name for c in collections]
                 )
                 if len(collections) == 1
                 else []
@@ -2216,11 +2178,7 @@ class PodCodexBot(discord.Client):
             return
 
         # Artwork only when the scope is a single show (mirrors /episodes).
-        artwork = (
-            col_info.get(collections[0], {}).get("artwork_url", "")
-            if len(collections) == 1
-            else ""
-        )
+        artwork = collections[0].artwork_url if len(collections) == 1 else ""
         embed = build_stats_embed(per_show, speakers, artwork_url=artwork)
         await interaction.followup.send(embed=embed)
 
@@ -2234,7 +2192,9 @@ class PodCodexBot(discord.Client):
     ) -> None:
         await interaction.response.defer()
         await self._refresh_if_stale()
-        settings = self._effective_settings(interaction.guild_id, model or "", 0)
+        settings, base, explicit = self._settings_and_explicit(
+            interaction.guild_id, model
+        )
         loop = asyncio.get_running_loop()
 
         try:
@@ -2244,10 +2204,9 @@ class PodCodexBot(discord.Client):
                 if show
                 else ResolvedShows(ShowAccess.ALL)
             )
-            collections = [
-                c
-                for c, _ in self._resolve_show_collections(resolved, settings, col_info)
-            ]
+            collections = self._resolve_show_collections(
+                resolved, base, col_info, explicit=explicit
+            )
             if not collections:
                 speaker_shows = resolved if show else None
                 await interaction.followup.send(
@@ -2257,7 +2216,7 @@ class PodCodexBot(discord.Client):
                 return
 
             ranked = await loop.run_in_executor(
-                None, self.local.speaker_stats_multi, collections
+                None, self.local.speaker_stats_multi, [c.name for c in collections]
             )
 
         except Exception:
@@ -2309,7 +2268,9 @@ class PodCodexBot(discord.Client):
     ) -> None:
         await interaction.response.defer()
         await self._refresh_if_stale()
-        settings = self._effective_settings(interaction.guild_id, model or "", 0)
+        settings, base, explicit = self._settings_and_explicit(
+            interaction.guild_id, model
+        )
         loop = asyncio.get_running_loop()
 
         # Auto-resolve show: explicit > unlocked > single accessible show > ask
@@ -2331,9 +2292,9 @@ class PodCodexBot(discord.Client):
             else:
                 col_info = await self._cached_col_info()
                 pairs = self._resolve_show_collections(
-                    ResolvedShows(ShowAccess.ALL), settings, col_info
+                    ResolvedShows(ShowAccess.ALL), base, col_info, explicit=explicit
                 )
-                shows = sorted({col_info.get(c, {}).get("show") or c for c, _ in pairs})
+                shows = sorted({c.show for c in pairs})
                 if len(shows) == 1:
                     show = shows[0]
                 elif not shows:
@@ -2352,14 +2313,17 @@ class PodCodexBot(discord.Client):
 
         col_info = await self._cached_col_info()
         ep_pairs = self._resolve_show_collections(
-            ResolvedShows(ShowAccess.SPECIFIC, (show,)), settings, col_info
+            ResolvedShows(ShowAccess.SPECIFIC, (show,)),
+            base,
+            col_info,
+            explicit=explicit,
         )
         if not ep_pairs:
             await interaction.followup.send(
                 f"No episodes found for **{show}**.", ephemeral=True
             )
             return
-        col = ep_pairs[0][0]
+        col = ep_pairs[0].name
 
         try:
             ep_stats = await loop.run_in_executor(

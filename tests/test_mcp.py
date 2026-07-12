@@ -96,39 +96,27 @@ def test_resolve_collections_unknown_show_returns_empty():
     assert mcp_server._resolve_collections("Nope") == []
 
 
-def _meta(model: str, chunker: str = "semantic", show: str = "S") -> dict:
-    return {"model": model, "chunker": chunker, "show": show}
-
-
-def test_pick_collection_prefers_show_preference():
-    cols = [
-        ("s__bge-m3__semantic", _meta("bge-m3")),
-        ("s__e5-large__speaker", _meta("e5-large", "speaker")),
+def test_resolve_collections_honors_show_rag_prefs(monkeypatch):
+    """A show.toml RAG preference (surfaced through load_show_rag_prefs, the
+    shared search_service seam) steers which collection is picked over the
+    global bge-m3/semantic default."""
+    store = rag_index_store.get_index_store()
+    store.ensure_collection(
+        "my_show__e5-large__speaker",
+        show="My Show",
+        model="e5-large",
+        chunker="speaker",
+        dim=DIM,
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "load_show_rag_prefs",
+        lambda: {"my show": ("e5-large", "speaker")},
+    )
+    cols = mcp_server._resolve_collections("My Show")
+    assert [(c.name, c.model) for c in cols] == [
+        ("my_show__e5-large__speaker", "e5-large")
     ]
-    chosen = mcp_server._pick_collection(cols, pref=("e5-large", "speaker"))
-    assert (chosen.name, chosen.model) == ("s__e5-large__speaker", "e5-large")
-
-
-def test_pick_collection_falls_back_to_default_when_pref_absent():
-    cols = [
-        ("s__bge-m3__semantic", _meta("bge-m3")),
-        ("s__e5-large__speaker", _meta("e5-large", "speaker")),
-    ]
-    chosen = mcp_server._pick_collection(cols, pref=None)
-    assert chosen.model == "bge-m3"
-
-
-def test_pick_collection_falls_back_to_first_when_no_default():
-    cols = [
-        ("s__e5-large__speaker", _meta("e5-large", "speaker")),
-        ("s__e5-small__semantic", _meta("e5-small")),
-    ]
-    chosen = mcp_server._pick_collection(cols, pref=None)
-    assert chosen.name == "s__e5-large__speaker"  # first by name
-
-
-def test_pick_collection_empty_returns_none():
-    assert mcp_server._pick_collection([], pref=None) is None
 
 
 def test_trim_shape_prefers_rss_title():

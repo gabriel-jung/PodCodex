@@ -34,7 +34,6 @@ if TYPE_CHECKING:
 # Constants
 # ──────────────────────────────────────────────
 
-_MAX_CONTEXT_N = 8
 _MAX_CHARS = 3900  # context sent as embed description (Discord limit: 4096)
 _MAX_DESC_CHARS = 4000  # result / answer embed description guard
 COOLDOWN_SECONDS = 5.0
@@ -236,82 +235,6 @@ def safe_truncate(text: str, max_chars: int = _MAX_CHARS) -> tuple[str, bool]:
 def truncate_description(text: str) -> str:
     """Truncate embed description to Discord's 4096-char limit."""
     return safe_truncate(text, _MAX_DESC_CHARS)[0]
-
-
-# ──────────────────────────────────────────────
-# Context formatting
-# ──────────────────────────────────────────────
-
-
-def _expand_turns(chunk: dict, bold: bool = False) -> list[str]:
-    """Expand a chunk into individual speaker turns.
-
-    If the chunk has a ``speakers`` list (semantic chunks), each turn is
-    rendered separately.  Otherwise fall back to a single line with the
-    chunk-level speaker.
-    """
-    turns: list[dict] = chunk.get("speakers") or []
-    if not turns:
-        spk = speaker(chunk)
-        start = chunk.get("start", 0)
-        ts_part = f" · {fmt_time(start)}" if start else ""
-        text = chunk.get("text", "")
-        if bold:
-            return [f"**▶ {spk}**{ts_part}\n**{text}**"]
-        return [f"*{spk}*{ts_part}\n{text}"]
-
-    lines: list[str] = []
-    for t in turns:
-        spk = display_speaker(t.get("speaker"))
-        start = t.get("start", 0)
-        ts_part = f" · {fmt_time(start)}" if start else ""
-        text = t.get("text", "")
-        if bold:
-            lines.append(f"**▶ {spk}**{ts_part}\n**{text}**")
-        else:
-            lines.append(f"*{spk}*{ts_part}\n{text}")
-    return lines
-
-
-def format_context(
-    neighbors: list[dict], start: float, n: int, show: str, episode: str
-) -> tuple[str, bool]:
-    """
-    Format transcript context around a chunk at `start`.
-    Returns (markdown_text, has_more) where has_more signals
-    whether a 'Show more' button makes sense.
-    """
-    pos = next(
-        (i for i, c in enumerate(neighbors) if abs(c.get("start", -1) - start) < 0.1),
-        None,
-    )
-    if pos is None:
-        return "Could not locate this excerpt in the episode.", False
-
-    lo = max(0, pos - n)
-    hi = min(len(neighbors), pos + n + 1)
-    has_more = (lo > 0 or hi < len(neighbors)) and n < _MAX_CONTEXT_N
-
-    before = neighbors[lo:pos]
-    current = neighbors[pos]
-    after = neighbors[pos + 1 : hi]
-
-    ep_display = (
-        neighbors[0].get("episode_title") if neighbors else ""
-    ) or humanize_stem(episode)
-    header = f"**{show} — {ep_display}**" if (show or ep_display) else "*Context*"
-    lines = [header + f" · ±{n} turns\n"]
-
-    for c in before:
-        lines.extend(_expand_turns(c, bold=False))
-
-    lines.extend(_expand_turns(current, bold=True))
-
-    for c in after:
-        lines.extend(_expand_turns(c, bold=False))
-
-    content, truncated = safe_truncate("\n\n".join(lines))
-    return content, has_more and not truncated
 
 
 # ──────────────────────────────────────────────

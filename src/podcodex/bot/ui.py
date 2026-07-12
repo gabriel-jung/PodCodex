@@ -19,7 +19,6 @@ custom_id grammar (':'-delimited; ``sid`` is hex so it never contains ':'):
 from __future__ import annotations
 
 import asyncio
-import re
 from typing import TYPE_CHECKING
 
 import discord
@@ -406,26 +405,6 @@ def _transcript_embed(
     marker = " ◀ matched" if is_match else ""
     embed.set_footer(text=f"{pos + 1} of {total}{marker}")
     return embed
-
-
-_MARKDOWN_STRIP = re.compile(r"[*_`~]+")
-
-
-def _option_snippet(embed: discord.Embed) -> str:
-    """Build a short snippet for a jump-dropdown option description."""
-    ts = ""
-    for f in embed.fields:
-        if f.name == "Timestamp":
-            ts = f.value or ""
-            break
-
-    raw = (embed.description or "").strip()
-    first_line = raw.split("\n", 1)[0] if raw else ""
-    text = _MARKDOWN_STRIP.sub("", first_line).strip()
-
-    if ts and text:
-        return f"{ts} • {text}"
-    return ts or text
 
 
 # ──────────────────────────────────────────────

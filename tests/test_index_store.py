@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from podcodex.rag.index_store import IndexStore
+from podcodex.rag.index_store import IndexStore, chunk_map_from_chunks
 
 
 def _store(tmp_path: Path) -> IndexStore:
@@ -387,12 +387,12 @@ def test_search_fts_finds_token(tmp_path):
 # ── Stats helpers ────────────────────────────────────────────────────────
 
 
-def test_collection_chunk_count(tmp_path):
+def test_count_rows(tmp_path):
     s = _store(tmp_path)
     s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
     s.save_chunks("c", "e1", _chunks(3, "e1"), _rng_embeddings(3))
     s.save_chunks("c", "e2", _chunks(2, "e2"), _rng_embeddings(2))
-    assert s.collection_chunk_count("c") == 5
+    assert s.count_rows("c") == 5
 
 
 def test_list_sources_and_speakers(tmp_path):
@@ -425,7 +425,7 @@ def test_reopening_preserves_data(tmp_path):
     s2 = IndexStore(tmp_path / "index")
     assert s2.collection_exists("c")
     assert s2.list_episodes("c") == ["e1"]
-    assert s2.collection_chunk_count("c") == 2
+    assert s2.count_rows("c") == 2
 
 
 # ── _normalize_pub_date ──────────────────────────────────────────────────
@@ -719,18 +719,20 @@ def _seeded(tmp_path):
     return s, col
 
 
-def test_get_chunk_map_shape(tmp_path):
+def test_chunk_map_from_chunks_shape(tmp_path):
     s, col = _seeded(tmp_path)
-    cmap = s.get_chunk_map(col, "ep1")
+    cmap = chunk_map_from_chunks(s.load_chunks_no_embeddings(col, "ep1"))
     assert len(cmap) == 6
     assert cmap[0]["chunk_index"] == 0
     assert cmap[3]["start_hms"] == "0m03"
     assert "text_preview" not in cmap[0]
 
 
-def test_get_chunk_map_text_preview(tmp_path):
+def test_chunk_map_from_chunks_text_preview(tmp_path):
     s, col = _seeded(tmp_path)
-    cmap = s.get_chunk_map(col, "ep1", text_preview=4)
+    cmap = chunk_map_from_chunks(
+        s.load_chunks_no_embeddings(col, "ep1"), text_preview=4
+    )
     assert cmap[3]["text_preview"] == "chun"
 
 
@@ -771,3 +773,45 @@ def test_list_episodes_filtered_broadcast_none_when_absent(tmp_path):
     s.save_chunks(col, "ep1", _chunks(3), _rng_embeddings(3))
     items = s.list_episodes_filtered(col, with_detail=True)
     assert items[0]["broadcast_number"] is None
+
+
+# ── FTS index migration (fuzzy-capable v2 rebuild) ───────────────────────
+
+
+def _fts_seeded(tmp_path):
+    s = _store(tmp_path)
+    col = "s__bge-m3__semantic"
+    s.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    chunks = _chunks(2)
+    chunks[0]["text"] = "john williams composed the score"
+    s.save_chunks(col, "ep1", chunks, _rng_embeddings(2))
+    return s, col
+
+
+def test_fts_v2_sentinel_written_on_first_index(tmp_path):
+    s, col = _fts_seeded(tmp_path)
+    s.search_fts(col, "score", 10)
+    assert (tmp_path / "index" / f"{col}.fts_v2").exists()
+
+
+def test_fts_legacy_index_rebuilt_and_sentinels_migrated(tmp_path):
+    s, col = _fts_seeded(tmp_path)
+    s.search_fts(col, "score", 10)
+    index_dir = tmp_path / "index"
+    v2 = index_dir / f"{col}.fts_v2"
+    v1 = index_dir / f"{col}.fts_folded_v1"
+    # Simulate the pre-v2 on-disk state: folding sentinel present, no v2.
+    v2.unlink()
+    v1.touch()
+    s2 = IndexStore(index_dir)  # fresh instance, per-process cache empty
+    s2.search_fts(col, "score", 10)
+    assert v2.exists()
+    assert not v1.exists()
+
+
+def test_search_literal_fuzzy_tier_catches_one_edit_typo(tmp_path):
+    s, col = _fts_seeded(tmp_path)
+    exact, accent, fuzzy = s.search_literal(col, "williames")
+    assert exact == [] and accent == []
+    assert len(fuzzy) == 1
+    assert "williams" in fuzzy[0]["text"]

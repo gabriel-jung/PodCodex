@@ -848,23 +848,6 @@ class IndexStore:
         t = self._table(collection)
         return int(t.count_rows(filter=f"episode = '{_escape(episode)}'"))
 
-    def episode_source(self, collection: str, episode: str) -> str:
-        """Return the source step (transcript/corrected/<lang>) for an
-        episode's chunks in this collection. Empty string if not indexed.
-        Episodes are always indexed from a single source per collection.
-        """
-        if not self.collection_exists(collection):
-            return ""
-        t = self._table(collection)
-        rows = (
-            t.search()
-            .where(f"episode = '{_escape(episode)}'")
-            .select(["source"])
-            .limit(1)
-            .to_list()
-        )
-        return str(rows[0].get("source", "")) if rows else ""
-
     def episode_collection_summary(self, collection: str, episode: str) -> dict | None:
         """``(chunk_count, source)`` for an episode in a collection, or ``None``."""
         if not self.collection_exists(collection):
@@ -1129,23 +1112,6 @@ class IndexStore:
         lo = max(0, center - window)
         hi = min(len(chunks), center + window + 1)
         return chunks[lo:hi]
-
-    def get_chunk_map(
-        self, collection: str, episode: str, text_preview: int = 0
-    ) -> list[dict]:
-        """Lightweight chunk index for an episode: positions and times, no full text.
-
-        Returns ``[{chunk_index, start, end, start_hms, speakers}]`` ordered by
-        position. ``speakers`` is the distinct turn-speaker list (falling back
-        to ``[dominant_speaker]``). ``text_preview > 0`` adds a ``text_preview``
-        field of the first N characters of the chunk's flat text, enough to
-        title a segment without pulling the whole transcript.
-
-        Callers that also need the raw chunks (e.g. to build a transcript from
-        the same load) should call :func:`chunk_map_from_chunks` directly.
-        """
-        chunks = self.load_chunks_no_embeddings(collection, episode)
-        return chunk_map_from_chunks(chunks, text_preview)
 
     def find_chunk_index_at_time(
         self, collection: str, episode: str, at_time: float
@@ -1500,13 +1466,19 @@ class IndexStore:
         query has an effective leading-char prefix constraint that prevents
         1-edit matches when the first char is the accented one.
 
-        A sentinel file (``.fts_folded_v1``) records the one-time upgrade so
-        we rebuild only when a pre-existing non-folding index is found, not
-        on every process restart.
+        A sentinel file (``.fts_v2``) records the one-time upgrade so we
+        rebuild only when a pre-existing stale index is found, not on every
+        process restart. v2 exists because indexes written by older lancedb
+        versions silently no-op fuzzy ``MatchQuery`` (exact-token hits only,
+        zero for unknown tokens), starving ``search_literal``'s candidate
+        pool; a rebuild under the current version restores fuzzy matching.
+        The earlier ``.fts_folded_v1`` (accent-folding upgrade) is superseded
+        and removed on migration.
         """
         if collection in self._fts_ready:
             return
-        sentinel = self._path / f"{collection}.fts_folded_v1"
+        sentinel = self._path / f"{collection}.fts_v2"
+        legacy_sentinel = self._path / f"{collection}.fts_folded_v1"
         try:
             existing = {idx.name for idx in table.list_indices()}
         except Exception:
@@ -1524,25 +1496,16 @@ class IndexStore:
                     remove_stop_words=False,
                 )
                 sentinel.touch()
+                legacy_sentinel.unlink(missing_ok=True)
                 if needs_rebuild:
                     logger.info(
-                        f"FTS index rebuilt with ASCII folding for {collection}"
+                        f"FTS index rebuilt (v2, fuzzy-capable) for {collection}"
                     )
         except Exception:
             logger.opt(exception=True).debug("FTS index creation skipped")
         self._fts_ready.add(collection)
 
     # ── Stats ────────────────────────────────────────────────────────────
-
-    def collection_chunk_count(self, collection: str) -> int:
-        """Return the total number of chunks in a collection.
-
-        Args:
-            collection: Collection name.
-        """
-        if not self.collection_exists(collection):
-            return 0
-        return int(self._table(collection).count_rows())
 
     def list_sources(self, collection: str) -> list[str]:
         """Return sorted distinct ``source`` values in a collection."""
