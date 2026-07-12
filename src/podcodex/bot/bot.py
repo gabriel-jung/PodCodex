@@ -65,6 +65,7 @@ from podcodex.bot.announce import (
 from podcodex.bot.formatting import (
     CooldownManager,
     count_occurrences,
+    count_word_occurrences,
     display_speaker,
     episode_display,
     fmt_time,
@@ -1723,13 +1724,29 @@ class PodCodexBot(discord.Client):
             )
             return
 
-        total_mentions = sum(
-            count_occurrences(c.get("text", ""), query) for c, _ in all_results
-        )
-        # Fuzzy-only hits contain no literal occurrence; never show "0 matches"
-        # above a non-empty result list.
-        n = total_mentions or len(all_results)
-        label = f"{n} match{'es' if n != 1 else ''}"
+        # Split the mention count: whole-word occurrences are "matches",
+        # everything else (inside a longer word, accent variants, and fuzzy
+        # excerpts, which contain no literal occurrence) is "partial".
+        total_mentions = 0
+        word_mentions = 0
+        fuzzy_excerpts = 0
+        for c, _ in all_results:
+            text = c.get("text", "")
+            total_mentions += count_occurrences(text, query)
+            word_mentions += count_word_occurrences(text, query)
+            if c.get("fuzzy_match"):
+                fuzzy_excerpts += 1
+        partial = (total_mentions - word_mentions) + fuzzy_excerpts
+        if word_mentions and partial:
+            label = f"{word_mentions} exact · {partial} partial"
+        elif word_mentions:
+            label = f"{word_mentions} exact"
+        elif partial:
+            label = f"{partial} partial"
+        else:
+            # Never show "0 matches" above a non-empty result list.
+            n = len(all_results)
+            label = f"{n} match{'es' if n != 1 else ''}"
         # /exact is survey-shaped (many positional hits): open on the list.
         await self._send_results(
             "exact", label, query, all_results, interaction, prefer_list=True

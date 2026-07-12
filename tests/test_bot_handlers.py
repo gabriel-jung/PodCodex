@@ -327,3 +327,29 @@ def test_handle_episodes_calls_get_episode_stats_and_sends_embed(monkeypatch):
     assert local.get_episode_stats_calls == ["alpha__bge-m3__semantic"]
     assert interaction.followup.messages
     assert interaction.followup.messages[0]["embed"] is not None
+
+
+def test_run_exact_label_splits_word_and_partial_matches(monkeypatch):
+    word = _chunk(text="I met William yesterday")
+    sup = _chunk(text="John Williams composed, Williams again")
+    fake_exact = _Recorder(
+        [(word, "alpha__bge-m3__semantic"), (sup, "alpha__bge-m3__semantic")]
+    )
+    monkeypatch.setattr(bot_module, "exact_search", fake_exact)
+    monkeypatch.setattr(bot_module, "load_show_rag_prefs", lambda: {})
+
+    local = _FakeLocal(episode_chunks={("alpha__bge-m3__semantic", "ep1"): [word, sup]})
+    bot = _make_bot(local)
+    captured = {}
+    orig = bot._send_results
+
+    async def spy(kind, label, query, results, interaction, **kw):
+        captured["label"] = label
+        return await orig(kind, label, query, results, interaction, **kw)
+
+    monkeypatch.setattr(bot, "_send_results", spy)
+    interaction = _FakeInteraction()
+
+    asyncio.run(bot._run_exact(interaction, "william", ResolvedShows(ShowAccess.ALL)))
+    # 1 standalone "William", 2 occurrences inside "Williams".
+    assert captured["label"] == "1 exact · 2 partial"

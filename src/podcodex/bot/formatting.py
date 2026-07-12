@@ -174,6 +174,18 @@ def count_occurrences(text: str, query: str) -> int:
     return fold_text(text).count(fold_text(query))
 
 
+def count_word_occurrences(text: str, query: str) -> int:
+    """Count whole-word occurrences of *query* in *text*, accent-folded.
+
+    Word boundaries on both sides of the matched span; "william" inside
+    "Williams" does not count. Multi-word queries match as a phrase.
+    """
+    fq = fold_text(query)
+    if not fq:
+        return 0
+    return len(re.findall(rf"(?<!\w){re.escape(fq)}(?!\w)", fold_text(text)))
+
+
 def highlight(text: str, query: str) -> str:
     """Case-insensitive highlight: wrap all occurrences of *query* in bold."""
 

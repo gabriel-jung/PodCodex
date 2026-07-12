@@ -16,6 +16,7 @@ from podcodex.bot.formatting import (
     CooldownManager,
     build_compact_embed,
     display_speaker,
+    count_word_occurrences as _count_word,
     fmt_duration as _fmt_duration,
     fmt_time as _fmt_time,
     safe_truncate,
@@ -343,9 +344,9 @@ def test_episodes_embeds_paginate_ten_per_page():
 
 def test_result_embed_footer_carries_match_total_when_given():
     embed = build_result_embed(
-        _CHUNK, rank=3, total=1473, label="", footer_extra="2444 matches"
+        _CHUNK, rank=3, total=1473, label="", footer_extra="40 exact · 176 partial"
     )
-    assert embed.footer.text == "3 of 1473 excerpts · 2444 matches"
+    assert embed.footer.text == "3 of 1473 · 40 exact · 176 partial"
 
 
 def test_result_embed_footer_plain_without_extra():
@@ -890,3 +891,26 @@ def test_stats_embed_artwork_thumbnail():
 def test_stats_embed_no_thumbnail_without_artwork():
     embed = build_stats_embed({"A": _stats_rows()}, [])
     assert embed.thumbnail.url is None
+
+
+# ──────────────────────────────────────────────
+# count_word_occurrences
+# ──────────────────────────────────────────────
+
+
+def test_count_word_occurrences_boundaries():
+    assert (
+        _count_word("William met Williams. William!", "william") == 2
+    )  # two standalone, one inside Williams
+
+
+def test_count_word_occurrences_accent_folded():
+    assert _count_word("Rêve et reve", "rêve") == 2
+
+
+def test_count_word_occurrences_phrase():
+    assert _count_word("john williams and john williamson", "john williams") == 1
+
+
+def test_count_word_occurrences_empty_query():
+    assert _count_word("anything", "") == 0

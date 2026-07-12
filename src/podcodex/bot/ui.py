@@ -135,7 +135,7 @@ def build_result_embed(
     The card leads with the quote and anchors it to the episode (show on the
     author line, episode title as the title, one quiet ``time · month`` line
     under the body). The engine numbers — relevance, full range, published
-    date, match tier, search label — all live behind the Details button
+    date, match tier, search label — all live behind the Search info button
     (:func:`build_details_embed`), so a reader is never shown telemetry.
 
     ``text`` is the search string; ``highlight`` marks it in-body (set by
@@ -176,7 +176,7 @@ def build_result_embed(
     # ``footer_extra`` carries /exact's human total ("2444 matches"); /search
     # passes nothing (its label is engine telemetry, which lives in Details).
     if footer_extra:
-        embed.set_footer(text=f"{rank} of {total} excerpts · {footer_extra}")
+        embed.set_footer(text=f"{rank} of {total} · {footer_extra}")
     else:
         embed.set_footer(text=f"{rank} of {total}")
     return embed
@@ -572,7 +572,7 @@ class ResultDetails(
     def __init__(self, sid: str, idx: int) -> None:
         super().__init__(
             discord.ui.Button(
-                label="Details",
+                label="Search info",
                 style=discord.ButtonStyle.secondary,
                 custom_id=f"pcx:rd:{sid}:{idx}",
                 row=1,
@@ -772,14 +772,10 @@ async def build_compact_view(
     # 6000-char total budget both trim from the tail.
     shown = len(embed.fields)
     if total > shown:
-        # Never hide the cap: /exact is uncapped, the list shows a page at most.
-        # For /exact, repeat the human match total next to the excerpt count
-        # (the label is telemetry for /search, so it stays out of that footer).
-        extra = f" · {cached.label}" if is_exact and cached.label else ""
-        embed.set_footer(
-            text=f"Showing {shown} of {total} excerpts{extra} · "
-            "Full view pages through all"
-        )
+        # Never hide the cap: /exact is uncapped, the list shows a page at
+        # most. The match totals already live in the title label; the footer
+        # only signals there is more.
+        embed.set_footer(text="Full view pages through all results")
     view = discord.ui.View(timeout=None)
     view.add_item(ViewSwitch(sid, "c"))
     return embed, view
