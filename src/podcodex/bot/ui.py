@@ -316,24 +316,32 @@ def build_stats_embed(
     speakers: list[dict],
     artwork_url: str = "",
 ) -> discord.Embed:
-    """Build the `/stats` overview embed: totals, top speakers, per-show lines.
+    """Build the `/stats` embed: a show card for one show, a table for many.
 
     ``per_show`` maps show name to its ``IndexStore.get_episode_stats`` rows;
     ``speakers`` is the ranked list from ``speaker_stats_multi``. The caller
     passes it only for a single-show scope (and it may still be empty:
     subtitle-only indexes carry no attribution); no list, no 🎤 line.
-    Shows sort newest-episode first; shows with no ``pub_date`` at all sink
+
+    One show: the card belongs to the show (title, artwork, one meta line,
+    top speakers). Several shows: index header with totals, then one block
+    per show, newest-episode first; shows with no ``pub_date`` at all sink
     to the bottom alphabetically and show no "newest" (nothing is invented).
-    ``artwork_url`` is set by the caller only when the scope is one show.
     """
-    total_eps = sum(len(rows) for rows in per_show.values())
-    total_dur = sum(r.get("duration", 0.0) for rows in per_show.values() for r in rows)
 
-    header = [
-        f"{_plural(len(per_show), 'show')} · {_plural(total_eps, 'episode')} · "
-        f"{fmt_duration(total_dur)} indexed"
-    ]
+    def _newest(rows: list[dict]) -> str:
+        return max((r.get("pub_date") or "" for r in rows), default="")
 
+    def _meta_line(rows: list[dict]) -> str:
+        meta = f"{_plural(len(rows), 'episode')} · " + fmt_duration(
+            sum(r.get("duration", 0.0) for r in rows)
+        )
+        day = pub_day(_newest(rows))
+        if day:
+            meta += f" · newest {day}"
+        return meta
+
+    speaker_line = ""
     if speakers:
         ranked = sorted(
             speakers, key=lambda s: s.get("total_duration", 0.0), reverse=True
@@ -341,37 +349,50 @@ def build_stats_embed(
         parts = [
             f"{display_speaker(s.get('speaker'))} "
             f"({fmt_duration(s.get('total_duration', 0.0))})"
-            for s in ranked[:3]
+            for s in ranked[:5]
         ]
-        rest = len(ranked) - 3
+        rest = len(ranked) - 5
         tail = f", and {_plural(rest, 'other')}" if rest > 0 else ""
-        header.append(f"🎤 {', '.join(parts)}{tail}")
+        speaker_line = f"🎤 {', '.join(parts)}{tail}"
 
-    def _newest(rows: list[dict]) -> str:
-        return max((r.get("pub_date") or "" for r in rows), default="")
-
-    # Name-ascending first, then a stable date-descending pass, so shows
-    # sharing a newest date stay alphabetical.
-    dated = sorted(s for s in per_show if _newest(per_show[s]))
-    dated.sort(key=lambda s: _newest(per_show[s]), reverse=True)
-    dateless = sorted(s for s in per_show if not _newest(per_show[s]))
-
-    blocks: list[str] = []
-    for show in [*dated, *dateless]:
-        rows = per_show[show]
-        meta = f"{_plural(len(rows), 'episode')} · " + fmt_duration(
-            sum(r.get("duration", 0.0) for r in rows)
+    if len(per_show) == 1:
+        show, rows = next(iter(per_show.items()))
+        lines = [_meta_line(rows)]
+        if speaker_line:
+            lines.append(speaker_line)
+        embed = discord.Embed(
+            title=f"🎙 {show}",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
         )
-        day = pub_day(_newest(rows))
-        if day:
-            meta += f" · newest {day}"
-        blocks.append(f"🎙 **{show}**\n{meta}")
+    else:
+        total_eps = sum(len(rows) for rows in per_show.values())
+        total_dur = sum(
+            r.get("duration", 0.0) for rows in per_show.values() for r in rows
+        )
+        header = [
+            f"{_plural(len(per_show), 'show')} · {_plural(total_eps, 'episode')} · "
+            f"{fmt_duration(total_dur)}"
+        ]
+        if speaker_line:
+            header.append(speaker_line)
 
-    embed = discord.Embed(
-        title="📊 PodCodex Index",
-        description="\n".join(header) + "\n\n" + "\n".join(blocks),
-        color=discord.Color.blurple(),
-    )
+        # Name-ascending first, then a stable date-descending pass, so shows
+        # sharing a newest date stay alphabetical.
+        dated = sorted(s for s in per_show if _newest(per_show[s]))
+        dated.sort(key=lambda s: _newest(per_show[s]), reverse=True)
+        dateless = sorted(s for s in per_show if not _newest(per_show[s]))
+
+        blocks = [
+            f"🎙 **{show}**\n{_meta_line(per_show[show])}"
+            for show in [*dated, *dateless]
+        ]
+        embed = discord.Embed(
+            title="📊 PodCodex Index",
+            description="\n".join(header) + "\n\n" + "\n".join(blocks),
+            color=discord.Color.blurple(),
+        )
+
     if is_http_url(artwork_url):
         embed.set_thumbnail(url=artwork_url.strip())
     return embed

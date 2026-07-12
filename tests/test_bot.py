@@ -788,18 +788,30 @@ def _stats_rows(pub_date="2026-01-08", n=2, dur=3600.0) -> list[dict]:
     ]
 
 
-def test_stats_embed_totals_line():
+def test_stats_embed_multi_show_totals_line():
     per_show = {"A": _stats_rows(n=2), "B": _stats_rows(n=3)}
     embed = build_stats_embed(per_show, [])
+    assert embed.title == "📊 PodCodex Index"
     first = embed.description.splitlines()[0]
-    assert first == "2 shows · 5 episodes · 5h indexed"
+    assert first == "2 shows · 5 episodes · 5h"
 
 
-def test_stats_embed_totals_singular():
-    per_show = {"A": _stats_rows(n=1)}
+def test_stats_embed_single_show_is_a_show_card():
+    per_show = {"My Show": _stats_rows(pub_date="2026-07-08", n=3, dur=7200.0)}
     embed = build_stats_embed(per_show, [])
-    first = embed.description.splitlines()[0]
-    assert first == "1 show · 1 episode · 1h indexed"
+    # One show: the card belongs to the show, no index header, no
+    # duplicated per-show block.
+    assert embed.title == "🎙 My Show"
+    assert embed.description.splitlines()[0] == "3 episodes · 6h · newest 8 Jul 2026"
+    assert "My Show" not in embed.description
+    assert "1 show" not in embed.description
+
+
+def test_stats_embed_single_show_omits_newest_without_pub_date():
+    per_show = {"My Show": _stats_rows(pub_date="", n=1)}
+    embed = build_stats_embed(per_show, [])
+    assert "newest" not in embed.description
+    assert embed.description.splitlines()[0] == "1 episode · 1h"
 
 
 def test_stats_embed_shows_sorted_newest_first_dateless_last():
@@ -814,46 +826,43 @@ def test_stats_embed_shows_sorted_newest_first_dateless_last():
     assert [line.split("**")[1] for line in order] == ["New", "Old", "Alpha", "Zeta"]
 
 
-def test_stats_embed_show_line_content():
-    per_show = {"My Show": _stats_rows(pub_date="2026-07-08", n=3, dur=7200.0)}
+def test_stats_embed_multi_show_line_content():
+    per_show = {
+        "My Show": _stats_rows(pub_date="2026-07-08", n=3, dur=7200.0),
+        "Other": _stats_rows(n=1),
+    }
     embed = build_stats_embed(per_show, [])
     assert "🎙 **My Show**" in embed.description
     assert "3 episodes · 6h · newest 8 Jul 2026" in embed.description
 
 
-def test_stats_embed_show_line_omits_newest_without_pub_date():
-    per_show = {"My Show": _stats_rows(pub_date="", n=1)}
-    embed = build_stats_embed(per_show, [])
-    assert "newest" not in embed.description
-    assert "1 episode · 1h" in embed.description
-
-
-def test_stats_embed_speaker_line_top3_with_others():
+def test_stats_embed_speaker_line_top5_with_others():
     speakers = [
         {"speaker": "Olivier", "total_duration": 166320.0},
         {"speaker": "David", "total_duration": 111840.0},
         {"speaker": "Eve", "total_duration": 33120.0},
+        {"speaker": "Ana", "total_duration": 7200.0},
+        {"speaker": "Bob", "total_duration": 3600.0},
         {"speaker": "X1", "total_duration": 10.0},
         {"speaker": "X2", "total_duration": 10.0},
-        {"speaker": "X3", "total_duration": 10.0},
     ]
     embed = build_stats_embed({"A": _stats_rows()}, speakers)
     assert (
-        "🎤 Olivier (46h 12m), David (31h 4m), Eve (9h 12m), and 3 others"
-        in embed.description
+        "🎤 Olivier (46h 12m), David (31h 4m), Eve (9h 12m), "
+        "Ana (2h), Bob (1h), and 2 others" in embed.description
     )
 
 
 def test_stats_embed_speaker_line_singular_other():
     speakers = [
-        {"speaker": f"S{i}", "total_duration": 3600.0 * (9 - i)} for i in range(4)
+        {"speaker": f"S{i}", "total_duration": 3600.0 * (9 - i)} for i in range(6)
     ]
     embed = build_stats_embed({"A": _stats_rows()}, speakers)
     assert "and 1 other" in embed.description
     assert "others" not in embed.description
 
 
-def test_stats_embed_speaker_line_no_tail_when_three_or_fewer():
+def test_stats_embed_speaker_line_no_tail_when_five_or_fewer():
     speakers = [{"speaker": "Solo", "total_duration": 3600.0}]
     embed = build_stats_embed({"A": _stats_rows()}, speakers)
     assert "🎤 Solo (1h)" in embed.description
