@@ -815,3 +815,58 @@ def test_search_literal_fuzzy_tier_catches_one_edit_typo(tmp_path):
     assert exact == [] and accent == []
     assert len(fuzzy) == 1
     assert "williams" in fuzzy[0]["text"]
+
+
+# ── Exact tier: whole-word matches rank before superstring matches ───────
+
+
+def _word_rank_store(tmp_path):
+    s = _store(tmp_path)
+    col = "s__bge-m3__semantic"
+    s.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    chunks = _chunks(3)
+    chunks[0]["text"] = "John Williams composed the score"
+    chunks[1]["text"] = "I met William yesterday"
+    chunks[2]["text"] = "William, come here"
+    s.save_chunks(col, "ep1", chunks, _rng_embeddings(3))
+    return s, col
+
+
+def test_exact_word_matches_rank_before_superstring(tmp_path):
+    s, col = _word_rank_store(tmp_path)
+    exact, _, _ = s.search_literal(col, "william")
+    assert len(exact) == 3
+    texts = [h["text"] for h in exact]
+    # Standalone-word hits first (both, stable order), superstring last.
+    assert texts[-1] == "John Williams composed the score"
+    assert set(texts[:2]) == {"I met William yesterday", "William, come here"}
+
+
+def test_exact_word_match_scores(tmp_path):
+    s, col = _word_rank_store(tmp_path)
+    exact, _, _ = s.search_literal(col, "william")
+    by_text = {h["text"]: h["score"] for h in exact}
+    assert by_text["I met William yesterday"] == 1.0
+    assert by_text["William, come here"] == 1.0  # punctuation is a boundary
+    assert by_text["John Williams composed the score"] == 0.99
+
+
+def test_exact_word_match_found_past_superstring_occurrence(tmp_path):
+    s = _store(tmp_path)
+    col = "s__bge-m3__semantic"
+    s.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    chunks = _chunks(1)
+    # Superstring occurrence first, standalone word later in the same chunk:
+    # the chunk must still count as a whole-word match.
+    chunks[0]["text"] = "Williams admired William deeply"
+    s.save_chunks(col, "ep1", chunks, _rng_embeddings(1))
+    exact, _, _ = s.search_literal(col, "william")
+    assert exact[0]["score"] == 1.0
+    assert exact[0]["match_text"] == "William"
+
+
+def test_exact_whole_query_still_scores_full(tmp_path):
+    s, col = _word_rank_store(tmp_path)
+    exact, _, _ = s.search_literal(col, "williams")
+    assert [h["score"] for h in exact] == [1.0]
+    assert exact[0]["text"] == "John Williams composed the score"

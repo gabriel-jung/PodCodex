@@ -106,6 +106,12 @@ def _accent_score(query: str, span: str) -> float:
     return SequenceMatcher(None, query.lower(), span.lower()).ratio()
 
 
+# Exact-tier score for a match inside a longer word ("william" in
+# "Williams"): below the whole-word 1.0 so word hits rank first, above any
+# realistic accent/fuzzy ratio so the tiers keep their order.
+_EXACT_SUBSTRING_SCORE = 0.99
+
+
 _WORD_RE = re.compile(r"[^\w]+", re.UNICODE)
 
 
@@ -1332,7 +1338,12 @@ class IndexStore:
         FTS ``~{max_dist}`` pre-filters candidates; Python re-verifies with
         exact Levenshtein ≤ ``max_dist`` after accent folding.
 
-        - ``exact``:       ``query.lower()`` is a substring of ``text.lower()``
+        - ``exact``:       ``query.lower()`` is a substring of ``text.lower()``.
+                           Whole-word occurrences (non-letter or text edge on
+                           both sides) score 1.0 and rank first; matches
+                           inside a longer word ("william" in "Williams")
+                           stay in the tier at 0.99 and rank after them,
+                           chronologically within each group.
         - ``accent_only``: accent-folded query is a substring of folded text
         - ``fuzzy_only``:  single-word query with a word within ``max_dist``
                            edits (after accent folding) in the chunk text
@@ -1413,9 +1424,25 @@ class IndexStore:
             text = c.get("text", "")
             lower = text.lower()
             if query_lower in lower:
+                # Prefer a whole-word occurrence over the first occurrence:
+                # a chunk with both "Williams" and "William" is a word match.
                 idx = lower.find(query_lower)
+                word = False
+                i = idx
+                while i != -1:
+                    before_ok = i == 0 or not lower[i - 1].isalnum()
+                    end = i + len(query_lower)
+                    after_ok = end >= len(lower) or not lower[end].isalnum()
+                    if before_ok and after_ok:
+                        idx, word = i, True
+                        break
+                    i = lower.find(query_lower, i + 1)
                 exact.append(
-                    {**c, "score": 1.0, "match_text": text[idx : idx + len(query)]}
+                    {
+                        **c,
+                        "score": 1.0 if word else _EXACT_SUBSTRING_SCORE,
+                        "match_text": text[idx : idx + len(query)],
+                    }
                 )
             else:
                 folded_t = fold_text(text)
@@ -1451,7 +1478,15 @@ class IndexStore:
                             score = 1.0 - d / max(len(folded_q), 1)
                             fuzzy_only.append({**c, "score": score, "match_text": span})
 
-        exact.sort(key=lambda c: (c.get("episode", ""), c.get("start", 0.0)))
+        # Word matches (1.0) before superstring matches (0.99), each group
+        # chronological.
+        exact.sort(
+            key=lambda c: (
+                -c.get("score", 1.0),
+                c.get("episode", ""),
+                c.get("start", 0.0),
+            )
+        )
         accent_only.sort(key=lambda c: (c.get("episode", ""), c.get("start", 0.0)))
         fuzzy_only.sort(key=lambda c: c.get("score", 0.0), reverse=True)
 

@@ -223,8 +223,10 @@ def exact_search(
 
     ``order="positional"`` keeps each collection's retriever order (MCP,
     API). ``order="chronological"`` reproduces the bot's reading order:
-    phrase hits (exact + accent) sorted by (exactness, episode, start),
-    fuzzy hits appended by score descending.
+    phrase hits (exact + accent) sorted by (score desc, episode, start), so
+    whole-word matches (1.0) precede superstring matches (0.99) precede
+    accent variants, each group chronological; fuzzy hits appended by score
+    descending.
     """
     out: list[tuple[dict, str]] = []
     for col in collections:
@@ -250,7 +252,7 @@ def exact_search(
         phrase = sorted(
             (r for r in out if not r[0].get("fuzzy_match")),
             key=lambda x: (
-                x[0].get("score", 1.0) < 1.0,
+                -x[0].get("score", 1.0),
                 x[0].get("episode", ""),
                 x[0].get("start", 0.0),
             ),

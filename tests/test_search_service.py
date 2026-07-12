@@ -402,3 +402,20 @@ def test_exact_reraises_value_error():
 
     with pytest.raises(ValueError):
         exact_search("q", [ALPHA_COL], retriever_factory=factory)
+
+
+def test_exact_chronological_word_matches_before_superstring():
+    hits = {
+        "alpha__bge-m3__semantic": [
+            {"text": "sup", "score": 0.99, "episode": "ep0", "start": 1.0},
+            {"text": "word", "score": 1.0, "episode": "ep9", "start": 9.0},
+        ]
+    }
+    out = exact_search(
+        "q",
+        [ALPHA_COL],
+        order="chronological",
+        retriever_factory=_factory(hits, []),
+    )
+    # Word match ranks first despite the later episode.
+    assert [c["text"] for c, _ in out] == ["word", "sup"]
