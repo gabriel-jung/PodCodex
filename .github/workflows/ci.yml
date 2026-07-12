@@ -35,6 +35,11 @@ jobs:
         # [project.optional-dependencies], so the flags differ.
         run: uv sync --group dev --extra desktop --extra bot --extra mcp --extra rag --extra youtube
 
+      # Whole-repo lint — pre-commit's ruff hook only sees staged files, so
+      # dead imports in untouched files never resurface there.
+      - name: Ruff
+        run: uv run ruff check src tests scripts
+
       - name: Run tests
         run: uv run pytest -q
 
@@ -64,6 +69,12 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      # Dead-code guard: unused files, exports, and dependencies.
+      # Config in frontend/knip.json (generated-types.ts and shadcn ui/
+      # excluded; tailwindcss is imported from CSS, invisible to knip).
+      - name: Knip
+        run: npm run knip
 
   tauri:
     name: Tauri (cargo check)
