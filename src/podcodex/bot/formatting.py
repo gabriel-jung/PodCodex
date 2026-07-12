@@ -51,6 +51,22 @@ def fmt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
 
 
+def fmt_duration(seconds: float) -> str:
+    """Humanize a duration for totals: ``"46h 12m"``, ``"59m"``, ``"214h"``.
+
+    Rounds to the nearest minute (clock precision belongs to
+    :func:`fmt_time`; totals read better coarse). Zero-minute components
+    drop out; a zero total is ``"0m"``.
+    """
+    minutes = round(seconds / 60)
+    h, m = divmod(minutes, 60)
+    if h and m:
+        return f"{h}h {m}m"
+    if h:
+        return f"{h}h"
+    return f"{m}m"
+
+
 def fmt_timestamp(start: float, end: float, *, timed: bool = True) -> str | None:
     """Format a timestamp range for display.
 

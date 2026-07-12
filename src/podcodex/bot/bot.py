@@ -84,6 +84,7 @@ from podcodex.bot.ui import (
     build_list_view,
     build_listen_button,
     build_results_view,
+    build_stats_embed,
 )
 from podcodex.rag.defaults import (
     ALPHA,
@@ -1269,7 +1270,7 @@ class PodCodexBot(discord.Client):
         # /stats ──────────────────────────────
         @self.tree.command(
             name="stats",
-            description="Index overview: shows, episodes, excerpts, duration",
+            description="Index overview: shows, episodes, duration",
         )
         @app_commands.describe(
             show="Pick a show (shows all if empty)",
@@ -1495,7 +1496,11 @@ class PodCodexBot(discord.Client):
             )
             embed.add_field(
                 name="/stats",
-                value="Overview of what's indexed: shows, episodes, excerpts, duration.",
+                value=(
+                    "Overview of what's indexed: episodes and duration per "
+                    "show. A single show (one indexed, or picked via the "
+                    "show filter) also gets its top speakers."
+                ),
                 inline=False,
             )
             embed.add_field(
@@ -2183,13 +2188,25 @@ class PodCodexBot(discord.Client):
                 )
                 return
 
-            all_stats: list[dict] = []
+            per_show: dict[str, list[dict]] = {}
             for col in collections:
                 stats = await loop.run_in_executor(
                     None,
                     lambda c=col: self.local.get_episode_stats(c),
                 )
-                all_stats.extend(stats)
+                name = col_info.get(col, {}).get("show") or col
+                per_show.setdefault(name, []).extend(stats)
+
+            # Speaker detail only for a single-show scope; the global
+            # overview stays a per-show table (mixing speakers across
+            # shows is /speakers' job).
+            speakers = (
+                await loop.run_in_executor(
+                    None, self.local.speaker_stats_multi, collections
+                )
+                if len(collections) == 1
+                else []
+            )
 
         except Exception:
             logger.exception("Stats error")
@@ -2198,27 +2215,13 @@ class PodCodexBot(discord.Client):
             )
             return
 
-        total_eps = len(all_stats)
-        total_chunks = sum(s["chunk_count"] for s in all_stats)
-        total_dur = sum(s["duration"] for s in all_stats)
-
-        show_names = sorted(
-            {col_info.get(col, {}).get("show") or col for col in collections}
+        # Artwork only when the scope is a single show (mirrors /episodes).
+        artwork = (
+            col_info.get(collections[0], {}).get("artwork_url", "")
+            if len(collections) == 1
+            else ""
         )
-
-        embed = discord.Embed(
-            title="📊 PodCodex Index Stats", color=discord.Color.blurple()
-        )
-        embed.add_field(name="Shows", value=str(len(collections)), inline=True)
-        embed.add_field(name="Episodes", value=str(total_eps), inline=True)
-        embed.add_field(name="Excerpts", value=str(total_chunks), inline=True)
-        embed.add_field(name="Duration", value=fmt_time(total_dur), inline=True)
-        embed.add_field(
-            name="Indexed shows",
-            value="\n".join(f"🎙 {s}" for s in show_names) or "—",
-            inline=False,
-        )
-
+        embed = build_stats_embed(per_show, speakers, artwork_url=artwork)
         await interaction.followup.send(embed=embed)
 
     # ── /speakers handler ─────────────────────

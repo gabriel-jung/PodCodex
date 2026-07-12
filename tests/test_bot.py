@@ -10,11 +10,13 @@ from podcodex.bot.ui import (
     build_episodes_embeds,
     build_listen_button,
     build_result_embed,
+    build_stats_embed,
 )
 from podcodex.bot.formatting import (
     CooldownManager,
     build_compact_embed,
     display_speaker,
+    fmt_duration as _fmt_duration,
     fmt_time as _fmt_time,
     safe_truncate,
     speaker as _speaker,
@@ -837,3 +839,131 @@ def test_resolve_show_collections_excludes_locked_show(tmp_path):
         ResolvedShows(ShowAccess.ALL), settings, col_info
     )
     assert pairs == [("alpha__bge-m3__semantic", "bge-m3")]
+
+
+# ──────────────────────────────────────────────
+# fmt_duration
+# ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "seconds,expected",
+    [
+        (0, "0m"),
+        (59, "1m"),
+        (60, "1m"),
+        (3540, "59m"),
+        (3600, "1h"),
+        (3660, "1h 1m"),
+        (7322, "2h 2m"),
+        (770400, "214h"),
+    ],
+)
+def test_fmt_duration(seconds, expected):
+    assert _fmt_duration(seconds) == expected
+
+
+# ──────────────────────────────────────────────
+# build_stats_embed
+# ──────────────────────────────────────────────
+
+
+def _stats_rows(pub_date="2026-01-08", n=2, dur=3600.0) -> list[dict]:
+    return [
+        {"episode": f"ep{i}", "pub_date": pub_date, "duration": dur} for i in range(n)
+    ]
+
+
+def test_stats_embed_totals_line():
+    per_show = {"A": _stats_rows(n=2), "B": _stats_rows(n=3)}
+    embed = build_stats_embed(per_show, [])
+    first = embed.description.splitlines()[0]
+    assert first == "2 shows · 5 episodes · 5h indexed"
+
+
+def test_stats_embed_totals_singular():
+    per_show = {"A": _stats_rows(n=1)}
+    embed = build_stats_embed(per_show, [])
+    first = embed.description.splitlines()[0]
+    assert first == "1 show · 1 episode · 1h indexed"
+
+
+def test_stats_embed_shows_sorted_newest_first_dateless_last():
+    per_show = {
+        "Old": _stats_rows(pub_date="2024-05-01"),
+        "New": _stats_rows(pub_date="2026-07-08"),
+        "Zeta": _stats_rows(pub_date=""),
+        "Alpha": _stats_rows(pub_date=""),
+    }
+    embed = build_stats_embed(per_show, [])
+    order = [line for line in embed.description.splitlines() if line.startswith("🎙")]
+    assert [line.split("**")[1] for line in order] == ["New", "Old", "Alpha", "Zeta"]
+
+
+def test_stats_embed_show_line_content():
+    per_show = {"My Show": _stats_rows(pub_date="2026-07-08", n=3, dur=7200.0)}
+    embed = build_stats_embed(per_show, [])
+    assert "🎙 **My Show**" in embed.description
+    assert "3 episodes · 6h · newest 8 Jul 2026" in embed.description
+
+
+def test_stats_embed_show_line_omits_newest_without_pub_date():
+    per_show = {"My Show": _stats_rows(pub_date="", n=1)}
+    embed = build_stats_embed(per_show, [])
+    assert "newest" not in embed.description
+    assert "1 episode · 1h" in embed.description
+
+
+def test_stats_embed_speaker_line_top3_with_others():
+    speakers = [
+        {"speaker": "Olivier", "total_duration": 166320.0},
+        {"speaker": "David", "total_duration": 111840.0},
+        {"speaker": "Eve", "total_duration": 33120.0},
+        {"speaker": "X1", "total_duration": 10.0},
+        {"speaker": "X2", "total_duration": 10.0},
+        {"speaker": "X3", "total_duration": 10.0},
+    ]
+    embed = build_stats_embed({"A": _stats_rows()}, speakers)
+    assert (
+        "🎤 Olivier (46h 12m), David (31h 4m), Eve (9h 12m), and 3 others"
+        in embed.description
+    )
+
+
+def test_stats_embed_speaker_line_singular_other():
+    speakers = [
+        {"speaker": f"S{i}", "total_duration": 3600.0 * (9 - i)} for i in range(4)
+    ]
+    embed = build_stats_embed({"A": _stats_rows()}, speakers)
+    assert "and 1 other" in embed.description
+    assert "others" not in embed.description
+
+
+def test_stats_embed_speaker_line_no_tail_when_three_or_fewer():
+    speakers = [{"speaker": "Solo", "total_duration": 3600.0}]
+    embed = build_stats_embed({"A": _stats_rows()}, speakers)
+    assert "🎤 Solo (1h)" in embed.description
+    assert "other" not in embed.description
+
+
+def test_stats_embed_omits_speaker_line_without_speakers():
+    embed = build_stats_embed({"A": _stats_rows()}, [])
+    assert "🎤" not in embed.description
+
+
+def test_stats_embed_maps_raw_diarization_speaker_labels():
+    speakers = [{"speaker": "SPEAKER_01", "total_duration": 3600.0}]
+    embed = build_stats_embed({"A": _stats_rows()}, speakers)
+    assert "Speaker 1 (1h)" in embed.description
+
+
+def test_stats_embed_artwork_thumbnail():
+    embed = build_stats_embed(
+        {"A": _stats_rows()}, [], artwork_url="https://img.example/a.jpg"
+    )
+    assert embed.thumbnail.url == "https://img.example/a.jpg"
+
+
+def test_stats_embed_no_thumbnail_without_artwork():
+    embed = build_stats_embed({"A": _stats_rows()}, [])
+    assert embed.thumbnail.url is None
