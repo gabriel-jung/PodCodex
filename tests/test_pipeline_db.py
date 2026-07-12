@@ -27,21 +27,6 @@ def test_empty_db(db):
     assert db.episode_count() == 0
 
 
-def test_ensure_episode(db):
-    db.ensure_episode("ep1", audio_path="/audio/ep1.mp3")
-    row = db.get_episode("ep1")
-    assert row is not None
-    assert row["stem"] == "ep1"
-    assert row["audio_path"] == "/audio/ep1.mp3"
-    assert row["transcribed"] is False
-    assert row["translations"] == []
-    assert db.episode_count() == 1
-
-    # Idempotent — does not overwrite.
-    db.ensure_episode("ep1", audio_path="/other.mp3")
-    assert db.get_episode("ep1")["audio_path"] == "/audio/ep1.mp3"
-
-
 def test_mark_creates_row(db):
     """mark() on a non-existent stem creates the row."""
     db.mark("ep1", transcribed=True)
@@ -138,20 +123,6 @@ def test_all_episodes_sorted(db):
     db.mark("b", indexed=True)
     stems = [row["stem"] for row in db.all_episodes()]
     assert stems == ["a", "b", "c"]
-
-
-# ── Remove ────────────────────────────────────────────────
-
-
-def test_remove_episode(db):
-    db.mark("ep1", transcribed=True)
-    db.remove_episode("ep1")
-    assert db.get_episode("ep1") is None
-    assert db.episode_count() == 0
-
-
-def test_remove_nonexistent(db):
-    db.remove_episode("nope")  # should not raise
 
 
 # ── Module-level cache ────────────────────────────────────

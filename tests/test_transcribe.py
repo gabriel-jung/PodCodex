@@ -278,31 +278,6 @@ def test_export_transcript_diarized_has_diarized_true(tmp_path):
     assert full["meta"]["diarized"] is True
 
 
-def test_is_segment_flagged_undiarized():
-    """When diarized=False, speaker-based checks are skipped."""
-    from podcodex.core.transcribe import is_segment_flagged
-
-    # UNKNOWN speaker — flagged in diarized mode, not in nodiar
-    seg = {"speaker": "UNKNOWN", "start": 0, "end": 5, "text": "Hello world test"}
-    assert is_segment_flagged(seg, diarized=True) is True
-    assert is_segment_flagged(seg, diarized=False) is False
-
-    # Low density — flagged in both modes
-    low_density = {"speaker": "Narrator", "start": 0, "end": 10, "text": "Hi"}
-    assert is_segment_flagged(low_density, diarized=True) is True
-    assert is_segment_flagged(low_density, diarized=False) is True
-
-    # Normal segment — not flagged in either mode
-    normal = {
-        "speaker": "Alice",
-        "start": 0,
-        "end": 5,
-        "text": "Hello world how are you doing today",
-    }
-    assert is_segment_flagged(normal, diarized=True) is False
-    assert is_segment_flagged(normal, diarized=False) is False
-
-
 # ──────────────────────────────────────────────
 # clean_transcript integration with export
 # ──────────────────────────────────────────────

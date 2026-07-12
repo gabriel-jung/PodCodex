@@ -18,16 +18,11 @@ export type {
   BatchFix,
   BatchRequest,
   BroadcastPreviewOut,
-  CreateFromRSSRequest,
   CreateFromRSSResponse,
-  CreateFromYouTubeRequest,
   CreateFromYouTubeResponse,
-  ExtractVoicesRequest,
   GenerateRequest,
   IndexRequest,
   PipelineDefaultsSchema as PipelineDefaults,
-  CorrectApplyManualRequest,
-  CorrectManualPromptsRequest,
   CorrectRequest,
   RSSEpisodeOut,
   SearchRequest,
@@ -36,8 +31,6 @@ export type {
   ShowSummary,
   TaskResponse,
   TranscribeRequest,
-  TranslateApplyManualRequest,
-  TranslateManualPromptsRequest,
   TranslateRequest,
   UnifiedEpisodeOut,
 } from "./generated-types";
@@ -79,12 +72,6 @@ export interface OllamaCheckResponse {
 
 /** Unified episode used throughout the frontend (aliased from generated). */
 export type Episode = import("./generated-types").UnifiedEpisodeOut;
-
-export interface DownloadResult {
-  stem: string;
-  audio_path: string | null;
-  status: "downloaded" | "exists" | "failed" | "no_audio";
-}
 
 export interface PodcastSearchResult {
   name: string;
@@ -151,13 +138,6 @@ export interface IndexStatus {
   chunking: string;
   indexed: boolean;
   chunk_count: number;
-}
-
-export interface CollectionInfo {
-  name: string;
-  model: string;
-  chunker: string;
-  episode_count: number;
 }
 
 // ── Search (response shape) ──────────────────────────────

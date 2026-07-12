@@ -14,12 +14,6 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
-# OS-level bundle identifier for the desktop app (Tauri code-signing,
-# URI handlers, etc.) — kept at reverse-DNS form, defined in
-# src-tauri/tauri.conf.json. Distinct from the data-dir folder name
-# below, which is just a directory label.
-APP_BUNDLE_ID = "com.podcodex.desktop"
-
 # Directory name used under each platform's app-data root. Mirrors
 # config_dir()'s use of ``podcodex`` so config and data are symmetric,
 # and matches what the bot/CLI/MCP server expect when sharing the index.

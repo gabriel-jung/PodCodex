@@ -11,7 +11,6 @@ from podcodex.core.versions import (
     list_versions,
     load_latest,
     load_version,
-    prune_versions,
     resolve_verified_source,
     save_version,
     version_count,
@@ -193,39 +192,6 @@ class TestVersionCount:
                 _prov(model=f"m{i}"),
             )
         assert version_count(episode_dir, "corrected") == 3
-
-
-class TestPruneVersions:
-    def test_prune_keeps_newest(self, episode_dir):
-        ids = []
-        for i in range(5):
-            vid = save_version(
-                episode_dir,
-                "corrected",
-                SAMPLE_SEGMENTS,
-                _prov(model=f"m{i}"),
-            )
-            ids.append(vid)
-
-        removed = prune_versions(episode_dir, "corrected", keep=2)
-        assert removed == 3
-
-        remaining = list_versions(episode_dir, "corrected")
-        assert len(remaining) == 2
-        # Newest are kept
-        assert remaining[0]["id"] == ids[-1]
-        assert remaining[1]["id"] == ids[-2]
-
-        # Old files deleted
-        sdir = versions_dir(episode_dir) / "corrected"
-        for old_id in ids[:3]:
-            assert not (sdir / f"{old_id}.json").exists()
-
-    def test_prune_noop_when_under_limit(self, episode_dir):
-        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov())
-        removed = prune_versions(episode_dir, "corrected", keep=5)
-        assert removed == 0
-        assert version_count(episode_dir, "corrected") == 1
 
 
 class TestDifferentSteps:

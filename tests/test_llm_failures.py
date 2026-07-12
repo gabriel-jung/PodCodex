@@ -5,7 +5,6 @@ from podcodex.core.llm_failures import (
     failures_path,
     load_failures,
     save_batch_records,
-    step_has_rejects,
 )
 
 
@@ -34,27 +33,6 @@ def test_save_and_load_roundtrip(tmp_path):
     assert section["rejected"] == 1
     assert section["batches"] == records
     assert failures_path(base).is_file()
-
-
-def test_step_has_rejects(tmp_path):
-    base = _base(tmp_path)
-    save_batch_records(
-        base,
-        "corrected",
-        model="m",
-        mode="api",
-        records=[{"batch": 1, "status": "ok"}],
-    )
-    assert step_has_rejects(base, "corrected") is False
-    save_batch_records(
-        base,
-        "fr",
-        model="m",
-        mode="api",
-        records=[{"batch": 1, "status": "rejected"}],
-    )
-    assert step_has_rejects(base, "fr") is True
-    assert step_has_rejects(base, "missing") is False
 
 
 def test_clear_step_removes_section_and_file(tmp_path):

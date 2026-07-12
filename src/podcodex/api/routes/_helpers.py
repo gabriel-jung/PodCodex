@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import asdict
 from pathlib import Path
@@ -319,9 +318,7 @@ def rss_episode_to_out(
 # ── Task submission ─────────────────────────────
 
 
-_GPU_STEPS = frozenset(
-    {"transcribe", "index", "batch", "generate_tts", "extract_voices"}
-)
+_GPU_STEPS = frozenset({"transcribe", "index", "batch", "generate_tts"})
 
 
 def submit_task(step: str, audio_path: str, fn, *args) -> TaskResponse:
@@ -373,28 +370,6 @@ def submit_subprocess_task(
         )
 
     return submit_task(step, audio_path, _run, req)
-
-
-def read_segments(path: Path) -> list[dict] | None:
-    """Read segments from a JSON file.
-
-    Handles both formats:
-    - Plain array: [{speaker, text, start, end}, ...]
-    - Wrapped: {meta: {...}, segments: [...]}
-    """
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to read segments from {}: {}", path, exc)
-        return None
-
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict) and "segments" in data:
-        return data["segments"]
-    return None
 
 
 def is_flagged(seg: dict) -> bool:

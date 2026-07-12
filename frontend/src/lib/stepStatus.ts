@@ -2,11 +2,6 @@
 import { isEdited } from "./utils";
 export { isEdited };
 
-/** Freshness status returned by the backend for transcribe/correct/translate.
- *  Freshness = "does the saved version's params still match the effective
- *  defaults?", independent of review state (see `isEdited`). */
-export type BackendStepStatus = "none" | "outdated" | "done";
-
 /** Three-way review status used by Overview StageCards and PipelinePanel
  *  headers. Stays in sync with `STAGE_CARD_CLASSES` vocabulary. */
 export type PanelStatus = "ready" | "review" | "none";

@@ -736,21 +736,6 @@ def test_chunk_map_from_chunks_text_preview(tmp_path):
     assert cmap[3]["text_preview"] == "chun"
 
 
-def test_find_chunk_index_at_time_contained(tmp_path):
-    s, col = _seeded(tmp_path)  # chunks span [i, i+1)
-    assert s.find_chunk_index_at_time(col, "ep1", 3.5) == 3
-
-
-def test_find_chunk_index_at_time_gap_nearest(tmp_path):
-    s, col = _seeded(tmp_path)
-    assert s.find_chunk_index_at_time(col, "ep1", 100.0) == 5
-
-
-def test_find_chunk_index_at_time_empty(tmp_path):
-    s, col = _seeded(tmp_path)
-    assert s.find_chunk_index_at_time(col, "missing", 1.0) is None
-
-
 # ── broadcast_number surfacing (#5) ──────────────────────────────────────
 
 

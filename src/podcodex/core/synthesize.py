@@ -2,8 +2,9 @@
 podcodex.core.synthesize — Voice synthesis pipeline using Qwen3-TTS.
 
 Steps:
-    1. extract_voice_samples() — extract audio clips per speaker for voice cloning
-    2. generate_segments()     — generate TTS audio for each translated segment
+    1. extract_selected_samples() — extract user-chosen clips for voice cloning
+    2. generate_segment()      — generate TTS audio per translated segment
+                                 (driven incrementally by synthesize_job.run_generate)
     3. assemble_episode()      — merge all segments into a final podcast audio file
 
 Files produced in output_dir:
@@ -20,7 +21,6 @@ import re
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -31,9 +31,7 @@ from loguru import logger
 from podcodex.core._ffmpeg import ffmpeg_exe
 from podcodex.core._utils import (
     SAMPLE_RATE,
-    UNKNOWN_SPEAKERS,
     AudioPaths,
-    group_by_speaker,
     tts_segment_filename,
     wav_duration,
 )
@@ -223,106 +221,8 @@ def segment_is_current(
 
 
 # ──────────────────────────────────────────────
-# Hallucination detection
-# ──────────────────────────────────────────────
-
-# Patterns Whisper commonly generates on music/silence instead of real speech.
-_HALLUCINATION_RE = re.compile(
-    r"(?i)"
-    r"sous-titrag"  # "Sous-titrage FR", "Sous-titrage MFP", etc.
-    r"|subtitl"  # English equivalents
-    r"|merci d'avoir"  # filler sign-off
-    r"|transcription\s+réalis"
-    r"|www\."  # URLs hallucinated on silence
-)
-
-
-def is_hallucination(text: str) -> bool:
-    """Return True if *text* looks like a Whisper hallucination rather than real speech.
-
-    Catches the most common artifacts produced on music or silence:
-    repeated punctuation (``... ...``), very short strings, and
-    known French/English subtitle watermarks.
-
-    Args:
-        text: segment text to evaluate.
-
-    Returns:
-        ``True`` if the text matches known hallucination patterns, ``False``
-        for empty strings or genuine speech.
-    """
-    t = text.strip()
-    if not t:
-        return False
-    # Only punctuation / dots / ellipses
-    if re.fullmatch(r"[\s.…\-_,;:!?/|]+", t):
-        return True
-    # Very short (single word or less, likely a stutter artifact)
-    if len(t) <= 3:
-        return True
-    # Known watermark / filler patterns
-    if _HALLUCINATION_RE.search(t):
-        return True
-    return False
-
-
-# ──────────────────────────────────────────────
 # STEP 1 — Voice sample extraction
 # ──────────────────────────────────────────────
-
-
-def _select_candidates(
-    segs: list[dict],
-    speaker: str,
-    *,
-    min_duration: float | None = None,
-    max_duration: float | None = None,
-    top_k: int = 3,
-) -> list[dict]:
-    """Pick the best voice-cloning candidates for one speaker.
-
-    Filters by duration range and hallucination detection, then returns
-    up to *top_k* segments sorted by duration descending.
-
-    Args:
-        segs: all segments for this speaker, each with a ``duration`` key.
-        speaker: speaker label (used for log messages).
-        min_duration: minimum clip duration in seconds (``None`` to skip).
-        max_duration: maximum clip duration in seconds (``None`` to skip).
-        top_k: maximum number of candidates to return.
-
-    Returns:
-        Up to *top_k* candidate dicts sorted by duration descending,
-        or an empty list if no usable candidates remain.
-    """
-    candidates = segs
-
-    # Duration filter (fall back to all segments if nothing matches)
-    if min_duration is not None or max_duration is not None:
-        filtered = candidates
-        if min_duration is not None:
-            filtered = [s for s in filtered if s["duration"] >= min_duration]
-        if max_duration is not None:
-            filtered = [s for s in filtered if s["duration"] <= max_duration]
-        if filtered:
-            candidates = filtered
-        else:
-            logger.warning(
-                f"No segments in duration range for {speaker} — using all segments"
-            )
-
-    # Hallucination filter
-    clean = [s for s in candidates if not is_hallucination(s.get("text", ""))]
-    dropped = len(candidates) - len(clean)
-    if dropped:
-        logger.warning(f"Dropped {dropped} hallucinated-text segment(s) for {speaker}")
-    if not clean:
-        logger.warning(
-            f"All candidates for {speaker} are music/hallucination — skipping"
-        )
-        return []
-
-    return sorted(clean, key=lambda s: s["duration"], reverse=True)[:top_k]
 
 
 def _extract_clip(audio_path: Path, seg: dict, output_path: Path) -> dict:
@@ -365,87 +265,6 @@ def _extract_clip(audio_path: Path, seg: dict, output_path: Path) -> dict:
         "duration": seg["duration"],
         "text": seg["text"],
     }
-
-
-def extract_voice_samples(
-    audio_path: Path | str,
-    segments: list[dict],
-    output_dir: str | Path | None = None,
-    min_duration: float | None = None,
-    max_duration: float | None = None,
-    top_k: int = 3,
-) -> dict[str, list[dict]]:
-    """
-    Extract audio clips per speaker for voice cloning.
-
-    For each speaker, selects up to top_k segments sorted by duration descending.
-    Optionally filtered by min_duration and max_duration.
-    Clips are saved as 16kHz mono WAV in output_dir/voice_samples/.
-
-    Args:
-        audio_path   : source audio file
-        segments     : output of merge_consecutive_segments()
-        output_dir   : directory relative to audio_path for outputs
-        min_duration : minimum clip duration in seconds (optional)
-        max_duration : maximum clip duration in seconds (optional)
-        top_k        : max number of candidates per speaker
-
-    Returns:
-        {speaker: [{"file", "start", "end", "duration", "text"}, ...]}
-        sorted by duration descending
-    """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    logger.info(
-        f"Extracting voice samples from {p.audio_path.name} — {len(segments)} segments, top_k={top_k}"
-    )
-    samples_dir = p.ensure_voice_samples_dir()
-
-    # Group by speaker, add duration, select candidates, build extraction plan
-    by_speaker = {
-        speaker: [{**seg, "duration": seg["end"] - seg["start"]} for seg in segs]
-        for speaker, segs in group_by_speaker(segments).items()
-    }
-    logger.debug(f"Found {len(by_speaker)} distinct speaker labels")
-
-    plan: list[tuple[str, dict, Path]] = []
-    for speaker, segs in by_speaker.items():
-        if not speaker or speaker in UNKNOWN_SPEAKERS:
-            logger.warning(
-                f"Skipping speaker {speaker!r} — not a real speaker ({len(segs)} segments)"
-            )
-            continue
-        candidates = _select_candidates(
-            segs,
-            speaker,
-            min_duration=min_duration,
-            max_duration=max_duration,
-            top_k=top_k,
-        )
-        for i, seg in enumerate(candidates):
-            plan.append((speaker, seg, samples_dir / f"{speaker}_{i:02d}.wav"))
-
-    # Run ffmpeg extractions in parallel (I/O-bound)
-    results: dict[str, list[dict]] = {}
-    with ThreadPoolExecutor(max_workers=min(len(plan) or 1, 8)) as executor:
-        futures = {
-            executor.submit(_extract_clip, p.audio_path, seg, out): speaker
-            for speaker, seg, out in plan
-        }
-        for future in as_completed(futures):
-            speaker = futures[future]
-            entry = future.result()
-            logger.debug(f"{speaker} — {entry['duration']:.1f}s → {entry['file'].name}")
-            results.setdefault(speaker, []).append(entry)
-
-    # Restore order (sorted by duration descending)
-    for speaker in results:
-        results[speaker].sort(key=lambda e: e["duration"], reverse=True)
-
-    total = sum(len(v) for v in results.values())
-    logger.success(
-        f"Voice samples extracted — {total} clips for {len(results)} speakers → {samples_dir.name}/"
-    )
-    return results
 
 
 def extract_selected_samples(
@@ -625,7 +444,7 @@ def build_clone_prompts(
 
     Args:
         model        : loaded Qwen3TTSModel from load_tts_model()
-        voice_samples: output of extract_voice_samples()
+        voice_samples: output of extract_selected_samples() / load_voice_samples()
         sample_index : which sample to use per speaker —
                        int (global) or dict {speaker: index}
 
@@ -806,124 +625,6 @@ def generate_segment(
     return {**seg, "audio_file": output_path, "sample_rate": sr}
 
 
-def generate_segments(
-    audio_path: Path | str,
-    segments: list[dict],
-    voice_samples: dict[str, list[dict]],
-    output_dir: str | Path | None = None,
-    model_size: str = "1.7B",
-    language: str = "English",
-    sample_index: dict[str, int] | int = 0,
-    max_chunk_duration: float = 20.0,
-    force: bool = False,
-    only_speakers: list[str] | None = None,
-) -> list[dict]:
-    """
-    Generate TTS audio for all translated segments using Qwen3-TTS voice cloning.
-
-    Supports incremental generation: previously generated segments are skipped
-    if their text and voice sample haven't changed (tracked via manifest.json).
-
-    Convenience wrapper around load_tts_model + build_clone_prompts + generate_segment.
-
-    Args:
-        audio_path         : source audio file (used to resolve output_dir)
-        segments           : translated segment dicts
-        voice_samples      : output of extract_voice_samples()
-        output_dir         : directory relative to audio_path for outputs
-        model_size         : "0.6B" or "1.7B"
-        language           : target language for TTS — must match translation target_lang
-        sample_index       : which voice sample to use per speaker
-        max_chunk_duration : source-audio seconds above which a segment is split
-        force              : if True, regenerate all segments ignoring manifest
-        only_speakers      : if set, only regenerate segments for these speakers
-
-    Returns:
-        List of segments with added "audio_file" and "sample_rate" fields
-    """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    logger.info(
-        f"Generating TTS for {len(segments)} segments — model={model_size}, language={language}"
-    )
-    segments_dir = p.ensure_tts_segments_dir()
-
-    # Load manifest for incremental generation
-    manifest = (
-        load_manifest(segments_dir)
-        if not force
-        else {"model": None, "language": None, "segments": {}}
-    )
-
-    model = load_tts_model(model_size=model_size)
-    clone_prompts = build_clone_prompts(model, voice_samples, sample_index=sample_index)
-
-    generated = []
-    reused = 0
-    for i, seg in enumerate(segments):
-        speaker = seg.get("speaker", "UNK")
-        text = seg.get("text", "").strip()
-        filename = tts_segment_filename(seg)
-        output_path = segments_dir / filename
-
-        # Skip if only regenerating specific speakers
-        if only_speakers and speaker not in only_speakers:
-            if output_path.exists():
-                generated.append(
-                    {**seg, "audio_file": output_path, "sample_rate": SAMPLE_RATE}
-                )
-            continue
-
-        # Check manifest — skip if segment is still valid
-        sample_name = _sample_key(voice_samples, speaker, sample_index)
-        if (
-            not force
-            and output_path.exists()
-            and segment_is_current(
-                manifest, filename, text, speaker, sample_name, model_size, language
-            )
-        ):
-            generated.append(
-                {**seg, "audio_file": output_path, "sample_rate": SAMPLE_RATE}
-            )
-            reused += 1
-            continue
-
-        result = generate_segment(
-            model,
-            seg,
-            clone_prompts,
-            output_path,
-            language=language,
-            max_chunk_duration=max_chunk_duration,
-        )
-        if result:
-            generated.append(result)
-            # Update manifest entry
-            manifest["segments"][filename] = {
-                "speaker": speaker,
-                "voice_sample": sample_name,
-                "text_hash": _text_hash(text),
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            logger.debug(f"[{i + 1}/{len(segments)}] {speaker}: {text[:60]}…")
-
-    # Update run-level manifest fields and save
-    manifest["model"] = model_size
-    manifest["language"] = language
-    save_manifest(segments_dir, manifest)
-
-    new_count = len(generated) - reused
-    logger.success(
-        f"TTS generation done — {new_count} generated, {reused} reused"
-        + (
-            f", {len(segments) - len(generated)} skipped"
-            if len(generated) < len(segments)
-            else ""
-        )
-    )
-    return generated
-
-
 # ──────────────────────────────────────────────
 # STEP 3 — Assembly
 # ──────────────────────────────────────────────
@@ -944,7 +645,7 @@ def assemble_episode(
                            preserve the rhythm of the original podcast
 
     Args:
-        generated        : output of generate_segments()
+        generated        : segment dicts with "audio_file" set (from generate_segment)
         output_path      : destination .wav file (parent dir must exist)
         strategy         : assembly strategy
         silence_duration : silence in seconds between segments (strategy="silence" only)

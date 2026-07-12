@@ -70,16 +70,6 @@ ASSEMBLE_STRATEGIES: dict[str, str] = {
     "silence": "Use a short fixed pause between speakers, even shorter within a turn",
 }
 
-# ── Voice sample extraction defaults ─────────────────────────────────────────
-
-VOICE_MIN_DURATION = 3.0  # minimum clip length (seconds) for a voice sample
-VOICE_MAX_DURATION = 0.0  # 0 = no upper limit
-VOICE_TOP_K = 3  # how many samples to keep per speaker
-DEFAULT_MAX_CHUNK_DURATION = 20.0  # max seconds per TTS chunk
-DEFAULT_SILENCE_DURATION = (
-    0.2  # speaker-change pause for the "silence" strategy; within-turn auto-scales
-)
-
 # ── LLM providers (for Correct & Translate) ───────────────────────────────────
 #
 # Per-legacy-provider runtime fallbacks for the api mode in run_api(). Used

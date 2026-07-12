@@ -863,36 +863,3 @@ def load_latest_speaker_map(base: Path) -> dict[str, str]:
             continue
         return {e["id"]: e["name"] for e in entries}
     return {}
-
-
-def prune_versions(base: Path, step: str, keep: int) -> int:
-    """Remove old versions, keeping the newest *keep* entries.
-
-    Returns number of versions removed.
-    """
-    try:
-        db = _get_db(base)
-        versions = db.list_versions(base.name, step)
-    except Exception:
-        versions = []
-
-    if len(versions) <= keep:
-        return 0
-
-    to_remove = versions[keep:]
-    ids = [v["id"] for v in to_remove]
-
-    # Delete files
-    for vid in ids:
-        seg_path = version_path(base, step, vid)
-        if seg_path.exists():
-            seg_path.unlink()
-
-    # Delete from DB
-    try:
-        db.delete_versions(base.name, step, ids)
-    except Exception:
-        logger.opt(exception=True).warning("Failed to prune versions from DB")
-
-    logger.info("Pruned {} versions for step '{}', kept {}", len(ids), step, keep)
-    return len(ids)

@@ -5,12 +5,11 @@ Covers the highest-traffic, lowest-dependency routes:
 - /api/shows/* CRUD (config + meta round-trip)
 - /api/transcribe/segments GET/PUT (versioned editor endpoint)
 - /api/export/text,srt,vtt (segment formatters)
-- _helpers.read_segments / load_segments_or_404 / is_flagged (pure)
+- _helpers.load_segments_or_404 / is_flagged (pure)
 
 All tests isolate state by redirecting CONFIG_PATH and operating in tmp_path.
 """
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -594,38 +593,6 @@ def test_speakers_falls_back_when_requested_combo_missing(client, seeded_index):
 # ──────────────────────────────────────────────
 # _helpers pure functions
 # ──────────────────────────────────────────────
-
-
-def test_read_segments_plain_array(tmp_path):
-    from podcodex.api.routes._helpers import read_segments
-
-    p = tmp_path / "segs.json"
-    segs = [{"speaker": "A", "text": "x", "start": 0, "end": 1}]
-    p.write_text(json.dumps(segs))
-    assert read_segments(p) == segs
-
-
-def test_read_segments_wrapped_format(tmp_path):
-    from podcodex.api.routes._helpers import read_segments
-
-    p = tmp_path / "segs.json"
-    wrapped = {"meta": {"show": "x"}, "segments": [{"text": "hi"}]}
-    p.write_text(json.dumps(wrapped))
-    assert read_segments(p) == [{"text": "hi"}]
-
-
-def test_read_segments_missing_file(tmp_path):
-    from podcodex.api.routes._helpers import read_segments
-
-    assert read_segments(tmp_path / "nope.json") is None
-
-
-def test_read_segments_corrupt_returns_none(tmp_path):
-    from podcodex.api.routes._helpers import read_segments
-
-    p = tmp_path / "bad.json"
-    p.write_text("{not json")
-    assert read_segments(p) is None
 
 
 def test_is_flagged_break_not_flagged():

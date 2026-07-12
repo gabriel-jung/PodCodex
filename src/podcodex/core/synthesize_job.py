@@ -1,8 +1,7 @@
 """Subprocess entry points for the synthesize pipeline step.
 
-Keeps TTS models (torch) out of the FastAPI process. Two entries:
+Keeps TTS models (torch) out of the FastAPI process. One entry:
 
-* ``run_extract`` — extract voice samples from an existing transcript.
 * ``run_generate`` — run incremental TTS generation with a manifest.
 """
 
@@ -14,38 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-
-
-def run_extract(
-    *,
-    progress_cb: Callable[[float, str], None],
-    cancelled: Callable[[], bool],
-    audio_path: str,
-    output_dir: str | None,
-    min_duration: float | None,
-    max_duration: float | None,
-    top_k: int,
-) -> dict[str, Any]:
-    """Extract speaker voice samples from a transcript."""
-    from podcodex.core.synthesize import extract_voice_samples
-    from podcodex.core.transcribe import load_transcript
-
-    progress_cb(0.0, "Loading transcript...")
-    segments = load_transcript(audio_path, output_dir=output_dir)
-    if not segments:
-        raise ValueError("No transcript found. Transcribe first.")
-
-    progress_cb(0.1, "Extracting voice samples...")
-    samples = extract_voice_samples(
-        audio_path,
-        segments,
-        output_dir=output_dir,
-        min_duration=min_duration,
-        max_duration=max_duration,
-        top_k=top_k,
-    )
-    total = sum(len(v) for v in samples.values())
-    return {"speakers": len(samples), "total_samples": total}
 
 
 def run_generate(

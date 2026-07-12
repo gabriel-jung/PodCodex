@@ -98,11 +98,6 @@ def clear_step(base: Path, step: str) -> bool:
     return True
 
 
-def step_has_rejects(base: Path, step: str) -> bool:
-    """True when the *step* section records at least one rejected batch."""
-    return _has_rejects(load_failures(base).get(step))
-
-
 def rejected_steps(episode_dir: Path) -> list[str]:
     """Steps under *episode_dir* whose last auto run had a rejected batch.
 

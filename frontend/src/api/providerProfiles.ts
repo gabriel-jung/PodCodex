@@ -2,7 +2,6 @@ import { json, rawFetch } from "./client";
 import type { ProviderProfile } from "./generated-types";
 
 export type { ProviderProfile };
-export type ProviderType = ProviderProfile["type"];
 
 export interface ProviderProfilesListResponse {
   profiles: ProviderProfile[];

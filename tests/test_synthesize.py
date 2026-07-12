@@ -81,7 +81,7 @@ def make_wav(tmp_path: Path, name: str, duration: float) -> Path:
 
 
 def make_generated(tmp_path, segments_data):
-    """Build a generated list as returned by generate_segments()."""
+    """Build a generated list of segment dicts with "audio_file" set."""
     result = []
     for i, (start, end) in enumerate(segments_data):
         wav = make_wav(tmp_path, f"{i:04d}.wav", end - start)

@@ -376,24 +376,6 @@ class PipelineDB:
                 rows,
             )
 
-    def ensure_episode(self, stem: str, audio_path: str | None = None) -> None:
-        """Create an episode row if it does not exist (idempotent)."""
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT OR IGNORE INTO episodes (stem, audio_path, updated_at)
-                VALUES (?, ?, ?)
-                """,
-                (stem, audio_path, time.time()),
-            )
-            self._conn.commit()
-
-    def remove_episode(self, stem: str) -> None:
-        """Delete an episode row."""
-        with self._lock:
-            self._conn.execute("DELETE FROM episodes WHERE stem = ?", (stem,))
-            self._conn.commit()
-
     # ── Versions ─────────────────────────────────────────
 
     def insert_version(self, stem: str, step: str, meta: dict) -> None:
@@ -452,29 +434,6 @@ class PipelineDB:
             (version_id,),
         ).fetchone()
         return self._version_to_dict(row) if row else None
-
-    def latest_versions_for_steps(
-        self, steps: list[str]
-    ) -> dict[tuple[str, str], dict]:
-        """Bulk: latest version per ``(stem, step)`` via one window-function query."""
-        if not steps:
-            return {}
-        placeholders = ", ".join("?" for _ in steps)
-        rows = self._conn.execute(
-            f"""SELECT * FROM (
-                    SELECT *,
-                           ROW_NUMBER() OVER (PARTITION BY stem, step ORDER BY timestamp DESC) AS rn
-                    FROM versions
-                    WHERE step IN ({placeholders})
-                )
-               WHERE rn = 1""",
-            steps,
-        ).fetchall()
-        out: dict[tuple[str, str], dict] = {}
-        for r in rows:
-            d = self._version_to_dict(r)
-            out[(d["stem"], d["step"])] = d
-        return out
 
     def versions_for_steps(self, steps: list[str]) -> dict[tuple[str, str], list[dict]]:
         """Bulk: all versions per ``(stem, step)``, newest first, one query.
@@ -550,13 +509,6 @@ class PipelineDB:
                 f"DELETE FROM versions WHERE stem = ? AND step = ? AND id IN ({placeholders})",
                 [stem, step, *ids],
             )
-            self._conn.commit()
-            return cur.rowcount
-
-    def delete_all_versions(self, stem: str) -> int:
-        """Delete all versions for an episode. Returns count deleted."""
-        with self._lock:
-            cur = self._conn.execute("DELETE FROM versions WHERE stem = ?", (stem,))
             self._conn.commit()
             return cur.rowcount
 

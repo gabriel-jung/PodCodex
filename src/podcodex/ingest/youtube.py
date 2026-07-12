@@ -10,7 +10,6 @@ Requires the optional ``[youtube]`` dependency group (``yt-dlp``).
 
 from __future__ import annotations
 
-import re
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -38,24 +37,6 @@ _MAX_DELAY = 8.0  # maximum delay between requests
 _CONSECUTIVE_FAIL_LIMIT = 3  # abort batch after this many consecutive failures
 _request_count = 0
 _pace_lock = threading.Lock()
-
-# yt-dlp error strings that indicate rate limiting / bot detection
-_THROTTLE_PATTERNS = (
-    "HTTP Error 429",
-    "Sign in to confirm",
-    "too many requests",
-    "This helps protect our community",
-)
-
-
-class YouTubeThrottledError(RuntimeError):
-    """Raised when YouTube appears to be rate-limiting requests."""
-
-
-def _is_throttle_error(exc: Exception) -> bool:
-    """Check if an exception looks like YouTube rate limiting."""
-    msg = str(exc).lower()
-    return any(p.lower() in msg for p in _THROTTLE_PATTERNS)
 
 
 def _pace_request() -> None:
@@ -127,22 +108,6 @@ def _require_yt_dlp():
             "yt-dlp is required for YouTube support. "
             "Install with: pip install podcodex[youtube]"
         )
-
-
-def _extract_video_id(url_or_id: str) -> str:
-    """Extract a YouTube video ID from a URL or return as-is if already an ID."""
-    # Already a bare ID (11 chars, alphanumeric + dash/underscore)
-    if re.match(r"^[\w-]{11}$", url_or_id):
-        return url_or_id
-    # Standard watch URL
-    m = re.search(r"[?&]v=([\w-]{11})", url_or_id)
-    if m:
-        return m.group(1)
-    # Short URL (youtu.be/ID)
-    m = re.search(r"youtu\.be/([\w-]{11})", url_or_id)
-    if m:
-        return m.group(1)
-    return url_or_id
 
 
 def _entry_to_episode(entry: dict[str, Any], idx: int) -> RSSEpisode:

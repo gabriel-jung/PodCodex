@@ -8,7 +8,6 @@ can read it without importing from ``api/routes`` — the FastAPI route at
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from loguru import logger
 from pydantic import BaseModel

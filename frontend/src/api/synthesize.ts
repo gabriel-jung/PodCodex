@@ -1,6 +1,5 @@
 import type {
   AssembleRequest,
-  ExtractVoicesRequest,
   GenerateRequest,
   GeneratedSegment,
   SynthesisStatus,
@@ -19,13 +18,6 @@ function synthVersionsQuery(audioPath: string | null | undefined, outputDir?: st
 
 export const getSynthesisStatus = (audioPath: string | null | undefined, outputDir?: string | null) =>
   json<SynthesisStatus>(`/api/synthesize/status?${synthVersionsQuery(audioPath, outputDir)}`);
-
-export const startExtractVoices = (req: ExtractVoicesRequest) =>
-  json<TaskResponse>("/api/synthesize/extract-voices", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
-  });
 
 export const getVoiceSamples = (
   audioPath: string | null | undefined,

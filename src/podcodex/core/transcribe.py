@@ -34,7 +34,6 @@ from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import (
     get_latest_provenance,
     has_matching_version,
-    has_version,
     load_latest,
     load_latest_speaker_map,
     save_speaker_map_version,
@@ -46,32 +45,6 @@ warnings.filterwarnings("ignore", category=UserWarning, module="pyannote")
 warnings.filterwarnings("ignore", category=UserWarning, module="torchcodec")
 warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
 warnings.filterwarnings("ignore", message=".*Lightning automatically upgraded.*")
-
-
-def processing_status(
-    audio_path: Path | str,
-    output_dir: str | Path | None = None,
-) -> dict[str, bool]:
-    """Return the processing state of an audio file.
-
-    Checks the version DB for each pipeline sub-step.
-
-    Args:
-        audio_path: Source audio file.
-        output_dir: Output directory override (see ``AudioPaths.output_dir``
-            for resolution rules).
-
-    Returns:
-        Dict with boolean flags: ``transcribed``, ``diarized``, ``assigned``,
-        ``exported``.
-    """
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    return {
-        "transcribed": has_version(p.base, "segments"),
-        "diarized": has_version(p.base, "diarization"),
-        "assigned": has_version(p.base, "diarized_segments"),
-        "exported": has_version(p.base, "transcript"),
-    }
 
 
 # ──────────────────────────────────────────────
@@ -672,39 +645,6 @@ def segment_speech_density(seg: dict) -> float | None:
     if dur < 0.5:
         return None
     return len(text) / dur
-
-
-def is_segment_flagged(seg: dict, diarized: bool = True) -> bool:
-    """Return True if a segment is suspicious and should be reviewed or removed.
-
-    A segment is flagged when:
-
-    - speaker is missing or an unresolved placeholder (UNKNOWN, UNK, ...)
-    - speaker is a reserved remove marker ([remove])
-    - speech density is abnormal (< 2 or > 75 chars/s), indicating music, noise,
-      or a Whisper hallucination artifact
-
-    When *diarized* is False, speaker-based checks are skipped (only density
-    is used) since all segments share a generic narrator label.
-
-    Args:
-        seg: Segment dict with ``speaker``, ``text``, ``start``, ``end``.
-        diarized: Whether diarization was performed.  When False, only
-            density-based flagging is applied.
-
-    Returns:
-        True if the segment should be flagged for review.
-    """
-    speaker = seg.get("speaker", "")
-    if speaker == BREAK_SPEAKER:
-        return False
-    if diarized:
-        if not speaker or speaker in UNKNOWN_SPEAKERS:
-            return True
-        if speaker in REMOVE_SPEAKERS:
-            return True
-    density = segment_speech_density(seg)
-    return density is not None and (density < MIN_DENSITY or density > MAX_DENSITY)
 
 
 def clean_transcript(

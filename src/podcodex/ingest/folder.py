@@ -127,13 +127,6 @@ def lance_indexed_stems(show_folder: Path) -> set[str]:
         return set()
 
 
-def _list_dir(d: Path) -> set[str]:
-    """Return the set of filenames in *d*, or empty set if it doesn't exist."""
-    if d.is_dir():
-        return {f.name for f in d.iterdir()}
-    return set()
-
-
 def _load_title(output_dir: Path) -> str:
     """Read the display title from episode metadata if it exists."""
     meta_path = output_dir / EPISODE_META_FILE

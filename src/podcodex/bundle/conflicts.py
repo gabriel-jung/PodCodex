@@ -7,7 +7,6 @@ Pure logic — callers (CLI, API) map their own UX (prompts, modals) to a
 from __future__ import annotations
 
 from enum import StrEnum
-from pathlib import Path
 
 from podcodex.bundle.manifest import Mode
 
@@ -53,8 +52,3 @@ def rename_suffix(name: str, taken: set[str], suffix: str = "-imported") -> str:
     while f"{candidate}-{i}" in taken:
         i += 1
     return f"{candidate}-{i}"
-
-
-def detect_folder_conflict(target: Path) -> bool:
-    """True if a folder already exists at ``target``."""
-    return target.exists()

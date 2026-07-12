@@ -47,41 +47,6 @@ async def synthesis_status(
 # ── Voice sample extraction ─────────────────────────────
 
 
-class ExtractVoicesRequest(BaseModel):
-    audio_path: str
-    output_dir: str | None = None
-    min_duration: float | None = None
-    max_duration: float | None = None
-    top_k: int = 3
-
-    @field_validator("top_k")
-    @classmethod
-    def top_k_positive(cls, v: int) -> int:
-        """Validate that top_k is at least 1."""
-        if v < 1:
-            raise ValueError("top_k must be at least 1")
-        return v
-
-
-@router.post("/extract-voices", response_model=TaskResponse)
-async def extract_voices(req: ExtractVoicesRequest) -> TaskResponse:
-    """Extract voice samples for cloning as a background task."""
-
-    return submit_subprocess_task(
-        "extract_voices",
-        req.audio_path,
-        entry_path="podcodex.core.synthesize_job:run_extract",
-        kwargs={
-            "audio_path": req.audio_path,
-            "output_dir": req.output_dir,
-            "min_duration": req.min_duration,
-            "max_duration": req.max_duration,
-            "top_k": req.top_k,
-        },
-        req=req,
-    )
-
-
 class VoiceSelection(BaseModel):
     speaker: str
     start: float

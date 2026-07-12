@@ -1119,22 +1119,6 @@ class IndexStore:
         hi = min(len(chunks), center + window + 1)
         return chunks[lo:hi]
 
-    def find_chunk_index_at_time(
-        self, collection: str, episode: str, at_time: float
-    ) -> int | None:
-        """Return the chunk_index whose ``[start, end)`` contains ``at_time``.
-
-        If ``at_time`` falls in a gap between chunks or past the transcript,
-        returns the chunk with the nearest ``start``. ``None`` when the episode
-        has no chunks. (``get_chunk_window(at_time=...)`` resolves the same
-        center in a single load; this exists for callers that need only the
-        index.)
-        """
-        chunks = self.load_chunks_no_embeddings(collection, episode)
-        if not chunks:
-            return None
-        return int(chunks[_center_pos_by_time(chunks, at_time)].get("chunk_index", -1))
-
     def load_all_chunks(
         self,
         collection: str,

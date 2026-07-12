@@ -310,7 +310,9 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _extract_tar_gz(archive: Path, dest: Path, label: str, progress_cb, frac: float) -> None:
+def _extract_tar_gz(
+    archive: Path, dest: Path, label: str, progress_cb, frac: float
+) -> None:
     """Extract *archive* into *dest* (which must already exist). Does not
     wipe the dest — both archives extract into the same install root."""
     progress_cb(frac, f"Extracting {label}…")
@@ -395,7 +397,9 @@ def download_and_install(
     _ensure_bundle_mode()
     _ensure_platform_supported()
     if not manifest_url:
-        raise ValueError("Manifest URL is empty. Set PODCODEX_GPU_MANIFEST_URL or pass via API.")
+        raise ValueError(
+            "Manifest URL is empty. Set PODCODEX_GPU_MANIFEST_URL or pass via API."
+        )
 
     cancel_event: threading.Event | None = getattr(progress_cb, "cancel_event", None)
     install_dir = gpu_install_dir()
@@ -454,8 +458,12 @@ def download_and_install(
             )
             server_tar = tmp / server_archive_name
             _stream_download(
-                server_url, server_tar, progress_cb, cancel_event,
-                progress_start=server_band[0], progress_end=server_band[1] - 0.02,
+                server_url,
+                server_tar,
+                progress_cb,
+                cancel_event,
+                progress_start=server_band[0],
+                progress_end=server_band[1] - 0.02,
                 label="server core",
             )
             # Verify against sidecar .sha256 if published; warn otherwise.
@@ -468,11 +476,15 @@ def download_and_install(
                         f"server-core sha256 mismatch: expected {expected[:16]}…, got {actual[:16]}…"
                     )
             else:
-                logger.warning("server-core.tar.gz.sha256 not published; skipping integrity check")
+                logger.warning(
+                    "server-core.tar.gz.sha256 not published; skipping integrity check"
+                )
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("Install cancelled before extraction")
             _purge_stale_dist_info(install_dir)
-            _extract_tar_gz(server_tar, install_dir, "server core", progress_cb, server_band[1])
+            _extract_tar_gz(
+                server_tar, install_dir, "server core", progress_cb, server_band[1]
+            )
 
         if needs_libs:
             assert cuda_band is not None
@@ -483,8 +495,12 @@ def download_and_install(
             )
             cuda_tar = tmp / cuda_archive_name
             _stream_download(
-                cuda_url, cuda_tar, progress_cb, cancel_event,
-                progress_start=cuda_band[0], progress_end=cuda_band[1] - 0.02,
+                cuda_url,
+                cuda_tar,
+                progress_cb,
+                cancel_event,
+                progress_start=cuda_band[0],
+                progress_end=cuda_band[1] - 0.02,
                 label="cuda libs",
             )
             progress_cb(cuda_band[1] - 0.01, "Verifying cuda-libs hash…")
@@ -495,7 +511,9 @@ def download_and_install(
                 )
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("Install cancelled before extraction")
-            _extract_tar_gz(cuda_tar, install_dir, "cuda libs", progress_cb, cuda_band[1])
+            _extract_tar_gz(
+                cuda_tar, install_dir, "cuda libs", progress_cb, cuda_band[1]
+            )
 
     _manifest_path().write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     progress_cb(1.0, "Installed. Activate to switch the sidecar to GPU.")
@@ -562,7 +580,3 @@ def default_manifest_url() -> str:
     """
     override = os.environ.get("PODCODEX_GPU_MANIFEST_URL", "").strip()
     return override or _DEFAULT_LATEST_MANIFEST_URL
-
-
-# Back-compat alias — older route handlers reference the old name.
-manifest_url_from_env = default_manifest_url

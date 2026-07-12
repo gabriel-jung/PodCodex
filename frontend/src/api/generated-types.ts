@@ -412,14 +412,6 @@ export interface IndexRequest {
   overwrite?: boolean;
 }
 
-export interface ExtractVoicesRequest {
-  audio_path: string;
-  output_dir?: string | null;
-  min_duration?: number | null;
-  max_duration?: number | null;
-  top_k?: number;
-}
-
 export interface VoiceSelection {
   speaker: string;
   start: number;

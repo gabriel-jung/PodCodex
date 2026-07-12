@@ -309,11 +309,6 @@ def write_parquet(path: Path, records: list[dict]) -> None:
     atomic_write(path, lambda p: pd.DataFrame(records).to_parquet(p, index=False))
 
 
-def read_json(path: Path):
-    """Read and parse a JSON file."""
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def write_json(path: Path, data) -> None:
     """Write data as formatted JSON atomically."""
     write_json_atomic(path, data)

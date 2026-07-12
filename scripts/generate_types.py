@@ -69,7 +69,6 @@ from podcodex.api.routes.shows import (  # noqa: E402
 from podcodex.api.routes.synthesize import (  # noqa: E402
     AssembleRequest,
     ExtractSelectedRequest,
-    ExtractVoicesRequest,
     GenerateRequest,
     VoiceSelection,
 )
@@ -140,7 +139,6 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, ExactRequest),
     (None, RandomRequest),
     (None, IndexRequest),
-    (None, ExtractVoicesRequest),
     (None, VoiceSelection),
     (None, ExtractSelectedRequest),
     (None, GenerateRequest),

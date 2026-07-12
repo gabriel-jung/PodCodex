@@ -600,46 +600,6 @@ def clean_description(raw: str, max_chars: int = 500) -> str:
     return desc
 
 
-def build_episode_context(
-    show_name: str = "",
-    episode_dir: Path | str | None = None,
-    max_desc: int = 500,
-) -> str:
-    """Build an LLM context string from show name + RSS episode metadata.
-
-    Returns a multi-line string suitable for the ``context`` parameter of
-    :func:`~podcodex.core.correct.correct_segments` and
-    :func:`~podcodex.core.translate.translate_segments`.
-
-    Args:
-        show_name   : display name of the podcast
-        episode_dir : path to the episode output directory (may contain
-                      ``.episode_meta.json``)
-        max_desc    : maximum characters to keep from the RSS description
-    """
-    parts: list[str] = []
-    if show_name:
-        parts.append(f"Podcast: {show_name}")
-
-    if episode_dir is not None:
-        meta = load_episode_meta(Path(episode_dir))
-        if meta:
-            # Title + optional episode/season identifier
-            if meta.title:
-                ep_id = ""
-                if meta.season_number is not None and meta.episode_number is not None:
-                    ep_id = f" (S{meta.season_number}E{meta.episode_number})"
-                elif meta.episode_number is not None:
-                    ep_id = f" (Episode {meta.episode_number})"
-                parts.append(f'Episode: "{meta.title}"{ep_id}')
-            if meta.description:
-                parts.append(
-                    f"Description: {clean_description(meta.description, max_desc)}"
-                )
-
-    return "\n".join(parts)
-
-
 # ── Audio download ────────────────────────────
 
 
