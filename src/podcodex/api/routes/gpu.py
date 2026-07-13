@@ -46,7 +46,9 @@ async def gpu_download(req: DownloadRequest) -> dict:
             "app. Your dev venv already uses whatever torch you have installed.",
         )
 
-    manifest_url = (req.manifest_url or "").strip() or gpu_backend.default_manifest_url()
+    manifest_url = (
+        req.manifest_url or ""
+    ).strip() or gpu_backend.default_manifest_url()
 
     def _run(progress_cb, url: str) -> dict:
         return gpu_backend.download_and_install(progress_cb, manifest_url=url)
