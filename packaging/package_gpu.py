@@ -133,7 +133,10 @@ def package(
 ) -> None:
     if not onedir_path.is_dir():
         print(f"Error: input is not a directory: {onedir_path}", file=sys.stderr)
-        print("Expected the PyInstaller --onedir output from build_server.py --gpu.", file=sys.stderr)
+        print(
+            "Expected the PyInstaller --onedir output from build_server.py --gpu.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -169,7 +172,9 @@ def package(
     print(f"\nWriting {core_archive.name} ...")
     write_archive(core_archive, core_files)
     core_sha = sha256_file(core_archive)
-    (output_dir / f"{core_archive.name}.sha256").write_text(f"{core_sha}  {core_archive.name}\n")
+    (output_dir / f"{core_archive.name}.sha256").write_text(
+        f"{core_sha}  {core_archive.name}\n"
+    )
     print(f"  size:    {core_archive.stat().st_size / 1024**2:.1f} MB")
     print(f"  sha256:  {core_sha[:16]}...")
 
@@ -178,7 +183,9 @@ def package(
     print(f"\nWriting {cuda_archive.name} ...")
     write_archive(cuda_archive, nvidia_files)
     cuda_sha = sha256_file(cuda_archive)
-    (output_dir / f"{cuda_archive.name}.sha256").write_text(f"{cuda_sha}  {cuda_archive.name}\n")
+    (output_dir / f"{cuda_archive.name}.sha256").write_text(
+        f"{cuda_sha}  {cuda_archive.name}\n"
+    )
     print(f"  size:    {cuda_archive.stat().st_size / 1024**2:.1f} MB")
     print(f"  sha256:  {cuda_sha[:16]}...")
 

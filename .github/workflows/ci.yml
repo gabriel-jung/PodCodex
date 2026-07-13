@@ -38,7 +38,13 @@ jobs:
       # Whole-repo lint — pre-commit's ruff hook only sees staged files, so
       # dead imports in untouched files never resurface there.
       - name: Ruff
-        run: uv run ruff check src tests scripts
+        run: uv run ruff check src tests scripts packaging
+
+      # Same blind spot, formatting side: a file committed unformatted stays
+      # unformatted until something touches it, and its reflow then rides along
+      # in an unrelated diff.
+      - name: Ruff format
+        run: uv run ruff format --check src tests scripts packaging
 
       - name: Run tests
         run: uv run pytest -q
