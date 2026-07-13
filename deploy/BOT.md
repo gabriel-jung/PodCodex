@@ -74,10 +74,19 @@ Follow the official install guide: <https://docs.astral.sh/uv/getting-started/in
 ```bash
 git clone https://github.com/gabriel-jung/PodCodex.git
 cd PodCodex
-uv sync --extra bot --extra rag
+uv sync --extra bot --extra rag --extra cpu --no-dev
 ```
 
-This creates `.venv/` with all runtime dependencies.
+This creates `.venv/` with all runtime dependencies (~1.5 GB).
+
+Both trailing flags matter on a typical GPU-less VPS:
+
+- `--extra cpu` pulls the CPU-only PyTorch wheel. Without it, torch resolves from PyPI, which on Linux means the CUDA build plus ~6 GB of `nvidia-*` and `triton` packages the host can never use.
+- `--no-dev` skips the dev dependency group (Jupyter, pre-commit, pytest), which `uv sync` installs by default.
+
+If the VPS does have an NVIDIA GPU and you want the embedder on it, swap `--extra cpu` for `--extra gpu` (or `--extra gpu-pascal` on GTX 10xx / P40 / P100, see [PASCAL.md](PASCAL.md)). The extras are mutually exclusive.
+
+Already synced without these flags? Re-run the command above with `--reinstall` to drop the CUDA stack.
 
 ### 3. Create `.env` at the repo root
 

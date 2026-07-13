@@ -61,6 +61,13 @@ pipeline = [
     "soundfile>=0.13.1",
     "whisperx>=3.8.1",
 ]
+# CPU-only wheel. For GPU-less hosts (bot / RAG VPS, CI). On Linux the
+# default PyPI torch wheel is the CUDA build and drags in ~6 GB of
+# nvidia-* + triton that such a host can never use; this extra skips it.
+cpu = [
+    "torch>=2.6",
+    "torchaudio>=2.6",
+]
 # Modern NVIDIA wheel (Turing through Blackwell). Default for new installs.
 gpu = [
     "torch>=2.8",
@@ -103,20 +110,23 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 # ──────────────────────────────────────────────────────────────────────
-# Torch wheel routing (uv extras → PyTorch CUDA index)
+# Torch wheel routing (uv extras → PyTorch wheel index)
 #
-# Default (no extra): uv resolves torch from PyPI — CPU wheel on
-# Linux/Windows, MPS-capable wheel on macOS. Works for dev, CI, CPU bundles.
+#   uv sync --extra rag      --extra cpu         → cpu   (no nvidia-*)
+#   uv sync --extra pipeline --extra gpu         → cu128 (Turing+)
+#   uv sync --extra pipeline --extra gpu-pascal  → cu126 (Pascal)
 #
-#   uv sync --extra pipeline --extra gpu          → cu128 (Turing+)
-#   uv sync --extra pipeline --extra gpu-pascal   → cu126 (Pascal)
+# The three are mutually exclusive; never enable more than one at once.
 #
-# These two extras are mutually exclusive — never enable both at once.
+# Default (no extra): uv resolves torch from PyPI. That is the CUDA build
+# on Linux/Windows (~6 GB of nvidia-* + triton) and the MPS-capable wheel
+# on macOS. GPU-less Linux hosts want --extra cpu, not the default.
 # ──────────────────────────────────────────────────────────────────────
 
 [tool.uv]
 conflicts = [
     [
+        { extra = "cpu" },
         { extra = "gpu" },
         { extra = "gpu-pascal" },
     ],
@@ -124,13 +134,20 @@ conflicts = [
 
 [tool.uv.sources]
 torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-cu128", extra = "gpu" },
     { index = "pytorch-cu126", extra = "gpu-pascal" },
 ]
 torchaudio = [
+    { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-cu128", extra = "gpu" },
     { index = "pytorch-cu126", extra = "gpu-pascal" },
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
