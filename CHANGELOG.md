@@ -1,6 +1,36 @@
 # Changelog
 
-## [0.2.6] - 2026-07-12
+## [0.2.7] - 2026-07-13
+
+### Search ranking and the Discord bot
+
+- Exact search ranks whole-word matches first. A match inside a longer word
+  ("William" in "Williams") still counts, but sorts after the real word
+  matches, chronologically within each group.
+- `/exact` now splits its count: whole-word occurrences are reported as exact,
+  and occurrences inside longer words, accent variants, and near-typo excerpts
+  as partial.
+- `/stats` for a single show renders as that show's card: show name, artwork,
+  one meta line, and the top five speakers, with no index header and no
+  duplicated per-show block.
+- `/search` says why nothing matched. It used to answer "try simpler wording"
+  even when it had not searched anything, which was misleading for a locked
+  show or a show indexed under a different model. It now names the reason, as
+  `/exact` and `/random` already did.
+- The wrong-model message no longer tells a regular member to run `/setup`,
+  which only admins can see, or to pass an option that command does not have.
+
+### Fixes
+
+- Result cards, `/random`, and MCP `get_context` show the episode's publication
+  date again. It was missing from every read that did not go through search.
+- `/random` reports the speaker of the quoted turn instead of the chunk's
+  dominant speaker when it narrows a chunk to one turn.
+- Episodes whose stored metadata could not be parsed no longer take down every
+  search for that show. The unreadable fields are dropped and the rest is
+  served.
+- `/random` no longer loads an entire show to pick one quote, so it returns
+  immediately on large indexes.
 
 ### One search engine for app, bot, and MCP
 
