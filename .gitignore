@@ -190,6 +190,9 @@ htmlcov/
 # Documentation builds
 # ============================================================================
 docs/_build/
+
+# Design docs and specs live in scratch, never in the repo.
+docs/superpowers/
 site/
 
 # Test artifacts
