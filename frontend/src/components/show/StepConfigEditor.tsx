@@ -30,19 +30,9 @@ import HelpLabel from "@/components/common/HelpLabel";
 import VersionPicker from "@/components/common/VersionPicker";
 import { getCorrectManualPrompts, applyCorrectManual } from "@/api/correct";
 import { getTranslateManualPrompts, applyTranslateManual } from "@/api/translate";
+import { episodeNeedsStep } from "@/lib/stepStatus";
 
 export type StepKey = PipelineInputStep;
-
-/** True if the episode still needs work for the given step. */
-export function episodeNeedsStep(ep: Episode, step: StepKey): boolean {
-  switch (step) {
-    case "transcribe": return ep.transcribe_status !== "done";
-    case "correct":    return ep.correct_status !== "done";
-    case "translate":  return ep.translate_status !== "done";
-    case "index":      return !ep.indexed;
-    default:           return true;
-  }
-}
 
 /** Group key for the input source selector. */
 interface SourceVariant {

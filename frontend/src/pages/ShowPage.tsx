@@ -143,7 +143,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     mutationFn: (args: Parameters<typeof startBatch>[0]) => startBatch(args),
   });
 
-  const all = episodes ?? [];
+  const all = useMemo(() => episodes ?? [], [episodes]);
 
   const filterCounts = useMemo(() => ({
     all: all.length,

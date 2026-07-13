@@ -48,6 +48,7 @@ export default function ProgressBar({ taskId, onComplete, onRetry, onDismiss, on
       lastUpdateRef.current = Date.now();
       setStaleElapsed(0);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- track field changes, not object identity
   }, [progress?.progress, progress?.message, progress?.log?.length]);
 
   useEffect(() => {

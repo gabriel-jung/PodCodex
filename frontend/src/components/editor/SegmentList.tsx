@@ -189,6 +189,7 @@ const SegmentList = forwardRef<SegmentListHandle, SegmentListProps>(function Seg
 
   // Virtualizer: only rows visible in the scroll viewport are rendered. Row
   // heights are measured dynamically; the estimate covers first paint.
+  // eslint-disable-next-line react-hooks/incompatible-library -- virtualizer is ref-based; compiler skip is expected
   const rowVirtualizer = useVirtualizer({
     count: pageSegments.length,
     getScrollElement: () => scrollRef.current,

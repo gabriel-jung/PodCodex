@@ -21,7 +21,7 @@ interface DownloadDropdownProps {
 }
 
 /** Sort subtitle languages, prioritizing the show's language. */
-export function sortLanguagesByShow(showLanguage: string) {
+function sortLanguagesByShow(showLanguage: string) {
   const showLangCode = languageToISO(showLanguage) || showLanguage.toLowerCase().slice(0, 2);
   return [...SUB_LANGUAGES].sort((a, b) => {
     if (a.code === showLangCode) return -1;

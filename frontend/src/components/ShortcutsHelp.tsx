@@ -2,29 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-
-export type Shortcut = { keys: string[]; label: string };
-export type ShortcutGroup = { heading: string; items: Shortcut[] };
-
-export const SHORTCUTS: ShortcutGroup[] = [
-  {
-    heading: "Global",
-    items: [
-      { keys: ["⌘", "K"], label: "Open command palette" },
-      { keys: ["Space"], label: "Play / pause current audio" },
-      { keys: ["Ctrl", "Space"], label: "Play / pause without leaving the text field" },
-      { keys: ["Shift", "Space"], label: "Play / pause (alternate; not French AZERTY)" },
-      { keys: ["Esc"], label: "Pause audio and exit the text field" },
-      { keys: ["Shift", "?"], label: "Show this shortcuts dialog" },
-    ],
-  },
-  {
-    heading: "Navigation",
-    items: [
-      { keys: ["Esc"], label: "Close dialogs / clear focus" },
-    ],
-  },
-];
+import { SHORTCUTS } from "@/lib/shortcuts";
 
 export default function ShortcutsHelp() {
   const [open, setOpen] = useState(false);

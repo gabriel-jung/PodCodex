@@ -64,6 +64,7 @@ export default function IndexPanel() {
   const [inspectTarget, setInspectTarget] = useState<{ model: string; chunking: string } | null>(null);
   useEffect(() => {
     setOverwrite(!!episode?.indexed);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on episode switch only, not indexed flips
   }, [episode?.id]);
 
   const startMutation = useMutation({

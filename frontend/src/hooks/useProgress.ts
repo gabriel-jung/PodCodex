@@ -93,6 +93,7 @@ export function useProgress(taskId: string | null): TaskProgress | null {
 
   useEffect(() => {
     if (!taskId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clear progress when the task id clears
       setState(null);
       return;
     }

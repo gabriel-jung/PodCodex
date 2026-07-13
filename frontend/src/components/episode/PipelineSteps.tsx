@@ -150,6 +150,7 @@ export function PipelineStatus({ episode }: { episode: Episode }) {
       prevStatus.current[s.key] = curr;
     }
     if (justCompleted.length === 0) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flash badge when a step just completed
     setFlashing((f) => new Set([...f, ...justCompleted]));
     // Per-key timers so simultaneous or staggered completions don't clobber
     // each other's cleanup.

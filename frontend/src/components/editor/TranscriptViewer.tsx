@@ -34,7 +34,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import Pagination, { PAGE_SIZE_ALL } from "./Pagination";
+import Pagination from "./Pagination";
+import { PAGE_SIZE_ALL } from "@/lib/pagination";
 import SpeakerStrip from "./SpeakerStrip";
 import SegmentList, { type SegmentListHandle } from "./SegmentList";
 import EditorToolbar from "./EditorToolbar";

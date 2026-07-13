@@ -6,7 +6,7 @@ import { getHealth } from "@/api/client";
 import PanelLoading from "@/components/common/PanelLoading";
 import { queryKeys } from "@/api/queryKeys";
 import AudioBar from "@/components/layout/AudioBar";
-import { sidebarPad } from "@/components/layout/AppSidebar";
+import { sidebarPad } from "@/lib/sidebar";
 import TaskBar from "@/components/layout/TaskBar";
 import CommandPalette from "@/components/CommandPalette";
 import ShortcutsHelp from "@/components/ShortcutsHelp";

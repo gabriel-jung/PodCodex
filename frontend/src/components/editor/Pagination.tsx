@@ -1,8 +1,9 @@
 import { Button } from "@/components/ui/button";
 import { ChevronsLeft, ChevronsRight } from "lucide-react";
 
+import { PAGE_SIZE_ALL } from "@/lib/pagination";
+
 const PAGE_SIZES = [20, 50, 100, 200] as const;
-export const PAGE_SIZE_ALL = Number.MAX_SAFE_INTEGER;
 
 interface PaginationProps {
   page: number;

@@ -202,6 +202,7 @@ function RevealDialog({
 
   useEffect(() => {
     if (reveal) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset dialog state on reveal
       setCopied(false);
       setAcknowledged(false);
     }
@@ -292,6 +293,7 @@ function ManualDialog({
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset form on dialog open
       setPassword("");
       setConfirm("");
     }

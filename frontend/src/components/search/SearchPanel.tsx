@@ -129,11 +129,13 @@ export default function SearchPanel(props: SearchPanelProps) {
 
   useEffect(() => {
     if (availableModels.length > 0 && !availableModels.includes(model)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clamp model to the available list
       setModel(availableModels[0]);
     }
   }, [availableModels, model]);
   useEffect(() => {
     if (availableChunkings.length > 0 && !availableChunkings.includes(chunking)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clamp chunking to the available list
       setChunking(availableChunkings[0]);
     }
   }, [availableChunkings, chunking]);

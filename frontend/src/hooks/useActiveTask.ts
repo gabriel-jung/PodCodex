@@ -20,6 +20,7 @@ export function useActiveTask(
   useEffect(() => {
     if (!audioPath) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clear stale task id when the target changes
     setTaskId(null);
     getActiveTask(audioPath).then((data) => {
       if (cancelled || !data?.task_id) return;

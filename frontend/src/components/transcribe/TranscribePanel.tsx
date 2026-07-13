@@ -127,6 +127,7 @@ export default function TranscribePanel() {
   };
   useEffect(() => {
     if (userPickedSourceRef.current) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- derive default source until the user picks
     setTranscribeSource(hasRealAudio ? "audio" : hasSubs ? "subtitles" : "upload");
   }, [hasRealAudio, hasSubs]);
 

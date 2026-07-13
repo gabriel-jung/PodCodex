@@ -17,6 +17,7 @@ export default function HelpIcon({ help }: HelpIconProps) {
 
   useLayoutEffect(() => {
     if (!show || !btnRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- position popover from layout measurement
       setStyle(undefined);
       return;
     }

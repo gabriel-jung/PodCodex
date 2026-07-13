@@ -26,9 +26,24 @@ export default defineConfig([
       ],
       // React Compiler preview rule. Fires on legitimate "reset downstream
       // state when an upstream value changes" effects — pattern has no
-      // concise non-effect replacement in React 19. Tracked as warnings
-      // so new additions stay visible without blocking CI.
+      // concise non-effect replacement in React 19. Existing legitimate
+      // sites carry a per-line disable with a reason; anything new fails
+      // lint (--max-warnings 0), so the baseline can only shrink.
       'react-hooks/set-state-in-effect': 'warn',
+    },
+  },
+  {
+    // Files that legitimately mix components with config/registry exports:
+    // shadcn ui/ follows upstream conventions (variants exports), router.tsx
+    // is route wiring, PipelineSteps.tsx is the step registry (lazy panel
+    // components + data table). HMR purity is not a concern for these.
+    files: [
+      'src/components/ui/**',
+      'src/router.tsx',
+      'src/components/episode/PipelineSteps.tsx',
+    ],
+    rules: {
+      'react-refresh/only-export-components': 'off',
     },
   },
 ])

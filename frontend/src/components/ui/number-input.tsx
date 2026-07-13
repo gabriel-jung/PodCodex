@@ -97,6 +97,7 @@ export function NullableNumberInput({
   const [draft, setDraft] = useState(value == null ? "" : String(value));
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync draft from the controlled value
     setDraft(value == null ? "" : String(value));
   }, [value]);
 

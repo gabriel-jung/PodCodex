@@ -113,7 +113,7 @@ export default function AudioBar() {
     }
     setSpeed(newSpeed);
     if (audioRef.current) audioRef.current.playbackRate = newSpeed;
-  }, [audioPath]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [audioPath]);
 
   // Handle pending seek (from segment play buttons)
   useEffect(() => {

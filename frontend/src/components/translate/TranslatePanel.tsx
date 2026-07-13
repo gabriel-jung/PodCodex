@@ -136,9 +136,10 @@ export default function TranslatePanel() {
   const translateStatus = translationsStatus(episode?.translations ?? [], episode?.provenance);
   useEffect(() => {
     if (episode && editingLang === "" && hasTranslations) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- sync editing lang from episode on first load
       setEditingLang(episode.translations[0]);
     }
-  }, [episode, editingLang, hasTranslations]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [episode, editingLang, hasTranslations]);
 
   if (!episode) return null;
 

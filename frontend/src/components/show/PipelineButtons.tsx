@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { Episode } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import StepConfigEditor, { STEPS, type StepKey, type TranscribeSource, episodeNeedsStep } from "./StepConfigEditor";
+import StepConfigEditor, { STEPS, type StepKey, type TranscribeSource } from "./StepConfigEditor";
+import { episodeNeedsStep } from "@/lib/stepStatus";
 
 /** Count episodes that need this step (prerequisites met + not already up-to-date). */
 function countCanRun(episodes: Episode[], step: StepKey): number {

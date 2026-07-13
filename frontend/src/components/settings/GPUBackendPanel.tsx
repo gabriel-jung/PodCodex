@@ -60,8 +60,8 @@ export default function GPUBackendPanel() {
     if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") {
       if (task.status === "failed") {
         const msg = task.error ?? "Download failed";
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- surface task failure once on completion
         setLastError(msg);
-        // eslint-disable-next-line no-console
         console.error("GPU download task failed:", task);
       }
       setActiveTaskId(null);
@@ -85,7 +85,6 @@ export default function GPUBackendPanel() {
     onError: (err) => {
       const msg = err instanceof Error ? err.message : String(err);
       setLastError(msg);
-      // eslint-disable-next-line no-console
       console.error("GPU download POST failed:", err);
     },
   });

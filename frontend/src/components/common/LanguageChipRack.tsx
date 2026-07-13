@@ -1,7 +1,7 @@
 // Labels are stored verbatim into LLMConfig.sourceLang / pipelineConfigStore.targetLang
 // and interpolated into LLM prompt templates — keep them English (what the prompt
 // expects) rather than native names like `Français`.
-export const TOP_LANGS: readonly string[] = ["English", "French", "German", "Spanish", "Italian"];
+const TOP_LANGS: readonly string[] = ["English", "French", "German", "Spanish", "Italian"];
 
 interface LanguageChipRackProps {
   value: string;
