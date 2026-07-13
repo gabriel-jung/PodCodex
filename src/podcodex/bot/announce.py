@@ -12,6 +12,7 @@ user choice, or it is omitted. Nothing is synthesized (see the design spec).
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 import threading
 from pathlib import Path
 
@@ -164,6 +165,70 @@ def build_new_episodes_embed(show: str, episodes: list[dict]) -> discord.Embed:
     return embed
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+# Cap the listed commits so a long-overdue update stays one readable card.
+_MAX_COMMITS = 12
+
+
+def _git(*args: str) -> str:
+    """Run git in the repo root; "" when git or the checkout is unavailable.
+
+    The uv install path clones the repo, so the bot usually knows its commit.
+    The Docker image copies only ``src/`` (no ``.git``), and there the commit
+    is simply unknown: the card then omits it rather than inventing one.
+    """
+    try:
+        out = subprocess.run(
+            ["git", *args],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def bot_revision() -> tuple[str, str]:
+    """``(version, short_sha)`` for the running bot. ``short_sha`` may be ""."""
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        version = _pkg_version("podcodex")
+    except Exception:
+        version = ""
+    return version, _git("rev-parse", "--short", "HEAD")
+
+
+def repo_url() -> str:
+    """The project's repository URL from package metadata, or ""."""
+    try:
+        from importlib.metadata import metadata as _pkg_metadata
+
+        for entry in _pkg_metadata("podcodex").get_all("Project-URL") or []:
+            name, _, url = entry.partition(",")
+            if name.strip().lower() == "repository":
+                return url.strip().rstrip("/")
+    except Exception:
+        pass
+    return ""
+
+
+def commit_subjects(old_sha: str, new_sha: str) -> list[str]:
+    """Subjects of the commits between two revisions, newest last.
+
+    Empty when either revision is unknown to this checkout (a fresh clone, or
+    a deploy that skipped commits), so the card says nothing rather than
+    guessing what changed.
+    """
+    if not old_sha or not new_sha:
+        return []
+    out = _git("log", "--format=%s", f"{old_sha}..{new_sha}")
+    return [ln for ln in out.splitlines() if ln][:_MAX_COMMITS] if out else []
+
+
 def changelog_section(version: str) -> str:
     """Return CHANGELOG.md's section for *version*, or "" when unavailable.
 
@@ -192,14 +257,42 @@ def changelog_section(version: str) -> str:
     return "\n".join(lines[start + 1 : end]).strip()
 
 
-def build_version_embed(version: str) -> discord.Embed:
-    """A 'bot updated' card carrying that version's changelog notes.
+def build_update_embed(
+    version: str,
+    *,
+    sha: str = "",
+    repo: str = "",
+    notes: str = "",
+    changes: list[str] | None = None,
+) -> discord.Embed:
+    """The 'bot updated' card.
 
-    Version is the real ``__version__``; the body is the matching CHANGELOG
-    section, omitted entirely when it cannot be read.
+    The bot is deployed by git pull / rsync, not by release, so its identity is
+    the commit it runs, and a version bump is only one kind of update. The card
+    states what it is running (version, and the commit when the checkout knows
+    it, linked when the repository URL is known), then either the release notes
+    for a new version or the list of commits since the last announcement.
+
+    Every part is dropped when it cannot be derived: no commit in the Docker
+    image, no link without a repository URL, no notes without a CHANGELOG.
     """
+    lines: list[str] = []
+    running = f"Now running **v{version}**" if version else "Now running"
+    if sha:
+        link = f"[`{sha}`]({repo}/commit/{sha})" if repo else f"`{sha}`"
+        running += f" · {link}"
+    lines.append(running)
+
+    if notes:
+        lines.append("")
+        lines.append(notes)
+    elif changes:
+        lines.append("")
+        lines.append("**Changes**")
+        lines.extend(f"• {c}" for c in changes)
+
     return discord.Embed(
-        title=f"🔖 PodCodex bot v{version}",
-        description=truncate_description(changelog_section(version)) or None,
+        title="🔖 PodCodex bot updated",
+        description=truncate_description("\n".join(lines)),
         color=discord.Color.blurple(),
     )

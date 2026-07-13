@@ -10,8 +10,12 @@ from loguru import logger
 
 from podcodex.bot.access import ResolvedShows, ShowAccess
 from podcodex.bot.announce import (
+    bot_revision,
     build_new_episodes_embed,
-    build_version_embed,
+    build_update_embed,
+    changelog_section,
+    commit_subjects,
+    repo_url,
 )
 
 
@@ -120,28 +124,48 @@ class AnnounceMixin:
                 yield guild_id, settings, channel
 
     async def _announce_version_if_changed(self) -> None:
-        """Announce the bot version once when it changes from the last one.
+        """Announce once when the running revision changes.
 
-        First ever run baselines silently (no announce). Idempotent across the
-        repeated ``on_ready`` fired on gateway reconnects.
+        The bot is deployed by git pull / rsync, so it updates far more often
+        than it is released: the revision is ``version+commit``, and a plain
+        code update announces just like a version bump. A new version shows the
+        release notes; a same-version update lists the commits since the last
+        announcement.
+
+        First ever run baselines silently (no announce), so enabling this never
+        backfills. Idempotent across the repeated ``on_ready`` fired on gateway
+        reconnects.
         """
-        from importlib.metadata import version as _pkg_version
+        loop = asyncio.get_running_loop()
+        version, sha = await loop.run_in_executor(None, bot_revision)
+        if not version:
+            return
 
-        try:
-            current = _pkg_version("podcodex")
-        except Exception:
-            return
-        if not current:
-            return
-        stored = self.announce.get_meta("announced_version")
+        current = f"{version}+{sha}" if sha else version
+        stored = self.announce.get_meta("announced_revision")
         if stored is None:
-            self.announce.set_meta("announced_version", current)
+            self.announce.set_meta("announced_revision", current)
             return
         if stored == current:
             return
+
+        stored_version, _, stored_sha = stored.partition("+")
+        notes = changelog_section(version) if stored_version != version else ""
+        changes = (
+            await loop.run_in_executor(None, commit_subjects, stored_sha, sha)
+            if not notes
+            else []
+        )
+        embed = build_update_embed(
+            version,
+            sha=sha,
+            repo=await loop.run_in_executor(None, repo_url),
+            notes=notes,
+            changes=changes,
+        )
         async for guild_id, _settings, channel in self._iter_announce_channels():
             try:
-                await channel.send(embed=build_version_embed(current))
+                await channel.send(embed=embed)
             except discord.HTTPException:
-                logger.warning(f"Version announce send failed (guild {guild_id})")
-        self.announce.set_meta("announced_version", current)
+                logger.warning(f"Update announce send failed (guild {guild_id})")
+        self.announce.set_meta("announced_revision", current)

@@ -9,8 +9,10 @@ pytest.importorskip("discord")
 from podcodex.bot.announce import (  # noqa: E402
     AnnounceStore,
     build_new_episodes_embed,
-    build_version_embed,
+    bot_revision,
+    build_update_embed,
     changelog_section,
+    commit_subjects,
 )
 
 
@@ -111,19 +113,48 @@ def test_new_episodes_embed_truncates_large_batch():
     assert "…and 5 more" in embed.description
 
 
-def test_version_embed():
-    assert build_version_embed("0.2.5").title == "🔖 PodCodex bot v0.2.5"
+def test_update_embed_states_what_is_running():
+    e = build_update_embed("0.2.5")
+    assert e.title == "🔖 PodCodex bot updated"
+    assert "v0.2.5" in e.description
 
 
-def test_version_embed_carries_the_changelog_section():
+def test_update_embed_links_the_commit_when_both_are_known():
+    e = build_update_embed(
+        "0.2.7", sha="abc1234", repo="https://github.com/o/r", changes=["fix: x"]
+    )
+    assert "[`abc1234`](https://github.com/o/r/commit/abc1234)" in e.description
+    assert "• fix: x" in e.description
+
+
+def test_update_embed_shows_the_bare_commit_without_a_repo_url():
+    e = build_update_embed("0.2.7", sha="abc1234")
+    assert "`abc1234`" in e.description
+    assert "http" not in e.description
+
+
+def test_update_embed_omits_the_commit_it_does_not_know():
+    # The Docker image ships no .git, so the commit is simply unknown.
+    e = build_update_embed("0.2.7")
+    assert e.description == "Now running **v0.2.7**"
+
+
+def test_update_embed_prefers_release_notes_over_the_commit_list():
+    e = build_update_embed(
+        "0.2.7", sha="abc1234", notes="### Fixes\n- thing", changes=["fix: x"]
+    )
+    assert "### Fixes" in e.description
+    assert "fix: x" not in e.description
+
+
+def test_version_notes_come_from_the_changelog():
     import podcodex
 
-    embed = build_version_embed(podcodex.__version__)
     section = changelog_section(podcodex.__version__)
     assert section, "the running version should have a CHANGELOG entry"
-    # The notes are shown, not summarized: the card body is the section itself.
-    assert embed.description
-    assert embed.description.startswith(section[:40])
+    assert build_update_embed(podcodex.__version__, notes=section).description.endswith(
+        section[-40:]
+    )
 
 
 def test_changelog_section_stops_at_the_next_version():
@@ -132,18 +163,20 @@ def test_changelog_section_stops_at_the_next_version():
     assert "## [" not in section  # did not bleed into 0.2.5
 
 
-def test_version_embed_omits_notes_it_cannot_read():
-    # An unknown version (and, on the Docker image, a missing CHANGELOG) must
-    # degrade to the bare card rather than inventing a summary.
+def test_changelog_section_empty_for_an_unknown_version():
     assert changelog_section("9.9.9") == ""
-    assert build_version_embed("9.9.9").description is None
 
 
-def test_changelog_section_empty_when_file_is_absent(monkeypatch, tmp_path):
-    import podcodex.bot.announce as announce_mod
+def test_bot_revision_reports_the_running_version():
+    version, sha = bot_revision()
+    assert version
+    # sha is "" wherever the checkout is unavailable; here it is a real repo.
+    assert sha == "" or len(sha) >= 7
 
-    monkeypatch.setattr(announce_mod, "__file__", str(tmp_path / "bot" / "x.py"))
-    assert announce_mod.changelog_section("0.2.7") == ""
+
+def test_commit_subjects_needs_both_revisions():
+    assert commit_subjects("", "abc1234") == []
+    assert commit_subjects("abc1234", "") == []
 
 
 # ── announce tick orchestration (real bot + seeded index, fake channel) ──
