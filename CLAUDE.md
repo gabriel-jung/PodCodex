@@ -8,7 +8,7 @@ LLM-correction pipeline step is **correct** (or "AI correct"). Never "polish"; t
 
 ## Python env
 
-- Pinned 3.12. Install: `uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp`
+- Pinned 3.12. Install: `uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp --extra bot`
 - Don't use `.venv/bin/pip`. Use `uv pip install -e . --python .venv/bin/python` if needed.
 - Tests: `.venv/bin/python -m pytest`. No root `conftest.py`; fixtures explicit-import from `tests/fixtures/`.
 - GPU extras: `--extra gpu` (cu128, Turing+) or `--extra gpu-pascal` (cu126, GTX 10xx/P40/P100). Mutually exclusive; never enable both. Wheel routing in `[tool.uv.sources]` of `pyproject.toml`.
@@ -26,7 +26,7 @@ LLM-correction pipeline step is **correct** (or "AI correct"). Never "polish"; t
 
 ## Versioning (bump on every Windows MSI release)
 
-WiX skips file replace on same version → silent broken upgrade. Keep these files in sync:
+WiX skips file replace on same version → silent broken upgrade. Run `make bump VERSION=X.Y.Z` (wraps `scripts/bump_version.py` + lockfile refresh); it keeps these files in sync:
 
 1. `pyproject.toml`: `version = "X.Y.Z"`
 2. `src-tauri/Cargo.toml`: `version = "X.Y.Z"`

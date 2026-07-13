@@ -5,7 +5,7 @@
  *   - NARRATOR_SPEAKER, BREAK_SPEAKER
  *   - UNKNOWN_SPEAKERS frozenset
  *
- * A cross-language drift test (tests/test_speaker_constants_sync.py)
+ * A cross-language drift test (tests/test_frontend_constants_sync.py)
  * parses this file and asserts the values match. Update both sides together.
  */
 

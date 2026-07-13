@@ -38,7 +38,7 @@ instead of `gpu`:
 
 ```bash
 git clone https://github.com/gabriel-jung/PodCodex && cd PodCodex
-uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp --extra gpu-pascal
+uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp --extra bot --extra gpu-pascal
 ```
 
 `gpu-pascal` pulls torch + torchaudio from PyTorch's `cu126` index, which

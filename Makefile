@@ -23,15 +23,15 @@
 #   make dev     # start FastAPI + Vite + Tauri (hot-reload)
 #   make build   # production .dmg (macOS) or .msi (Windows) bundle
 
-.PHONY: setup setup-python setup-frontend setup-pyinstaller dev dev-api dev-frontend dev-tauri dev-sidecar build bundle bundle-gpu bundle-server bundle-server-gpu package-gpu bundle-natives bundle-sign bundle-sign-only clean
+.PHONY: setup setup-python setup-frontend setup-pyinstaller dev dev-api dev-frontend dev-tauri dev-sidecar build bundle bundle-gpu bundle-server bundle-server-gpu package-gpu bundle-natives bundle-sign bundle-sign-only clean test bump types icons help
 
 # ── Setup ────────────────────────────────────────────────
 
 setup: setup-python setup-frontend  ## One-time setup: install all dependencies
 	@echo "\n✅ Setup complete. Run 'make dev' to start developing."
 
-setup-python:  ## Install Python deps (desktop + pipeline + rag + youtube + mcp)
-	uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp
+setup-python:  ## Install Python deps (desktop + pipeline + rag + youtube + mcp + bot)
+	uv sync --extra desktop --extra pipeline --extra rag --extra youtube --extra mcp --extra bot
 
 setup-frontend:  ## Install frontend deps
 	cd frontend && npm install
@@ -110,6 +110,13 @@ clean:  ## Remove build artifacts
 
 test:  ## Run Python tests
 	.venv/bin/python -m pytest tests/ -x -q
+
+bump:  ## Bump version in all 4 synced files (usage: make bump VERSION=0.2.7)
+	@test -n "$(VERSION)" || { echo "usage: make bump VERSION=X.Y.Z"; exit 1; }
+	.venv/bin/python scripts/bump_version.py $(VERSION)
+	cd src-tauri && . $$HOME/.cargo/env && cargo update --workspace --quiet
+	uv lock
+	@echo "\n✅ Bumped to $(VERSION). Review: git diff pyproject.toml src-tauri/Cargo.toml src-tauri/Cargo.lock uv.lock"
 
 types:  ## Regenerate frontend TS types from Pydantic models
 	.venv/bin/python scripts/generate_types.py
