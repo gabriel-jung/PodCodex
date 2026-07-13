@@ -9,7 +9,8 @@ import pytest
 
 pytest.importorskip("mcp")
 
-from podcodex.mcp import server as mcp_server  # noqa: E402
+from podcodex.mcp import server as mcp_server
+from podcodex.rag.hit import Hit  # noqa: E402
 from podcodex.rag import index_store as rag_index_store  # noqa: E402
 from podcodex.rag import retriever as rag_retriever  # noqa: E402
 from podcodex.rag.index_store import IndexStore  # noqa: E402
@@ -121,18 +122,20 @@ def test_resolve_collections_honors_show_rag_prefs(monkeypatch):
 
 def test_trim_shape_prefers_rss_title():
     trimmed = mcp_server._trim(
-        {
-            "show": "S",
-            "episode": "0001_some_stem_here",
-            "episode_title": "Episode one: the beginning",
-            "chunk_index": 4,
-            "start": 1.5,
-            "end": 3.0,
-            "dominant_speaker": "Alice",
-            "text": "hi",
-            "score": 0.72,
-            "meta_extra": "dropped",
-        }
+        Hit.model_validate(
+            {
+                "show": "S",
+                "episode": "0001_some_stem_here",
+                "episode_title": "Episode one: the beginning",
+                "chunk_index": 4,
+                "start": 1.5,
+                "end": 3.0,
+                "dominant_speaker": "Alice",
+                "text": "hi",
+                "score": 0.72,
+                "meta_extra": "dropped",
+            }
+        )
     )
     assert trimmed == {
         "show": "S",
@@ -150,35 +153,39 @@ def test_trim_shape_prefers_rss_title():
 
 def test_trim_falls_back_to_humanized_stem():
     trimmed = mcp_server._trim(
-        {
-            "show": "S",
-            "episode": "0042_episode_5_my_great_topic",
-            "chunk_index": 0,
-            "start": 0.0,
-            "end": 1.0,
-            "dominant_speaker": "Bob",
-            "text": "x",
-        }
+        Hit.model_validate(
+            {
+                "show": "S",
+                "episode": "0042_episode_5_my_great_topic",
+                "chunk_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "dominant_speaker": "Bob",
+                "text": "x",
+            }
+        )
     )
     assert trimmed["episode_title"] == "My great topic"
 
 
 def test_trim_emits_speakers_array_and_drops_text_when_diarised():
     trimmed = mcp_server._trim(
-        {
-            "show": "S",
-            "episode": "ep1",
-            "chunk_index": 2,
-            "start": 10.0,
-            "end": 30.0,
-            "dominant_speaker": "Alice",
-            "text": "hi there yo",
-            "speakers": [
-                {"speaker": "Alice", "start": 10.0, "end": 15.0, "text": "hi"},
-                {"speaker": "Alice", "start": 15.0, "end": 20.0, "text": "there"},
-                {"speaker": "Bob", "start": 20.0, "end": 30.0, "text": "yo"},
-            ],
-        }
+        Hit.model_validate(
+            {
+                "show": "S",
+                "episode": "ep1",
+                "chunk_index": 2,
+                "start": 10.0,
+                "end": 30.0,
+                "dominant_speaker": "Alice",
+                "text": "hi there yo",
+                "speakers": [
+                    {"speaker": "Alice", "start": 10.0, "end": 15.0, "text": "hi"},
+                    {"speaker": "Alice", "start": 15.0, "end": 20.0, "text": "there"},
+                    {"speaker": "Bob", "start": 20.0, "end": 30.0, "text": "yo"},
+                ],
+            }
+        )
     )
     assert "text" not in trimmed
     assert trimmed["speaker"] == "Alice"
@@ -202,15 +209,17 @@ def test_trim_emits_speakers_array_and_drops_text_when_diarised():
 
 def test_trim_keeps_text_when_no_speakers():
     trimmed = mcp_server._trim(
-        {
-            "show": "S",
-            "episode": "e",
-            "chunk_index": 0,
-            "start": 0.0,
-            "end": 1.0,
-            "dominant_speaker": "",
-            "text": "single blob",
-        }
+        Hit.model_validate(
+            {
+                "show": "S",
+                "episode": "e",
+                "chunk_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "dominant_speaker": "",
+                "text": "single blob",
+            }
+        )
     )
     assert trimmed["text"] == "single blob"
     assert "speakers" not in trimmed
@@ -218,15 +227,17 @@ def test_trim_keeps_text_when_no_speakers():
 
 def test_trim_omits_score_when_absent():
     trimmed = mcp_server._trim(
-        {
-            "show": "S",
-            "episode": "e",
-            "chunk_index": 0,
-            "start": 0.0,
-            "end": 1.0,
-            "dominant_speaker": "",
-            "text": "x",
-        }
+        Hit.model_validate(
+            {
+                "show": "S",
+                "episode": "e",
+                "chunk_index": 0,
+                "start": 0.0,
+                "end": 1.0,
+                "dominant_speaker": "",
+                "text": "x",
+            }
+        )
     )
     assert "score" not in trimmed
 

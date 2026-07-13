@@ -15,10 +15,12 @@ import pytest
 
 pytest.importorskip("discord")
 
-import discord  # noqa: E402
+import discord
+
+from podcodex.rag.hit import Hit  # noqa: E402
 
 from podcodex.bot import ui  # noqa: E402
-from podcodex.bot.bot import _chunk_to_ref  # noqa: E402
+from podcodex.bot.search_commands import _chunk_to_ref  # noqa: E402
 from podcodex.bot.result_store import CachedSearch, SearchCacheStore  # noqa: E402
 
 # ── Fake index (LanceDB stand-in) ──────────────
@@ -55,7 +57,7 @@ _EPISODES = {
 
 class _FakeLocal:
     def load_chunks_no_embeddings(self, collection, episode):
-        return [dict(c) for c in _EPISODES[(collection, episode)]]
+        return [Hit.model_validate(c) for c in _EPISODES[(collection, episode)]]
 
 
 class _FakeBot:
@@ -129,7 +131,7 @@ def _search_bot():
     alpha = _EPISODES[("col_a", "ep_alpha")]
     beta = _EPISODES[("col_b", "ep_beta")]
     results = [(c, "col_a") for c in alpha] + [(c, "col_b") for c in beta]
-    refs = [_chunk_to_ref(c, col) for c, col in results]
+    refs = [_chunk_to_ref(Hit.model_validate(c), col) for c, col in results]
     sid = store.save(CachedSearch("search", "α=0.50", "coffee", refs))
     return _FakeBot(store), sid
 
@@ -255,7 +257,11 @@ def test_random_expand_opens_at_its_chunk():
     store = _store()
     bot = _FakeBot(store)
     alpha = _EPISODES[("col_a", "ep_alpha")]
-    sid = store.save(CachedSearch("random", "", "", [_chunk_to_ref(alpha[3], "col_a")]))
+    sid = store.save(
+        CachedSearch(
+            "random", "", "", [_chunk_to_ref(Hit.model_validate(alpha[3]), "col_a")]
+        )
+    )
 
     async def go():
         view = discord.ui.View(timeout=None)

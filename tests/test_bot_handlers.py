@@ -16,18 +16,21 @@ from pathlib import Path
 
 import pytest
 
+from podcodex.rag.hit import Hit
+
 pytest.importorskip("discord")
 
-from podcodex.bot import bot as bot_module  # noqa: E402
+from podcodex.bot import resolution as resolution_module  # noqa: E402
+from podcodex.bot import search_commands as search_module  # noqa: E402
 from podcodex.bot.bot import (  # noqa: E402
     BotConfig,
     PodCodexBot,
     ResolvedShows,
-    SearchCollection,
     ServerSettings,
     ShowAccess,
     _AutocompleteCache,
 )
+from podcodex.rag.search_service import SearchCollection  # noqa: E402
 from podcodex.bot.result_store import SearchCacheStore  # noqa: E402
 
 COL_INFO = {
@@ -47,19 +50,19 @@ COL_INFO = {
 
 
 def _chunk(episode="ep1", idx=0, text="hello world", show="Alpha Show", start=1.0):
-    return {
-        "episode": episode,
-        "chunk_index": idx,
-        "text": text,
-        "score": 0.8,
-        "show": show,
-        "start": start,
-        "end": start + 5.0,
-        "dominant_speaker": "Alice",
-        "pub_date": "2024-01-01",
-        "source": "transcript",
-        "timed": True,
-    }
+    return Hit(
+        episode=episode,
+        chunk_index=idx,
+        text=text,
+        score=0.8,
+        show=show,
+        start=start,
+        end=start + 5.0,
+        dominant_speaker="Alice",
+        pub_date="2024-01-01",
+        source="transcript",
+        timed=True,
+    )
 
 
 class _FakeLocal:
@@ -76,7 +79,9 @@ class _FakeLocal:
         return dict(COL_INFO)
 
     def load_chunks_no_embeddings(self, collection, episode):
-        return [dict(c) for c in self._episode_chunks.get((collection, episode), [])]
+        return [
+            c.model_copy() for c in self._episode_chunks.get((collection, episode), [])
+        ]
 
     def get_episode_stats(self, collection):
         self.get_episode_stats_calls.append(collection)
@@ -162,8 +167,8 @@ def _make_bot(local):
 def test_run_search_wires_hybrid_search_and_sends_followup(monkeypatch):
     chunk = _chunk()
     fake_hybrid = _Recorder([(chunk, "alpha__bge-m3__semantic")])
-    monkeypatch.setattr(bot_module, "hybrid_search", fake_hybrid)
-    monkeypatch.setattr(bot_module, "load_show_rag_prefs", lambda: {})
+    monkeypatch.setattr(search_module, "hybrid_search", fake_hybrid)
+    monkeypatch.setattr(resolution_module, "load_show_rag_prefs", lambda: {})
 
     local = _FakeLocal(episode_chunks={("alpha__bge-m3__semantic", "ep1"): [chunk]})
     bot = _make_bot(local)
@@ -195,8 +200,8 @@ def test_run_search_wires_hybrid_search_and_sends_followup(monkeypatch):
 def test_run_exact_wires_exact_search_chronological_and_sends_followup(monkeypatch):
     chunk = _chunk(text="hello world")
     fake_exact = _Recorder([(chunk, "alpha__bge-m3__semantic")])
-    monkeypatch.setattr(bot_module, "exact_search", fake_exact)
-    monkeypatch.setattr(bot_module, "load_show_rag_prefs", lambda: {})
+    monkeypatch.setattr(search_module, "exact_search", fake_exact)
+    monkeypatch.setattr(resolution_module, "load_show_rag_prefs", lambda: {})
 
     local = _FakeLocal(episode_chunks={("alpha__bge-m3__semantic", "ep1"): [chunk]})
     bot = _make_bot(local)
@@ -225,8 +230,8 @@ def test_run_exact_wires_exact_search_chronological_and_sends_followup(monkeypat
 def test_run_random_wires_random_quote_and_sends_followup(monkeypatch):
     chunk = _chunk()
     fake_random = _Recorder((chunk, "alpha__bge-m3__semantic"))
-    monkeypatch.setattr(bot_module, "random_quote", fake_random)
-    monkeypatch.setattr(bot_module, "load_show_rag_prefs", lambda: {})
+    monkeypatch.setattr(search_module, "random_quote", fake_random)
+    monkeypatch.setattr(resolution_module, "load_show_rag_prefs", lambda: {})
 
     local = _FakeLocal()
     bot = _make_bot(local)
@@ -251,7 +256,7 @@ def test_run_random_wires_random_quote_and_sends_followup(monkeypatch):
 
 
 def test_handle_stats_single_show_calls_speaker_stats_multi(monkeypatch):
-    monkeypatch.setattr(bot_module, "load_show_rag_prefs", lambda: {})
+    monkeypatch.setattr(resolution_module, "load_show_rag_prefs", lambda: {})
     local = _FakeLocal(
         episode_stats={
             "alpha__bge-m3__semantic": [
@@ -283,7 +288,7 @@ def test_handle_stats_single_show_calls_speaker_stats_multi(monkeypatch):
 
 
 def test_handle_speakers_calls_speaker_stats_multi_and_sends_embed(monkeypatch):
-    monkeypatch.setattr(bot_module, "load_show_rag_prefs", lambda: {})
+    monkeypatch.setattr(resolution_module, "load_show_rag_prefs", lambda: {})
     local = _FakeLocal(
         speaker_rows=[
             {
@@ -311,7 +316,7 @@ def test_handle_speakers_calls_speaker_stats_multi_and_sends_embed(monkeypatch):
 
 
 def test_handle_episodes_calls_get_episode_stats_and_sends_embed(monkeypatch):
-    monkeypatch.setattr(bot_module, "load_show_rag_prefs", lambda: {})
+    monkeypatch.setattr(resolution_module, "load_show_rag_prefs", lambda: {})
     local = _FakeLocal(
         episode_stats={
             "alpha__bge-m3__semantic": [
@@ -335,8 +340,8 @@ def test_run_exact_label_splits_word_and_partial_matches(monkeypatch):
     fake_exact = _Recorder(
         [(word, "alpha__bge-m3__semantic"), (sup, "alpha__bge-m3__semantic")]
     )
-    monkeypatch.setattr(bot_module, "exact_search", fake_exact)
-    monkeypatch.setattr(bot_module, "load_show_rag_prefs", lambda: {})
+    monkeypatch.setattr(search_module, "exact_search", fake_exact)
+    monkeypatch.setattr(resolution_module, "load_show_rag_prefs", lambda: {})
 
     local = _FakeLocal(episode_chunks={("alpha__bge-m3__semantic", "ep1"): [word, sup]})
     bot = _make_bot(local)

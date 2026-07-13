@@ -85,7 +85,7 @@ def vectorize_episode(
     if local.episode_is_indexed(col, episode) and not overwrite:
         new_source = transcript.get("meta", {}).get("source", "")
         stored = local.load_chunks_no_embeddings(col, episode)
-        stored_source = stored[0].get("source", "") if stored else ""
+        stored_source = stored[0].source if stored else ""
 
         if stored_source and new_source and stored_source != new_source:
             logger.info(
@@ -96,7 +96,9 @@ def vectorize_episode(
         else:
             local_count = local.episode_chunk_count(col, episode)
             logger.info(f"[SKIP] '{episode}' cached ({col}, {local_count} chunks)")
-            return chunks or stored, 0
+            # Stored hits may be reused as write-path chunks for the next
+            # model; convert back to the chunker dict shape.
+            return chunks or [c.to_chunk_dict() for c in stored], 0
 
     if chunks is None:
         n_segs = len(transcript.get("segments", []))

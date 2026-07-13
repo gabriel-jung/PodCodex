@@ -8,7 +8,9 @@ import pytest
 
 pytest.importorskip("discord")
 
-import discord  # noqa: E402
+import discord
+
+from podcodex.rag.hit import Hit  # noqa: E402
 
 from podcodex.bot import ui  # noqa: E402
 from podcodex.bot.result_store import (  # noqa: E402
@@ -110,15 +112,15 @@ def test_corrupt_row_is_dropped_as_miss():
 class _FakeLocal:
     def load_chunks_no_embeddings(self, collection, episode):
         return [
-            {
-                "chunk_index": i,
-                "episode": episode,
-                "show": "My Show",
-                "start": i * 10.0,
-                "end": i * 10 + 9.0,
-                "text": f"segment {i}",
-                "timed": True,
-            }
+            Hit(
+                chunk_index=i,
+                episode=episode,
+                show="My Show",
+                start=i * 10.0,
+                end=i * 10 + 9.0,
+                text=f"segment {i}",
+                timed=True,
+            )
             for i in range(5)
         ]
 

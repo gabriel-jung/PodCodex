@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from podcodex.rag.hit import Hit
+
 
 # ──────────────────────────────────────────────
 # vectorize_episode — incremental / upgrade / overwrite
@@ -22,8 +24,8 @@ def test_vectorize_episode_skips_when_locally_cached(tmp_path):
     mock_local.episode_is_indexed.return_value = True
     mock_local.episode_chunk_count.return_value = 2
     mock_local.load_chunks_no_embeddings.return_value = [
-        {"text": "a", "source": "transcript"},
-        {"text": "b", "source": "transcript"},
+        Hit(text="a", source="transcript"),
+        Hit(text="b", source="transcript"),
     ]
 
     _, n = vectorize_episode(transcript, "S", "E1", "bge-m3", "semantic", mock_local)
@@ -42,7 +44,7 @@ def test_vectorize_episode_upgrades_on_source_change(tmp_path):
     mock_local = MagicMock()
     mock_local.episode_is_indexed.side_effect = [True, False]
     mock_local.load_chunks_no_embeddings.return_value = [
-        {"text": "a", "source": "transcript"},  # old source
+        Hit(text="a", source="transcript"),  # old source
     ]
 
     mock_embedder = MagicMock()

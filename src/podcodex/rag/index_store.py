@@ -20,7 +20,6 @@ import unicodedata
 from collections import Counter
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
-from email.utils import parsedate_to_datetime
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -28,8 +27,28 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 from loguru import logger
+from pydantic import ValidationError
+
+from podcodex.core._utils import normalize_pub_date
+from podcodex.rag.hit import Hit
 
 _COLLECTIONS_TABLE = "_collections"
+
+# Scalar columns re-applied over the meta blob when a row is inflated into a
+# Hit, and the projection every no-vector read selects (plus "meta"). Keep the
+# two uses in lockstep: a column missing from the select comes back as the
+# field default, silently (this is how pub_date used to vanish from /random).
+_FILTER_COLUMNS = (
+    "chunk_index",
+    "show",
+    "episode",
+    "source",
+    "pub_date",
+    "dominant_speaker",
+    "start",
+    "end",
+    "text",
+)
 
 
 # Hyphens/dashes, apostrophes, and non-standard spaces all normalize to a
@@ -151,8 +170,8 @@ def _fuzzy_match(query: str, text: str, max_dist: int) -> tuple[float, str] | No
     return best
 
 
-def _chunk_key(chunk: dict) -> str:
-    return f"{chunk.get('episode', '')}|{chunk.get('start', 0)}"
+def _chunk_key(chunk: Hit) -> str:
+    return f"{chunk.episode}|{chunk.start}"
 
 
 def _approx_substring(
@@ -488,7 +507,7 @@ class IndexStore:
                     meta = json.loads(r.get("meta") or "{}")
                 except Exception:
                     continue
-                norm = _normalize_pub_date(
+                norm = normalize_pub_date(
                     meta.get("pub_date") or meta.get("rss_pub_date")
                 )
                 if norm:
@@ -959,7 +978,7 @@ class IndexStore:
                     "show": str(chunk.get("show", "")),
                     "episode": str(chunk.get("episode", episode)),
                     "source": str(chunk.get("source", "")),
-                    "pub_date": _normalize_pub_date(chunk.get("pub_date")) or "",
+                    "pub_date": normalize_pub_date(chunk.get("pub_date")) or "",
                     "dominant_speaker": str(speaker),
                     "start": float(chunk.get("start", 0.0)),
                     "end": float(chunk.get("end", 0.0)),
@@ -974,7 +993,7 @@ class IndexStore:
 
     # ── Read helpers ─────────────────────────────────────────────────────
 
-    def load_chunks_no_embeddings(self, collection: str, episode: str) -> list[dict]:
+    def load_chunks_no_embeddings(self, collection: str, episode: str) -> list[Hit]:
         """Return chunks for an episode without their vectors.
 
         Used by the indexer for stale-source detection.
@@ -984,7 +1003,7 @@ class IndexStore:
             episode: Episode identifier.
 
         Returns:
-            List of chunk dicts sorted by ``chunk_index``.
+            Hits sorted by ``chunk_index``.
         """
         if not self.collection_exists(collection):
             return []
@@ -992,24 +1011,12 @@ class IndexStore:
         rows = (
             t.search()
             .where(f"episode = '{_escape(episode)}'")
-            .select(
-                [
-                    "chunk_index",
-                    "show",
-                    "episode",
-                    "source",
-                    "dominant_speaker",
-                    "start",
-                    "end",
-                    "text",
-                    "meta",
-                ]
-            )
+            .select([*_FILTER_COLUMNS, "meta"])
             .limit(100_000)
             .to_list()
         )
         out = [_row_to_chunk(r) for r in rows]
-        out.sort(key=lambda c: c.get("chunk_index", 0))
+        out.sort(key=lambda c: c.chunk_index)
         return out
 
     def load_chunks_with_vector_stats(
@@ -1027,27 +1034,16 @@ class IndexStore:
         rows = (
             t.search()
             .where(f"episode = '{_escape(episode)}'")
-            .select(
-                [
-                    "chunk_index",
-                    "show",
-                    "episode",
-                    "source",
-                    "dominant_speaker",
-                    "start",
-                    "end",
-                    "text",
-                    "vector",
-                    "meta",
-                ]
-            )
+            .select([*_FILTER_COLUMNS, "vector", "meta"])
             .limit(100_000)
             .to_list()
         )
         out: list[dict] = []
         for r in rows:
             v = np.asarray(r.get("vector") or [], dtype=np.float32)
-            chunk = _row_to_chunk(r)
+            # Inspector-only projection: stays a plain dict so the vector_*
+            # diagnostics keys don't pollute the Hit model.
+            chunk = _row_to_chunk(r).model_dump(exclude_none=True)
             if v.size:
                 chunk["vector_norm"] = float(np.linalg.norm(v))
                 chunk["vector_zero_frac"] = float((v == 0.0).mean())
@@ -1073,7 +1069,7 @@ class IndexStore:
         chunk_index: int | None = None,
         window: int = 3,
         at_time: float | None = None,
-    ) -> list[dict]:
+    ) -> list[Hit]:
         """Return chunks around a center chunk, ordered by position.
 
         Used to expand a retrieved hit with its neighbors so callers
@@ -1102,11 +1098,7 @@ class IndexStore:
             return []
         if chunk_index is not None:
             center = next(
-                (
-                    i
-                    for i, c in enumerate(chunks)
-                    if c.get("chunk_index") == chunk_index
-                ),
+                (i for i, c in enumerate(chunks) if c.chunk_index == chunk_index),
                 -1,
             )
         elif at_time is not None:
@@ -1119,58 +1111,66 @@ class IndexStore:
         hi = min(len(chunks), center + window + 1)
         return chunks[lo:hi]
 
-    def load_all_chunks(
+    def count_chunks(
         self,
         collection: str,
-        episode: str | None = None,
         *,
+        episode: str | None = None,
         episodes: list[str] | None = None,
+        source: str | None = None,
+        speaker: str | None = None,
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
-    ) -> list[dict]:
-        """Load all chunks (without vectors) in a collection.
+    ) -> int:
+        """Count chunks matching the filters (no rows marshalled)."""
+        if not self.collection_exists(collection):
+            return 0
+        t = self._table(collection)
+        clause = _build_where(
+            episode=episode,
+            episodes=episodes,
+            source=source,
+            speaker=speaker,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
+        )
+        return t.count_rows(clause) if clause else t.count_rows()
 
-        Args:
-            collection: Collection name.
-            episode: If set, restrict to this one episode.
-            episodes: Alternative to ``episode`` — restrict to a list of stems.
-            pub_date_min, pub_date_max: Inclusive date bounds (``YYYY-MM-DD``).
+    def chunk_at(
+        self,
+        collection: str,
+        offset: int,
+        *,
+        episode: str | None = None,
+        episodes: list[str] | None = None,
+        source: str | None = None,
+        speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
+    ) -> Hit | None:
+        """Return the single chunk at ``offset`` within the filtered scan.
 
-        Returns:
-            List of chunk dicts ordered by ``(episode, chunk_index)``.
+        Pairs with :meth:`count_chunks` so ``Retriever.random`` can pick one
+        chunk without loading (and validating) the whole collection. Returns
+        None when the offset is past the end, which the caller treats as a
+        stale count and retries.
         """
         if not self.collection_exists(collection):
-            return []
+            return None
         t = self._table(collection)
         q = t.search()
         clause = _build_where(
             episode=episode,
             episodes=episodes,
+            source=source,
+            speaker=speaker,
             pub_date_min=pub_date_min,
             pub_date_max=pub_date_max,
         )
         if clause:
             q = q.where(clause)
-        rows = (
-            q.select(
-                [
-                    "chunk_index",
-                    "show",
-                    "episode",
-                    "source",
-                    "dominant_speaker",
-                    "start",
-                    "end",
-                    "text",
-                    "meta",
-                ]
-            )
-            .limit(1_000_000)
-            .to_list()
-        )
-        out = [_row_to_chunk(r) for r in rows]
-        out.sort(key=lambda c: (c.get("episode", ""), c.get("chunk_index", 0)))
-        return out
+        rows = q.select([*_FILTER_COLUMNS, "meta"]).offset(offset).limit(1).to_list()
+        return _row_to_chunk(rows[0]) if rows else None
 
     # ── Native search primitives ─────────────────────────────────────────
 
@@ -1186,7 +1186,7 @@ class IndexStore:
         speaker: str | None = None,
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
-    ) -> list[dict]:
+    ) -> list[Hit]:
         """ANN vector search with optional pre-filters.
 
         Args:
@@ -1198,8 +1198,7 @@ class IndexStore:
             pub_date_min, pub_date_max: Inclusive date bounds.
 
         Returns:
-            List of chunk dicts with cosine ``score`` (``1 - distance``)
-            attached.
+            Hits with cosine ``score`` (``1 - distance``) attached.
         """
         if not self.collection_exists(collection):
             return []
@@ -1236,12 +1235,13 @@ class IndexStore:
         if clause:
             q = q.where(clause)
         rows = q.limit(top_k).to_list()
-        out: list[dict] = []
+        out: list[Hit] = []
         for r in rows:
+            hit = _row_to_chunk(r)
             # LanceDB cosine distance is 1 - cosine_sim, so 1 - distance is
             # the cosine similarity in [0, 1] (assuming non-negative dot).
-            score = max(0.0, 1.0 - float(r.get("_distance", 1.0)))
-            out.append({**_row_to_chunk(r), "score": score})
+            hit.score = max(0.0, 1.0 - float(r.get("_distance", 1.0)))
+            out.append(hit)
         return out
 
     def search_fts(
@@ -1257,7 +1257,7 @@ class IndexStore:
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
         fuzziness: int = 0,
-    ) -> list[dict]:
+    ) -> list[Hit]:
         """Full-text search (Tantivy, tokenized).
 
         Creates the FTS index lazily on first call per collection.
@@ -1272,7 +1272,7 @@ class IndexStore:
             fuzziness: Levenshtein edit distance for fuzzy matching (0 = exact).
 
         Returns:
-            List of chunk dicts with BM25 ``score`` attached.
+            Hits with BM25 ``score`` attached.
         """
         if not self.collection_exists(collection):
             return []
@@ -1300,9 +1300,12 @@ class IndexStore:
         except Exception:
             logger.opt(exception=True).warning("FTS query failed — treating as empty")
             return []
-        return [
-            {**_row_to_chunk(r), "score": float(r.get("_score", 0.0))} for r in rows
-        ]
+        out: list[Hit] = []
+        for r in rows:
+            hit = _row_to_chunk(r)
+            hit.score = float(r.get("_score", 0.0))
+            out.append(hit)
+        return out
 
     def search_literal(
         self,
@@ -1316,7 +1319,7 @@ class IndexStore:
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
         max_dist: int = 1,
-    ) -> tuple[list[dict], list[dict], list[dict]]:
+    ) -> tuple[list[Hit], list[Hit], list[Hit]]:
         """Three-tier phrase search: exact, accent variant, near-typo.
 
         FTS ``~{max_dist}`` pre-filters candidates; Python re-verifies with
@@ -1353,7 +1356,7 @@ class IndexStore:
         # cover both "accented query, no-accent typing" directions.
         # Multi-word: intersect per-token chunk hits so every token must
         # appear (approximately) in the same chunk.
-        def _fts_token(token: str) -> list[dict]:
+        def _fts_token(token: str) -> list[Hit]:
             hits = self.search_fts(
                 collection,
                 token,
@@ -1391,7 +1394,7 @@ class IndexStore:
             candidates = _fts_token(fts_tokens[0])
         else:
             hit_count: Counter = Counter()
-            chunk_map: dict[str, dict] = {}
+            chunk_map: dict[str, Hit] = {}
             for token in fts_tokens:
                 for h in _fts_token(token):
                     key = _chunk_key(h)
@@ -1401,11 +1404,11 @@ class IndexStore:
                 chunk_map[k] for k, n in hit_count.items() if n >= len(fts_tokens)
             ]
 
-        exact: list[dict] = []
-        accent_only: list[dict] = []
-        fuzzy_only: list[dict] = []
+        exact: list[Hit] = []
+        accent_only: list[Hit] = []
+        fuzzy_only: list[Hit] = []
         for c in candidates:
-            text = c.get("text", "")
+            text = c.text
             lower = text.lower()
             if query_lower in lower:
                 # Prefer a whole-word occurrence over the first occurrence:
@@ -1421,30 +1424,24 @@ class IndexStore:
                         idx, word = i, True
                         break
                     i = lower.find(query_lower, i + 1)
-                exact.append(
-                    {
-                        **c,
-                        "score": 1.0 if word else _EXACT_SUBSTRING_SCORE,
-                        "match_text": text[idx : idx + len(query)],
-                    }
-                )
+                # Candidates are freshly built for this query (search_fts →
+                # _row_to_chunk) and land in exactly one tier: mutate in place.
+                c.score = 1.0 if word else _EXACT_SUBSTRING_SCORE
+                c.match_text = text[idx : idx + len(query)]
+                exact.append(c)
             else:
                 folded_t = fold_text(text)
                 if folded_q in folded_t:
                     span = _accent_span(text, folded_t, folded_q) or query
-                    accent_only.append(
-                        {
-                            **c,
-                            "score": _accent_score(query, span),
-                            "match_text": span,
-                        }
-                    )
+                    c.score = _accent_score(query, span)
+                    c.match_text = span
+                    accent_only.append(c)
                 else:
                     if single_word:
                         result = _fuzzy_match(fts_tokens[0], text, max_dist)
                         if result is not None:
-                            score, span = result
-                            fuzzy_only.append({**c, "score": score, "match_text": span})
+                            c.score, c.match_text = result
+                            fuzzy_only.append(c)
                     else:
                         # Tolerance ~12% of phrase length: short queries stay
                         # strict, long ones accept one or two real typos.
@@ -1459,20 +1456,15 @@ class IndexStore:
                                     _find_original_span(text, folded_t[fs:fe])
                                     or folded_t[fs:fe]
                                 )
-                            score = 1.0 - d / max(len(folded_q), 1)
-                            fuzzy_only.append({**c, "score": score, "match_text": span})
+                            c.score = 1.0 - d / max(len(folded_q), 1)
+                            c.match_text = span
+                            fuzzy_only.append(c)
 
         # Word matches (1.0) before superstring matches (0.99), each group
         # chronological.
-        exact.sort(
-            key=lambda c: (
-                -c.get("score", 1.0),
-                c.get("episode", ""),
-                c.get("start", 0.0),
-            )
-        )
-        accent_only.sort(key=lambda c: (c.get("episode", ""), c.get("start", 0.0)))
-        fuzzy_only.sort(key=lambda c: c.get("score", 0.0), reverse=True)
+        exact.sort(key=lambda c: (-c.score, c.episode, c.start))
+        accent_only.sort(key=lambda c: (c.episode, c.start))
+        fuzzy_only.sort(key=lambda c: c.score, reverse=True)
 
         return exact, accent_only, fuzzy_only
 
@@ -1829,7 +1821,7 @@ def _escape(s: str) -> str:
     return s.replace("'", "''")
 
 
-def chunk_map_from_chunks(chunks: list[dict], text_preview: int = 0) -> list[dict]:
+def chunk_map_from_chunks(chunks: list[Hit], text_preview: int = 0) -> list[dict]:
     """Project loaded chunks into the lightweight chunk-map shape.
 
     Pure counterpart of :meth:`IndexStore.get_chunk_map` so a caller that has
@@ -1840,41 +1832,35 @@ def chunk_map_from_chunks(chunks: list[dict], text_preview: int = 0) -> list[dic
 
     out: list[dict] = []
     for c in chunks:
-        turns = c.get("speakers") or []
+        turns = c.speakers or []
         speakers = (
-            sorted({t.get("speaker", "") for t in turns if t.get("speaker")})
+            sorted({t.speaker for t in turns if t.speaker})
             if turns
-            else ([c["dominant_speaker"]] if c.get("dominant_speaker") else [])
+            else ([c.dominant_speaker] if c.dominant_speaker else [])
         )
-        start = float(c.get("start", 0.0))
         entry: dict = {
-            "chunk_index": int(c.get("chunk_index", -1)),
-            "start": start,
-            "end": float(c.get("end", 0.0)),
-            "start_hms": format_hms(start),
+            "chunk_index": c.chunk_index,
+            "start": c.start,
+            "end": c.end,
+            "start_hms": format_hms(c.start),
             "speakers": speakers,
         }
         if text_preview > 0:
-            entry["text_preview"] = (c.get("text") or "")[:text_preview]
+            entry["text_preview"] = c.text[:text_preview]
         out.append(entry)
     return out
 
 
-def _center_pos_by_time(chunks: list[dict], at_time: float) -> int:
+def _center_pos_by_time(chunks: list[Hit], at_time: float) -> int:
     """List position of the chunk covering ``at_time`` (nearest by start on a gap).
 
     Assumes ``chunks`` is non-empty and ordered by position; always returns a
     valid index.
     """
     for i, c in enumerate(chunks):
-        start = float(c.get("start", 0.0))
-        end = float(c.get("end", 0.0))
-        if start <= at_time < end:
+        if c.start <= at_time < c.end:
             return i
-    return min(
-        range(len(chunks)),
-        key=lambda i: abs(float(chunks[i].get("start", 0.0)) - at_time),
-    )
+    return min(range(len(chunks)), key=lambda i: abs(chunks[i].start - at_time))
 
 
 def _episode_group_to_dict(episode: str, g: dict) -> dict:
@@ -1892,41 +1878,6 @@ def _episode_group_to_dict(episode: str, g: dict) -> dict:
         "duration": g["duration"],
         "speakers": sorted(g.get("speakers") or ()),
     }
-
-
-_PUB_DATE_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
-_PUB_DATE_COMPACT_RE = re.compile(r"^\d{8}$")
-
-
-def _normalize_pub_date(raw: Any) -> str | None:
-    """Normalize a publication date to ``YYYY-MM-DD``.
-
-    Accepts ISO 8601 (``2024-01-15``, ``2024-01-15T12:00:00Z``), RFC 2822
-    (``Mon, 15 Jan 2024 12:00:00 GMT``), and YouTube's compact
-    ``YYYYMMDD``. Returns ``None`` if *raw* is falsy or unparseable.
-    Idempotent on already-normalized input.
-    """
-    if not raw:
-        return None
-    if not isinstance(raw, str):
-        raw = str(raw)
-    s = raw.strip()
-    if not s:
-        return None
-    if _PUB_DATE_ISO_RE.match(s):
-        return s[:10]
-    if _PUB_DATE_COMPACT_RE.match(s):
-        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
-    try:
-        dt = parsedate_to_datetime(s)
-    except (TypeError, ValueError):
-        dt = None
-    if dt is not None:
-        return dt.date().isoformat()
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).date().isoformat()
-    except ValueError:
-        return None
 
 
 def _build_where(
@@ -1957,47 +1908,67 @@ def _build_where(
     if speaker:
         parts.append(f"dominant_speaker = '{_escape(speaker)}'")
     if pub_date_min:
-        norm = _normalize_pub_date(pub_date_min)
+        norm = normalize_pub_date(pub_date_min)
         if not norm:
             raise ValueError(f"Invalid pub_date_min: {pub_date_min!r}")
         parts.append(f"pub_date >= '{norm}'")
     if pub_date_max:
-        norm = _normalize_pub_date(pub_date_max)
+        norm = normalize_pub_date(pub_date_max)
         if not norm:
             raise ValueError(f"Invalid pub_date_max: {pub_date_max!r}")
         parts.append(f"pub_date <= '{norm}'")
     return " AND ".join(parts)
 
 
-_FILTER_COLUMNS = (
-    "chunk_index",
-    "show",
-    "episode",
-    "source",
-    "pub_date",
-    "dominant_speaker",
-    "start",
-    "end",
-    "text",
-)
+def _row_to_chunk(row: dict) -> Hit:
+    """Re-inflate a LanceDB row into a ``Hit``.
 
-
-def _row_to_chunk(row: dict) -> dict:
-    """Re-inflate a LanceDB row into a chunk dict.
-
-    Drops the vector column and LanceDB internals (``_distance``, ``_score``,
-    ``_relevance_score``); merges the ``meta`` JSON payload back in.
+    The single point where hits are born: drops the vector column and
+    LanceDB internals (``_distance``, ``_score``, ``_relevance_score``),
+    merges the ``meta`` JSON payload back in, validates as ``Hit``.
+    Unknown legacy meta keys land in ``Hit.model_extra``.
     """
     meta_raw = row.get("meta") or "{}"
     try:
         meta = json.loads(meta_raw) if isinstance(meta_raw, str) else dict(meta_raw)
     except Exception:
         meta = {}
-    chunk: dict[str, Any] = dict(meta)
+    # A null in the meta blob means "absent" (older chunkers wrote explicit
+    # nulls); the model's field defaults cover those, but validation would
+    # reject the None. Turns need the same treatment one level down: their
+    # start/end are non-optional floats, so a single nulled offset would
+    # otherwise fail the whole row into the degrade path below.
+    chunk: dict[str, Any] = {}
+    for key, value in meta.items():
+        if value is None:
+            continue
+        if key == "speakers" and isinstance(value, list):
+            value = [
+                {k: v for k, v in turn.items() if v is not None}
+                if isinstance(turn, dict)
+                else turn
+                for turn in value
+            ]
+        chunk[key] = value
     for key in _FILTER_COLUMNS:
         if key in row and row[key] is not None:
             chunk[key] = row[key]
-    return chunk
+    try:
+        return Hit.model_validate(chunk)
+    except ValidationError as e:
+        # A single un-coercible legacy meta value (e.g. episode_number stored
+        # as "S2E4") must not take down every read for the whole show. Degrade
+        # to the fixed columns, which are schema-typed and always valid.
+        # Fires per row, so keep it to one line (no traceback).
+        logger.warning(
+            f"Dropping unparseable meta for chunk "
+            f"{row.get('episode', '?')}#{row.get('chunk_index', '?')}: "
+            f"{e.errors()[0].get('msg', 'invalid')}"
+        )
+        columns = {
+            k: row[k] for k in _FILTER_COLUMNS if k in row and row[k] is not None
+        }
+        return Hit.model_validate(columns)
 
 
 # ── Process-wide singleton ───────────────────────────────────────────────

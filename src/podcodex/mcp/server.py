@@ -33,6 +33,7 @@ from podcodex.core._utils import (
     merge_display_turns,
 )
 from podcodex.rag.defaults import ALPHA, CONTEXT_WINDOW, TOP_K
+from podcodex.rag.hit import Hit
 from podcodex.rag.index_store import chunk_map_from_chunks, get_index_store
 from podcodex.rag.retriever import get_retriever
 from podcodex.rag.search_service import (
@@ -49,7 +50,7 @@ mcp = FastMCP("podcodex")
 mcp.settings.streamable_http_path = "/"
 
 
-def _episode_transcript_text(chunks: list[dict]) -> str:
+def _episode_transcript_text(chunks: list[Hit]) -> str:
     """Flatten preloaded episode chunks to ``[MmSS] Speaker: text`` lines.
 
     Diarised chunks emit one line per merged turn; untimed/single-speaker
@@ -57,16 +58,15 @@ def _episode_transcript_text(chunks: list[dict]) -> str:
     """
     lines: list[str] = []
     for c in chunks:
-        turns = merge_display_turns(c.get("speakers") or [])
+        turns = merge_display_turns(c.speakers or [])
         if turns:
             for t in turns:
-                ts = format_hms(float(t.get("start") or c.get("start", 0.0)))
+                ts = format_hms(float(t.get("start") or c.start))
                 sp = t.get("speaker", "Unknown")
                 lines.append(f"[{ts}] {sp}: {t.get('text', '')}")
         else:
-            ts = format_hms(float(c.get("start", 0.0)))
-            sp = c.get("dominant_speaker", "")
-            lines.append(f"[{ts}] {sp}: {c.get('text', '')}")
+            ts = format_hms(c.start)
+            lines.append(f"[{ts}] {c.dominant_speaker}: {c.text}")
     return "\n".join(lines)
 
 
@@ -104,7 +104,7 @@ def _put_show_date_cache(key: tuple[str, float], value: tuple[str, str] | None) 
     _SHOW_DATE_CACHE[key] = value
 
 
-def _trim(chunk: dict) -> dict:
+def _trim(chunk: Hit) -> dict:
     """Compact chunk shape sent to MCP clients.
 
     ``episode_title`` is the human-readable label to cite (RSS title if
@@ -122,18 +122,17 @@ def _trim(chunk: dict) -> dict:
     instead of guessing from the chunk-level ``dominant_speaker``.
     Consecutive same-speaker turns are merged for compactness.
     """
-    start = float(chunk.get("start", 0.0))
     out: dict = {
-        "show": chunk.get("show", ""),
-        "episode": chunk.get("episode", ""),
-        "episode_title": episode_display(chunk),
-        "chunk_index": int(chunk.get("chunk_index", -1)),
-        "start": start,
-        "start_hms": format_hms(start),
-        "end": float(chunk.get("end", 0.0)),
-        "speaker": chunk.get("dominant_speaker", ""),
+        "show": chunk.show,
+        "episode": chunk.episode,
+        "episode_title": chunk.display_title,
+        "chunk_index": chunk.chunk_index,
+        "start": chunk.start,
+        "start_hms": format_hms(chunk.start),
+        "end": chunk.end,
+        "speaker": chunk.dominant_speaker,
     }
-    turns = merge_display_turns(chunk.get("speakers") or [])
+    turns = merge_display_turns(chunk.speakers or [])
     if turns:
         out["speakers"] = [
             {
@@ -148,18 +147,20 @@ def _trim(chunk: dict) -> dict:
             for t in turns
         ]
     else:
-        out["text"] = chunk.get("text", "")
-    pub_date = chunk.get("pub_date") or ""
+        out["text"] = chunk.text
+    # effective_pub_date tolerates legacy indexes that only carry the raw
+    # rss_pub_date form (previously rendered as no date at all).
+    pub_date = chunk.effective_pub_date
     if pub_date:
         out["pub_date"] = pub_date
-    ep_num = chunk.get("episode_number")
-    if ep_num is not None:
-        out["episode_number"] = int(ep_num)
-    if "score" in chunk:
-        out["score"] = float(chunk["score"])
-    for flag in ("accent_match", "fuzzy_match"):
-        if chunk.get(flag):
-            out[flag] = True
+    if chunk.episode_number is not None:
+        out["episode_number"] = chunk.episode_number
+    if chunk.score is not None:
+        out["score"] = chunk.score
+    if chunk.accent_match:
+        out["accent_match"] = True
+    if chunk.fuzzy_match:
+        out["fuzzy_match"] = True
     return out
 
 

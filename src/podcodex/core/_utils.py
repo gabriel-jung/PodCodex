@@ -9,12 +9,17 @@ import gc
 import json
 import os
 import re
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from podcodex.rag.hit import SpeakerTurn
 
 
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
@@ -333,17 +338,56 @@ def humanize_stem(stem: str) -> str:
     return (s[:1].upper() + s[1:]) if s else stem
 
 
-def episode_display(chunk: dict) -> str:
-    """Best human-readable episode title for a chunk.
+def resolve_episode_title(episode_title: str, stem: str) -> str:
+    """Canonical episode-title resolution: RSS title, else humanized stem.
 
-    Canonical resolution order:
-      1. ``chunk["episode_title"]`` — RSS title injected at index time.
-      2. humanised ``chunk["episode"]`` stem.
-
-    Used by the bot, MCP server, and the desktop API so every consumer
-    cites the same title for the same episode.
+    The single owner of the fallback rule. ``episode_display`` (dict-shaped
+    episode records) and ``Hit.display_title`` (typed search hits) both
+    delegate here so every consumer cites the same title.
     """
-    return chunk.get("episode_title") or humanize_stem(chunk.get("episode", ""))
+    return episode_title or humanize_stem(stem)
+
+
+def episode_display(chunk: dict) -> str:
+    """Best human-readable episode title for a dict-shaped episode record."""
+    return resolve_episode_title(
+        chunk.get("episode_title") or "", chunk.get("episode", "")
+    )
+
+
+_PUB_DATE_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+_PUB_DATE_COMPACT_RE = re.compile(r"^\d{8}$")
+
+
+def normalize_pub_date(raw) -> str | None:
+    """Normalize a publication date to ``YYYY-MM-DD``.
+
+    Accepts ISO 8601 (``2024-01-15``, ``2024-01-15T12:00:00Z``), RFC 2822
+    (``Mon, 15 Jan 2024 12:00:00 GMT``), and YouTube's compact
+    ``YYYYMMDD``. Returns ``None`` if *raw* is falsy or unparseable.
+    Idempotent on already-normalized input.
+    """
+    if not raw:
+        return None
+    if not isinstance(raw, str):
+        raw = str(raw)
+    s = raw.strip()
+    if not s:
+        return None
+    if _PUB_DATE_ISO_RE.match(s):
+        return s[:10]
+    if _PUB_DATE_COMPACT_RE.match(s):
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+    try:
+        dt = parsedate_to_datetime(s)
+    except (TypeError, ValueError):
+        dt = None
+    if dt is not None:
+        return dt.date().isoformat()
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return None
 
 
 _HMS_RE = re.compile(r"^(?:(\d+)h)?(\d+)m(\d{1,2})$")
@@ -1011,32 +1055,31 @@ def vtt_to_segments(vtt_text: str) -> list[dict]:
     return _merge_parsed_cues(cues)
 
 
-def merge_display_turns(turns: list[dict]) -> list[dict]:
+def merge_display_turns(turns: "list[SpeakerTurn]") -> list[dict]:
     """Collapse consecutive same-speaker turns for search-result display.
 
     One speaker label / one text block per contiguous speaker run —
     unlike :func:`merge_consecutive_segments`, there are no gap caps,
     duration caps, or break sentinels. Intended for rendering a single
-    search-result chunk where readers just want a clean paragraph per
-    speaker.
+    search-result chunk (``Hit.speakers``) where readers just want a clean
+    paragraph per speaker. Output entries are plain display dicts.
     """
     out: list[dict] = []
     for t in turns:
-        speaker = t.get("speaker") or "Unknown"
-        text = (t.get("text") or "").strip()
+        speaker = t.speaker or "Unknown"
+        text = t.text.strip()
         if not text:
             continue
         if out and out[-1]["speaker"] == speaker:
             out[-1]["text"] += " " + text
-            if t.get("end") is not None:
-                out[-1]["end"] = t["end"]
+            # A turn with no timing (legacy rows default end to 0.0) must not
+            # drag the merged run's end backwards.
+            if t.end:
+                out[-1]["end"] = t.end
         else:
-            entry: dict = {"speaker": speaker, "text": text}
-            if t.get("start") is not None:
-                entry["start"] = t["start"]
-            if t.get("end") is not None:
-                entry["end"] = t["end"]
-            out.append(entry)
+            out.append(
+                {"speaker": speaker, "text": text, "start": t.start, "end": t.end}
+            )
     return out
 
 

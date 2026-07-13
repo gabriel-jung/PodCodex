@@ -2,6 +2,8 @@
 
 import pytest
 
+from podcodex.rag.hit import Hit
+
 pytest.importorskip("discord")
 
 from podcodex.bot.bot import BotConfig, ResolvedShows, ServerSettings, ShowAccess
@@ -87,23 +89,23 @@ def test_fmt_time(seconds, expected):
 
 
 def test_speaker_uses_speaker_field():
-    assert _speaker({"speaker": "Alice"}) == "Alice"
+    assert _speaker(Hit(speaker="Alice")) == "Alice"
 
 
 def test_speaker_falls_back_to_dominant():
-    assert _speaker({"dominant_speaker": "Bob"}) == "Bob"
+    assert _speaker(Hit(dominant_speaker="Bob")) == "Bob"
 
 
 def test_speaker_prefers_speaker_over_dominant():
-    assert _speaker({"speaker": "Alice", "dominant_speaker": "Bob"}) == "Alice"
+    assert _speaker(Hit(speaker="Alice", dominant_speaker="Bob")) == "Alice"
 
 
 def test_speaker_generic_when_missing():
-    assert _speaker({}) == "Speaker"
+    assert _speaker(Hit()) == "Speaker"
 
 
 def test_speaker_generic_when_none():
-    assert _speaker({"speaker": None, "dominant_speaker": None}) == "Speaker"
+    assert _speaker(Hit(speaker=None, dominant_speaker="")) == "Speaker"
 
 
 def test_resolve_show_collections_precedence(monkeypatch):
@@ -126,7 +128,9 @@ def test_resolve_show_collections_precedence(monkeypatch):
     bot._shows = {}  # nothing protected: _show_allowed always True
 
     def resolve(settings, prefs, explicit=None, cols=col_info):
-        monkeypatch.setattr("podcodex.bot.bot.load_show_rag_prefs", lambda: prefs)
+        monkeypatch.setattr(
+            "podcodex.bot.resolution.load_show_rag_prefs", lambda: prefs
+        )
         shows = ResolvedShows(ShowAccess.ALL)
         return bot._resolve_show_collections(shows, settings, cols, explicit=explicit)
 
@@ -204,15 +208,15 @@ def test_score_bar_half_is_mixed():
 # build_result_embed
 # ──────────────────────────────────────────────
 
-_CHUNK = {
-    "show": "My Podcast",
-    "episode": "ep01",
-    "speaker": "Alice",
-    "start": 83.0,
-    "end": 102.5,
-    "text": "The composer came in on day one.",
-    "score": 0.87,
-}
+_CHUNK = Hit(
+    show="My Podcast",
+    episode="ep01",
+    speaker="Alice",
+    start=83.0,
+    end=102.5,
+    text="The composer came in on day one.",
+    score=0.87,
+)
 
 
 def test_result_embed_show_as_author_episode_as_title():
@@ -355,7 +359,7 @@ def test_result_embed_footer_plain_without_extra():
 
 
 def test_result_embed_sets_thumbnail_from_artwork():
-    chunk = {**_CHUNK, "artwork_url": "https://cdn.example/art.jpg"}
+    chunk = _CHUNK.model_copy(update={"artwork_url": "https://cdn.example/art.jpg"})
     embed = build_result_embed(chunk, rank=1, total=5, label="")
     assert embed.thumbnail.url == "https://cdn.example/art.jpg"
     # No artwork → no thumbnail.
@@ -363,7 +367,7 @@ def test_result_embed_sets_thumbnail_from_artwork():
 
 
 def test_listen_button_youtube_jumps_to_timestamp():
-    chunk = {**_CHUNK, "youtube_id": "pqIcoskUuWs", "start": 614.0}
+    chunk = _CHUNK.model_copy(update={"youtube_id": "pqIcoskUuWs", "start": 614.0})
     btn = build_listen_button(chunk)
     assert btn is not None
     assert btn.url == "https://www.youtube.com/watch?v=pqIcoskUuWs&t=614s"
@@ -371,7 +375,9 @@ def test_listen_button_youtube_jumps_to_timestamp():
 
 
 def test_listen_button_rss_links_episode_no_seek():
-    chunk = {**_CHUNK, "audio_url": "https://cdn.example/ep.mp3", "start": 614.0}
+    chunk = _CHUNK.model_copy(
+        update={"audio_url": "https://cdn.example/ep.mp3", "start": 614.0}
+    )
     btn = build_listen_button(chunk)
     assert btn is not None
     assert btn.url == "https://cdn.example/ep.mp3"  # no timestamp appended
@@ -383,7 +389,7 @@ def test_listen_button_none_for_local_import():
 
 
 def test_result_embed_no_show_has_no_author():
-    chunk = {**_CHUNK, "show": ""}
+    chunk = _CHUNK.model_copy(update={"show": ""})
     embed = build_result_embed(chunk, rank=1, total=5, label="α=0.50")
     assert embed.author.name is None
 
@@ -503,27 +509,27 @@ def test_server_settings_backwards_compat_missing_new_keys():
 
 _COMPACT_RESULTS = [
     (
-        {
-            "show": "Podcast A",
-            "episode": "ep01",
-            "speaker": "Alice",
-            "start": 60.0,
-            "end": 90.0,
-            "text": "This is a test result.",
-            "score": 0.85,
-        },
+        Hit(
+            show="Podcast A",
+            episode="ep01",
+            speaker="Alice",
+            start=60.0,
+            end=90.0,
+            text="This is a test result.",
+            score=0.85,
+        ),
         "podcast_a__bge-m3__semantic",
     ),
     (
-        {
-            "show": "Podcast B",
-            "episode": "ep02",
-            "speaker": "Bob",
-            "start": 120.0,
-            "end": 150.0,
-            "text": "Another test result here.",
-            "score": 0.72,
-        },
+        Hit(
+            show="Podcast B",
+            episode="ep02",
+            speaker="Bob",
+            start=120.0,
+            end=150.0,
+            text="Another test result here.",
+            score=0.72,
+        ),
         "podcast_b__bge-m3__semantic",
     ),
 ]
@@ -558,22 +564,22 @@ def test_compact_embed_stays_under_discord_total_limit():
     # 25 realistic long-text results burst Discord's 6000-char total embed
     # cap (observed: 7637 chars for a 1473-hit /exact); Discord then rejects
     # the message with HTTP 400 and the interaction hangs on "thinking".
-    long_chunk = {
-        "show": "Total Trax",
-        "episode": "21_249_isabelle_durin_un_violon_au_cinema",
-        "episode_title": "Isabelle Durin, un violon au cinéma (excerpt)",
-        "speaker": "Isabelle",
-        "start": 1234.0,
-        "end": 1290.0,
-        "text": (
+    long_chunk = Hit(
+        show="Total Trax",
+        episode="21_249_isabelle_durin_un_violon_au_cinema",
+        episode_title="Isabelle Durin, un violon au cinéma (excerpt)",
+        speaker="Isabelle",
+        start=1234.0,
+        end=1290.0,
+        text=(
             "La musique de film est un art à part entière et la musique "
             "accompagne chaque scène avec une intensité remarquable, la "
             "musique soulignant l'émotion du récit à chaque instant du film "
             "pour le spectateur attentif."
         ),
-        "score": 1.0,
-    }
-    many = [(dict(long_chunk), "col")] * 30
+        score=1.0,
+    )
+    many = [(long_chunk, "col")] * 30
     embed = build_compact_embed(many, "1473 matches", query="musique")
     assert len(embed) <= 6000
     # Trimmed, not emptied: still shows a useful number of rows.
@@ -586,7 +592,7 @@ def test_compact_embed_footer_shows_count():
 
 
 def test_compact_embed_truncates_long_text():
-    chunk = {**_COMPACT_RESULTS[0][0], "text": "word " * 100}
+    chunk = _COMPACT_RESULTS[0][0].model_copy(update={"text": "word " * 100})
     embed = build_compact_embed([(chunk, "col")], "test")
     assert "…" in embed.fields[0].value
 

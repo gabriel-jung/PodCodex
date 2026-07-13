@@ -39,6 +39,7 @@ from podcodex.bot.formatting import (
     truncate_description,
 )
 from podcodex.bot.result_store import CachedSearch, ResultRef
+from podcodex.rag.hit import Hit
 
 if TYPE_CHECKING:
     from podcodex.bot.bot import PodCodexBot
@@ -52,12 +53,12 @@ UNAVAILABLE_MSG = "This result is no longer available (the episode may have chan
 # Episode chunk cache
 # ──────────────────────────────────────────────
 
-_chunk_cache: dict[tuple[str, str], list[dict]] = {}
+_chunk_cache: dict[tuple[str, str], list[Hit]] = {}
 _cache_lock = asyncio.Lock()
 _MAX_CACHE = 64
 
 
-async def _fetch_episode_chunks(store, collection: str, episode: str) -> list[dict]:
+async def _fetch_episode_chunks(store, collection: str, episode: str) -> list[Hit]:
     key = (collection, episode)
     async with _cache_lock:
         if key in _chunk_cache:
@@ -77,24 +78,24 @@ async def _fetch_episode_chunks(store, collection: str, episode: str) -> list[di
     return chunks
 
 
-def _locate(chunks: list[dict], chunk_index: int) -> int:
+def _locate(chunks: list[Hit], chunk_index: int) -> int:
     """Position of the chunk with ``chunk_index``, nearest on drift, 0 if empty.
 
     The episode may have been re-chunked since the search ran, so the exact
     index can be gone; falling back to the nearest keeps the page rendering.
     """
     for i, c in enumerate(chunks):
-        if c.get("chunk_index") == chunk_index:
+        if c.chunk_index == chunk_index:
             return i
     if not chunks:
         return 0
     return min(
         range(len(chunks)),
-        key=lambda i: abs(chunks[i].get("chunk_index", 0) - chunk_index),
+        key=lambda i: abs(chunks[i].chunk_index - chunk_index),
     )
 
 
-async def _result_chunk(local, ref: ResultRef) -> dict | None:
+async def _result_chunk(local, ref: ResultRef) -> Hit | None:
     """Re-fetch the chunk a ref points to and re-attach the cached scalars.
 
     Returns None if the episode is gone.
@@ -103,13 +104,14 @@ async def _result_chunk(local, ref: ResultRef) -> dict | None:
     if not chunks:
         return None
     # Overlay the search-time scalars LanceDB doesn't carry.
-    return {
-        **chunks[_locate(chunks, ref.chunk_index)],
-        "score": ref.score,
-        "fuzzy_match": ref.fuzzy_match,
-        "accent_match": ref.accent_match,
-        "match_text": ref.match_text,
-    }
+    return chunks[_locate(chunks, ref.chunk_index)].model_copy(
+        update={
+            "score": ref.score,
+            "fuzzy_match": ref.fuzzy_match,
+            "accent_match": ref.accent_match,
+            "match_text": ref.match_text,
+        }
+    )
 
 
 # ──────────────────────────────────────────────
@@ -118,7 +120,7 @@ async def _result_chunk(local, ref: ResultRef) -> dict | None:
 
 
 def build_result_embed(
-    chunk: dict,
+    chunk: Hit,
     rank: int,
     total: int,
     label: str,
@@ -142,17 +144,17 @@ def build_result_embed(
     /exact). /search passes the question through for highlighting context but
     leaves ``highlight`` off.
     """
-    show = chunk.get("show", "")
-    start = chunk.get("start", 0.0)
+    show = chunk.show
+    start = chunk.start
 
     description = truncate_description(
         speaker_lines(chunk, query=text if highlight else "")
     )
 
     # Match tier only tints the card now; the badge text moved to Details.
-    if chunk.get("fuzzy_match"):
+    if chunk.fuzzy_match:
         color = discord.Color.orange()
-    elif chunk.get("accent_match"):
+    elif chunk.accent_match:
         color = discord.Color.gold()
     else:
         color = discord.Color.blurple()
@@ -162,7 +164,7 @@ def build_result_embed(
     meta_bits: list[str] = []
     if start:
         meta_bits.append(f"🕐 {fmt_time(start)}")
-    month = pub_month(chunk.get("pub_date"))
+    month = pub_month(chunk.effective_pub_date)
     if month:
         meta_bits.append(month)
     if meta_bits:
@@ -171,7 +173,7 @@ def build_result_embed(
     embed = discord.Embed(description=description, color=color)
     if show:
         embed.set_author(name=show)
-    embed.title = episode_display(chunk) or "(untitled)"
+    embed.title = chunk.display_title or "(untitled)"
     set_chunk_thumbnail(embed, chunk)
     # ``footer_extra`` carries /exact's human total ("2444 matches"); /search
     # passes nothing (its label is engine telemetry, which lives in Details).
@@ -182,7 +184,7 @@ def build_result_embed(
     return embed
 
 
-def build_listen_button(chunk: dict) -> discord.ui.Button | None:
+def build_listen_button(chunk: Hit) -> discord.ui.Button | None:
     """A source-routed link button to reach the audio, or None when unavailable.
 
     YouTube episodes (``youtube_id`` present) get a timestamped watch link that
@@ -190,8 +192,8 @@ def build_listen_button(chunk: dict) -> discord.ui.Button | None:
     episode' link (raw-audio seek isn't reliable, so no timestamp). Local
     imports carry neither and get no button.
     """
-    yt = (chunk.get("youtube_id") or "").strip()
-    start = int(chunk.get("start", 0) or 0)
+    yt = chunk.youtube_id.strip()
+    start = int(chunk.start or 0)
     if yt:
         label = (
             f"▶ Watch on YouTube · {fmt_time(start)}" if start else "▶ Watch on YouTube"
@@ -202,7 +204,7 @@ def build_listen_button(chunk: dict) -> discord.ui.Button | None:
             label=label,
             row=1,
         )
-    audio = (chunk.get("audio_url") or "").strip()
+    audio = chunk.audio_url.strip()
     if is_http_url(audio):
         return discord.ui.Button(
             style=discord.ButtonStyle.link,
@@ -213,7 +215,7 @@ def build_listen_button(chunk: dict) -> discord.ui.Button | None:
     return None
 
 
-def build_details_embed(chunk: dict, label: str) -> discord.Embed:
+def build_details_embed(chunk: Hit, label: str) -> discord.Embed:
     """Build the ephemeral 'Details' card — the engine numbers, opt-in.
 
     Everything the lean result card deliberately drops: relevance score, the
@@ -221,13 +223,13 @@ def build_details_embed(chunk: dict, label: str) -> discord.Embed:
     (``α`` / model). Sent per-user so opening it never mutates the shared
     public result message.
     """
-    show = chunk.get("show", "")
-    start = chunk.get("start", 0.0)
-    end = chunk.get("end", 0.0)
-    score = chunk.get("score", 0.0)
+    show = chunk.show
+    start = chunk.start
+    end = chunk.end
+    score = chunk.score or 0.0
 
     embed = discord.Embed(
-        title=episode_display(chunk) or "(untitled)",
+        title=chunk.display_title or "(untitled)",
         color=discord.Color.dark_gray(),
     )
     if show:
@@ -237,16 +239,15 @@ def build_details_embed(chunk: dict, label: str) -> discord.Embed:
     embed.add_field(
         name="Relevance", value=f"{score_bar(clamped)} {clamped:.0%}", inline=True
     )
-    timed = chunk.get("timed", True)
-    ts_label = fmt_timestamp(start, end, timed=timed)
+    ts_label = fmt_timestamp(start, end, timed=chunk.timed)
     if ts_label:
         embed.add_field(name="Full range", value=ts_label, inline=True)
-    pub_date = (chunk.get("pub_date") or "").strip()
+    pub_date = chunk.effective_pub_date
     if pub_date:
         embed.add_field(name="Published", value=pub_date[:10], inline=True)
-    if chunk.get("fuzzy_match"):
+    if chunk.fuzzy_match:
         embed.add_field(name="Match", value="〜 near-typo", inline=True)
-    elif chunk.get("accent_match"):
+    elif chunk.accent_match:
         embed.add_field(name="Match", value="≈ accent variant", inline=True)
     if label:
         embed.add_field(name="Search", value=label, inline=True)
@@ -399,7 +400,7 @@ def build_stats_embed(
 
 
 def _transcript_embed(
-    chunk: dict,
+    chunk: Hit,
     pos: int,
     total: int,
     show: str,
@@ -411,15 +412,12 @@ def _transcript_embed(
     color = discord.Color.gold() if is_match else discord.Color.dark_gray()
     embed = discord.Embed(description=description, color=color)
 
-    title = episode_display(chunk) or "(untitled)"
+    title = chunk.display_title or "(untitled)"
     if show:
         title += f" ({show})"
     embed.title = title
 
-    start = chunk.get("start", 0.0)
-    end = chunk.get("end", 0.0)
-    timed = chunk.get("timed", True)
-    ts = fmt_timestamp(start, end, timed=timed)
+    ts = fmt_timestamp(chunk.start, chunk.end, timed=chunk.timed)
     if ts:
         embed.add_field(name="Timestamp", value=ts, inline=True)
 
@@ -727,7 +725,7 @@ async def build_results_view(
     listen = build_listen_button(chunk)
     if listen is not None:
         view.add_item(listen)
-    if chunk.get("episode"):
+    if chunk.episode:
         view.add_item(ExpandResult(sid, index))
     view.add_item(ResultDetails(sid, index))
     if n > 1:
@@ -748,7 +746,7 @@ async def build_compact_view(
     cached = client.results.load(sid)
     if cached is None or not cached.refs:
         return None
-    chunks: list[dict] = []
+    chunks: list[Hit] = []
     for ref in cached.refs[:25]:
         chunk = await _result_chunk(client.local, ref)
         if chunk is not None:
@@ -800,7 +798,7 @@ async def build_transcript_view(
     if pos is None:
         pos = match_pos
     pos = max(0, min(pos, len(chunks) - 1))
-    show = chunks[pos].get("show", "")
+    show = chunks[pos].show
 
     embed = _transcript_embed(
         chunks[pos], pos, len(chunks), show, is_match=(pos == match_pos)

@@ -11,7 +11,6 @@ The bot process (wherever it runs) reads the same IndexStore on its next
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from podcodex.core.show_passwords import hash_show_password
 from podcodex.api.routes._helpers import get_index_store
 
 router = APIRouter()
@@ -74,10 +74,6 @@ def _all_show_names() -> set[str]:
     return names
 
 
-def _hash(password: str) -> str:
-    return f"sha256:{hashlib.sha256(password.encode()).hexdigest()}"
-
-
 # ── Routes ──────────────────────────────────────────────────────────────
 
 
@@ -126,7 +122,7 @@ async def set_password(show: str, payload: SetPasswordRequest) -> ShowPasswordSe
             )
         plaintext = supplied
 
-    get_index_store().set_show_password(show, _hash(plaintext))
+    get_index_store().set_show_password(show, hash_show_password(plaintext))
     return ShowPasswordSet(show=show, password=plaintext, generated=generated)
 
 

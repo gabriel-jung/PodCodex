@@ -88,6 +88,7 @@ from podcodex.api.routes.bundle import (  # noqa: E402
     ImportRequest,
     PreviewRequest,
 )
+from podcodex.rag.hit import SpeakerTurn  # noqa: E402
 from podcodex.core.api_keys import APIKeyPublic  # noqa: E402
 from podcodex.core.provider_profiles import ProviderProfile  # noqa: E402
 from podcodex.bundle.manifest import (  # noqa: E402
@@ -135,6 +136,7 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     ("TranslateApplyBatchesRequest", ApplyBatchesRequest),
     (None, BatchRequest),
     (None, SearchRequest),
+    (None, SpeakerTurn),
     ("SearchResultSchema", SearchResultSchema),
     (None, ExactRequest),
     (None, RandomRequest),

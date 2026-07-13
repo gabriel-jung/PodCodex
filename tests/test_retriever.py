@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from podcodex.rag.index_store import IndexStore
+from podcodex.rag.hit import Hit
 from podcodex.rag.retriever import merge_results
 
 
@@ -86,8 +87,8 @@ def test_retriever_unknown_model_raises():
 def test_dense_search_returns_results(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
     results = retriever.retrieve("neural networks", col, top_k=3, alpha=1.0)
-    assert all("score" in r for r in results)
-    assert all("text" in r for r in results)
+    assert all(r.score is not None for r in results)
+    assert all(r.text for r in results)
 
 
 def test_dense_search_respects_top_k(tmp_path):
@@ -129,7 +130,7 @@ def test_weighted_search_returns_results(tmp_path):
 def test_weighted_search_blends_scores(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
     results = retriever.retrieve("neural", col, top_k=5, alpha=0.5)
-    assert all(r["score"] >= 0 for r in results)
+    assert all(r.score >= 0 for r in results)
 
 
 # ── Filters ──────────────────────────────────────────────────────────────
@@ -138,13 +139,13 @@ def test_weighted_search_blends_scores(tmp_path):
 def test_dense_search_episode_filter(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
     results = retriever.retrieve("q", col, top_k=10, alpha=1.0, episode="ep1")
-    assert all(r.get("episode") == "ep1" for r in results)
+    assert all(r.episode == "ep1" for r in results)
 
 
 def test_dense_search_speaker_filter(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
     results = retriever.retrieve("q", col, top_k=10, alpha=1.0, speaker="Alice")
-    assert all(r.get("dominant_speaker") == "Alice" for r in results)
+    assert all(r.dominant_speaker == "Alice" for r in results)
 
 
 def test_dense_search_episodes_list_filter(tmp_path):
@@ -152,7 +153,7 @@ def test_dense_search_episodes_list_filter(tmp_path):
     local, col = _seed_index(tmp_path, {"ep1": 2, "ep2": 2, "ep3": 2})
     retriever, _, _ = _make_retriever(tmp_path, local=local, col=col)
     results = retriever.retrieve("q", col, top_k=10, alpha=1.0, episodes=["ep1", "ep3"])
-    eps = {r.get("episode") for r in results}
+    eps = {r.episode for r in results}
     assert eps <= {"ep1", "ep3"}
     assert eps  # non-empty
 
@@ -188,7 +189,7 @@ def test_dense_search_pub_date_range_filter(tmp_path):
         pub_date_min="2024-02-01",
         pub_date_max="2024-04-30",
     )
-    assert {r.get("episode") for r in results} == {"ep2"}
+    assert {r.episode for r in results} == {"ep2"}
 
 
 # ── exact / random ────────────────────────────────────────────────────────
@@ -198,7 +199,7 @@ def test_exact_returns_token_match(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
     results = retriever.exact("neural", col)
     assert len(results) > 0
-    assert all(r["score"] == 1.0 for r in results)
+    assert all(r.score == 1.0 for r in results)
 
 
 def test_exact_no_match(tmp_path):
@@ -258,11 +259,11 @@ def test_exact_speaker_filter_is_turn_level(tmp_path):
 
     # Turn-level: Bob is the speaker, he utters the phrase → one hit.
     hits = retriever.exact("neural networks", col, speaker="Bob")
-    assert {h["episode"] for h in hits} == {"ep1"}
+    assert {h.episode for h in hits} == {"ep1"}
 
     # Without speaker filter: chunk with the phrase matches regardless.
     hits = retriever.exact("neural networks", col)
-    assert {h["episode"] for h in hits} == {"ep1"}
+    assert {h.episode for h in hits} == {"ep1"}
 
     # Alice doesn't utter the phrase → no hits, even though she dominates ep1.
     hits = retriever.exact("neural networks", col, speaker="Alice")
@@ -273,7 +274,7 @@ def test_random_returns_chunk(tmp_path):
     retriever, _, col = _make_retriever(tmp_path)
     result = retriever.random(col)
     assert result is not None
-    assert "text" in result
+    assert result.text
 
 
 def test_random_empty_collection(tmp_path):
@@ -294,17 +295,17 @@ def test_rank_normalize_empty():
 def test_rank_normalize_single_result():
     from podcodex.rag.retriever import _rank_normalize
 
-    result = _rank_normalize([{"score": 0.3, "text": "a"}])
-    assert result[0]["score"] == pytest.approx(1.0)
+    result = _rank_normalize([Hit(score=0.3, text="a")])
+    assert result[0].score == pytest.approx(1.0)
 
 
 def test_rank_normalize_rank_based_scores():
     from podcodex.rag.retriever import _rank_normalize
 
-    results = [{"score": 0.0, "text": "a"}, {"score": 0.0, "text": "b"}]
+    results = [Hit(score=0.0, text="a"), Hit(score=0.0, text="b")]
     normed = _rank_normalize(results)
-    assert normed[0]["score"] == pytest.approx(1.0)
-    assert normed[1]["score"] == pytest.approx(0.5)
+    assert normed[0].score == pytest.approx(1.0)
+    assert normed[1].score == pytest.approx(0.5)
 
 
 # ── exact_counts (count/batch mode) ──────────────────────────────────────
@@ -338,8 +339,8 @@ def test_exact_counts_first_hit(tmp_path):
 # ──────────────────────────────────────────────
 
 
-def _hits(scores: list[float]) -> list[dict]:
-    return [{"text": f"t{i}", "score": s} for i, s in enumerate(scores)]
+def _hits(scores: list[float]) -> list[Hit]:
+    return [Hit(text=f"t{i}", score=s) for i, s in enumerate(scores)]
 
 
 def test_merge_score_strategy_sorts_globally():
@@ -348,7 +349,7 @@ def test_merge_score_strategy_sorts_globally():
         "b": _hits([0.8, 0.6]),
     }
     merged = merge_results(hits_by_col, top_k=4, strategy="score")
-    scores = [c.get("score") for c, _ in merged]
+    scores = [c.score for c, _ in merged]
     assert scores == [0.9, 0.8, 0.6, 0.5]
 
 
@@ -400,3 +401,61 @@ def test_merge_single_collection():
     merged = merge_results(hits_by_col, top_k=5, strategy="roundrobin")
     assert len(merged) == 2
     assert all(col == "a" for _, col in merged)
+
+
+def test_random_turn_flatten_keeps_unnamed_speaker_empty(tmp_path, monkeypatch):
+    """An unnamed turn must not be given an invented "Unknown" name: the
+    display layer (display_speaker) owns how a blank speaker is rendered."""
+    from podcodex.rag.hit import Hit, SpeakerTurn
+    from podcodex.rag.retriever import Retriever
+
+    chunk = Hit(
+        episode="ep1",
+        show="S",
+        start=10.0,
+        end=20.0,
+        text="a b",
+        speakers=[
+            SpeakerTurn(speaker="", text="a", start=10.0, end=15.0),
+            SpeakerTurn(speaker="", text="b", start=15.0, end=20.0),
+        ],
+    )
+
+    class _Store:
+        def count_chunks(self, *a, **kw):
+            return 1
+
+        def chunk_at(self, *a, **kw):
+            return chunk.model_copy(deep=True)
+
+    r = Retriever.__new__(Retriever)
+    r._local = _Store()
+    picked = r.random("col")
+    assert picked is not None
+    assert picked.speaker == ""
+    assert picked.speaker_label == ""
+
+
+def test_random_retries_when_the_index_shrinks_mid_pick():
+    """count_chunks and chunk_at are two reads; an out-of-process reindex
+    between them must not surface as "no excerpts" on a populated collection."""
+    from podcodex.rag.hit import Hit
+    from podcodex.rag.retriever import Retriever
+
+    class _ShrinkingStore:
+        def __init__(self):
+            self.counts = iter([1200, 900])  # first count is stale
+            self.calls = 0
+
+        def count_chunks(self, *a, **kw):
+            return next(self.counts)
+
+        def chunk_at(self, collection, offset, **kw):
+            self.calls += 1
+            # The stale offset misses; the re-counted one lands.
+            return None if self.calls == 1 else Hit(text="ok", episode="ep1")
+
+    r = Retriever.__new__(Retriever)
+    r._local = _ShrinkingStore()
+    picked = r.random("col")
+    assert picked is not None and picked.text == "ok"

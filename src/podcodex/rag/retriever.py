@@ -19,6 +19,7 @@ import numpy as np
 from loguru import logger
 
 from podcodex.rag.defaults import DEFAULT_MODEL
+from podcodex.rag.hit import Hit
 from podcodex.rag.index_store import IndexStore, get_index_store
 
 
@@ -79,7 +80,7 @@ class Retriever:
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
         query_vector: np.ndarray | None = None,
-    ) -> list[dict]:
+    ) -> list[Hit]:
         """Return the top_k most relevant chunks for a query.
 
         Args:
@@ -96,7 +97,7 @@ class Retriever:
                 encode once.
 
         Returns:
-            List of chunk dicts with a ``score`` key added.
+            Hits with ``score`` set.
         """
         if alpha >= 1.0:
             return self._dense(
@@ -147,7 +148,7 @@ class Retriever:
         speaker: str | None = None,
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
-    ) -> list[dict]:
+    ) -> list[Hit]:
         """Three-tier phrase search: exact (1.0), accent variant (0.8), near-typo (0.6).
 
         FTS ~2 pre-filter for speed; Python phrase checks for tier classification.
@@ -178,14 +179,13 @@ class Retriever:
             q_lower = query.lower()
             q_folded = fold_text(query)
 
-            def _keep(chunks: list[dict], needle: str, folded: bool) -> list[dict]:
-                out: list[dict] = []
+            def _keep(chunks: list[Hit], needle: str, folded: bool) -> list[Hit]:
+                out: list[Hit] = []
                 for c in chunks:
-                    for t in c.get("speakers") or []:
-                        if t.get("speaker") != speaker:
+                    for t in c.speakers or []:
+                        if t.speaker != speaker:
                             continue
-                        turn_text = t.get("text", "")
-                        hay = fold_text(turn_text) if folded else turn_text.lower()
+                        hay = fold_text(t.text) if folded else t.text.lower()
                         if needle in hay:
                             out.append(c)
                             break
@@ -194,11 +194,12 @@ class Retriever:
             exact = _keep(exact, q_lower, folded=False)
             accent_only = _keep(accent_only, q_folded, folded=True)
             fuzzy_only = []
-        return (
-            exact
-            + [{**c, "accent_match": True} for c in accent_only]
-            + [{**c, "fuzzy_match": True} for c in fuzzy_only]
-        )
+        # Tier hits are freshly built by search_literal: flag in place.
+        for c in accent_only:
+            c.accent_match = True
+        for c in fuzzy_only:
+            c.fuzzy_match = True
+        return exact + accent_only + fuzzy_only
 
     def exact_counts(
         self,
@@ -246,15 +247,15 @@ class Retriever:
             )
             groups: dict[str, dict | int] = {}
             for h in hits:
-                if h.get("fuzzy_match"):
+                if h.fuzzy_match:
                     continue
-                g = h.get(key, "")
+                g = getattr(h, key)
                 if not g:
                     continue
                 if first_hit:
-                    start = float(h.get("start", 0.0))
+                    start = h.start
                     entry = {
-                        "chunk_index": int(h.get("chunk_index", -1)),
+                        "chunk_index": h.chunk_index,
                         "start": start,
                         "start_hms": format_hms(start),
                     }
@@ -279,12 +280,13 @@ class Retriever:
         speaker: str | None = None,
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
-    ) -> dict | None:
+    ) -> Hit | None:
         """Return a single random chunk (with optional per-speaker refinement).
 
         When the selected chunk has multiple speaker turns and a speaker
-        filter is set, a single turn from that speaker is returned as a
-        flat chunk dict.
+        filter is set, the hit is narrowed to a single turn from that
+        speaker: ``speaker``/``text``/``start``/``end`` come from the turn
+        and ``speakers`` holds only it.
 
         Args:
             collection: Collection name.
@@ -292,42 +294,50 @@ class Retriever:
             episodes: Alternative to ``episode`` — restrict to a list of stems.
             pub_date_min, pub_date_max: Inclusive date bounds (``YYYY-MM-DD``).
         """
-        chunks = self._local.load_all_chunks(
-            collection,
+        # Count + offset instead of loading (and validating) the whole
+        # collection to keep one row. Filters are pushed into the SQL clause;
+        # stored rows never carry a flat `speaker`, so the dominant_speaker
+        # clause matches the previous Python-side coalesce.
+        filters = dict(
             episode=episode,
             episodes=episodes,
+            source=source,
+            speaker=speaker,
             pub_date_min=pub_date_min,
             pub_date_max=pub_date_max,
         )
-        if source or speaker:
-            chunks = [
-                c
-                for c in chunks
-                if (not source or c.get("source") == source)
-                and (
-                    not speaker
-                    or c.get("dominant_speaker", c.get("speaker")) == speaker
-                )
-            ]
-        if not chunks:
+        # Count and fetch are two reads, so an out-of-process index change
+        # between them (rsync onto a running bot, a reindex in the desktop app)
+        # can shrink the table and leave the offset past the end. Re-count and
+        # retry rather than reporting "no excerpts" on a populated collection.
+        chunk = None
+        for _ in range(3):
+            n = self._local.count_chunks(collection, **filters)
+            if n == 0:
+                return None
+            chunk = self._local.chunk_at(collection, random.randrange(n), **filters)
+            if chunk is not None:
+                break
+        if chunk is None:
             return None
-
-        chunk = random.choice(chunks)
-        turns: list[dict] = chunk.get("speakers") or []
+        turns = chunk.speakers or []
         if len(turns) > 1:
             if speaker:
-                matching = [t for t in turns if t.get("speaker") == speaker]
+                matching = [t for t in turns if t.speaker == speaker]
                 turns = matching or turns
             turn = random.choice(turns)
-            return {
-                **chunk,
-                "speaker": turn.get("speaker", "Unknown"),
-                "text": turn.get("text", ""),
-                "start": turn.get("start", chunk.get("start", 0.0)),
-                "end": turn.get("end", chunk.get("end", 0.0)),
-                "speakers": [turn],
-                "_chunk_start": chunk.get("start", 0.0),
-            }
+            # Absence stays absence: an unnamed turn keeps its empty speaker
+            # so the display layer (display_speaker) renders it, rather than
+            # baking a raw "Unknown" sentinel into the data.
+            return chunk.model_copy(
+                update={
+                    "speaker": turn.speaker,
+                    "text": turn.text,
+                    "start": turn.start or chunk.start,
+                    "end": turn.end or chunk.end,
+                    "speakers": [turn],
+                }
+            )
         return chunk
 
     # ── Internals ────────────────────────────────────────────────────────
@@ -344,7 +354,7 @@ class Retriever:
         pub_date_min: str | None,
         pub_date_max: str | None,
         query_vector: np.ndarray | None = None,
-    ) -> list[dict]:
+    ) -> list[Hit]:
         qv = (
             query_vector
             if query_vector is not None
@@ -361,7 +371,7 @@ class Retriever:
             pub_date_min=pub_date_min,
             pub_date_max=pub_date_max,
         )
-        return [h for h in hits if h["score"] >= 0.01]
+        return [h for h in hits if h.score >= 0.01]
 
     def _fts(
         self,
@@ -374,7 +384,7 @@ class Retriever:
         speaker: str | None,
         pub_date_min: str | None,
         pub_date_max: str | None,
-    ) -> list[dict]:
+    ) -> list[Hit]:
         hits = self._local.search_fts(
             collection,
             query,
@@ -386,7 +396,7 @@ class Retriever:
             pub_date_min=pub_date_min,
             pub_date_max=pub_date_max,
         )
-        return _rank_normalize([h for h in hits if h["score"] > 1e-6])
+        return _rank_normalize([h for h in hits if h.score > 1e-6])
 
     def _weighted(
         self,
@@ -401,7 +411,7 @@ class Retriever:
         pub_date_min: str | None,
         pub_date_max: str | None,
         query_vector: np.ndarray | None = None,
-    ) -> list[dict]:
+    ) -> list[Hit]:
         """Linear blend of rank-normalized dense and FTS scores."""
         k = top_k * 4
         dense_hits = _rank_normalize(
@@ -431,18 +441,22 @@ class Retriever:
         )
 
         combined: dict[str, float] = {}
-        payloads: dict[str, dict] = {}
+        payloads: dict[str, Hit] = {}
         for r in dense_hits:
             key = _chunk_key(r)
-            combined[key] = alpha * r["score"]
+            combined[key] = alpha * r.score
             payloads[key] = r
         for r in fts_hits:
             key = _chunk_key(r)
-            combined[key] = combined.get(key, 0.0) + (1 - alpha) * r["score"]
+            combined[key] = combined.get(key, 0.0) + (1 - alpha) * r.score
             payloads.setdefault(key, r)
 
         sorted_keys = sorted(combined, key=combined.__getitem__, reverse=True)[:top_k]
-        return [{**payloads[k], "score": combined[k]} for k in sorted_keys]
+        out = []
+        for k in sorted_keys:
+            payloads[k].score = combined[k]
+            out.append(payloads[k])
+        return out
 
 
 # ──────────────────────────────────────────────
@@ -450,17 +464,20 @@ class Retriever:
 # ──────────────────────────────────────────────
 
 
-def _chunk_key(chunk: dict) -> str:
+def _chunk_key(chunk: Hit) -> str:
     """Deduplication key for merging dense + FTS hits."""
-    return f"{chunk.get('show', '')}|{chunk.get('episode', '')}|{chunk.get('start', 0)}"
+    return f"{chunk.show}|{chunk.episode}|{chunk.start}"
 
 
-def _rank_normalize(results: list[dict]) -> list[dict]:
-    """Assign each hit a rank-based score in ``[1/n, 1]`` (top = 1.0)."""
+def _rank_normalize(results: list[Hit]) -> list[Hit]:
+    """Assign each hit a rank-based score in ``[1/n, 1]`` (top = 1.0).
+
+    Mutates in place: every caller passes freshly built, unshared hits.
+    """
     n = len(results)
-    if n == 0:
-        return results
-    return [{**r, "score": 1.0 - (i / n)} for i, r in enumerate(results)]
+    for i, r in enumerate(results):
+        r.score = 1.0 - (i / n)
+    return results
 
 
 @lru_cache(maxsize=4)
@@ -487,10 +504,10 @@ get_retriever.cache_clear = _get_retriever_cached.cache_clear  # type: ignore[at
 
 
 def merge_results(
-    hits_by_collection: dict[str, list[dict]],
+    hits_by_collection: dict[str, list[Hit]],
     top_k: int,
     strategy: str = "roundrobin",
-) -> list[tuple[dict, str]]:
+) -> list[tuple[Hit, str]]:
     """Merge per-collection hits into a ranked list of ``(chunk, collection)``.
 
     Strategies:
@@ -505,14 +522,14 @@ def merge_results(
             for col, chunks in hits_by_collection.items()
             for chunk in chunks
         ]
-        all_hits.sort(key=lambda x: x[0].get("score", 0.0), reverse=True)
+        all_hits.sort(key=lambda x: x[0].score or 0.0, reverse=True)
         return all_hits[:top_k]
 
-    sorted_cols: dict[str, list[dict]] = {
-        col: sorted(chunks, key=lambda c: c.get("score", 0.0), reverse=True)
+    sorted_cols: dict[str, list[Hit]] = {
+        col: sorted(chunks, key=lambda c: c.score or 0.0, reverse=True)
         for col, chunks in hits_by_collection.items()
     }
-    result: list[tuple[dict, str]] = []
+    result: list[tuple[Hit, str]] = []
     queues = list(sorted_cols.items())
     idx = defaultdict(int)
 

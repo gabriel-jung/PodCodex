@@ -9,8 +9,7 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import AUDIO_EXTS, get_index_store
-from podcodex.core._utils import humanize_stem
-from podcodex.rag.index_store import _normalize_pub_date
+from podcodex.rag.hit import Hit, SpeakerTurn
 from podcodex.rag.search_service import (
     SearchCollection,
     exact_search as svc_exact_search,
@@ -171,7 +170,7 @@ class SearchResult(BaseModel):
     score: float
     source: str
     pub_date: str = ""
-    speakers: list[dict] | None = None
+    speakers: list[SpeakerTurn] | None = None
     accent_match: bool = False
     fuzzy_match: bool = False
     match_text: str | None = None
@@ -218,37 +217,35 @@ async def search_query(req: SearchRequest) -> list[dict]:
     return [_result_to_dict(r, audio_lookup) for r, _col in results]
 
 
-def _result_to_dict(r: dict, audio_lookup: dict[str, dict] | None = None) -> dict:
-    stem = r.get("episode", "")
-    title = r.get("episode_title") or humanize_stem(stem)
-    show_name = r.get("show", "")
+def _result_to_dict(r: Hit, audio_lookup: dict[str, dict] | None = None) -> dict:
+    stem = r.episode
     show_entry = (
-        audio_lookup.get(show_name)
-        if audio_lookup is not None and stem and show_name
+        audio_lookup.get(r.show)
+        if audio_lookup is not None and stem and r.show
         else None
     ) or {}
     audio_path = (show_entry.get("audio") or {}).get(stem, "")
     folder = show_entry.get("folder", "")
     output_dir = str(Path(folder) / stem) if folder and stem else ""
     return {
-        "text": r.get("text", ""),
-        "episode": title,
+        "text": r.text,
+        "episode": r.display_title,
         "episode_stem": stem,
-        "episode_number": r.get("episode_number"),
+        "episode_number": r.episode_number,
         "audio_path": audio_path,
         "output_dir": output_dir,
-        "speaker": r.get("dominant_speaker", r.get("speaker", "")),
-        "start": r.get("start", 0.0),
-        "end": r.get("end", 0.0),
-        "score": r.get("score", 0.0),
-        "source": r.get("source", ""),
-        "pub_date": (
-            r.get("pub_date") or _normalize_pub_date(r.get("rss_pub_date")) or ""
-        ),
-        "speakers": r.get("speakers"),
-        "accent_match": bool(r.get("accent_match", False)),
-        "fuzzy_match": bool(r.get("fuzzy_match", False)),
-        "match_text": r.get("match_text"),
+        # speaker_label is turn-first: a /random hit flattened to one turn
+        # reports that turn's speaker, not the chunk's dominant one.
+        "speaker": r.speaker_label,
+        "start": r.start,
+        "end": r.end,
+        "score": r.score or 0.0,
+        "source": r.source,
+        "pub_date": r.effective_pub_date,
+        "speakers": r.speakers,
+        "accent_match": r.accent_match,
+        "fuzzy_match": r.fuzzy_match,
+        "match_text": r.match_text,
     }
 
 
@@ -327,7 +324,9 @@ async def random_quote(req: RandomRequest) -> dict | None:
     if picked is None:
         return None
     chunk, _col = picked
-    return _result_to_dict({**chunk, "score": 1.0}, _build_audio_lookup())
+    return _result_to_dict(
+        chunk.model_copy(update={"score": 1.0}), _build_audio_lookup()
+    )
 
 
 # ── Distinct speakers ────────────────────────────────────

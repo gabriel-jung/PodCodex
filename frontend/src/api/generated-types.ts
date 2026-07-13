@@ -355,6 +355,15 @@ export interface SearchRequest {
   pub_date_max?: string | null;
 }
 
+export interface SpeakerTurn {
+  speaker: string;
+  start: number;
+  end: number;
+  text: string;
+  start_char?: number | null;
+  end_char?: number | null;
+}
+
 export interface SearchResultSchema {
   text: string;
   episode: string;
@@ -368,7 +377,7 @@ export interface SearchResultSchema {
   score: number;
   source: string;
   pub_date: string;
-  speakers?: Record<string, unknown>[] | null;
+  speakers?: SpeakerTurn[] | null;
   accent_match: boolean;
   fuzzy_match: boolean;
   match_text?: string | null;

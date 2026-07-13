@@ -1,7 +1,6 @@
 """Tests for podcodex.rag.chunker — pure logic only (no model loading)."""
 
-from unittest.mock import MagicMock, patch
-
+from tests.fixtures.chunker_mocks import make_mock_chunk, mock_chonkie
 
 from podcodex.rag.chunker import (
     _build_episode_text,
@@ -150,21 +149,6 @@ def test_map_offsets_to_metadata_no_speaker_uses_unknown():
 # ──────────────────────────────────────────────
 
 
-def _make_mock_chunk(text: str, start: int, end: int, token_count: int = 10):
-    c = MagicMock()
-    c.text = text
-    c.start_index = start
-    c.end_index = end
-    c.token_count = token_count
-    return c
-
-
-def _mock_chonkie():
-    """Return a context manager that mocks the chonkie module in sys.modules."""
-    mock_mod = MagicMock()
-    return patch.dict("sys.modules", {"chonkie": mock_mod}), mock_mod
-
-
 def test_semantic_chunks_returns_expected_fields():
     transcript = {
         "meta": {"show": "S", "episode": "E"},
@@ -184,9 +168,9 @@ def test_semantic_chunks_returns_expected_fields():
         ],
     }
     full_text = "Hello world this is a longer sentence for testing. And here is another sentence with more words."
-    mock_chunk = _make_mock_chunk(full_text, 0, len(full_text), token_count=20)
+    mock_chunk = make_mock_chunk(full_text, 0, len(full_text), token_count=20)
 
-    ctx, mock_mod = _mock_chonkie()
+    ctx, mock_mod = mock_chonkie()
     mock_mod.SemanticChunker.return_value.chunk.return_value = [mock_chunk]
 
     with ctx:
@@ -220,7 +204,7 @@ def test_semantic_chunks_filters_noise_before_chunking():
             },
         ],
     }
-    ctx, mock_mod = _mock_chonkie()
+    ctx, mock_mod = mock_chonkie()
     instance = mock_mod.SemanticChunker.return_value
     instance.chunk.return_value = []
 
@@ -288,7 +272,7 @@ def test_semantic_chunks_empty_after_filter_returns_empty():
         "meta": {},
         "segments": [{"start": 0.0, "end": 1.0, "speaker": "A", "text": ".."}],
     }
-    ctx, _ = _mock_chonkie()
+    ctx, _ = mock_chonkie()
     with ctx:
         result = semantic_chunks(transcript, min_chars=30)
     assert result == []
@@ -345,9 +329,9 @@ def test_semantic_chunks_include_source_field():
         ],
     }
     full_text = "Hello world this is a longer sentence for testing."
-    mock_chunk = _make_mock_chunk(full_text, 0, len(full_text), token_count=10)
+    mock_chunk = make_mock_chunk(full_text, 0, len(full_text), token_count=10)
 
-    ctx, mock_mod = _mock_chonkie()
+    ctx, mock_mod = mock_chonkie()
     mock_mod.SemanticChunker.return_value.chunk.return_value = [mock_chunk]
 
     with ctx:

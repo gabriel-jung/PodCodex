@@ -6,7 +6,8 @@ import re
 import time
 from typing import TYPE_CHECKING
 
-from podcodex.core._utils import episode_display, humanize_stem  # noqa: F401 — re-exported
+from podcodex.core._utils import episode_display  # noqa: F401 (re-exported)
+from podcodex.rag.hit import Hit
 from podcodex.rag.index_store import fold_text
 
 
@@ -98,8 +99,8 @@ def display_speaker(name: str | None) -> str:
     return name
 
 
-def speaker(chunk: dict) -> str:
-    return display_speaker(chunk.get("speaker") or chunk.get("dominant_speaker"))
+def speaker(chunk: Hit) -> str:
+    return display_speaker(chunk.speaker_label)
 
 
 def is_http_url(value: str | None) -> bool:
@@ -107,9 +108,9 @@ def is_http_url(value: str | None) -> bool:
     return (value or "").strip().startswith(("http://", "https://"))
 
 
-def set_chunk_thumbnail(embed: "discord.Embed", chunk: dict) -> None:
+def set_chunk_thumbnail(embed: "discord.Embed", chunk: Hit) -> None:
     """Set the embed thumbnail from a chunk's ``artwork_url`` when it's a real URL."""
-    art = (chunk.get("artwork_url") or "").strip()
+    art = chunk.artwork_url.strip()
     if is_http_url(art):
         embed.set_thumbnail(url=art)
 
@@ -195,7 +196,7 @@ def highlight(text: str, query: str) -> str:
     return re.sub(f"({escaped})", r"**__\1__**", text, flags=re.IGNORECASE)
 
 
-def speaker_lines(chunk: dict, query: str = "") -> str:
+def speaker_lines(chunk: Hit, query: str = "") -> str:
     """Format chunk text with per-turn speaker labels when available.
 
     Consecutive same-speaker turns are merged into a single block via
@@ -208,11 +209,10 @@ def speaker_lines(chunk: dict, query: str = "") -> str:
     """
     from podcodex.core._utils import merge_display_turns
 
-    turns: list[dict] = chunk.get("speakers") or []
-    mark = chunk.get("match_text") or query
+    turns = chunk.speakers or []
+    mark = chunk.match_text or query
     if not turns:
-        text = chunk.get("text", "")
-        return highlight(text, mark) if mark else text
+        return highlight(chunk.text, mark) if mark else chunk.text
     merged = merge_display_turns(turns)
     lines = []
     for t in merged:
@@ -289,7 +289,7 @@ _COMPACT_EMBED_BUDGET = 5800
 
 
 def build_compact_embed(
-    results: list[tuple[dict, str]],
+    results: list[tuple[Hit, str]],
     label: str,
     query: str = "",
     question: str = "",
@@ -312,11 +312,11 @@ def build_compact_embed(
         color=discord.Color.blurple(),
     )
     for i, (chunk, _col) in enumerate(results[:25], 1):
-        show = chunk.get("show", "")
-        episode = episode_display(chunk)
-        score = chunk.get("score", 0.0)
-        start = chunk.get("start", 0.0)
-        text = chunk.get("text", "")
+        show = chunk.show
+        episode = chunk.display_title
+        score = chunk.score or 0.0
+        start = chunk.start
+        text = chunk.text
         if len(text) > _COMPACT_TEXT_MAX:
             cut = text.rfind(" ", 0, _COMPACT_TEXT_MAX)
             text = text[: cut if cut != -1 else _COMPACT_TEXT_MAX] + "…"
@@ -326,9 +326,7 @@ def build_compact_embed(
         name = f"#{i} {episode}"
         if show:
             name += f" ({show})"
-        end = chunk.get("end", 0.0)
-        timed = chunk.get("timed", True)
-        ts_label = fmt_timestamp(start, end, timed=timed)
+        ts_label = fmt_timestamp(start, chunk.end, timed=chunk.timed)
         ts_part = f" · {ts_label}" if ts_label else ""
         value = (
             f"{speaker(chunk)}{ts_part} · "
@@ -341,7 +339,7 @@ def build_compact_embed(
 
     n_results = len(results)
     if query:
-        total_occ = sum(count_occurrences(c.get("text", ""), query) for c, _ in results)
+        total_occ = sum(count_occurrences(c.text, query) for c, _ in results)
         footer = (
             f"{n_results} excerpt{'s' if n_results != 1 else ''} · "
             f"{total_occ} mention{'s' if total_occ != 1 else ''}"

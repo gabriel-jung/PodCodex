@@ -19,6 +19,7 @@ from loguru import logger
 from podcodex.core.app_config import load_config
 from podcodex.ingest.show import load_show_meta
 from podcodex.rag.defaults import ALPHA, DEFAULT_CHUNKING, DEFAULT_MODEL
+from podcodex.rag.hit import Hit
 from podcodex.rag.retriever import Retriever, get_retriever, merge_results
 
 _PREFS_TTL = 5.0
@@ -169,7 +170,7 @@ def hybrid_search(
     pub_date_min: str | None = None,
     pub_date_max: str | None = None,
     retriever_factory: Callable[[str], Retriever] = get_retriever,
-) -> list[tuple[dict, str]]:
+) -> list[tuple[Hit, str]]:
     """Fan a semantic query across collections and merge.
 
     Groups by embedding model so the query is encoded once per model, not
@@ -177,7 +178,7 @@ def hybrid_search(
     re-raises; any other per-collection failure is logged and skipped so one
     broken table never blanks the whole answer.
     """
-    hits_by_col: dict[str, list[dict]] = {}
+    hits_by_col: dict[str, list[Hit]] = {}
     for model, cols in _by_model(collections).items():
         ret = retriever_factory(model)
         qv = ret.encode_query(query)
@@ -202,7 +203,7 @@ def hybrid_search(
                 logger.exception(f"search_service: retrieve failed for {col.name}")
     merged = merge_results(hits_by_col, top_k=top_k, strategy=strategy)
     if score_floor > 0.0:
-        merged = [r for r in merged if r[0].get("score", 0.0) > score_floor]
+        merged = [r for r in merged if (r[0].score or 0.0) > score_floor]
     return merged
 
 
@@ -218,7 +219,7 @@ def exact_search(
     pub_date_min: str | None = None,
     pub_date_max: str | None = None,
     retriever_factory: Callable[[str], Retriever] = get_retriever,
-) -> list[tuple[dict, str]]:
+) -> list[tuple[Hit, str]]:
     """Literal search across collections.
 
     ``order="positional"`` keeps each collection's retriever order (MCP,
@@ -228,7 +229,7 @@ def exact_search(
     accent variants, each group chronological; fuzzy hits appended by score
     descending.
     """
-    out: list[tuple[dict, str]] = []
+    out: list[tuple[Hit, str]] = []
     for col in collections:
         ret = retriever_factory(col.model)
         try:
@@ -249,17 +250,19 @@ def exact_search(
             continue
         out.extend((hit, col.name) for hit in hits)
     if order == "chronological":
+        # `score if score is not None`, not `score or ...`: a legitimate 0.0
+        # must sort as 0.0, not jump to the top as if the field were missing.
         phrase = sorted(
-            (r for r in out if not r[0].get("fuzzy_match")),
+            (r for r in out if not r[0].fuzzy_match),
             key=lambda x: (
-                -x[0].get("score", 1.0),
-                x[0].get("episode", ""),
-                x[0].get("start", 0.0),
+                -(x[0].score if x[0].score is not None else 1.0),
+                x[0].episode,
+                x[0].start,
             ),
         )
         fuzzy = sorted(
-            (r for r in out if r[0].get("fuzzy_match")),
-            key=lambda x: -x[0].get("score", 0.6),
+            (r for r in out if r[0].fuzzy_match),
+            key=lambda x: -(x[0].score if x[0].score is not None else 0.6),
         )
         out = phrase + fuzzy
     return out
@@ -275,7 +278,7 @@ def random_quote(
     pub_date_min: str | None = None,
     pub_date_max: str | None = None,
     retriever_factory: Callable[[str], Retriever] = get_retriever,
-) -> tuple[dict, str] | None:
+) -> tuple[Hit, str] | None:
     """One random quote from a randomly picked collection, or None.
 
     ``ValueError`` from the retriever (bad filter) re-raises; any other

@@ -241,7 +241,7 @@ def test_save_chunks_text_round_trip(tmp_path):
         "c", "ep1", [{"text": "hello world", "start": 0.0}], _rng_embeddings(1)
     )
     loaded = s.load_chunks_no_embeddings("c", "ep1")
-    assert loaded[0]["text"] == "hello world"
+    assert loaded[0].text == "hello world"
 
 
 def test_save_chunks_meta_round_trip(tmp_path):
@@ -255,9 +255,9 @@ def test_save_chunks_meta_round_trip(tmp_path):
     }
     s.save_chunks("c", "ep1", [chunk], _rng_embeddings(1))
     loaded = s.load_chunks_no_embeddings("c", "ep1")
-    assert loaded[0]["start"] == pytest.approx(1.5)
-    assert loaded[0]["end"] == pytest.approx(3.0)
-    assert loaded[0]["speakers"] == [{"speaker": "Alice", "text": "hi"}]
+    assert loaded[0].start == pytest.approx(1.5)
+    assert loaded[0].end == pytest.approx(3.0)
+    assert [(t.speaker, t.text) for t in loaded[0].speakers] == [("Alice", "hi")]
 
 
 def test_save_chunks_length_mismatch_raises(tmp_path):
@@ -280,25 +280,25 @@ def _prepare_episode(tmp_path: Path, n: int = 10) -> IndexStore:
 def test_get_chunk_window_returns_center_plus_neighbors(tmp_path):
     s = _prepare_episode(tmp_path, n=10)
     window = s.get_chunk_window("c", "ep1", chunk_index=5, window=2)
-    assert [c["chunk_index"] for c in window] == [3, 4, 5, 6, 7]
+    assert [c.chunk_index for c in window] == [3, 4, 5, 6, 7]
 
 
 def test_get_chunk_window_clamps_at_start(tmp_path):
     s = _prepare_episode(tmp_path, n=10)
     window = s.get_chunk_window("c", "ep1", chunk_index=1, window=3)
-    assert [c["chunk_index"] for c in window] == [0, 1, 2, 3, 4]
+    assert [c.chunk_index for c in window] == [0, 1, 2, 3, 4]
 
 
 def test_get_chunk_window_clamps_at_end(tmp_path):
     s = _prepare_episode(tmp_path, n=10)
     window = s.get_chunk_window("c", "ep1", chunk_index=9, window=3)
-    assert [c["chunk_index"] for c in window] == [6, 7, 8, 9]
+    assert [c.chunk_index for c in window] == [6, 7, 8, 9]
 
 
 def test_get_chunk_window_zero_width_returns_center_only(tmp_path):
     s = _prepare_episode(tmp_path, n=5)
     window = s.get_chunk_window("c", "ep1", chunk_index=2, window=0)
-    assert [c["chunk_index"] for c in window] == [2]
+    assert [c.chunk_index for c in window] == [2]
 
 
 def test_get_chunk_window_missing_center_returns_empty(tmp_path):
@@ -314,7 +314,7 @@ def test_get_chunk_window_missing_episode_returns_empty(tmp_path):
 def test_get_chunk_window_negative_window_treated_as_zero(tmp_path):
     s = _prepare_episode(tmp_path, n=5)
     window = s.get_chunk_window("c", "ep1", chunk_index=2, window=-3)
-    assert [c["chunk_index"] for c in window] == [2]
+    assert [c.chunk_index for c in window] == [2]
 
 
 # ── Native search ────────────────────────────────────────────────────────
@@ -334,7 +334,7 @@ def test_search_vector_returns_self_first(tmp_path):
     ]
     s.save_chunks("c", "e", chunks, vecs)
     hits = s.search_vector("c", vecs[0], top_k=2)
-    assert hits[0]["text"] == "first"
+    assert hits[0].text == "first"
 
 
 def test_search_vector_rejects_dim_mismatch(tmp_path):
@@ -369,7 +369,7 @@ def test_search_vector_episode_filter(tmp_path):
         vecs[1:],
     )
     hits = s.search_vector("c", vecs[0], top_k=5, episode="ep2")
-    assert [h["text"] for h in hits] == ["beta"]
+    assert [h.text for h in hits] == ["beta"]
 
 
 def test_search_fts_finds_token(tmp_path):
@@ -381,7 +381,7 @@ def test_search_fts_finds_token(tmp_path):
     ]
     s.save_chunks("c", "e", chunks, _rng_embeddings(2, dim=4))
     hits = s.search_fts("c", "fox", top_k=5)
-    assert any("fox" in h["text"] for h in hits)
+    assert any("fox" in h.text for h in hits)
 
 
 # ── Stats helpers ────────────────────────────────────────────────────────
@@ -446,18 +446,18 @@ def test_reopening_preserves_data(tmp_path):
         ("2024", None),
     ],
 )
-def test_normalize_pub_date(raw, expected):
-    from podcodex.rag.index_store import _normalize_pub_date
+def testnormalize_pub_date(raw, expected):
+    from podcodex.core._utils import normalize_pub_date
 
-    assert _normalize_pub_date(raw) == expected
+    assert normalize_pub_date(raw) == expected
 
 
 def test_normalize_pub_date_idempotent():
-    from podcodex.rag.index_store import _normalize_pub_date
+    from podcodex.core._utils import normalize_pub_date
 
-    assert _normalize_pub_date(
-        _normalize_pub_date("Mon, 15 Jan 2024 12:00:00 GMT")
-    ) == ("2024-01-15")
+    assert normalize_pub_date(normalize_pub_date("Mon, 15 Jan 2024 12:00:00 GMT")) == (
+        "2024-01-15"
+    )
 
 
 # ── pub_date column + migration ──────────────────────────────────────────
@@ -799,7 +799,7 @@ def test_search_literal_fuzzy_tier_catches_one_edit_typo(tmp_path):
     exact, accent, fuzzy = s.search_literal(col, "williames")
     assert exact == [] and accent == []
     assert len(fuzzy) == 1
-    assert "williams" in fuzzy[0]["text"]
+    assert "williams" in fuzzy[0].text
 
 
 # ── Exact tier: whole-word matches rank before superstring matches ───────
@@ -821,7 +821,7 @@ def test_exact_word_matches_rank_before_superstring(tmp_path):
     s, col = _word_rank_store(tmp_path)
     exact, _, _ = s.search_literal(col, "william")
     assert len(exact) == 3
-    texts = [h["text"] for h in exact]
+    texts = [h.text for h in exact]
     # Standalone-word hits first (both, stable order), superstring last.
     assert texts[-1] == "John Williams composed the score"
     assert set(texts[:2]) == {"I met William yesterday", "William, come here"}
@@ -830,7 +830,7 @@ def test_exact_word_matches_rank_before_superstring(tmp_path):
 def test_exact_word_match_scores(tmp_path):
     s, col = _word_rank_store(tmp_path)
     exact, _, _ = s.search_literal(col, "william")
-    by_text = {h["text"]: h["score"] for h in exact}
+    by_text = {h.text: h.score for h in exact}
     assert by_text["I met William yesterday"] == 1.0
     assert by_text["William, come here"] == 1.0  # punctuation is a boundary
     assert by_text["John Williams composed the score"] == 0.99
@@ -846,12 +846,12 @@ def test_exact_word_match_found_past_superstring_occurrence(tmp_path):
     chunks[0]["text"] = "Williams admired William deeply"
     s.save_chunks(col, "ep1", chunks, _rng_embeddings(1))
     exact, _, _ = s.search_literal(col, "william")
-    assert exact[0]["score"] == 1.0
-    assert exact[0]["match_text"] == "William"
+    assert exact[0].score == 1.0
+    assert exact[0].match_text == "William"
 
 
 def test_exact_whole_query_still_scores_full(tmp_path):
     s, col = _word_rank_store(tmp_path)
     exact, _, _ = s.search_literal(col, "williams")
-    assert [h["score"] for h in exact] == [1.0]
-    assert exact[0]["text"] == "John Williams composed the score"
+    assert [h.score for h in exact] == [1.0]
+    assert exact[0].text == "John Williams composed the score"

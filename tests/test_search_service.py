@@ -3,6 +3,7 @@
 import pytest
 
 from podcodex.rag import search_service
+from podcodex.rag.hit import Hit
 from podcodex.rag.search_service import (
     SearchCollection,
     exact_search,
@@ -232,8 +233,8 @@ def _factory(hits_by_col, calls):
 def test_hybrid_encodes_once_per_model_and_merges():
     calls = []
     hits = {
-        "alpha__bge-m3__semantic": [{"text": "a", "score": 0.9}],
-        "beta__e5-small__semantic": [{"text": "b", "score": 0.8}],
+        "alpha__bge-m3__semantic": [Hit(text="a", score=0.9)],
+        "beta__e5-small__semantic": [Hit(text="b", score=0.8)],
     }
     out = hybrid_search(
         "q",
@@ -241,7 +242,7 @@ def test_hybrid_encodes_once_per_model_and_merges():
         top_k=5,
         retriever_factory=_factory(hits, calls),
     )
-    assert [c["text"] for c, _ in out] == ["a", "b"]  # roundrobin, score order
+    assert [c.text for c, _ in out] == ["a", "b"]  # roundrobin, score order
     assert calls.count(("encode", "q")) == 2  # one per model, not per collection
     assert ("retrieve", "alpha__bge-m3__semantic", "QV") in calls
 
@@ -249,8 +250,8 @@ def test_hybrid_encodes_once_per_model_and_merges():
 def test_hybrid_score_floor_drops_noise():
     hits = {
         "alpha__bge-m3__semantic": [
-            {"text": "keep", "score": 0.5},
-            {"text": "noise", "score": 0.01},
+            Hit(text="keep", score=0.5),
+            Hit(text="noise", score=0.01),
         ]
     }
     out = hybrid_search(
@@ -260,7 +261,7 @@ def test_hybrid_score_floor_drops_noise():
         score_floor=0.05,
         retriever_factory=_factory(hits, []),
     )
-    assert [c["text"] for c, _ in out] == ["keep"]
+    assert [c.text for c, _ in out] == ["keep"]
 
 
 def test_hybrid_reraises_value_error():
@@ -280,22 +281,22 @@ def test_hybrid_skips_broken_collection():
         def retrieve(self, query, collection, **kw):
             if collection.startswith("alpha"):
                 raise RuntimeError("lance io")
-            return [{"text": "b", "score": 0.8}]
+            return [Hit(text="b", score=0.8)]
 
     def factory(model):
         return Flaky({}, [])
 
     out = hybrid_search("q", [ALPHA_COL, BETA_COL], top_k=5, retriever_factory=factory)
-    assert [c["text"] for c, _ in out] == ["b"]
+    assert [c.text for c, _ in out] == ["b"]
 
 
 def test_exact_chronological_order_bot_semantics():
     hits = {
         "alpha__bge-m3__semantic": [
-            {"text": "t3", "score": 0.6, "fuzzy_match": True},
-            {"text": "t1", "score": 1.0, "episode": "ep1", "start": 5.0},
-            {"text": "t2", "score": 0.8, "fuzzy_match": True},
-            {"text": "t0", "score": 1.0, "episode": "ep0", "start": 9.0},
+            Hit(text="t3", score=0.6, fuzzy_match=True),
+            Hit(text="t1", score=1.0, episode="ep1", start=5.0),
+            Hit(text="t2", score=0.8, fuzzy_match=True),
+            Hit(text="t0", score=1.0, episode="ep0", start=9.0),
         ]
     }
     out = exact_search(
@@ -305,19 +306,20 @@ def test_exact_chronological_order_bot_semantics():
         retriever_factory=_factory(hits, []),
     )
     # phrase hits chronological by (episode, start), fuzzy after, by score desc
-    assert [c["text"] for c, _ in out] == ["t0", "t1", "t2", "t3"]
+    assert [c.text for c, _ in out] == ["t0", "t1", "t2", "t3"]
 
 
 def test_exact_positional_keeps_retriever_order():
-    hits = {"alpha__bge-m3__semantic": [{"text": "x"}, {"text": "y"}]}
+    hits = {"alpha__bge-m3__semantic": [Hit(text="x"), Hit(text="y")]}
     out = exact_search("q", [ALPHA_COL], retriever_factory=_factory(hits, []))
-    assert [c["text"] for c, _ in out] == ["x", "y"]
+    assert [c.text for c, _ in out] == ["x", "y"]
 
 
 def test_random_returns_chunk_and_collection():
-    hits = {"alpha__bge-m3__semantic": [{"text": "r"}]}
+    hits = {"alpha__bge-m3__semantic": [Hit(text="r")]}
     got = random_quote([ALPHA_COL], retriever_factory=_factory(hits, []))
-    assert got == ({"text": "r"}, "alpha__bge-m3__semantic")
+    assert got is not None
+    assert (got[0].text, got[1]) == ("r", "alpha__bge-m3__semantic")
     assert random_quote([], retriever_factory=_factory({}, [])) is None
 
 
@@ -348,8 +350,8 @@ def test_hybrid_same_model_encodes_once():
     calls = []
     alpha2 = SearchCollection("gamma__bge-m3__semantic", "bge-m3", "Gamma")
     hits = {
-        "alpha__bge-m3__semantic": [{"text": "a", "score": 0.9}],
-        "gamma__bge-m3__semantic": [{"text": "g", "score": 0.7}],
+        "alpha__bge-m3__semantic": [Hit(text="a", score=0.9)],
+        "gamma__bge-m3__semantic": [Hit(text="g", score=0.7)],
     }
     hybrid_search(
         "q",
@@ -367,13 +369,13 @@ def test_exact_skips_broken_collection():
         def exact(self, query, collection, **kw):
             if collection.startswith("alpha"):
                 raise RuntimeError("lance io")
-            return [{"text": "b"}]
+            return [Hit(text="b")]
 
     def factory(model):
         return Flaky({}, [])
 
     out = exact_search("q", [ALPHA_COL, BETA_COL], retriever_factory=factory)
-    assert [c["text"] for c, _ in out] == ["b"]
+    assert [c.text for c, _ in out] == ["b"]
 
 
 def test_exact_positional_preserves_input_collection_order():
@@ -384,12 +386,12 @@ def test_exact_positional_preserves_input_collection_order():
     y_col = SearchCollection("y__b-model__semantic", "b-model", "Y")
     z_col = SearchCollection("z__a-model__semantic", "a-model", "Z")
     hits = {
-        "x__a-model__semantic": [{"text": "x"}],
-        "y__b-model__semantic": [{"text": "y"}],
-        "z__a-model__semantic": [{"text": "z"}],
+        "x__a-model__semantic": [Hit(text="x")],
+        "y__b-model__semantic": [Hit(text="y")],
+        "z__a-model__semantic": [Hit(text="z")],
     }
     out = exact_search("q", [x_col, y_col, z_col], retriever_factory=_factory(hits, []))
-    assert [c["text"] for c, _ in out] == ["x", "y", "z"]
+    assert [c.text for c, _ in out] == ["x", "y", "z"]
 
 
 def test_exact_reraises_value_error():
@@ -407,8 +409,8 @@ def test_exact_reraises_value_error():
 def test_exact_chronological_word_matches_before_superstring():
     hits = {
         "alpha__bge-m3__semantic": [
-            {"text": "sup", "score": 0.99, "episode": "ep0", "start": 1.0},
-            {"text": "word", "score": 1.0, "episode": "ep9", "start": 9.0},
+            Hit(text="sup", score=0.99, episode="ep0", start=1.0),
+            Hit(text="word", score=1.0, episode="ep9", start=9.0),
         ]
     }
     out = exact_search(
@@ -418,4 +420,4 @@ def test_exact_chronological_word_matches_before_superstring():
         retriever_factory=_factory(hits, []),
     )
     # Word match ranks first despite the later episode.
-    assert [c["text"] for c, _ in out] == ["word", "sup"]
+    assert [c.text for c, _ in out] == ["word", "sup"]

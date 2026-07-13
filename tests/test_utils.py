@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from podcodex.rag.hit import SpeakerTurn
 from podcodex.core._utils import (
     batch_segments_by_duration,
     call_and_parse,
@@ -283,10 +284,10 @@ def test_merge_display_turns_collapses_same_speaker_runs():
     """Consecutive turns from the same speaker merge into a single block
     with concatenated text and the last turn's ``end`` timestamp."""
     turns = [
-        {"speaker": "Alice", "text": "Hello there.", "start": 0.0, "end": 1.0},
-        {"speaker": "Alice", "text": "How are you?", "start": 1.0, "end": 2.5},
-        {"speaker": "Bob", "text": "Good, you?", "start": 2.5, "end": 3.5},
-        {"speaker": "Bob", "text": "And yourself?", "start": 3.5, "end": 4.0},
+        SpeakerTurn(speaker="Alice", text="Hello there.", start=0.0, end=1.0),
+        SpeakerTurn(speaker="Alice", text="How are you?", start=1.0, end=2.5),
+        SpeakerTurn(speaker="Bob", text="Good, you?", start=2.5, end=3.5),
+        SpeakerTurn(speaker="Bob", text="And yourself?", start=3.5, end=4.0),
     ]
     merged = merge_display_turns(turns)
     assert len(merged) == 2
@@ -302,9 +303,9 @@ def test_merge_display_turns_collapses_same_speaker_runs():
 def test_merge_display_turns_preserves_alternation():
     """Alternating speakers produce one block per turn (no collapsing)."""
     turns = [
-        {"speaker": "Alice", "text": "A1", "start": 0.0, "end": 1.0},
-        {"speaker": "Bob", "text": "B1", "start": 1.0, "end": 2.0},
-        {"speaker": "Alice", "text": "A2", "start": 2.0, "end": 3.0},
+        SpeakerTurn(speaker="Alice", text="A1", start=0.0, end=1.0),
+        SpeakerTurn(speaker="Bob", text="B1", start=1.0, end=2.0),
+        SpeakerTurn(speaker="Alice", text="A2", start=2.0, end=3.0),
     ]
     merged = merge_display_turns(turns)
     assert [(m["speaker"], m["text"]) for m in merged] == [
@@ -315,12 +316,12 @@ def test_merge_display_turns_preserves_alternation():
 
 
 def test_merge_display_turns_skips_empty_and_unknown_speaker():
-    """Empty text is dropped; missing speaker labels default to ``Unknown``."""
+    """Empty text is dropped; blank speaker labels default to ``Unknown``."""
     turns = [
-        {"speaker": "Alice", "text": "   ", "start": 0.0, "end": 1.0},
-        {"speaker": "", "text": "ghost line", "start": 1.0, "end": 2.0},
-        {"speaker": None, "text": "another ghost", "start": 2.0, "end": 3.0},
-        {"speaker": "Alice", "text": "real line", "start": 3.0, "end": 4.0},
+        SpeakerTurn(speaker="Alice", text="   ", start=0.0, end=1.0),
+        SpeakerTurn(speaker="", text="ghost line", start=1.0, end=2.0),
+        SpeakerTurn(speaker="", text="another ghost", start=2.0, end=3.0),
+        SpeakerTurn(speaker="Alice", text="real line", start=3.0, end=4.0),
     ]
     merged = merge_display_turns(turns)
     # Whitespace-only turn dropped; ghost turns collapse under "Unknown"; Alice
@@ -371,3 +372,15 @@ def test_parse_time_rejects_out_of_range_fields():
         parse_time("1h09m60")
     with pytest.raises(ValueError):
         parse_time("1h60m00")
+
+
+def test_merge_display_turns_absent_end_does_not_rewind_run():
+    """A turn with no timing (end defaults to 0.0) must not drag the merged
+    run's end backwards below its start."""
+    turns = [
+        SpeakerTurn(speaker="Alice", text="one", start=1.0, end=9.0),
+        SpeakerTurn(speaker="Alice", text="two"),  # legacy turn, no timing
+    ]
+    merged = merge_display_turns(turns)
+    assert len(merged) == 1
+    assert merged[0]["end"] == 9.0
