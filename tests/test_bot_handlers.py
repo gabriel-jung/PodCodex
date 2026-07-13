@@ -192,6 +192,29 @@ def test_run_search_wires_hybrid_search_and_sends_followup(monkeypatch):
     assert interaction.followup.messages[0]["embed"] is not None
 
 
+def test_run_search_explains_why_nothing_matched(monkeypatch):
+    """/search must give the same precise reason as /exact and /random when a
+    scope resolves to no collections (locked show, wrong model), not the
+    generic "no results, try simpler wording"."""
+    fake_hybrid = _Recorder([])
+    monkeypatch.setattr(search_module, "hybrid_search", fake_hybrid)
+    monkeypatch.setattr(resolution_module, "load_show_rag_prefs", lambda: {})
+
+    bot = _make_bot(_FakeLocal())
+    interaction = _FakeInteraction()
+    settings = ServerSettings()
+    # A show that is not in the index at all: nothing resolves.
+    shows = ResolvedShows(ShowAccess.SPECIFIC, ("Nonexistent Show",))
+
+    asyncio.run(bot._run_search(interaction, "hello", shows, settings, 0.5, "α=0.50"))
+
+    # Retrieval never ran, and the user got the resolver's explanation.
+    assert fake_hybrid.calls == []
+    msg = interaction.followup.messages[0]["content"]
+    assert "simpler wording" not in msg
+    assert "Nonexistent Show" in msg
+
+
 # ──────────────────────────────────────────────
 # /exact
 # ──────────────────────────────────────────────

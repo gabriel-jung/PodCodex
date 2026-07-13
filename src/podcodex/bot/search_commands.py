@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 
 import discord
 from loguru import logger
@@ -28,6 +29,7 @@ from podcodex.bot.ui import (
 from podcodex.rag.hit import Hit
 from podcodex.core._utils import normalize_pub_date
 from podcodex.rag.search_service import (
+    SearchCollection,
     exact_search,
     hybrid_search,
     random_quote,
@@ -128,12 +130,26 @@ class SearchCommandsMixin:
         await interaction.response.defer()
         loop = asyncio.get_running_loop()
 
+        # Same pre-flight as /exact, /random and the stats commands: resolve
+        # first, so a locked show or a wrong-model scope gets the precise
+        # reason instead of the generic "no results, try simpler wording".
+        col_info = await self._cached_col_info()
+        cols = self._resolve_show_collections(
+            shows, settings, col_info, explicit=explicit
+        )
+        if not cols:
+            await interaction.followup.send(
+                self._empty_collections_message(col_info, settings, shows),
+                ephemeral=True,
+            )
+            return
+
         try:
             results = await loop.run_in_executor(
                 None,
                 lambda: self._hybrid_search(
                     query,
-                    shows,
+                    cols,
                     settings,
                     alpha,
                     source=source,
@@ -141,7 +157,6 @@ class SearchCommandsMixin:
                     speaker=speaker,
                     pub_date_min=pub_date_min,
                     pub_date_max=pub_date_max,
-                    explicit=explicit,
                 ),
             )
         except ValueError as e:
@@ -204,7 +219,7 @@ class SearchCommandsMixin:
     def _hybrid_search(
         self,
         query: str,
-        shows: ResolvedShows,
+        cols: Sequence[SearchCollection],
         settings: ServerSettings,
         alpha: float,
         *,
@@ -213,22 +228,14 @@ class SearchCommandsMixin:
         speaker: str | None = None,
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
-        explicit: tuple[str, str] | None = None,
     ) -> list[tuple[Hit, str]]:
-        """Run hybrid retrieval, one collection per show, and merge results.
+        """Run hybrid retrieval over already-resolved collections and merge.
 
-        Shows may resolve to collections under different embedding models; the
-        shared search service groups retrievers by model so each query is
-        encoded once per model, not once per collection.
+        Collections may sit under different embedding models; the shared search
+        service groups retrievers by model so each query is encoded once per
+        model, not once per collection. Resolution (and the "why did nothing
+        match" message) is the caller's job, as it is for every other command.
         """
-        col_info = self.local.get_all_collection_info()
-        cols = self._resolve_show_collections(
-            shows, settings, col_info, explicit=explicit
-        )
-        if not cols:
-            logger.warning("No collections resolved for this query")
-            return []
-
         return hybrid_search(
             query,
             cols,

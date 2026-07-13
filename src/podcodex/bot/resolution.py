@@ -47,11 +47,17 @@ class ResolutionMixin:
 
         if settings.model not in same_model:
             others = sorted(m for m in same_model if m)
+            # `/setup` is manage_guild-gated, so attribute it to an admin (the
+            # locked-show message below already does). `model:` is not an option
+            # on plain /search, /exact or /random, so point at the one command a
+            # non-admin can actually use to override it.
             hint = (
                 f"Available models: {', '.join(others)}. "
-                f"Switch with `/setup model:{others[0]}` or pass `model:` to this command."
+                f"An admin can change the server default with "
+                f"`/setup model:{others[0]}`, or use the `model:` option on "
+                f"`/search-advanced`."
                 if others
-                else "No other models available either — index something first."
+                else "No other models are available either. Index a show first."
             )
             return (
                 f"No shows are indexed with the **{model_label}** embedding model. "
