@@ -32,6 +32,8 @@
 - `/random` no longer loads an entire show to pick one quote, so it returns
   immediately on large indexes.
 
+## [0.2.6] - 2026-07-12
+
 ### One search engine for app, bot, and MCP
 
 The app API, the Discord bot, and the MCP server now resolve shows and run

@@ -10,6 +10,7 @@ from podcodex.bot.announce import (  # noqa: E402
     AnnounceStore,
     build_new_episodes_embed,
     build_version_embed,
+    changelog_section,
 )
 
 
@@ -112,6 +113,37 @@ def test_new_episodes_embed_truncates_large_batch():
 
 def test_version_embed():
     assert build_version_embed("0.2.5").title == "🔖 PodCodex bot v0.2.5"
+
+
+def test_version_embed_carries_the_changelog_section():
+    import podcodex
+
+    embed = build_version_embed(podcodex.__version__)
+    section = changelog_section(podcodex.__version__)
+    assert section, "the running version should have a CHANGELOG entry"
+    # The notes are shown, not summarized: the card body is the section itself.
+    assert embed.description
+    assert embed.description.startswith(section[:40])
+
+
+def test_changelog_section_stops_at_the_next_version():
+    section = changelog_section("0.2.6")
+    assert section
+    assert "## [" not in section  # did not bleed into 0.2.5
+
+
+def test_version_embed_omits_notes_it_cannot_read():
+    # An unknown version (and, on the Docker image, a missing CHANGELOG) must
+    # degrade to the bare card rather than inventing a summary.
+    assert changelog_section("9.9.9") == ""
+    assert build_version_embed("9.9.9").description is None
+
+
+def test_changelog_section_empty_when_file_is_absent(monkeypatch, tmp_path):
+    import podcodex.bot.announce as announce_mod
+
+    monkeypatch.setattr(announce_mod, "__file__", str(tmp_path / "bot" / "x.py"))
+    assert announce_mod.changelog_section("0.2.7") == ""
 
 
 # ── announce tick orchestration (real bot + seeded index, fake channel) ──

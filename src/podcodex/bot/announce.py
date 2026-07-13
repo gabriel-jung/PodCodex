@@ -17,7 +17,12 @@ from pathlib import Path
 
 import discord
 
-from podcodex.bot.formatting import episode_display, is_http_url, pub_month
+from podcodex.bot.formatting import (
+    episode_display,
+    is_http_url,
+    pub_month,
+    truncate_description,
+)
 
 # Cap the per-show episode list so a large back-to-back batch stays one readable
 # embed rather than blowing past Discord's description limit.
@@ -159,9 +164,42 @@ def build_new_episodes_embed(show: str, episodes: list[dict]) -> discord.Embed:
     return embed
 
 
+def changelog_section(version: str) -> str:
+    """Return CHANGELOG.md's section for *version*, or "" when unavailable.
+
+    Provenance rule: the notes are read from the shipped CHANGELOG, never
+    synthesized. When the file is not there (the Docker image and a plain
+    site-packages install do not carry the repo root), the caller falls back
+    to the bare version card rather than inventing a summary.
+    """
+    # src/podcodex/bot/announce.py -> repo root (also /app in the container).
+    path = Path(__file__).resolve().parents[3] / "CHANGELOG.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+    lines = text.splitlines()
+    start = next(
+        (i for i, ln in enumerate(lines) if ln.startswith(f"## [{version}]")), None
+    )
+    if start is None:
+        return ""
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
+        len(lines),
+    )
+    return "\n".join(lines[start + 1 : end]).strip()
+
+
 def build_version_embed(version: str) -> discord.Embed:
-    """A minimal 'bot updated' card. Version is the real ``__version__``."""
+    """A 'bot updated' card carrying that version's changelog notes.
+
+    Version is the real ``__version__``; the body is the matching CHANGELOG
+    section, omitted entirely when it cannot be read.
+    """
     return discord.Embed(
         title=f"🔖 PodCodex bot v{version}",
+        description=truncate_description(changelog_section(version)) or None,
         color=discord.Color.blurple(),
     )
