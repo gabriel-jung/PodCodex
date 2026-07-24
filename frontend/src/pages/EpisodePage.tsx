@@ -105,7 +105,7 @@ export default function EpisodePage({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const seekTo = useAudioStore((s) => s.seekTo);
-  const setAudioMeta = useAudioStore((s) => s.setAudioMeta);
+  const registerMeta = useAudioStore((s) => s.registerMeta);
   const activeStep: ActiveStep = (initialTab as ActiveStep) || "overview";
 
   const setActiveStep = useCallback((step: ActiveStep) => {
@@ -188,16 +188,19 @@ export default function EpisodePage({
 
   const artwork = episode?.artwork_url || (meta?.artwork_url && folder ? artworkUrl(folder) : "");
 
+  // Register meta for this episode's audio WITHOUT loading it into the player.
+  // Navigation stays separate from playback: the bar keeps playing whatever is
+  // playing, and only reveals this episode once the user explicitly plays it.
   useEffect(() => {
     if (!episode?.audio_path) return;
-    setAudioMeta(episode.audio_path, {
+    registerMeta(episode.audio_path, {
       title: episode.title,
       artwork: artwork || undefined,
       showName: meta?.name,
       folder,
       stem: episode.stem || undefined,
     });
-  }, [episode?.audio_path, episode?.title, artwork, meta?.name, folder, episode?.stem, setAudioMeta]);
+  }, [episode?.audio_path, episode?.title, artwork, meta?.name, folder, episode?.stem, registerMeta]);
 
   const setEpisode = useEpisodeStore((s) => s.setEpisode);
   const setShowMeta = useEpisodeStore((s) => s.setShowMeta);
