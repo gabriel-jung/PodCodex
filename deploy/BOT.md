@@ -258,26 +258,41 @@ ssh user@host 'mkdir -p ~/.local/share/podcodex/index'
 
 ### 2. rsync from the indexing machine
 
-**Run as a single line.** Multi-line paste without `\` continuations fails in zsh. Trailing slash on source matters (copies contents, not the dir itself). Use `--delete` so renamed/removed shows on the desktop don't leave stale tables on the bot.
+**Run as a single line.** Multi-line paste without `\` continuations fails in zsh. Trailing slash on source matters (copies contents, not the dir itself). Use `--delete-after` so renamed/removed shows on the desktop don't leave stale tables on the bot.
+
+`-n` is the dry run. It prints what would transfer or delete and changes nothing; drop it for the real copy. If the output ends in `(DRY RUN)`, nothing was sent.
 
 From Linux desktop:
 
 ```bash
-# Dry run first: prints what would transfer or delete, changes nothing
-rsync -avn --delete --progress ~/.local/share/podcodex/index/ user@host:~/.local/share/podcodex/index/
-
-# Real copy
-rsync -av --delete --progress ~/.local/share/podcodex/index/ user@host:~/.local/share/podcodex/index/
+rsync -avn --delete-after --delay-updates --progress ~/.local/share/podcodex/index/ user@host:~/.local/share/podcodex/index/
+rsync -av  --delete-after --delay-updates --progress ~/.local/share/podcodex/index/ user@host:~/.local/share/podcodex/index/
 ```
 
 From macOS desktop (note the escaped space):
 
 ```bash
-rsync -avn --delete --progress ~/Library/Application\ Support/podcodex/index/ user@host:~/.local/share/podcodex/index/
-rsync -av --delete --progress ~/Library/Application\ Support/podcodex/index/ user@host:~/.local/share/podcodex/index/
+rsync -avn --delete-after --delay-updates --progress ~/Library/Application\ Support/podcodex/index/ user@host:~/.local/share/podcodex/index/
+rsync -av  --delete-after --delay-updates --progress ~/Library/Application\ Support/podcodex/index/ user@host:~/.local/share/podcodex/index/
 ```
 
-Safe to run while the bot is running; LanceDB is read-only on the bot side.
+Safe to run while the bot is running, with one caveat worth understanding.
+
+The bot polls the index directory and reloads within seconds of spotting a change, so a plain `rsync` exposes it to half-transferred state: LanceDB records a commit as a manifest file, and a manifest that arrives before the data files it references describes rows that aren't on disk yet. `--delay-updates` stages updated files and renames them in at the end of the transfer, and `--delete-after` holds removals until then too, which shrinks that window to the final batch instead of the whole transfer.
+
+That is enough for routine updates. For a large first sync, or any time you want the window gone entirely, stop the bot for the transfer:
+
+```bash
+ssh user@host 'sudo systemctl stop podcodex-bot'    # uv
+ssh user@host 'docker compose stop bot'             # docker
+
+# ... rsync ...
+
+ssh user@host 'sudo systemctl start podcodex-bot'   # uv
+ssh user@host 'docker compose start bot'            # docker
+```
+
+`--delay-updates` needs room for the staged copies on the bot host, roughly the size of what's changing (not of the whole index).
 
 ### Per-show sync
 
@@ -288,7 +303,7 @@ The full directory is the unit of transfer. Per-show selective sync is technical
 rsync isn't native on Windows. Use the bundle path (below). `podcodex-export` resolves `%APPDATA%\podcodex\index\` automatically and produces a single file you can move by any means (scp, web upload, USB drive). WSL + rsync also works if you prefer parity with the Linux flow:
 
 ```powershell
-wsl rsync -av --delete --progress /mnt/c/Users/<you>/AppData/Roaming/podcodex/index/ user@host:~/.local/share/podcodex/index/
+wsl rsync -av --delete-after --delay-updates --progress /mnt/c/Users/<you>/AppData/Roaming/podcodex/index/ user@host:~/.local/share/podcodex/index/
 ```
 
 ### Alternative: bundle archive (selective, atomic)
