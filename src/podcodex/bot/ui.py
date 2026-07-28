@@ -32,7 +32,6 @@ from podcodex.bot.formatting import (
     fmt_timestamp,
     is_http_url,
     pub_day,
-    pub_month,
     score_bar,
     set_chunk_thumbnail,
     speaker_lines,
@@ -159,14 +158,14 @@ def build_result_embed(
     else:
         color = discord.Color.blurple()
 
-    # One quiet meta line under the quote: start time · month. Plain text —
-    # Discord's `-#` subtext markdown does not render inside embeds.
+    # One quiet meta line under the quote: start time · date. Plain text,
+    # because Discord's `-#` subtext markdown does not render inside embeds.
     meta_bits: list[str] = []
     if start:
         meta_bits.append(f"🕐 {fmt_time(start)}")
-    month = pub_month(chunk.effective_pub_date)
-    if month:
-        meta_bits.append(month)
+    date = pub_day(chunk.effective_pub_date)
+    if date:
+        meta_bits.append(date)
     if meta_bits:
         description = f"{description}\n\n{' · '.join(meta_bits)}"
 
@@ -242,9 +241,9 @@ def build_details_embed(chunk: Hit, label: str) -> discord.Embed:
     ts_label = fmt_timestamp(start, end, timed=chunk.timed)
     if ts_label:
         embed.add_field(name="Full range", value=ts_label, inline=True)
-    pub_date = chunk.effective_pub_date
-    if pub_date:
-        embed.add_field(name="Published", value=pub_date[:10], inline=True)
+    published = pub_day(chunk.effective_pub_date)
+    if published:
+        embed.add_field(name="Published", value=published, inline=True)
     if chunk.fuzzy_match:
         embed.add_field(name="Match", value="〜 near-typo", inline=True)
     elif chunk.accent_match:

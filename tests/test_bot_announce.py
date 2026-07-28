@@ -95,8 +95,8 @@ def test_new_episodes_embed_counts_and_thumbnail():
     embed = build_new_episodes_embed("My Show", episodes)
     assert embed.title == "📣 2 new episodes — My Show"
     assert embed.thumbnail.url == "https://cdn/x.jpg"
-    assert "Ep Two · Apr 2026" in embed.description
-    assert "Ep One · Mar 2026" in embed.description
+    assert "Ep Two · 21 Apr 2026" in embed.description
+    assert "Ep One · 10 Mar 2026" in embed.description
 
 
 def test_new_episodes_embed_omits_absent_date_and_thumbnail():

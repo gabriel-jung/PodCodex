@@ -135,6 +135,9 @@ _MONTHS = (
 def pub_month(pub_date: str | None) -> str:
     """Format an ISO ``pub_date`` as ``"Apr 2026"``, or ``""`` when unusable.
 
+    Internal fallback for :func:`pub_day`, which is the only render-time entry
+    point for dates. Call that instead: every user-facing date carries the day.
+
     Locale-free: reads the ``YYYY-MM`` prefix directly rather than parsing a
     full datetime, so it never trips on the timezone/offset tails that ride
     along on normalized RSS dates.

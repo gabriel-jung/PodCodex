@@ -21,6 +21,7 @@ from podcodex.bot.formatting import (
     count_word_occurrences as _count_word,
     fmt_duration as _fmt_duration,
     fmt_time as _fmt_time,
+    pub_day as _pub_day,
     safe_truncate,
     speaker as _speaker,
     score_bar as _score_bar,
@@ -81,6 +82,30 @@ def test_guild_settings_custom():
 )
 def test_fmt_time(seconds, expected):
     assert _fmt_time(seconds) == expected
+
+
+# ──────────────────────────────────────────────
+# pub_day
+# ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "pub_date,expected",
+    [
+        ("2026-07-09", "9 Jul 2026"),  # no zero-padded day: "9", not "09"
+        ("2026-07-21", "21 Jul 2026"),
+        ("2026-01-01", "1 Jan 2026"),
+        ("2026-12-31", "31 Dec 2026"),
+        ("2026-07-09T13:45:00+02:00", "9 Jul 2026"),  # RSS timezone tail
+        ("2026-07", "Jul 2026"),  # no day part: fall back to month
+        ("2026-07-99", "Jul 2026"),  # day out of range: same fallback
+        ("2026-13-09", ""),  # month out of range: nothing usable
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_pub_day(pub_date, expected):
+    assert _pub_day(pub_date) == expected
 
 
 # ──────────────────────────────────────────────

@@ -21,7 +21,7 @@ import discord
 from podcodex.bot.formatting import (
     episode_display,
     is_http_url,
-    pub_month,
+    pub_day,
     truncate_description,
 )
 
@@ -157,8 +157,8 @@ def build_new_episodes_embed(show: str, episodes: list[dict]) -> discord.Embed:
     lines: list[str] = []
     for e in episodes[:_MAX_LISTED]:
         title = episode_display(e) or "(untitled)"
-        month = pub_month(e.get("pub_date"))
-        lines.append(f"• {title} · {month}" if month else f"• {title}")
+        date = pub_day(e.get("pub_date"))
+        lines.append(f"• {title} · {date}" if date else f"• {title}")
     if n > _MAX_LISTED:
         lines.append(f"…and {n - _MAX_LISTED} more")
     embed.description = "\n".join(lines)
