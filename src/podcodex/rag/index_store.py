@@ -34,6 +34,10 @@ from podcodex.rag.hit import Hit
 
 _COLLECTIONS_TABLE = "_collections"
 
+# Subdirectory a Lance table commits new versions into. Stat'd by index_mtime
+# because the table directory above it never changes on append.
+_LANCE_VERSIONS_DIR = "_versions"
+
 # Scalar columns re-applied over the meta blob when a row is inflated into a
 # Hit, and the projection every no-vector read selects (plus "meta"). Keep the
 # two uses in lockstep: a column missing from the select comes back as the
@@ -387,28 +391,38 @@ class IndexStore:
     # data without a process restart.
 
     def index_mtime(self) -> float:
-        """Return the newest mtime across top-level entries in the index dir.
+        """Return the newest mtime across the index dir's tables.
 
-        A rising value means something changed on disk (new table, updated
-        transaction log, rsync). Callers use this as a staleness signal.
+        A changed value means something changed on disk (new table, new
+        manifest, rsync). Callers use this as a staleness signal, and must
+        compare for inequality rather than growth: ``rsync -a`` stamps
+        destination mtimes from the source, so the value can move backwards.
+
+        Each table's ``_versions`` subdirectory is stat'd alongside the table
+        directory itself. Every LanceDB commit writes a manifest there, and
+        POSIX only bumps a directory's mtime when its own entries change, so a
+        table directory stays frozen at creation time no matter how many
+        episodes are appended. Top-level entries alone would miss every append.
         """
         try:
             entries = list(self._path.iterdir())
         except OSError:
             return 0.0
-        if not entries:
-            try:
-                return self._path.stat().st_mtime
-            except OSError:
-                return 0.0
-        latest = 0.0
+        try:
+            # Seeds the empty-index case, and catches a table directory being
+            # removed outright (which bumps the parent and nothing else).
+            latest = self._path.stat().st_mtime
+        except OSError:
+            latest = 0.0
         for e in entries:
-            try:
-                m = e.stat().st_mtime
-            except OSError:
-                continue
-            if m > latest:
-                latest = m
+            # NotADirectoryError (an OSError) covers the sentinel files.
+            for target in (e, e / _LANCE_VERSIONS_DIR):
+                try:
+                    m = target.stat().st_mtime
+                except OSError:
+                    continue
+                if m > latest:
+                    latest = m
         return latest
 
     def reconnect(self) -> None:

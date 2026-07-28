@@ -48,12 +48,18 @@ class AnnounceMixin:
         """
         loop = asyncio.get_running_loop()
         current_mtime = await loop.run_in_executor(None, self.local.index_mtime)
-        if current_mtime <= self._announce_mtime_seen:
+        # Inequality, not ">": rsync can lower the value by stamping an older
+        # source mtime onto a table. See _refresh_if_stale for the long form.
+        if current_mtime == self._announce_mtime_seen:
             return
-        self._announce_mtime_seen = current_mtime
         await loop.run_in_executor(None, self.local.reconnect)
         await loop.run_in_executor(None, self._reload_shows)
         col_info = await loop.run_in_executor(None, self.local.get_all_collection_info)
+        # Advanced only once the reload succeeded, so a tick that dies mid-rsync
+        # is retried instead of being swallowed by _announce_loop's handler.
+        # Posting below is best-effort; observe() has already durably recorded
+        # the stems, so a re-run after a posting failure announces nothing twice.
+        self._announce_mtime_seen = current_mtime
 
         # Diff each collection; observe() advances the seen-state.
         new_cols: dict[str, list[str]] = {}

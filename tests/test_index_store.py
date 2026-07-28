@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +19,17 @@ def _store(tmp_path: Path) -> IndexStore:
 def _rng_embeddings(n: int, dim: int = 8) -> np.ndarray:
     rng = np.random.default_rng(42)
     return rng.random((n, dim), dtype=np.float32)
+
+
+def _backdate(path: Path, seconds: float = 60.0) -> None:
+    """Push mtimes of ``path`` and everything under it into the past.
+
+    Lets a staleness test assert "strictly newer" without sleeping, whatever
+    the filesystem's timestamp granularity.
+    """
+    stamp = time.time() - seconds
+    for p in [path, *path.rglob("*")]:
+        os.utime(p, (stamp, stamp))
 
 
 def _chunks(n: int, episode: str = "ep1") -> list[dict]:
@@ -426,6 +439,54 @@ def test_reopening_preserves_data(tmp_path):
     assert s2.collection_exists("c")
     assert s2.list_episodes("c") == ["e1"]
     assert s2.count_rows("c") == 2
+
+
+# ── External-change detection (index_mtime) ──────────────────────────────
+
+
+def test_index_mtime_rises_on_append_to_existing_table(tmp_path):
+    """An append to an existing table must be visible to staleness checks.
+
+    LanceDB commits land in ``<table>.lance/_versions/``, and POSIX only bumps
+    a directory's mtime when its own entries change, so the table directory
+    itself stays frozen at creation time. The bot's refresh gate and the
+    announce loop both poll this value; if it misses appends, rsynced
+    episodes never surface without a restart.
+    """
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    s.save_chunks("c", "ep1", _chunks(2, "ep1"), _rng_embeddings(2))
+
+    index_dir = tmp_path / "index"
+    table_dir = index_dir / "c.lance"
+    # A top-level plain file: the sweep stats "<file>/_versions" on it and must
+    # shrug off the resulting NotADirectoryError rather than blow up.
+    (index_dir / "c.sentinel_v1").touch()
+    _backdate(index_dir)
+    before_table = table_dir.stat().st_mtime
+    before = s.index_mtime()
+
+    s.save_chunks("c", "ep2", _chunks(2, "ep2"), _rng_embeddings(2))
+
+    # Guards the premise: the table dir itself is untouched by the append.
+    assert table_dir.stat().st_mtime == before_table
+    assert s.index_mtime() > before
+
+
+def test_index_mtime_rises_on_new_table(tmp_path):
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    _backdate(tmp_path / "index")
+    before = s.index_mtime()
+    s.ensure_collection("d", show="S", model="m", chunker="semantic", dim=8)
+    assert s.index_mtime() > before
+
+
+def test_index_mtime_empty_dir(tmp_path):
+    s = _store(tmp_path)
+    index_dir = tmp_path / "index"
+    assert not any(index_dir.iterdir())  # guards the branch under test
+    assert s.index_mtime() == index_dir.stat().st_mtime
 
 
 # ── _normalize_pub_date ──────────────────────────────────────────────────

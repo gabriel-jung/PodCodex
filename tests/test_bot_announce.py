@@ -278,3 +278,69 @@ def test_tick_respects_locked_show_access(tmp_path):
     titles = " ".join(e.title for e in fake.embeds)
     assert "Pub" in titles
     assert "Secret" not in titles  # locked show never leaks
+
+
+def test_tick_keeps_watermark_when_reload_fails(tmp_path):
+    """A tick that dies mid-reload must be retried, not swallowed.
+
+    ``_announce_loop`` catches every exception, so advancing the watermark
+    before the reload would mark a half-written rsync as seen and drop those
+    episodes permanently.
+    """
+    import asyncio
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    fake = _FakeChannel()
+    bot.get_channel = lambda cid: fake  # type: ignore[assignment]
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+
+    asyncio.run(bot._run_announce_tick())  # baseline
+    baseline = bot._announce_mtime_seen
+    assert baseline > 0
+
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+
+    def _boom():
+        raise OSError("manifest landed before its data files")
+
+    bot.local.reconnect = _boom  # type: ignore[method-assign]
+    with pytest.raises(OSError):
+        asyncio.run(bot._run_announce_tick())
+    assert bot._announce_mtime_seen == baseline
+    assert fake.embeds == []
+
+    # Recovered: the retry still sees the change and announces it.
+    del bot.local.reconnect
+    asyncio.run(bot._run_announce_tick())
+    assert bot._announce_mtime_seen != baseline
+    assert len(fake.embeds) == 1
+    assert "EP2" in fake.embeds[0].description
+
+
+def test_tick_detects_mtime_moving_backwards(tmp_path):
+    """``rsync -a`` stamps source mtimes, so the signal can drop, not just rise.
+
+    Syncing an older dev-machine copy over a table last written on the bot
+    host lowers the value. A ``<=`` gate would treat that as "nothing new"
+    forever after.
+    """
+    import asyncio
+    from podcodex.bot.bot import ServerSettings
+
+    _seed(tmp_path, {"Alpha": ["ep1"]})
+    bot = _bot(tmp_path)
+    fake = _FakeChannel()
+    bot.get_channel = lambda cid: fake  # type: ignore[assignment]
+    bot._server_cfg[42] = ServerSettings(announce_channel_id=999)
+
+    asyncio.run(bot._run_announce_tick())  # baseline
+    _seed(tmp_path, {"Alpha": ["ep2"]})
+
+    # Watermark stranded above the on-disk value, as a backwards sync leaves it.
+    bot._announce_mtime_seen = bot.local.index_mtime() + 10_000
+    asyncio.run(bot._run_announce_tick())
+
+    assert len(fake.embeds) == 1
+    assert "EP2" in fake.embeds[0].description

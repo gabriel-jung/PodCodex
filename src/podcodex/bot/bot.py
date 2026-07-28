@@ -149,12 +149,19 @@ class PodCodexBot(
         self._last_mtime_check = now
         loop = asyncio.get_running_loop()
         current = await loop.run_in_executor(None, self.local.index_mtime)
-        if current <= self._index_mtime_seen:
+        # Inequality, not ">": the value can move backwards. ``rsync -a``
+        # stamps destination mtimes from the source, so syncing an older
+        # dev-machine copy over a table last written on the bot host (a
+        # password change, say) lowers it. Any movement means a change.
+        if current == self._index_mtime_seen:
             return
-        self._index_mtime_seen = current
         await loop.run_in_executor(None, self.local.reconnect)
         self._ac_cache.reset()
         await loop.run_in_executor(None, self._reload_shows)
+        # Advanced only once the reload succeeded. A sweep landing mid-rsync
+        # can open a manifest whose data files haven't arrived; advancing
+        # first would mark that torn state as seen and never retry it.
+        self._index_mtime_seen = current
         logger.info("Index refresh: external change detected, bot state reloaded.")
 
     # ── Lazy singletons ──────────────────────
