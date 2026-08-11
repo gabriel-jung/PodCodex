@@ -155,6 +155,7 @@ def _install_all_patches() -> None:
     fallback installed before any caller hits ``torch.from_numpy``.
     """
     logger.info("bootstrap: installing platform patches (pid={})", os.getpid())
+    _wire_ssl_certs()
     _apply_persisted_device_override()
     _install_hf_symlink_patch()
     _install_subprocess_console_patch()
@@ -163,6 +164,22 @@ def _install_all_patches() -> None:
     _install_transformers_torch_check_patch()
     _check_cuda_kernels_or_degrade()
     logger.info("bootstrap: all patches installed")
+
+
+def _wire_ssl_certs() -> None:
+    """Point stdlib ``ssl`` at certifi's CA bundle.
+
+    The frozen bundle's OpenSSL carries a compiled-in default cert path
+    from the build machine that does not exist on user machines, so any
+    stdlib HTTPS client (urllib, and therefore torch.hub align-model
+    downloads, RSS enclosure fetches, cover-art fetches) fails with
+    CERTIFICATE_VERIFY_FAILED. requests/httpx are unaffected: they use
+    certifi on their own. ``setdefault`` keeps user-provided overrides
+    (corporate CA bundles) intact.
+    """
+    import certifi
+
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 
 
 def _apply_persisted_device_override() -> None:

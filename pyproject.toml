@@ -18,6 +18,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "certifi>=2024.7.4",  # bootstrap._wire_ssl_certs: frozen bundle has no system CA path
     "feedparser>=6.0",
     "loguru>=0.7.3",
     "python-dotenv>=1.2.1",
