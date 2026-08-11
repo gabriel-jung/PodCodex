@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.8] - 2026-08-11
+
+### Fixes
+
+- Desktop app: downloads that go through Python's built-in HTTP client no
+  longer fail with `CERTIFICATE_VERIFY_FAILED`. This hit the per-language
+  alignment models (any first transcription in French, German, ...), RSS
+  audio downloads, and cover-art fetches. The bundled Python now falls
+  back to certifi's CA store when the system offers none; a user-set
+  `SSL_CERT_FILE` (corporate CA bundles) is still respected.
+
 ## [0.2.7] - 2026-07-13
 
 ### Search ranking and the Discord bot
