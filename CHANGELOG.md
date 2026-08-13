@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.2.9] - 2026-08-13
+
+### Files: single audio files become real episodes
+
+- Dropping an audio file on the app (or picking one via Add show, Local)
+  now copies it into a managed "Files" show in your library. Imported files
+  behave like any other episode: full pipeline, survive restarts, appear in
+  search. Previously they opened in a temporary view that vanished on
+  reload. Old in-place outputs are not migrated; re-add their folder as a
+  local show to pick them up.
+- Name collisions open a rename dialog with a suggested free name.
+- Dropping several files at once imports them all in order.
+- Failed imports show a plain-language message on the home screen.
+
+### Fixes
+
+- Audio bar shows the transcript text of the version you were viewing
+  again; a 0.2.8 change made it fall back to a server-side pick.
+- Folder picker highlights only the place you are browsing; Home no longer
+  stays lit while browsing a mounted volume.
+- API errors surface as plain sentences instead of status codes and JSON.
+- Discord bot: update announcements keep working across the internal
+  rename introduced in 0.2.8, and release notes now also appear when the
+  bot runs from a Docker image or a non-editable install.
+
 ## [0.2.8] - 2026-08-11
 
 ### Fixes
