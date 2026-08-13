@@ -190,6 +190,16 @@ export interface MoveShowRequest {
   move_files?: boolean;
 }
 
+export interface FilesImportRequest {
+  file_path: string;
+  name?: string | null;
+}
+
+export interface FilesImportResponse {
+  folder: string;
+  stem: string;
+}
+
 export interface TranscribeRequest {
   audio_path: string;
   output_dir?: string | null;
@@ -552,3 +562,6 @@ export interface ProviderProfile {
   base_url?: string | null;
   builtin: boolean;
 }
+
+// Audio file extensions the backend accepts (src/podcodex/core/constants.py).
+export const AUDIO_EXTENSIONS = [".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm", ".wma"];

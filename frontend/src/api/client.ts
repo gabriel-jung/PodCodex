@@ -18,15 +18,38 @@ export const BASE =
 export const CSRF_HEADER = "X-PodCodex";
 export const CSRF_VALUE = "1";
 
+/** Thrown for non-2xx responses. Carries the status and parsed JSON body
+ *  (raw text when not JSON) so callers can read structured details (e.g.
+ *  FastAPI's `detail`) without re-parsing the message string. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: unknown;
+
+  constructor(status: number, body: unknown, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 /** Fetch with the CSRF header already set. Use for non-JSON responses or
- *  FormData uploads where `json()` doesn't fit. Throws on `!res.ok`. */
+ *  FormData uploads where `json()` doesn't fit. Throws ApiError on `!res.ok`. */
 export async function rawFetch(url: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   headers.set(CSRF_HEADER, CSRF_VALUE);
   const res = await fetch(`${BASE}${url}`, { ...init, headers });
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`${res.status}: ${body}`);
+    const text = await res.text();
+    let body: unknown = text;
+    try {
+      body = JSON.parse(text);
+    } catch { /* keep raw text */ }
+    // Prefer FastAPI's `detail` string so surfaced errors read as plain
+    // sentences, not status codes and JSON.
+    const detail = (body as { detail?: unknown } | null)?.detail;
+    const message = typeof detail === "string" ? detail : `${res.status}: ${text}`;
+    throw new ApiError(res.status, body, message);
   }
   return res;
 }

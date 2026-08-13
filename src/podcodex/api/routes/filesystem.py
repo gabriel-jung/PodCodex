@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
-from podcodex.api.routes._helpers import AUDIO_EXTS
+from podcodex.api.routes._helpers import AUDIO_EXTS, bad_path_component
 
 router = APIRouter()
 
@@ -173,7 +173,7 @@ async def make_directory(
     if not parent.is_dir():
         return {"path": None, "error": "Parent directory does not exist"}
     # Prevent path traversal
-    if "/" in name or "\\" in name or name in (".", ".."):
+    if bad_path_component(name):
         return {"path": None, "error": "Invalid folder name"}
     target = parent / name
     if target.exists():
@@ -292,7 +292,9 @@ async def list_drives() -> dict:
             except PermissionError:
                 pass
 
-    return {"drives": drives}
+    # ``home`` lets the picker resolve its "~" quick-access entry to a real
+    # path so active-highlight can compare prefixes against the listing path.
+    return {"drives": drives, "home": str(Path.home())}
 
 
 @router.post("/open")

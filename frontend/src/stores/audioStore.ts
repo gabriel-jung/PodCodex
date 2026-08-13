@@ -28,8 +28,6 @@ interface AudioState {
   audioFolder: string | null;
   /** Episode stem for linking back to episode page. */
   audioStem: string | null;
-  /** Segments for the current audio — set by SegmentEditor, read by AudioBar. */
-  audioSegments: AudioSegment[] | null;
   /**
    * Metadata registered per audio path by pages the user is viewing, WITHOUT
    * loading the track. Lets navigation stay separate from playback: seekTo/
@@ -37,6 +35,13 @@ interface AudioState {
    * first time a registered track is actually played.
    */
   metaByPath: Record<string, AudioMeta>;
+  /**
+   * Segments registered per audio path, same lifecycle as metaByPath: pages
+   * register the segments of the version the user is viewing. The loaded
+   * track's segments are derived from this map (see selectAudioSegments);
+   * the map is capped so long sessions don't retain every visited transcript.
+   */
+  segmentsByPath: Record<string, AudioSegment[]>;
   /** Pending seek target in seconds — consumed by AudioBar. */
   pendingSeek: number | null;
   /** Current playback position — updated by AudioBar. */
@@ -51,7 +56,8 @@ interface AudioState {
    * explicitly played (seekTo/playEpisode).
    */
   registerMeta: (path: string, meta: AudioMeta) => void;
-  /** Provide segments for the current audio so AudioBar can show active text. */
+  /** Register segments for a path so AudioBar can show active text once
+   *  (or while) that track plays. */
   setAudioSegments: (path: string, segments: AudioSegment[]) => void;
   /** Play/seek — loads the file if needed, seeks to time (0 = start). */
   seekTo: (path: string, time: number) => void;
@@ -64,6 +70,15 @@ interface AudioState {
   stopAudio: () => void;
 }
 
+// Cap on registered transcripts; oldest entries evict first, but never the
+// loaded track's. Keeps a long browsing session from retaining every visited
+// episode's full segment list.
+const SEGMENTS_CACHE_MAX = 8;
+
+/** Segments of the loaded track, or null. Use as a zustand selector. */
+export const selectAudioSegments = (s: AudioState): AudioSegment[] | null =>
+  s.audioPath ? s.segmentsByPath[s.audioPath] ?? null : null;
+
 export const useAudioStore = create<AudioState>((set, get) => ({
   audioPath: null,
   audioTitle: null,
@@ -71,8 +86,8 @@ export const useAudioStore = create<AudioState>((set, get) => ({
   audioShowName: null,
   audioFolder: null,
   audioStem: null,
-  audioSegments: null,
   metaByPath: {},
+  segmentsByPath: {},
   pendingSeek: null,
   currentTime: 0,
   isPlaying: false,
@@ -112,11 +127,17 @@ export const useAudioStore = create<AudioState>((set, get) => ({
           }
         : {}),
     })),
-  setAudioSegments: (path, segments) => {
-    if (get().audioPath === path) {
-      set({ audioSegments: segments });
-    }
-  },
+  setAudioSegments: (path, segments) =>
+    set((state) => {
+      const next = { ...state.segmentsByPath, [path]: segments };
+      // Evict oldest entries (object insertion order) past the cap, sparing
+      // the just-registered path and the loaded track.
+      for (const k of Object.keys(next)) {
+        if (Object.keys(next).length <= SEGMENTS_CACHE_MAX) break;
+        if (k !== path && k !== state.audioPath) delete next[k];
+      }
+      return { segmentsByPath: next };
+    }),
   seekTo: (path, time) => {
     const state = get();
     if (state.audioPath === path) {
@@ -135,7 +156,6 @@ export const useAudioStore = create<AudioState>((set, get) => ({
         audioShowName: meta?.showName ?? null,
         audioFolder: meta?.folder ?? null,
         audioStem: meta?.stem ?? null,
-        audioSegments: null,
         pendingSeek: time,
       });
     }
@@ -148,7 +168,6 @@ export const useAudioStore = create<AudioState>((set, get) => ({
       audioShowName: meta.showName || null,
       audioFolder: meta.folder || null,
       audioStem: meta.stem || null,
-      audioSegments: state.audioPath === path ? state.audioSegments : null,
       pendingSeek: time,
       // Seed the map so a later seekTo to this path (e.g. from a segment row)
       // reuses this meta instead of blanking the bar.
@@ -157,5 +176,5 @@ export const useAudioStore = create<AudioState>((set, get) => ({
   },
   consumeSeek: () => set({ pendingSeek: null }),
   stopAudio: () =>
-    set({ audioPath: null, audioTitle: null, audioArtwork: null, audioShowName: null, audioFolder: null, audioStem: null, audioSegments: null, pendingSeek: null }),
+    set({ audioPath: null, audioTitle: null, audioArtwork: null, audioShowName: null, audioFolder: null, audioStem: null, pendingSeek: null }),
 }));

@@ -1,6 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-
-const PATH_SEPARATORS = ["/", "\\"];
+import { isUnderPath } from "@/lib/utils";
 
 /**
  * Remove every cached query whose key references `path` either exactly or
@@ -25,10 +24,6 @@ export function removeQueriesUnderPath(qc: QueryClient, path: string): void {
   if (!path) return;
   qc.removeQueries({
     predicate: (q) =>
-      q.queryKey.some((k) => {
-        if (typeof k !== "string") return false;
-        if (k === path) return true;
-        return PATH_SEPARATORS.some((sep) => k.startsWith(path + sep));
-      }),
+      q.queryKey.some((k) => typeof k === "string" && isUnderPath(k, path)),
   });
 }

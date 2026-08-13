@@ -91,6 +91,7 @@ Point it at audio. Six steps, all on your machine:
    - As in a regular podcast app: subscribe to any show available through Apple Podcasts search or any RSS URL.
    - Follow YouTube channels, with audio and subtitle downloads.
    - Or just point it at a folder of recordings you already have.
+   - Single audio files dropped onto the app are copied into a managed "Files" show inside your library folder, so they stay around like any other episode. (Before 0.2.9, dropped files were opened in place and their transcripts were written next to the source audio; those outputs are not migrated, but re-adding the original folder as a local show finds them again.)
 
 2. **Transcribe**
    - Turn audio into a transcript using [WhisperX](https://github.com/m-bain/whisperX), with optional speaker labels from [pyannote-audio](https://github.com/pyannote/pyannote-audio).

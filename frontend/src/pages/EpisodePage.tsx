@@ -26,7 +26,6 @@ import DropOverlay from "@/components/common/DropOverlay";
 import EditorialHeader from "@/components/layout/EditorialHeader";
 import AppSidebar from "@/components/layout/AppSidebar";
 import type { Episode, ShowMeta, VersionEntry } from "@/api/types";
-import { standaloneEpisode } from "@/lib/standaloneEpisode";
 import { useAudioStore, useEpisodeStore, useTaskStore, useSeedPipelineFromShow } from "@/stores";
 import { Button } from "@/components/ui/button";
 import PanelLoading from "@/components/common/PanelLoading";
@@ -94,12 +93,10 @@ function buildSidebarSections(episode: Episode) {
 export default function EpisodePage({
   folder,
   stem,
-  audioFilePath,
   initialTab,
 }: {
   folder?: string;
   stem?: string;
-  audioFilePath?: string;
   initialTab?: string;
 }) {
   const queryClient = useQueryClient();
@@ -117,7 +114,6 @@ export default function EpisodePage({
     });
   }, [navigate]);
 
-  const isStandalone = !!audioFilePath;
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
   const pipelineDefaults = usePipelineDefaults();
 
@@ -152,9 +148,9 @@ export default function EpisodePage({
     prevDownloadTaskId.current = downloadTaskId;
   }, [downloadTaskId, folder, queryClient]);
 
-  const episode: Episode | undefined = audioFilePath
-    ? standaloneEpisode(audioFilePath)
-    : episodes?.find((e) => e.stem === stem || e.id === stem);
+  const episode: Episode | undefined = episodes?.find(
+    (e) => e.stem === stem || e.id === stem,
+  );
 
   // Prev/next navigation walks the sibling list in the show's default order
   // (newest first). Note: a user-applied sort or filter on the show list does
@@ -171,11 +167,9 @@ export default function EpisodePage({
         stem: encodeURIComponent(ep.stem || ep.id),
       },
     });
-  const navIdx = isStandalone
-    ? -1
-    : siblings.findIndex((e) => e.stem === stem || e.id === stem);
+  const navIdx = siblings.findIndex((e) => e.stem === stem || e.id === stem);
   const headerNav =
-    isStandalone || !folder || navIdx < 0 || siblings.length < 2
+    !folder || navIdx < 0 || siblings.length < 2
       ? undefined
       : {
           onPrev: navIdx > 0 ? () => goToEpisode(siblings[navIdx - 1]) : undefined,
@@ -243,7 +237,7 @@ export default function EpisodePage({
     [episode],
   );
 
-  if (!isStandalone && !episodes) {
+  if (!episodes) {
     return <div className="p-6 text-muted-foreground">Loading...</div>;
   }
 
@@ -263,17 +257,13 @@ export default function EpisodePage({
       {isDragging && <DropOverlay message="Drop a transcript file here (JSON, SRT, VTT)" />}
       <EditorialHeader
         title={episode.title}
-        breadcrumbs={
-          isStandalone
-            ? [{ label: "File", onClick: () => navigate({ to: "/" }) }, { label: episode.title }]
-            : [
-                { label: "Shows", onClick: () => navigate({ to: "/" }) },
-                ...(folder
-                  ? [{ label: meta?.name || folder, onClick: () => navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } }) }]
-                  : []),
-                { label: episode.title },
-              ]
-        }
+        breadcrumbs={[
+          { label: "Shows", onClick: () => navigate({ to: "/" }) },
+          ...(folder
+            ? [{ label: meta?.name || folder, onClick: () => navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } }) }]
+            : []),
+          { label: episode.title },
+        ]}
         artworkUrl={artwork || undefined}
         fallbackIcon={Mic}
         onArtworkClick={episode.audio_path ? () => seekTo(episode.audio_path!, 0) : undefined}
@@ -318,8 +308,8 @@ export default function EpisodePage({
 
       <div className="flex-1 flex flex-col overflow-hidden">
         <AppSidebar
-          parentLabel={!isStandalone ? (meta?.name ?? "Show") : undefined}
-          onParent={!isStandalone && folder ? () => navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } }) : undefined}
+          parentLabel={meta?.name ?? "Show"}
+          onParent={folder ? () => navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } }) : undefined}
           pageSections={sidebarSections}
           activeItem={activeStep}
           onItemClick={(key) => setActiveStep(key as ActiveStep)}

@@ -34,7 +34,7 @@ export interface DriveInfo {
 }
 
 export const listDrives = () =>
-  json<{ drives: DriveInfo[] }>("/api/fs/drives");
+  json<{ drives: DriveInfo[]; home: string }>("/api/fs/drives");
 
 /** Delete a non-audio auxiliary file (subtitles, JSON exports, etc). */
 export const deleteFile = (path: string) =>

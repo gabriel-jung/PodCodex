@@ -63,20 +63,6 @@ const episodeRoute = createRoute({
   },
 });
 
-const fileRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/file/$path",
-  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
-    const tab = typeof search.tab === "string" ? search.tab : undefined;
-    return tab ? { tab } : {};
-  },
-  component: function FileWrapper() {
-    const { path } = fileRoute.useParams();
-    const { tab } = fileRoute.useSearch();
-    return <EpisodePage audioFilePath={decodeURIComponent(path)} initialTab={tab} />;
-  },
-});
-
 export const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
@@ -87,7 +73,7 @@ export const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
-const routeTree = rootRoute.addChildren([homeRoute, showRoute, episodeRoute, fileRoute, settingsRoute]);
+const routeTree = rootRoute.addChildren([homeRoute, showRoute, episodeRoute, settingsRoute]);
 
 export const router = createRouter({ routeTree });
 

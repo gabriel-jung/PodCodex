@@ -74,11 +74,11 @@ function DownloadStrip() {
     if (isFinished && downloadFolder && !didInvalidateRef.current) {
       didInvalidateRef.current = true;
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(downloadFolder) });
-      // AudioBar caches segments in Zustand on first "show segment" click and
-      // never refetches. After a subtitle import, the cached array is stale;
-      // clearing it forces a fresh fetch on next toggle. Audio playback is
+      // Registered segments in Zustand are never refetched on their own.
+      // After a subtitle import any cached array may be stale; clearing the
+      // registry forces a fresh fetch on next toggle. Audio playback is
       // unaffected — the <audio> element keys off audioPath, not segments.
-      useAudioStore.setState({ audioSegments: null });
+      useAudioStore.setState({ segmentsByPath: {} });
     }
     if (!isFinished) didInvalidateRef.current = false;
   }, [isFinished, downloadFolder, queryClient]);

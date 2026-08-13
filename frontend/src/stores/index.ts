@@ -1,6 +1,6 @@
 /** Barrel re-export of all stores. */
 
-export { useAudioStore, type AudioSegment } from "./audioStore";
+export { useAudioStore, selectAudioSegments, type AudioSegment } from "./audioStore";
 export { useEpisodeStore, useAudioPath } from "./episodeStore";
 export { useSearchStore } from "./searchStore";
 export { usePipelineConfigStore, useSeedPipelineFromShow } from "./pipelineConfigStore";

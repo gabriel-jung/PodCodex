@@ -9,7 +9,7 @@ import FolderLocationFields from "@/components/common/FolderLocationFields";
 import FolderPicker from "@/components/common/FolderPicker";
 import MissingDependency from "@/components/common/MissingDependency";
 import BundleImportPanel from "./BundleImportPanel";
-import { PlaySquare, Search, Rss, FolderOpen, Loader2, Package, X } from "lucide-react";
+import { PlaySquare, Search, Rss, FileAudio, FolderOpen, Loader2, Package, X } from "lucide-react";
 
 export interface AddShowModalProps {
   defaultSavePath: string;
@@ -221,7 +221,9 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
               {sourceMode === "local" && (
                 <>
                   <p className="text-xs text-muted-foreground">
-                    Pick an existing folder of episodes (creates a show) or a single audio file (one-off transcription).
+                    Add a whole folder of episodes as a show, or pick one audio
+                    file to transcribe. Single files are kept together in a show
+                    called Files.
                   </p>
 
                   <div className="flex flex-col gap-3">
@@ -230,7 +232,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
                       variant="outline"
                       className="justify-start gap-2"
                     >
-                      <FolderOpen className="w-4 h-4" /> Existing folder…
+                      <FolderOpen className="w-4 h-4" /> Folder of episodes…
                     </Button>
                     {onOpenFile && (
                       <Button
@@ -238,10 +240,16 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
                         variant="outline"
                         className="justify-start gap-2"
                       >
-                        <Search className="w-4 h-4" /> Single audio file…
+                        <FileAudio className="w-4 h-4" /> Single audio file…
                       </Button>
                     )}
                   </div>
+
+                  {onOpenFile && (
+                    <p className="text-xs text-muted-foreground">
+                      Tip: you can also drop audio files anywhere on the home screen.
+                    </p>
+                  )}
 
                   {importMutation.isPending && (
                     <p className="text-xs text-muted-foreground">Registering show…</p>

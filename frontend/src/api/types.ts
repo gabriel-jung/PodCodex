@@ -20,6 +20,7 @@ export type {
   BroadcastPreviewOut,
   CreateFromRSSResponse,
   CreateFromYouTubeResponse,
+  FilesImportResponse,
   GenerateRequest,
   IndexRequest,
   PipelineDefaultsSchema as PipelineDefaults,
@@ -34,6 +35,8 @@ export type {
   TranslateRequest,
   UnifiedEpisodeOut,
 } from "./generated-types";
+
+export { AUDIO_EXTENSIONS } from "./generated-types";
 
 // ── Frontend-only types (not backed by Pydantic models) ──
 

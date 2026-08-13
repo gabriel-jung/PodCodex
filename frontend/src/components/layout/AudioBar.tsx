@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation } from "@tanstack/react-query";
-import { useAudioStore } from "@/stores";
+import { selectAudioSegments, useAudioStore } from "@/stores";
 import type { AudioSegment } from "@/stores";
 import { audioFileUrl } from "@/api/client";
 import { getBestSegments, toAudioSegments } from "@/api/segments";
@@ -34,7 +34,7 @@ export default function AudioBar() {
   const audioShowName = useAudioStore((s) => s.audioShowName);
   const audioFolder = useAudioStore((s) => s.audioFolder);
   const audioStem = useAudioStore((s) => s.audioStem);
-  const audioSegments = useAudioStore((s) => s.audioSegments);
+  const audioSegments = useAudioStore(selectAudioSegments);
   const setAudioSegments = useAudioStore((s) => s.setAudioSegments);
   const pendingSeek = useAudioStore((s) => s.pendingSeek);
   const consumeSeek = useAudioStore((s) => s.consumeSeek);
@@ -181,6 +181,8 @@ export default function AudioBar() {
     : duration >= 3600 ? "w-[4.25rem]"
     : "w-14";
 
+  const hasEpisode = !!(audioFolder && audioStem);
+
   return (
     <div className="border-t border-border bg-card">
       {/* Current segment text — collapsible */}
@@ -220,17 +222,19 @@ export default function AudioBar() {
 
       {/* Row 1: Artwork + info | centered transport | right controls */}
       <div className="flex items-center gap-3 mb-1">
-        {/* Artwork — click to open episode */}
+        {/* Artwork: click to open episode (inert when the playing audio has
+            no known episode, e.g. meta registered before folder/stem exist) */}
         <button
           onClick={() => {
             if (audioFolder && audioStem) {
               navigate({ to: "/show/$folder/episode/$stem", params: { folder: encodeURIComponent(audioFolder), stem: encodeURIComponent(audioStem) } });
-            } else if (audioPath) {
-              navigate({ to: "/file/$path", params: { path: encodeURIComponent(audioPath) } });
             }
           }}
-          className="w-10 h-10 rounded-md bg-muted shrink-0 overflow-hidden flex items-center justify-center hover:ring-2 hover:ring-primary/50 transition cursor-pointer"
-          title="Go to episode"
+          disabled={!hasEpisode}
+          className={`w-10 h-10 rounded-md bg-muted shrink-0 overflow-hidden flex items-center justify-center transition ${
+            hasEpisode ? "hover:ring-2 hover:ring-primary/50 cursor-pointer" : "cursor-default"
+          }`}
+          title={hasEpisode ? "Go to episode" : undefined}
         >
           {audioArtwork ? (
             <img src={audioArtwork} alt={audioTitle || "Now playing"} className="w-full h-full object-cover" />

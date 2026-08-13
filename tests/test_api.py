@@ -14,29 +14,15 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
-
-from podcodex.api.app import create_app
 from podcodex.core.versions import save_version
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    """FastAPI TestClient with an isolated config file.
+    """FastAPI TestClient with an isolated config file (see fixtures/api_client)."""
+    from tests.fixtures.api_client import make_client
 
-    Patches ``core.app_config.CONFIG_PATH`` (the canonical source read by
-    ``load_config``/``save_config``) and clears the load cache so the
-    fixture-patched path is honored. Patching ``routes.config.CONFIG_PATH``
-    alone is a no-op — that name is just a re-export.
-    """
-    from podcodex.core import app_config as app_config_mod
-
-    cfg_path = tmp_path / "config.json"
-    monkeypatch.setattr(app_config_mod, "CONFIG_PATH", cfg_path)
-    monkeypatch.setattr(app_config_mod, "_LOAD_CACHE", None)
-
-    app = create_app()
-    return TestClient(app, headers={"X-PodCodex": "1"})
+    return make_client(tmp_path, monkeypatch)
 
 
 # ──────────────────────────────────────────────
@@ -63,6 +49,14 @@ def test_extras_lists_known_extras(client):
     for ext in body["extras"].values():
         assert "description" in ext
         assert "installed" in ext
+
+
+def test_drives_includes_resolved_home(client):
+    r = client.get("/api/fs/drives")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body["drives"], list)
+    assert body["home"] == str(Path.home())
 
 
 # ──────────────────────────────────────────────

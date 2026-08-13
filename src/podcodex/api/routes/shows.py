@@ -16,7 +16,14 @@ from fastapi.responses import FileResponse
 from loguru import logger
 from pydantic import BaseModel
 
-from podcodex.api.routes._helpers import apply_broadcast_pattern, require_show_folder
+from podcodex.api.routes._helpers import (
+    apply_broadcast_pattern,
+    bad_path_component,
+    list_show_stems,
+    require_show_folder,
+)
+from podcodex.bundle.conflicts import rename_suffix
+from podcodex.core._utils import atomic_write
 from podcodex.api.routes.config import _load, _register_folder, _save
 from podcodex.api.schemas import (
     BroadcastPreviewOut,
@@ -173,6 +180,91 @@ async def list_shows() -> list[ShowSummary]:
             )
         )
     return shows
+
+
+# ── Files bucket (standalone audio imports) ──
+
+FILES_BUCKET_NAME = "Files"
+
+
+class FilesImportRequest(BaseModel):
+    file_path: str
+    name: str | None = None
+
+
+class FilesImportResponse(BaseModel):
+    folder: str
+    stem: str
+
+
+def _files_bucket_path(cfg) -> Path:
+    root = Path(cfg.default_save_path or "~").expanduser()
+    return root / FILES_BUCKET_NAME
+
+
+def _ensure_files_bucket() -> Path:
+    """Return the registered Files bucket, creating + registering on first use.
+
+    A candidate path is usable only when nothing exists there yet or it is a
+    plain local folder (no feed cache). Feed-backed shows, even registered
+    ones, and stray files at the path are never touched; the bucket shifts to
+    ``Files-2``, ``Files-3``, ... instead.
+    """
+    cfg = _load()
+    base = _files_bucket_path(cfg)
+    registered = {str(Path(p).resolve()) for p in cfg.show_folders}
+    for n in range(1, 100):
+        bucket = base if n == 1 else base.parent / f"{FILES_BUCKET_NAME}-{n}"
+        if bucket.exists() and not bucket.is_dir():
+            continue
+        if bucket.is_dir() and (bucket / ".feed_cache.json").exists():
+            continue
+        if str(bucket.resolve()) in registered:
+            return bucket
+        bucket.mkdir(parents=True, exist_ok=True)
+        if load_show_meta(bucket) is None:
+            save_show_meta(bucket, _ShowMeta(name=bucket.name))
+        _register_folder(cfg, str(bucket))
+        return bucket
+    raise HTTPException(500, "Could not allocate a Files bucket folder")
+
+
+@router.post("/files/import", response_model=FilesImportResponse)
+async def import_local_file(req: FilesImportRequest) -> FilesImportResponse:
+    """Copy a standalone audio file into the Files bucket show."""
+    src = Path(req.file_path).expanduser()
+    if not src.is_file():
+        raise HTTPException(404, f"File not found: {req.file_path}")
+    ext = src.suffix.lower()
+    if ext not in AUDIO_EXTENSIONS:
+        raise HTTPException(400, f"Not an audio file: {src.name}")
+
+    stem = (req.name or src.stem).strip()
+    if bad_path_component(stem):
+        raise HTTPException(400, f"Invalid name: {stem!r}")
+
+    bucket = _ensure_files_bucket()
+    # The folder scanner keys episodes by stem alone, so any same-stem audio
+    # file (regardless of extension) or output dir counts as a collision.
+    # list_show_stems is the scanner-aligned set of both.
+    taken = list_show_stems(bucket)
+    if stem in taken:
+        raise HTTPException(
+            409, detail={"suggested": rename_suffix(stem, taken, suffix="")}
+        )
+
+    dest = bucket / f"{stem}{ext}"
+    try:
+        # Off-thread: a multi-GB copy must not block the event loop.
+        # atomic_write's temp naming also keeps a crash-abandoned copy
+        # visible to the recovery reaper.
+        await asyncio.to_thread(atomic_write, dest, lambda p: shutil.copyfile(src, p))
+    except OSError as exc:
+        raise HTTPException(500, f"Copy failed: {exc}")
+
+    invalidate_scan_cache(bucket)
+    logger.info("Imported standalone file {} -> {}", src, dest)
+    return FilesImportResponse(folder=str(bucket), stem=stem)
 
 
 # ── Artwork caching ────────────────────────────

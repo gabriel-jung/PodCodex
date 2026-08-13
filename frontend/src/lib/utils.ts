@@ -195,6 +195,13 @@ export function errorMessage(err: unknown): string {
   return "An unknown error occurred";
 }
 
+/** True when `p` equals `base` or sits underneath it (separator-aware, so
+ *  "/Volumes/Data2" is not under "/Volumes/Data"). Handles / and \. */
+export function isUnderPath(p: string, base: string): boolean {
+  const b = base.replace(/[\\/]+$/, "");
+  return p === b || p.startsWith(`${b}/`) || p.startsWith(`${b}\\`);
+}
+
 /** Map a language name to its ISO 639-1 code for WhisperX. */
 export function languageToISO(lang: string): string {
   const map: Record<string, string> = {

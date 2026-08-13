@@ -150,6 +150,11 @@ class AnnounceMixin:
         current = f"{version}+{sha}" if sha else version
         stored = self.announce.get_meta("announced_revision")
         if stored is None:
+            # Pre-revision deployments stored the bare version under the old
+            # key; reading it keeps the pending update announcement instead
+            # of silently re-baselining on the first run after the rename.
+            stored = self.announce.get_meta("announced_version")
+        if stored is None:
             self.announce.set_meta("announced_revision", current)
             return
         if stored == current:

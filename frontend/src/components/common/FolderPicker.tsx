@@ -3,6 +3,7 @@ import { listDirectory, createDirectory, listDrives } from "@/api/client";
 import type { DirEntry, DirListing, FileEntry } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Folder, FolderPlus, Music, ChevronLeft, ChevronRight, ArrowUp, Home, HardDrive, X } from "lucide-react";
+import { isUnderPath } from "@/lib/utils";
 
 interface FolderPickerProps {
   open: boolean;
@@ -24,6 +25,26 @@ const QUICK_ACCESS_BASE = [
 ];
 
 const LAST_PATH_KEY = "podcodex.lastBrowsePath";
+
+/** The single active quick-access entry: the item whose resolved path is the
+ *  longest separator-aware prefix of the listing path. Home ("~") resolves
+ *  via the backend-provided home dir; a mounted volume beats Home when the
+ *  listing sits under both. */
+const activeQuickPath = (
+  listingPath: string | null | undefined,
+  items: { path: string }[],
+  homePath: string | null,
+): string | null => {
+  if (!listingPath) return null;
+  let best: { path: string; len: number } | null = null;
+  for (const item of items) {
+    const base = item.path === "~" ? homePath : item.path;
+    if (base && isUnderPath(listingPath, base) && (!best || base.length > best.len)) {
+      best = { path: item.path, len: base.length };
+    }
+  }
+  return best?.path ?? null;
+};
 
 const readLastPath = (): string | null => {
   try {
@@ -47,6 +68,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
   const [loading, setLoading] = useState(false);
   const [editingPath, setEditingPath] = useState(false);
   const [quickAccess, setQuickAccess] = useState<{ label: string; path: string; icon: typeof Home }[]>(QUICK_ACCESS_BASE);
+  const [homePath, setHomePath] = useState<string | null>(null);
 
   // Backend enumerates drives based on host OS — Windows letters, macOS
   // /Volumes/*, Linux /mnt/<letter> (incl. WSL bridges) + /media/<user>.
@@ -55,8 +77,10 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
   useEffect(() => {
     let cancelled = false;
     listDrives()
-      .then(({ drives }) => {
-        if (cancelled || drives.length === 0) return;
+      .then(({ drives, home }) => {
+        if (cancelled) return;
+        setHomePath(home || null);
+        if (drives.length === 0) return;
         setQuickAccess([
           ...QUICK_ACCESS_BASE,
           ...drives.map((d) => ({ ...d, icon: HardDrive })),
@@ -196,6 +220,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
   })();
 
   const displayTitle = title || (mode === "file" ? "Choose a file" : "Choose a folder");
+  const activeQuick = activeQuickPath(listing?.path, quickAccess, homePath);
 
   return (
     <div
@@ -281,7 +306,7 @@ export default function FolderPicker({ open, onClose, onSelect, initialPath, mod
                 key={item.path}
                 onClick={() => navigateTo(item.path)}
                 className={`flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent transition text-left
-                  ${listing?.path?.startsWith(item.path === "~" ? "" : item.path) ? "bg-accent text-foreground" : "text-muted-foreground"}`}
+                  ${activeQuick === item.path ? "bg-accent text-foreground" : "text-muted-foreground"}`}
               >
                 <item.icon className="w-3.5 h-3.5" />
                 {item.label}

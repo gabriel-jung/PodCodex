@@ -177,6 +177,11 @@ def _git(*args: str) -> str:
     The Docker image copies only ``src/`` (no ``.git``), and there the commit
     is simply unknown: the card then omits it rather than inventing one.
     """
+    # Only trust the computed root when it really is our checkout. For a
+    # site-packages install, git would otherwise walk up and could report
+    # whatever unrelated repo happens to contain the venv.
+    if not (_REPO_ROOT / ".git").exists():
+        return ""
     try:
         out = subprocess.run(
             ["git", *args],
@@ -233,15 +238,20 @@ def changelog_section(version: str) -> str:
     """Return CHANGELOG.md's section for *version*, or "" when unavailable.
 
     Provenance rule: the notes are read from the shipped CHANGELOG, never
-    synthesized. When the file is not there (the Docker image and a plain
-    site-packages install do not carry the repo root), the caller falls back
-    to the bare version card rather than inventing a summary.
+    synthesized. When no copy is found, the caller falls back to the bare
+    version card rather than inventing a summary.
+
+    Lookup order: the repo checkout (editable installs), then the process
+    cwd (the Docker image copies CHANGELOG.md into /app, its WORKDIR).
     """
-    # src/podcodex/bot/announce.py -> repo root (also /app in the container).
-    path = Path(__file__).resolve().parents[3] / "CHANGELOG.md"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+    text = None
+    for path in (_REPO_ROOT / "CHANGELOG.md", Path.cwd() / "CHANGELOG.md"):
+        try:
+            text = path.read_text(encoding="utf-8")
+            break
+        except OSError:
+            continue
+    if text is None:
         return ""
 
     lines = text.splitlines()

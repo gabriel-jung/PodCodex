@@ -179,6 +179,37 @@ def test_commit_subjects_needs_both_revisions():
     assert commit_subjects("abc1234", "") == []
 
 
+def test_changelog_falls_back_to_cwd(tmp_path, monkeypatch):
+    """Non-editable installs have no repo checkout; the Docker image copies
+    CHANGELOG.md to the WORKDIR, so cwd is the fallback."""
+    from podcodex.bot import announce as announce_mod
+
+    monkeypatch.setattr(announce_mod, "_REPO_ROOT", tmp_path / "not-a-checkout")
+    workdir = tmp_path / "app"
+    workdir.mkdir()
+    (workdir / "CHANGELOG.md").write_text("## [1.2.3]\n- shipped note\n## [1.2.2]\n")
+    monkeypatch.chdir(workdir)
+    assert changelog_section("1.2.3") == "- shipped note"
+
+
+def test_changelog_empty_when_no_file_anywhere(tmp_path, monkeypatch):
+    from podcodex.bot import announce as announce_mod
+
+    monkeypatch.setattr(announce_mod, "_REPO_ROOT", tmp_path / "not-a-checkout")
+    monkeypatch.chdir(tmp_path)
+    assert changelog_section("1.2.3") == ""
+
+
+def test_git_refuses_foreign_root(tmp_path, monkeypatch):
+    """A site-packages install nested in some unrelated git checkout must not
+    report that repo's HEAD as the bot's revision."""
+    from podcodex.bot import announce as announce_mod
+
+    monkeypatch.setattr(announce_mod, "_REPO_ROOT", tmp_path)  # no .git here
+    _version, sha = bot_revision()
+    assert sha == ""
+
+
 # ── announce tick orchestration (real bot + seeded index, fake channel) ──
 
 

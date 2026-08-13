@@ -63,6 +63,8 @@ from podcodex.api.routes.search import (  # noqa: E402
     SearchResult as SearchResultSchema,
 )
 from podcodex.api.routes.shows import (  # noqa: E402
+    FilesImportRequest,
+    FilesImportResponse,
     MoveShowRequest,
     ShowSummary,
 )
@@ -88,6 +90,7 @@ from podcodex.api.routes.bundle import (  # noqa: E402
     ImportRequest,
     PreviewRequest,
 )
+from podcodex.core.constants import AUDIO_EXTENSIONS  # noqa: E402
 from podcodex.rag.hit import SpeakerTurn  # noqa: E402
 from podcodex.core.api_keys import APIKeyPublic  # noqa: E402
 from podcodex.core.provider_profiles import ProviderProfile  # noqa: E402
@@ -122,6 +125,8 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, AppConfig),
     (None, ShowSummary),
     (None, MoveShowRequest),
+    (None, FilesImportRequest),
+    (None, FilesImportResponse),
     (None, TranscribeRequest),
     ("CorrectRequest", CorrectRequest),
     ("CorrectManualPromptsRequest", CorrectManualPromptsRequest),
@@ -322,6 +327,15 @@ def main() -> None:
             continue
         seen_names.add(name)
         blocks.append(_model_to_ts(name, model))
+
+    # Shared constants: whatever the backend accepts, frontend filters
+    # (e.g. the home-page drop zone) must accept too.
+    exts = ", ".join(json.dumps(e) for e in sorted(AUDIO_EXTENSIONS))
+    blocks.append(
+        "// Audio file extensions the backend accepts"
+        " (src/podcodex/core/constants.py).\n"
+        f"export const AUDIO_EXTENSIONS = [{exts}];"
+    )
 
     content = "\n\n".join(blocks) + "\n"
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)

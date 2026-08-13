@@ -5,6 +5,7 @@ import type {
   CreateFromYouTubeResponse,
   Episode,
   EpisodeSpeakersResponse,
+  FilesImportResponse,
   PipelineConfig,
   PipelineDefaults,
   PodcastSearchResult,
@@ -14,7 +15,7 @@ import type {
   SpeakerRosterResponse,
   TaskResponse,
 } from "./types";
-import { json } from "./client";
+import { ApiError, json } from "./client";
 
 const enc = encodeURIComponent;
 
@@ -66,6 +67,21 @@ export const registerShow = (path: string) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
   });
+
+export const importLocalFile = (filePath: string, name?: string) =>
+  json<FilesImportResponse>("/api/shows/files/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_path: filePath, name: name ?? null }),
+  });
+
+/** The suggested free name from an import-collision 409, else null. */
+export function conflictSuggestion(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  const suggested = (err.body as { detail?: { suggested?: unknown } } | null)
+    ?.detail?.suggested;
+  return typeof suggested === "string" ? suggested : null;
+}
 
 export const getShowMeta = (folder: string) =>
   json<ShowMeta>(`/api/shows/${enc(folder)}/meta`);
