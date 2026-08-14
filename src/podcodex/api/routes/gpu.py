@@ -31,8 +31,13 @@ class DownloadRequest(BaseModel):
 
 
 @router.get("/status")
-async def gpu_status() -> dict:
-    """Return current GPU backend status — safe in dev or bundle mode."""
+def gpu_status() -> dict:
+    """Return current GPU backend status, safe in dev or bundle mode.
+
+    Sync def on purpose: status() probes binaries via subprocess.run
+    (seconds, 15s timeout), and FastAPI runs sync handlers on its
+    threadpool, keeping the event loop responsive.
+    """
     return gpu_backend.status()
 
 
@@ -79,10 +84,20 @@ async def gpu_deactivate() -> dict:
 
 
 @router.post("/uninstall")
-async def gpu_uninstall() -> dict:
-    """Remove the on-disk GPU install entirely. Idempotent."""
+def gpu_uninstall() -> dict:
+    """Remove the on-disk GPU install entirely. Idempotent.
+
+    Sync def on purpose: uninstall() rmtrees a multi-GB CUDA install;
+    FastAPI's threadpool keeps that off the event loop.
+    """
     try:
         gpu_backend.uninstall()
     except gpu_backend.DevModeError as exc:
         raise HTTPException(400, str(exc)) from None
+    except OSError as exc:
+        # Windows: a concurrent /gpu/status probe can hold the sidecar binary
+        # open while we delete, or files may be locked by a running sidecar.
+        raise HTTPException(
+            409, f"GPU backend files are in use, try again: {exc}"
+        ) from None
     return {"installed": False}

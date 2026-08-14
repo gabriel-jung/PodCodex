@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import unicodedata
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -494,13 +495,22 @@ def merge_with_cache(
 
 
 def save_feed_cache(show_folder: Path, episodes: list[RSSEpisode]) -> Path:
-    """Cache feed data to *show_folder*."""
+    """Cache feed data to *show_folder*.
+
+    Written via temp file + atomic rename: concurrent refreshes (two clients,
+    threadpool handlers) must never leave a torn JSON that breaks every
+    subsequent ``load_feed_cache``. The temp name is unique per writer so
+    two concurrent saves can't interleave inside the same temp file either;
+    the losing writer's rename is simply overwritten (last writer wins).
+    """
     Path(show_folder).mkdir(parents=True, exist_ok=True)
     path = Path(show_folder) / _FEED_CACHE
-    path.write_text(
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(
         json.dumps([asdict(ep) for ep in episodes], indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    os.replace(tmp, path)
     return path
 
 

@@ -169,8 +169,13 @@ async def free_vram_endpoint() -> dict:
 
 
 @router.get("/system/device")
-async def get_device_info() -> dict:
-    """Return resolved device, dtype, GPU name, compute capability, env override."""
+def get_device_info() -> dict:
+    """Return resolved device, dtype, GPU name, compute capability, env override.
+
+    Sync def on purpose: device_info() imports torch and probes CUDA
+    (first call can block seconds); FastAPI's threadpool keeps that off
+    the event loop.
+    """
     from podcodex.core.device import device_info
     from podcodex.core.user_settings import get_device_override
 

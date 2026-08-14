@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -20,6 +21,14 @@ from podcodex.rag.search_service import (
 )
 
 router = APIRouter()
+
+# Retrieval handlers below are sync def: embedding inference and LanceDB
+# scans take seconds, and running them on the event loop froze every other
+# endpoint. FastAPI's threadpool takes them instead. This lock preserves the
+# serialization the event loop used to provide: the shared embedder's
+# encode()/tokenizer thread-safety is unproven, so concurrent searches queue
+# here rather than interleave inside the model.
+_retrieval_lock = threading.Lock()
 
 
 def _resolve_req_cols(show: str, model: str, chunking: str) -> list[SearchCollection]:
@@ -177,7 +186,7 @@ class SearchResult(BaseModel):
 
 
 @router.post("/query", response_model=list[SearchResult])
-async def search_query(req: SearchRequest) -> list[dict]:
+def search_query(req: SearchRequest) -> list[dict]:
     """Hybrid search over the global LanceDB index."""
     from podcodex.rag.defaults import MODELS
 
@@ -194,18 +203,19 @@ async def search_query(req: SearchRequest) -> list[dict]:
     if not cols:
         return []
     try:
-        results = svc_hybrid_search(
-            req.query,
-            cols,
-            top_k=req.top_k,
-            alpha=req.alpha,
-            episode=req.episode,
-            episodes=req.episodes,
-            speaker=req.speaker,
-            source=req.source,
-            pub_date_min=req.pub_date_min,
-            pub_date_max=req.pub_date_max,
-        )
+        with _retrieval_lock:
+            results = svc_hybrid_search(
+                req.query,
+                cols,
+                top_k=req.top_k,
+                alpha=req.alpha,
+                episode=req.episode,
+                episodes=req.episodes,
+                speaker=req.speaker,
+                source=req.source,
+                pub_date_min=req.pub_date_min,
+                pub_date_max=req.pub_date_max,
+            )
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception:
@@ -266,22 +276,23 @@ class ExactRequest(BaseModel):
 
 
 @router.post("/exact", response_model=list[SearchResult])
-async def exact_search(req: ExactRequest) -> list[dict]:
+def exact_search(req: ExactRequest) -> list[dict]:
     """Phrase search: returns all exact, accent-variant, and near-typo matches."""
     cols = _resolve_req_cols(req.show, req.model, req.chunking)
     if not cols:
         return []
     try:
-        hits = svc_exact_search(
-            req.query,
-            cols,
-            episode=req.episode,
-            episodes=req.episodes,
-            speaker=req.speaker,
-            source=req.source,
-            pub_date_min=req.pub_date_min,
-            pub_date_max=req.pub_date_max,
-        )
+        with _retrieval_lock:
+            hits = svc_exact_search(
+                req.query,
+                cols,
+                episode=req.episode,
+                episodes=req.episodes,
+                speaker=req.speaker,
+                source=req.source,
+                pub_date_min=req.pub_date_min,
+                pub_date_max=req.pub_date_max,
+            )
     except ValueError as e:
         raise HTTPException(400, str(e))
     audio_lookup = _build_audio_lookup()
@@ -304,21 +315,22 @@ class RandomRequest(BaseModel):
 
 
 @router.post("/random", response_model=SearchResult | None)
-async def random_quote(req: RandomRequest) -> dict | None:
+def random_quote(req: RandomRequest) -> dict | None:
     """Pick a random indexed chunk (optionally filtered)."""
     cols = _resolve_req_cols(req.show, req.model, req.chunking)
     if not cols:
         return None
     try:
-        picked = svc_random_quote(
-            cols,
-            episode=req.episode,
-            episodes=req.episodes,
-            speaker=req.speaker,
-            source=req.source,
-            pub_date_min=req.pub_date_min,
-            pub_date_max=req.pub_date_max,
-        )
+        with _retrieval_lock:
+            picked = svc_random_quote(
+                cols,
+                episode=req.episode,
+                episodes=req.episodes,
+                speaker=req.speaker,
+                source=req.source,
+                pub_date_min=req.pub_date_min,
+                pub_date_max=req.pub_date_max,
+            )
     except ValueError as e:
         raise HTTPException(400, str(e))
     if picked is None:
@@ -333,7 +345,7 @@ async def random_quote(req: RandomRequest) -> dict | None:
 
 
 @router.get("/speakers")
-async def list_indexed_speakers(
+def list_indexed_speakers(
     show: str,
     model: str = "bge-m3",
     chunking: str = "semantic",
@@ -354,7 +366,7 @@ async def list_indexed_speakers(
 
 
 @router.get("/stats")
-async def index_stats(show: str = "") -> dict:
+def index_stats(show: str = "") -> dict:
     """Return index statistics, optionally scoped to one show."""
     local = get_index_store()
     collections = local.list_collections(show=show)

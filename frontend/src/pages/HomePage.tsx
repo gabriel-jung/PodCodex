@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
@@ -6,12 +6,11 @@ import {
   getConfig,
   importLocalFile,
   listShows,
-  refreshRSS,
-  refreshYouTube,
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
-import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
+import { FeedRefreshButton } from "@/components/common/FeedRefreshButton";
+import { useFeedRefreshAll } from "@/hooks/useFeedRefresh";
 import { useLayoutStore } from "@/stores";
 import type { FilesImportResponse, ShowSummary } from "@/api/types";
 import { AUDIO_EXTENSIONS } from "@/api/types";
@@ -20,7 +19,7 @@ import ShowListRow from "@/components/show/ShowListRow";
 import CompactToggle from "@/components/show/CompactToggle";
 import AddShowModal from "@/components/show/AddShowModal";
 import ImportFileDialog from "@/components/show/ImportFileDialog";
-import { Plus, RefreshCw, List, LayoutGrid, Podcast, Group, X } from "lucide-react";
+import { Plus, List, LayoutGrid, Podcast, Group, X } from "lucide-react";
 import { errorMessage, splitPath } from "@/lib/utils";
 import { EmptyState } from "@/components/ui/empty-state";
 import AppSidebar from "@/components/layout/AppSidebar";
@@ -91,18 +90,8 @@ export default function HomePage() {
     }, null),
   [rssShows, ytShows]);
 
-  const refreshAllMutation = useMutation({
-    mutationFn: async () => {
-      await Promise.allSettled([
-        ...rssShows.map((s) => refreshRSS(s.path)),
-        ...ytShows.map((s) => refreshYouTube(s.path)),
-      ]);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
-      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-    },
-  });
+  const { mutation: refreshAllMutation, refreshingLabel } =
+    useFeedRefreshAll(rssShows, ytShows);
 
   const goToShow = useCallback((folder: string) =>
     navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } }),
@@ -203,30 +192,14 @@ export default function HomePage() {
         actions={
           <div className="flex items-center gap-2">
             {(rssShows.length > 0 || ytShows.length > 0) && (
-              <Button
-                onClick={() => refreshAllMutation.mutate()}
-                disabled={refreshAllMutation.isPending}
-                variant="outline"
-                size="sm"
-                title={
-                  refreshAllMutation.isPending
-                    ? "Refreshing all feeds…"
-                    : oldestFeedUpdate
-                      ? "Refresh all feeds (RSS + YouTube)"
-                      : "Update feeds"
-                }
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${refreshAllMutation.isPending ? "animate-spin" : ""}`} />
-                <span className="hidden md:inline">
-                  {refreshAllMutation.isPending ? (
-                    "Refreshing..."
-                  ) : oldestFeedUpdate ? (
-                    <StaleUpdatedLabel timestamp={oldestFeedUpdate} />
-                  ) : (
-                    "Update feeds"
-                  )}
-                </span>
-              </Button>
+              <FeedRefreshButton
+                onRefresh={() => refreshAllMutation.mutate()}
+                title={oldestFeedUpdate ? "Refresh all feeds (RSS + YouTube)" : "Update feeds"}
+                lastUpdate={oldestFeedUpdate}
+                idleLabel="Update feeds"
+                refreshingLabel={refreshingLabel}
+                labelClassName="hidden md:inline"
+              />
             )}
             <Button onClick={() => setAddOpen(true)} size="sm"><Plus /> Add show</Button>
           </div>

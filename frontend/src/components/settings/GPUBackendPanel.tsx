@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Cpu, Zap, Download, Power, PowerOff, Trash2, Loader2,
-  CheckCircle2, AlertCircle, RefreshCw,
+  CheckCircle2, AlertCircle,
 } from "lucide-react";
 import {
   getGPUStatus, downloadGPUBackend, activateGPUBackend,
@@ -12,6 +12,7 @@ import {
 import type { DeviceInfo, DeviceOverride } from "@/api/gpu";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
+import { RefreshIconButton } from "@/components/common/RefreshIconButton";
 import { restartApp } from "@/lib/restartApp";
 
 const POLL_INTERVAL_MS = 1000;
@@ -30,15 +31,16 @@ export default function GPUBackendPanel() {
   // sees what went wrong even if the failure is fast.
   const [lastError, setLastError] = useState<string | null>(null);
 
-  const { data: status, isLoading, refetch } = useQuery({
+  const { data: status, isLoading, isFetching, refetch } = useQuery({
     queryKey: queryKeys.gpuStatus(),
     queryFn: getGPUStatus,
   });
 
-  const { data: deviceInfo, refetch: refetchDevice } = useQuery({
+  const { data: deviceInfo, isFetching: deviceFetching, refetch: refetchDevice } = useQuery({
     queryKey: queryKeys.deviceInfo(),
     queryFn: getDeviceInfo,
   });
+  const statusRefreshing = isFetching || deviceFetching;
 
   const overrideMut = useMutation({
     mutationFn: (next: DeviceOverride) => setDeviceOverride(next),
@@ -124,14 +126,10 @@ export default function GPUBackendPanel() {
     <section className="space-y-6">
       <div className="flex items-center justify-between">
         <Heading />
-        <Button
-          variant="ghost"
-          size="sm"
+        <RefreshIconButton
+          refreshing={statusRefreshing}
           onClick={() => { void refetch(); void refetchDevice(); }}
-          className="h-7"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-        </Button>
+        />
       </div>
 
       <StatusCard status={status} />

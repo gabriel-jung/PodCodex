@@ -27,6 +27,8 @@ export const queryKeys = {
 
   // ── Shows & episodes ───────────────────────────────────
   shows: () => ["shows"] as const,
+  /** All show metas: broad invalidation (every folder). */
+  showMetaAll: () => ["showMeta"] as const,
   showMeta: (folder: string) => ["showMeta", folder] as const,
   speakerRoster: (folder: string) => ["speakerRoster", folder] as const,
   episodeSpeakers: (folder: string, stem: string) =>
@@ -108,4 +110,14 @@ export const queryKeys = {
     audioPath: AudioPath,
     versionId: string | null,
   ) => [editorKey, "versions", audioPath, versionId] as const,
+};
+
+/**
+ * Mutation keys, shared so `useIsMutating` can observe in-flight mutations
+ * across pages (a refresh started on the home page stays visible after
+ * navigating into a show).
+ */
+export const mutationKeys = {
+  /** Any feed refresh: single-show RSS/YouTube or home-page refresh-all. */
+  feedRefresh: () => ["feed-refresh"] as const,
 };

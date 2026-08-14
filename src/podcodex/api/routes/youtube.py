@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
@@ -29,6 +31,17 @@ from podcodex.ingest.show import load_show_meta, save_show_meta
 
 router = APIRouter()
 
+# Per-show locks serializing the feed-cache read-merge-write in youtube_fetch.
+# Keyed by resolved folder path; never pruned (one small Lock per show).
+_feed_cache_locks: dict[str, threading.Lock] = {}
+_feed_cache_locks_guard = threading.Lock()
+
+
+def _feed_cache_lock(path: Path) -> threading.Lock:
+    key = str(path)
+    with _feed_cache_locks_guard:
+        return _feed_cache_locks.setdefault(key, threading.Lock())
+
 
 # ── Request models ─────────────────────────────
 
@@ -48,8 +61,14 @@ class YouTubeSubsRequest(BaseModel):
 
 
 @router.post("/{show_folder:path}/youtube/fetch", response_model=list[RSSEpisodeOut])
-async def youtube_fetch(show_folder: str) -> list[dict]:
-    """Refresh the video list for a YouTube show."""
+def youtube_fetch(show_folder: str) -> list[dict]:
+    """Refresh the video list for a YouTube show.
+
+    Sync def on purpose: yt-dlp extraction blocks for minutes on big
+    channels (network I/O plus rate-limit pacing sleeps). FastAPI runs
+    sync handlers on its threadpool, so the event loop stays free and
+    other requests (e.g. the show page's episode list) stay responsive.
+    """
     from podcodex.ingest.youtube import fetch_youtube
 
     path = require_show_folder(show_folder)
@@ -58,7 +77,7 @@ async def youtube_fetch(show_folder: str) -> list[dict]:
         raise HTTPException(400, "No YouTube URL in show.toml")
 
     try:
-        episodes = fetch_youtube(meta.youtube_url)
+        episodes, channel_info = fetch_youtube(meta.youtube_url)
     except ImportError as exc:
         raise HTTPException(501, str(exc)) from None
     except Exception as exc:
@@ -82,28 +101,29 @@ async def youtube_fetch(show_folder: str) -> list[dict]:
         fill_empty_fields(merged, old)
         return merged
 
-    episodes = merge_with_cache(
-        episodes, load_feed_cache(path), on_match=_preserve_enriched
-    )
+    # Serialize the read-merge-write per show: threadpool handlers from two
+    # clients would otherwise interleave and drop each other's enrichment.
+    with _feed_cache_lock(path):
+        episodes = merge_with_cache(
+            episodes, load_feed_cache(path), on_match=_preserve_enriched
+        )
+        save_feed_cache(path, episodes)
 
-    save_feed_cache(path, episodes)
-
-    # One-time artwork upgrade: fetch channel avatar if artwork is missing
-    # or doesn't look like a square avatar (yt3.googleusercontent.com)
-    if meta:
-        current = meta.artwork_url or ""
-        needs_upgrade = not current or "yt3.googleusercontent.com" not in current
-        if needs_upgrade:
-            try:
-                from podcodex.ingest.youtube import youtube_show_info
-
-                info = youtube_show_info(meta.youtube_url)
-                fresh = info.get("artwork_url", "")
-                if fresh and fresh != current:
-                    meta.artwork_url = fresh
-                    save_show_meta(path, meta)
-            except Exception:
-                pass  # non-critical
+    # Artwork upgrade: use the channel info distilled from the extraction we
+    # just did (no second crawl). Re-load show.toml before writing: minutes
+    # passed since the pre-fetch load, and writing that stale snapshot back
+    # would clobber any edits the user made while the fetch ran.
+    fresh = channel_info.get("artwork_url", "")
+    if fresh:
+        current_meta = load_show_meta(path)
+        if current_meta and fresh != (current_meta.artwork_url or ""):
+            needs_upgrade = (
+                not current_meta.artwork_url
+                or "yt3.googleusercontent.com" not in current_meta.artwork_url
+            )
+            if needs_upgrade:
+                current_meta.artwork_url = fresh
+                save_show_meta(path, current_meta)
 
     existing_stems = list_show_stems(path)
     return [

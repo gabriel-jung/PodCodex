@@ -425,27 +425,27 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
 
 
 @router.post("/from-youtube", response_model=CreateFromYouTubeResponse)
-async def create_from_youtube(
+def create_from_youtube(
     req: CreateFromYouTubeRequest,
 ) -> CreateFromYouTubeResponse:
-    """Fetch YouTube metadata and create a show folder."""
-    from podcodex.ingest.youtube import fetch_youtube, youtube_show_info
+    """Fetch YouTube metadata and create a show folder.
+
+    Sync def on purpose: the yt-dlp crawl can take minutes; FastAPI's
+    threadpool keeps it off the event loop.
+    """
+    from podcodex.ingest.youtube import fetch_youtube
 
     save_base = Path(req.save_path).expanduser()
     if not save_base.is_dir():
         raise HTTPException(400, f"Save path does not exist: {req.save_path}")
 
-    # Get channel/playlist info for show name and artwork
+    # One extraction yields both the episode list and the channel info
+    # (name, artwork); a separate youtube_show_info call would re-crawl
+    # the whole channel.
     try:
-        info = youtube_show_info(req.youtube_url)
+        episodes, info = fetch_youtube(req.youtube_url)
     except ImportError as exc:
         raise HTTPException(501, str(exc)) from None
-    except Exception as exc:
-        raise HTTPException(502, f"Failed to fetch YouTube info: {exc}") from None
-
-    # Fetch episode list
-    try:
-        episodes = fetch_youtube(req.youtube_url)
     except Exception as exc:
         raise HTTPException(502, f"Failed to fetch videos: {exc}") from None
 

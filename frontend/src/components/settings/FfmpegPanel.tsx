@@ -10,6 +10,7 @@ import {
   AlertCircle, CheckCircle2, RefreshCw, Wrench, Loader2, Power,
   FolderOpen, Check, X,
 } from "lucide-react";
+import { RefreshIconButton } from "@/components/common/RefreshIconButton";
 
 export default function FfmpegPanel() {
   const qc = useQueryClient();
@@ -34,9 +35,7 @@ export default function FfmpegPanel() {
         <h2 className="text-base font-semibold flex items-center gap-2">
           <Wrench className="w-4 h-4" /> ffmpeg
         </h2>
-        <Button variant="ghost" size="sm" onClick={onRecheck} className="h-7" disabled={healthFetching}>
-          <RefreshCw className={`w-3.5 h-3.5 ${healthFetching ? "animate-spin" : ""}`} />
-        </Button>
+        <RefreshIconButton refreshing={healthFetching} onClick={onRecheck} />
       </div>
 
       {healthLoading ? (

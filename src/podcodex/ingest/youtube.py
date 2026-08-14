@@ -38,6 +38,11 @@ _CONSECUTIVE_FAIL_LIMIT = 3  # abort batch after this many consecutive failures
 _request_count = 0
 _pace_lock = threading.Lock()
 
+# Channel/playlist extraction is a full paginated crawl; running many in
+# parallel (home page "update feeds") from one IP trips YouTube throttling.
+# Bound concurrency here so every entry point shares the same limit.
+_EXTRACT_SEMAPHORE = threading.Semaphore(2)
+
 
 def _pace_request() -> None:
     """Sleep between YouTube API calls to avoid rate limiting."""
@@ -184,22 +189,8 @@ def _best_thumbnail(info: dict[str, Any], prefer_square: bool = False) -> str:
     return ""
 
 
-def youtube_show_info(url: str) -> dict[str, Any]:
-    """Extract channel/playlist metadata for show creation.
-
-    Args:
-        url: YouTube channel, playlist, or single video URL.
-
-    Returns:
-        Dict with ``name``, ``artwork_url``, and ``video_count`` keys.
-    """
-    yt_dlp = _require_yt_dlp()
-    url = _normalize_channel_url(url)
-
-    ydl_opts = _base_ydl_opts(extract_flat=True, skip_download=True)
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-
+def _info_to_show_meta(info: dict[str, Any] | None) -> dict[str, Any]:
+    """Distill a yt-dlp channel/playlist info dict into show-level metadata."""
     if not info:
         return {"name": "", "artwork_url": "", "video_count": 0}
 
@@ -224,7 +215,26 @@ def youtube_show_info(url: str) -> dict[str, Any]:
     }
 
 
-def fetch_youtube(url: str) -> list[RSSEpisode]:
+def youtube_show_info(url: str) -> dict[str, Any]:
+    """Extract channel/playlist metadata for show creation.
+
+    Args:
+        url: YouTube channel, playlist, or single video URL.
+
+    Returns:
+        Dict with ``name``, ``artwork_url``, and ``video_count`` keys.
+    """
+    yt_dlp = _require_yt_dlp()
+    url = _normalize_channel_url(url)
+
+    ydl_opts = _base_ydl_opts(extract_flat=True, skip_download=True)
+    with _EXTRACT_SEMAPHORE, yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    return _info_to_show_meta(info)
+
+
+def fetch_youtube(url: str) -> tuple[list[RSSEpisode], dict[str, Any]]:
     """Extract video metadata from a YouTube channel, playlist, or video URL.
 
     Uses flat extraction (no download) to quickly enumerate videos.
@@ -235,17 +245,21 @@ def fetch_youtube(url: str) -> list[RSSEpisode]:
         url: YouTube channel, playlist, or single video URL.
 
     Returns:
-        List of :class:`RSSEpisode` instances, newest first.
+        ``(episodes, show_info)``: episodes newest first, plus the same
+        ``name``/``artwork_url``/``video_count`` dict ``youtube_show_info``
+        returns, distilled from the single extraction so callers never need
+        a second full channel crawl.
     """
     yt_dlp = _require_yt_dlp()
     url = _normalize_channel_url(url)
 
     ydl_opts = _base_ydl_opts(extract_flat="in_playlist", skip_download=True)
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    with _EXTRACT_SEMAPHORE, yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
+    show_info = _info_to_show_meta(info)
     if not info:
-        return []
+        return [], show_info
 
     entries: list[dict[str, Any]]
     if info.get("entries") is not None:
@@ -263,7 +277,7 @@ def fetch_youtube(url: str) -> list[RSSEpisode]:
             episodes.append(ep)
 
     logger.info("Fetched {} videos from {}", len(episodes), url)
-    return episodes
+    return episodes, show_info
 
 
 def download_youtube_audio(

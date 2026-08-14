@@ -1,5 +1,5 @@
-import { CheckCircle2, AlertCircle, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { CheckCircle2, AlertCircle } from "lucide-react";
+import { RefreshIconButton } from "@/components/common/RefreshIconButton";
 import type { OllamaCheckResponse } from "@/api/types";
 
 interface OllamaStatusProps {
@@ -47,15 +47,7 @@ export default function OllamaStatus({ data, isFetching, onRefresh }: OllamaStat
           </p>
         )}
       </div>
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={onRefresh}
-        disabled={isFetching}
-        className="h-7 px-2"
-      >
-        <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
-      </Button>
+      <RefreshIconButton refreshing={isFetching} onClick={onRefresh} className="h-7 px-2" />
     </div>
   );
 }

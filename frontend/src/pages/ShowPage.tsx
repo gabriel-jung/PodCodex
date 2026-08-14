@@ -2,8 +2,6 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
-  refreshRSS,
-  refreshYouTube,
   getEpisodes,
   getShowMeta,
   getSpeakerRoster,
@@ -17,7 +15,8 @@ import type { Episode } from "@/api/types";
 import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
 import { dateCmp } from "@/lib/episodeSort";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
-import { StaleUpdatedLabel } from "@/components/common/StaleUpdatedLabel";
+import { FeedRefreshButton } from "@/components/common/FeedRefreshButton";
+import { useFeedRefresh, useFeedRefreshing } from "@/hooks/useFeedRefresh";
 import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore, useLayoutStore, useSeedPipelineFromShow } from "@/stores";
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useShowActions } from "@/hooks/useShowActions";
@@ -27,7 +26,7 @@ import AppSidebar, { type SidebarSection } from "@/components/layout/AppSidebar"
 import EditorialHeader from "@/components/layout/EditorialHeader";
 import { Button } from "@/components/ui/button";
 import {
-  RefreshCw, Podcast, Search, Users, SlidersHorizontal,
+  Podcast, Search, Users, SlidersHorizontal,
   List, LayoutGrid,
 } from "lucide-react";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
@@ -117,16 +116,14 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const { downloadMutation, importSubsMutation, isYouTube } = useShowActions(folder, meta);
 
-  const refreshMutation = useMutation({
-    mutationFn: async () => {
-      if (isYouTube) await refreshYouTube(folder);
-      else await refreshRSS(folder);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(folder) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
-    },
-  });
+  const { mutation: refreshMutation } = useFeedRefresh(folder, isYouTube);
+  // Page-level only for the empty-state action; the header button subscribes itself.
+  const feedRefreshing = useFeedRefreshing();
+  // isYouTube derives from meta and reads false while meta loads; refreshing
+  // in that window would hit the RSS endpoint on a YouTube show. Disable
+  // refresh until meta is in.
+  const metaLoaded = !!meta;
+  const refreshLabel = !metaLoaded ? "Refresh" : isYouTube ? "Refresh YouTube" : "Refresh RSS";
 
   const deleteMutation = useMutation({
     mutationFn: (audioPath: string) => deleteAudioFile(audioPath),
@@ -405,22 +402,13 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           ...(meta?.language ? [{ value: meta.language }] : []),
         ]}
         actions={
-          <Button
-            onClick={() => refreshMutation.mutate()}
-            disabled={refreshMutation.isPending}
-            variant="outline"
-            size="sm"
+          <FeedRefreshButton
+            onRefresh={() => refreshMutation.mutate()}
             title={isYouTube ? "Refresh YouTube videos" : "Refresh RSS feed"}
-          >
-            <RefreshCw className={refreshMutation.isPending ? "animate-spin" : ""} />
-            {refreshMutation.isPending ? (
-              "Refreshing..."
-            ) : meta?.last_feed_update ? (
-              <StaleUpdatedLabel timestamp={meta.last_feed_update} />
-            ) : (
-              isYouTube ? "Refresh YouTube" : "Refresh RSS"
-            )}
-          </Button>
+            lastUpdate={meta?.last_feed_update}
+            idleLabel={refreshLabel}
+            disabled={!metaLoaded}
+          />
         }
       />
 
@@ -563,7 +551,11 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                 { label: "Download audio to enable transcription" },
                 { label: "Transcribe, correct, and index" },
               ]}
-              action={{ label: isYouTube ? "Refresh YouTube" : "Refresh RSS", onClick: () => refreshMutation.mutate() }}
+              action={{
+                label: refreshLabel,
+                onClick: () => refreshMutation.mutate(),
+                disabled: feedRefreshing || !metaLoaded,
+              }}
             />
           ) : (
             <EmptyState
