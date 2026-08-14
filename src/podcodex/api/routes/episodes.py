@@ -45,7 +45,7 @@ def _fill_title(d: dict) -> dict:
 
 
 @router.get("/{show}", response_model=list[EpisodeListItem])
-async def list_show_episodes(
+def list_show_episodes(
     show: str,
     model: str = "bge-m3",
     chunking: str = "semantic",
@@ -69,7 +69,7 @@ async def list_show_episodes(
 
 
 @router.get("/{show}/{episode_stem}", response_model=EpisodeMeta)
-async def get_show_episode(
+def get_show_episode(
     show: str,
     episode_stem: str,
     model: str = "bge-m3",

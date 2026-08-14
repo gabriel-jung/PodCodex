@@ -8,6 +8,8 @@ can read it without importing from ``api/routes`` — the FastAPI route at
 from __future__ import annotations
 
 import json
+import threading
+from collections.abc import Callable
 
 from loguru import logger
 from pydantic import BaseModel
@@ -28,6 +30,11 @@ class AppConfig(BaseModel):
 
 # Hit on every search/list_shows; mtime-keyed so writes auto-invalidate.
 _LOAD_CACHE: tuple[float, AppConfig] | None = None
+
+# Serializes every load-modify-save of config.json. Route handlers run on
+# FastAPI's threadpool, so two mutations (register a show, save settings)
+# can otherwise interleave their load/save windows and lose updates.
+_config_lock = threading.RLock()
 
 
 def load_config() -> AppConfig:
@@ -63,13 +70,28 @@ def save_config(cfg: AppConfig) -> None:
     """Persist app config to disk as JSON (atomic write)."""
     from podcodex.core._utils import atomic_write
 
-    atomic_write(
-        CONFIG_PATH,
-        lambda p: p.write_text(cfg.model_dump_json(indent=2), encoding="utf-8"),
-        suffix=".json",
-    )
-    global _LOAD_CACHE
-    _LOAD_CACHE = None  # invalidate; next load_config() picks up new mtime
+    with _config_lock:
+        atomic_write(
+            CONFIG_PATH,
+            lambda p: p.write_text(cfg.model_dump_json(indent=2), encoding="utf-8"),
+            suffix=".json",
+        )
+        global _LOAD_CACHE
+        _LOAD_CACHE = None  # invalidate; next load_config() picks up new mtime
+
+
+def mutate_config(fn: Callable[[AppConfig], bool | None]) -> AppConfig:
+    """Atomically load-modify-save config under the process-wide lock.
+
+    Every read-modify-write of config.json must go through here so
+    concurrent handlers can't lose each other's updates. ``fn`` mutates the
+    loaded config in place; return ``False`` to skip the save (no change).
+    """
+    with _config_lock:
+        cfg = load_config()
+        if fn(cfg) is not False:
+            save_config(cfg)
+        return cfg
 
 
 def strip_user_path(raw: str) -> str:

@@ -78,7 +78,7 @@ def _all_show_names() -> set[str]:
 
 
 @router.get("/passwords", response_model=list[ShowAccess])
-async def list_passwords() -> list[ShowAccess]:
+def list_passwords() -> list[ShowAccess]:
     """Return every indexed show with its password-protection status."""
     store = get_index_store()
     protected = set(store.get_show_passwords().keys())
@@ -89,7 +89,7 @@ async def list_passwords() -> list[ShowAccess]:
 
 
 @router.get("/passwords/{show}", response_model=ShowAccess)
-async def get_password_status(show: str) -> ShowAccess:
+def get_password_status(show: str) -> ShowAccess:
     """Per-show protection status."""
     if show not in _all_show_names():
         raise HTTPException(404, f"Unknown show {show!r}.")
@@ -98,7 +98,7 @@ async def get_password_status(show: str) -> ShowAccess:
 
 
 @router.post("/passwords/{show}", response_model=ShowPasswordSet)
-async def set_password(show: str, payload: SetPasswordRequest) -> ShowPasswordSet:
+def set_password(show: str, payload: SetPasswordRequest) -> ShowPasswordSet:
     """Set or rotate the password for a show.
 
     If ``payload.password`` is empty or omitted the server generates a
@@ -127,7 +127,7 @@ async def set_password(show: str, payload: SetPasswordRequest) -> ShowPasswordSe
 
 
 @router.delete("/passwords/{show}", status_code=204)
-async def delete_password(show: str) -> None:
+def delete_password(show: str) -> None:
     """Remove password protection — the show becomes public to the bot."""
     if show not in _all_show_names():
         raise HTTPException(404, f"Unknown show {show!r}.")

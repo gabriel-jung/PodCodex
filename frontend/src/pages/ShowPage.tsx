@@ -110,8 +110,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     queryFn: () => getEpisodes(folder, pipelineDefaults),
     placeholderData: keepPreviousData,
     refetchInterval: isPolling ? 5000 : false,
-    // While polling, suppress focus refetch so alt-tabs don't double the cadence.
-    refetchOnWindowFocus: isPolling ? false : undefined,
+    // Heavy endpoint (full unified list); alt-tab must not refetch it.
+    refetchOnWindowFocus: false,
   });
 
   const { downloadMutation, importSubsMutation, isYouTube } = useShowActions(folder, meta);

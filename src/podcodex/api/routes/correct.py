@@ -52,7 +52,7 @@ async def get_corrected_segments(
 
 
 @router.put("/segments")
-async def save_corrected_segments(
+def save_corrected_segments(
     segments: list[Segment],
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
@@ -202,7 +202,7 @@ async def get_correct_failures(
 
 
 @router.delete("/llm-failures")
-async def dismiss_correct_failures(
+def dismiss_correct_failures(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict:
@@ -212,7 +212,7 @@ async def dismiss_correct_failures(
 
 
 @router.post("/apply-manual")
-async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
+def apply_manual_corrections(req: ApplyManualRequest) -> dict:
     """Apply manually-obtained LLM corrections and save as raw."""
     from podcodex.core._utils import validate_manual
     from podcodex.core.correct import save_corrected
@@ -242,7 +242,7 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
 
 
 @router.post("/apply-batches")
-async def apply_batches_correction(req: ApplyBatchesRequest) -> dict:
+def apply_batches_correction(req: ApplyBatchesRequest) -> dict:
     """Apply hand-reconciled batches from a failed auto correction run.
 
     One new version for all fixes (not one per batch); provenance keeps the

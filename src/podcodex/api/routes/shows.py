@@ -24,7 +24,8 @@ from podcodex.api.routes._helpers import (
 )
 from podcodex.bundle.conflicts import rename_suffix
 from podcodex.core._utils import atomic_write
-from podcodex.api.routes.config import _load, _register_folder, _save
+from podcodex.core.app_config import AppConfig, mutate_config
+from podcodex.api.routes.config import _load, _register_folder
 from podcodex.api.schemas import (
     BroadcastPreviewOut,
     CreateFromRSSRequest,
@@ -54,6 +55,7 @@ from podcodex.ingest.folder import (
 )
 from podcodex.ingest.rss import (
     episode_stem,
+    feed_cache_episode_count,
     fetch_feed_with_artwork,
     load_episode_meta,
     load_feed_cache,
@@ -97,7 +99,7 @@ class ShowSummary(BaseModel):
 
 
 @router.get("/", response_model=list[ShowSummary])
-async def list_shows() -> list[ShowSummary]:
+def list_shows() -> list[ShowSummary]:
     """List all known show folders."""
     cfg = _load()
     shows: list[ShowSummary] = []
@@ -128,9 +130,7 @@ async def list_shows() -> list[ShowSummary]:
             last_rss = datetime.fromtimestamp(
                 feed_cache.stat().st_mtime, tz=timezone.utc
             ).isoformat()
-            cached = load_feed_cache(child)
-            if cached is not None:
-                feed_count = len(cached)
+            feed_count = feed_cache_episode_count(child)
 
         # Per-stage progress aggregates: only computed when pipeline.db file
         # already exists (skip otherwise to avoid creating an empty DB file
@@ -664,7 +664,7 @@ async def broadcast_preview(show_folder: str, pattern: str = Query("")) -> dict:
 
 
 @router.get("/{show_folder:path}/episodes", response_model=list[EpisodeOut])
-async def list_episodes(show_folder: str) -> list[dict]:
+def list_episodes(show_folder: str) -> list[dict]:
     """List locally scanned episodes for a show folder."""
     path = require_show_folder(show_folder)
     episodes = scan_folder(path)
@@ -678,7 +678,7 @@ async def list_episodes(show_folder: str) -> list[dict]:
     "/{show_folder:path}/unified",
     response_model=list[UnifiedEpisodeOut],
 )
-async def unified_episodes(
+def unified_episodes(
     show_folder: str,
     defaults: str | None = None,
 ) -> list[dict]:
@@ -1262,12 +1262,9 @@ async def episode_speakers(show_folder: str, stem: str) -> EpisodeSpeakersRespon
 async def resync_pipeline_db(show_folder: str) -> dict:
     """Force-rebuild pipeline.db from filesystem scan."""
     path = require_show_folder(show_folder)
-    close_pipeline_db(path)
-    from podcodex.core.pipeline_db import DB_FILENAME
+    from podcodex.core.pipeline_db import reset_pipeline_db
 
-    db_file = path / DB_FILENAME
-    if db_file.exists():
-        db_file.unlink()
+    reset_pipeline_db(path)
     db = get_pipeline_db(path)
     episodes = scan_folder(path)
     if episodes:
@@ -1566,13 +1563,15 @@ async def move_show(show_folder: str, req: MoveShowRequest) -> dict:
         )
 
     # Update config.json: replace old path with new
-    cfg = _load()
     old_resolved = str(old_path.resolve())
-    cfg.show_folders = [
-        str(new_path) if str(Path(p).resolve()) == old_resolved else p
-        for p in cfg.show_folders
-    ]
-    _save(cfg)
+
+    def _replace(cfg: AppConfig) -> None:
+        cfg.show_folders = [
+            str(new_path) if str(Path(p).resolve()) == old_resolved else p
+            for p in cfg.show_folders
+        ]
+
+    mutate_config(_replace)
 
     invalidate_scan_cache(new_path)
 
@@ -1607,12 +1606,14 @@ async def delete_show(show_folder: str, req: DeleteShowRequest) -> dict:
     _ROSTER_CACHE.pop(str(path), None)
 
     # Remove from config.json
-    cfg = _load()
     resolved = str(path.resolve())
-    cfg.show_folders = [
-        p for p in cfg.show_folders if str(Path(p).resolve()) != resolved
-    ]
-    _save(cfg)
+
+    def _remove(cfg: AppConfig) -> None:
+        cfg.show_folders = [
+            p for p in cfg.show_folders if str(Path(p).resolve()) != resolved
+        ]
+
+    mutate_config(_remove)
 
     # Optionally delete the folder on disk
     deleted_files = False

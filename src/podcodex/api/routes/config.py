@@ -15,6 +15,7 @@ from podcodex.core.app_config import (
     CONFIG_PATH,
     AppConfig,
     load_config,
+    mutate_config,
     save_config,
     strip_user_path,
 )
@@ -48,13 +49,24 @@ _save = save_config
 
 
 def _register_folder(cfg: AppConfig, folder_path: str) -> AppConfig:
-    """Add a folder to known shows if not already tracked."""
+    """Add a folder to known shows if not already tracked.
+
+    Ignores the passed (possibly stale) config and re-loads under the
+    config lock via ``mutate_config``, so a concurrent settings save can't
+    make the new show vanish. The parameter stays for call-site
+    compatibility.
+    """
+    del cfg  # potentially stale; mutate_config re-loads under the lock
     resolved = str(Path(folder_path).resolve())
-    existing = {str(Path(p).resolve()) for p in cfg.show_folders}
-    if resolved not in existing:
-        cfg.show_folders.append(resolved)
-        save_config(cfg)
-    return cfg
+
+    def _add(fresh: AppConfig) -> bool:
+        existing = {str(Path(p).resolve()) for p in fresh.show_folders}
+        if resolved in existing:
+            return False
+        fresh.show_folders.append(resolved)
+        return True
+
+    return mutate_config(_add)
 
 
 def _detect_env_keys() -> dict[str, str]:
@@ -152,7 +164,7 @@ async def get_secrets_status() -> SecretsStatusResponse:
 
 
 @router.put("/config/secrets", response_model=SecretsStatusResponse)
-async def put_secrets(req: SecretsUpdateRequest) -> SecretsStatusResponse:
+def put_secrets(req: SecretsUpdateRequest) -> SecretsStatusResponse:
     """Update managed secrets on disk and reload into the live environment.
 
     `values` semantics:
@@ -208,10 +220,20 @@ async def get_config() -> AppConfig:
 
 
 @router.put("/config", response_model=AppConfig)
-async def put_config(cfg: AppConfig) -> AppConfig:
-    """Persist and return an updated app configuration."""
-    _save(cfg)
-    return cfg
+def put_config(cfg: AppConfig) -> AppConfig:
+    """Persist and return an updated app configuration.
+
+    Applies only the settings-panel scalars; show_folders stays owned by
+    the show create/move/delete flows. Taking the client's (GET-time)
+    snapshot of show_folders wholesale would silently drop any show
+    registered between that GET and this PUT.
+    """
+
+    def _apply(fresh: AppConfig) -> None:
+        fresh.default_save_path = cfg.default_save_path
+        fresh.ffmpeg_exe_override = cfg.ffmpeg_exe_override
+
+    return mutate_config(_apply)
 
 
 class FfmpegValidateRequest(BaseModel):

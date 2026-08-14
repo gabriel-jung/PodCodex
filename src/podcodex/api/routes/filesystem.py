@@ -57,7 +57,7 @@ def _is_hidden(item: Path) -> bool:
 
 
 @router.get("/list")
-async def list_directory(
+def list_directory(
     path: str = Query(default="~", description="Directory to list"),
     show_files: bool = Query(
         default=False, description="Include matching files in listing"
@@ -164,7 +164,7 @@ async def list_directory(
 
 
 @router.post("/mkdir")
-async def make_directory(
+def make_directory(
     path: str = Query(..., description="Parent directory"),
     name: str = Query(..., description="New folder name"),
 ) -> dict:
@@ -186,7 +186,7 @@ async def make_directory(
 
 
 @router.delete("/file")
-async def delete_file(
+def delete_file(
     path: str = Query(..., description="Absolute path to the file to delete"),
 ) -> dict:
     """Delete a non-audio auxiliary file (subtitles, metadata, etc).
@@ -217,7 +217,7 @@ async def delete_file(
 
 
 @router.get("/drives")
-async def list_drives() -> dict:
+def list_drives() -> dict:
     """Enumerate filesystem roots for the FolderPicker's quick-access list.
 
     Returns whatever's appropriate for the host OS:

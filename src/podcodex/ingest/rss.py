@@ -494,6 +494,31 @@ def merge_with_cache(
     return merged
 
 
+# Feed-cache episode count by cache-file mtime. The home page needs only
+# len() per show; parsing a 10-500KB JSON per show per load is wasted work.
+_FEED_COUNT_CACHE: dict[str, tuple[float, int]] = {}
+
+
+def feed_cache_episode_count(show_folder: Path) -> int | None:
+    """Number of episodes in the feed cache, or None if absent/corrupt.
+
+    mtime-cached so repeated home-page loads skip the full JSON parse.
+    """
+    path = Path(show_folder) / _FEED_CACHE
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    hit = _FEED_COUNT_CACHE.get(str(path))
+    if hit is not None and hit[0] == mtime:
+        return hit[1]
+    cached = load_feed_cache(show_folder)
+    if cached is None:
+        return None
+    _FEED_COUNT_CACHE[str(path)] = (mtime, len(cached))
+    return len(cached)
+
+
 def save_feed_cache(show_folder: Path, episodes: list[RSSEpisode]) -> Path:
     """Cache feed data to *show_folder*.
 
@@ -549,6 +574,12 @@ def _bridge_legacy_youtube_id(ep: RSSEpisode) -> RSSEpisode:
     return ep
 
 
+# Parsed .episode_meta.json by path, keyed on file mtime. unified_episodes
+# reads every local episode's meta per request (and polls every 5s during
+# downloads); the files change only when the pipeline writes them.
+_EPISODE_META_CACHE: dict[str, tuple[float, RSSEpisode]] = {}
+
+
 def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
     """Load episode metadata from ``EPISODE_META_FILE``, or None if absent.
 
@@ -559,6 +590,14 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
     """
     episode_dir = Path(episode_dir)
     path = episode_dir / EPISODE_META_FILE
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = None
+    if mtime is not None:
+        hit = _EPISODE_META_CACHE.get(str(path))
+        if hit is not None and hit[0] == mtime:
+            return hit[1]
     try:
         text = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
@@ -571,7 +610,10 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
             ep = RSSEpisode(**data)
             # Files written before the field existed need the legacy bridge;
             # newer files carry an explicit (possibly empty) youtube_id.
-            return ep if "youtube_id" in data else _bridge_legacy_youtube_id(ep)
+            ep = ep if "youtube_id" in data else _bridge_legacy_youtube_id(ep)
+            if mtime is not None:
+                _EPISODE_META_CACHE[str(path)] = (mtime, ep)
+            return ep
         except (json.JSONDecodeError, TypeError, KeyError):
             logger.warning(
                 f"Corrupt episode meta: {path}; attempting recovery from feed cache"

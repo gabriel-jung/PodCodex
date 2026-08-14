@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import unicodedata
 from collections import Counter
 from datetime import datetime, timezone
@@ -369,6 +370,11 @@ class IndexStore:
             logger.info(f"IndexStore opened: {self._path} (explicit path)")
         self._path.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self._path))
+        # Serializes mutating ops (password set/delete, episode/collection
+        # delete): the store is a process-wide singleton shared across
+        # threadpool handlers, LanceDB writes are not internally locked,
+        # and e.g. set_show_password is a non-atomic delete-then-add.
+        self._write_lock = threading.Lock()
         self._fts_ready: set[str] = set()
         self._pub_date_ready: set[str] = set()
         self._episode_title_ready: set[str] = set()
@@ -683,16 +689,18 @@ class IndexStore:
 
     def set_show_password(self, show: str, password_hash: str) -> None:
         """Set or replace the password hash for a show."""
-        t = self._passwords_table()
-        t.delete(f"show = '{_escape(show)}'")
-        t.add([{"show": show, "password_hash": password_hash}])
+        with self._write_lock:
+            t = self._passwords_table()
+            t.delete(f"show = '{_escape(show)}'")
+            t.add([{"show": show, "password_hash": password_hash}])
         logger.debug(f"Password set for show {show!r}")
 
     def delete_show_password(self, show: str) -> None:
         """Remove password protection for a show (makes it public)."""
-        if _SHOW_PASSWORDS_TABLE not in self._table_names():
-            return
-        self._passwords_table().delete(f"show = '{_escape(show)}'")
+        with self._write_lock:
+            if _SHOW_PASSWORDS_TABLE not in self._table_names():
+                return
+            self._passwords_table().delete(f"show = '{_escape(show)}'")
         logger.debug(f"Password removed for show {show!r}")
 
     # ── Collection management ────────────────────────────────────────────
@@ -778,11 +786,12 @@ class IndexStore:
         Args:
             name: Collection name to delete.
         """
-        if name in self._table_names():
-            self._db.drop_table(name)
-        meta = self._collections_table()
-        meta.delete(f"name = '{_escape(name)}'")
-        self._fts_ready.discard(name)
+        with self._write_lock:
+            if name in self._table_names():
+                self._db.drop_table(name)
+            meta = self._collections_table()
+            meta.delete(f"name = '{_escape(name)}'")
+            self._fts_ready.discard(name)
         logger.debug(f"Deleted collection '{name}'")
 
     def get_collection_info(self, name: str) -> dict | None:
@@ -909,11 +918,12 @@ class IndexStore:
             collection: Collection name.
             episode: Episode identifier.
         """
-        if not self.collection_exists(collection):
-            return
-        t = self._table(collection)
-        t.delete(f"episode = '{_escape(episode)}'")
-        self._fts_ready.discard(collection)
+        with self._write_lock:
+            if not self.collection_exists(collection):
+                return
+            t = self._table(collection)
+            t.delete(f"episode = '{_escape(episode)}'")
+            self._fts_ready.discard(collection)
         logger.debug(f"Deleted episode '{episode}' from '{collection}'")
 
     def list_episodes(self, collection: str) -> list[str]:

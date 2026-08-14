@@ -61,7 +61,7 @@ class ExtractSelectedRequest(BaseModel):
 
 
 @router.post("/extract-selected")
-async def extract_selected(req: ExtractSelectedRequest) -> dict:
+def extract_selected(req: ExtractSelectedRequest) -> dict:
     """Extract specific user-chosen segments as voice samples."""
     from podcodex.core.synthesize import extract_selected_samples
 
@@ -101,7 +101,7 @@ async def extract_selected(req: ExtractSelectedRequest) -> dict:
 
 
 @router.post("/upload-sample")
-async def upload_voice_sample(
+def upload_voice_sample(
     audio_path: str | None = Form(None),
     output_dir: str | None = Form(None),
     speaker: str = Form(...),
@@ -126,7 +126,7 @@ async def upload_voice_sample(
 
     suffix = Path(file.filename or "upload.wav").suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(await file.read())
+        tmp.write(file.file.read())
         tmp_path = tmp.name
 
     try:
@@ -379,7 +379,7 @@ async def get_synthesize_version(
 
 
 @router.delete("/versions/{version_id}")
-async def remove_synthesize_version(
+def remove_synthesize_version(
     version_id: str,
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
@@ -397,7 +397,7 @@ async def remove_synthesize_version(
 
 
 @router.post("/assemble")
-async def assemble(req: AssembleRequest) -> dict:
+def assemble(req: AssembleRequest) -> dict:
     """Assemble generated TTS segments into a versioned final episode audio file."""
     from podcodex.core.synthesize import assemble_episode, load_generated_segments
     from podcodex.core.versions import (

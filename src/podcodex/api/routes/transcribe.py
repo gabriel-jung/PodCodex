@@ -48,7 +48,7 @@ async def get_segments(
 
 
 @router.put("/segments")
-async def save_segments(
+def save_segments(
     segments: list[Segment],
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
@@ -101,7 +101,7 @@ async def save_speaker_map(
 
 
 @router.post("/upload")
-async def upload_transcript(
+def upload_transcript(
     file: UploadFile = File(...),
     audio_path: str | None = Query(None, description="Absolute path to audio file"),
     output_dir: str | None = Query(None),
@@ -110,7 +110,7 @@ async def upload_transcript(
     from podcodex.core._utils import srt_to_segments, vtt_to_segments
 
     require_audio_or_output(audio_path, output_dir)
-    content = await file.read()
+    content = file.file.read()
     filename = (file.filename or "").lower()
 
     if filename.endswith(".vtt"):
@@ -187,7 +187,7 @@ async def upload_transcript(
 
 
 @router.post("/import")
-async def import_transcript(
+def import_transcript(
     audio_path: str | None = Query(None, description="Absolute path to audio file"),
     file_path: str = Query(
         ..., description="Absolute path to VTT/SRT/JSON file to import"

@@ -147,8 +147,15 @@ class PipelineDB:
                     self._conn.execute(stmt)
 
     def close(self) -> None:
-        """Close the underlying SQLite connection."""
-        self._conn.close()
+        """Close the underlying SQLite connection.
+
+        Taken under the per-DB lock so an in-flight query on another
+        thread finishes before the connection goes away. A thread holding
+        a stale instance after close gets one sqlite ProgrammingError and
+        re-resolves through get_pipeline_db on its next request.
+        """
+        with self._lock:
+            self._conn.close()
 
     # ── Read ──────────────────────────────────────────────
 
@@ -645,6 +652,22 @@ def close_pipeline_db(show_folder: Path | str) -> None:
         db = _dbs.pop(show_folder, None)
         if db:
             db.close()
+
+
+def reset_pipeline_db(show_folder: Path | str) -> None:
+    """Close the cached instance AND delete the DB file, atomically.
+
+    Holding ``_dbs_lock`` across close + unlink stops a concurrent
+    ``get_pipeline_db`` (threadpool status poll) from re-opening the file
+    between the two steps and then writing every subsequent update to a
+    deleted inode until process restart.
+    """
+    show_folder = Path(show_folder)
+    with _dbs_lock:
+        db = _dbs.pop(show_folder, None)
+        if db:
+            db.close()
+        (show_folder / DB_FILENAME).unlink(missing_ok=True)
 
 
 def mark_step(show_dir: Path, stem: str, **fields: object) -> None:

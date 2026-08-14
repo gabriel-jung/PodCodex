@@ -131,7 +131,8 @@ export default function EpisodePage({
     placeholderData: keepPreviousData,
     enabled: !!folder,
     refetchInterval: downloadTaskId ? 5000 : false,
-    refetchOnWindowFocus: downloadTaskId ? false : undefined,
+    // Heavy endpoint (full unified list); alt-tab must not refetch it.
+    refetchOnWindowFocus: false,
   });
 
   const { downloadMutation: episodeDownloadMutation, importSubsMutation, isYouTube } = useShowActions(folder ?? "", meta, { withSubs: false });

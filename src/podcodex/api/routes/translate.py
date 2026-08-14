@@ -62,7 +62,7 @@ async def get_translated_segments(
 
 
 @router.put("/segments")
-async def save_translated_segments(
+def save_translated_segments(
     segments: list[Segment],
     audio_path: str | None = Query(None),
     lang: str = Query(...),
@@ -225,7 +225,7 @@ async def get_translate_failures(
 
 
 @router.delete("/llm-failures")
-async def dismiss_translate_failures(
+def dismiss_translate_failures(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
     lang: str = Query(..., description="Target language of the translation"),
@@ -236,7 +236,7 @@ async def dismiss_translate_failures(
 
 
 @router.post("/apply-manual")
-async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
+def apply_manual_corrections(req: ApplyManualRequest) -> dict:
     """Apply manually-obtained translation corrections and save as raw."""
     from podcodex.core._utils import validate_manual
     from podcodex.core.translate import save_translation_raw
@@ -266,7 +266,7 @@ async def apply_manual_corrections(req: ApplyManualRequest) -> dict:
 
 
 @router.post("/apply-batches")
-async def apply_batches_translation(req: ApplyBatchesRequest) -> dict:
+def apply_batches_translation(req: ApplyBatchesRequest) -> dict:
     """Apply hand-reconciled batches from a failed auto translation run.
 
     One new version for all fixes (not one per batch); provenance keeps the

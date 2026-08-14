@@ -139,7 +139,7 @@ async def index_sources(
 
 
 @router.get("/status")
-async def index_status(
+def index_status(
     show: str = Query(...),
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
@@ -153,13 +153,17 @@ async def index_status(
     episode = p.audio_path.stem
 
     local = get_index_store()
+    # One mtime-cached read of the registry; combos without a registered
+    # collection skip their LanceDB round-trip entirely (most of the
+    # model x chunking grid never exists for a given install).
+    known = local.get_all_collection_info()
     combinations = []
     for model_key in MODELS:
         for chunking in CHUNKING_STRATEGIES:
             col = collection_name(show, model_key, chunking)
             # chunk_count > 0 already implies indexed; the separate
             # episode_is_indexed query was a redundant round-trip.
-            count = local.episode_chunk_count(col, episode)
+            count = local.episode_chunk_count(col, episode) if col in known else 0
             combinations.append(
                 {
                     "model": model_key,
@@ -175,7 +179,7 @@ async def index_status(
 
 
 @router.get("/collections")
-async def list_collections(
+def list_collections(
     show: str = Query(""),
 ) -> list[dict]:
     """List indexed collections, optionally filtered by show."""
@@ -196,7 +200,7 @@ async def list_collections(
 
 
 @router.get("/episode-collections")
-async def episode_collections(
+def episode_collections(
     show: str = Query(...),
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
@@ -234,7 +238,7 @@ async def episode_collections(
 
 
 @router.delete("/episode")
-async def delete_episode_from_index(
+def delete_episode_from_index(
     show: str = Query(...),
     collection: str = Query(...),
     audio_path: str | None = Query(None),
@@ -268,7 +272,7 @@ async def delete_episode_from_index(
 
 
 @router.get("/inspect")
-async def inspect_index(
+def inspect_index(
     show: str = Query(...),
     model: str = Query(...),
     chunking: str = Query(...),

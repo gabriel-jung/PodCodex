@@ -9,7 +9,23 @@
  * without checking callers, since React Query matches by prefix.
  */
 
+import type { QueryKey } from "@tanstack/react-query";
+
 type AudioPath = string | null | undefined;
+
+declare module "@tanstack/react-query" {
+  interface Register {
+    mutationMeta: {
+      /**
+       * Query keys the MutationCache default onSuccess (main.tsx) invalidates
+       * when this mutation succeeds. Cache-level, so it still runs after the
+       * owning component unmounts; prefer this over component onSuccess for
+       * any invalidation that must not be skipped.
+       */
+      invalidates?: readonly QueryKey[];
+    };
+  }
+}
 
 export const queryKeys = {
   // ── System / config ────────────────────────────────────
