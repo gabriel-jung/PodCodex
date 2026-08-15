@@ -9,6 +9,7 @@
 import { create } from "zustand";
 import { persist, type PersistOptions } from "zustand/middleware";
 import type { Episode, ShowMeta } from "@/api/types";
+import type { StepFilterState, StepFilterStep } from "@/lib/stepStatus";
 
 interface EpisodeState {
   // ── Runtime context (not persisted) ──
@@ -31,10 +32,21 @@ interface EpisodeState {
   /** Hide episodes whose title contains this text. Empty = no filter. */
   titleExclude: string;
   setTitleExclude: (v: string) => void;
+  /** Per-step state filter. Empty step = off; both are set together. */
+  stepFilterStep: StepFilterStep | "";
+  stepFilterState: StepFilterState;
+  /** Narrows a `translate` filter to one language. Empty = any language. */
+  stepFilterLang: string;
+  setStepFilter: (
+    step: StepFilterStep | "",
+    state?: StepFilterState,
+    lang?: string,
+  ) => void;
 }
 
 const persistOptions: PersistOptions<EpisodeState, Pick<EpisodeState,
   "minDurationMinutes" | "maxDurationMinutes" | "titleInclude" | "titleExclude"
+  | "stepFilterStep" | "stepFilterState" | "stepFilterLang"
 >> = {
   name: "podcodex-episode-filters",
   partialize: (s) => ({
@@ -42,6 +54,9 @@ const persistOptions: PersistOptions<EpisodeState, Pick<EpisodeState,
     maxDurationMinutes: s.maxDurationMinutes,
     titleInclude: s.titleInclude,
     titleExclude: s.titleExclude,
+    stepFilterStep: s.stepFilterStep,
+    stepFilterState: s.stepFilterState,
+    stepFilterLang: s.stepFilterLang,
   }),
 };
 
@@ -62,6 +77,18 @@ export const useEpisodeStore = create<EpisodeState>()(
       setTitleInclude: (v) => set({ titleInclude: v }),
       titleExclude: "",
       setTitleExclude: (v) => set({ titleExclude: v }),
+
+      stepFilterStep: "",
+      stepFilterState: "missing",
+      stepFilterLang: "",
+      setStepFilter: (step, state, lang) =>
+        set((s) => ({
+          stepFilterStep: step,
+          stepFilterState: state ?? s.stepFilterState,
+          // A language only means anything for translate; drop it otherwise
+          // so the badge count doesn't claim a filter that isn't applied.
+          stepFilterLang: step === "translate" ? (lang ?? s.stepFilterLang) : "",
+        })),
     }),
     persistOptions,
   ),

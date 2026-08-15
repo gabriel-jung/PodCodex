@@ -16,6 +16,7 @@ import type { Episode } from "@/api/types";
 import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
 import { dateCmp } from "@/lib/episodeSort";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
+import { matchesStepFilter } from "@/lib/stepStatus";
 import { FeedRefreshButton } from "@/components/common/FeedRefreshButton";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { useFeedRefresh, useFeedRefreshing } from "@/hooks/useFeedRefresh";
@@ -75,6 +76,9 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const maxDurationMinutes = useEpisodeStore((s) => s.maxDurationMinutes);
   const titleInclude = useEpisodeStore((s) => s.titleInclude);
   const titleExclude = useEpisodeStore((s) => s.titleExclude);
+  const stepFilterStep = useEpisodeStore((s) => s.stepFilterStep);
+  const stepFilterState = useEpisodeStore((s) => s.stepFilterState);
+  const stepFilterLang = useEpisodeStore((s) => s.stepFilterLang);
   const queryClient = useQueryClient();
 
 
@@ -188,6 +192,11 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     if (filter === "indexed") list = list.filter((e) => e.indexed);
     if (filter === "outdated") list = list.filter((e) => isOutdated(e));
     if (filter === "verified") list = list.filter((e) => !!e.verified);
+    if (stepFilterStep) {
+      list = list.filter((e) =>
+        matchesStepFilter(e, stepFilterStep, stepFilterState, stepFilterLang),
+      );
+    }
     // Sort. Date sorts fall back to feed_order via the shared comparator
     // (`lib/episodeSort`), so this list and episode prev/next nav agree.
     list = [...list].sort((a, b) => {
@@ -204,7 +213,16 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       }
     });
     return list;
-  }, [all, search, filter, sort, minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude]);
+  }, [all, search, filter, sort, minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude,
+      stepFilterStep, stepFilterState, stepFilterLang]);
+
+  // Languages this show actually has translations in, so the translate filter
+  // only offers languages that can match something.
+  const languages = useMemo(() => {
+    const seen = new Set<string>();
+    for (const e of all) for (const l of e.translations ?? []) seen.add(l);
+    return [...seen].sort();
+  }, [all]);
 
   // Speaker names per episode for the list column. One roster fetch (shared,
   // cached with the Speakers tab) inverted to stem -> names ordered by airtime.
@@ -468,6 +486,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           filter={filter}
           setFilter={setFilter}
           filterCounts={filterCounts}
+          languages={languages}
         />
         <div className="flex-1" />
         {view === "card" && (
@@ -741,9 +760,11 @@ interface FilterControlsProps {
   filter: StatusFilter;
   setFilter: (f: StatusFilter) => void;
   filterCounts: Record<StatusFilter, number>;
+  /** Translation languages present in this show, for the step filter. */
+  languages: string[];
 }
 
-function FilterControls({ hidden, search, setSearch, filter, setFilter, filterCounts }: FilterControlsProps) {
+function FilterControls({ hidden, search, setSearch, filter, setFilter, filterCounts, languages }: FilterControlsProps) {
   return (
     <div className={`flex items-center gap-2 ${hidden ? "hidden" : ""}`}>
       <input
@@ -766,7 +787,7 @@ function FilterControls({ hidden, search, setSearch, filter, setFilter, filterCo
         <option value="outdated">Outdated ({filterCounts.outdated})</option>
         <option value="verified">Verified ({filterCounts.verified})</option>
       </select>
-      <FilterDropdown />
+      <FilterDropdown languages={languages} />
     </div>
   );
 }

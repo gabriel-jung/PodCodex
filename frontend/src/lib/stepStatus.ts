@@ -41,3 +41,90 @@ export function episodeNeedsStep(ep: Episode, step: PipelineInputStep): boolean 
     default:           return true;
   }
 }
+
+// ── Per-step episode-list filtering ────────────────────────────────────────
+
+/** Steps the episode list can filter on. */
+export type StepFilterStep =
+  | "transcribe"
+  | "correct"
+  | "translate"
+  | "index"
+  | "synthesize";
+
+/** Per-step state an episode can be in. */
+export type StepFilterState = "missing" | "done" | "raw" | "edited" | "outdated";
+
+/** Steps with no review concept: content either exists or it doesn't. */
+const TERMINAL_STEPS: readonly StepFilterStep[] = ["index", "synthesize"];
+
+/** States offered for a step. Terminal steps have no raw/edited/outdated. */
+export function statesForStep(step: StepFilterStep): readonly StepFilterState[] {
+  return TERMINAL_STEPS.includes(step)
+    ? (["missing", "done"] as const)
+    : (["missing", "done", "raw", "edited", "outdated"] as const);
+}
+
+/** Resolve a step to (present, edited, outdated) for one episode.
+ *
+ * `lang` narrows `translate` to a single language; without it, translate is
+ * aggregated across every language the episode has (see translationsStatus).
+ */
+function resolveStep(
+  ep: Episode,
+  step: StepFilterStep,
+  lang: string,
+): { present: boolean; edited: boolean; outdated: boolean } {
+  const prov = (ep.provenance ?? {}) as Record<string, unknown>;
+  switch (step) {
+    case "transcribe":
+      return {
+        present: ep.transcribed,
+        edited: isEdited(prov.transcript),
+        outdated: ep.transcribe_status === "outdated",
+      };
+    case "correct":
+      return {
+        present: ep.corrected,
+        edited: isEdited(prov.corrected),
+        outdated: ep.correct_status === "outdated",
+      };
+    case "translate": {
+      const langs = ep.translations ?? [];
+      const present = lang ? langs.includes(lang) : langs.length > 0;
+      const edited = lang
+        ? isEdited(prov[lang])
+        : translationsStatus(langs, prov) === "ready";
+      // Outdated is a per-episode aggregate; the backend does not break it
+      // down per language.
+      return { present, edited, outdated: ep.translate_status === "outdated" };
+    }
+    case "index":
+      return { present: ep.indexed, edited: false, outdated: false };
+    case "synthesize":
+      return { present: ep.synthesized, edited: false, outdated: false };
+  }
+}
+
+/**
+ * True when the episode is in `state` for `step`.
+ *
+ * Drives the episode-list step filter. Reads the same `*_status` fields and
+ * provenance the pipeline buttons and StageCards use, so "needs correcting"
+ * here and a lit-up Correct button always agree.
+ */
+export function matchesStepFilter(
+  ep: Episode,
+  step: StepFilterStep,
+  state: StepFilterState,
+  lang = "",
+): boolean {
+  const { present, edited, outdated } = resolveStep(ep, step, lang);
+  switch (state) {
+    case "missing":  return !present;
+    case "done":     return present;
+    case "raw":      return present && !edited;
+    case "edited":   return present && edited;
+    case "outdated": return outdated;
+  }
+}

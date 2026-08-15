@@ -2,8 +2,32 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SlidersHorizontal } from "lucide-react";
 import { useEpisodeStore } from "@/stores";
+import { langLabel } from "@/lib/utils";
+import {
+  statesForStep,
+  type StepFilterState,
+  type StepFilterStep,
+} from "@/lib/stepStatus";
 
-export default function FilterDropdown() {
+const STEP_LABELS: Record<StepFilterStep, string> = {
+  transcribe: "Transcribe",
+  correct: "Correct",
+  translate: "Translate",
+  index: "Index",
+  synthesize: "Synthesize",
+};
+
+const STATE_LABELS: Record<StepFilterState, string> = {
+  missing: "Not started",
+  done: "Done",
+  raw: "Needs review",
+  edited: "Edited",
+  outdated: "Outdated",
+};
+
+/** `languages` are the translation languages present in this show, used to
+ *  narrow a translate filter (e.g. "missing translation in French"). */
+export default function FilterDropdown({ languages = [] }: { languages?: string[] }) {
   const minDurationMinutes = useEpisodeStore((s) => s.minDurationMinutes);
   const setMinDurationMinutes = useEpisodeStore((s) => s.setMinDurationMinutes);
   const maxDurationMinutes = useEpisodeStore((s) => s.maxDurationMinutes);
@@ -12,12 +36,17 @@ export default function FilterDropdown() {
   const setTitleInclude = useEpisodeStore((s) => s.setTitleInclude);
   const titleExclude = useEpisodeStore((s) => s.titleExclude);
   const setTitleExclude = useEpisodeStore((s) => s.setTitleExclude);
+  const stepFilterStep = useEpisodeStore((s) => s.stepFilterStep);
+  const stepFilterState = useEpisodeStore((s) => s.stepFilterState);
+  const stepFilterLang = useEpisodeStore((s) => s.stepFilterLang);
+  const setStepFilter = useEpisodeStore((s) => s.setStepFilter);
   const [open, setOpen] = useState(false);
   const activeCount = [
     minDurationMinutes > 0,
     maxDurationMinutes > 0,
     titleInclude.length > 0,
     titleExclude.length > 0,
+    stepFilterStep !== "",
   ].filter(Boolean).length;
 
   const clearAll = () => {
@@ -25,6 +54,16 @@ export default function FilterDropdown() {
     setMaxDurationMinutes(0);
     setTitleInclude("");
     setTitleExclude("");
+    setStepFilter("");
+  };
+
+  // Switching to a step that lacks the current state (e.g. "outdated" then
+  // Index) would filter to nothing, so fall back to the step's first state.
+  const onStepChange = (next: StepFilterStep | "") => {
+    if (!next) return setStepFilter("");
+    const allowed = statesForStep(next);
+    const state = allowed.includes(stepFilterState) ? stepFilterState : allowed[0];
+    setStepFilter(next, state);
   };
 
   return (
@@ -81,6 +120,51 @@ export default function FilterDropdown() {
                 placeholder="word or phrase..."
                 className="input w-full text-xs"
               />
+            </div>
+            <div className="space-y-2">
+              <span className="text-xs font-medium">Pipeline step</span>
+              <div className="flex items-center gap-2">
+                <select
+                  value={stepFilterStep}
+                  onChange={(e) => onStepChange(e.target.value as StepFilterStep | "")}
+                  className="input flex-1 text-xs"
+                  aria-label="Filter by pipeline step"
+                >
+                  <option value="">Any step</option>
+                  {(Object.keys(STEP_LABELS) as StepFilterStep[]).map((s) => (
+                    <option key={s} value={s}>{STEP_LABELS[s]}</option>
+                  ))}
+                </select>
+                {stepFilterStep && (
+                  <select
+                    value={stepFilterState}
+                    onChange={(e) =>
+                      setStepFilter(stepFilterStep, e.target.value as StepFilterState)
+                    }
+                    className="input flex-1 text-xs"
+                    aria-label="Filter by step state"
+                  >
+                    {statesForStep(stepFilterStep).map((st) => (
+                      <option key={st} value={st}>{STATE_LABELS[st]}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              {stepFilterStep === "translate" && languages.length > 0 && (
+                <select
+                  value={stepFilterLang}
+                  onChange={(e) =>
+                    setStepFilter("translate", stepFilterState, e.target.value)
+                  }
+                  className="input w-full text-xs"
+                  aria-label="Filter by translation language"
+                >
+                  <option value="">Any language</option>
+                  {languages.map((l) => (
+                    <option key={l} value={l}>{langLabel(l)}</option>
+                  ))}
+                </select>
+              )}
             </div>
             {activeCount > 0 && (
               <Button onClick={() => { clearAll(); setOpen(false); }} variant="ghost" size="sm" className="text-xs w-full">
