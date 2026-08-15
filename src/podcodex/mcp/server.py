@@ -140,13 +140,19 @@ def _trim(chunk: Hit) -> dict:
         "start": chunk.start,
         "start_hms": format_hms(chunk.start),
         "end": chunk.end,
-        "speaker": chunk.dominant_speaker,
+        # Empty rather than the placeholder: an LLM citing this payload would
+        # otherwise attribute quotes to "Narrator" on a non-diarized show.
+        "speaker": ""
+        if is_unattributed(chunk.dominant_speaker)
+        else chunk.dominant_speaker,
     }
     turns = merge_display_turns(chunk.speakers or [])
     if turns:
         out["speakers"] = [
             {
-                "speaker": t.get("speaker", "Unknown"),
+                "speaker": ""
+                if is_unattributed(t.get("speaker"))
+                else t.get("speaker", ""),
                 "start": float(t["start"]) if t.get("start") is not None else 0.0,
                 "start_hms": format_hms(
                     float(t["start"]) if t.get("start") is not None else 0.0

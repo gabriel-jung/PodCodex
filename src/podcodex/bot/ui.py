@@ -349,9 +349,9 @@ def build_stats_embed(
             speakers, key=lambda s: s.get("total_duration", 0.0), reverse=True
         )
         parts = [
-            f"{display_speaker(s.get('speaker'))} "
-            f"({fmt_duration(s.get('total_duration', 0.0))})"
+            f"{name} ({fmt_duration(s.get('total_duration', 0.0))})"
             for s in ranked[:5]
+            if (name := display_speaker(s.get("speaker")))
         ]
         rest = len(ranked) - 5
         tail = f", and {_plural(rest, 'other')}" if rest > 0 else ""

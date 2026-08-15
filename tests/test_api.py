@@ -352,6 +352,38 @@ def test_status_reconcile_demotes_when_nothing_is_left(tmp_path):
     close_pipeline_db(show)
 
 
+def test_status_reconcile_skips_stems_it_could_not_scan(tmp_path):
+    """An unreadable episode dir must not be read as "nothing on disk".
+
+    Otherwise a transient EACCES on a network mount demotes the step flags
+    and wipes the language list for that request.
+    """
+    import os
+
+    from podcodex.api.routes.shows import _EPISODE_FILES_CACHE, _load_status_context
+    from podcodex.core.pipeline_db import close_pipeline_db
+
+    show = tmp_path / "show"
+    (show / "ep1" / "transcript").mkdir(parents=True)
+    (show / "ep1" / "transcript" / "20260101T000000000000Z_raw.json").write_text("[]")
+    (show / "ep1" / "french").mkdir()
+    (show / "ep1" / "french" / "20260101T000000000000Z_raw.json").write_text("[]")
+
+    ctx = _load_status_context(show, None)
+    assert ctx.status_map["ep1"]["transcribed"] is True
+    assert ctx.status_map["ep1"]["translations"] == ["french"]
+
+    _EPISODE_FILES_CACHE.clear()
+    os.chmod(show / "ep1", 0o000)
+    try:
+        ctx = _load_status_context(show, None)
+        assert ctx.status_map["ep1"]["transcribed"] is True
+        assert ctx.status_map["ep1"]["translations"] == ["french"]
+    finally:
+        os.chmod(show / "ep1", 0o755)
+        close_pipeline_db(show)
+
+
 def test_episode_file_scan_sees_nested_writes(tmp_path):
     """Caching is keyed on the whole recorded directory tree, not just the top.
 

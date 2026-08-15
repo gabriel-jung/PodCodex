@@ -804,7 +804,9 @@ def segments_to_text(segments: list[dict], text_field: str = "text") -> str:
         else:
             header = speaker
         text = seg.get(text_field) or "[empty]"
-        lines.append(f"{header}\n{text}")
+        # An untimed, unattributed segment has no header at all; emitting an
+        # empty one would open the block with a blank line.
+        lines.append(f"{header}\n{text}" if header else text)
     return "\n\n".join(lines)
 
 

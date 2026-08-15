@@ -304,7 +304,9 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
             known[step] = db.version_ids_by_stem(step)
         return known[step]
 
-    def _register(stem: str, step: str, path: Path) -> None:
+    def _register(
+        stem: str, step: str, path: Path, input_hash: str | None = None
+    ) -> None:
         nonlocal inserted
         version_id = path.stem
         if version_id in _ids(step).get(stem, set()):
@@ -342,6 +344,7 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
                     timestamp=timestamp,
                     content_hash=content_hash,
                     segment_count=segment_count,
+                    input_hash=input_hash,
                 )
             ),
         )
@@ -351,17 +354,33 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
         if ep_dir.name.startswith("."):
             continue
         stem = ep_dir.name
+        # Label sources first: a speaker_map's input_hash points at whichever
+        # of them is current, so they must carry their (rebuilt) hashes before
+        # any map is registered.
         for step_dir in sorted(p for p in ep_dir.iterdir() if p.is_dir()):
             step = step_dir.name
-            for path in sorted(step_dir.glob(f"*{_step_ext(step)}")):
-                _register(stem, step, path)
-            # Parquet sub-steps live one level under transcript/.
             if step == "transcript":
                 for sub in sorted(p for p in step_dir.iterdir() if p.is_dir()):
                     if sub.name not in PARQUET_STEPS:
                         continue
                     for path in sorted(sub.glob(f"*{_step_ext(sub.name)}")):
                         _register(stem, sub.name, path)
+        for step_dir in sorted(p for p in ep_dir.iterdir() if p.is_dir()):
+            step = step_dir.name
+            if step == "speaker_map":
+                continue
+            for path in sorted(step_dir.glob(f"*{_step_ext(step)}")):
+                _register(stem, step, path)
+        # Speaker maps last, re-bound to the rebuilt label source. Their
+        # original input_hash was the source's sha256, which a rebuild cannot
+        # reproduce (parquet gets a stat hash), so binding them to the current
+        # bucket is what keeps the mapping loadable instead of silently
+        # dropping every hand-assigned name.
+        map_dir = ep_dir / "speaker_map"
+        if map_dir.is_dir():
+            bucket = _speaker_map_bucket_hash(ep_dir / stem)
+            for path in sorted(map_dir.glob(f"*{_step_ext('speaker_map')}")):
+                _register(stem, "speaker_map", path, input_hash=bucket)
 
     if inserted:
         logger.info(

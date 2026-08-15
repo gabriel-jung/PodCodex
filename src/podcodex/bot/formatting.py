@@ -336,9 +336,11 @@ def build_compact_embed(
         if show:
             name += f" ({show})"
         ts_label = fmt_timestamp(start, chunk.end, timed=chunk.timed)
-        ts_part = f" · {ts_label}" if ts_label else ""
+        # Both the name and the timestamp can be absent; join what is left so
+        # the line never opens on a separator.
+        meta = " · ".join(p for p in (speaker(chunk), ts_label) if p)
         value = (
-            f"{speaker(chunk)}{ts_part} · "
+            f"{meta + ' · ' if meta else ''}"
             f"{score_bar(score)} {min(1.0, score):.0%}\n"
             f'*"{text}"*'
         )

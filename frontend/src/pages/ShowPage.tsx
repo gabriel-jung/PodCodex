@@ -155,14 +155,15 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     return [...seen].sort();
   }, [all]);
 
-  // The step filter persists across shows, so a language picked on one show
-  // would keep filtering on the next one that never had that translation,
-  // with no visible control to clear it. Prune once the show's languages are
-  // known, so the store holds one truth instead of every reader re-checking.
-  const pruneStepFilterLang = useEpisodeStore((s) => s.pruneStepFilterLang);
-  useEffect(() => {
-    if (episodes) pruneStepFilterLang(languages);
-  }, [episodes, languages, pruneStepFilterLang]);
+  // The step filter persists across shows. Mask a language this show has no
+  // translations in rather than clearing it: the user picked it on another
+  // show, and with keepPreviousData `languages` still holds the previous
+  // show's list for a render during navigation, so clearing would throw the
+  // pick away on a show that does have it.
+  const effectiveStepLang = useMemo(
+    () => (stepFilterLang && languages.includes(stepFilterLang) ? stepFilterLang : ""),
+    [stepFilterLang, languages],
+  );
 
   const filterCounts = useMemo(() => ({
     all: all.length,
@@ -206,7 +207,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     if (filter === "verified") list = list.filter((e) => !!e.verified);
     if (stepFilterStep) {
       list = list.filter((e) =>
-        matchesStepFilter(e, stepFilterStep, stepFilterState, stepFilterLang),
+        matchesStepFilter(e, stepFilterStep, stepFilterState, effectiveStepLang),
       );
     }
     // Sort. Date sorts fall back to feed_order via the shared comparator
@@ -226,7 +227,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     });
     return list;
   }, [all, search, filter, sort, minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude,
-      stepFilterStep, stepFilterState, stepFilterLang]);
+      stepFilterStep, stepFilterState, effectiveStepLang]);
 
   // Speaker names per episode for the list column. One roster fetch (shared,
   // cached with the Speakers tab) inverted to stem -> names ordered by airtime.

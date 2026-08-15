@@ -894,12 +894,14 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
     if db.episode_count() == 0:
         episodes = scan_folder(path, indexed_stems=lance_indexed)
         if episodes:
-            db.populate_from_scan(episodes)
-            # populate_from_scan restores the per-episode flags but not the
-            # version index, and every read path resolves an id through that
-            # index. Without this the episodes read "done" while their
-            # transcripts cannot be opened.
+            # Rebuild the version index *before* the episode rows: every read
+            # path resolves an id through that index, so without it episodes
+            # read "done" while their transcripts cannot be opened. Doing it
+            # first also makes the repair resumable, since `episode_count`
+            # stays 0 until it finishes and a process killed midway retries
+            # the whole thing instead of staying half-rebuilt forever.
             backfill_versions_from_disk(path)
+            db.populate_from_scan(episodes)
 
     status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
 
@@ -929,10 +931,15 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
     # the DB file, versions table included) would report a whole library as
     # not started. Read from the already-cached file list, so this costs no
     # extra syscalls.
+    # A stem whose walk failed has an untrustworthy file list: "no files" there
+    # means "could not look", so leave its status alone until a clean scan.
+    incomplete = _INCOMPLETE_SCANS.get(str(path), set())
     for step, flag in STEP_FLAG.items():
         stems_with_versions = set(db.stems_with_step(step))
         ext = step_ext(step)
         for stem, row in status_map.items():
+            if stem in incomplete:
+                continue
             desired = stem in stems_with_versions or _has_step_files(
                 episode_files.get(stem, []), stem, step, ext
             )
@@ -946,6 +953,8 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
     # with its translation sitting right there. Rebuilding it here also drops
     # the pipeline-step names legacy rows leaked into it.
     for stem, row in status_map.items():
+        if stem in incomplete:
+            continue
         desired_langs = _episode_languages(episode_files.get(stem, []), stem)
         if sorted(clean_translations(row.get("translations") or [])) != desired_langs:
             row["translations"] = desired_langs
@@ -1429,12 +1438,14 @@ def resync_pipeline_db(show_folder: str) -> dict:
 
     reset_pipeline_db(path)
     db = get_pipeline_db(path)
+    # Resync deletes the DB file, versions table included, so the index has to
+    # be rebuilt from disk or the repair would strand every transcript. Before
+    # the episode rows, so an interrupted resync retries rather than leaving a
+    # populated DB with a half-rebuilt index.
+    restored = backfill_versions_from_disk(path)
     episodes = scan_folder(path)
     if episodes:
         db.populate_from_scan(episodes)
-    # Resync deletes the DB file, versions table included, so the index has
-    # to be rebuilt from disk or the repair would strand every transcript.
-    restored = backfill_versions_from_disk(path)
     return {
         "status": "resynced",
         "episode_count": len(episodes),
@@ -1709,6 +1720,7 @@ def _scan_episode_files(
     now_ns = time.time_ns()
 
     result: dict[str, list[str]] = {}
+    incomplete: set[str] = set()
     try:
         with os.scandir(show_folder) as it:
             for entry in it:
@@ -1724,10 +1736,13 @@ def _scan_episode_files(
                 else:
                     files, visited = _walk_episode_dir(Path(entry.path), stem)
                     files.sort()
-                    # Only cache a complete walk whose mtimes have settled;
-                    # anything else is re-walked next call (see _settled and
-                    # _walk_episode_dir's None contract).
-                    if visited and _settled(visited, now_ns):
+                    if visited is None:
+                        # The list is truncated, so it must not be cached and
+                        # must not drive status either: reconciling against it
+                        # would demote a step and wipe the language list from
+                        # a transient EACCES.
+                        incomplete.add(stem)
+                    elif _settled(visited, now_ns):
                         fresh[stem] = (visited, files)
                 # Hand out a copy: the root-audio merge below prepends to these
                 # lists, which would otherwise grow the cached entry per call.
@@ -1743,7 +1758,14 @@ def _scan_episode_files(
     for stem, audio_path in local_audio.items():
         result.setdefault(stem, []).insert(0, audio_path.name)
 
+    _INCOMPLETE_SCANS[str(show_folder)] = incomplete
     return result
+
+
+# Stems whose last walk hit an OSError, per show. The file list is still
+# returned (a partial Pipeline file list beats none) but the status reconcile
+# skips these, since "no files found" there means "could not look".
+_INCOMPLETE_SCANS: dict[str, set[str]] = {}
 
 
 # ── Move / rename show folder ──────────────

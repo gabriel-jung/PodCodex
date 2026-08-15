@@ -149,8 +149,13 @@ class StatsCommandsMixin:
             share = (
                 (r["total_duration"] / total_duration * 100) if total_duration else 0
             )
+            name = display_speaker(r["speaker"])
+            if not name:
+                # Unattributed time has no one to rank; speaker_stats does not
+                # filter the placeholder the way speaker_airtime does.
+                continue
             lines.append(
-                f"`{i:>2}.` **{display_speaker(r['speaker'])}** — `{fmt_time(r['total_duration'])}` "
+                f"`{i:>2}.` **{name}** — `{fmt_time(r['total_duration'])}` "
                 f"({share:.0f}%) · {r['chunk_count']} excerpt{'s' if r['chunk_count'] != 1 else ''} "
                 f"· {r['episodes']} episode{'s' if r['episodes'] != 1 else ''}"
             )

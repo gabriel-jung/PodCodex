@@ -447,6 +447,36 @@ class TestBackfillFromDisk:
         assert load_version(episode_dir, "corrected", vid) == SAMPLE_SEGMENTS
         close_pipeline_db(show_dir)
 
+    def test_speaker_map_survives_the_rebuild(self, episode_dir):
+        """A hand-assigned speaker map must still load after a rebuild.
+
+        Its input_hash pointed at the label source's sha256, which a rebuild
+        cannot reproduce (parquet gets a stat hash), so without re-binding it
+        every assigned name would silently vanish.
+        """
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import (
+            backfill_versions_from_disk,
+            load_latest_speaker_map,
+            save_speaker_map_version,
+        )
+
+        save_version(
+            episode_dir,
+            "diarized_segments",
+            SAMPLE_SEGMENTS,
+            _prov(step="diarized_segments"),
+        )
+        save_speaker_map_version(episode_dir, {"SPEAKER_00": "Alice"})
+        show_dir = episode_dir.parent.parent
+        assert load_latest_speaker_map(episode_dir) == {"SPEAKER_00": "Alice"}
+
+        close_pipeline_db(show_dir)
+        (show_dir / "pipeline.db").unlink()
+        backfill_versions_from_disk(show_dir)
+        assert load_latest_speaker_map(episode_dir) == {"SPEAKER_00": "Alice"}
+        close_pipeline_db(show_dir)
+
     def test_is_idempotent(self, episode_dir):
         from podcodex.core.pipeline_db import close_pipeline_db
         from podcodex.core.versions import backfill_versions_from_disk
