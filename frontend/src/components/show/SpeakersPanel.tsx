@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { ChevronRight, Plus, Star, X } from "lucide-react";
 import { formatDuration, errorMessage } from "@/lib/utils";
 import { speakerColor, speakerTint } from "@/lib/speakerColor";
-import { NARRATOR_SPEAKER } from "@/lib/speakers";
 
 interface SpeakersPanelProps {
   folder: string;
@@ -68,28 +67,19 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
     }
   };
 
-  // NARRATOR_SPEAKER is what a transcript gets when it was never diarized, so
-  // listing it implies an identification nobody made. Judge that on the
-  // speakers actually *observed* in transcripts: the roster also carries the
-  // show's declared known speakers with episode_count 0 (see shows.py), and
-  // counting those made the Narrator row reappear as soon as the user added
-  // one. Only the Narrator row is dropped, so declared speakers still show.
-  //
-  // A lone diarizer placeholder (SPEAKER_00) is deliberately kept: that show
-  // *was* diarized and simply has one voice, and this panel is where it gets
-  // named.
-  const observed = (roster.data?.speakers ?? []).filter((s) => s.episode_count > 0);
-  const narratorOnly =
-    observed.length === 1 && observed[0].name === NARRATOR_SPEAKER;
-
   const sorted: SpeakerRosterEntry[] = useMemo(() => {
-    const list = (roster.data?.speakers ?? []).filter(
-      (s) => !(narratorOnly && s.name === NARRATOR_SPEAKER),
-    );
+    const list = [...(roster.data?.speakers ?? [])];
     const cmp = SORT_OPTIONS.find((o) => o.key === sort)?.cmp;
     if (cmp) list.sort(cmp);
     return list;
-  }, [roster.data, sort, narratorOnly]);
+  }, [roster.data, sort]);
+
+  // The roster only counts speakers someone actually identified, so a
+  // transcribed-but-never-diarized show comes back empty (see
+  // core/_utils.speaker_airtime). Say why, instead of the generic
+  // "transcribe episodes" advice the user already followed.
+  const transcribedButNotDiarized =
+    !!roster.data && roster.data.episodes_with_transcripts > 0;
 
   const totalTalk = (roster.data?.speakers ?? []).reduce((s, x) => s + x.total_seconds, 0);
 
@@ -165,19 +155,11 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
       )}
       {roster.data && sorted.length === 0 && (
         <p className="text-xs text-muted-foreground">
-          {narratorOnly
+          {transcribedButNotDiarized
             ? "These transcripts have no speaker labels. Re-transcribe with diarization on to tell speakers apart."
             : "No speakers found yet — transcribe episodes to populate the roster."}
         </p>
       )}
-      {roster.data && narratorOnly && sorted.length > 0 && (
-        <p className="text-xs text-muted-foreground">
-          These transcripts have no speaker labels, so nothing is attributed to
-          the speakers below yet. Re-transcribe with diarization on to tell
-          speakers apart.
-        </p>
-      )}
-
       <ul className="space-y-1.5">
         {sorted.map((sp) => {
           const isKnown = known.includes(sp.name);

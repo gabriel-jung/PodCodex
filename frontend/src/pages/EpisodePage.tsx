@@ -948,8 +948,8 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
   const speakers = useMemo(() => {
     if (!speakerMap) return [];
     const names = [...new Set(Object.values(speakerMap))].filter(Boolean);
-    // Naming nothing but the default narrator adds no information to the
-    // version subline; drop it rather than repeat it on every episode.
+    // The speaker map is raw stored labels, not the roster, so the
+    // placeholder still has to be filtered out here.
     return isSoloDefaultSpeaker(names) ? [] : names;
   }, [speakerMap]);
 
@@ -1118,10 +1118,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
         </nav>
       )}
 
-      {/* A lone "Narrator" (no diarization) says nothing, so the airtime line
-          only appears once there is a real speaker breakdown to show. */}
-      {episodeSpeakers && episodeSpeakers.speakers.length > 0
-        && !isSoloDefaultSpeaker(episodeSpeakers.speakers.map((s) => s.name)) && (
+      {episodeSpeakers && episodeSpeakers.speakers.length > 0 && (
         <div
           className="flex items-center gap-x-1.5 gap-y-1 flex-wrap text-xs text-muted-foreground"
           title="Share of the episode duration spoken by each speaker (music and gaps are not counted)"

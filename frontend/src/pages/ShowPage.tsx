@@ -18,7 +18,6 @@ import { dateCmp } from "@/lib/episodeSort";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
 import { matchesStepFilter } from "@/lib/stepStatus";
 import { getEpisodeBatchPath } from "@/lib/episodeRef";
-import { isSoloDefaultSpeaker } from "@/lib/speakers";
 import { FeedRefreshButton } from "@/components/common/FeedRefreshButton";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { useFeedRefresh, useFeedRefreshing } from "@/hooks/useFeedRefresh";
@@ -248,11 +247,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     }
     const out = new Map<string, string[]>();
     for (const [stem, arr] of acc) {
-      const names = arr.sort((a, b) => b.secs - a.secs).map((x) => x.name);
-      // A lone "Narrator" is what a non-diarized transcript produces; showing
-      // it on every row is noise, so the column stays empty instead.
-      if (isSoloDefaultSpeaker(names)) continue;
-      out.set(stem, names);
+      out.set(stem, arr.sort((a, b) => b.secs - a.secs).map((x) => x.name));
     }
     return out;
   }, [roster]);

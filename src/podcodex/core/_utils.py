@@ -671,13 +671,16 @@ def speaker_airtime(segments: list[dict]) -> dict[str, dict]:
 
     Returns ``{speaker: {"segment_count": int, "total_seconds": float}}``,
     summing ``end - start`` (clamped at 0) over each speaker's segments.
-    Break markers and unnamed/unknown labels are skipped, so the result holds
-    only real, attributable speakers. Shared by the show-wide roster and the
-    per-episode speaker endpoint.
+    Break markers and labels that name nobody are skipped, so the result holds
+    only real, attributable speakers. That includes NARRATOR_SPEAKER: an
+    episode transcribed without diarization carries it on every segment, and
+    counting it would put a speaker nobody identified in the show roster and
+    the per-episode airtime line. Shared by both of those endpoints, so the
+    rule lives here rather than in each surface.
     """
     out: dict[str, dict] = {}
     for spk, segs in group_by_speaker(segments).items():
-        if not spk or spk == BREAK_SPEAKER or spk in UNKNOWN_SPEAKERS:
+        if spk == BREAK_SPEAKER or is_unattributed(spk):
             continue
         secs = sum(
             max(0.0, float(s.get("end", 0.0)) - float(s.get("start", 0.0)))
