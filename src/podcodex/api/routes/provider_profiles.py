@@ -38,12 +38,12 @@ class UpdateRequest(BaseModel):
 
 
 @router.get("", response_model=ListResponse)
-async def list_profiles() -> ListResponse:
+def list_profiles() -> ListResponse:
     return ListResponse(profiles=list_all())
 
 
 @router.post("", response_model=ProviderProfile, status_code=201)
-async def create_profile(req: CreateRequest) -> ProviderProfile:
+def create_profile(req: CreateRequest) -> ProviderProfile:
     if is_builtin(req.name):
         raise HTTPException(
             status_code=409, detail=f"'{req.name}' collides with a built-in profile"
@@ -65,7 +65,7 @@ async def create_profile(req: CreateRequest) -> ProviderProfile:
 
 
 @router.patch("/{name}", response_model=ProviderProfile)
-async def update_profile(name: str, req: UpdateRequest) -> ProviderProfile:
+def update_profile(name: str, req: UpdateRequest) -> ProviderProfile:
     if is_builtin(name):
         raise HTTPException(status_code=403, detail="Built-in profiles are read-only")
     file = load_custom()
@@ -87,7 +87,7 @@ async def update_profile(name: str, req: UpdateRequest) -> ProviderProfile:
 
 
 @router.delete("/{name}", status_code=204)
-async def delete_profile(name: str) -> None:
+def delete_profile(name: str) -> None:
     if is_builtin(name):
         raise HTTPException(
             status_code=403, detail="Built-in profiles cannot be deleted"

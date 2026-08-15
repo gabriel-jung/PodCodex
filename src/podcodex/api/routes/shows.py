@@ -49,7 +49,7 @@ from podcodex.api.schemas import (
 from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.core.llm_failures import rejected_steps
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
-from podcodex.core.versions import is_edited
+from podcodex.core.versions import STEP_FLAG, is_edited
 from podcodex.ingest.folder import (
     EpisodeInfo,
     invalidate_scan_cache,
@@ -493,7 +493,7 @@ def create_from_youtube(
 
 
 @router.post("/register")
-async def register_show(req: RegisterShowRequest) -> dict:
+def register_show(req: RegisterShowRequest) -> dict:
     """Register an existing folder as a known show."""
     p = Path(req.path).expanduser().resolve()
     if not p.is_dir():
@@ -526,7 +526,7 @@ def _episode_to_dict(ep: EpisodeInfo) -> dict:
 
 
 @router.get("/{show_folder:path}/meta", response_model=ShowMeta)
-async def get_show_meta(show_folder: str) -> ShowMeta:
+def get_show_meta(show_folder: str) -> ShowMeta:
     """Return metadata for a show folder."""
     path = require_show_folder(show_folder)
     meta = load_show_meta(path)
@@ -567,7 +567,7 @@ async def get_show_meta(show_folder: str) -> ShowMeta:
 
 
 @router.put("/{show_folder:path}/meta")
-async def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
+def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
     """Persist updated show metadata to show.toml."""
     path = require_show_folder(show_folder)
     p = meta.pipeline
@@ -901,17 +901,24 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
     if indexed_updates:
         db.mark_indexed_bulk(indexed_updates)
 
-    # Reconcile synthesized flag against the versions DB: an episode with
-    # any registered synthesize version is synthesized, regardless of what
-    # populate_from_scan stored initially (which is only re-run when the
-    # DB is empty). Without this, the overview StageCard stays "not started"
-    # for any episode whose first sync happened before our first assemble.
-    stems_with_synth = set(db.stems_with_step("synthesize"))
-    for stem, row in status_map.items():
-        desired = stem in stems_with_synth
-        if row.get("synthesized", False) != desired:
-            row["synthesized"] = desired
-            db.mark(stem, synthesized=desired)
+    # Reconcile the per-step flags against the versions DB: an episode is
+    # transcribed / corrected / synthesized exactly when it has a registered
+    # version for that step, regardless of what populate_from_scan stored
+    # initially (it only re-runs when the DB is empty). Both directions
+    # matter. Without the promote, the overview StageCard stays "not started"
+    # for any episode whose first sync predates our first assemble; without
+    # the demote, a flag survives content deleted out of band.
+    #
+    # The DB is the right authority here rather than the step directory: every
+    # read path resolves a version id through the DB, so a file with no row
+    # cannot be opened and must not report as done.
+    for step, flag in STEP_FLAG.items():
+        stems_with_versions = set(db.stems_with_step(step))
+        for stem, row in status_map.items():
+            desired = stem in stems_with_versions
+            if row.get(flag, False) != desired:
+                row[flag] = desired
+                db.mark(stem, **{flag: desired})
 
     # Reconcile verified pointers: a pointer whose target version no longer
     # exists (out-of-band file deletion, manual DB edit) is stale and must
@@ -1347,7 +1354,7 @@ async def episode_speakers(show_folder: str, stem: str) -> EpisodeSpeakersRespon
 
 
 @router.post("/{show_folder:path}/resync")
-async def resync_pipeline_db(show_folder: str) -> dict:
+def resync_pipeline_db(show_folder: str) -> dict:
     """Force-rebuild pipeline.db from filesystem scan."""
     path = require_show_folder(show_folder)
     from podcodex.core.pipeline_db import reset_pipeline_db
@@ -1361,7 +1368,7 @@ async def resync_pipeline_db(show_folder: str) -> dict:
 
 
 @router.get("/best-source-segments")
-async def best_source_segments(
+def best_source_segments(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
@@ -1381,7 +1388,7 @@ async def best_source_segments(
 
 
 @router.get("/versions")
-async def list_all_versions(
+def list_all_versions(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
@@ -1408,7 +1415,7 @@ class VerifiedRequest(BaseModel):
 
 
 @router.put("/verified")
-async def set_verified_version(
+def set_verified_version(
     req: VerifiedRequest,
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
@@ -1462,7 +1469,7 @@ async def set_verified_version(
 
 
 @router.delete("/versions/{version_id}")
-async def delete_any_version(
+def delete_any_version(
     version_id: str,
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
@@ -1513,16 +1520,26 @@ _SKIP_PREFIXES = (".", "__")
 _SKIP_NAMES = {"manifest.json"}
 
 
-def _walk_episode_dir(root: Path, rel_prefix: str) -> list[str]:
+def _walk_episode_dir(
+    root: Path, rel_prefix: str
+) -> tuple[list[str], list[tuple[str, int]]]:
     """Recursively collect interesting files under an episode dir.
 
     ``rel_prefix`` is the path (relative to the show folder) to prepend to
     each file name, so we skip allocating a Path per entry just to call
     ``relative_to``.
+
+    Returns the file list plus every directory visited paired with its mtime,
+    which is what `_scan_episode_files` caches on.
     """
     import os
 
     collected: list[str] = []
+    try:
+        stamp = os.stat(root).st_mtime_ns
+    except OSError:
+        return [], []
+    visited: list[tuple[str, int]] = [(str(root), stamp)]
     try:
         with os.scandir(root) as it:
             for f in it:
@@ -1530,9 +1547,11 @@ def _walk_episode_dir(root: Path, rel_prefix: str) -> list[str]:
                 if name.startswith(_SKIP_PREFIXES):
                     continue
                 if f.is_dir(follow_symlinks=False):
-                    collected.extend(
-                        _walk_episode_dir(Path(f.path), f"{rel_prefix}/{name}")
+                    sub_files, sub_dirs = _walk_episode_dir(
+                        Path(f.path), f"{rel_prefix}/{name}"
                     )
+                    collected.extend(sub_files)
+                    visited.extend(sub_dirs)
                     continue
                 if not f.is_file(follow_symlinks=False) or name in _SKIP_NAMES:
                     continue
@@ -1542,7 +1561,34 @@ def _walk_episode_dir(root: Path, rel_prefix: str) -> list[str]:
                 collected.append(f"{rel_prefix}/{name}")
     except OSError:
         pass
-    return collected
+    return collected, visited
+
+
+# show folder → stem → (visited dirs with their mtimes, file list). Walking a
+# show's episode dirs is the most expensive part of building the episode list
+# (~20ms for 269 episodes) and it runs on every request, including the 5s
+# status poll. Re-stat'ing the recorded directories instead costs ~0.7ms.
+_EPISODE_FILES_CACHE: dict[str, dict[str, tuple[list[tuple[str, int]], list[str]]]] = {}
+
+# A directory whose mtime is younger than this is treated as a cache miss.
+# Filesystems with coarse timestamps (FAT32 rounds to 2s) can otherwise land a
+# write in the same tick as the scan that recorded the mtime, hiding it.
+_MTIME_SETTLE_NS = 2_000_000_000
+
+
+def _dirs_unchanged(visited: list[tuple[str, int]], now_ns: int) -> bool:
+    """True when every recorded directory still has its recorded mtime."""
+    import os
+
+    for path, stamp in visited:
+        if now_ns - stamp < _MTIME_SETTLE_NS:
+            return False
+        try:
+            if os.stat(path).st_mtime_ns != stamp:
+                return False
+        except OSError:
+            return False
+    return True
 
 
 def _scan_episode_files(
@@ -1554,8 +1600,19 @@ def _scan_episode_files(
     Walks version subdirectories (``transcript/``, ``corrected/``,
     ``speaker_map/``, language folders, etc.) so the Pipeline file list
     surfaces version artifacts alongside legacy flat files.
+
+    Per-episode results are cached against the mtimes of every directory the
+    walk touched, so an added or removed file anywhere in the tree is caught:
+    adding a file bumps its directory's mtime, and adding a directory bumps
+    its parent's. Content edits don't bump anything, which is fine because
+    only names are reported.
     """
     import os
+    import time
+
+    cached = _EPISODE_FILES_CACHE.get(str(show_folder), {})
+    fresh: dict[str, tuple[list[tuple[str, int]], list[str]]] = {}
+    now_ns = time.time_ns()
 
     result: dict[str, list[str]] = {}
     try:
@@ -1566,12 +1623,23 @@ def _scan_episode_files(
                 stem = entry.name
                 if stem.startswith("."):
                     continue
-                files = _walk_episode_dir(Path(entry.path), stem)
-                if files:
+                hit = cached.get(stem)
+                if hit is not None and _dirs_unchanged(hit[0], now_ns):
+                    fresh[stem] = hit
+                    files = hit[1]
+                else:
+                    files, visited = _walk_episode_dir(Path(entry.path), stem)
                     files.sort()
-                    result[stem] = files
+                    fresh[stem] = (visited, files)
+                # Hand out a copy: the root-audio merge below prepends to these
+                # lists, which would otherwise grow the cached entry per call.
+                if files:
+                    result[stem] = list(files)
     except OSError:
         pass
+    # Replacing the show's map (rather than updating it) drops entries for
+    # episode directories that no longer exist.
+    _EPISODE_FILES_CACHE[str(show_folder)] = fresh
 
     # Prepend root audio (already discovered by _scan_audio_files).
     for stem, audio_path in local_audio.items():
@@ -1589,7 +1657,7 @@ class MoveShowRequest(BaseModel):
 
 
 @router.post("/{show_folder:path}/move")
-async def move_show(show_folder: str, req: MoveShowRequest) -> dict:
+def move_show(show_folder: str, req: MoveShowRequest) -> dict:
     """Move or rename a show folder, optionally relocating all files."""
     old_path = require_show_folder(show_folder)
     new_path = Path(req.new_path).expanduser().resolve()
@@ -1674,7 +1742,7 @@ class DeleteShowRequest(BaseModel):
 
 
 @router.post("/{show_folder:path}/delete")
-async def delete_show(show_folder: str, req: DeleteShowRequest) -> dict:
+def delete_show(show_folder: str, req: DeleteShowRequest) -> dict:
     """Remove a show from the app. Optionally delete the local folder."""
     path = require_show_folder(show_folder)
 

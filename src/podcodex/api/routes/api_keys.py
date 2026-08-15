@@ -50,7 +50,7 @@ class ScanResponse(BaseModel):
 
 
 @router.get("", response_model=ListResponse)
-async def list_keys() -> ListResponse:
+def list_keys() -> ListResponse:
     file = load_keys()
     return ListResponse(
         path=str(api_keys_path()),
@@ -59,7 +59,7 @@ async def list_keys() -> ListResponse:
 
 
 @router.post("", response_model=APIKeyPublic, status_code=201)
-async def create_key(req: CreateRequest) -> APIKeyPublic:
+def create_key(req: CreateRequest) -> APIKeyPublic:
     file = load_keys()
     if find_key(file, req.name) is not None:
         raise HTTPException(status_code=409, detail=f"Key '{req.name}' already exists")
@@ -75,7 +75,7 @@ async def create_key(req: CreateRequest) -> APIKeyPublic:
 
 
 @router.patch("/{name}", response_model=APIKeyPublic)
-async def update_key(name: str, req: UpdateRequest) -> APIKeyPublic:
+def update_key(name: str, req: UpdateRequest) -> APIKeyPublic:
     file = load_keys()
     key = find_key(file, name)
     if key is None:
@@ -90,7 +90,7 @@ async def update_key(name: str, req: UpdateRequest) -> APIKeyPublic:
 
 
 @router.delete("/{name}", status_code=204)
-async def delete_key(name: str) -> None:
+def delete_key(name: str) -> None:
     file = load_keys()
     if find_key(file, name) is None:
         raise HTTPException(status_code=404, detail=f"Key '{name}' not found")
@@ -99,7 +99,7 @@ async def delete_key(name: str) -> None:
 
 
 @router.post("/scan-env", response_model=ScanResponse)
-async def scan_env() -> ScanResponse:
+def scan_env() -> ScanResponse:
     """Seed the pool with `*_API_KEY` vars from the environment.
 
     Existing names are never overwritten — manual edits stick. Returns

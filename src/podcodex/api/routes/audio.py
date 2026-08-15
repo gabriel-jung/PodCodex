@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 @router.get("/file")
-async def serve_audio_file(
+def serve_audio_file(
     path: str = Query(..., description="Absolute path to audio file"),
 ):
     """Serve a full audio file with range-request support."""
@@ -32,7 +32,7 @@ async def serve_audio_file(
 
 
 @router.get("/clip")
-async def serve_audio_clip(
+def serve_audio_clip(
     path: str = Query(...),
     start: float = Query(0.0),
     end: float = Query(0.0),
@@ -75,7 +75,7 @@ async def serve_audio_clip(
 
 
 @router.delete("/file")
-async def delete_audio_file(
+def delete_audio_file(
     path: str = Query(..., description="Absolute path to audio file"),
 ):
     """Delete an audio file from disk."""

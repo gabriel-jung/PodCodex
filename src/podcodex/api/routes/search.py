@@ -106,7 +106,7 @@ def _build_audio_lookup() -> dict[str, dict]:
 
 
 @router.get("/config")
-async def search_config() -> dict:
+def search_config() -> dict:
     """Return available models, chunking strategies, and defaults."""
     from podcodex.rag.defaults import (
         ALPHA,

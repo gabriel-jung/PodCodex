@@ -25,7 +25,7 @@ router = APIRouter()
 
 
 @router.get("/status")
-async def synthesis_status(
+def synthesis_status(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict:
@@ -168,7 +168,7 @@ def upload_voice_sample(
 
 
 @router.get("/voice-samples")
-async def get_voice_samples(
+def get_voice_samples(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
     source_version_id: str | None = Query(None),
@@ -240,7 +240,7 @@ class GenerateRequest(BaseModel):
 
 
 @router.post("/generate", response_model=TaskResponse)
-async def generate_tts(req: GenerateRequest) -> TaskResponse:
+def generate_tts(req: GenerateRequest) -> TaskResponse:
     """Generate TTS audio for all segments as a background task.
 
     Supports incremental generation: previously generated segments are skipped
@@ -275,7 +275,7 @@ async def generate_tts(req: GenerateRequest) -> TaskResponse:
 
 
 @router.get("/generated-segments")
-async def get_generated_segments(
+def get_generated_segments(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
     source_version_id: str | None = Query(None),
@@ -342,7 +342,7 @@ class AssembleRequest(BaseModel):
 
 
 @router.get("/versions")
-async def list_synthesize_versions(
+def list_synthesize_versions(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
@@ -358,7 +358,7 @@ async def list_synthesize_versions(
 
 
 @router.get("/versions/{version_id}")
-async def get_synthesize_version(
+def get_synthesize_version(
     version_id: str,
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),

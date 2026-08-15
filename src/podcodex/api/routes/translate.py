@@ -32,7 +32,7 @@ register_version_routes(router, lang_param=True)
 
 
 @router.get("/segments")
-async def get_translated_segments(
+def get_translated_segments(
     audio_path: str | None = Query(None),
     lang: str = Query(...),
     output_dir: str | None = Query(None),
@@ -82,7 +82,7 @@ def save_translated_segments(
 
 
 @router.get("/languages")
-async def list_languages(
+def list_languages(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[str]:
@@ -101,7 +101,7 @@ class TranslateRequest(LLMRequest):
 
 
 @router.post("/start", response_model=TaskResponse)
-async def start_translate(req: TranslateRequest) -> TaskResponse:
+def start_translate(req: TranslateRequest) -> TaskResponse:
     """Start the translate pipeline as a background task."""
     if req.mode == "api":
         from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm
@@ -184,7 +184,7 @@ async def start_translate(req: TranslateRequest) -> TaskResponse:
 
 
 @router.post("/manual-prompts")
-async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
+def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     """Generate batched prompts for manual translation."""
     from podcodex.core.translate import build_manual_prompts_batched
     from podcodex.core.versions import load_version
@@ -214,7 +214,7 @@ async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
 
 
 @router.get("/llm-failures")
-async def get_translate_failures(
+def get_translate_failures(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
     lang: str = Query(..., description="Target language of the translation"),

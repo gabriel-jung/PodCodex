@@ -82,7 +82,7 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
 
 
 @router.get("/{show_folder:path}/rss/cache", response_model=list[RSSEpisodeOut])
-async def rss_cache(show_folder: str) -> list[dict]:
+def rss_cache(show_folder: str) -> list[dict]:
     """Return cached RSS feed data (no network call)."""
     path = Path(show_folder)
     cached = load_feed_cache(path)
@@ -96,7 +96,7 @@ async def rss_cache(show_folder: str) -> list[dict]:
     "/{show_folder:path}/rss/download",
     response_model=TaskResponse,
 )
-async def rss_download(
+def rss_download(
     show_folder: str,
     guids: list[str] | None = None,
     force: bool = False,

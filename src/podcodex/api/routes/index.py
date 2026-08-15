@@ -21,7 +21,7 @@ router = APIRouter()
 
 
 @router.get("/config")
-async def index_config() -> dict:
+def index_config() -> dict:
     """Return available embedding models and chunking strategies."""
     from podcodex.rag.defaults import (
         CHUNKING_STRATEGIES,
@@ -51,7 +51,7 @@ async def index_config() -> dict:
 
 
 @router.get("/sources")
-async def index_sources(
+def index_sources(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
@@ -355,7 +355,7 @@ class IndexRequest(BaseModel):
 
 
 @router.post("/start", response_model=TaskResponse)
-async def start_index(req: IndexRequest) -> TaskResponse:
+def start_index(req: IndexRequest) -> TaskResponse:
     """Vectorize an episode into the IndexStore as a background task.
 
     The heavy work (embedding encode, LanceDB writes) runs in a spawned

@@ -135,7 +135,7 @@ def youtube_fetch(show_folder: str) -> list[dict]:
     "/{show_folder:path}/youtube/download",
     response_model=TaskResponse,
 )
-async def youtube_download(
+def youtube_download(
     show_folder: str,
     req: YouTubeDownloadRequest,
     force: bool = False,
@@ -256,7 +256,7 @@ async def youtube_download(
     "/{show_folder:path}/youtube/import-subs",
     response_model=TaskResponse,
 )
-async def youtube_import_subs(
+def youtube_import_subs(
     show_folder: str,
     req: YouTubeSubsRequest,
 ) -> TaskResponse:

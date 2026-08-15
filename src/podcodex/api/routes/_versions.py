@@ -32,7 +32,7 @@ def register_version_routes(
         return p, s
 
     @router.get("/versions")
-    async def list_step_versions(
+    def list_step_versions(
         audio_path: str | None = Query(None),
         output_dir: str | None = Query(None),
         lang: str | None = Query(None),
@@ -43,7 +43,7 @@ def register_version_routes(
         return list_versions(p.base, s)
 
     @router.get("/versions/{version_id}")
-    async def load_step_version(
+    def load_step_version(
         version_id: str,
         audio_path: str | None = Query(None),
         output_dir: str | None = Query(None),
@@ -58,7 +58,7 @@ def register_version_routes(
             raise HTTPException(404, f"Version {version_id} not found")
 
     @router.delete("/versions/{version_id}")
-    async def delete_step_version(
+    def delete_step_version(
         version_id: str,
         audio_path: str | None = Query(None),
         output_dir: str | None = Query(None),

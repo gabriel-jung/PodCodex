@@ -42,7 +42,7 @@ def gpu_status() -> dict:
 
 
 @router.post("/download")
-async def gpu_download(req: DownloadRequest) -> dict:
+def gpu_download(req: DownloadRequest) -> dict:
     """Kick off the download+install task. Returns the task_id to poll."""
     if not gpu_backend.running_in_bundle():
         raise HTTPException(
@@ -62,7 +62,7 @@ async def gpu_download(req: DownloadRequest) -> dict:
 
 
 @router.post("/activate")
-async def gpu_activate() -> dict:
+def gpu_activate() -> dict:
     """Mark the GPU backend as active. Sidecar respawn is the caller's job."""
     try:
         gpu_backend.activate()
@@ -74,7 +74,7 @@ async def gpu_activate() -> dict:
 
 
 @router.post("/deactivate")
-async def gpu_deactivate() -> dict:
+def gpu_deactivate() -> dict:
     """Revert to the bundled CPU sidecar on next launch."""
     try:
         gpu_backend.deactivate()

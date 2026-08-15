@@ -294,13 +294,13 @@ def _status(request: Request) -> ClaudeDesktopStatus:
 
 
 @router.get("/claude-desktop", response_model=ClaudeDesktopStatus)
-async def get_claude_desktop_status(request: Request) -> ClaudeDesktopStatus:
+def get_claude_desktop_status(request: Request) -> ClaudeDesktopStatus:
     """Current toggle state + resolved paths/endpoint for the UI."""
     return _status(request)
 
 
 @router.post("/claude-desktop/enable", response_model=ClaudeDesktopStatus)
-async def enable_claude_desktop(request: Request) -> ClaudeDesktopStatus:
+def enable_claude_desktop(request: Request) -> ClaudeDesktopStatus:
     """Write the mcpServers.podcodex entry, preserving every other key."""
     if not getattr(request.app.state, "mcp_available", False):
         raise HTTPException(
@@ -319,7 +319,7 @@ async def enable_claude_desktop(request: Request) -> ClaudeDesktopStatus:
 
 
 @router.post("/claude-desktop/disable", response_model=ClaudeDesktopStatus)
-async def disable_claude_desktop(request: Request) -> ClaudeDesktopStatus:
+def disable_claude_desktop(request: Request) -> ClaudeDesktopStatus:
     """Remove only the podcodex entry. Every other key is preserved."""
     path = _claude_config_path()
     cfg = _read_config(path)

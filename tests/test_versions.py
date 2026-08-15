@@ -421,3 +421,75 @@ class TestResolveVerifiedSource:
         ptr = db.get_verified(episode_dir.name)
         assert ptr == {"step": "corrected", "version_id": v1}
         close_pipeline_db(show_dir)
+
+
+class TestStatusDemotionOnDelete:
+    """Deleting the last version of a step demotes its pipeline_db flag."""
+
+    def test_last_delete_demotes_flag(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.mark(episode_dir.name, corrected=True)
+        delete_version(episode_dir, "corrected", vid)
+        assert db.get_episode(episode_dir.name)["corrected"] is False
+        close_pipeline_db(show_dir)
+
+    def test_demote_skipped_when_a_version_survives(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        v1 = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov(model="other"))
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.mark(episode_dir.name, corrected=True)
+        delete_version(episode_dir, "corrected", v1)
+        assert db.get_episode(episode_dir.name)["corrected"] is True
+        close_pipeline_db(show_dir)
+
+    def test_demote_is_atomic_against_a_racing_save(self, episode_dir):
+        """A version registered mid-delete must win over the demotion.
+
+        Pipeline steps run in spawned subprocesses writing to this same DB,
+        so the emptiness check and the flag write have to be one transaction.
+        Simulated here by registering a new version from inside the check.
+        """
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.mark(episode_dir.name, corrected=True)
+
+        # The racing save lands after the delete removes the only row, but
+        # before the demotion commits.
+        original = db.demote_step_if_no_versions
+
+        def racing_demote(stem, step, flag):
+            save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov(model="race"))
+            return original(stem, step, flag)
+
+        db.demote_step_if_no_versions = racing_demote
+        try:
+            delete_version(episode_dir, "corrected", vid)
+        finally:
+            db.demote_step_if_no_versions = original
+
+        assert list_versions(episode_dir, "corrected"), "racing save should survive"
+        assert db.get_episode(episode_dir.name)["corrected"] is True
+        close_pipeline_db(show_dir)
+
+    def test_last_translation_delete_drops_the_language(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        vid = save_version(
+            episode_dir, "english", SAMPLE_SEGMENTS, _prov(step="english")
+        )
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.mark(episode_dir.name, translations=["english", "french"])
+        delete_version(episode_dir, "english", vid)
+        assert db.get_episode(episode_dir.name)["translations"] == ["french"]
+        close_pipeline_db(show_dir)

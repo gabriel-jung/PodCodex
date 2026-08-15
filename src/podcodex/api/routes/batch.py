@@ -90,7 +90,7 @@ def _enabled_weight(req: BatchRequest) -> float:
 
 
 @router.post("/start", response_model=TaskResponse)
-async def start_batch(req: BatchRequest) -> TaskResponse:
+def start_batch(req: BatchRequest) -> TaskResponse:
     """Start a batch pipeline run across multiple episodes."""
     if not req.audio_paths:
         raise HTTPException(400, "No episodes selected")

@@ -298,7 +298,7 @@ def list_drives() -> dict:
 
 
 @router.post("/open")
-async def open_folder(
+def open_folder(
     path: str = Query(..., description="Folder to open in the OS file manager"),
 ) -> dict:
     """Open a folder in the OS file manager (Finder, Explorer, etc.)."""

@@ -158,7 +158,7 @@ def _status_from_file_values(file_values: dict[str, str]) -> SecretsStatusRespon
 
 
 @router.get("/config/secrets", response_model=SecretsStatusResponse)
-async def get_secrets_status() -> SecretsStatusResponse:
+def get_secrets_status() -> SecretsStatusResponse:
     """Report which managed secrets are set and where they come from."""
     return _status_from_file_values(_read_secrets_file())
 
@@ -194,7 +194,7 @@ def put_secrets(req: SecretsUpdateRequest) -> SecretsStatusResponse:
 
 
 @router.get("/pipeline-config")
-async def pipeline_config() -> dict:
+def pipeline_config() -> dict:
     """Return all pipeline constants (models, providers, strategies).
 
     The React frontend fetches this once at startup so that labels,
@@ -214,7 +214,7 @@ async def pipeline_config() -> dict:
 
 
 @router.get("/config", response_model=AppConfig)
-async def get_config() -> AppConfig:
+def get_config() -> AppConfig:
     """Return the current app configuration."""
     return _load()
 

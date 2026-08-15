@@ -105,12 +105,12 @@ def _apply_and_persist(prompts: list[PromptDef]) -> None:
 
 
 @router.get("/prompts", response_model=list[PromptOut])
-async def list_prompts() -> list[PromptOut]:
+def list_prompts() -> list[PromptOut]:
     return [_to_out(p) for p in load_prompts()]
 
 
 @router.post("/prompts", response_model=PromptOut, status_code=201)
-async def create_prompt(payload: PromptCreate) -> PromptOut:
+def create_prompt(payload: PromptCreate) -> PromptOut:
     prompts = load_prompts()
     if any(p.id == payload.id for p in prompts):
         raise HTTPException(409, f"Prompt id {payload.id!r} already exists.")
@@ -134,7 +134,7 @@ async def create_prompt(payload: PromptCreate) -> PromptOut:
 
 
 @router.put("/prompts/{prompt_id}", response_model=PromptOut)
-async def update_prompt(prompt_id: str, payload: PromptUpdate) -> PromptOut:
+def update_prompt(prompt_id: str, payload: PromptUpdate) -> PromptOut:
     prompts = load_prompts()
     idx = next((i for i, p in enumerate(prompts) if p.id == prompt_id), -1)
     if idx < 0:
@@ -179,7 +179,7 @@ async def update_prompt(prompt_id: str, payload: PromptUpdate) -> PromptOut:
 
 
 @router.delete("/prompts/{prompt_id}", status_code=204)
-async def delete_prompt(prompt_id: str) -> None:
+def delete_prompt(prompt_id: str) -> None:
     prompts = load_prompts()
     idx = next((i for i, p in enumerate(prompts) if p.id == prompt_id), -1)
     if idx < 0:
@@ -194,7 +194,7 @@ async def delete_prompt(prompt_id: str) -> None:
 
 
 @router.post("/prompts/{prompt_id}/toggle", response_model=PromptOut)
-async def toggle_prompt(prompt_id: str) -> PromptOut:
+def toggle_prompt(prompt_id: str) -> PromptOut:
     prompts = load_prompts()
     idx = next((i for i, p in enumerate(prompts) if p.id == prompt_id), -1)
     if idx < 0:

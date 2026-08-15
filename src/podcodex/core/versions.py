@@ -692,36 +692,39 @@ def _delete_speaker_maps_where(
 
 
 def _refresh_status_after_delete(base: Path, step: str) -> None:
-    """Clear pipeline_db status flags when no versions remain for a step."""
+    """Clear pipeline_db status flags when no versions remain for a step.
+
+    The "no versions left" test reads the DB rather than the step directory
+    on purpose: every read path (``load_version``, ``load_version_by_id``)
+    resolves an id through the DB first, so a file with no row is unreachable
+    and must not keep a status flag alive.
+
+    Deliberately does not pre-check with ``list_versions``: pipeline steps run
+    in spawned subprocesses that write to this same DB, so the check and the
+    demotion have to be one transaction (``demote_step_if_no_versions``) or a
+    version landing in between strands a False flag next to live content.
+    """
     try:
         db = _get_db(base)
         stem = base.name
         # The verified pointer can reference any version, including one that
-        # was just deleted. Clear the pointer when the target is gone.
+        # was just deleted. Clear the pointer when the target is gone. Safe
+        # to do independently: a version arriving concurrently cannot make a
+        # deleted pointer target valid again.
         ptr = db.get_verified(stem)
         if ptr and ptr["step"] == step:
             remaining_ids = {v["id"] for v in db.list_versions(stem, step)}
             if ptr["version_id"] not in remaining_ids:
                 db.clear_verified(stem)
-        if db.list_versions(stem, step):
+
+        if not db.demote_step_if_no_versions(stem, step, STEP_FLAG.get(step)):
             return
 
-        # No versions left for this step — drop any recorded LLM batch
-        # failures too, which referenced the now-deleted versions.
+        # The step really is empty — drop any recorded LLM batch failures
+        # too, which referenced the now-deleted versions.
         from podcodex.core.llm_failures import clear_step
 
         clear_step(base, step)
-
-        flag = STEP_FLAG.get(step)
-        if flag is not None:
-            db.mark(stem, **{flag: False})
-            return
-        row = db.get_episode(stem)
-        if row:
-            translations = list(row.get("translations") or [])
-            if step in translations:
-                translations.remove(step)
-                db.mark(stem, translations=translations)
     except Exception:
         logger.opt(exception=True).warning(
             "Failed to refresh status after delete (step={})", step

@@ -84,7 +84,7 @@ def _installed_extras(caps: dict[str, bool] | None = None) -> set[str]:
 
 
 @router.get("/health")
-async def health() -> dict:
+def health() -> dict:
     """Return API status and detected capabilities."""
     from podcodex.core.app_paths import running_in_bundle
 
@@ -99,7 +99,7 @@ async def health() -> dict:
 
 
 @router.get("/system/extras")
-async def list_extras() -> dict:
+def list_extras() -> dict:
     """List installable extras and their install status."""
     caps = _get_capabilities()
     return {
@@ -150,7 +150,7 @@ def ollama_check() -> dict:
 
 
 @router.post("/system/free-vram")
-async def free_vram_endpoint() -> dict:
+def free_vram_endpoint() -> dict:
     """Flush GPU VRAM — call before heavy pipeline steps if memory is tight."""
     from podcodex.core._utils import free_vram
     from podcodex.core.device import cuda_available
@@ -189,7 +189,7 @@ class SetDeviceRequest(BaseModel):
 
 
 @router.post("/system/device")
-async def set_device(req: SetDeviceRequest) -> dict:
+def set_device(req: SetDeviceRequest) -> dict:
     """Persist the device override and apply it to the running process.
 
     Validates a ``cuda`` request against actual CUDA availability so the
@@ -221,7 +221,7 @@ async def set_device(req: SetDeviceRequest) -> dict:
 
 
 @router.get("/tasks/active")
-async def get_active_task(
+def get_active_task(
     audio_path: str | None = None,
 ) -> dict | None:
     """Return the active task for an audio path, if any."""
@@ -246,7 +246,7 @@ async def get_active_task(
 
 
 @router.get("/tasks/{task_id}")
-async def get_task(task_id: str) -> dict | None:
+def get_task(task_id: str) -> dict | None:
     """Return current state of a task by ID (any status, until cleanup)."""
     from podcodex.api.tasks import task_manager
 
@@ -271,7 +271,7 @@ async def get_task(task_id: str) -> dict | None:
 
 
 @router.post("/tasks/{task_id}/cancel")
-async def cancel_task(task_id: str) -> dict:
+def cancel_task(task_id: str) -> dict:
     """Cancel a running or pending task."""
     from podcodex.api.tasks import task_manager
 
@@ -328,7 +328,7 @@ class InstallExtraRequest(BaseModel):
 
 
 @router.post("/system/install-extra")
-async def install_extra(req: InstallExtraRequest) -> dict:
+def install_extra(req: InstallExtraRequest) -> dict:
     """Install a Python extra via uv sync as a background task."""
     if req.extra not in INSTALLABLE_EXTRAS:
         raise HTTPException(
@@ -344,7 +344,7 @@ async def install_extra(req: InstallExtraRequest) -> dict:
 
 
 @router.post("/system/remove-extra")
-async def remove_extra(req: InstallExtraRequest) -> dict:
+def remove_extra(req: InstallExtraRequest) -> dict:
     """Remove a Python extra via uv sync (omitting it) as a background task."""
     if req.extra not in INSTALLABLE_EXTRAS:
         raise HTTPException(

@@ -28,7 +28,7 @@ register_version_routes(router, "transcript")
 
 
 @router.get("/segments")
-async def get_segments(
+def get_segments(
     audio_path: str | None = Query(None, description="Absolute path to audio file"),
     output_dir: str | None = Query(None),
     limit: int | None = Query(None, ge=1, description="Max segments to return"),
@@ -72,7 +72,7 @@ def save_segments(
 
 
 @router.get("/speaker-map")
-async def get_speaker_map(
+def get_speaker_map(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict[str, str]:
@@ -84,7 +84,7 @@ async def get_speaker_map(
 
 
 @router.put("/speaker-map")
-async def save_speaker_map(
+def save_speaker_map(
     mapping: dict[str, str],
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
@@ -282,7 +282,7 @@ class TranscribeRequest(BaseModel):
 
 
 @router.post("/start", response_model=TaskResponse)
-async def start_transcribe(req: TranscribeRequest) -> TaskResponse:
+def start_transcribe(req: TranscribeRequest) -> TaskResponse:
     """Start the transcription pipeline as a background task.
 
     Heavy work (WhisperX, pyannote) runs in a spawned subprocess so the

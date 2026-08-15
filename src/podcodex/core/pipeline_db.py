@@ -132,6 +132,8 @@ class PipelineDB:
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # DELETE, not WAL: WAL needs shared memory in the same directory and
+        # is unsafe on synced/network folders. See "sync-safe pipeline DB".
         self._conn.execute("PRAGMA journal_mode=DELETE")
         self._conn.executescript(_SCHEMA)
         self._run_migrations()
@@ -296,6 +298,68 @@ class PipelineDB:
             vals_full = [stem, *vals, time.time()]
             self._conn.execute(sql, vals_full)
             self._conn.commit()
+
+    def demote_step_if_no_versions(
+        self, stem: str, step: str, flag: str | None
+    ) -> bool:
+        """Clear a step's status only if the step still has no versions.
+
+        The check and the write happen inside one ``BEGIN IMMEDIATE``, which
+        is what makes this safe: pipeline steps run in spawned subprocesses
+        (see ``api/subprocess_runner``) that write to this same file, so the
+        in-process lock alone cannot stop a version landing between a
+        "any versions left?" read and the demotion that follows it. Losing
+        that race strands a False flag next to a live version.
+
+        Args:
+            stem: Episode stem.
+            step: Version step that was just emptied.
+            flag: Boolean column to clear, or None to drop *step* from the
+                  ``translations`` list instead.
+
+        Returns:
+            True when the status was demoted, False when a version appeared
+            (or the episode row is gone) and the demotion was skipped.
+        """
+        if flag is not None and flag not in _VALID_COLUMNS:
+            raise ValueError(f"Unknown column: {flag}")
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT 1 FROM versions WHERE stem = ? AND step = ? LIMIT 1",
+                    (stem, step),
+                ).fetchone()
+                if row is not None:
+                    self._conn.rollback()
+                    return False
+                if flag is not None:
+                    self._conn.execute(
+                        f"UPDATE episodes SET {flag} = 0, updated_at = ? WHERE stem = ?",
+                        (time.time(), stem),
+                    )
+                else:
+                    current = self._conn.execute(
+                        "SELECT translations FROM episodes WHERE stem = ?", (stem,)
+                    ).fetchone()
+                    if current is None:
+                        self._conn.rollback()
+                        return False
+                    langs = json.loads(current["translations"] or "[]")
+                    if step not in langs:
+                        self._conn.rollback()
+                        return False
+                    langs.remove(step)
+                    self._conn.execute(
+                        "UPDATE episodes SET translations = ?, updated_at = ? "
+                        "WHERE stem = ?",
+                        (json.dumps(langs), time.time(), stem),
+                    )
+                self._conn.commit()
+                return True
+            except Exception:
+                self._conn.rollback()
+                raise
 
     # ── Verified pointer ──────────────────────────────────
 

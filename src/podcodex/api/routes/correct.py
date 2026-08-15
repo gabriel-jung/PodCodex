@@ -32,7 +32,7 @@ register_version_routes(router, "corrected")
 
 
 @router.get("/segments")
-async def get_corrected_segments(
+def get_corrected_segments(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
     limit: int | None = Query(None, ge=1, description="Max segments to return"),
@@ -71,7 +71,7 @@ def save_corrected_segments(
 
 
 @router.post("/start", response_model=TaskResponse)
-async def start_correct(req: LLMRequest) -> TaskResponse:
+def start_correct(req: LLMRequest) -> TaskResponse:
     """Start the correct pipeline as a background task."""
     # Resolve profile + key up front so a bad pick fails the request, not
     # the background task. Ollama mode tolerates an empty key_name.
@@ -158,7 +158,7 @@ async def start_correct(req: LLMRequest) -> TaskResponse:
 
 
 @router.post("/manual-prompts")
-async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
+def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     """Generate batched prompts for manual LLM correction."""
     from podcodex.core.correct import (
         build_manual_prompts_batched,
@@ -192,7 +192,7 @@ async def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
 
 
 @router.get("/llm-failures")
-async def get_correct_failures(
+def get_correct_failures(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict | None:

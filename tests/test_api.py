@@ -10,6 +10,9 @@ Covers the highest-traffic, lowest-dependency routes:
 All tests isolate state by redirecting CONFIG_PATH and operating in tmp_path.
 """
 
+import os
+import shutil
+import time
 from pathlib import Path
 
 import numpy as np
@@ -269,6 +272,100 @@ def test_status_matches_unified_status_fields(client, tmp_path):
         assert by_stem[ep["stem"]] == expected
 
     close_pipeline_db(show_dir)
+
+
+def _age_dirs(root: Path, seconds: float) -> None:
+    """Push mtimes of *root* and every directory under it into the past.
+
+    The file scan ignores cached mtimes younger than a couple of seconds
+    (coarse-timestamp filesystems can hide a same-tick write), so a test that
+    wants the cache-hit path has to age the tree first.
+    """
+    stamp = time.time() - seconds
+    for d in [root, *(p for p in root.rglob("*") if p.is_dir())]:
+        os.utime(d, (stamp, stamp))
+
+
+def _make_episode_tree(tmp_path) -> Path:
+    show = tmp_path / "show"
+    (show / "ep" / "transcript").mkdir(parents=True)
+    (show / "ep" / "ep.vtt").touch()
+    (show / "ep" / "transcript" / "v1.json").touch()
+    return show
+
+
+def test_episode_file_scan_sees_nested_writes(tmp_path):
+    """Caching is keyed on the whole recorded directory tree, not just the top.
+
+    A version landing in `ep/transcript/` leaves `ep/`'s own mtime untouched,
+    so validating only the episode directory would serve a stale file list.
+    """
+    from podcodex.api.routes.shows import _scan_episode_files
+
+    show = _make_episode_tree(tmp_path)
+    _age_dirs(show, 60)
+    assert _scan_episode_files(show, {})["ep"] == [
+        "ep/ep.vtt",
+        "ep/transcript/v1.json",
+    ]
+
+    versions = show / "ep" / "transcript"
+    (versions / "v2.json").touch()
+    # Age only the subdirectory: `show/` and `ep/` keep the mtimes just
+    # recorded, so nothing but the nested change can trip the cache.
+    stamp = time.time() - 30
+    os.utime(versions, (stamp, stamp))
+    assert _scan_episode_files(show, {})["ep"] == [
+        "ep/ep.vtt",
+        "ep/transcript/v1.json",
+        "ep/transcript/v2.json",
+    ]
+
+    os.remove(versions / "v1.json")
+    stamp = time.time() - 20
+    os.utime(versions, (stamp, stamp))
+    assert _scan_episode_files(show, {})["ep"] == ["ep/ep.vtt", "ep/transcript/v2.json"]
+
+    # A removed episode directory drops out of the result and the cache.
+    shutil.rmtree(show / "ep")
+    assert _scan_episode_files(show, {}) == {}
+
+
+def test_episode_file_scan_reuses_settled_results(tmp_path, monkeypatch):
+    """An untouched, settled tree is served from cache instead of re-walked."""
+    from podcodex.api.routes import shows as shows_routes
+
+    show = _make_episode_tree(tmp_path)
+    _age_dirs(show, 60)
+    shows_routes._scan_episode_files(show, {})  # records settled mtimes
+
+    def _fail(*args):
+        raise AssertionError("settled directories should not be re-walked")
+
+    monkeypatch.setattr(shows_routes, "_walk_episode_dir", _fail)
+    assert shows_routes._scan_episode_files(show, {})["ep"] == [
+        "ep/ep.vtt",
+        "ep/transcript/v1.json",
+    ]
+
+
+def test_episode_file_scan_rewalks_recent_changes(tmp_path):
+    """A just-written directory is never trusted, whatever its mtime says.
+
+    FAT32 rounds mtimes to 2s, so a write can land in the same tick as the
+    scan that recorded the mtime and leave it looking unchanged.
+    """
+    from podcodex.api.routes.shows import _scan_episode_files
+
+    show = _make_episode_tree(tmp_path)
+    _scan_episode_files(show, {})
+
+    versions = show / "ep" / "transcript"
+    recorded = os.stat(versions).st_mtime
+    (versions / "v2.json").touch()
+    os.utime(versions, (recorded, recorded))  # simulate a same-tick write
+
+    assert "ep/transcript/v2.json" in _scan_episode_files(show, {})["ep"]
 
 
 # ──────────────────────────────────────────────
