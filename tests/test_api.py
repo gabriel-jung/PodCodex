@@ -294,6 +294,44 @@ def _make_episode_tree(tmp_path) -> Path:
     return show
 
 
+def test_status_reconcile_keeps_flags_bootstrapped_from_disk(tmp_path):
+    """A DB built from a filesystem scan must survive the reconcile pass.
+
+    `populate_from_scan` derives transcribed/synthesized from the step
+    directories and writes no `versions` rows, so reconciling against rows
+    alone would undo the bootstrap in the same call, and `POST /resync`
+    (which deletes the DB file) would report a whole library as not started.
+    """
+    from podcodex.api.routes.shows import _load_status_context
+    from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+
+    show = tmp_path / "show"
+    (show / "ep1" / "transcript").mkdir(parents=True)
+    (show / "ep1" / "transcript" / "20260101T000000000000Z_raw.json").write_text(
+        '[{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}]'
+    )
+
+    ctx = _load_status_context(show, None)
+    assert ctx.status_map["ep1"]["transcribed"] is True
+    # And it must not have been persisted as False either.
+    assert get_pipeline_db(show).get_episode("ep1")["transcribed"] is True
+    close_pipeline_db(show)
+
+
+def test_status_reconcile_demotes_when_nothing_is_left(tmp_path):
+    """The demote half still fires when neither a row nor a file remains."""
+    from podcodex.api.routes.shows import _load_status_context
+    from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+
+    show = tmp_path / "show"
+    (show / "ep1").mkdir(parents=True)
+    get_pipeline_db(show).mark("ep1", transcribed=True)
+
+    ctx = _load_status_context(show, None)
+    assert ctx.status_map["ep1"]["transcribed"] is False
+    close_pipeline_db(show)
+
+
 def test_episode_file_scan_sees_nested_writes(tmp_path):
     """Caching is keyed on the whole recorded directory tree, not just the top.
 

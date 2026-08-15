@@ -225,6 +225,22 @@ class AudioPaths:
 
 # Speaker labels that don't represent a real person (unresolved diarization placeholders).
 # Used by transcribe.py (filtering) and synthesize.py (voice sample extraction).
+# ── mtime-based caching ──────────────────────────────────────────────────────
+
+# A cached mtime younger than this is not trusted. Filesystems with coarse
+# timestamps (FAT32 rounds to 2s, exFAT to 10ms) can land a write in the same
+# tick as the stat that cached it, leaving the cached value looking current;
+# external drives are a normal home for a podcast library.
+MTIME_SETTLE_SECONDS = 2.0
+
+
+def mtime_settled(mtime: float, now: float | None = None) -> bool:
+    """True when *mtime* is old enough that a same-tick write can't hide."""
+    import time as _time
+
+    return (now if now is not None else _time.time()) - mtime >= MTIME_SETTLE_SECONDS
+
+
 UNKNOWN_SPEAKERS = frozenset({"UNKNOWN", "UNK", "None", "none", ""})
 
 # Default speaker label when diarization is skipped.

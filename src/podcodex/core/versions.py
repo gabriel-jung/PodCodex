@@ -151,6 +151,16 @@ def _step_ext(step: str) -> str:
     return ".json"
 
 
+def step_ext(step: str) -> str:
+    """Public accessor for a step's version-file extension.
+
+    Callers outside this module need it to recognise version files on disk
+    (e.g. the status reconcile in the shows route); the layout itself stays
+    owned here alongside ``version_path``.
+    """
+    return _step_ext(step)
+
+
 def version_path(base: Path, step: str, version_id: str) -> Path:
     """Return the canonical on-disk path for a step version file.
 

@@ -318,8 +318,12 @@ class PipelineDB:
                   ``translations`` list instead.
 
         Returns:
-            True when the status was demoted, False when a version appeared
-            (or the episode row is gone) and the demotion was skipped.
+            True when the step has no versions left, whether or not that
+            required a write (the row may be absent, or the language may
+            already be off the list). False only when a version exists, i.e.
+            one landed between the caller's delete and this check. Callers
+            use it to decide whether the step's other leftovers, such as
+            recorded LLM batch failures, should be cleared too.
         """
         if flag is not None and flag not in _VALID_COLUMNS:
             raise ValueError(f"Unknown column: {flag}")
@@ -344,11 +348,11 @@ class PipelineDB:
                     ).fetchone()
                     if current is None:
                         self._conn.rollback()
-                        return False
+                        return True
                     langs = json.loads(current["translations"] or "[]")
                     if step not in langs:
                         self._conn.rollback()
-                        return False
+                        return True
                     langs.remove(step)
                     self._conn.execute(
                         "UPDATE episodes SET translations = ?, updated_at = ? "

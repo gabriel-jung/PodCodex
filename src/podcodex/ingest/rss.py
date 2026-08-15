@@ -22,6 +22,8 @@ import feedparser
 import httpx
 from loguru import logger
 
+from podcodex.core._utils import mtime_settled
+
 _FEED_CACHE = ".feed_cache.json"
 EPISODE_META_FILE = ".episode_meta.json"
 
@@ -510,7 +512,7 @@ def feed_cache_episode_count(show_folder: Path) -> int | None:
     except OSError:
         return None
     hit = _FEED_COUNT_CACHE.get(str(path))
-    if hit is not None and hit[0] == mtime:
+    if hit is not None and hit[0] == mtime and mtime_settled(mtime):
         return hit[1]
     cached = load_feed_cache(show_folder)
     if cached is None:
@@ -596,7 +598,7 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
         mtime = None
     if mtime is not None:
         hit = _EPISODE_META_CACHE.get(str(path))
-        if hit is not None and hit[0] == mtime:
+        if hit is not None and hit[0] == mtime and mtime_settled(mtime):
             return hit[1]
     try:
         text = path.read_text(encoding="utf-8").strip()

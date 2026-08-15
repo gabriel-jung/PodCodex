@@ -25,7 +25,7 @@ from podcodex.api.routes._helpers import (
     require_show_folder,
 )
 from podcodex.bundle.conflicts import rename_suffix
-from podcodex.core._utils import atomic_write
+from podcodex.core._utils import MTIME_SETTLE_SECONDS, atomic_write
 from podcodex.core.app_config import AppConfig, mutate_config
 from podcodex.api.routes.config import _load, _register_folder
 from podcodex.api.schemas import (
@@ -49,7 +49,7 @@ from podcodex.api.schemas import (
 from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.core.llm_failures import rejected_steps
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
-from podcodex.core.versions import STEP_FLAG, is_edited
+from podcodex.core.versions import STEP_FLAG, is_edited, step_ext
 from podcodex.ingest.folder import (
     EpisodeInfo,
     invalidate_scan_cache,
@@ -901,21 +901,30 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
     if indexed_updates:
         db.mark_indexed_bulk(indexed_updates)
 
-    # Reconcile the per-step flags against the versions DB: an episode is
-    # transcribed / corrected / synthesized exactly when it has a registered
-    # version for that step, regardless of what populate_from_scan stored
-    # initially (it only re-runs when the DB is empty). Both directions
-    # matter. Without the promote, the overview StageCard stays "not started"
-    # for any episode whose first sync predates our first assemble; without
-    # the demote, a flag survives content deleted out of band.
+    local_audio = _scan_audio_files(path)
+    episode_files = _scan_episode_files(path, local_audio)
+
+    # Reconcile the per-step flags: an episode is transcribed / corrected /
+    # synthesized when it has a registered version for that step *or* a file
+    # in the step directory. Both directions matter. Without the promote, the
+    # overview StageCard stays "not started" for any episode whose first sync
+    # predates our first assemble; without the demote, a flag survives content
+    # deleted out of band.
     #
-    # The DB is the right authority here rather than the step directory: every
-    # read path resolves a version id through the DB, so a file with no row
-    # cannot be opened and must not report as done.
+    # The on-disk half is not optional: `populate_from_scan` above derives
+    # these very flags from the step directories, and a DB bootstrapped that
+    # way has no `versions` rows at all. Reconciling against rows alone would
+    # undo the bootstrap in the same call, and `POST /resync` (which deletes
+    # the DB file, versions table included) would report a whole library as
+    # not started. Read from the already-cached file list, so this costs no
+    # extra syscalls.
     for step, flag in STEP_FLAG.items():
         stems_with_versions = set(db.stems_with_step(step))
+        ext = step_ext(step)
         for stem, row in status_map.items():
-            desired = stem in stems_with_versions
+            desired = stem in stems_with_versions or _has_step_files(
+                episode_files.get(stem, []), stem, step, ext
+            )
             if row.get(flag, False) != desired:
                 row[flag] = desired
                 db.mark(stem, **{flag: desired})
@@ -937,15 +946,26 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
                 if row:
                     row["verified"] = None
 
-    local_audio = _scan_audio_files(path)
     return _StatusContext(
         status_map=status_map,
         seg_counts=db.latest_segment_counts("transcript"),
         stems_with_speaker_map=db.stems_with_step("speaker_map"),
         local_audio=local_audio,
-        episode_files=_scan_episode_files(path, local_audio),
+        episode_files=episode_files,
         effective=effective,
     )
+
+
+def _has_step_files(ep_files: list[str], stem: str, step: str, ext: str) -> bool:
+    """True when the episode's file list holds a version file for *step*.
+
+    `ep_files` entries are paths relative to the show folder, so a version
+    file reads as ``<stem>/<step>/<id><ext>``. The extension check also keeps
+    the parquet sub-steps nested under ``transcript/`` from counting as
+    transcripts.
+    """
+    prefix = f"{stem}/{step}/"
+    return any(f.startswith(prefix) and f.endswith(ext) for f in ep_files)
 
 
 def _build_status_out(
@@ -1571,9 +1591,9 @@ def _walk_episode_dir(
 _EPISODE_FILES_CACHE: dict[str, dict[str, tuple[list[tuple[str, int]], list[str]]]] = {}
 
 # A directory whose mtime is younger than this is treated as a cache miss.
-# Filesystems with coarse timestamps (FAT32 rounds to 2s) can otherwise land a
-# write in the same tick as the scan that recorded the mtime, hiding it.
-_MTIME_SETTLE_NS = 2_000_000_000
+# Same reasoning (and same value) as the mtime caches in ingest/rss.py; see
+# core/_utils.MTIME_SETTLE_SECONDS.
+_MTIME_SETTLE_NS = int(MTIME_SETTLE_SECONDS * 1_000_000_000)
 
 
 def _dirs_unchanged(visited: list[tuple[str, int]], now_ns: int) -> bool:
@@ -1624,7 +1644,11 @@ def _scan_episode_files(
                 if stem.startswith("."):
                     continue
                 hit = cached.get(stem)
-                if hit is not None and _dirs_unchanged(hit[0], now_ns):
+                # An entry with no recorded directories came from a walk that
+                # hit an OSError. `_dirs_unchanged` is vacuously true for it,
+                # so trusting it would pin a truncated file list for the rest
+                # of the process; re-walk instead.
+                if hit is not None and hit[0] and _dirs_unchanged(hit[0], now_ns):
                     fresh[stem] = hit
                     files = hit[1]
                 else:
