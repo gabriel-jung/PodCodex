@@ -1575,8 +1575,21 @@ class IndexStore:
         }
 
     def list_speakers(self, collection: str) -> list[str]:
-        """Return sorted distinct ``dominant_speaker`` values in a collection."""
-        return self._distinct(collection, "dominant_speaker")
+        """Return sorted distinct ``dominant_speaker`` values in a collection.
+
+        Labels that name nobody are left out: they drive speaker pickers in
+        the search panel and the bot's autocomplete, where NARRATOR_SPEAKER
+        would offer "filter by Narrator" for episodes that were simply never
+        diarized. Chunks keep the stored value, so an explicit query for it
+        still matches.
+        """
+        from podcodex.core._utils import is_unattributed
+
+        return [
+            s
+            for s in self._distinct(collection, "dominant_speaker")
+            if not is_unattributed(s)
+        ]
 
     def speaker_stats_multi(self, collections: list[str]) -> list[dict]:
         """Aggregate :meth:`speaker_stats` across multiple collections.
