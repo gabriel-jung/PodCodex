@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.2.10] - 2026-08-15
+
+### A faster episode list
+
+- Opening a show and watching a run in progress no longer reloads the whole
+  episode list every few seconds. Live progress now arrives through a small
+  status check, and the list itself is only rebuilt when it really changed.
+  On a 269-episode show the wait dropped from about 90ms to 30ms.
+- Long episode lists render only what fits on screen, in both list and card
+  view, so scrolling and typing in the search box stay smooth on shows with
+  hundreds of episodes.
+
+### Filter episodes by pipeline state
+
+- The Filters popover gains a pipeline step and a state: not started, done,
+  needs review, edited, or outdated. Translate narrows further to a single
+  language, so "missing the French translation" is now something you can ask
+  for. The counts match what the pipeline buttons would act on.
+
+### Speakers: nothing is attributed to nobody
+
+- An episode transcribed without diarization no longer shows an invented
+  speaker on every line, in the episode list, in the speakers tab, or in the
+  airtime breakdown. The speakers tab explains that the transcripts have no
+  labels instead of listing a speaker nobody identified.
+- Exported files follow: SRT, VTT and text no longer prefix those lines with
+  a speaker name. **If you have scripts reading exports, lines from
+  non-diarized episodes now have no "Name:" prefix.** Named speakers are
+  unaffected.
+- Search results, the Discord bot and the MCP tools stopped attributing
+  quotes to that placeholder, and it no longer appears in speaker filters.
+- A show that genuinely has a speaker called "Narrator" can declare it in the
+  speakers tab and it will be treated as the name it is.
+
+### Fixes
+
+- Picking a specific input version for a batch run now applies to episodes
+  imported from subtitles. Their version was silently ignored and the run
+  used a different one, which affected whole YouTube shows.
+- Repairing a show's status no longer strands its transcripts. Rebuilding the
+  database now restores the version index from disk, so episodes stay
+  openable, keep their translations, and hand-edited versions stay marked as
+  edited.
+- Speaker maps survive that rebuild instead of silently emptying.
+- A folder the app cannot read for a moment, on a network or synced drive, no
+  longer marks its episodes as not transcribed.
+- Saving in the editor no longer refetches search and index data it cannot
+  have changed, and finishing a batch only refreshes what that step touched.
+- A transcript edit made from a panel that you navigate away from still
+  updates the rest of the app.
+
 ## [0.2.9] - 2026-08-13
 
 ### Files: single audio files become real episodes
