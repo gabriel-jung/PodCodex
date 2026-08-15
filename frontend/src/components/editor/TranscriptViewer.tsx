@@ -25,7 +25,7 @@ import { versionInfo, isEdited } from "@/lib/utils";
 const REF_NONE = "none";
 const REF_DEFAULT = "default";
 type RefChoice = typeof REF_NONE | typeof REF_DEFAULT | string;
-import { BREAK_SPEAKER } from "@/lib/speakers";
+import { BREAK_SPEAKER, isSoloDefaultSpeaker } from "@/lib/speakers";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -362,6 +362,22 @@ export default function TranscriptViewer({
     for (const removed of pendingRemovals) set.delete(removed);
     return Array.from(set).sort();
   }, [sourceSegments, externalSpeakers, addedSpeakers, pendingRenames, pendingRemovals]);
+
+  // A transcript with nothing but the default narrator (no diarization, or a
+  // subtitle import without <v Speaker> tags) repeats one meaningless label on
+  // every row. Fade it out at rest; the row still reveals it on hover so the
+  // speaker can be named, which is how it stops being the default.
+  //
+  // Derived from the segments alone, not from `speakers`: that list also
+  // carries the show's known speakers, which are picker options rather than
+  // anyone actually speaking in this episode.
+  const speakerMuted = useMemo(() => {
+    const present = new Set<string>();
+    for (const seg of sourceSegments ?? []) {
+      if (seg.speaker !== BREAK_SPEAKER) present.add(seg.speaker);
+    }
+    return isSoloDefaultSpeaker([...present]);
+  }, [sourceSegments]);
 
   // ── Merge dialog (when speakers differ) ──────────────────────────────────
 
@@ -1059,6 +1075,7 @@ export default function TranscriptViewer({
         audioPath={audioPath}
         showFlags={showFlags}
         showSpeaker={showSpeaker}
+        speakerMuted={speakerMuted}
         showDelete={showDelete}
         showDiff={showDiff}
         densityThreshold={filters.densityThreshold}

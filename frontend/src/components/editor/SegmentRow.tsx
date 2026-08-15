@@ -134,6 +134,8 @@ export interface SegmentRowProps {
   audioPath?: string;
   speakers: string[];
   showSpeaker: boolean;
+  /** Fade the speaker label until the row is hovered or focused. */
+  speakerMuted?: boolean;
   showDelete: boolean;
   onTextChange: (id: number, text: string) => void;
   onSpeakerChange: (id: number, speaker: string) => void;
@@ -166,6 +168,7 @@ const SegmentRow = memo(function SegmentRow({
   audioPath,
   speakers,
   showSpeaker,
+  speakerMuted,
   showDelete,
   onTextChange,
   onSpeakerChange,
@@ -334,7 +337,7 @@ const SegmentRow = memo(function SegmentRow({
             ) : (
               <button
                 onClick={() => setEditingSpeaker(true)}
-                className="text-xs font-medium truncate w-full text-left hover:opacity-80 transition"
+                className={`text-xs font-medium truncate w-full text-left hover:opacity-80 transition ${speakerMuted ? "opacity-0 group-hover:opacity-100 focus-visible:opacity-100" : ""}`}
                 style={{ color: speakerColor(segment.speaker) }}
                 title="Click to edit speaker"
               >

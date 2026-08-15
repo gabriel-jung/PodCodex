@@ -24,14 +24,10 @@ import { useAudioStore } from "@/stores";
 import { formatTime } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import { MIN_DENSITY } from "@/hooks/useSegmentFiltering";
-import { BREAK_SPEAKER } from "@/lib/speakers";
+import { BREAK_SPEAKER, isDiarizerPlaceholder } from "@/lib/speakers";
 import SectionHeader from "@/components/common/SectionHeader";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 
-// Matches raw diarizer output like SPEAKER_00, SPEAKER_12.
-const DIARIZER_DEFAULT_RE = /^SPEAKER_\d+$/;
-const isDiarizerDefault = (id: string) =>
-  id === "" || DIARIZER_DEFAULT_RE.test(id);
 
 // ── Derived types ────────────────────────────────────────────────────────────
 
@@ -144,7 +140,7 @@ export default function SpeakerStrip({
     return s;
   }, [speakerInfos, addedSpeakers, pendingRenames]);
 
-  const unnamedCount = speakerInfos.filter((s) => isDiarizerDefault(s.name)).length;
+  const unnamedCount = speakerInfos.filter((s) => isDiarizerPlaceholder(s.name)).length;
 
   // Suggestions for the rename/add inputs: show-level speakers minus any
   // already present on a chip (either existing, added, or a rename target).
@@ -242,7 +238,7 @@ export default function SpeakerStrip({
         durationSec: s.durationSec,
         suspectCount: s.suspectCount,
         added: false,
-        unnamed: isDiarizerDefault(s.name),
+        unnamed: isDiarizerPlaceholder(s.name),
       })),
       ...addedSpeakers.map((a) => ({
         name: a,

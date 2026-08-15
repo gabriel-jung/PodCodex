@@ -31,6 +31,31 @@ export const UNKNOWN_SPEAKERS: ReadonlySet<string> = new Set([
 export const isRealSpeaker = (sp: string): boolean =>
   !!sp && sp !== BREAK_SPEAKER && !UNKNOWN_SPEAKERS.has(sp);
 
+/** Matches raw diarizer output like SPEAKER_00, SPEAKER_12. */
+const DIARIZER_DEFAULT_RE = /^SPEAKER_\d+$/;
+
+/** True for a diarizer placeholder id ("", SPEAKER_00): a turn the diarizer
+ *  separated but nobody has named yet. Note this excludes NARRATOR_SPEAKER,
+ *  which means "never diarized at all" rather than "unnamed turn". */
+export const isDiarizerPlaceholder = (sp: string): boolean =>
+  sp === "" || DIARIZER_DEFAULT_RE.test(sp);
+
+/** True when the label is a placeholder rather than a name someone chose. */
+export const isDefaultSpeaker = (sp: string): boolean =>
+  sp === NARRATOR_SPEAKER || UNKNOWN_SPEAKERS.has(sp) || DIARIZER_DEFAULT_RE.test(sp);
+
+/**
+ * True when a speaker list carries no information: exactly one speaker, and
+ * it is a placeholder.
+ *
+ * That is what a non-diarized transcript or a subtitle import without
+ * `<v Speaker>` tags produces, and repeating "Narrator" on every row, in the
+ * episode list and in the airtime line then says nothing. A single *named*
+ * speaker is different: the user chose that name, so it stays visible.
+ */
+export const isSoloDefaultSpeaker = (names: readonly string[]): boolean =>
+  names.length === 1 && isDefaultSpeaker(names[0]);
+
 /**
  * Resolve a segment's speaker for synth display/grouping.
  *   - real name → unchanged

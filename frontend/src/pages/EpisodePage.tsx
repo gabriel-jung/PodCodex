@@ -20,6 +20,7 @@ import { useShowActions } from "@/hooks/useShowActions";
 import { isVerifiedVersion, VERIFIED_CAPTION } from "@/lib/verified";
 import { usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
+import { isSoloDefaultSpeaker } from "@/lib/speakers";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
 import InlineConfirm from "@/components/common/InlineConfirm";
 import { useDropZone } from "@/hooks/useDropZone";
@@ -946,7 +947,10 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
 
   const speakers = useMemo(() => {
     if (!speakerMap) return [];
-    return [...new Set(Object.values(speakerMap))].filter(Boolean);
+    const names = [...new Set(Object.values(speakerMap))].filter(Boolean);
+    // Naming nothing but the default narrator adds no information to the
+    // version subline; drop it rather than repeat it on every episode.
+    return isSoloDefaultSpeaker(names) ? [] : names;
   }, [speakerMap]);
 
   const versionGroups = useMemo(
@@ -1114,7 +1118,10 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
         </nav>
       )}
 
-      {episodeSpeakers && episodeSpeakers.speakers.length > 0 && (
+      {/* A lone "Narrator" (no diarization) says nothing, so the airtime line
+          only appears once there is a real speaker breakdown to show. */}
+      {episodeSpeakers && episodeSpeakers.speakers.length > 0
+        && !isSoloDefaultSpeaker(episodeSpeakers.speakers.map((s) => s.name)) && (
         <div
           className="flex items-center gap-x-1.5 gap-y-1 flex-wrap text-xs text-muted-foreground"
           title="Share of the episode duration spoken by each speaker (music and gaps are not counted)"

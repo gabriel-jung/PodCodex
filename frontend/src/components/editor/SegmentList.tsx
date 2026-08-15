@@ -93,6 +93,8 @@ export interface SegmentListProps {
   audioPath?: string;
   showFlags: boolean;
   showSpeaker: boolean;
+  /** Fade the speaker label at rest (single default speaker). */
+  speakerMuted?: boolean;
   showDelete: boolean;
   showDiff: boolean;
   // Filter context for flag reason
@@ -138,6 +140,7 @@ const SegmentList = forwardRef<SegmentListHandle, SegmentListProps>(function Seg
     audioPath,
     showFlags,
     showSpeaker,
+    speakerMuted,
     showDelete,
     showDiff,
     densityThreshold,
@@ -277,6 +280,7 @@ const SegmentList = forwardRef<SegmentListHandle, SegmentListProps>(function Seg
                 audioPath={audioPath}
                 speakers={speakers}
                 showSpeaker={showSpeaker}
+                speakerMuted={speakerMuted}
                 showDelete={showDelete}
                 onTextChange={onTextChange}
                 onSpeakerChange={onSpeakerChange}

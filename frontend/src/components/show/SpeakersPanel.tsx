@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ChevronRight, Plus, Star, X } from "lucide-react";
 import { formatDuration, errorMessage } from "@/lib/utils";
 import { speakerColor, speakerTint } from "@/lib/speakerColor";
+import { isSoloDefaultSpeaker } from "@/lib/speakers";
 
 interface SpeakersPanelProps {
   folder: string;
@@ -67,12 +68,19 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
     }
   };
 
+  // A roster that is nothing but the default narrator means the show was
+  // never diarized; listing it as "a speaker" implies an identification that
+  // never happened, so the panel shows why the roster is empty instead.
+  const narratorOnly = isSoloDefaultSpeaker(
+    (roster.data?.speakers ?? []).map((s) => s.name),
+  );
+
   const sorted: SpeakerRosterEntry[] = useMemo(() => {
-    const list = [...(roster.data?.speakers ?? [])];
+    const list = narratorOnly ? [] : [...(roster.data?.speakers ?? [])];
     const cmp = SORT_OPTIONS.find((o) => o.key === sort)?.cmp;
     if (cmp) list.sort(cmp);
     return list;
-  }, [roster.data, sort]);
+  }, [roster.data, sort, narratorOnly]);
 
   const totalTalk = (roster.data?.speakers ?? []).reduce((s, x) => s + x.total_seconds, 0);
 
@@ -148,7 +156,9 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
       )}
       {roster.data && sorted.length === 0 && (
         <p className="text-xs text-muted-foreground">
-          No speakers found yet — transcribe episodes to populate the roster.
+          {narratorOnly
+            ? "These transcripts have no speaker labels. Re-transcribe with diarization on to tell speakers apart."
+            : "No speakers found yet — transcribe episodes to populate the roster."}
         </p>
       )}
 
