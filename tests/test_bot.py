@@ -125,12 +125,20 @@ def test_speaker_prefers_speaker_over_dominant():
     assert _speaker(Hit(speaker="Alice", dominant_speaker="Bob")) == "Alice"
 
 
-def test_speaker_generic_when_missing():
-    assert _speaker(Hit()) == "Speaker"
+def test_speaker_blank_when_missing():
+    """No label means no attribution: callers drop the speaker entirely."""
+    assert _speaker(Hit()) == ""
 
 
-def test_speaker_generic_when_none():
-    assert _speaker(Hit(speaker=None, dominant_speaker="")) == "Speaker"
+def test_speaker_blank_when_none():
+    assert _speaker(Hit(speaker=None, dominant_speaker="")) == ""
+
+
+def test_speaker_blank_for_narrator_placeholder():
+    """NARRATOR_SPEAKER is a storage placeholder, not an identification."""
+    from podcodex.core._utils import NARRATOR_SPEAKER
+
+    assert _speaker(Hit(dominant_speaker=NARRATOR_SPEAKER)) == ""
 
 
 def test_resolve_show_collections_precedence(monkeypatch):
@@ -202,8 +210,9 @@ def test_resolve_show_collections_precedence(monkeypatch):
 def test_display_speaker_maps_raw_diarization_labels():
     assert display_speaker("SPEAKER_01") == "Speaker 1"
     assert display_speaker("speaker_12") == "Speaker 12"
-    assert display_speaker("") == "Speaker"
-    assert display_speaker(None) == "Speaker"
+    assert display_speaker("") == ""
+    assert display_speaker(None) == ""
+    assert display_speaker("Narrator") == ""
     assert display_speaker("Patrick Beja") == "Patrick Beja"
 
 

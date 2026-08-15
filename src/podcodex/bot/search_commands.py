@@ -407,7 +407,8 @@ class SearchCommandsMixin:
             embed.set_author(name=show)
         embed.title = ep_display or "(untitled)"
         set_chunk_thumbnail(embed, chunk)
-        embed.add_field(name="Speaker", value=spk, inline=True)
+        if spk:
+            embed.add_field(name="Speaker", value=spk, inline=True)
         ts_label = fmt_timestamp(start, end, timed=chunk.timed)
         if ts_label:
             embed.add_field(name="Timestamp", value=ts_label, inline=True)

@@ -30,6 +30,7 @@ from mcp.server.fastmcp import FastMCP
 from podcodex.core._utils import (
     episode_display,
     format_hms,
+    is_unattributed,
     merge_display_turns,
 )
 from podcodex.rag.defaults import ALPHA, CONTEXT_WINDOW, TOP_K
@@ -62,11 +63,20 @@ def _episode_transcript_text(chunks: list[Hit]) -> str:
         if turns:
             for t in turns:
                 ts = format_hms(float(t.get("start") or c.start))
-                sp = t.get("speaker", "Unknown")
-                lines.append(f"[{ts}] {sp}: {t.get('text', '')}")
+                sp = t.get("speaker", "")
+                lines.append(
+                    f"[{ts}] {sp}: {t.get('text', '')}"
+                    if not is_unattributed(sp)
+                    else f"[{ts}] {t.get('text', '')}"
+                )
         else:
             ts = format_hms(c.start)
-            lines.append(f"[{ts}] {c.dominant_speaker}: {c.text}")
+            sp = c.dominant_speaker
+            lines.append(
+                f"[{ts}] {sp}: {c.text}"
+                if not is_unattributed(sp)
+                else f"[{ts}] {c.text}"
+            )
     return "\n".join(lines)
 
 

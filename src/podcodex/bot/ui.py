@@ -293,7 +293,9 @@ def build_episodes_embeds(
 
             # Cap the roster so 10 fields stay under Discord's 6000-char
             # total embed budget even on heavily-diarized episodes.
-            roster = [display_speaker(s) for s in ep.get("speakers", [])]
+            roster = [
+                n for n in (display_speaker(s) for s in ep.get("speakers", [])) if n
+            ]
             if len(roster) > 5:
                 roster = roster[:5] + [f"+{len(roster) - 5}"]
             speakers = ", ".join(roster) or "—"

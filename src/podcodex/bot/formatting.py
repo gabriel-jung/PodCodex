@@ -86,13 +86,17 @@ _RAW_SPEAKER_RE = re.compile(r"^SPEAKER_0*(\d+)$", re.IGNORECASE)
 def display_speaker(name: str | None) -> str:
     """Render a speaker label for humans, never leaking raw diarization tags.
 
-    ``SPEAKER_01`` becomes ``Speaker 1``; an empty/blank label (YouTube
-    subtitle imports without ``<v>`` tags leave ``""``) becomes ``Speaker``.
-    Any real name passes through unchanged.
+    ``SPEAKER_01`` becomes ``Speaker 1``. A label that names nobody returns
+    ``""`` so callers drop the attribution entirely: that covers the blank
+    left by YouTube subtitle imports without ``<v>`` tags and the
+    NARRATOR_SPEAKER placeholder a non-diarized transcript carries. Any real
+    name passes through unchanged.
     """
+    from podcodex.core._utils import is_unattributed
+
     name = (name or "").strip()
-    if not name:
-        return "Speaker"
+    if is_unattributed(name):
+        return ""
     m = _RAW_SPEAKER_RE.match(name)
     if m:
         return f"Speaker {int(m.group(1))}"
@@ -223,8 +227,10 @@ def speaker_lines(chunk: Hit, query: str = "") -> str:
         start = t.get("start", 0)
         ts_part = f"({fmt_time(start)})" if start else ""
         text = highlight(t.get("text", ""), mark) if mark else t.get("text", "")
-        sep = " " if ts_part else ""
-        lines.append(f"**{spk}**{sep}{ts_part}: {text}")
+        # No speaker: keep the timestamp but drop the name and its separator,
+        # rather than printing an empty bold label.
+        head = f"**{spk}**{' ' if ts_part else ''}{ts_part}" if spk else ts_part
+        lines.append(f"{head}: {text}" if head else text)
     return "\n".join(lines)
 
 
