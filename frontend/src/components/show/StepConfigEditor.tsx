@@ -24,6 +24,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { languageToISO, errorMessage, selectClass, cn, versionLabel, stepTag, SUB_LANGUAGES } from "@/lib/utils";
 import { modelPlaceholderFor, modelsFor } from "@/lib/providerModels";
 import { INPUT_STEPS, filterVersionsForStep, sortVersionsForDefault, type PipelineInputStep } from "@/lib/pipelineInputs";
+import { getEpisodeBatchPath } from "@/lib/episodeRef";
 import PresetCards from "@/components/common/PresetCards";
 import SectionHeader from "@/components/common/SectionHeader";
 import HelpLabel from "@/components/common/HelpLabel";
@@ -68,6 +69,29 @@ function findSourceLabel(groups: SourceGroup[], key: string): string | undefined
 /** Stable key for an episode across the manual workflow. */
 function epKey(ep: Episode): string {
   return ep.audio_path || ep.id;
+}
+
+/**
+ * Re-key a per-episode map from the local `epKey` space into the batch API's
+ * `audio_paths` space.
+ *
+ * `epKey` falls back to `ep.id` for episodes with no audio, but the batch API
+ * identifies those by `<output_dir>.virtual`. Sending the former means the
+ * backend's `source_version_ids` lookup misses and it quietly falls back to
+ * its own default version, so subtitle-only episodes would ignore the user's
+ * pick. See `getEpisodeBatchPath`.
+ */
+function toBatchKeys(
+  byEpKey: Record<string, string>,
+  episodes: Episode[],
+): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const ep of episodes) {
+    const versionId = byEpKey[epKey(ep)];
+    const key = getEpisodeBatchPath(ep);
+    if (versionId && key) out[key] = versionId;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** Check if all batches for an episode have been validated. */
@@ -1046,7 +1070,9 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
           {filteredEpisodes.length > 0 && !(isLLMStep && llm.mode === "manual") && !manualActive && selectedSource !== "custom" && (() => {
             const pending = filteredEpisodes.filter((e) => needsWorkIds.has(epKey(e)));
             const runWith = (force?: boolean) => {
-              let vids = Object.keys(customVersions).length > 0 ? customVersions : undefined;
+              let vids = Object.keys(customVersions).length > 0
+                ? toBatchKeys(customVersions, filteredEpisodes)
+                : undefined;
               if (!vids && selectedSource && epVersionsMap) {
                 const sourceVids: Record<string, string> = {};
                 const isVariant = !sourceGroups.some((g) => g.key === selectedSource);
@@ -1059,7 +1085,8 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                   const match = isVariant
                     ? versions.find((v) => `${v.step}:${versionLabel(v)}` === selectedSource)
                     : versions.find((v) => v.step === selectedSource);
-                  if (match) sourceVids[epKey(ep)] = match.id;
+                  const key = getEpisodeBatchPath(ep);
+                  if (match && key) sourceVids[key] = match.id;
                 }
                 if (Object.keys(sourceVids).length > 0) vids = sourceVids;
               }

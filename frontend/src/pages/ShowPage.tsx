@@ -17,6 +17,7 @@ import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
 import { dateCmp } from "@/lib/episodeSort";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
 import { matchesStepFilter } from "@/lib/stepStatus";
+import { getEpisodeBatchPath } from "@/lib/episodeRef";
 import { FeedRefreshButton } from "@/components/common/FeedRefreshButton";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { useFeedRefresh, useFeedRefreshing } from "@/hooks/useFeedRefresh";
@@ -61,12 +62,6 @@ const SIDEBAR_SECTIONS: SidebarSection[] = [
     ],
   },
 ];
-
-// `.virtual` suffix signals to the batch API that the episode has no audio on
-// disk but does have an output_dir to resume from (subtitle-only imports).
-function batchPath(e: Episode): string | null {
-  return e.audio_path ?? (e.output_dir ? e.output_dir.replace(/\/+$/, "") + ".virtual" : null);
-}
 
 export default function ShowPage({ folder, initialTab }: { folder: string; initialTab?: string }) {
   const navigate = useNavigate();
@@ -346,7 +341,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const batchMutate = batchMutation.mutate;
   const runStep = useCallback((step: PipelineInputStep, filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: string, force?: boolean) => {
     const source = filteredEpisodes || batchableSelectedRef.current;
-    const audioPaths = source.map(batchPath).filter(Boolean) as string[];
+    const audioPaths = source.map(getEpisodeBatchPath).filter(Boolean) as string[];
     if (audioPaths.length === 0) return;
     const episodes = source.map((e) => ({ title: e.title, stem: e.stem || e.id }));
     batchMutate({

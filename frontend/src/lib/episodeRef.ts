@@ -29,3 +29,20 @@ export function getEpisodeSourceRef(episode: Episode | null | undefined): Episod
 export function getEpisodeStem(episode: Episode): string {
   return episode.stem || episode.id;
 }
+
+/**
+ * The path the batch API identifies this episode by.
+ *
+ * The `.virtual` suffix tells the backend the episode has no audio on disk
+ * but does have an output_dir to resume from (subtitle-only imports). This is
+ * the key space of `BatchRequest.audio_paths` *and* of its
+ * `source_version_ids` map, so anything building either must go through here:
+ * keying a version map by `audio_path || id` instead silently loses every
+ * subtitle-only episode, and the backend then falls back to its own default
+ * version rather than the one the user picked.
+ */
+export function getEpisodeBatchPath(episode: Episode): string | null {
+  if (episode.audio_path) return episode.audio_path;
+  if (!episode.output_dir) return null;
+  return episode.output_dir.replace(/\/+$/, "") + ".virtual";
+}
