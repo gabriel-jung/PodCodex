@@ -68,20 +68,24 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
     }
   };
 
-  // A roster that is nothing but NARRATOR_SPEAKER means the show was never
-  // diarized; listing it as "a speaker" implies an identification that never
-  // happened, so the panel shows why the roster is empty instead.
+  // NARRATOR_SPEAKER is what a transcript gets when it was never diarized, so
+  // listing it implies an identification nobody made. Judge that on the
+  // speakers actually *observed* in transcripts: the roster also carries the
+  // show's declared known speakers with episode_count 0 (see shows.py), and
+  // counting those made the Narrator row reappear as soon as the user added
+  // one. Only the Narrator row is dropped, so declared speakers still show.
   //
-  // A lone diarizer placeholder (SPEAKER_00) is deliberately NOT suppressed:
-  // that show *was* diarized and simply has one voice, and this panel is
-  // where the user names it. Hiding it would remove that affordance and
-  // advise re-running diarization they already ran.
-  const rosterNames = (roster.data?.speakers ?? []).map((s) => s.name);
+  // A lone diarizer placeholder (SPEAKER_00) is deliberately kept: that show
+  // *was* diarized and simply has one voice, and this panel is where it gets
+  // named.
+  const observed = (roster.data?.speakers ?? []).filter((s) => s.episode_count > 0);
   const narratorOnly =
-    rosterNames.length === 1 && rosterNames[0] === NARRATOR_SPEAKER;
+    observed.length === 1 && observed[0].name === NARRATOR_SPEAKER;
 
   const sorted: SpeakerRosterEntry[] = useMemo(() => {
-    const list = narratorOnly ? [] : [...(roster.data?.speakers ?? [])];
+    const list = (roster.data?.speakers ?? []).filter(
+      (s) => !(narratorOnly && s.name === NARRATOR_SPEAKER),
+    );
     const cmp = SORT_OPTIONS.find((o) => o.key === sort)?.cmp;
     if (cmp) list.sort(cmp);
     return list;
@@ -164,6 +168,13 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
           {narratorOnly
             ? "These transcripts have no speaker labels. Re-transcribe with diarization on to tell speakers apart."
             : "No speakers found yet — transcribe episodes to populate the roster."}
+        </p>
+      )}
+      {roster.data && narratorOnly && sorted.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          These transcripts have no speaker labels, so nothing is attributed to
+          the speakers below yet. Re-transcribe with diarization on to tell
+          speakers apart.
         </p>
       )}
 
