@@ -49,7 +49,12 @@ from podcodex.api.schemas import (
 from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.core.llm_failures import rejected_steps
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
-from podcodex.core.versions import STEP_FLAG, is_edited, step_ext
+from podcodex.core.versions import (
+    STEP_FLAG,
+    backfill_versions_from_disk,
+    is_edited,
+    step_ext,
+)
 from podcodex.ingest.folder import (
     EpisodeInfo,
     invalidate_scan_cache,
@@ -889,6 +894,11 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
         episodes = scan_folder(path, indexed_stems=lance_indexed)
         if episodes:
             db.populate_from_scan(episodes)
+            # populate_from_scan restores the per-episode flags but not the
+            # version index, and every read path resolves an id through that
+            # index. Without this the episodes read "done" while their
+            # transcripts cannot be opened.
+            backfill_versions_from_disk(path)
 
     status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
 
@@ -1389,7 +1399,14 @@ def resync_pipeline_db(show_folder: str) -> dict:
     episodes = scan_folder(path)
     if episodes:
         db.populate_from_scan(episodes)
-    return {"status": "resynced", "episode_count": len(episodes)}
+    # Resync deletes the DB file, versions table included, so the index has
+    # to be rebuilt from disk or the repair would strand every transcript.
+    restored = backfill_versions_from_disk(path)
+    return {
+        "status": "resynced",
+        "episode_count": len(episodes),
+        "versions_restored": restored,
+    }
 
 
 @router.get("/best-source-segments")

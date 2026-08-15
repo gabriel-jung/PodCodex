@@ -423,6 +423,43 @@ class TestResolveVerifiedSource:
         close_pipeline_db(show_dir)
 
 
+class TestBackfillFromDisk:
+    """Rebuilding pipeline.db must make on-disk versions reachable again."""
+
+    def test_restores_rows_for_orphaned_files(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+        from podcodex.core.versions import backfill_versions_from_disk
+
+        vid = save_version(
+            episode_dir, "corrected", SAMPLE_SEGMENTS, _prov(type_="validated")
+        )
+        show_dir = episode_dir.parent.parent
+        close_pipeline_db(show_dir)
+        (show_dir / "pipeline.db").unlink()
+
+        assert backfill_versions_from_disk(show_dir) == 1
+        rows = get_pipeline_db(show_dir).list_versions(episode_dir.name, "corrected")
+        assert [r["id"] for r in rows] == [vid]
+        # The type suffix survives, so an edited version still reads as edited
+        # rather than silently demoting to a raw model output.
+        assert rows[0]["type"] == "validated"
+        assert rows[0]["segment_count"] == len(SAMPLE_SEGMENTS)
+        assert load_version(episode_dir, "corrected", vid) == SAMPLE_SEGMENTS
+        close_pipeline_db(show_dir)
+
+    def test_is_idempotent(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import backfill_versions_from_disk
+
+        save_version(
+            episode_dir, "transcript", SAMPLE_SEGMENTS, _prov(step="transcript")
+        )
+        show_dir = episode_dir.parent.parent
+        # Rows already exist, so a second pass must not duplicate them.
+        assert backfill_versions_from_disk(show_dir) == 0
+        close_pipeline_db(show_dir)
+
+
 class TestStatusDemotionOnDelete:
     """Deleting the last version of a step demotes its pipeline_db flag."""
 

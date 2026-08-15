@@ -254,6 +254,122 @@ def save_version(
     return version_id
 
 
+def _parse_version_id(version_id: str, fallback: Path) -> tuple[str, str]:
+    """Recover ``(type, iso_timestamp)`` from a version filename.
+
+    Ids are ``<%Y%m%dT%H%M%S><micros>Z_<type>`` (see `new_version_id`). Both
+    halves are best-effort: an id that predates the format keeps type "raw"
+    and borrows the file's mtime, which only affects ordering.
+    """
+    head, _, vtype = version_id.rpartition("_")
+    if not head:
+        head, vtype = version_id, "raw"
+    try:
+        stamp = datetime.strptime(head.rstrip("Z"), "%Y%m%dT%H%M%S%f").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        try:
+            stamp = datetime.fromtimestamp(fallback.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            stamp = datetime.now(timezone.utc)
+    return (vtype or "raw"), stamp.isoformat()
+
+
+def backfill_versions_from_disk(show_folder: Path) -> int:
+    """Register version files on disk that pipeline.db has no row for.
+
+    The DB is the version index: every read path resolves an id through it,
+    so files whose rows are gone cannot be opened even though the content is
+    right there. That happens whenever the DB is rebuilt from a filesystem
+    scan (`POST /resync`, a first open of a pre-DB library, a DB lost to a
+    sync conflict), because `populate_from_scan` restores the per-episode
+    flags but not the version index.
+
+    Provenance cannot be recovered, so rows come back with no model and no
+    params. The ``type`` suffix in the filename is preserved, which is what
+    decides whether a version reads as edited.
+
+    Returns the number of rows inserted.
+    """
+    from podcodex.core._utils import read_parquet
+    from podcodex.core.pipeline_db import get_pipeline_db
+
+    show_folder = Path(show_folder)
+    db = get_pipeline_db(show_folder)
+    inserted = 0
+    known: dict[str, dict[str, set[str]]] = {}
+
+    def _ids(step: str) -> dict[str, set[str]]:
+        if step not in known:
+            known[step] = db.version_ids_by_stem(step)
+        return known[step]
+
+    def _register(stem: str, step: str, path: Path) -> None:
+        nonlocal inserted
+        version_id = path.stem
+        if version_id in _ids(step).get(stem, set()):
+            return
+        if step in WAV_STEPS:
+            try:
+                content_hash = f"size:{path.stat().st_size}"
+            except OSError:
+                return
+            segment_count = 0
+        else:
+            try:
+                segments = (
+                    read_parquet(path)
+                    if step in PARQUET_STEPS
+                    else json.loads(path.read_text(encoding="utf-8"))
+                )
+            except Exception:
+                logger.warning("Skipping unreadable version file {}", path)
+                return
+            if not isinstance(segments, list):
+                return
+            content_hash = compute_hash(segments)
+            segment_count = len(segments)
+        vtype, timestamp = _parse_version_id(version_id, path)
+        db.insert_version(
+            stem,
+            step,
+            asdict(
+                VersionMeta(
+                    step=step,
+                    type=vtype,
+                    id=version_id,
+                    timestamp=timestamp,
+                    content_hash=content_hash,
+                    segment_count=segment_count,
+                )
+            ),
+        )
+        inserted += 1
+
+    for ep_dir in sorted(p for p in show_folder.iterdir() if p.is_dir()):
+        if ep_dir.name.startswith("."):
+            continue
+        stem = ep_dir.name
+        for step_dir in sorted(p for p in ep_dir.iterdir() if p.is_dir()):
+            step = step_dir.name
+            for path in sorted(step_dir.glob(f"*{_step_ext(step)}")):
+                _register(stem, step, path)
+            # Parquet sub-steps live one level under transcript/.
+            if step == "transcript":
+                for sub in sorted(p for p in step_dir.iterdir() if p.is_dir()):
+                    if sub.name not in PARQUET_STEPS:
+                        continue
+                    for path in sorted(sub.glob(f"*{_step_ext(sub.name)}")):
+                        _register(stem, sub.name, path)
+
+    if inserted:
+        logger.info(
+            "Rebuilt {} version rows from disk for {}", inserted, show_folder.name
+        )
+    return inserted
+
+
 def new_version_id(vtype: str = "raw") -> tuple[datetime, str]:
     """Return (now, version_id) for a fresh version using the canonical format."""
     now = datetime.now(timezone.utc)
