@@ -228,6 +228,50 @@ def test_get_transcript_segments_404_when_missing(client, tmp_path):
 
 
 # ──────────────────────────────────────────────
+# Episode listing / status poll
+# ──────────────────────────────────────────────
+
+
+def test_status_matches_unified_status_fields(client, tmp_path):
+    """The status poll must report exactly what /unified reports.
+
+    They share `_build_status_out`; this pins the contract so a field added to
+    one payload can't silently skip the other and leave the polled UI stale.
+    """
+    from podcodex.api.schemas import EpisodeStatusOut
+    from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+
+    _, ep_dir = _make_audio_dir(tmp_path)
+    show_dir = Path(ep_dir).parent
+    save_version(
+        Path(ep_dir) / "ep",
+        "transcript",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}],
+        {"step": "transcript", "type": "raw", "model": "small"},
+    )
+    get_pipeline_db(show_dir).mark("ep", transcribed=True)
+    client.post("/api/shows/register", json={"path": str(show_dir)})
+
+    unified = client.get(f"/api/shows/{show_dir}/unified")
+    assert unified.status_code == 200, unified.text
+    status = client.get(f"/api/shows/{show_dir}/status")
+    assert status.status_code == 200, status.text
+
+    status_keys = set(EpisodeStatusOut.model_fields)
+    by_stem = {row["stem"]: row for row in status.json()}
+    assert by_stem, "status poll returned no episodes"
+    assert by_stem["ep"]["transcribed"] is True
+    assert by_stem["ep"]["downloaded"] is True
+    for ep in unified.json():
+        if ep["stem"] is None:
+            continue
+        expected = {k: v for k, v in ep.items() if k in status_keys}
+        assert by_stem[ep["stem"]] == expected
+
+    close_pipeline_db(show_dir)
+
+
+# ──────────────────────────────────────────────
 # Verified pointer endpoint
 # ──────────────────────────────────────────────
 

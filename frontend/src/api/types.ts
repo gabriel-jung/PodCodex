@@ -20,6 +20,7 @@ export type {
   BroadcastPreviewOut,
   CreateFromRSSResponse,
   CreateFromYouTubeResponse,
+  EpisodeStatusOut,
   FilesImportResponse,
   GenerateRequest,
   IndexRequest,
@@ -75,6 +76,10 @@ export interface OllamaCheckResponse {
 
 /** Unified episode used throughout the frontend (aliased from generated). */
 export type Episode = import("./generated-types").UnifiedEpisodeOut;
+
+/** The mutable half of an Episode, as returned by the status poll. Spreading
+ *  one over an `Episode` is type-safe because `UnifiedEpisodeOut` extends it. */
+export type EpisodeStatus = import("./generated-types").EpisodeStatusOut;
 
 export interface PodcastSearchResult {
   name: string;

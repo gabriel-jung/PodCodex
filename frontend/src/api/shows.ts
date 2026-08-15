@@ -5,6 +5,7 @@ import type {
   CreateFromYouTubeResponse,
   Episode,
   EpisodeSpeakersResponse,
+  EpisodeStatus,
   FilesImportResponse,
   PipelineConfig,
   PipelineDefaults,
@@ -125,6 +126,13 @@ export const deleteShow = (folder: string, deleteFiles = false) =>
 export const getEpisodes = (folder: string, defaults?: PipelineDefaults) => {
   const params = defaults ? `?defaults=${enc(JSON.stringify(defaults))}` : "";
   return json<Episode[]>(`/api/shows/${enc(folder)}/unified${params}`);
+};
+
+/** Live pipeline state only, keyed by stem. The cheap poll counterpart to
+ *  `getEpisodes`; pass the same `defaults` so step statuses agree. */
+export const getEpisodeStatus = (folder: string, defaults?: PipelineDefaults) => {
+  const params = defaults ? `?defaults=${enc(JSON.stringify(defaults))}` : "";
+  return json<EpisodeStatus[]>(`/api/shows/${enc(folder)}/status${params}`);
 };
 
 // ── RSS actions ─────────────────────────────

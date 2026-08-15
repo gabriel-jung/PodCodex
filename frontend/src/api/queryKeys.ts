@@ -58,6 +58,10 @@ export const queryKeys = {
   /** Episodes for a folder + specific pipeline defaults (the fully-specified key). */
   episodes: (folder: string, pipelineDefaults: unknown) =>
     ["episodes", folder, pipelineDefaults] as const,
+  /** Status-only poll. Deliberately outside the "episodes" namespace: broad
+   *  `episodes` invalidations should refetch the real list, not this mirror. */
+  episodeStatus: (folder: string, pipelineDefaults: unknown) =>
+    ["episodeStatus", folder, pipelineDefaults] as const,
 
   // ── Per-episode pipeline data ──────────────────────────
   transcribeSegments: (audioPath: AudioPath) =>

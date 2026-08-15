@@ -84,27 +84,17 @@ export interface VerifiedPointer {
   version_id: string;
 }
 
-export interface UnifiedEpisodeOut {
-  id: string;
-  title: string;
+export interface EpisodeStatusOut {
   stem?: string | null;
-  pub_date?: string | null;
-  description: string;
-  audio_url?: string | null;
-  duration: number;
-  episode_number?: number | null;
   audio_path?: string | null;
   output_dir?: string | null;
   downloaded: boolean;
-  removed: boolean;
-  feed_order?: number | null;
   transcribed: boolean;
   corrected: boolean;
   indexed: boolean;
   synthesized: boolean;
   has_subtitles: boolean;
   translations: string[];
-  artwork_url: string;
   provenance: Record<string, unknown>;
   verified?: VerifiedPointer | null;
   segment_count?: number | null;
@@ -113,6 +103,37 @@ export interface UnifiedEpisodeOut {
   correct_status: string;
   translate_status: string;
   llm_failed_steps: string[];
+}
+
+export interface UnifiedEpisodeOut {
+  stem?: string | null;
+  audio_path?: string | null;
+  output_dir?: string | null;
+  downloaded: boolean;
+  transcribed: boolean;
+  corrected: boolean;
+  indexed: boolean;
+  synthesized: boolean;
+  has_subtitles: boolean;
+  translations: string[];
+  provenance: Record<string, unknown>;
+  verified?: VerifiedPointer | null;
+  segment_count?: number | null;
+  files: string[];
+  transcribe_status: string;
+  correct_status: string;
+  translate_status: string;
+  llm_failed_steps: string[];
+  id: string;
+  title: string;
+  pub_date?: string | null;
+  description: string;
+  audio_url?: string | null;
+  duration: number;
+  episode_number?: number | null;
+  removed: boolean;
+  feed_order?: number | null;
+  artwork_url: string;
 }
 
 export interface VerifiedSetRequest {

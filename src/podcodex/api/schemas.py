@@ -96,29 +96,28 @@ class VerifiedPointer(BaseModel):
     version_id: str
 
 
-class UnifiedEpisodeOut(BaseModel):
-    id: str  # guid or stem
-    title: str
+class EpisodeStatusOut(BaseModel):
+    """Pipeline state for one episode, keyed by ``stem``.
+
+    Every field here can change while the app is open (a download lands, a
+    batch step finishes), which makes this the payload the status-poll
+    endpoint returns. `UnifiedEpisodeOut` inherits it and adds the static
+    feed-derived fields, so the two responses can never drift apart and the
+    frontend merges a poll result with a plain spread.
+    """
+
     stem: str | None = None
-    pub_date: str | None = None
-    description: str = ""
-    audio_url: str | None = None
-    duration: float = 0.0
-    episode_number: int | None = None
     audio_path: str | None = None
     output_dir: str | None = (
         None  # episode directory (always set when episode dir exists)
     )
     downloaded: bool = False
-    removed: bool = False  # no longer present in the live feed
-    feed_order: int | None = None  # position in source feed (0 = newest)
     transcribed: bool = False
     corrected: bool = False
     indexed: bool = False
     synthesized: bool = False
     has_subtitles: bool = False
     translations: list[str] = []
-    artwork_url: str = ""
     provenance: dict = {}
     # Singleton pointer to the version the user marked as verified.
     verified: VerifiedPointer | None = None
@@ -131,6 +130,21 @@ class UnifiedEpisodeOut(BaseModel):
     # Steps ("corrected" / a lang key) whose last auto LLM run had a rejected
     # batch — drives the "partially failed" marker in episode rows.
     llm_failed_steps: list[str] = []
+
+
+class UnifiedEpisodeOut(EpisodeStatusOut):
+    """A merged RSS + local episode: static feed metadata plus live status."""
+
+    id: str  # guid or stem
+    title: str
+    pub_date: str | None = None
+    description: str = ""
+    audio_url: str | None = None
+    duration: float = 0.0
+    episode_number: int | None = None
+    removed: bool = False  # no longer present in the live feed
+    feed_order: int | None = None  # position in source feed (0 = newest)
+    artwork_url: str = ""
 
 
 class SpeakerEpisodeEntry(BaseModel):

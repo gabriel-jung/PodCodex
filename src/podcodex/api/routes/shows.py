@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+from collections.abc import Container
 from dataclasses import fields
 from pathlib import Path
+from typing import NamedTuple
 
 import hashlib
 import urllib.request
@@ -35,6 +37,7 @@ from podcodex.api.schemas import (
     EpisodeOut,
     EpisodeSpeakerEntry,
     EpisodeSpeakersResponse,
+    EpisodeStatusOut,
     PipelineDefaultsSchema,
     RegisterShowRequest,
     ShowMeta,
@@ -693,9 +696,179 @@ def unified_episodes(
                   llm_models_by_mode, target_lang). Show-level overrides
                   take precedence.
     """
-    import json as _json
-
     path = require_show_folder(show_folder)
+    ctx = _load_status_context(path, defaults)
+
+    rss = load_feed_cache(path) or []
+
+    result: list[dict] = []
+    seen_stems: set[str] = set()
+    seen_ids: set[str] = set()
+
+    def _build_episode_out(
+        *,
+        ep_id: str,
+        title: str,
+        stem: str | None,
+        pub_date: str | None,
+        description: str,
+        audio_url: str | None,
+        duration: float,
+        episode_number: int | None,
+        audio_path: Path | None,
+        output_dir: Path | None,
+        artwork_url: str,
+        st: dict,
+        ep_files: list[str],
+        removed: bool = False,
+        feed_order: int | None = None,
+    ) -> dict:
+        return {
+            "id": ep_id,
+            "title": title,
+            "pub_date": pub_date,
+            "description": description,
+            "audio_url": audio_url,
+            "duration": duration,
+            "episode_number": episode_number,
+            "artwork_url": artwork_url,
+            "removed": removed,
+            "feed_order": feed_order,
+            **_build_status_out(
+                stem=stem,
+                audio_path=audio_path,
+                output_dir=output_dir,
+                st=st,
+                ep_files=ep_files,
+                ctx=ctx,
+            ),
+        }
+
+    # Pass the set of stems already on disk so episode_stem can match a
+    # changed-title episode to its existing file without re-scandir-ing per
+    # call. Covers root-audio stems and per-episode subdir stems.
+    existing_stems = set(ctx.local_audio) | set(ctx.episode_files)
+
+    # RSS episodes first (preserves feed order)
+    for r in rss:
+        stem = episode_stem(r, path, existing_stems=existing_stems)
+        if r.guid in seen_ids:
+            continue
+        seen_ids.add(r.guid)
+        st = ctx.status_map.get(stem, {}) if stem else {}
+        audio_path = ctx.local_audio.get(stem)
+        if stem:
+            seen_stems.add(stem)
+        result.append(
+            _build_episode_out(
+                ep_id=r.guid,
+                title=r.title,
+                stem=stem,
+                pub_date=r.pub_date,
+                description=r.description or "",
+                audio_url=r.audio_url or None,
+                duration=r.duration,
+                episode_number=r.episode_number,
+                audio_path=audio_path,
+                output_dir=path / stem if stem else None,
+                artwork_url=r.artwork_url or "",
+                st=st,
+                ep_files=ctx.episode_files.get(stem, []) if stem else [],
+                removed=r.removed,
+                feed_order=r.feed_order,
+            )
+        )
+
+    # Local-only episodes (no RSS match)
+    for stem, st in ctx.status_map.items():
+        if stem in seen_stems:
+            continue
+        output_dir = path / stem
+        meta = load_episode_meta(output_dir) if output_dir.is_dir() else None
+        ep_id = meta.guid if meta else stem
+        if ep_id in seen_ids:
+            continue
+        seen_ids.add(ep_id)
+        audio_path = ctx.local_audio.get(stem)
+        result.append(
+            _build_episode_out(
+                ep_id=ep_id,
+                title=(meta.title if meta else None) or stem,
+                stem=stem,
+                pub_date=meta.pub_date if meta else None,
+                description=(meta.description or "") if meta else "",
+                audio_url=(meta.audio_url or None) if meta else None,
+                duration=meta.duration if meta else 0,
+                episode_number=meta.episode_number if meta else None,
+                audio_path=audio_path,
+                output_dir=output_dir,
+                artwork_url=(meta.artwork_url or "") if meta else "",
+                st=st,
+                ep_files=ctx.episode_files.get(stem, []),
+            )
+        )
+
+    return result
+
+
+@router.get(
+    "/{show_folder:path}/status",
+    response_model=list[EpisodeStatusOut],
+)
+def episode_statuses(
+    show_folder: str,
+    defaults: str | None = None,
+) -> list[dict]:
+    """Return live pipeline status for every known episode, keyed by stem.
+
+    The cheap counterpart to ``/unified``, meant for the 5s poll the UI runs
+    while a download or batch is in flight. It reuses the exact same status
+    builder, but skips everything that only feeds the *static* half of an
+    episode: the feed cache parse (10-500KB of JSON per request), the
+    per-feed-entry stem resolution, and the per-episode ``.episode_meta.json``
+    reads. Feed-only episodes with no local footprint are omitted — they have
+    no status to report, and the client already holds their static fields.
+
+    Args:
+        defaults: Same JSON string as ``/unified``; step statuses are relative
+                  to the effective defaults, so it must match or the poll
+                  would flip ``outdated`` markers back and forth.
+    """
+    path = require_show_folder(show_folder)
+    ctx = _load_status_context(path, defaults)
+    return [
+        _build_status_out(
+            stem=stem,
+            audio_path=ctx.local_audio.get(stem),
+            output_dir=path / stem,
+            st=st,
+            ep_files=ctx.episode_files.get(stem, []),
+            ctx=ctx,
+        )
+        for stem, st in ctx.status_map.items()
+    ]
+
+
+class _StatusContext(NamedTuple):
+    """Per-request state shared by every episode's status build."""
+
+    status_map: dict[str, dict]
+    seg_counts: dict[str, int]
+    stems_with_speaker_map: Container[str]
+    local_audio: dict[str, Path]
+    episode_files: dict[str, list[str]]
+    effective: dict
+
+
+def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
+    """Gather everything the status half of an episode payload needs.
+
+    Shared by ``/unified`` and ``/status`` so the two can never disagree about
+    a flag. Also runs the DB reconciliation passes (indexed / synthesized /
+    verified pointers), which must happen on the polled endpoint too or a
+    step finishing mid-batch would not surface until the next heavy fetch.
+    """
+    import json as _json
 
     # ── Resolve effective defaults (app → show override) ──
     try:
@@ -718,8 +891,6 @@ def unified_episodes(
             db.populate_from_scan(episodes)
 
     status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
-    seg_counts = db.latest_segment_counts("transcript")
-    stems_with_speaker_map = db.stems_with_step("speaker_map")
 
     indexed_updates: dict[str, bool] = {}
     for stem, row in status_map.items():
@@ -760,138 +931,55 @@ def unified_episodes(
                     row["verified"] = None
 
     local_audio = _scan_audio_files(path)
-    episode_files = _scan_episode_files(path, local_audio)
+    return _StatusContext(
+        status_map=status_map,
+        seg_counts=db.latest_segment_counts("transcript"),
+        stems_with_speaker_map=db.stems_with_step("speaker_map"),
+        local_audio=local_audio,
+        episode_files=_scan_episode_files(path, local_audio),
+        effective=effective,
+    )
 
-    rss = load_feed_cache(path) or []
 
-    result: list[dict] = []
-    seen_stems: set[str] = set()
-    seen_ids: set[str] = set()
-
-    def _build_episode_out(
-        *,
-        ep_id: str,
-        title: str,
-        stem: str | None,
-        pub_date: str | None,
-        description: str,
-        audio_url: str | None,
-        duration: float,
-        episode_number: int | None,
-        audio_path: Path | None,
-        output_dir: Path | None,
-        artwork_url: str,
-        st: dict,
-        ep_files: list[str],
-        removed: bool = False,
-        feed_order: int | None = None,
-    ) -> dict:
-        prov = _normalize_provenance(st.get("provenance", {}))
-        # Speaker labels resolved by user counts as editing the displayed transcript,
-        # even though raw segment text is unchanged.
-        if stem and stem in stems_with_speaker_map:
-            tprov = prov.get("transcript")
-            prov["transcript"] = {
-                **(tprov if isinstance(tprov, dict) else {}),
-                "manual_edit": True,
-            }
-        seg_count = seg_counts.get(stem) if stem else None
-        cleaned_translations = clean_translations(st.get("translations", []))
-        out_dir_exists = bool(output_dir and output_dir.is_dir())
-        return {
-            "id": ep_id,
-            "title": title,
-            "stem": stem,
-            "pub_date": pub_date,
-            "description": description,
-            "audio_url": audio_url,
-            "duration": duration,
-            "episode_number": episode_number,
-            "audio_path": str(audio_path) if audio_path else None,
-            "output_dir": str(output_dir) if out_dir_exists else None,
-            "downloaded": audio_path is not None,
-            "transcribed": st.get("transcribed", False),
-            "corrected": st.get("corrected", False),
-            "indexed": st.get("indexed", False),
-            "synthesized": st.get("synthesized", False),
-            "has_subtitles": any(f.endswith(".vtt") for f in ep_files),
-            "translations": cleaned_translations,
-            "artwork_url": artwork_url,
-            "removed": removed,
-            "feed_order": feed_order,
-            "segment_count": seg_count,
-            "files": ep_files,
-            "provenance": prov,
-            "verified": st.get("verified"),
-            "llm_failed_steps": rejected_steps(output_dir) if out_dir_exists else [],
-            **_step_statuses(st, prov, effective, cleaned_translations),
+def _build_status_out(
+    *,
+    stem: str | None,
+    audio_path: Path | None,
+    output_dir: Path | None,
+    st: dict,
+    ep_files: list[str],
+    ctx: _StatusContext,
+) -> dict:
+    """Build the `EpisodeStatusOut` half of an episode payload."""
+    prov = _normalize_provenance(st.get("provenance", {}))
+    # Speaker labels resolved by user counts as editing the displayed transcript,
+    # even though raw segment text is unchanged.
+    if stem and stem in ctx.stems_with_speaker_map:
+        tprov = prov.get("transcript")
+        prov["transcript"] = {
+            **(tprov if isinstance(tprov, dict) else {}),
+            "manual_edit": True,
         }
-
-    # Pass the set of stems already on disk so episode_stem can match a
-    # changed-title episode to its existing file without re-scandir-ing per
-    # call. Covers root-audio stems and per-episode subdir stems.
-    existing_stems = set(local_audio) | set(episode_files)
-
-    # RSS episodes first (preserves feed order)
-    for r in rss:
-        stem = episode_stem(r, path, existing_stems=existing_stems)
-        if r.guid in seen_ids:
-            continue
-        seen_ids.add(r.guid)
-        st = status_map.get(stem, {}) if stem else {}
-        audio_path = local_audio.get(stem)
-        if stem:
-            seen_stems.add(stem)
-        result.append(
-            _build_episode_out(
-                ep_id=r.guid,
-                title=r.title,
-                stem=stem,
-                pub_date=r.pub_date,
-                description=r.description or "",
-                audio_url=r.audio_url or None,
-                duration=r.duration,
-                episode_number=r.episode_number,
-                audio_path=audio_path,
-                output_dir=path / stem if stem else None,
-                artwork_url=r.artwork_url or "",
-                st=st,
-                ep_files=episode_files.get(stem, []) if stem else [],
-                removed=r.removed,
-                feed_order=r.feed_order,
-            )
-        )
-
-    # Local-only episodes (no RSS match)
-    for stem, st in status_map.items():
-        if stem in seen_stems:
-            continue
-        output_dir = path / stem
-        meta = load_episode_meta(output_dir) if output_dir.is_dir() else None
-        ep_id = meta.guid if meta else stem
-        if ep_id in seen_ids:
-            continue
-        seen_ids.add(ep_id)
-        audio_path = local_audio.get(stem)
-        result.append(
-            _build_episode_out(
-                ep_id=ep_id,
-                title=(meta.title if meta else None) or stem,
-                stem=stem,
-                pub_date=meta.pub_date if meta else None,
-                description=(meta.description or "") if meta else "",
-                audio_url=(meta.audio_url or None) if meta else None,
-                duration=meta.duration if meta else 0,
-                episode_number=meta.episode_number if meta else None,
-                audio_path=audio_path,
-                output_dir=output_dir,
-                artwork_url=(meta.artwork_url or "") if meta else "",
-                st=st,
-                ep_files=episode_files.get(stem, []),
-            )
-        )
-
-    return result
+    cleaned_translations = clean_translations(st.get("translations", []))
+    out_dir_exists = bool(output_dir and output_dir.is_dir())
+    return {
+        "stem": stem,
+        "audio_path": str(audio_path) if audio_path else None,
+        "output_dir": str(output_dir) if out_dir_exists else None,
+        "downloaded": audio_path is not None,
+        "transcribed": st.get("transcribed", False),
+        "corrected": st.get("corrected", False),
+        "indexed": st.get("indexed", False),
+        "synthesized": st.get("synthesized", False),
+        "has_subtitles": any(f.endswith(".vtt") for f in ep_files),
+        "translations": cleaned_translations,
+        "segment_count": ctx.seg_counts.get(stem) if stem else None,
+        "files": ep_files,
+        "provenance": prov,
+        "verified": st.get("verified"),
+        "llm_failed_steps": rejected_steps(output_dir) if out_dir_exists else [],
+        **_step_statuses(st, prov, ctx.effective, cleaned_translations),
+    }
 
 
 _PARAM_RENAMES = {"mode": "llm_mode"}

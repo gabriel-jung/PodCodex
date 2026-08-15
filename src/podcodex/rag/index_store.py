@@ -934,6 +934,20 @@ class IndexStore:
         """
         return self._distinct(collection, "episode")
 
+    def collection_version(self, collection: str) -> int:
+        """Dataset version of a collection's table, or 0 if it doesn't exist.
+
+        Bumps on every write, and the table handle is opened fresh per call,
+        so this is a cross-process-safe cache key for anything derived from a
+        collection's contents. Costs a metadata read, not a scan.
+
+        Args:
+            collection: Collection name.
+        """
+        if not self.collection_exists(collection):
+            return 0
+        return int(self._table(collection).version)
+
     def episode_count(self, collection: str) -> int:
         """Number of distinct episodes in the collection (no sort).
 

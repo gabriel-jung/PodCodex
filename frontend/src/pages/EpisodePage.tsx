@@ -19,6 +19,7 @@ import {
 import { useShowActions } from "@/hooks/useShowActions";
 import { isVerifiedVersion, VERIFIED_CAPTION } from "@/lib/verified";
 import { usePipelineDefaults } from "@/hooks/usePipelineConfig";
+import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
 import InlineConfirm from "@/components/common/InlineConfirm";
 import { useDropZone } from "@/hooks/useDropZone";
@@ -130,10 +131,11 @@ export default function EpisodePage({
     queryFn: () => getEpisodes(folder!, pipelineDefaults),
     placeholderData: keepPreviousData,
     enabled: !!folder,
-    refetchInterval: downloadTaskId ? 5000 : false,
-    // Heavy endpoint (full unified list); alt-tab must not refetch it.
+    // Heavy endpoint (full unified list); alt-tab must not refetch it, and
+    // live progress arrives through the status poll below instead.
     refetchOnWindowFocus: false,
   });
+  useEpisodeStatusPoll(folder, pipelineDefaults, !!downloadTaskId);
 
   const { downloadMutation: episodeDownloadMutation, importSubsMutation, isYouTube } = useShowActions(folder ?? "", meta, { withSubs: false });
 

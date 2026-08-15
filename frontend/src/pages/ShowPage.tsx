@@ -1,6 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   getEpisodes,
   getShowMeta,
@@ -16,11 +17,12 @@ import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
 import { dateCmp } from "@/lib/episodeSort";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
 import { FeedRefreshButton } from "@/components/common/FeedRefreshButton";
+import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { useFeedRefresh, useFeedRefreshing } from "@/hooks/useFeedRefresh";
 import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore, useLayoutStore, useSeedPipelineFromShow } from "@/stores";
 import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useShowActions } from "@/hooks/useShowActions";
-import { episodeCardGridTemplate } from "@/lib/cardGrid";
+import { autoFillColumns, episodeCardMinWidth } from "@/lib/cardGrid";
 
 import AppSidebar, { type SidebarSection } from "@/components/layout/AppSidebar";
 import EditorialHeader from "@/components/layout/EditorialHeader";
@@ -87,6 +89,9 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const [sort, setSort] = useState<SortKey>("date_desc");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const lastShiftClickIndex = useRef<number | null>(null);
+  // Scroll container for both virtualized views; owned here so switching
+  // list ↔ card keeps the same element (and therefore the scroll position).
+  const listScrollRef = useRef<HTMLDivElement>(null);
   // Narrow selectors so unrelated task store writes don't re-render this page.
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
   const batchTaskId = useTaskStore((s) => s.batchTaskId);
@@ -109,10 +114,11 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     queryKey: queryKeys.episodes(folder, pipelineDefaults),
     queryFn: () => getEpisodes(folder, pipelineDefaults),
     placeholderData: keepPreviousData,
-    refetchInterval: isPolling ? 5000 : false,
-    // Heavy endpoint (full unified list); alt-tab must not refetch it.
+    // Heavy endpoint (full unified list); alt-tab must not refetch it, and
+    // live progress arrives through the status poll below instead.
     refetchOnWindowFocus: false,
   });
+  useEpisodeStatusPoll(folder, pipelineDefaults, isPolling);
 
   const { downloadMutation, importSubsMutation, isYouTube } = useShowActions(folder, meta);
 
@@ -488,14 +494,15 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         ))}
 
       {/* Episode list */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={listScrollRef} className="flex-1 overflow-y-auto">
         {view === "list" ? (
-          <div className="divide-y divide-border/50">
-            {filtered.map((ep, i) => {
+          <VirtualEpisodeRows
+            scrollRef={listScrollRef}
+            episodes={filtered}
+            renderItem={(ep, i) => {
               const isCurrent = !!ep.audio_path && ep.audio_path === audioPath;
               return (
                 <EpisodeRow
-                  key={ep.id}
                   ep={ep}
                   index={i}
                   selected={selected.has(ep.id)}
@@ -510,18 +517,18 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                   speakers={ep.stem ? speakersByStem.get(ep.stem) : undefined}
                 />
               );
-            })}
-          </div>
+            }}
+          />
         ) : (
-          <div
-            className={`p-6 grid ${compact ? "gap-2" : "gap-4"}`}
-            style={{ gridTemplateColumns: episodeCardGridTemplate(cardSize) }}
-          >
-            {filtered.map((ep) => {
+          <VirtualEpisodeCards
+            scrollRef={listScrollRef}
+            episodes={filtered}
+            cardSize={cardSize}
+            gap={compact ? 8 : 16}
+            renderItem={(ep) => {
               const isCurrent = !!ep.audio_path && ep.audio_path === audioPath;
               return (
                 <EpisodeCard
-                  key={ep.id}
                   ep={ep}
                   onOpen={goEpisode}
                   onPlay={playEpisode}
@@ -533,8 +540,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                   speakers={ep.stem ? speakersByStem.get(ep.stem) : undefined}
                 />
               );
-            })}
-          </div>
+            }}
+          />
         )}
 
         {episodesLoading && (
@@ -600,6 +607,129 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       )}
     </div>
     </div>
+    </div>
+  );
+}
+
+interface VirtualEpisodesProps {
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+  episodes: Episode[];
+  renderItem: (ep: Episode, index: number) => React.ReactNode;
+}
+
+/**
+ * List view. Only the rows in (and just outside) the viewport are mounted, so
+ * a 500-episode show costs the same per keystroke as a 20-episode one. Row
+ * heights are measured; the estimate only has to be close for first paint.
+ */
+function VirtualEpisodeRows({ scrollRef, episodes, renderItem }: VirtualEpisodesProps) {
+  // eslint-disable-next-line react-hooks/incompatible-library -- virtualizer is ref-based; compiler skip is expected
+  const virtualizer = useVirtualizer({
+    count: episodes.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 57,
+    overscan: 8,
+    getItemKey: (i) => episodes[i].id,
+  });
+
+  return (
+    <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
+      {virtualizer.getVirtualItems().map((v) => {
+        const ep = episodes[v.index];
+        if (!ep) return null;
+        return (
+          <div
+            key={ep.id}
+            data-index={v.index}
+            ref={virtualizer.measureElement}
+            // `divide-y` can't reach absolutely positioned children, so the
+            // separator lives on each row and the last one goes without.
+            className={v.index < episodes.length - 1 ? "border-b border-border/50" : ""}
+            style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${v.start}px)` }}
+          >
+            {renderItem(ep, v.index)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Card view. Virtualizes by grid *row*, so the column count has to be the one
+ * `repeat(auto-fill, ...)` would have produced — measured from the container
+ * and recomputed through `autoFillColumns` (see `lib/cardGrid`).
+ */
+function VirtualEpisodeCards({
+  scrollRef,
+  episodes,
+  cardSize,
+  gap,
+  renderItem,
+}: VirtualEpisodesProps & { cardSize: number; gap: number }) {
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [columns, setColumns] = useState(1);
+
+  useLayoutEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    const min = episodeCardMinWidth(cardSize);
+    // Column count is a DOM measurement, not derivable from props.
+    const measure = (width: number) => setColumns(autoFillColumns(width, min, gap));
+    measure(el.clientWidth);
+    const observer = new ResizeObserver(([entry]) => measure(entry.contentRect.width));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [cardSize, gap]);
+
+  const rowCount = Math.ceil(episodes.length / columns);
+  // eslint-disable-next-line react-hooks/incompatible-library -- virtualizer is ref-based; compiler skip is expected
+  const virtualizer = useVirtualizer({
+    count: rowCount,
+    getScrollElement: () => scrollRef.current,
+    // Tiles are roughly square plus a text block; measurement corrects it.
+    estimateSize: () => episodeCardMinWidth(cardSize) + 120,
+    overscan: 3,
+    getItemKey: (row) => episodes[row * columns]?.id ?? row,
+  });
+
+  // Cached row heights are meaningless once the cards reflow.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [columns, cardSize, virtualizer]);
+
+  return (
+    <div className="p-6">
+      <div ref={gridRef} style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
+        {virtualizer.getVirtualItems().map((v) => {
+          const row = episodes.slice(v.index * columns, (v.index + 1) * columns);
+          if (row.length === 0) return null;
+          return (
+            <div
+              key={row[0].id}
+              data-index={v.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                transform: `translateY(${v.start}px)`,
+                display: "grid",
+                gap,
+                gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                // Row gap, but measured as part of the row so the virtualizer
+                // accounts for it. The last row doesn't need trailing space.
+                paddingBottom: v.index < rowCount - 1 ? gap : 0,
+              }}
+            >
+              {row.map((ep, i) => (
+                <Fragment key={ep.id}>{renderItem(ep, v.index * columns + i)}</Fragment>
+              ))}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

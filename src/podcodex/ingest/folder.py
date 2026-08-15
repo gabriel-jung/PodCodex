@@ -100,12 +100,22 @@ def _episode_status(
     }
 
 
+# Indexed-stem sets by show name, guarded by the collections' dataset
+# versions. Listing the episodes means scanning every chunk row (tens of ms on
+# a large show) and the episode list route asks for it on every request,
+# including the 5s status poll.
+_INDEXED_STEMS_CACHE: dict[str, tuple[tuple[tuple[str, int], ...], set[str]]] = {}
+
+
 def lance_indexed_stems(show_folder: Path) -> set[str]:
     """Return the set of episode stems that LanceDB has chunks for, for this show.
 
     Authoritative source for ``indexed`` status. Returns empty set if the
     index is unavailable or the show has no collections (treat as
     not-indexed rather than blocking the scan).
+
+    Cached against the collections' dataset versions, which bump on every
+    write from any process, so a stale set can't outlive an index run.
     """
     try:
         from podcodex.ingest.show import load_show_meta
@@ -118,10 +128,15 @@ def lance_indexed_stems(show_folder: Path) -> set[str]:
     try:
         store = get_index_store()
         cols = store.list_collections(show=show_name)
+        versions = tuple(sorted((c, store.collection_version(c)) for c in cols))
+        cached = _INDEXED_STEMS_CACHE.get(show_name)
+        if cached is not None and cached[0] == versions:
+            return set(cached[1])
         indexed: set[str] = set()
         for col in cols:
             indexed.update(store.list_episodes(col))
-        return indexed
+        _INDEXED_STEMS_CACHE[show_name] = (versions, indexed)
+        return set(indexed)
     except Exception as exc:
         logger.warning("lance indexed-set lookup failed for {!r}: {!r}", show_name, exc)
         return set()

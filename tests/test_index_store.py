@@ -244,6 +244,18 @@ def test_list_episodes_sorted(tmp_path):
     assert s.list_episodes("c") == ["ep_a", "ep_b"]
 
 
+def test_collection_version_advances_on_write(tmp_path):
+    """`lance_indexed_stems` caches on this, so a write must move it."""
+    s = _store(tmp_path)
+    assert s.collection_version("c") == 0  # missing collection
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    before = s.collection_version("c")
+    s.save_chunks("c", "ep1", _chunks(1, "ep1"), _rng_embeddings(1))
+    after = s.collection_version("c")
+    assert after > before
+    assert s.collection_version("c") == after  # stable without writes
+
+
 # ── save_chunks ──────────────────────────────────────────────────────────
 
 
