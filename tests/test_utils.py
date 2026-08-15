@@ -384,3 +384,20 @@ def test_merge_display_turns_absent_end_does_not_rewind_run():
     merged = merge_display_turns(turns)
     assert len(merged) == 1
     assert merged[0]["end"] == 9.0
+
+
+def test_declared_speaker_outranks_the_placeholder():
+    """A show that declares a speaker called "Narrator" means it.
+
+    The name doubles as the no-diarization placeholder, so without this a
+    documentary's narrator would vanish from its own roster and airtime.
+    """
+    from podcodex.core._utils import is_unattributed, speaker_airtime
+
+    segs = [{"speaker": "Narrator", "start": 0.0, "end": 10.0, "text": "x"}]
+    assert is_unattributed("Narrator") is True
+    assert is_unattributed("Narrator", {"Narrator"}) is False
+    # The empty label is never a name, declared or not.
+    assert is_unattributed("", {"Narrator"}) is True
+    assert speaker_airtime(segs) == {}
+    assert list(speaker_airtime(segs, {"Narrator"})) == ["Narrator"]

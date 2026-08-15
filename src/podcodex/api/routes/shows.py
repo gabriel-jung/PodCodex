@@ -1300,7 +1300,7 @@ def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
         ep_meta = load_episode_meta(path / stem)
         ep_title = ep_meta.title if ep_meta and ep_meta.title else stem
 
-        for spk, air in speaker_airtime(segments).items():
+        for spk, air in speaker_airtime(segments, known).items():
             secs = air["total_seconds"]
             n = air["segment_count"]
             row = totals.setdefault(
@@ -1388,6 +1388,9 @@ def _compute_episode_speakers(path: Path, stem: str) -> EpisodeSpeakersResponse:
             speakers=[], episode_seconds=0.0, has_transcript=False
         )
 
+    show_meta = load_show_meta(path)
+    # A show that declares a speaker called "Narrator" means it.
+    declared = set(show_meta.speakers) if show_meta else set()
     ep_meta = load_episode_meta(path / stem)
     audio_seconds = float(ep_meta.duration) if ep_meta else 0.0
     last_end = max((float(s.get("end", 0.0)) for s in segments), default=0.0)
@@ -1395,7 +1398,7 @@ def _compute_episode_speakers(path: Path, stem: str) -> EpisodeSpeakersResponse:
     # silence) is simply not counted, so the percentages can sum to under 100%.
     denom = max(audio_seconds, last_end)
 
-    air = speaker_airtime(segments)
+    air = speaker_airtime(segments, declared)
     entries = [
         EpisodeSpeakerEntry(
             name=spk,

@@ -13,7 +13,7 @@ from datetime import datetime
 from email.utils import parsedate_to_datetime
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Container
 from typing import TYPE_CHECKING, Self
 
 from loguru import logger
@@ -234,7 +234,7 @@ NARRATOR_SPEAKER = "Narrator"
 BREAK_SPEAKER = "[BREAK]"
 
 
-def is_unattributed(speaker: str | None) -> bool:
+def is_unattributed(speaker: str | None, declared: Container[str] = ()) -> bool:
     """True when a speaker label names nobody.
 
     NARRATOR_SPEAKER is a storage placeholder, not an identification: it is
@@ -242,8 +242,15 @@ def is_unattributed(speaker: str | None) -> bool:
     sample key on disk (see synthesize.fill_narrator_speaker), which is why
     it stays in the data. Output boundaries should treat it exactly like the
     empty label and attribute nothing.
+
+    Pass *declared* (a show's known speakers) wherever it is available: a
+    documentary can legitimately have someone called "Narrator", and once the
+    user has declared that name it is an identification like any other. The
+    empty and UNKNOWN labels are never names, declared or not.
     """
-    return not speaker or speaker in UNKNOWN_SPEAKERS or speaker == NARRATOR_SPEAKER
+    if not speaker or speaker in UNKNOWN_SPEAKERS:
+        return True
+    return speaker == NARRATOR_SPEAKER and speaker not in declared
 
 
 # ── mtime-based caching ──────────────────────────────────────────────────────
@@ -666,7 +673,9 @@ def group_by_speaker(segments: list[dict]) -> dict[str, list[dict]]:
     return by_speaker
 
 
-def speaker_airtime(segments: list[dict]) -> dict[str, dict]:
+def speaker_airtime(
+    segments: list[dict], declared: Container[str] = ()
+) -> dict[str, dict]:
     """Per-speaker airtime from a seglist.
 
     Returns ``{speaker: {"segment_count": int, "total_seconds": float}}``,
@@ -680,7 +689,7 @@ def speaker_airtime(segments: list[dict]) -> dict[str, dict]:
     """
     out: dict[str, dict] = {}
     for spk, segs in group_by_speaker(segments).items():
-        if spk == BREAK_SPEAKER or is_unattributed(spk):
+        if spk == BREAK_SPEAKER or is_unattributed(spk, declared):
             continue
         secs = sum(
             max(0.0, float(s.get("end", 0.0)) - float(s.get("start", 0.0)))

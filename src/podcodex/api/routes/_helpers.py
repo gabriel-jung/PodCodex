@@ -160,6 +160,13 @@ def build_provenance(
     version's chain and appending this step's model/mode identifier.
     """
     params = dict(params) if params else {}
+    # A hand-edited version is "validated" by definition, and the two flags
+    # must agree: `is_edited` reads either, but only the type reaches the
+    # filename, so a manual edit typed "raw" is indistinguishable from model
+    # output once the DB is rebuilt from disk. Enforced here rather than at
+    # each caller, which is how /translate/save-manual drifted.
+    if manual_edit:
+        ptype = "validated"
     if (
         step != "transcript"
         and "source_chain" not in params

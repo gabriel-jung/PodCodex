@@ -477,6 +477,32 @@ class TestBackfillFromDisk:
         assert load_latest_speaker_map(episode_dir) == {"SPEAKER_00": "Alice"}
         close_pipeline_db(show_dir)
 
+    def test_hand_edited_version_stays_edited(self, episode_dir):
+        """A manual edit must not be demoted to model output by a rebuild.
+
+        `manual_edit` lives only in the DB, so the type suffix in the filename
+        is the sole carrier across a rebuild. build_provenance keeps the two
+        in step; /translate/save-manual once wrote manual_edit=True with type
+        "raw", and that version came back reading as un-edited.
+        """
+        from podcodex.api.routes._helpers import build_provenance
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import backfill_versions_from_disk, is_edited
+
+        prov = build_provenance(
+            "french", params={"llm_mode": "manual"}, manual_edit=True
+        )
+        assert prov["type"] == "validated"
+        save_version(episode_dir, "french", SAMPLE_SEGMENTS, prov)
+        show_dir = episode_dir.parent.parent
+        assert is_edited(list_versions(episode_dir, "french")[0])
+
+        close_pipeline_db(show_dir)
+        (show_dir / "pipeline.db").unlink()
+        backfill_versions_from_disk(show_dir)
+        assert is_edited(list_versions(episode_dir, "french")[0])
+        close_pipeline_db(show_dir)
+
     def test_is_idempotent(self, episode_dir):
         from podcodex.core.pipeline_db import close_pipeline_db
         from podcodex.core.versions import backfill_versions_from_disk
