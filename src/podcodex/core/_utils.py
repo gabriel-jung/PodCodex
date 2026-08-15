@@ -234,6 +234,18 @@ NARRATOR_SPEAKER = "Narrator"
 BREAK_SPEAKER = "[BREAK]"
 
 
+def is_unattributed(speaker: str | None) -> bool:
+    """True when a speaker label names nobody.
+
+    NARRATOR_SPEAKER is a storage placeholder, not an identification: it is
+    what a transcript gets with diarization off, and it doubles as the voice
+    sample key on disk (see synthesize.fill_narrator_speaker), which is why
+    it stays in the data. Output boundaries should treat it exactly like the
+    empty label and attribute nothing.
+    """
+    return not speaker or speaker in UNKNOWN_SPEAKERS or speaker == NARRATOR_SPEAKER
+
+
 # ── mtime-based caching ──────────────────────────────────────────────────────
 
 # A cached mtime younger than this is not trusted. Filesystems with coarse
@@ -779,11 +791,13 @@ def segments_to_text(segments: list[dict], text_field: str = "text") -> str:
     """
     lines = []
     for seg in segments:
-        speaker = seg.get("speaker", "UNKNOWN")
+        speaker = seg.get("speaker", "")
+        if is_unattributed(speaker):
+            speaker = ""
         start = seg.get("start")
         end = seg.get("end")
         if start is not None and end is not None:
-            header = f"[{start:.3f}s - {end:.3f}s] {speaker}"
+            header = f"[{start:.3f}s - {end:.3f}s] {speaker}".rstrip()
         else:
             header = speaker
         text = seg.get(text_field) or "[empty]"
@@ -804,7 +818,7 @@ def segments_to_srt(segments: list[dict], text_field: str = "text") -> str:
         end = seg.get("end", 0.0)
         speaker = seg.get("speaker", "")
         text = seg.get(text_field) or "[empty]"
-        prefix = f"{speaker}: " if speaker else ""
+        prefix = f"{speaker}: " if not is_unattributed(speaker) else ""
         lines.append(str(i))
         lines.append(f"{_srt_ts(start)} --> {_srt_ts(end)}")
         lines.append(f"{prefix}{text}")
@@ -834,7 +848,7 @@ def segments_to_vtt(segments: list[dict], text_field: str = "text") -> str:
         end = seg.get("end", 0.0)
         speaker = seg.get("speaker", "")
         text = seg.get(text_field) or "[empty]"
-        prefix = f"<v {speaker}>" if speaker else ""
+        prefix = f"<v {speaker}>" if not is_unattributed(speaker) else ""
         lines.append(f"{_vtt_ts(start)} --> {_vtt_ts(end)}")
         lines.append(f"{prefix}{text}")
         lines.append("")
