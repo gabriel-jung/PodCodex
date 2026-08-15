@@ -512,12 +512,16 @@ def feed_cache_episode_count(show_folder: Path) -> int | None:
     except OSError:
         return None
     hit = _FEED_COUNT_CACHE.get(str(path))
-    if hit is not None and hit[0] == mtime and mtime_settled(mtime):
+    if hit is not None and hit[0] == mtime:
         return hit[1]
     cached = load_feed_cache(show_folder)
     if cached is None:
         return None
-    _FEED_COUNT_CACHE[str(path)] = (mtime, len(cached))
+    # Gate on write, not read: a second write inside the same coarse
+    # timestamp bucket keeps the same mtime, so an entry recorded between
+    # the two would match forever and hide it.
+    if mtime_settled(mtime):
+        _FEED_COUNT_CACHE[str(path)] = (mtime, len(cached))
     return len(cached)
 
 
@@ -598,7 +602,7 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
         mtime = None
     if mtime is not None:
         hit = _EPISODE_META_CACHE.get(str(path))
-        if hit is not None and hit[0] == mtime and mtime_settled(mtime):
+        if hit is not None and hit[0] == mtime:
             return hit[1]
     try:
         text = path.read_text(encoding="utf-8").strip()
@@ -613,7 +617,7 @@ def load_episode_meta(episode_dir: Path) -> RSSEpisode | None:
             # Files written before the field existed need the legacy bridge;
             # newer files carry an explicit (possibly empty) youtube_id.
             ep = ep if "youtube_id" in data else _bridge_legacy_youtube_id(ep)
-            if mtime is not None:
+            if mtime is not None and mtime_settled(mtime):
                 _EPISODE_META_CACHE[str(path)] = (mtime, ep)
             return ep
         except (json.JSONDecodeError, TypeError, KeyError):

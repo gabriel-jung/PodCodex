@@ -42,6 +42,8 @@ interface EpisodeState {
     state?: StepFilterState,
     lang?: string,
   ) => void;
+  /** Drop a persisted language the current show has no translations in. */
+  pruneStepFilterLang: (available: readonly string[]) => void;
 }
 
 const persistOptions: PersistOptions<EpisodeState, Pick<EpisodeState,
@@ -89,6 +91,15 @@ export const useEpisodeStore = create<EpisodeState>()(
           // so the badge count doesn't claim a filter that isn't applied.
           stepFilterLang: step === "translate" ? (lang ?? s.stepFilterLang) : "",
         })),
+      // The filter persists across shows, so a language chosen on one show
+      // would keep filtering on the next one that never had it, with no
+      // visible control to clear it. ShowPage prunes on load.
+      pruneStepFilterLang: (available) =>
+        set((s) =>
+          s.stepFilterLang && !available.includes(s.stepFilterLang)
+            ? { stepFilterLang: "" }
+            : {},
+        ),
     }),
     persistOptions,
   ),

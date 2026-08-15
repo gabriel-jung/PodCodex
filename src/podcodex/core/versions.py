@@ -704,10 +704,12 @@ def _delete_speaker_maps_where(
 def _refresh_status_after_delete(base: Path, step: str) -> None:
     """Clear pipeline_db status flags when no versions remain for a step.
 
-    The "no versions left" test reads the DB rather than the step directory
-    on purpose: every read path (``load_version``, ``load_version_by_id``)
-    resolves an id through the DB first, so a file with no row is unreachable
-    and must not keep a status flag alive.
+    The "no versions left" test reads the DB, not the step directory: a
+    normal delete unlinks the file before dropping the row, so both agree.
+    Note the status reconcile in the shows route is deliberately broader (a
+    step counts as done when it has a row *or* a file on disk), because it
+    also has to preserve flags a filesystem-derived bootstrap wrote before
+    any version rows existed.
 
     Deliberately does not pre-check with ``list_versions``: pipeline steps run
     in spawned subprocesses that write to this same DB, so the check and the

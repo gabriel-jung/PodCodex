@@ -225,6 +225,15 @@ class AudioPaths:
 
 # Speaker labels that don't represent a real person (unresolved diarization placeholders).
 # Used by transcribe.py (filtering) and synthesize.py (voice sample extraction).
+UNKNOWN_SPEAKERS = frozenset({"UNKNOWN", "UNK", "None", "none", ""})
+
+# Default speaker label when diarization is skipped.
+NARRATOR_SPEAKER = "Narrator"
+
+# Segment inserted by merge_consecutive_segments when gap > max_gap.
+BREAK_SPEAKER = "[BREAK]"
+
+
 # ── mtime-based caching ──────────────────────────────────────────────────────
 
 # A cached mtime younger than this is not trusted. Filesystems with coarse
@@ -235,19 +244,16 @@ MTIME_SETTLE_SECONDS = 2.0
 
 
 def mtime_settled(mtime: float, now: float | None = None) -> bool:
-    """True when *mtime* is old enough that a same-tick write can't hide."""
+    """True when *mtime* is old enough that a same-tick write can't hide.
+
+    Gate *storing* a cache entry on this, not reading one: two writes inside
+    the same coarse bucket share an mtime, so an entry recorded between them
+    matches forever and hides the second.
+    """
     import time as _time
 
     return (now if now is not None else _time.time()) - mtime >= MTIME_SETTLE_SECONDS
 
-
-UNKNOWN_SPEAKERS = frozenset({"UNKNOWN", "UNK", "None", "none", ""})
-
-# Default speaker label when diarization is skipped.
-NARRATOR_SPEAKER = "Narrator"
-
-# Segment inserted by merge_consecutive_segments when gap > max_gap.
-BREAK_SPEAKER = "[BREAK]"
 
 # Sentinel for segments the user marked for removal in the editor.
 REMOVE_SPEAKER = "[remove]"

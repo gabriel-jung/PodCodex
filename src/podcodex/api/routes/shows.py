@@ -960,12 +960,17 @@ def _has_step_files(ep_files: list[str], stem: str, step: str, ext: str) -> bool
     """True when the episode's file list holds a version file for *step*.
 
     `ep_files` entries are paths relative to the show folder, so a version
-    file reads as ``<stem>/<step>/<id><ext>``. The extension check also keeps
-    the parquet sub-steps nested under ``transcript/`` from counting as
-    transcripts.
+    file reads as ``<stem>/<step>/<id><ext>``. Matching only that one level
+    keeps this in step with `ingest/folder._step_has_versions`, which globs
+    ``<step>/*<ext>`` and feeds the very bootstrap this defends; a nested
+    sub-step that ever emits the same extension would otherwise make the two
+    disagree about the same episode.
     """
     prefix = f"{stem}/{step}/"
-    return any(f.startswith(prefix) and f.endswith(ext) for f in ep_files)
+    return any(
+        f.startswith(prefix) and f.endswith(ext) and "/" not in f[len(prefix) :]
+        for f in ep_files
+    )
 
 
 def _build_status_out(
@@ -1542,7 +1547,7 @@ _SKIP_NAMES = {"manifest.json"}
 
 def _walk_episode_dir(
     root: Path, rel_prefix: str
-) -> tuple[list[str], list[tuple[str, int]]]:
+) -> tuple[list[str], list[tuple[str, int]] | None]:
     """Recursively collect interesting files under an episode dir.
 
     ``rel_prefix`` is the path (relative to the show folder) to prepend to
@@ -1550,7 +1555,12 @@ def _walk_episode_dir(
     ``relative_to``.
 
     Returns the file list plus every directory visited paired with its mtime,
-    which is what `_scan_episode_files` caches on.
+    which is what `_scan_episode_files` caches on. The directory list is
+    ``None`` when any part of the walk hit an ``OSError``: the file list is
+    then incomplete, and caching it would pin a truncated result against
+    mtimes that will not change. Since this list also drives the status-flag
+    reconcile, a transient EACCES could otherwise demote a step and keep it
+    demoted.
     """
     import os
 
@@ -1558,8 +1568,8 @@ def _walk_episode_dir(
     try:
         stamp = os.stat(root).st_mtime_ns
     except OSError:
-        return [], []
-    visited: list[tuple[str, int]] = [(str(root), stamp)]
+        return [], None
+    visited: list[tuple[str, int]] | None = [(str(root), stamp)]
     try:
         with os.scandir(root) as it:
             for f in it:
@@ -1571,7 +1581,10 @@ def _walk_episode_dir(
                         Path(f.path), f"{rel_prefix}/{name}"
                     )
                     collected.extend(sub_files)
-                    visited.extend(sub_dirs)
+                    if sub_dirs is None:
+                        visited = None
+                    elif visited is not None:
+                        visited.extend(sub_dirs)
                     continue
                 if not f.is_file(follow_symlinks=False) or name in _SKIP_NAMES:
                     continue
@@ -1580,7 +1593,7 @@ def _walk_episode_dir(
                     continue
                 collected.append(f"{rel_prefix}/{name}")
     except OSError:
-        pass
+        return collected, None
     return collected, visited
 
 
@@ -1596,19 +1609,30 @@ _EPISODE_FILES_CACHE: dict[str, dict[str, tuple[list[tuple[str, int]], list[str]
 _MTIME_SETTLE_NS = int(MTIME_SETTLE_SECONDS * 1_000_000_000)
 
 
-def _dirs_unchanged(visited: list[tuple[str, int]], now_ns: int) -> bool:
+def _dirs_unchanged(visited: list[tuple[str, int]]) -> bool:
     """True when every recorded directory still has its recorded mtime."""
     import os
 
     for path, stamp in visited:
-        if now_ns - stamp < _MTIME_SETTLE_NS:
-            return False
         try:
             if os.stat(path).st_mtime_ns != stamp:
                 return False
         except OSError:
             return False
     return True
+
+
+def _settled(visited: list[tuple[str, int]], now_ns: int) -> bool:
+    """True when every recorded mtime was already old when we recorded it.
+
+    The settle window has to gate *storing* an entry, not trusting one: a
+    directory written twice inside one coarse timestamp bucket (FAT32 rounds
+    to 2s) keeps the same mtime, so an entry recorded between the two writes
+    matches forever and hides the second. Refusing to cache until the mtime
+    has stopped moving means anything we do cache cannot have a same-bucket
+    write after it.
+    """
+    return all(now_ns - stamp >= _MTIME_SETTLE_NS for _, stamp in visited)
 
 
 def _scan_episode_files(
@@ -1644,17 +1668,17 @@ def _scan_episode_files(
                 if stem.startswith("."):
                     continue
                 hit = cached.get(stem)
-                # An entry with no recorded directories came from a walk that
-                # hit an OSError. `_dirs_unchanged` is vacuously true for it,
-                # so trusting it would pin a truncated file list for the rest
-                # of the process; re-walk instead.
-                if hit is not None and hit[0] and _dirs_unchanged(hit[0], now_ns):
+                if hit is not None and _dirs_unchanged(hit[0]):
                     fresh[stem] = hit
                     files = hit[1]
                 else:
                     files, visited = _walk_episode_dir(Path(entry.path), stem)
                     files.sort()
-                    fresh[stem] = (visited, files)
+                    # Only cache a complete walk whose mtimes have settled;
+                    # anything else is re-walked next call (see _settled and
+                    # _walk_episode_dir's None contract).
+                    if visited and _settled(visited, now_ns):
+                        fresh[stem] = (visited, files)
                 # Hand out a copy: the root-audio merge below prepends to these
                 # lists, which would otherwise grow the cached entry per call.
                 if files:

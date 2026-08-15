@@ -158,12 +158,12 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   // The step filter persists across shows, so a language picked on one show
   // would keep filtering on the next one that never had that translation,
-  // with no visible control to clear it. Treat it as "any language" unless
-  // this show actually has it.
-  const effectiveStepLang = useMemo(
-    () => (stepFilterLang && languages.includes(stepFilterLang) ? stepFilterLang : ""),
-    [stepFilterLang, languages],
-  );
+  // with no visible control to clear it. Prune once the show's languages are
+  // known, so the store holds one truth instead of every reader re-checking.
+  const pruneStepFilterLang = useEpisodeStore((s) => s.pruneStepFilterLang);
+  useEffect(() => {
+    if (episodes) pruneStepFilterLang(languages);
+  }, [episodes, languages, pruneStepFilterLang]);
 
   const filterCounts = useMemo(() => ({
     all: all.length,
@@ -207,7 +207,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     if (filter === "verified") list = list.filter((e) => !!e.verified);
     if (stepFilterStep) {
       list = list.filter((e) =>
-        matchesStepFilter(e, stepFilterStep, stepFilterState, effectiveStepLang),
+        matchesStepFilter(e, stepFilterStep, stepFilterState, stepFilterLang),
       );
     }
     // Sort. Date sorts fall back to feed_order via the shared comparator
@@ -227,7 +227,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     });
     return list;
   }, [all, search, filter, sort, minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude,
-      stepFilterStep, stepFilterState, effectiveStepLang]);
+      stepFilterStep, stepFilterState, stepFilterLang]);
 
   // Speaker names per episode for the list column. One roster fetch (shared,
   // cached with the Speakers tab) inverted to stem -> names ordered by airtime.

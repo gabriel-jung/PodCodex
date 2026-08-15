@@ -70,8 +70,10 @@ export function useEpisodeStatusPoll(
     // Polling stops and restarts across runs, so this query can hand back a
     // cached result older than the full list (which TaskBar refetches on
     // completion). Merging that would roll flags backwards for one tick.
-    const episodesUpdatedAt = queryClient.getQueryState(key)?.dataUpdatedAt ?? 0;
-    if (dataUpdatedAt < episodesUpdatedAt) return;
+    // Read fresh from the cache rather than using the prop: the prop is a
+    // render-stale snapshot and exists only to re-run this effect.
+    const cachedEpisodesUpdatedAt = queryClient.getQueryState(key)?.dataUpdatedAt ?? 0;
+    if (dataUpdatedAt < cachedEpisodesUpdatedAt) return;
 
     const byStem = new Map<string, EpisodeStatus>();
     for (const s of statuses) if (s.stem) byStem.set(s.stem, s);
