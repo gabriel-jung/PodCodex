@@ -318,6 +318,26 @@ def test_status_reconcile_keeps_flags_bootstrapped_from_disk(tmp_path):
     close_pipeline_db(show)
 
 
+def test_status_reconcile_rebuilds_the_translations_list(tmp_path):
+    """Languages are the per-language equivalent of the step flags.
+
+    A rebuilt DB restores the language versions but not this list, so the
+    episode would report "not started" with its translation on disk. The
+    rebuild also drops pipeline-step names legacy rows leaked in.
+    """
+    from podcodex.api.routes.shows import _load_status_context
+    from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+
+    show = tmp_path / "show"
+    (show / "ep1" / "french").mkdir(parents=True)
+    (show / "ep1" / "french" / "20260101T000000000000Z_raw.json").write_text("[]")
+    get_pipeline_db(show).mark("ep1", translations=["segments", "spanish"])
+
+    ctx = _load_status_context(show, None)
+    assert ctx.status_map["ep1"]["translations"] == ["french"]
+    close_pipeline_db(show)
+
+
 def test_status_reconcile_demotes_when_nothing_is_left(tmp_path):
     """The demote half still fires when neither a row nor a file remains."""
     from podcodex.api.routes.shows import _load_status_context

@@ -50,6 +50,7 @@ from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.core.llm_failures import rejected_steps
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
 from podcodex.core.versions import (
+    PIPELINE_STEPS,
     STEP_FLAG,
     backfill_versions_from_disk,
     is_edited,
@@ -939,6 +940,17 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
                 row[flag] = desired
                 db.mark(stem, **{flag: desired})
 
+    # Same treatment for the translations list, which is the per-language
+    # equivalent of those flags. A rebuilt DB restores the language versions
+    # but not this list, so a translated episode would report "not started"
+    # with its translation sitting right there. Rebuilding it here also drops
+    # the pipeline-step names legacy rows leaked into it.
+    for stem, row in status_map.items():
+        desired_langs = _episode_languages(episode_files.get(stem, []), stem)
+        if sorted(clean_translations(row.get("translations") or [])) != desired_langs:
+            row["translations"] = desired_langs
+            db.mark(stem, translations=desired_langs)
+
     # Reconcile verified pointers: a pointer whose target version no longer
     # exists (out-of-band file deletion, manual DB edit) is stale and must
     # be cleared so the UI never highlights a missing version.
@@ -964,6 +976,27 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
         episode_files=episode_files,
         effective=effective,
     )
+
+
+def _episode_languages(ep_files: list[str], stem: str) -> list[str]:
+    """Translation languages this episode has versions for, sorted.
+
+    A step directory that is not a known pipeline step is a language code
+    (`PIPELINE_STEPS` is the single source of truth for that distinction).
+    Read from files rather than the DB because a version file is always
+    written before its row, so the files are the superset, and because this
+    runs per episode where a query would not.
+    """
+    langs = set()
+    prefix = f"{stem}/"
+    for f in ep_files:
+        if not f.startswith(prefix) or not f.endswith(".json"):
+            continue
+        rest = f[len(prefix) :]
+        head, sep, tail = rest.partition("/")
+        if sep and "/" not in tail and head not in PIPELINE_STEPS:
+            langs.add(head)
+    return sorted(langs)
 
 
 def _has_step_files(ep_files: list[str], stem: str, step: str, ext: str) -> bool:

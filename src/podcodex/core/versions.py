@@ -292,7 +292,6 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
 
     Returns the number of rows inserted.
     """
-    from podcodex.core._utils import read_parquet
     from podcodex.core.pipeline_db import get_pipeline_db
 
     show_folder = Path(show_folder)
@@ -310,7 +309,12 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
         version_id = path.stem
         if version_id in _ids(step).get(stem, set()):
             return
-        if step in WAV_STEPS:
+        if step in WAV_STEPS or step in PARQUET_STEPS:
+            # Audio has no segments to hash, and parquet round-trips numpy
+            # arrays that compute_hash cannot serialise. Both fall back to the
+            # stat hash `save_synthesize_version` already uses. The original
+            # sha256 is unrecoverable either way, so speaker_map `input_hash`
+            # lineage does not survive a rebuild; only the versions do.
             try:
                 content_hash = f"size:{path.stat().st_size}"
             except OSError:
@@ -318,11 +322,7 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
             segment_count = 0
         else:
             try:
-                segments = (
-                    read_parquet(path)
-                    if step in PARQUET_STEPS
-                    else json.loads(path.read_text(encoding="utf-8"))
-                )
+                segments = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 logger.warning("Skipping unreadable version file {}", path)
                 return
