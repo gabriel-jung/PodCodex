@@ -794,7 +794,9 @@ def batch_segments_by_duration(
     return batches
 
 
-def segments_to_text(segments: list[dict], text_field: str = "text") -> str:
+def segments_to_text(
+    segments: list[dict], text_field: str = "text", declared: Container[str] = ()
+) -> str:
     """Format segments as plain readable text.
 
     Args:
@@ -804,7 +806,7 @@ def segments_to_text(segments: list[dict], text_field: str = "text") -> str:
     lines = []
     for seg in segments:
         speaker = seg.get("speaker", "")
-        if is_unattributed(speaker):
+        if is_unattributed(speaker, declared):
             speaker = ""
         start = seg.get("start")
         end = seg.get("end")
@@ -819,7 +821,9 @@ def segments_to_text(segments: list[dict], text_field: str = "text") -> str:
     return "\n\n".join(lines)
 
 
-def segments_to_srt(segments: list[dict], text_field: str = "text") -> str:
+def segments_to_srt(
+    segments: list[dict], text_field: str = "text", declared: Container[str] = ()
+) -> str:
     """Format segments as SRT subtitles.
 
     Args:
@@ -832,7 +836,7 @@ def segments_to_srt(segments: list[dict], text_field: str = "text") -> str:
         end = seg.get("end", 0.0)
         speaker = seg.get("speaker", "")
         text = seg.get(text_field) or "[empty]"
-        prefix = f"{speaker}: " if not is_unattributed(speaker) else ""
+        prefix = f"{speaker}: " if not is_unattributed(speaker, declared) else ""
         lines.append(str(i))
         lines.append(f"{_srt_ts(start)} --> {_srt_ts(end)}")
         lines.append(f"{prefix}{text}")
@@ -849,7 +853,9 @@ def _srt_ts(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def segments_to_vtt(segments: list[dict], text_field: str = "text") -> str:
+def segments_to_vtt(
+    segments: list[dict], text_field: str = "text", declared: Container[str] = ()
+) -> str:
     """Format segments as WebVTT subtitles.
 
     Args:
@@ -862,7 +868,7 @@ def segments_to_vtt(segments: list[dict], text_field: str = "text") -> str:
         end = seg.get("end", 0.0)
         speaker = seg.get("speaker", "")
         text = seg.get(text_field) or "[empty]"
-        prefix = f"<v {speaker}>" if not is_unattributed(speaker) else ""
+        prefix = f"<v {speaker}>" if not is_unattributed(speaker, declared) else ""
         lines.append(f"{_vtt_ts(start)} --> {_vtt_ts(end)}")
         lines.append(f"{prefix}{text}")
         lines.append("")

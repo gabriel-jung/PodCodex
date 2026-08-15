@@ -401,3 +401,18 @@ def test_declared_speaker_outranks_the_placeholder():
     assert is_unattributed("", {"Narrator"}) is True
     assert speaker_airtime(segs) == {}
     assert list(speaker_airtime(segs, {"Narrator"})) == ["Narrator"]
+
+
+def test_exports_keep_a_declared_narrator_named():
+    """A show's own narrator must not be the only unnamed line in an export."""
+    from podcodex.core._utils import segments_to_srt
+
+    segs = [
+        {"speaker": "Alice", "start": 0.0, "end": 1.0, "text": "bonjour"},
+        {"speaker": "Narrator", "start": 1.0, "end": 2.0, "text": "plus tard"},
+    ]
+    # Undeclared, it is the no-diarization placeholder and names nobody.
+    assert "Narrator:" not in segments_to_srt(segs)
+    assert "Alice: bonjour" in segments_to_srt(segs)
+    # Declared, it is a name like any other.
+    assert "Narrator: plus tard" in segments_to_srt(segs, declared={"Narrator"})

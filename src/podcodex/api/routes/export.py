@@ -35,6 +35,23 @@ _EXCLUDE_NAMES = frozenset(
 _EXCLUDE_DIRS = frozenset({".versions"})
 
 
+def _declared_speakers(audio_path: str, output_dir: str | None) -> set[str]:
+    """The show's declared speakers, for the exports' placeholder check.
+
+    A show can legitimately declare a speaker called "Narrator"; without this
+    their lines would be the only ones exported with no name (see
+    core/_utils.is_unattributed).
+    """
+    from podcodex.ingest.show import load_show_meta
+
+    try:
+        p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+        meta = load_show_meta(p.base.parent.parent)
+    except Exception:
+        return set()
+    return set(meta.speakers) if meta else set()
+
+
 def _load_segments(audio_path: str, output_dir: str | None, source: str) -> list[dict]:
     """Load segments for the given source (transcript, corrected, or a language code)."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
@@ -61,7 +78,9 @@ def export_text(
 ):
     """Export segments as plain text."""
     segments = _load_segments(audio_path, output_dir, source)
-    text = segments_to_text(segments)
+    text = segments_to_text(
+        segments, declared=_declared_speakers(audio_path, output_dir)
+    )
     return PlainTextResponse(
         text,
         media_type="text/plain; charset=utf-8",
@@ -77,7 +96,7 @@ def export_srt(
 ):
     """Export segments as SRT subtitles."""
     segments = _load_segments(audio_path, output_dir, source)
-    srt = segments_to_srt(segments)
+    srt = segments_to_srt(segments, declared=_declared_speakers(audio_path, output_dir))
     return PlainTextResponse(
         srt,
         media_type="application/x-subrip; charset=utf-8",
@@ -93,7 +112,7 @@ def export_vtt(
 ):
     """Export segments as WebVTT subtitles."""
     segments = _load_segments(audio_path, output_dir, source)
-    vtt = segments_to_vtt(segments)
+    vtt = segments_to_vtt(segments, declared=_declared_speakers(audio_path, output_dir))
     return PlainTextResponse(
         vtt,
         media_type="text/vtt; charset=utf-8",
@@ -164,12 +183,13 @@ def export_save(req: ExportSaveRequest) -> dict:
         shutil.copyfile(src, dest)
     else:
         segments = _load_segments(req.audio_path, req.output_dir, req.source)
+        declared = _declared_speakers(req.audio_path, req.output_dir)
         if req.format == "txt":
-            content = segments_to_text(segments)
+            content = segments_to_text(segments, declared=declared)
         elif req.format == "srt":
-            content = segments_to_srt(segments)
+            content = segments_to_srt(segments, declared=declared)
         else:
-            content = segments_to_vtt(segments)
+            content = segments_to_vtt(segments, declared=declared)
         dest.write_text(content, encoding="utf-8")
 
     return {"status": "saved", "path": str(dest)}
