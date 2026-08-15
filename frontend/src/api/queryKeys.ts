@@ -9,20 +9,27 @@
  * without checking callers, since React Query matches by prefix.
  */
 
-import type { QueryKey } from "@tanstack/react-query";
+import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
 type AudioPath = string | null | undefined;
+
+/**
+ * One entry in a mutation's `meta.invalidates`: either a key to invalidate,
+ * or a sweep that needs the client (a predicate match, or a helper from
+ * `api/cacheInvalidation`).
+ */
+export type Invalidation = QueryKey | ((qc: QueryClient) => void);
 
 declare module "@tanstack/react-query" {
   interface Register {
     mutationMeta: {
       /**
-       * Query keys the MutationCache default onSuccess (main.tsx) invalidates
-       * when this mutation succeeds. Cache-level, so it still runs after the
+       * What the MutationCache default onSuccess (main.tsx) invalidates when
+       * this mutation succeeds. Cache-level, so it still runs after the
        * owning component unmounts; prefer this over component onSuccess for
        * any invalidation that must not be skipped.
        */
-      invalidates?: readonly QueryKey[];
+      invalidates?: readonly Invalidation[];
     };
   }
 }

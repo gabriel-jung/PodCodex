@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useAudioStore, useTaskStore, useBatchHistoryStore } from "@/stores";
 import { cancelTask } from "@/api/client";
+import { invalidateAfterStep } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useProgress } from "@/hooks/useProgress";
 import { capitalize } from "@/lib/utils";
@@ -343,29 +344,9 @@ function BatchStrip() {
       successCount: batchEpisodes.length - failed.length,
       status: isDone ? "completed" : isFailed ? "failed" : "cancelled",
     });
-    // Batch run touches every step + every audio path in the folder, so
-    // sweep all pipeline namespaces rather than enumerate per-episode keys.
-    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-    queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(batchFolder) });
-    queryClient.invalidateQueries({
-      predicate: (q) => {
-        const first = q.queryKey[0];
-        if (typeof first !== "string") return false;
-        return (
-          first === "versions" ||
-          first === "transcribe" ||
-          first === "correct" ||
-          first === "index" ||
-          first === "search" ||
-          first === "best-source-segments" ||
-          first === "speaker-map" ||
-          first === "speakerRoster" ||
-          first === "episodeSpeakers" ||
-          first === "synthesize" ||
-          first.startsWith("translate-")
-        );
-      },
-    });
+    // A batch touches every episode in the folder, but only the namespaces
+    // its step actually writes (see invalidateAfterStep).
+    invalidateAfterStep(queryClient, batchStep, { folder: batchFolder });
   }, [isFinished, isDone, isFailed, batchTaskId, batchFolder, batchStep, batchEpisodes, episodeStatuses, queryClient]);
 
   if (!batchTaskId) return null;

@@ -2,7 +2,7 @@ import { useState, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useActiveTask } from "@/hooks/useActiveTask";
 import { cancelTask } from "@/api/client";
-import { invalidateSpeakerViews } from "@/api/cacheInvalidation";
+import { invalidateAfterStep } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useEpisodeStore, useTaskStore } from "@/stores";
 import { getEpisodeStem } from "@/lib/episodeRef";
@@ -45,28 +45,7 @@ export function usePipelineTask(
   }, [setResumedTaskId]);
 
   const refreshQueries = useCallback(() => {
-    // Translate's editor keys are language-suffixed (`translate-en`, …) so
-    // `stepAll("translate")` can't prefix-match — tanstack uses strict ===
-    // on key elements.
-    if (stepKey === "translate") {
-      queryClient.invalidateQueries({
-        predicate: (q) =>
-          typeof q.queryKey[0] === "string" && q.queryKey[0].startsWith("translate-"),
-      });
-    }
-    queryClient.invalidateQueries({ queryKey: queryKeys.stepAll(stepKey) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-    queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.speakerMap(audioPath) });
-    // A finished transcribe/correct run changes the canonical transcript the
-    // roster and the per-episode airtime views resolve.
-    invalidateSpeakerViews(queryClient);
-    // SearchPanel reads its own ["search", …] namespace which the
-    // ["index", …] sweep above doesn't reach.
-    if (stepKey === "index") {
-      queryClient.invalidateQueries({ queryKey: ["search"] });
-    }
+    invalidateAfterStep(queryClient, stepKey, { audioPath });
   }, [queryClient, stepKey, audioPath]);
 
   const applyOptimisticPatch = useCallback(() => {

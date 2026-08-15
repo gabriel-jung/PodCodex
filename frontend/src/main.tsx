@@ -7,16 +7,18 @@ import "@fontsource-variable/jetbrains-mono";
 import App from "./App";
 import "./index.css";
 
-// Cache-level invalidation: mutations declare the query keys they invalidate
-// via `meta: { invalidates: [...] }`. This runs here, at the MutationCache
-// level, because component-level onSuccess callbacks are skipped when the
-// owning component unmounts, and users routinely navigate away while long
-// mutations (feed refresh, downloads, imports) are still running.
+// Cache-level invalidation: mutations declare what they invalidate via
+// `meta: { invalidates: [...] }`, as query keys or as functions for sweeps
+// that need the client. This runs here, at the MutationCache level, because
+// component-level onSuccess callbacks are skipped when the owning component
+// unmounts, and users routinely navigate away while long mutations (feed
+// refresh, downloads, imports, editor saves) are still running.
 const queryClient = new QueryClient({
   mutationCache: new MutationCache({
     onSuccess: (_data, _variables, _context, mutation) => {
-      for (const queryKey of mutation.meta?.invalidates ?? []) {
-        void queryClient.invalidateQueries({ queryKey });
+      for (const entry of mutation.meta?.invalidates ?? []) {
+        if (typeof entry === "function") entry(queryClient);
+        else void queryClient.invalidateQueries({ queryKey: entry });
       }
     },
   }),

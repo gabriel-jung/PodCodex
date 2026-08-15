@@ -7,7 +7,7 @@
  */
 
 import { useRef, useEffect, useState, useMemo, useCallback } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type { Segment, VersionEntry } from "@/api/types";
 import { saveExportFile } from "@/api/client";
 import { usePlatform } from "@/platform";
@@ -190,8 +190,6 @@ export default function TranscriptViewer({
   verifiedStepMatches,
   onToggleVerified,
 }: TranscriptViewerProps) {
-  const queryClient = useQueryClient();
-
   // ── Data loading ──────────────────────────────────────────────────────────
 
   const { data: latestSegments } = useQuery({
@@ -312,34 +310,43 @@ export default function TranscriptViewer({
       }
       await Promise.all(writes);
     },
+    // Saving a long transcript outlives the editor if the user navigates away
+    // mid-save, so the invalidation runs at the cache level. Deliberately no
+    // ["search"] / ["index"]: both read indexed chunks out of LanceDB, which
+    // an editor save does not touch. They only change on a reindex, and the
+    // stale-vs-index state already surfaces as the episode's `outdated` mark.
+    meta: {
+      invalidates: [
+        queryKeys.stepSegments(editorKey, audioPath),
+        queryKeys.stepVersions(editorKey, audioPath),
+        queryKeys.episodesAll(),
+        // An edited segment fans out to every cross-step view of this episode.
+        queryKeys.allVersions(audioPath),
+        queryKeys.bestSourceSegments(audioPath),
+        queryKeys.speakerMap(audioPath),
+        invalidateSpeakerViews,
+      ],
+    },
     onSuccess: () => {
       // The save is the new latest version — snap the picker back to "Latest"
       // so the editor tracks it (matters when an older version was promoted).
       setSelectedVersionId(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments(editorKey, audioPath) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.stepVersions(editorKey, audioPath) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-      // An edited segment fans out to every cross-step view of this episode.
-      queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.speakerMap(audioPath) });
-      invalidateSpeakerViews(queryClient);
-      queryClient.invalidateQueries({ queryKey: ["search"] });
-      queryClient.invalidateQueries({ queryKey: ["index"] });
       onSaved?.();
     },
   });
 
   const deleteVersionMutation = useMutation({
     mutationFn: (id: string) => deleteVersion!(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.stepVersions(editorKey, audioPath) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments(editorKey, audioPath) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-      queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(audioPath) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
-      // Deleting the canonical version shifts what the speaker views resolve.
-      invalidateSpeakerViews(queryClient);
+    meta: {
+      invalidates: [
+        queryKeys.stepVersions(editorKey, audioPath),
+        queryKeys.stepSegments(editorKey, audioPath),
+        queryKeys.episodesAll(),
+        queryKeys.allVersions(audioPath),
+        queryKeys.bestSourceSegments(audioPath),
+        // Deleting the canonical version shifts what the speaker views resolve.
+        invalidateSpeakerViews,
+      ],
     },
   });
 
