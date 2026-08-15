@@ -110,7 +110,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   useSeedPipelineFromShow(folder, meta?.pipeline, !!meta);
 
   const isPolling = !!(downloadTaskId || batchTaskId);
-  const { data: episodes, isLoading: episodesLoading } = useQuery({
+  const { data: episodes, isLoading: episodesLoading, dataUpdatedAt: episodesUpdatedAt } = useQuery({
     queryKey: queryKeys.episodes(folder, pipelineDefaults),
     queryFn: () => getEpisodes(folder, pipelineDefaults),
     placeholderData: keepPreviousData,
@@ -118,7 +118,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     // live progress arrives through the status poll below instead.
     refetchOnWindowFocus: false,
   });
-  useEpisodeStatusPoll(folder, pipelineDefaults, isPolling);
+  useEpisodeStatusPoll(folder, pipelineDefaults, isPolling, episodesUpdatedAt);
 
   const { downloadMutation, importSubsMutation, isYouTube } = useShowActions(folder, meta);
 
@@ -147,6 +147,23 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   });
 
   const all = useMemo(() => episodes ?? [], [episodes]);
+
+  // Languages this show actually has translations in, so the translate filter
+  // only offers languages that can match something.
+  const languages = useMemo(() => {
+    const seen = new Set<string>();
+    for (const e of all) for (const l of e.translations ?? []) seen.add(l);
+    return [...seen].sort();
+  }, [all]);
+
+  // The step filter persists across shows, so a language picked on one show
+  // would keep filtering on the next one that never had that translation,
+  // with no visible control to clear it. Treat it as "any language" unless
+  // this show actually has it.
+  const effectiveStepLang = useMemo(
+    () => (stepFilterLang && languages.includes(stepFilterLang) ? stepFilterLang : ""),
+    [stepFilterLang, languages],
+  );
 
   const filterCounts = useMemo(() => ({
     all: all.length,
@@ -190,7 +207,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     if (filter === "verified") list = list.filter((e) => !!e.verified);
     if (stepFilterStep) {
       list = list.filter((e) =>
-        matchesStepFilter(e, stepFilterStep, stepFilterState, stepFilterLang),
+        matchesStepFilter(e, stepFilterStep, stepFilterState, effectiveStepLang),
       );
     }
     // Sort. Date sorts fall back to feed_order via the shared comparator
@@ -210,15 +227,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     });
     return list;
   }, [all, search, filter, sort, minDurationMinutes, maxDurationMinutes, titleInclude, titleExclude,
-      stepFilterStep, stepFilterState, stepFilterLang]);
-
-  // Languages this show actually has translations in, so the translate filter
-  // only offers languages that can match something.
-  const languages = useMemo(() => {
-    const seen = new Set<string>();
-    for (const e of all) for (const l of e.translations ?? []) seen.add(l);
-    return [...seen].sort();
-  }, [all]);
+      stepFilterStep, stepFilterState, effectiveStepLang]);
 
   // Speaker names per episode for the list column. One roster fetch (shared,
   // cached with the Speakers tab) inverted to stem -> names ordered by airtime.

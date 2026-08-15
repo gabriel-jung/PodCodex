@@ -371,13 +371,19 @@ export default function TranscriptViewer({
   // Derived from the segments alone, not from `speakers`: that list also
   // carries the show's known speakers, which are picker options rather than
   // anyone actually speaking in this episode.
+  //
+  // Read from the *live* editor rows with pending renames applied, which is
+  // exactly what the rows display. Reading the loaded version instead would
+  // keep the label hidden after the user renames the narrator, until a save
+  // round-tripped, which is the opposite of the affordance above.
   const speakerMuted = useMemo(() => {
     const present = new Set<string>();
-    for (const seg of sourceSegments ?? []) {
-      if (seg.speaker !== BREAK_SPEAKER) present.add(seg.speaker);
+    for (const seg of editor.editedSegments) {
+      if (seg.speaker === BREAK_SPEAKER) continue;
+      present.add(pendingRenames[seg.speaker] ?? seg.speaker);
     }
     return isSoloDefaultSpeaker([...present]);
-  }, [sourceSegments]);
+  }, [editor.editedSegments, pendingRenames]);
 
   // ── Merge dialog (when speakers differ) ──────────────────────────────────
 

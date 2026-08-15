@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ChevronRight, Plus, Star, X } from "lucide-react";
 import { formatDuration, errorMessage } from "@/lib/utils";
 import { speakerColor, speakerTint } from "@/lib/speakerColor";
-import { isSoloDefaultSpeaker } from "@/lib/speakers";
+import { NARRATOR_SPEAKER } from "@/lib/speakers";
 
 interface SpeakersPanelProps {
   folder: string;
@@ -68,12 +68,17 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
     }
   };
 
-  // A roster that is nothing but the default narrator means the show was
-  // never diarized; listing it as "a speaker" implies an identification that
-  // never happened, so the panel shows why the roster is empty instead.
-  const narratorOnly = isSoloDefaultSpeaker(
-    (roster.data?.speakers ?? []).map((s) => s.name),
-  );
+  // A roster that is nothing but NARRATOR_SPEAKER means the show was never
+  // diarized; listing it as "a speaker" implies an identification that never
+  // happened, so the panel shows why the roster is empty instead.
+  //
+  // A lone diarizer placeholder (SPEAKER_00) is deliberately NOT suppressed:
+  // that show *was* diarized and simply has one voice, and this panel is
+  // where the user names it. Hiding it would remove that affordance and
+  // advise re-running diarization they already ran.
+  const rosterNames = (roster.data?.speakers ?? []).map((s) => s.name);
+  const narratorOnly =
+    rosterNames.length === 1 && rosterNames[0] === NARRATOR_SPEAKER;
 
   const sorted: SpeakerRosterEntry[] = useMemo(() => {
     const list = narratorOnly ? [] : [...(roster.data?.speakers ?? [])];

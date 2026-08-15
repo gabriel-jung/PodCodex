@@ -49,7 +49,3 @@ export function showCardGridTemplate(size: number): string {
   const min = SHOW_CARD_MIN_WIDTHS[size] ?? SHOW_CARD_MIN_WIDTHS[3];
   return `repeat(auto-fill, minmax(${min}px, 1fr))`;
 }
-
-export function episodeCardGridTemplate(size: number): string {
-  return `repeat(auto-fill, minmax(${episodeCardMinWidth(size)}px, 1fr))`;
-}

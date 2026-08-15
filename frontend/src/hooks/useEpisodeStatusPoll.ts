@@ -43,6 +43,11 @@ export function useEpisodeStatusPoll(
   folder: string | undefined,
   pipelineDefaults: PipelineDefaults,
   enabled: boolean,
+  /** `dataUpdatedAt` of the caller's episodes query. Only a dependency: the
+   *  merge bails when the full list has not arrived yet, and the cheap poll
+   *  routinely resolves first, so without this the first tick after opening a
+   *  page during a run is dropped and live flags lag a whole interval. */
+  episodesUpdatedAt = 0,
 ) {
   const queryClient = useQueryClient();
   const { data: statuses, dataUpdatedAt } = useQuery({
@@ -88,5 +93,5 @@ export function useEpisodeStatusPoll(
       refetchedForRef.current = signature;
       queryClient.invalidateQueries({ queryKey: key });
     }
-  }, [statuses, dataUpdatedAt, folder, pipelineDefaults, queryClient]);
+  }, [statuses, dataUpdatedAt, episodesUpdatedAt, folder, pipelineDefaults, queryClient]);
 }

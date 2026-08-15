@@ -152,7 +152,9 @@ export default function FilterDropdown({ languages = [] }: { languages?: string[
               </div>
               {stepFilterStep === "translate" && languages.length > 0 && (
                 <select
-                  value={stepFilterLang}
+                  // Mirrors ShowPage: a language persisted from another show
+                  // reads as "any language" here rather than painting blank.
+                  value={languages.includes(stepFilterLang) ? stepFilterLang : ""}
                   onChange={(e) =>
                     setStepFilter("translate", stepFilterState, e.target.value)
                   }

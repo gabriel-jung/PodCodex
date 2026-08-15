@@ -127,7 +127,7 @@ export default function EpisodePage({
 
   useSeedPipelineFromShow(folder, meta?.pipeline, !!meta);
 
-  const { data: episodes } = useQuery({
+  const { data: episodes, dataUpdatedAt: episodesUpdatedAt } = useQuery({
     queryKey: queryKeys.episodes(folder ?? "", pipelineDefaults),
     queryFn: () => getEpisodes(folder!, pipelineDefaults),
     placeholderData: keepPreviousData,
@@ -136,7 +136,7 @@ export default function EpisodePage({
     // live progress arrives through the status poll below instead.
     refetchOnWindowFocus: false,
   });
-  useEpisodeStatusPoll(folder, pipelineDefaults, !!downloadTaskId);
+  useEpisodeStatusPoll(folder, pipelineDefaults, !!downloadTaskId, episodesUpdatedAt);
 
   const { downloadMutation: episodeDownloadMutation, importSubsMutation, isYouTube } = useShowActions(folder ?? "", meta, { withSubs: false });
 
