@@ -4,7 +4,7 @@
  *  A panel edit is otherwise a per-run tweak that never reaches the show. */
 
 import { useMemo } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowUpToLine, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getShowMeta, updateShowMeta } from "@/api/client";
@@ -44,7 +44,6 @@ function stepFields(step: PipelineInputStep, b: ConfigBundle): Partial<PipelineD
 }
 
 export default function RunSettingsBanner({ step }: { step: PipelineInputStep }) {
-  const queryClient = useQueryClient();
   const folder = useEpisodeStore((s) => s.folder);
   const appDefaults = usePipelineConfigStore((s) => s.appDefaults);
   const seedWorkingFromShow = usePipelineConfigStore((s) => s.seedWorkingFromShow);
@@ -88,9 +87,8 @@ export default function RunSettingsBanner({ step }: { step: PipelineInputStep })
         },
       });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder ?? "") });
-      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+    meta: {
+      invalidates: [queryKeys.showMeta(folder ?? ""), queryKeys.shows()],
     },
   });
 

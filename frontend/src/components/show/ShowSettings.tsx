@@ -149,16 +149,21 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
           rag_chunker: pipeRagChunker,
         },
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
-      // Showname is the cache key for search/index/bot-access namespaces;
-      // a rename strands those entries under the old name.
-      if (name !== meta.name) {
-        queryClient.invalidateQueries({ queryKey: ["search"] });
-        queryClient.invalidateQueries({ queryKey: ["index"] });
-        queryClient.invalidateQueries({ queryKey: ["bot-access"] });
-      }
+    // Cache-level: settings save is debounced and the panel can unmount (tab
+    // switch, navigation) before it resolves.
+    meta: {
+      invalidates: [
+        queryKeys.showMeta(folder),
+        queryKeys.shows(),
+        // Showname is the cache key for search/index/bot-access namespaces;
+        // a rename strands those entries under the old name.
+        (qc) => {
+          if (name === meta.name) return;
+          qc.invalidateQueries({ queryKey: ["search"] });
+          qc.invalidateQueries({ queryKey: ["index"] });
+          qc.invalidateQueries({ queryKey: ["bot-access"] });
+        },
+      ],
     },
   });
 

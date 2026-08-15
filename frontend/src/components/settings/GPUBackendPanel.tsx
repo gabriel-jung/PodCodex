@@ -100,7 +100,7 @@ export default function GPUBackendPanel() {
   });
   const uninstallMut = useMutation({
     mutationFn: uninstallGPUBackend,
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.gpuStatus() }),
+    meta: { invalidates: [queryKeys.gpuStatus()] },
   });
 
   if (isLoading || !status) {

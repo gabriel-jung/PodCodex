@@ -935,16 +935,13 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
   const deleteCollectionMutation = useMutation({
     mutationFn: (collection: string) =>
       deleteEpisodeCollection(audioPath, showName, collection, outputDir),
-    onSuccess: () => {
-      invalidateAll();
-      queryClient.invalidateQueries({ queryKey: ["search"] });
-      queryClient.invalidateQueries({ queryKey: ["index"] });
-    },
+    // Dropping an episode from a collection really does change the index.
+    meta: { invalidates: [invalidateAll, ["search"], ["index"]] },
   });
 
   const deleteFileMutation = useMutation({
     mutationFn: (path: string) => deleteFile(path),
-    onSuccess: invalidateAll,
+    meta: { invalidates: [invalidateAll] },
   });
 
   const speakers = useMemo(() => {

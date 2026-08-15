@@ -105,7 +105,6 @@ function InstallInstructions() {
 }
 
 function OverrideRow({ config, platform }: { config: AppConfig; platform: ReturnType<typeof usePlatform> }) {
-  const qc = useQueryClient();
   const [draft, setDraft] = useState(config.ffmpeg_exe_override ?? "");
   const [validation, setValidation] = useState<
     { state: "idle" } | { state: "ok"; version: string } | { state: "err"; error: string }
@@ -125,10 +124,7 @@ function OverrideRow({ config, platform }: { config: AppConfig; platform: Return
 
   const saveMut = useMutation({
     mutationFn: (next: string) => updateConfig({ ...config, ffmpeg_exe_override: next }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.config() });
-      qc.invalidateQueries({ queryKey: queryKeys.health() });
-    },
+    meta: { invalidates: [queryKeys.config(), queryKeys.health()] },
   });
 
   const persisted = config.ffmpeg_exe_override ?? "";

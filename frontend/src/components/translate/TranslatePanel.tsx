@@ -107,12 +107,12 @@ export default function TranslatePanel() {
   });
   const dismissFailures = useMutation({
     mutationFn: () => dismissTranslateFailures(audioPath!, editingLang),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["llmFailures", "translate", audioPath, editingLang],
-      });
-      // Overview's "Rejected batches" section reads episode.llm_failed_steps.
-      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+    meta: {
+      invalidates: [
+        ["llmFailures", "translate", audioPath, editingLang],
+        // Overview's "Rejected batches" section reads episode.llm_failed_steps.
+        queryKeys.episodesAll(),
+      ],
     },
   });
 

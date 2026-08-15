@@ -83,10 +83,12 @@ export default function CorrectPanel() {
   });
   const dismissFailures = useMutation({
     mutationFn: () => dismissCorrectFailures(audioPath!),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["llmFailures", "correct", audioPath] });
-      // Overview's "Rejected batches" section reads episode.llm_failed_steps.
-      queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+    meta: {
+      invalidates: [
+        ["llmFailures", "correct", audioPath],
+        // Overview's "Rejected batches" section reads episode.llm_failed_steps.
+        queryKeys.episodesAll(),
+      ],
     },
   });
 
