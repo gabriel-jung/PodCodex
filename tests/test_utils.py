@@ -386,6 +386,25 @@ def test_merge_display_turns_absent_end_does_not_rewind_run():
     assert merged[0]["end"] == 9.0
 
 
+def test_placeholder_cannot_collide_with_a_real_name():
+    """The current placeholder is not a plausible human name.
+
+    Declaring it changes nothing, unlike the legacy value it replaced, which
+    a documentary could legitimately call someone.
+    """
+    from podcodex.core._utils import (
+        LEGACY_NARRATOR_SPEAKER,
+        NARRATOR_SPEAKER,
+        is_unattributed,
+    )
+
+    assert is_unattributed(NARRATOR_SPEAKER) is True
+    assert is_unattributed(NARRATOR_SPEAKER, {NARRATOR_SPEAKER}) is True
+    # Libraries written before the switch keep reading as unattributed.
+    assert is_unattributed(LEGACY_NARRATOR_SPEAKER) is True
+    assert is_unattributed("Alice") is False
+
+
 def test_declared_speaker_outranks_the_placeholder():
     """A show that declares a speaker called "Narrator" means it.
 

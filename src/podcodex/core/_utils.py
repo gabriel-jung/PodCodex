@@ -227,8 +227,16 @@ class AudioPaths:
 # Used by transcribe.py (filtering) and synthesize.py (voice sample extraction).
 UNKNOWN_SPEAKERS = frozenset({"UNKNOWN", "UNK", "None", "none", ""})
 
-# Default speaker label when diarization is skipped.
-NARRATOR_SPEAKER = "Narrator"
+# Placeholder speaker written when diarization is skipped. Deliberately not a
+# plausible human name: it doubles as the voice-sample filename key and used to
+# be "Narrator", which a documentary could legitimately call someone, making an
+# identified speaker indistinguishable from "nobody identified anyone".
+NARRATOR_SPEAKER = "NoDiarization"
+
+# The value NARRATOR_SPEAKER had before 0.2.10. Still recognised as a
+# placeholder so libraries written by older versions, and RAG indexes built
+# from them, keep reading as unattributed without a reindex.
+LEGACY_NARRATOR_SPEAKER = "Narrator"
 
 # Segment inserted by merge_consecutive_segments when gap > max_gap.
 BREAK_SPEAKER = "[BREAK]"
@@ -250,7 +258,11 @@ def is_unattributed(speaker: str | None, declared: Container[str] = ()) -> bool:
     """
     if not speaker or speaker in UNKNOWN_SPEAKERS:
         return True
-    return speaker == NARRATOR_SPEAKER and speaker not in declared
+    if speaker not in (NARRATOR_SPEAKER, LEGACY_NARRATOR_SPEAKER):
+        return False
+    # The legacy value is a plausible name, so a show that declares it means a
+    # person. The current one cannot be a name, so declaring it changes nothing.
+    return speaker == NARRATOR_SPEAKER or speaker not in declared
 
 
 # ── mtime-based caching ──────────────────────────────────────────────────────

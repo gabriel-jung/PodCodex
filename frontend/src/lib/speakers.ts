@@ -9,8 +9,13 @@
  * parses this file and asserts the values match. Update both sides together.
  */
 
-/** Default label for unattributed segments. */
-export const NARRATOR_SPEAKER = "Narrator";
+/** Placeholder written when diarization is skipped. Deliberately not a
+ *  plausible human name; see the Python constant for why. */
+export const NARRATOR_SPEAKER = "NoDiarization";
+
+/** The value NARRATOR_SPEAKER had before 0.2.10, still treated as a
+ *  placeholder so libraries written by older versions keep working. */
+export const LEGACY_NARRATOR_SPEAKER = "Narrator";
 
 /** Sentinel speaker for break markers inserted between contiguous turns. */
 export const BREAK_SPEAKER = "[BREAK]";
@@ -42,7 +47,10 @@ export const isDiarizerPlaceholder = (sp: string): boolean =>
 
 /** True when the label is a placeholder rather than a name someone chose. */
 export const isDefaultSpeaker = (sp: string): boolean =>
-  sp === NARRATOR_SPEAKER || UNKNOWN_SPEAKERS.has(sp) || DIARIZER_DEFAULT_RE.test(sp);
+  sp === NARRATOR_SPEAKER ||
+  sp === LEGACY_NARRATOR_SPEAKER ||
+  UNKNOWN_SPEAKERS.has(sp) ||
+  DIARIZER_DEFAULT_RE.test(sp);
 
 /**
  * True when a speaker list carries no information: exactly one speaker, and
