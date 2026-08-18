@@ -43,11 +43,25 @@ export { AUDIO_EXTENSIONS } from "./generated-types";
 
 export interface HealthResponse {
   status: string;
+  /** Backend (sidecar) version. Compare against the Tauri shell version via
+   *  the useVersions() hook; a mismatch means a partial MSI upgrade. */
+  version: string;
   capabilities: Record<string, boolean>;
   /** "bundle" when running as the frozen PyInstaller sidecar; "dev" when
    *  uvicorn is running from a venv. Frontend uses this to hide tabs
    *  (e.g. Plugins) whose actions only make sense with a venv. */
   mode: "bundle" | "dev";
+}
+
+export interface AboutResponse {
+  version: string;
+  python_version: string;
+  platform: string;
+  machine: string;
+  mode: "bundle" | "dev";
+  data_dir: string;
+  config_dir: string;
+  log_path: string;
 }
 
 export interface ExtraInfo {

@@ -42,6 +42,35 @@ def test_health_returns_ok(client):
     assert isinstance(body["capabilities"], dict)
 
 
+def test_health_reports_backend_version(client):
+    """Version rides on /health so the sidebar and boot splash can show it
+    without a second request; the frontend compares it against the Tauri
+    shell version to catch a half-applied installer run."""
+    from podcodex import __version__
+
+    body = client.get("/api/health").json()
+    assert body["version"] == __version__
+
+
+def test_about_reports_environment(client):
+    r = client.get("/api/system/about")
+    assert r.status_code == 200
+    body = r.json()
+    from podcodex import __version__
+
+    assert body["version"] == __version__
+    assert body["mode"] in {"bundle", "dev"}
+    for key in (
+        "python_version",
+        "platform",
+        "machine",
+        "data_dir",
+        "config_dir",
+        "log_path",
+    ):
+        assert body[key], f"{key} should not be empty"
+
+
 def test_extras_lists_known_extras(client):
     r = client.get("/api/system/extras")
     assert r.status_code == 200

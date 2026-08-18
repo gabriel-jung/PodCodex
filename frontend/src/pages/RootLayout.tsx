@@ -2,9 +2,8 @@ import { Suspense, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
-import { getHealth } from "@/api/client";
+import { healthQueryOptions } from "@/api/client";
 import PanelLoading from "@/components/common/PanelLoading";
-import { queryKeys } from "@/api/queryKeys";
 import AudioBar from "@/components/layout/AudioBar";
 import { sidebarPad } from "@/lib/sidebar";
 import TaskBar from "@/components/layout/TaskBar";
@@ -14,6 +13,7 @@ import BatchHistoryModal from "@/components/BatchHistoryModal";
 import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
 import { PlatformProvider } from "@/platform";
 import { useGlobalShortcuts } from "@/hooks/useGlobalShortcuts";
+import { useVersions } from "@/hooks/useVersions";
 import { useLayoutStore } from "@/stores";
 
 // Boot phases shown while waiting on /api/health. Times are best-effort
@@ -48,17 +48,17 @@ function pickPhaseLabel(elapsedMs: number): string {
 
 export default function RootLayout() {
   useGlobalShortcuts();
+  // Shown on the boot screens: the shell version resolves without the
+  // backend, so users can identify their build even when the sidecar never
+  // comes up. On Windows there is no app menu to fall back on.
+  const { display: displayVersion } = useVersions();
   // Sidebar is fixed full-window-height; the rest of the shell sits in the
   // column to its right so AudioBar/TaskBar growth never reflows the sidebar.
   const sidebarExpanded = useLayoutStore((s) => s.sidebarExpanded);
-  // PyInstaller-bundled sidecar can take 10-30 s to extract + boot uvicorn on
-  // the first launch each session, so we retry generously before surrendering.
-  const { data: health, error } = useQuery({
-    queryKey: queryKeys.health(),
-    queryFn: getHealth,
-    retry: 60,
-    retryDelay: (attempt) => Math.min(500 + attempt * 500, 3000),
-  });
+  // Retry schedule lives in healthQueryOptions: the PyInstaller-bundled
+  // sidecar can take 10-30 s to extract + boot uvicorn on the first launch
+  // each session, and every observer of this key must agree on it.
+  const { data: health, error } = useQuery(healthQueryOptions);
 
   const elapsedMs = useElapsedMs();
 
@@ -73,6 +73,9 @@ export default function RootLayout() {
             Make sure the API is running on port 18811
           </p>
           <code className="text-xs text-muted-foreground block">make dev-api</code>
+          {displayVersion && (
+            <p className="font-mono text-xs text-muted-foreground/60">v{displayVersion}</p>
+          )}
         </div>
       </div>
     );
@@ -91,6 +94,9 @@ export default function RootLayout() {
               First launch each session can take up to 30 seconds while the
               bundled backend extracts.
             </p>
+          )}
+          {displayVersion && (
+            <p className="font-mono text-xs text-muted-foreground/60">v{displayVersion}</p>
           )}
         </div>
       </div>

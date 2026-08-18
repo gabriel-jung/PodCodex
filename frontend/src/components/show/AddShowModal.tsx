@@ -1,7 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { createFromRSS, createFromYouTube, getHealth, registerShow, searchPodcasts } from "@/api/client";
-import { queryKeys } from "@/api/queryKeys";
+import { createFromRSS, createFromYouTube, healthQueryOptions, registerShow, searchPodcasts } from "@/api/client";
 import type { PodcastSearchResult } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { errorMessage, SUB_LANGUAGES } from "@/lib/utils";
@@ -53,7 +52,7 @@ export default function AddShowModal({ defaultSavePath, onClose, onCreated, onIm
   const [customLang, setCustomLang] = useState("");
   const [localPickerOpen, setLocalPickerOpen] = useState<"folder" | "file" | null>(null);
 
-  const { data: health } = useQuery({ queryKey: queryKeys.health(), queryFn: getHealth });
+  const { data: health } = useQuery(healthQueryOptions);
   const hasYtDlp = health?.capabilities?.yt_dlp ?? false;
 
   const switchMode = (mode: SourceMode) => {

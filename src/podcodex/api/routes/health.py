@@ -85,16 +85,55 @@ def _installed_extras(caps: dict[str, bool] | None = None) -> set[str]:
 
 @router.get("/health")
 def health() -> dict:
-    """Return API status and detected capabilities."""
+    """Return API status, version, and detected capabilities."""
+    from podcodex import __version__
     from podcodex.core.app_paths import running_in_bundle
 
     return {
         "status": "ok",
+        # Backend (sidecar) version. The Tauri shell reports its own version
+        # separately; a mismatch means a partial MSI upgrade. See
+        # /system/about and the frontend useVersions() facility.
+        "version": __version__,
         "capabilities": _get_capabilities(),
         # mode: "bundle" = frozen PyInstaller sidecar (no venv to manage);
         # "dev" = uvicorn from .venv (extras installable via uv sync).
         # Frontend uses this to hide tabs that only make sense in dev.
         "mode": "bundle" if running_in_bundle() else "dev",
+    }
+
+
+@router.get("/system/about")
+def about() -> dict:
+    """Version + environment facts for the Settings > About panel.
+
+    Deliberately separate from /health (which is polled and must stay cheap)
+    and from /gpu/status (which spawns the GPU sidecar to probe --version and
+    takes seconds on Windows). Everything here is a cheap local lookup, so the
+    panel renders instantly and gives users something copy-pasteable for bug
+    reports. On Windows there is no app menu, so this is the only place the
+    version is discoverable.
+    """
+    import platform as platform_mod
+
+    from podcodex import __version__
+    from podcodex.core.app_paths import (
+        config_dir,
+        data_dir,
+        running_in_bundle,
+        server_log_path,
+    )
+
+    data = data_dir()
+    return {
+        "version": __version__,
+        "python_version": platform_mod.python_version(),
+        "platform": platform_mod.platform(),
+        "machine": platform_mod.machine(),
+        "mode": "bundle" if running_in_bundle() else "dev",
+        "data_dir": str(data),
+        "config_dir": str(config_dir()),
+        "log_path": str(server_log_path(data)),
     }
 
 

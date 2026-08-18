@@ -1,4 +1,5 @@
 import type {
+  AboutResponse,
   ExtrasResponse,
   HealthResponse,
   ModelsResponse,
@@ -6,8 +7,28 @@ import type {
   TaskResponse,
 } from "./types";
 import { json } from "./client";
+import { queryKeys } from "./queryKeys";
 
 export const getHealth = () => json<HealthResponse>("/api/health");
+
+/**
+ * Shared /api/health query options: use these everywhere instead of
+ * re-declaring the query.
+ *
+ * The PyInstaller sidecar can take 10-30 s to extract and boot on the first
+ * launch of a session, so every observer must agree on the generous retry
+ * schedule. React Query shares one fetch per key: a stricter observer
+ * mounting first would abort the boot fetch for the whole app.
+ */
+export const healthQueryOptions = {
+  queryKey: queryKeys.health(),
+  queryFn: getHealth,
+  staleTime: 30_000,
+  retry: 60,
+  retryDelay: (attempt: number) => Math.min(500 + attempt * 500, 3000),
+} as const;
+
+export const getAbout = () => json<AboutResponse>("/api/system/about");
 
 export const getExtras = () => json<ExtrasResponse>("/api/system/extras");
 

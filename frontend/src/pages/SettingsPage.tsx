@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { settingsRoute } from "@/router";
-import { getModels, deleteModel, getExtras, installExtra, removeExtra, getSecretsStatus, updateSecrets, getHealth } from "@/api/client";
+import { getModels, deleteModel, getExtras, installExtra, removeExtra, getSecretsStatus, updateSecrets, healthQueryOptions } from "@/api/client";
 import {
   createApiKey,
   deleteApiKey,
@@ -25,6 +26,7 @@ import {
 } from "lucide-react";
 import AppSidebar from "@/components/layout/AppSidebar";
 import EditorialHeader from "@/components/layout/EditorialHeader";
+import AboutPanel from "@/components/settings/AboutPanel";
 import IntegrationsPanel from "@/components/settings/IntegrationsPanel";
 import BundleExportPanel from "@/components/settings/BundleExportPanel";
 import GPUBackendPanel from "@/components/settings/GPUBackendPanel";
@@ -66,17 +68,14 @@ export default function SettingsPage() {
   // settingsRoute.useSearch() reactively returns the validated `?tab=…` so
   // both initial render and in-app navigation (sidebar warning click) land
   // on the right panel without hand-rolled popstate listeners.
+  const navigate = useNavigate();
   const search = settingsRoute.useSearch();
   const urlTab = search.tab && (VALID_TABS as readonly string[]).includes(search.tab)
     ? (search.tab as SettingsTab)
     : "general";
   const [tab, setTab] = useState<SettingsTab>(urlTab);
   useEffect(() => { setTab(urlTab); }, [urlTab]);
-  const { data: health } = useQuery({
-    queryKey: queryKeys.health(),
-    queryFn: getHealth,
-    staleTime: Infinity,
-  });
+  const { data: health } = useQuery(healthQueryOptions);
   // Default unknown mode to "bundle" (conservative): hide dev-only tabs
   // until health proves we're in dev. Otherwise the plugins tab flashes
   // visible during the loading window in shipped builds.
@@ -113,11 +112,19 @@ export default function SettingsPage() {
     return () => { cancelled = true; };
   }, [tab]);
 
+  // Go through the router, not window.history.replaceState. replaceState
+  // rewrites the URL without telling the router, so `search.tab` would drift
+  // from the visible tab and a later navigate() to that same tab would produce
+  // an identical search, leave `urlTab` unchanged, and silently do nothing.
+  // That is the path the sidebar's version / GPU / ffmpeg links take.
   const selectTab = (t: SettingsTab) => {
     setTab(t);
-    const usp = new URLSearchParams(window.location.search);
-    usp.set("tab", t);
-    window.history.replaceState(null, "", `?${usp.toString()}${window.location.hash}`);
+    navigate({
+      to: "/settings",
+      search: { tab: t },
+      hash: window.location.hash.slice(1) || undefined,
+      replace: true,
+    });
   };
 
   return (
@@ -135,6 +142,7 @@ export default function SettingsPage() {
               <>
                 <AppearancePanel />
                 <ShortcutsPanel />
+                <AboutPanel />
               </>
             )}
             {tab === "pipeline" && <PipelineDefaultsPanel />}

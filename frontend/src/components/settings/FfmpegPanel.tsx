@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getConfig, getHealth, updateConfig, validateFfmpegPath } from "@/api/client";
+import { getConfig, healthQueryOptions, updateConfig, validateFfmpegPath } from "@/api/client";
 import type { AppConfig } from "@/api/types";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -16,11 +16,8 @@ export default function FfmpegPanel() {
   const qc = useQueryClient();
   const platform = usePlatform();
 
-  const { data: health, isLoading: healthLoading, isFetching: healthFetching } = useQuery({
-    queryKey: queryKeys.health(),
-    queryFn: getHealth,
-    staleTime: 30_000,
-  });
+  const { data: health, isLoading: healthLoading, isFetching: healthFetching } =
+    useQuery(healthQueryOptions);
   const { data: config } = useQuery({
     queryKey: queryKeys.config(),
     queryFn: getConfig,

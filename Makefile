@@ -116,6 +116,10 @@ bump:  ## Bump version in all 4 synced files (usage: make bump VERSION=0.2.7)
 	.venv/bin/python scripts/bump_version.py $(VERSION)
 	cd src-tauri && . $$HOME/.cargo/env && cargo update --workspace --quiet
 	uv lock
+	@# Refresh the editable install's dist-info. importlib.metadata reads that,
+	@# not pyproject.toml, so without this the dev app keeps reporting the old
+	@# version in Settings > About and in `podcodex-server --version`.
+	uv pip install -e . --python .venv/bin/python --quiet
 	@echo "\n✅ Bumped to $(VERSION). Review: git diff pyproject.toml src-tauri/Cargo.toml src-tauri/Cargo.lock uv.lock"
 
 types:  ## Regenerate frontend TS types from Pydantic models

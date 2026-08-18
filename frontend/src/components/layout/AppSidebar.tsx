@@ -2,15 +2,16 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useTheme } from "@/hooks/useTheme";
 import { useLayoutStore } from "@/stores";
-import { getGPUStatus, getHealth } from "@/api/client";
+import { getGPUStatus, healthQueryOptions } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import {
   ArrowLeft, Home, Podcast, Settings, SunMoon,
-  PanelLeftOpen, PanelLeftClose, Zap, Wrench,
+  PanelLeftOpen, PanelLeftClose, Zap, Wrench, AlertCircle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { sidebarWidth } from "@/lib/sidebar";
+import { useVersions } from "@/hooks/useVersions";
 
 export interface SidebarItem {
   key: string;
@@ -90,6 +91,7 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
         <GPUAvailableWarning expanded={expanded} onClick={() => navigate({ to: "/settings", search: { tab: "gpu" } })} />
         <FfmpegMissingWarning expanded={expanded} onClick={() => navigate({ to: "/settings", search: { tab: "ffmpeg" } })} />
         <SidebarBtn icon={Settings} label="Settings" expanded={expanded} onClick={() => navigate({ to: "/settings" })} />
+        <VersionLine expanded={expanded} onClick={() => navigate({ to: "/settings", search: { tab: "general" } })} />
       </div>
 
       {/* Expand toggle */}
@@ -129,11 +131,7 @@ function GPUAvailableWarning({ expanded, onClick }: { expanded: boolean; onClick
 }
 
 function FfmpegMissingWarning({ expanded, onClick }: { expanded: boolean; onClick: () => void }) {
-  const { data: health } = useQuery({
-    queryKey: queryKeys.health(),
-    queryFn: getHealth,
-    staleTime: 30_000,
-  });
+  const { data: health } = useQuery(healthQueryOptions);
   if (!health) return null;
   if (health.capabilities?.ffmpeg) return null;
   const label = "Install ffmpeg";
@@ -146,6 +144,44 @@ function FfmpegMissingWarning({ expanded, onClick }: { expanded: boolean; onClic
     >
       <Wrench className="w-4 h-4 shrink-0" />
       {expanded && <span className="truncate font-medium">{label}</span>}
+    </button>
+  );
+}
+
+/**
+ * Always-on version readout. Windows has no app menu, so without this the
+ * running version is invisible until something breaks. Clicking opens the
+ * About panel, which carries the full diagnostics.
+ *
+ * Collapsed sidebar has no room for the number, so it only claims space there
+ * when the shell and backend versions disagree (a half-applied upgrade),
+ * which is worth interrupting for.
+ */
+function VersionLine({ expanded, onClick }: { expanded: boolean; onClick: () => void }) {
+  const { display, mismatch } = useVersions();
+  if (!display) return null;
+  if (!expanded && !mismatch) return null;
+  const label = mismatch ? `Version mismatch (v${display})` : `Version ${display}`;
+  if (mismatch) {
+    return (
+      <button
+        onClick={onClick}
+        title={expanded ? undefined : label}
+        aria-label={label}
+        className={`mx-2 my-1 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 text-warning px-2 py-2 text-xs transition hover:bg-warning/20 ${expanded ? "" : "justify-center"}`}
+      >
+        <AlertCircle className="w-4 h-4 shrink-0" />
+        {expanded && <span className="truncate font-medium">Version mismatch</span>}
+      </button>
+    );
+  }
+  return (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      className="w-full px-4 pb-1.5 pt-0.5 text-left font-mono text-xs text-muted-foreground/60 hover:text-foreground transition"
+    >
+      v{display}
     </button>
   );
 }

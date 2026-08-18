@@ -37,6 +37,10 @@ declare module "@tanstack/react-query" {
 export const queryKeys = {
   // ── System / config ────────────────────────────────────
   health: () => ["health"] as const,
+  about: () => ["system", "about"] as const,
+  /** Tauri shell version. Not a network call; cached so the sidebar,
+   *  boot splash and About panel share one lookup. */
+  shellVersion: () => ["shell-version"] as const,
   config: () => ["config"] as const,
   pipelineConfig: () => ["pipeline-config"] as const,
   secrets: () => ["config", "secrets"] as const,
