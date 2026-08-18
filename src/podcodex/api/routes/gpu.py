@@ -13,7 +13,6 @@ because they only mean something inside the packaged app.
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 
 from podcodex.api import gpu_backend
 from podcodex.api.routes._helpers import submit_task
@@ -24,10 +23,6 @@ router = APIRouter()
 # audio_path so duplicate POST /download calls return the existing task_id
 # rather than racing.
 _GPU_LOCK_KEY = "gpu_backend"
-
-
-class DownloadRequest(BaseModel):
-    manifest_url: str | None = None
 
 
 @router.get("/status")
@@ -42,7 +37,7 @@ def gpu_status() -> dict:
 
 
 @router.post("/download")
-def gpu_download(req: DownloadRequest) -> dict:
+def gpu_download() -> dict:
     """Kick off the download+install task. Returns the task_id to poll."""
     if not gpu_backend.running_in_bundle():
         raise HTTPException(
@@ -51,9 +46,11 @@ def gpu_download(req: DownloadRequest) -> dict:
             "app. Your dev venv already uses whatever torch you have installed.",
         )
 
-    manifest_url = (
-        req.manifest_url or ""
-    ).strip() or gpu_backend.default_manifest_url()
+    # The manifest URL is deliberately NOT accepted from the request body: the
+    # server-core archive it points at becomes the executed sidecar binary, so
+    # an HTTP caller must not be able to aim it at an arbitrary host. Forks and
+    # non-latest releases override via the PODCODEX_GPU_MANIFEST_URL env var.
+    manifest_url = gpu_backend.default_manifest_url()
 
     def _run(progress_cb, url: str) -> dict:
         return gpu_backend.download_and_install(progress_cb, manifest_url=url)

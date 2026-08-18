@@ -171,7 +171,11 @@ def main() -> None:
 
     from podcodex.api.app import app
 
-    host = os.environ.get("PODCODEX_API_HOST", "127.0.0.1")
+    # Bind is loopback-only by design and not configurable: the sidecar is a
+    # single-user local backend with no auth. A non-loopback bind would turn
+    # every unauthenticated route (arbitrary FS read, show delete, GPU install)
+    # into a remote primitive, so we don't expose an env knob for it.
+    host = "127.0.0.1"
     port = int(os.environ.get("PODCODEX_API_PORT", "18811"))
 
     uvicorn.run(

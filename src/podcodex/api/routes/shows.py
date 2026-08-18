@@ -22,6 +22,7 @@ from podcodex.api.routes._helpers import (
     apply_broadcast_pattern,
     bad_path_component,
     list_show_stems,
+    require_registered_show,
     require_show_folder,
 )
 from podcodex.bundle.conflicts import rename_suffix
@@ -575,7 +576,9 @@ def get_show_meta(show_folder: str) -> ShowMeta:
 @router.put("/{show_folder:path}/meta")
 def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
     """Persist updated show metadata to show.toml."""
-    path = require_show_folder(show_folder)
+    # Registered-show gate: this writes show.toml unconditionally, so confine
+    # it to a tracked show rather than any directory on disk.
+    path = require_registered_show(show_folder)
     p = meta.pipeline
     save_show_meta(
         path,
@@ -1436,7 +1439,9 @@ async def episode_speakers(show_folder: str, stem: str) -> EpisodeSpeakersRespon
 @router.post("/{show_folder:path}/resync")
 def resync_pipeline_db(show_folder: str) -> dict:
     """Force-rebuild pipeline.db from filesystem scan."""
-    path = require_show_folder(show_folder)
+    # Registered-show gate: resync deletes and rewrites pipeline.db, so confine
+    # it to a tracked show rather than any directory on disk.
+    path = require_registered_show(show_folder)
     from podcodex.core.pipeline_db import reset_pipeline_db
 
     reset_pipeline_db(path)
@@ -1782,7 +1787,9 @@ class MoveShowRequest(BaseModel):
 @router.post("/{show_folder:path}/move")
 def move_show(show_folder: str, req: MoveShowRequest) -> dict:
     """Move or rename a show folder, optionally relocating all files."""
-    old_path = require_show_folder(show_folder)
+    # Registered-show gate: move runs shutil.move/rmtree on the source, so
+    # confine it to a tracked show rather than any directory on disk.
+    old_path = require_registered_show(show_folder)
     new_path = Path(req.new_path).expanduser().resolve()
 
     if new_path == old_path.resolve():
@@ -1867,7 +1874,9 @@ class DeleteShowRequest(BaseModel):
 @router.post("/{show_folder:path}/delete")
 def delete_show(show_folder: str, req: DeleteShowRequest) -> dict:
     """Remove a show from the app. Optionally delete the local folder."""
-    path = require_show_folder(show_folder)
+    # Registered-show gate: delete_files runs shutil.rmtree, so confine it to
+    # a folder the app actually tracks rather than any directory on disk.
+    path = require_registered_show(show_folder)
 
     # Check no tasks are running on this show
     from podcodex.api.tasks import task_manager

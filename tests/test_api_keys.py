@@ -142,7 +142,9 @@ def client(tmp_path, monkeypatch):
         if var.endswith("_API_KEY"):
             monkeypatch.delenv(var, raising=False)
     app = create_app()
-    return TestClient(app, headers={"X-PodCodex": "1"})
+    return TestClient(
+        app, base_url="http://127.0.0.1:18811", headers={"X-PodCodex": "1"}
+    )
 
 
 def test_list_keys_empty(client):

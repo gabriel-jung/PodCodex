@@ -23,4 +23,10 @@ def make_client(tmp_path, monkeypatch, config=None) -> TestClient:
     if config is not None:
         save_config(config)
 
-    return TestClient(create_app(), headers={"X-PodCodex": "1"})
+    # base_url sets the Host header to a loopback name so the app's
+    # host-guard middleware (anti DNS-rebinding) accepts the request.
+    return TestClient(
+        create_app(),
+        base_url="http://127.0.0.1:18811",
+        headers={"X-PodCodex": "1"},
+    )

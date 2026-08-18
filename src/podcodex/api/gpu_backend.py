@@ -398,7 +398,8 @@ def download_and_install(
     _ensure_platform_supported()
     if not manifest_url:
         raise ValueError(
-            "Manifest URL is empty. Set PODCODEX_GPU_MANIFEST_URL or pass via API."
+            "Manifest URL is empty. Set PODCODEX_GPU_MANIFEST_URL to override "
+            "the default release manifest."
         )
 
     cancel_event: threading.Event | None = getattr(progress_cb, "cancel_event", None)

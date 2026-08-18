@@ -221,6 +221,29 @@ _CSRF_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _CSRF_EXEMPT_PREFIXES = ("/mcp",)
 
 
+def _loopback_hosts(port: int) -> frozenset[str]:
+    """Host-header values that identify a same-machine loopback request.
+
+    The CORS allowlist and the CSRF header both fall to a DNS-rebinding
+    attack, which makes a malicious page same-origin with the API (so CORS
+    never applies and the page can set X-PodCodex freely). The only signal
+    that still distinguishes rebinding from a real local request is the Host
+    header: a rebound request carries the attacker's hostname, not a loopback
+    name. Rejecting non-loopback hosts closes that hole for the default,
+    loopback-only install.
+    """
+    return frozenset(
+        {
+            f"127.0.0.1:{port}",
+            f"localhost:{port}",
+            f"[::1]:{port}",
+            "127.0.0.1",
+            "localhost",
+            "[::1]",
+        }
+    )
+
+
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     mcp_http = _mcp.streamable_http_app() if _mcp is not None else None
@@ -259,6 +282,19 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Reject any request whose Host header isn't a loopback name. Defeats DNS
+    # rebinding, which is the one browser vector CORS + X-PodCodex do not cover.
+    _allowed_hosts = _loopback_hosts(_API_PORT)
+
+    @app.middleware("http")
+    async def _host_guard(request: Request, call_next):
+        host = request.headers.get("host", "")
+        if host not in _allowed_hosts:
+            # Rejects a foreign hostname (rebinding) and also a missing/empty
+            # Host, which a compliant HTTP/1.1 client never sends anyway.
+            return JSONResponse({"detail": "Bad host header"}, status_code=421)
+        return await call_next(request)
 
     # Custom header forces a CORS preflight that the origin allowlist rejects,
     # so a drive-by <form> on a malicious page can't reach mutating endpoints.

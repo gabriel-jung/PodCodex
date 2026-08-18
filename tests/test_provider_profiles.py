@@ -78,7 +78,9 @@ def client(tmp_path, monkeypatch):
         pp_mod, "provider_profiles_path", lambda: tmp_path / "provider_profiles.json"
     )
     app = create_app()
-    return TestClient(app, headers={"X-PodCodex": "1"})
+    return TestClient(
+        app, base_url="http://127.0.0.1:18811", headers={"X-PodCodex": "1"}
+    )
 
 
 def test_list_returns_builtins_only_initially(client):

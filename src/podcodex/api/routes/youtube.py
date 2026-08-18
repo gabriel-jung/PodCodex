@@ -13,7 +13,7 @@ from podcodex.api.routes._helpers import (
     counted_progress,
     is_downloaded,
     list_show_stems,
-    require_show_folder,
+    require_registered_show,
     rss_episode_to_out,
     submit_task,
 )
@@ -71,7 +71,7 @@ def youtube_fetch(show_folder: str) -> list[dict]:
     """
     from podcodex.ingest.youtube import fetch_youtube
 
-    path = require_show_folder(show_folder)
+    path = require_registered_show(show_folder)
     meta = load_show_meta(path)
     if not meta or not meta.youtube_url:
         raise HTTPException(400, "No YouTube URL in show.toml")
@@ -151,7 +151,7 @@ def youtube_download(
         download_youtube_audio,
     )
 
-    path = require_show_folder(show_folder)
+    path = require_registered_show(show_folder)
     cached = load_feed_cache(path)
     if cached is None:
         raise HTTPException(400, "No cached video list — fetch YouTube first")
@@ -263,7 +263,7 @@ def youtube_import_subs(
     """Download and cache YouTube subtitles (VTT files). Background task."""
     from podcodex.ingest.youtube import cache_youtube_subtitles
 
-    path = require_show_folder(show_folder)
+    path = require_registered_show(show_folder)
     cached = load_feed_cache(path)
     if cached is None:
         raise HTTPException(400, "No cached video list")

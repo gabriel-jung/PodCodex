@@ -278,6 +278,30 @@ def require_show_folder(show_folder: str) -> Path:
     return path
 
 
+def require_registered_show(show_folder: str) -> Path:
+    """Resolve a show folder that must be a *registered* show.
+
+    ``require_show_folder`` only checks the path is a directory, which is
+    fine for read routes but dangerous for destructive ones: it would let a
+    caller point ``delete``/``move`` at any directory on disk. This gate adds
+    the missing check that the folder is actually tracked in the app config,
+    confining ``rmtree``/``move`` to real shows.
+    """
+    path = require_show_folder(show_folder)
+    from podcodex.api.routes.config import _load as _load_cfg
+
+    # samefile() compares device+inode, so it is correct across case-insensitive
+    # filesystems (macOS/Windows) and symlinks, where a resolved-string compare
+    # would false-negative and 403 a legitimately registered show.
+    for folder in _load_cfg().show_folders:
+        try:
+            if path.samefile(Path(folder)):
+                return path
+        except OSError:
+            continue  # a registered root that no longer exists on disk
+    raise HTTPException(403, "Not a registered show folder")
+
+
 def require_audio_or_output(audio_path: str | None, output_dir: str | None) -> None:
     """Raise 422 unless at least one of ``audio_path`` / ``output_dir`` is set.
 

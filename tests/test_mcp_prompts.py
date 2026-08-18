@@ -33,7 +33,9 @@ def _isolated_store(tmp_path: Path, monkeypatch):
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app, headers={"X-PodCodex": "1"})
+    return TestClient(
+        app, base_url="http://127.0.0.1:18811", headers={"X-PodCodex": "1"}
+    )
 
 
 # ── validate_prompt ─────────────────────────────────────────────────────

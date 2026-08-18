@@ -305,8 +305,14 @@ def open_folder(
     target = Path(path).expanduser().resolve()
     if not target.is_dir():
         return {"error": "Not a directory"}
+    # On macOS an .app/.workflow bundle is a directory, so `open <bundle>`
+    # would *launch* it, turning this file-manager helper into a code-launch
+    # primitive. Refuse bundle paths there. Other platforms have no such
+    # `open` behavior, so a dir merely named "foo.app" stays openable.
+    system = platform.system()
+    if system == "Darwin" and target.suffix.lower() in {".app", ".workflow"}:
+        return {"error": "Refusing to open an application bundle"}
     try:
-        system = platform.system()
         if system == "Darwin":
             subprocess.Popen(["open", str(target)])
         elif system == "Windows":

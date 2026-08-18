@@ -24,12 +24,8 @@ export interface GPUStatus {
 
 export const getGPUStatus = () => json<GPUStatus>("/api/gpu/status");
 
-export const downloadGPUBackend = (manifest_url?: string) =>
-  json<TaskResponse>("/api/gpu/download", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ manifest_url: manifest_url ?? null }),
-  });
+export const downloadGPUBackend = () =>
+  json<TaskResponse>("/api/gpu/download", { method: "POST" });
 
 export const activateGPUBackend = () =>
   json<{ activated: boolean; restart_required: boolean }>(

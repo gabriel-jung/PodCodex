@@ -13,7 +13,7 @@ from podcodex.api.routes._helpers import (
     counted_progress,
     is_downloaded,
     list_show_stems,
-    require_show_folder,
+    require_registered_show,
     rss_episode_to_out,
     submit_task,
 )
@@ -35,7 +35,7 @@ router = APIRouter()
 @router.post("/{show_folder:path}/rss/fetch", response_model=list[RSSEpisodeOut])
 async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
     """Fetch (or refresh) the RSS feed for a show. Uses show.toml rss_url if not provided."""
-    path = require_show_folder(show_folder)
+    path = require_registered_show(show_folder)
 
     meta = load_show_meta(path)
     if not rss_url:
@@ -102,7 +102,7 @@ def rss_download(
     force: bool = False,
 ) -> TaskResponse:
     """Download episodes as a background task. Progress is streamed via WebSocket."""
-    path = Path(show_folder)
+    path = require_registered_show(show_folder)
     cached = load_feed_cache(path)
     if cached is None:
         raise HTTPException(400, "No cached feed — fetch RSS first")
