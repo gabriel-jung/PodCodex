@@ -122,14 +122,24 @@ class TaskManager:
         for k in stale:
             del self._audio_locks[k]
 
+    def bind_loop(self) -> None:
+        """Cache the serving event loop. Called once from the app lifespan.
+
+        Everything that schedules a progress broadcast runs on FastAPI's
+        threadpool (route handlers are sync ``def``) or in a worker thread,
+        where there is no running loop to discover — and
+        ``asyncio.get_event_loop()`` raises on a non-main thread rather than
+        inventing one. So the loop has to be captured here, while we are
+        genuinely in async context.
+        """
+        self._loop = asyncio.get_running_loop()
+
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         """Return the cached asyncio event loop, refreshing if stale."""
         if self._loop is None or self._loop.is_closed():
-            try:
-                self._loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # Fallback — won't work from threads, but avoids crash
-                self._loop = asyncio.get_event_loop()
+            # Not bound yet (or the loop was replaced): only works when a
+            # loop is actually running on this thread.
+            self._loop = asyncio.get_running_loop()
         return self._loop
 
     def _cleanup_stale(self, max_age: float = 600.0) -> None:
@@ -176,8 +186,9 @@ class TaskManager:
             ValueError: If another task is already running on *audio_path*.
         """
         self._cleanup_stale()
-        # Capture the event loop while we're still in async context
-        self._loop = asyncio.get_running_loop()
+        # No loop capture here: route handlers are sync `def` and run on
+        # FastAPI's threadpool, where `get_running_loop()` raises. The loop
+        # is bound once at startup by `bind_loop`.
         # Check for existing task on this audio_path
         if audio_path in self._audio_locks:
             existing_id = self._audio_locks[audio_path]

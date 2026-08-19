@@ -50,7 +50,7 @@ dev:  ## Start all three services (FastAPI + Vite + Tauri) — Ctrl+C to stop
 	wait
 
 dev-api:  ## Start FastAPI backend (port 18811, auto-reload)
-	.venv/bin/uvicorn podcodex.api.app:app --host 127.0.0.1 --port 18811 --reload --reload-dir src
+	.venv/bin/uvicorn podcodex.api.app:app --host 127.0.0.1 --port 18811 --reload --reload-dir src --no-access-log
 
 dev-frontend:  ## Start Vite dev server (port 5173)
 	cd frontend && npm run dev

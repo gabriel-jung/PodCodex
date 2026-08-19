@@ -150,6 +150,13 @@ def _make_lifespan(mcp_http):
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Task submission happens on the threadpool (routes are sync `def`),
+        # so the progress broadcaster's loop has to be captured here, the one
+        # place we are reliably in async context.
+        from podcodex.api.tasks import task_manager
+
+        task_manager.bind_loop()
+
         watcher_task: asyncio.Task | None = None
         parent_pid_raw = os.environ.get("PODCODEX_PARENT_PID", "").strip()
         if parent_pid_raw and sys.platform != "win32":
@@ -266,8 +273,9 @@ class LoopbackGuardMiddleware:
     <img>/<audio>/download URLs and the browser WebSocket, which can't send
     custom headers. Exempt: /api/health (boot probe, runs before the UI has
     the token), OPTIONS (CORS preflights can't carry custom headers; the
-    CORSMiddleware, inner in the stack, answers them), /mcp (outside /api,
-    own access story).
+    CORSMiddleware sits outside this one and answers them before they get
+    here, so the exemption is belt-and-braces for any non-CORS OPTIONS),
+    /mcp (outside /api, own access story).
 
     Written as raw ASGI rather than ``@app.middleware("http")`` because
     BaseHTTPMiddleware never runs on the websocket scope; this way /api/ws
@@ -338,6 +346,42 @@ def create_app() -> FastAPI:
     if _mcp_import_error is not None:
         logger.warning(f"MCP extra unavailable: {_mcp_import_error}")
 
+    # ── Middleware stack ──
+    # Added last runs outermost, so these read inside-out: CSRF guard, then
+    # the loopback guard, then CORS on the outside. CORS *must* stay outermost
+    # so that the guards' 403/401/421 rejections travel back out through it and
+    # carry `Access-Control-Allow-Origin`. In the Tauri build the document
+    # origin (tauri://localhost) differs from the API origin (127.0.0.1), so a
+    # rejection without those headers is blocked by the webview: `fetch` raises
+    # a network error instead of resolving with a status, and the first-boot
+    # 401 token-refresh retry in `frontend/src/api/client.ts` can never run.
+
+    # Custom header forces a CORS preflight that the origin allowlist rejects,
+    # so a drive-by <form> on a malicious page can't reach mutating endpoints.
+    @app.middleware("http")
+    async def _csrf_guard(request: Request, call_next):
+        if request.method in _CSRF_METHODS and not request.url.path.startswith(
+            _CSRF_EXEMPT_PREFIXES
+        ):
+            if request.headers.get(CSRF_HEADER.lower()) != CSRF_VALUE:
+                return JSONResponse(
+                    {"detail": "CSRF token missing"},
+                    status_code=403,
+                )
+        return await call_next(request)
+
+    # Host + token enforcement (see LoopbackGuardMiddleware). Outside the CSRF
+    # guard: an unauthenticated request is rejected before anything downstream
+    # reads it.
+    api_token = get_or_create_api_token()
+    # Test fixtures read the resolved token from here to build auth headers.
+    app.state.api_token = api_token
+    app.add_middleware(
+        LoopbackGuardMiddleware,
+        allowed_hosts=_loopback_hosts(_API_PORT),
+        api_token=api_token,
+    )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -353,32 +397,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    # Host + token enforcement (see LoopbackGuardMiddleware). Added after
-    # CORSMiddleware so it runs outside it: real requests are authenticated
-    # before CORS, while exempt OPTIONS preflights fall through to CORS.
-    api_token = get_or_create_api_token()
-    # Test fixtures read the resolved token from here to build auth headers.
-    app.state.api_token = api_token
-    app.add_middleware(
-        LoopbackGuardMiddleware,
-        allowed_hosts=_loopback_hosts(_API_PORT),
-        api_token=api_token,
-    )
-
-    # Custom header forces a CORS preflight that the origin allowlist rejects,
-    # so a drive-by <form> on a malicious page can't reach mutating endpoints.
-    @app.middleware("http")
-    async def _csrf_guard(request: Request, call_next):
-        if request.method in _CSRF_METHODS and not request.url.path.startswith(
-            _CSRF_EXEMPT_PREFIXES
-        ):
-            if request.headers.get(CSRF_HEADER.lower()) != CSRF_VALUE:
-                return JSONResponse(
-                    {"detail": "CSRF token missing"},
-                    status_code=403,
-                )
-        return await call_next(request)
 
     app.include_router(health.router, prefix="/api", tags=["system"])
     app.include_router(config.router, prefix="/api", tags=["config"])
@@ -447,6 +465,10 @@ def main() -> None:
         port=_API_PORT,
         reload=False,
         log_config=None,
+        # The API token rides in the query string for <img>/<audio>/download
+        # and websocket URLs, which the access log would write out verbatim.
+        # Matches `api/server.py` (the bundled sidecar).
+        access_log=False,
     )
 
 

@@ -15,6 +15,7 @@ Usage::
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
 import threading
@@ -117,6 +118,33 @@ _VALID_COLUMNS = frozenset(
 
 DB_FILENAME = "pipeline.db"
 
+# Parsed-JSON memo for row columns (translations / provenance). The episode
+# list re-reads every row on each 5s poll and the strings rarely change, so
+# keying on the raw string skips ~500 json.loads per request. Callers get a
+# shallow copy from `_row_to_dict`, so top-level mutation can't poison the
+# cache; nested values must be replaced, never mutated in place (which is
+# already the rule, since rows round-trip through JSON).
+_loads_cached = functools.lru_cache(maxsize=8192)(json.loads)
+
+
+class _Rows:
+    """Rows already fetched under the connection lock (see ``PipelineDB._read``).
+
+    Stands in for the cursor so call sites keep reading as ``.fetchall()`` /
+    ``.fetchone()`` while the actual fetch happens inside the lock.
+    """
+
+    __slots__ = ("_rows",)
+
+    def __init__(self, rows: list[sqlite3.Row]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[sqlite3.Row]:
+        return self._rows
+
+    def fetchone(self) -> sqlite3.Row | None:
+        return self._rows[0] if self._rows else None
+
 
 class PipelineDB:
     """Per-show SQLite database for pipeline episode status.
@@ -127,7 +155,10 @@ class PipelineDB:
 
     def __init__(self, db_path: Path | str):
         self._path = str(db_path)
-        self._lock = threading.Lock()
+        # Reentrant: write paths hold this across a read-modify-write (e.g.
+        # `mark` merging provenance via `_get_provenance`, which takes it
+        # again through `_read`).
+        self._lock = threading.RLock()
         if self._path != ":memory:":
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
@@ -138,6 +169,20 @@ class PipelineDB:
         self._conn.executescript(_SCHEMA)
         self._run_migrations()
         self._conn.commit()
+
+    def _read(self, sql: str, params: tuple = ()) -> _Rows:
+        """Run a SELECT under the connection lock and materialize its rows.
+
+        Every read has to hold ``_lock``, not just the writes. One connection
+        is shared across FastAPI's threadpool, and a ``commit()`` or
+        ``rollback()`` on another thread resets an in-flight statement on that
+        same connection — the SELECT then yields nothing at all, which
+        surfaced as ``/unified`` intermittently 500-ing (an empty episode
+        list in the UI) whenever a reconcile or download wrote concurrently.
+        Rows are fetched inside the lock for the same reason.
+        """
+        with self._lock:
+            return _Rows(self._conn.execute(sql, params).fetchall())
 
     def _run_migrations(self) -> None:
         """Apply any pending schema migrations."""
@@ -163,19 +208,17 @@ class PipelineDB:
 
     def all_episodes(self) -> list[dict]:
         """Return status for every episode in one query."""
-        rows = self._conn.execute("SELECT * FROM episodes ORDER BY stem").fetchall()
+        rows = self._read("SELECT * FROM episodes ORDER BY stem").fetchall()
         return [self._row_to_dict(r) for r in rows]
 
     def get_episode(self, stem: str) -> dict | None:
         """Return status for a single episode, or None."""
-        row = self._conn.execute(
-            "SELECT * FROM episodes WHERE stem = ?", (stem,)
-        ).fetchone()
+        row = self._read("SELECT * FROM episodes WHERE stem = ?", (stem,)).fetchone()
         return self._row_to_dict(row) if row else None
 
     def episode_count(self) -> int:
         """Return the number of episodes in the DB."""
-        return self._conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+        return self._read("SELECT COUNT(*) FROM episodes").fetchone()[0]
 
     def aggregate_status(self) -> dict[str, int]:
         """Return per-stage completion counts across all episodes.
@@ -190,7 +233,7 @@ class PipelineDB:
         # keeping it lazy keeps the dependency direction obvious.
         from podcodex.core.versions import is_edited
 
-        rows = self._conn.execute(
+        rows = self._read(
             "SELECT transcribed, corrected, indexed, synthesized, "
             "translations, provenance FROM episodes"
         ).fetchall()
@@ -401,7 +444,7 @@ class PipelineDB:
 
     def get_verified(self, stem: str) -> dict | None:
         """Return ``{"step", "version_id"}`` for the verified pointer, or None."""
-        row = self._conn.execute(
+        row = self._read(
             "SELECT verified_step, verified_version_id FROM episodes WHERE stem = ?",
             (stem,),
         ).fetchone()
@@ -411,14 +454,14 @@ class PipelineDB:
 
     def stems_with_verified(self) -> set[str]:
         """Return the set of stems that have a verified pointer set."""
-        rows = self._conn.execute(
+        rows = self._read(
             "SELECT stem FROM episodes WHERE verified_version_id IS NOT NULL"
         ).fetchall()
         return {r[0] for r in rows}
 
     def verified_pointers(self) -> dict[str, dict]:
         """Bulk: ``{stem: {step, version_id}}`` for every episode with a pointer."""
-        rows = self._conn.execute(
+        rows = self._read(
             "SELECT stem, verified_step, verified_version_id "
             "FROM episodes WHERE verified_version_id IS NOT NULL"
         ).fetchall()
@@ -484,7 +527,7 @@ class PipelineDB:
 
     def list_versions(self, stem: str, step: str) -> list[dict]:
         """List all versions for an episode step (newest first)."""
-        rows = self._conn.execute(
+        rows = self._read(
             """SELECT * FROM versions
                WHERE stem = ? AND step = ?
                ORDER BY timestamp DESC""",
@@ -494,7 +537,7 @@ class PipelineDB:
 
     def get_latest_version(self, stem: str, step: str) -> dict | None:
         """Return the most recent version for a step, or None."""
-        row = self._conn.execute(
+        row = self._read(
             """SELECT * FROM versions
                WHERE stem = ? AND step = ?
                ORDER BY timestamp DESC LIMIT 1""",
@@ -504,7 +547,7 @@ class PipelineDB:
 
     def get_version(self, version_id: str) -> dict | None:
         """Return the version row for ``version_id``, or None."""
-        row = self._conn.execute(
+        row = self._read(
             "SELECT * FROM versions WHERE id = ? LIMIT 1",
             (version_id,),
         ).fetchone()
@@ -520,7 +563,7 @@ class PipelineDB:
         if not steps:
             return {}
         placeholders = ", ".join("?" for _ in steps)
-        rows = self._conn.execute(
+        rows = self._read(
             f"""SELECT * FROM versions
                 WHERE step IN ({placeholders})
                 ORDER BY timestamp DESC""",
@@ -534,14 +577,14 @@ class PipelineDB:
 
     def stems_with_step(self, step: str) -> set[str]:
         """Return the set of stems that have at least one version for ``step``."""
-        rows = self._conn.execute(
+        rows = self._read(
             "SELECT DISTINCT stem FROM versions WHERE step = ?", (step,)
         ).fetchall()
         return {r[0] for r in rows}
 
     def version_ids_by_stem(self, step: str) -> dict[str, set[str]]:
         """Bulk: ``{stem: {version_id, ...}}`` for one step."""
-        rows = self._conn.execute(
+        rows = self._read(
             "SELECT stem, id FROM versions WHERE step = ?", (step,)
         ).fetchall()
         out: dict[str, set[str]] = {}
@@ -551,7 +594,7 @@ class PipelineDB:
 
     def list_all_versions(self, stem: str) -> list[dict]:
         """List all versions across all steps for an episode (newest first)."""
-        rows = self._conn.execute(
+        rows = self._read(
             """SELECT * FROM versions
                WHERE stem = ?
                ORDER BY timestamp DESC""",
@@ -561,7 +604,7 @@ class PipelineDB:
 
     def list_steps(self, stem: str) -> list[str]:
         """Return distinct step names for an episode (sorted)."""
-        rows = self._conn.execute(
+        rows = self._read(
             "SELECT DISTINCT step FROM versions WHERE stem = ? ORDER BY step",
             (stem,),
         ).fetchall()
@@ -569,7 +612,7 @@ class PipelineDB:
 
     def version_count(self, stem: str, step: str) -> int:
         """Return the number of versions for a step."""
-        return self._conn.execute(
+        return self._read(
             "SELECT COUNT(*) FROM versions WHERE stem = ? AND step = ?",
             (stem, step),
         ).fetchone()[0]
@@ -601,7 +644,7 @@ class PipelineDB:
 
         Uses a single query with a window function to avoid N+1 lookups.
         """
-        rows = self._conn.execute(
+        rows = self._read(
             """SELECT stem, segment_count
                FROM (
                    SELECT stem, segment_count,
@@ -662,7 +705,7 @@ class PipelineDB:
 
     def _get_provenance(self, stem: str) -> dict:
         """Read existing provenance JSON for a stem, or return {}."""
-        row = self._conn.execute(
+        row = self._read(
             "SELECT provenance FROM episodes WHERE stem = ?", (stem,)
         ).fetchone()
         if row and row[0]:
@@ -678,10 +721,12 @@ class PipelineDB:
         d = dict(row)
         # Decode translations JSON.
         t = d.get("translations", "[]")
-        d["translations"] = json.loads(t) if isinstance(t, str) else t
+        d["translations"] = list(_loads_cached(t)) if isinstance(t, str) else t
         # Decode provenance JSON.
         p = d.get("provenance", "{}")
-        d["provenance"] = json.loads(p) if isinstance(p, str) else (p or {})
+        d["provenance"] = (
+            dict(_loads_cached(p) or {}) if isinstance(p, str) else (p or {})
+        )
         # Booleans.
         for key in ("transcribed", "corrected", "indexed", "synthesized"):
             d[key] = bool(d.get(key, 0))

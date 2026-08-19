@@ -17,6 +17,66 @@ def client(tmp_path, monkeypatch):
     return make_client(tmp_path, monkeypatch)
 
 
+# ── CORS on rejections ───────────────────────────────────────────────────
+
+
+TAURI_ORIGIN = "tauri://localhost"
+
+
+@pytest.mark.parametrize(
+    "headers, expected",
+    [
+        ({"X-PodCodex-Token": ""}, 401),  # token not resolved yet (first boot)
+        ({"X-PodCodex-Token": "wrong"}, 401),
+        ({"host": "evil.example.com"}, 421),
+    ],
+)
+def test_guard_rejections_carry_cors_headers(client, headers, expected):
+    """A rejected cross-origin request must still be readable by the caller.
+
+    CORSMiddleware has to stay outermost so the guards' 401/421 travel back
+    out through it. In the Tauri build the document origin differs from the
+    API origin, so a rejection without `Access-Control-Allow-Origin` is
+    blocked by the webview: `fetch` raises a network error instead of
+    resolving with a status, and the first-boot token-refresh retry in
+    `frontend/src/api/client.ts` never runs.
+    """
+    r = client.get(
+        "/api/config",
+        headers={"Origin": TAURI_ORIGIN, **headers},
+    )
+
+    assert r.status_code == expected
+    assert r.headers.get("access-control-allow-origin") == TAURI_ORIGIN
+
+
+def test_csrf_rejection_carries_cors_headers(client):
+    """Same for the CSRF guard's 403 (it sits inside CORS too)."""
+    r = client.post(
+        "/api/shows/register",
+        json={"path": "/tmp"},
+        headers={"Origin": TAURI_ORIGIN, "X-PodCodex": ""},
+    )
+
+    assert r.status_code == 403
+    assert r.headers.get("access-control-allow-origin") == TAURI_ORIGIN
+
+
+def test_preflight_needs_no_token(client):
+    """OPTIONS is answered by CORS before the token guard sees it."""
+    r = client.options(
+        "/api/config",
+        headers={
+            "Origin": TAURI_ORIGIN,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "x-podcodex-token",
+        },
+    )
+
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == TAURI_ORIGIN
+
+
 # ── Host-header guard ────────────────────────────────────────────────────
 
 
