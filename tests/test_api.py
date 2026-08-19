@@ -33,6 +33,24 @@ def client(tmp_path, monkeypatch):
 # ──────────────────────────────────────────────
 
 
+def test_pipeline_defaults_roundtrip_and_isolation(client):
+    """PUT /config/pipeline-defaults persists without touching other config."""
+    # Fresh install: the sentinel is None (frontend migrates localStorage on it).
+    assert client.get("/api/config").json()["pipeline_defaults"] is None
+
+    r = client.put(
+        "/api/config/pipeline-defaults",
+        json={"target_lang": "German", "transcribe": {"model_size": "medium"}},
+    )
+    assert r.status_code == 200
+    assert r.json()["target_lang"] == "German"
+
+    cfg = client.get("/api/config").json()
+    assert cfg["pipeline_defaults"]["transcribe"]["model_size"] == "medium"
+    # Unsent fields land on the model's built-in defaults.
+    assert cfg["pipeline_defaults"]["llm"]["batch_minutes"] == 15
+
+
 def test_health_returns_ok(client):
     r = client.get("/api/health")
     assert r.status_code == 200
@@ -323,6 +341,78 @@ def _make_episode_tree(tmp_path) -> Path:
     return show
 
 
+def test_srt_is_reimportable_but_not_batch_importable(tmp_path):
+    """`subtitle_files` and `has_subtitles` answer different questions.
+
+    The episode panel's manual reimport parses .vtt and .srt alike, so an
+    .srt shows up in `subtitle_files`. The *batch* subtitle source is gated
+    on `has_subtitles`, and `_batch_transcribe_from_subs` only ever reads a
+    cached `{stem}.subtitles.{lang}.vtt` — so reporting .srt there would
+    select episodes the batch run cannot process.
+    """
+    from podcodex.api.routes.shows import _build_status_out, _load_status_context
+
+    show = tmp_path / "show"
+    (show / "ep").mkdir(parents=True)
+    (show / "ep" / "ep.srt").touch()
+    ctx = _load_status_context(show)
+
+    out = _build_status_out(
+        stem="ep",
+        audio_path=None,
+        output_dir=show / "ep",
+        st={},
+        ep_files=ctx.episode_files.get("ep", []),
+        ctx=ctx,
+    )
+
+    assert out["subtitle_files"] == ["ep/ep.srt"]
+    assert out["has_subtitles"] is False
+
+
+def test_episode_stem_does_not_collapse_onto_a_same_named_audio_file(tmp_path):
+    """The legacy slug fallback matches directories, never audio stems.
+
+    The caller's stem listing carries root audio stems too; resolving the
+    fallback against it would make a feed entry whose title slugifies to an
+    existing `foo.mp3` claim stem `foo`, collapsing two same-titled episodes
+    onto one set of outputs — what the guid suffix exists to prevent.
+    """
+    from podcodex.ingest.rss import RSSEpisode, episode_stem
+
+    show = tmp_path / "show"
+    show.mkdir()
+    (show / "my_episode.mp3").touch()  # a *file*, not an episode directory
+    ep = RSSEpisode(guid="https://example.com/1", title="My Episode", pub_date="")
+
+    stem = episode_stem(ep, show, existing_stems=frozenset({"my_episode"}))
+    assert stem != "my_episode"
+    assert stem.startswith("my_episode_")
+
+    # A real legacy *directory* is still reused.
+    (show / "my_episode").mkdir()
+    assert episode_stem(ep, show, existing_stems=frozenset({"my_episode"})) == (
+        "my_episode"
+    )
+
+
+def test_status_context_lists_episode_dirs_that_hold_no_files(tmp_path):
+    """`episode_dirs` carries empty directories; `episode_files` cannot.
+
+    It is what `unified_episodes` unions into the stem listing, so a suffixed
+    but still-empty episode directory stays matchable.
+    """
+    from podcodex.api.routes.shows import _load_status_context
+
+    show = tmp_path / "show"
+    (show / "my_episode").mkdir(parents=True)
+
+    ctx = _load_status_context(show)
+
+    assert "my_episode" in ctx.episode_dirs
+    assert "my_episode" not in ctx.episode_files
+
+
 def test_status_reconcile_keeps_flags_bootstrapped_from_disk(tmp_path):
     """A DB built from a filesystem scan must survive the reconcile pass.
 
@@ -340,7 +430,7 @@ def test_status_reconcile_keeps_flags_bootstrapped_from_disk(tmp_path):
         '[{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}]'
     )
 
-    ctx = _load_status_context(show, None)
+    ctx = _load_status_context(show)
     assert ctx.status_map["ep1"]["transcribed"] is True
     # And it must not have been persisted as False either.
     assert get_pipeline_db(show).get_episode("ep1")["transcribed"] is True
@@ -362,7 +452,7 @@ def test_status_reconcile_rebuilds_the_translations_list(tmp_path):
     (show / "ep1" / "french" / "20260101T000000000000Z_raw.json").write_text("[]")
     get_pipeline_db(show).mark("ep1", translations=["segments", "spanish"])
 
-    ctx = _load_status_context(show, None)
+    ctx = _load_status_context(show)
     assert ctx.status_map["ep1"]["translations"] == ["french"]
     close_pipeline_db(show)
 
@@ -376,7 +466,7 @@ def test_status_reconcile_demotes_when_nothing_is_left(tmp_path):
     (show / "ep1").mkdir(parents=True)
     get_pipeline_db(show).mark("ep1", transcribed=True)
 
-    ctx = _load_status_context(show, None)
+    ctx = _load_status_context(show)
     assert ctx.status_map["ep1"]["transcribed"] is False
     close_pipeline_db(show)
 
@@ -398,14 +488,14 @@ def test_status_reconcile_skips_stems_it_could_not_scan(tmp_path):
     (show / "ep1" / "french").mkdir()
     (show / "ep1" / "french" / "20260101T000000000000Z_raw.json").write_text("[]")
 
-    ctx = _load_status_context(show, None)
+    ctx = _load_status_context(show)
     assert ctx.status_map["ep1"]["transcribed"] is True
     assert ctx.status_map["ep1"]["translations"] == ["french"]
 
     _EPISODE_FILES_CACHE.clear()
     os.chmod(show / "ep1", 0o000)
     try:
-        ctx = _load_status_context(show, None)
+        ctx = _load_status_context(show)
         assert ctx.status_map["ep1"]["transcribed"] is True
         assert ctx.status_map["ep1"]["translations"] == ["french"]
     finally:
@@ -423,7 +513,7 @@ def test_episode_file_scan_sees_nested_writes(tmp_path):
 
     show = _make_episode_tree(tmp_path)
     _age_dirs(show, 60)
-    assert _scan_episode_files(show, {})["ep"] == [
+    assert _scan_episode_files(show, {})[0]["ep"] == [
         "ep/ep.vtt",
         "ep/transcript/v1.json",
     ]
@@ -434,7 +524,7 @@ def test_episode_file_scan_sees_nested_writes(tmp_path):
     # recorded, so nothing but the nested change can trip the cache.
     stamp = time.time() - 30
     os.utime(versions, (stamp, stamp))
-    assert _scan_episode_files(show, {})["ep"] == [
+    assert _scan_episode_files(show, {})[0]["ep"] == [
         "ep/ep.vtt",
         "ep/transcript/v1.json",
         "ep/transcript/v2.json",
@@ -443,11 +533,28 @@ def test_episode_file_scan_sees_nested_writes(tmp_path):
     os.remove(versions / "v1.json")
     stamp = time.time() - 20
     os.utime(versions, (stamp, stamp))
-    assert _scan_episode_files(show, {})["ep"] == ["ep/ep.vtt", "ep/transcript/v2.json"]
+    assert _scan_episode_files(show, {})[0]["ep"] == [
+        "ep/ep.vtt",
+        "ep/transcript/v2.json",
+    ]
 
     # A removed episode directory drops out of the result and the cache.
     shutil.rmtree(show / "ep")
-    assert _scan_episode_files(show, {}) == {}
+    assert _scan_episode_files(show, {})[0] == {}
+
+
+def test_episode_file_scan_lists_the_llm_failures_file(tmp_path):
+    """The walk must keep listing llm_failures.json: the llm_failed_steps
+    gate reads the cached listing before touching disk, so a future trim of
+    the walk's filters would silently blank the failure markers."""
+    from podcodex.api.routes.shows import _scan_episode_files
+    from podcodex.core.llm_failures import FAILURES_FILENAME
+
+    show = _make_episode_tree(tmp_path)
+    (show / "ep" / FAILURES_FILENAME).write_text("{}", encoding="utf-8")
+    _age_dirs(show, 60)
+
+    assert f"ep/{FAILURES_FILENAME}" in _scan_episode_files(show, {})[0]["ep"]
 
 
 def test_episode_file_scan_reuses_settled_results(tmp_path, monkeypatch):
@@ -462,7 +569,7 @@ def test_episode_file_scan_reuses_settled_results(tmp_path, monkeypatch):
         raise AssertionError("settled directories should not be re-walked")
 
     monkeypatch.setattr(shows_routes, "_walk_episode_dir", _fail)
-    assert shows_routes._scan_episode_files(show, {})["ep"] == [
+    assert shows_routes._scan_episode_files(show, {})[0]["ep"] == [
         "ep/ep.vtt",
         "ep/transcript/v1.json",
     ]
@@ -484,7 +591,7 @@ def test_episode_file_scan_rewalks_recent_changes(tmp_path):
     (versions / "v2.json").touch()
     os.utime(versions, (recorded, recorded))  # simulate a same-tick write
 
-    assert "ep/transcript/v2.json" in _scan_episode_files(show, {})["ep"]
+    assert "ep/transcript/v2.json" in _scan_episode_files(show, {})[0]["ep"]
 
 
 # ──────────────────────────────────────────────

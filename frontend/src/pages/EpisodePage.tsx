@@ -18,7 +18,6 @@ import {
 } from "@/api/search";
 import { useShowActions } from "@/hooks/useShowActions";
 import { isVerifiedVersion, VERIFIED_CAPTION } from "@/lib/verified";
-import { usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { isSoloDefaultSpeaker } from "@/lib/speakers";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
@@ -117,7 +116,6 @@ export default function EpisodePage({
   }, [navigate]);
 
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
-  const pipelineDefaults = usePipelineDefaults();
 
   const { data: meta } = useQuery({
     queryKey: queryKeys.showMeta(folder ?? ""),
@@ -128,15 +126,15 @@ export default function EpisodePage({
   useSeedPipelineFromShow(folder, meta?.pipeline, !!meta);
 
   const { data: episodes, dataUpdatedAt: episodesUpdatedAt } = useQuery({
-    queryKey: queryKeys.episodes(folder ?? "", pipelineDefaults),
-    queryFn: () => getEpisodes(folder!, pipelineDefaults),
+    queryKey: queryKeys.episodesForFolder(folder ?? ""),
+    queryFn: () => getEpisodes(folder!),
     placeholderData: keepPreviousData,
     enabled: !!folder,
     // Heavy endpoint (full unified list); alt-tab must not refetch it, and
     // live progress arrives through the status poll below instead.
     refetchOnWindowFocus: false,
   });
-  useEpisodeStatusPoll(folder, pipelineDefaults, !!downloadTaskId, episodesUpdatedAt);
+  useEpisodeStatusPoll(folder, !!downloadTaskId, episodesUpdatedAt);
 
   const { downloadMutation: episodeDownloadMutation, importSubsMutation, isYouTube } = useShowActions(folder ?? "", meta, { withSubs: false });
 
@@ -958,10 +956,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
     [allVersions, episode.translations],
   );
 
-  const subtitleFiles = useMemo(
-    () => (episode.files ?? []).filter((f) => /\.(vtt|srt)$/i.test(f)),
-    [episode.files],
-  );
+  const subtitleFiles = episode.subtitle_files;
 
   const transcribeStatus = STEP_BY_KEY.transcribe.status(episode);
   const correctStatus = STEP_BY_KEY.correct.status(episode);

@@ -62,17 +62,14 @@ export const queryKeys = {
     ["episodeSpeakers", folder, stem] as const,
   broadcastPreview: (folder: string, pattern: string) =>
     ["broadcast-preview", folder, pattern] as const,
-  /** All episodes — broad invalidation (every folder, every defaults). */
+  /** All episodes — broad invalidation (every folder). */
   episodesAll: () => ["episodes"] as const,
-  /** Episodes for a specific show folder. */
+  /** Episodes for a specific show folder (the fully-specified key — step
+   *  statuses are computed server-side from server-owned defaults). */
   episodesForFolder: (folder: string) => ["episodes", folder] as const,
-  /** Episodes for a folder + specific pipeline defaults (the fully-specified key). */
-  episodes: (folder: string, pipelineDefaults: unknown) =>
-    ["episodes", folder, pipelineDefaults] as const,
   /** Status-only poll. Deliberately outside the "episodes" namespace: broad
    *  `episodes` invalidations should refetch the real list, not this mirror. */
-  episodeStatus: (folder: string, pipelineDefaults: unknown) =>
-    ["episodeStatus", folder, pipelineDefaults] as const,
+  episodeStatus: (folder: string) => ["episodeStatus", folder] as const,
 
   // ── Per-episode pipeline data ──────────────────────────
   transcribeSegments: (audioPath: AudioPath) =>

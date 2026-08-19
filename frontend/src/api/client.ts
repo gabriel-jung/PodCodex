@@ -28,15 +28,63 @@ const TOKEN_QUERY_PARAM = "token";
 
 let API_TOKEN = "";
 
-/** Resolve the loopback auth token before the app renders (see main.tsx). */
-export async function initApiToken(): Promise<void> {
-  if (!isTauri()) return;
+const tokenListeners = new Set<() => void>();
+
+/** Subscribe to the token arriving *after* startup (see `initApiToken`).
+ *  URLs built by `withToken` embed the token at render time, so anything
+ *  rendered during the empty window has to be rebuilt once it lands. */
+export function onApiTokenAcquired(cb: () => void): () => void {
+  tokenListeners.add(cb);
+  return () => tokenListeners.delete(cb);
+}
+
+function setApiToken(next: string): void {
+  const acquired = !API_TOKEN && !!next;
+  API_TOKEN = next;
+  if (acquired) for (const cb of tokenListeners) cb();
+}
+
+async function readApiToken(): Promise<string> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    API_TOKEN = await invoke<string>("get_api_token");
+    return await invoke<string>("get_api_token");
   } catch {
-    API_TOKEN = "";
+    return "";
   }
+}
+
+// First-launch race: the PyInstaller sidecar takes 10-30s to extract and
+// only then writes the token file, so the first read can come back empty.
+// Give up eventually — if the sidecar never starts, the app is dead anyway.
+const TOKEN_RETRY_LIMIT = 60;
+let tokenRetryTimer: ReturnType<typeof setTimeout> | null = null;
+// Module-level, not a parameter: `rawFetch` re-enters `initApiToken` on every
+// 401, which would otherwise restart the backoff at attempt 0 forever and
+// make the cap decorative.
+let tokenRetryAttempt = 0;
+
+function scheduleTokenRetry(): void {
+  if (tokenRetryTimer || tokenRetryAttempt >= TOKEN_RETRY_LIMIT) return;
+  const delay = Math.min(500 * 2 ** tokenRetryAttempt, 3000);
+  tokenRetryAttempt += 1;
+  tokenRetryTimer = setTimeout(() => {
+    tokenRetryTimer = null;
+    void readApiToken().then((token) => {
+      setApiToken(token);
+      if (token) tokenRetryAttempt = 0;
+      else scheduleTokenRetry();
+    });
+  }, delay);
+}
+
+/** Resolve the loopback auth token before the app renders (see main.tsx).
+ *  One immediate attempt keeps the common path instant; an empty result
+ *  means the sidecar hasn't written the file yet, so keep polling in the
+ *  background rather than running the whole session unauthenticated. */
+export async function initApiToken(): Promise<void> {
+  if (!isTauri()) return;
+  setApiToken(await readApiToken());
+  if (!API_TOKEN) scheduleTokenRetry();
 }
 
 /** Append the auth token to a URL destined for src/href/WebSocket use.

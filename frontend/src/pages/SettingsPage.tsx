@@ -44,6 +44,7 @@ import { useProviderProfiles } from "@/hooks/useProviderProfiles";
 import { usePipelineConfigStore } from "@/stores/pipelineConfigStore";
 import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
 import { inputWidth, selectClass } from "@/lib/utils";
+import { ErrorAlert } from "@/components/ui/error-alert";
 
 // Plugins panel runs `uv sync --extra X` to install Python extras — only
 // meaningful when a venv exists (dev mode). The bundled sidecar has its
@@ -240,6 +241,11 @@ function PipelineDefaultsPanel() {
   // App-wide defaults. Each show inherits these unless it overrides them in
   // its own Settings; episode and batch runs start from the show's resolved
   // values.
+  // Defaults are server-owned and hydrate at startup; edits before that
+  // resolves are refused (we will not overwrite settings we never read), so
+  // say so instead of accepting toggles that silently revert.
+  const defaultsReady = usePipelineConfigStore((s) => s.appDefaultsReady);
+  const defaultsFailed = usePipelineConfigStore((s) => s.appDefaultsFailed);
   const transcribe = usePipelineConfigStore((s) => s.appDefaults.transcribe);
   const setTranscribe = usePipelineConfigStore((s) => s.setAppTranscribe);
   const llm = usePipelineConfigStore((s) => s.appDefaults.llm);
@@ -251,8 +257,17 @@ function PipelineDefaultsPanel() {
   const indexChunker = usePipelineConfigStore((s) => s.appDefaults.indexChunker);
   const setIndexChunker = usePipelineConfigStore((s) => s.setAppIndexChunker);
 
+  if (!defaultsReady) {
+    return <p className="text-sm text-muted-foreground">Loading defaults…</p>;
+  }
+
   return (
     <div className="space-y-8">
+      {defaultsFailed && (
+        <ErrorAlert
+          error="Couldn't load your saved defaults, so changes here won't be saved. Restart the app once the backend is running."
+        />
+      )}
       <p className="text-sm text-muted-foreground">
         Defaults for every show on this computer. Each show can override these
         in its own Settings; one-off tweaks made in an episode panel apply to

@@ -7,8 +7,8 @@ import type {
   EpisodeSpeakersResponse,
   EpisodeStatus,
   FilesImportResponse,
+  PipelineAppDefaults,
   PipelineConfig,
-  PipelineDefaults,
   PodcastSearchResult,
   RSSEpisodeOut,
   ShowMeta,
@@ -32,6 +32,16 @@ export const updateConfig = (cfg: AppConfig) =>
     body: JSON.stringify(cfg),
   });
 
+/** Persist the app-wide pipeline defaults (Settings → Pipeline). Its own
+ *  endpoint so a defaults save can't carry stale copies of other config
+ *  scalars. */
+export const putPipelineDefaults = (defaults: PipelineAppDefaults) =>
+  json<PipelineAppDefaults>("/api/config/pipeline-defaults", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(defaults),
+  });
+
 export interface FfmpegValidateResponse {
   ok: boolean;
   path: string | null;
@@ -53,7 +63,7 @@ export const searchPodcasts = (query: string, limit = 8) =>
 
 // ── Shows ───────────────────────────────────
 
-export const listShows = () => json<ShowSummary[]>("/api/shows");
+export const listShows = () => json<ShowSummary[]>("/api/shows/");
 
 export const createFromRSS = (rssUrl: string, savePath: string, folderName?: string, artworkUrl?: string, name?: string, language?: string) =>
   json<CreateFromRSSResponse>("/api/shows/from-rss", {
@@ -123,17 +133,13 @@ export const deleteShow = (folder: string, deleteFiles = false) =>
 
 // ── Episodes (unified: local + RSS merged) ──
 
-export const getEpisodes = (folder: string, defaults?: PipelineDefaults) => {
-  const params = defaults ? `?defaults=${enc(JSON.stringify(defaults))}` : "";
-  return json<Episode[]>(`/api/shows/${enc(folder)}/unified${params}`);
-};
+export const getEpisodes = (folder: string) =>
+  json<Episode[]>(`/api/shows/${enc(folder)}/unified`);
 
 /** Live pipeline state only, keyed by stem. The cheap poll counterpart to
- *  `getEpisodes`; pass the same `defaults` so step statuses agree. */
-export const getEpisodeStatus = (folder: string, defaults?: PipelineDefaults) => {
-  const params = defaults ? `?defaults=${enc(JSON.stringify(defaults))}` : "";
-  return json<EpisodeStatus[]>(`/api/shows/${enc(folder)}/status${params}`);
-};
+ *  `getEpisodes`. */
+export const getEpisodeStatus = (folder: string) =>
+  json<EpisodeStatus[]>(`/api/shows/${enc(folder)}/status`);
 
 // ── RSS actions ─────────────────────────────
 

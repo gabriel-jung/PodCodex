@@ -31,7 +31,6 @@ import { exactSearch } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore, useBatchHistoryStore } from "@/stores";
 import { useTheme } from "@/hooks/useTheme";
-import { usePipelineDefaults } from "@/hooks/usePipelineConfig";
 import { formatTime } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 
@@ -50,13 +49,10 @@ export default function CommandPalette() {
     enabled: open,
   });
 
-  // Same defaults as ShowPage/EpisodePage so the palette shares their cache
-  // entries instead of re-fetching every show's episodes under its own key.
-  const pipelineDefaults = usePipelineDefaults();
   const episodeQueries = useQueries({
     queries: (shows ?? []).map((show) => ({
-      queryKey: queryKeys.episodes(show.path, pipelineDefaults),
-      queryFn: () => getEpisodes(show.path, pipelineDefaults),
+      queryKey: queryKeys.episodesForFolder(show.path),
+      queryFn: () => getEpisodes(show.path),
       enabled: open && !!shows,
       staleTime: 60_000,
     })),

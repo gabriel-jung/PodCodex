@@ -361,6 +361,14 @@ def start_index(req: IndexRequest) -> TaskResponse:
     The heavy work (embedding encode, LanceDB writes) runs in a spawned
     subprocess so the FastAPI event loop stays responsive.
     """
+    from podcodex.ingest.folder import note_episode_indexed
+
+    def _refresh_indexed_cache(result: dict) -> None:
+        # Keeps the status poll's indexed-stems cache warm instead of
+        # forcing a full chunk rescan; the job reports which stem landed.
+        stem = result.get("stem")
+        if stem:
+            note_episode_indexed(req.show, stem)
 
     return submit_subprocess_task(
         "index",
@@ -379,4 +387,5 @@ def start_index(req: IndexRequest) -> TaskResponse:
             "overwrite": req.overwrite,
         },
         req=req,
+        on_result=_refresh_indexed_cache,
     )

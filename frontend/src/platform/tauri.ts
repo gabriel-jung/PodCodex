@@ -38,8 +38,16 @@ export const tauriPlatform: Platform = {
     isNative: () => true,
   },
   lifecycle: {
+    // DO NOT USE without first granting `core:window:allow-destroy` in
+    // `src-tauri/capabilities/default.json`. Registering this at all makes the
+    // app unclosable: Tauri's own `onCloseRequested` wrapper calls
+    // `window.destroy()` whenever the handler does not `preventDefault`, and
+    // `destroy` is not part of the `core:default` permission set — so the
+    // close is denied and the window has no way out. Verified the hard way on
+    // 2026-08-19. There is currently no consumer; keep it that way unless the
+    // permission is added deliberately.
     onBeforeClose: (cb) => {
-      const unlistenPromise = getCurrentWindow().onCloseRequested(async () => {
+      const unlistenPromise = getCurrentWindow().onCloseRequested(() => {
         cb();
       });
       return () => {

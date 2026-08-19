@@ -14,6 +14,7 @@ from podcodex.core.api_keys import mask_secret
 from podcodex.core.app_config import (
     CONFIG_PATH,
     AppConfig,
+    PipelineAppDefaults,
     load_config,
     mutate_config,
     save_config,
@@ -234,6 +235,22 @@ def put_config(cfg: AppConfig) -> AppConfig:
         fresh.ffmpeg_exe_override = cfg.ffmpeg_exe_override
 
     return mutate_config(_apply)
+
+
+@router.put("/config/pipeline-defaults", response_model=PipelineAppDefaults)
+def put_pipeline_defaults(defaults: PipelineAppDefaults) -> PipelineAppDefaults:
+    """Persist the app-wide pipeline defaults (Settings → Pipeline).
+
+    Its own endpoint (rather than a ``put_config`` field) so a defaults
+    save can never carry a stale snapshot of the other config scalars,
+    and vice versa.
+    """
+
+    def _apply(fresh: AppConfig) -> None:
+        fresh.pipeline_defaults = defaults
+
+    mutate_config(_apply)
+    return defaults
 
 
 class FfmpegValidateRequest(BaseModel):

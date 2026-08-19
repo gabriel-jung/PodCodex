@@ -20,12 +20,16 @@ export const getHealth = () => json<HealthResponse>("/api/health");
  * schedule. React Query shares one fetch per key: a stricter observer
  * mounting first would abort the boot fetch for the whole app.
  */
+export const BOOT_RETRY = {
+  retry: 60,
+  retryDelay: (attempt: number) => Math.min(500 + attempt * 500, 3000),
+} as const;
+
 export const healthQueryOptions = {
   queryKey: queryKeys.health(),
   queryFn: getHealth,
   staleTime: 30_000,
-  retry: 60,
-  retryDelay: (attempt: number) => Math.min(500 + attempt * 500, 3000),
+  ...BOOT_RETRY,
 } as const;
 
 export const getAbout = () => json<AboutResponse>("/api/system/about");

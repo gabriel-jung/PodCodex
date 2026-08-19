@@ -105,10 +105,8 @@ export default function TranscribePanel() {
   const effectiveLang = language === "other" ? customLang : language;
 
   // Existing subtitle files for reimport controls
-  const subtitleFiles = (episode?.files ?? []).filter(
-    (f) => f.endsWith(".vtt") || f.endsWith(".srt"),
-  );
-  const hasSubs = !!episode?.has_subtitles || subtitleFiles.length > 0;
+  const subtitleFiles = episode?.subtitle_files ?? [];
+  const hasSubs = subtitleFiles.length > 0;
   const hasRealAudio = !!episode?.audio_path;
 
   // Source toggle — answers "where does the transcript come from".

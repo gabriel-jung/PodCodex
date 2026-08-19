@@ -107,6 +107,16 @@ def _episode_status(
 _INDEXED_STEMS_CACHE: dict[str, tuple[tuple[tuple[str, int], ...], set[str]]] = {}
 
 
+def _versions_fingerprint(store, cols) -> tuple[tuple[str, int], ...]:
+    """Cache key for a set of collections: sorted (name, dataset version) pairs.
+
+    The coherence contract of `_INDEXED_STEMS_CACHE`: every writer of the
+    cache must build its key here, or the scan path and the warm path stop
+    agreeing and the cache degrades to stale sets or perpetual rescans.
+    """
+    return tuple(sorted((c, store.collection_version(c)) for c in cols))
+
+
 def lance_indexed_stems(show_folder: Path) -> set[str]:
     """Return the set of episode stems that LanceDB has chunks for, for this show.
 
@@ -127,8 +137,15 @@ def lance_indexed_stems(show_folder: Path) -> set[str]:
     show_name = (meta.name if meta else None) or show_folder.name
     try:
         store = get_index_store()
-        cols = store.list_collections(show=show_name)
-        versions = tuple(sorted((c, store.collection_version(c)) for c in cols))
+        # get_all_collection_info is cached against index_mtime, so this
+        # avoids a LanceDB meta-table scan per request; list_collections
+        # would rescan every call.
+        cols = [
+            name
+            for name, info in store.get_all_collection_info().items()
+            if info.get("show") == show_name
+        ]
+        versions = _versions_fingerprint(store, cols)
         cached = _INDEXED_STEMS_CACHE.get(show_name)
         if cached is not None and cached[0] == versions:
             return set(cached[1])
@@ -140,6 +157,40 @@ def lance_indexed_stems(show_folder: Path) -> set[str]:
     except Exception as exc:
         logger.warning("lance indexed-set lookup failed for {!r}: {!r}", show_name, exc)
         return set()
+
+
+def note_episode_indexed(show_name: str, stem: str) -> None:
+    """Incrementally add *stem* to the cached indexed set after an index write.
+
+    Every LanceDB write bumps the dataset version, so during an index batch
+    each status poll would find the fingerprint stale and rebuild the set
+    with a full chunk scan — once per indexed episode. The server process
+    handling the index task knows exactly which episode just landed, so it
+    refreshes the fingerprint and adds the stem in place. Collection names
+    come from the cached fingerprint itself (metadata version reads only,
+    no meta-table scan); an episode indexed into a brand-new collection
+    self-heals through the normal rescan on the next request's mismatch.
+    Cross-process writers (bot rsync) also take the rescan path; a cold
+    cache just waits for the next request's scan.
+    """
+    cached = _INDEXED_STEMS_CACHE.get(show_name)
+    if cached is None:
+        return
+    try:
+        from podcodex.rag.index_store import get_index_store
+
+        versions = _versions_fingerprint(
+            get_index_store(), [name for name, _ in cached[0]]
+        )
+    except Exception as exc:
+        # Can't trust the fingerprint: drop the entry so the next request
+        # rebuilds from a real scan instead of serving a stale set.
+        _INDEXED_STEMS_CACHE.pop(show_name, None)
+        logger.warning("indexed-set refresh failed for {!r}: {!r}", show_name, exc)
+        return
+    stems = set(cached[1])
+    stems.add(stem)
+    _INDEXED_STEMS_CACHE[show_name] = (versions, stems)
 
 
 def _load_title(output_dir: Path) -> str:

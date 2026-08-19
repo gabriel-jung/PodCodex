@@ -122,7 +122,10 @@ class EpisodeStatusOut(BaseModel):
     # Singleton pointer to the version the user marked as verified.
     verified: VerifiedPointer | None = None
     segment_count: int | None = None
-    files: list[str] = []
+    # Subtitle files (.vtt/.srt) in the episode dir, relative to the show
+    # folder. The full file listing used to be shipped here, but subtitle
+    # reimport was its only consumer and it dominated the payload.
+    subtitle_files: list[str] = []
     # Step status: "none" | "outdated" | "done"
     transcribe_status: str = "none"
     correct_status: str = "none"

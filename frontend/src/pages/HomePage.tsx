@@ -22,6 +22,7 @@ import ImportFileDialog from "@/components/show/ImportFileDialog";
 import { Plus, List, LayoutGrid, Podcast, Group, X } from "lucide-react";
 import { errorMessage, splitPath } from "@/lib/utils";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import AppSidebar from "@/components/layout/AppSidebar";
 import EditorialHeader from "@/components/layout/EditorialHeader";
 import DropOverlay from "@/components/common/DropOverlay";
@@ -34,7 +35,12 @@ export default function HomePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: config } = useQuery({ queryKey: queryKeys.config(), queryFn: getConfig });
-  const { data: rawShows } = useQuery({
+  const {
+    data: rawShows,
+    isError: showsFailed,
+    error: showsError,
+    refetch: refetchShows,
+  } = useQuery({
     queryKey: queryKeys.shows(),
     queryFn: listShows,
   });
@@ -228,6 +234,14 @@ export default function HomePage() {
           </div>
         )}
 
+        {showsFailed && (
+          <ErrorAlert
+            error={showsError}
+            onRetry={() => void refetchShows()}
+            className="mb-4"
+          />
+        )}
+
         {sections && sections.length > 0 && (
           <>
             {/* Toolbar: group toggle + view toggle + card size */}
@@ -300,7 +314,7 @@ export default function HomePage() {
           </>
         )}
 
-        {sorted && sorted.length === 0 && (
+        {sorted && sorted.length === 0 && !showsFailed && (
           <EmptyState
             icon={Podcast}
             title="Welcome to PodCodex"

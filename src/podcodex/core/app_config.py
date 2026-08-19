@@ -12,11 +12,78 @@ import threading
 from collections.abc import Callable
 
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from podcodex.core.app_paths import config_dir
 
 CONFIG_PATH = config_dir() / "config.json"
+
+
+class PipelineTranscribeDefaults(BaseModel):
+    """App-wide transcribe defaults (Settings → Pipeline)."""
+
+    model_size: str = "large-v3-turbo"
+    batch_size: int | None = None
+    diarize: bool = False
+    clean: bool = False
+    num_speakers: str = ""
+    language: str = ""
+
+
+class PipelineLLMDefaults(BaseModel):
+    """App-wide LLM defaults for the correct/translate steps."""
+
+    mode: str = "manual"
+    provider_profile: str = ""
+    key_name: str = ""
+    model: str = ""
+    models_by_mode: dict[str, str] = Field(
+        default_factory=lambda: {"api": "", "ollama": "", "manual": ""}
+    )
+    context: str = ""
+    source_lang: str = "English"
+    batch_minutes: float = 15
+
+
+class PipelineAppDefaults(BaseModel):
+    """App-wide pipeline defaults, the base layer under per-show overrides.
+
+    Mirrors the frontend's ``ConfigBundle`` (snake_case, no HF token — that
+    lives in the secrets file). The presets are stored user picks, not
+    derived values, so they round-trip too.
+    """
+
+    transcribe: PipelineTranscribeDefaults = Field(
+        default_factory=PipelineTranscribeDefaults
+    )
+    llm: PipelineLLMDefaults = Field(default_factory=PipelineLLMDefaults)
+    engine: str = ""
+    target_lang: str = "French"
+    index_model: str = "bge-m3"
+    index_chunker: str = "semantic"
+    transcribe_preset: str = "gpu"
+    llm_preset: str = "manual"
+    llm_preset_touched: bool = False
+    index_preset: str = "balanced"
+
+    def status_defaults(self) -> dict:
+        """The app-level half of the step-status ("outdated") comparison.
+
+        Deliberately partial: only these fields participate in outdated
+        detection at the app level. ``llm_mode`` / ``llm_provider_profile``
+        stay at the unset sentinel ``""`` so a show-level override remains
+        the only thing that makes them count; ``llm_models_by_mode`` is an
+        input to model resolution, not compared directly. Consumers are
+        ``_resolve_defaults`` + ``_step_statuses`` in ``api/routes/shows.py``.
+        """
+        return {
+            "model_size": self.transcribe.model_size,
+            "diarize": self.transcribe.diarize,
+            "llm_mode": "",
+            "llm_provider_profile": "",
+            "llm_models_by_mode": dict(self.llm.models_by_mode),
+            "target_lang": self.target_lang,
+        }
 
 
 class AppConfig(BaseModel):
@@ -26,6 +93,11 @@ class AppConfig(BaseModel):
     # the sidecar's PODCODEX_FFMPEG_EXE env, and read directly here so
     # the dev path (no Tauri) works too.
     ffmpeg_exe_override: str = ""
+    # None = never saved (fresh install, or pre-migration client that still
+    # holds defaults in localStorage). Readers fall back to the model's
+    # built-in defaults; the frontend uses the None sentinel to run its
+    # one-time localStorage migration.
+    pipeline_defaults: PipelineAppDefaults | None = None
 
 
 # Hit on every search/list_shows; mtime-keyed so writes auto-invalidate.

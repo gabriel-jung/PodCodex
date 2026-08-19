@@ -1,8 +1,10 @@
 /** Pipeline configuration store.
  *
  * Two layers:
- *  - `appDefaults`: the persisted, app-wide defaults. Edited only on
- *    Settings → Pipeline.
+ *  - `appDefaults`: the app-wide defaults, owned by the server
+ *    (config.json `pipeline_defaults`). Hydrated once at startup via
+ *    `useHydrateAppDefaults`; edits on Settings → Pipeline write through
+ *    with a debounced PUT. Nothing here persists in the browser.
  *  - the flat working config (`transcribe`/`llm`/`engine`/`targetLang`/
  *    `indexModel` + preset keys): what the episode panels and the batch
  *    modal read and edit. It is re-seeded from the per-show config merged
@@ -12,9 +14,12 @@
  */
 
 import { useEffect, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
-import type { PipelineDefaults } from "@/api/types";
+import type { PipelineAppDefaults, PipelineDefaults } from "@/api/types";
+import { queryKeys } from "@/api/queryKeys";
+import { getConfig, putPipelineDefaults } from "@/api/shows";
+import { BOOT_RETRY } from "@/api/health";
 
 export type LLMMode = "api" | "ollama" | "manual";
 
@@ -246,11 +251,138 @@ export function effectiveBundle(
   };
 }
 
+// ── Server ⇄ store conversion ────────────────────────────
+
+/** Store bundle → server model (snake_case; the HF token never leaves the
+ *  secrets file, so it is not part of the server shape). */
+export function bundleToServer(b: ConfigBundle): PipelineAppDefaults {
+  return {
+    transcribe: {
+      model_size: b.transcribe.modelSize,
+      batch_size: b.transcribe.batchSize,
+      diarize: b.transcribe.diarize,
+      clean: b.transcribe.clean,
+      num_speakers: b.transcribe.numSpeakers,
+      language: b.transcribe.language,
+    },
+    llm: {
+      mode: b.llm.mode,
+      provider_profile: b.llm.providerProfile,
+      key_name: b.llm.keyName,
+      model: b.llm.model,
+      models_by_mode: b.llm.modelsByMode,
+      context: b.llm.context,
+      source_lang: b.llm.sourceLang,
+      batch_minutes: b.llm.batchMinutes,
+    },
+    engine: b.engine,
+    target_lang: b.targetLang,
+    index_model: b.indexModel,
+    index_chunker: b.indexChunker,
+    transcribe_preset: b.transcribePreset,
+    llm_preset: b.llmPreset,
+    llm_preset_touched: b.llmPresetTouched,
+    index_preset: b.indexPreset,
+  };
+}
+
+/** Server model → store bundle. Pydantic serializes complete sub-models,
+ *  so only the optional pieces (`transcribe`/`llm` on a partial payload and
+ *  the two nullable fields) need fallbacks. */
+export function serverToBundle(d: PipelineAppDefaults): ConfigBundle {
+  const t = d.transcribe ?? INITIAL_SERVER.transcribe!;
+  const llm = d.llm ?? INITIAL_SERVER.llm!;
+  return {
+    transcribe: {
+      modelSize: t.model_size,
+      batchSize: t.batch_size ?? null,
+      diarize: t.diarize,
+      clean: t.clean,
+      hfToken: "",
+      numSpeakers: t.num_speakers,
+      language: t.language,
+    },
+    llm: {
+      mode: llm.mode as LLMMode,
+      providerProfile: llm.provider_profile,
+      keyName: llm.key_name,
+      model: llm.model,
+      modelsByMode: {
+        ...INITIAL_BUNDLE.llm.modelsByMode,
+        ...llm.models_by_mode,
+      },
+      context: llm.context,
+      sourceLang: llm.source_lang,
+      batchMinutes: llm.batch_minutes,
+    },
+    engine: d.engine,
+    targetLang: d.target_lang,
+    indexModel: d.index_model,
+    indexChunker: d.index_chunker,
+    transcribePreset: d.transcribe_preset,
+    llmPreset: d.llm_preset,
+    llmPresetTouched: d.llm_preset_touched,
+    indexPreset: d.index_preset,
+  };
+}
+
+const INITIAL_SERVER = bundleToServer(INITIAL_BUNDLE);
+
+// Write-through on the *leading* edge: the first edit saves immediately, and
+// further edits inside the window coalesce into one trailing save. There is
+// deliberately no flush-on-close to fall back on — registering a Tauri close
+// handler makes the app unclosable (see platform/tauri.ts) — so a single
+// toggle, the common case, has to be durable the moment it is made. Only the
+// tail of a rapid burst, e.g. still typing into a number field, is at risk.
+const PUSH_DEBOUNCE_MS = 600;
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
+let lastPushAt = 0;
+
+function pushNow(): Promise<void> {
+  pushTimer = null;
+  lastPushAt = Date.now();
+  return putPipelineDefaults(
+    bundleToServer(usePipelineConfigStore.getState().appDefaults),
+  ).then(
+    () => undefined,
+    (err: unknown) => {
+      console.warn("Saving pipeline defaults failed:", err);
+    },
+  );
+}
+
+function schedulePush(): void {
+  // Never write defaults we did not successfully read. A failed hydration
+  // leaves `appDefaults` at the built-ins, so pushing would replace the
+  // user's stored defaults with factory values plus whatever they just
+  // touched — data loss the old localStorage persistence could not cause.
+  if (!hydrationSucceeded) {
+    console.warn("Pipeline defaults not loaded; skipping save.");
+    return;
+  }
+  if (pushTimer) clearTimeout(pushTimer);
+  const since = Date.now() - lastPushAt;
+  if (since >= PUSH_DEBOUNCE_MS) {
+    void pushNow();
+    return;
+  }
+  pushTimer = setTimeout(() => void pushNow(), PUSH_DEBOUNCE_MS - since);
+}
+
 // ── Store ────────────────────────────────────────────────
 
 export interface PipelineConfigState extends ConfigBundle {
-  /** Persisted app-wide defaults; edited only on Settings → Pipeline. */
+  /** App-wide defaults (server-owned); edited only on Settings → Pipeline. */
   appDefaults: ConfigBundle;
+  /** True once `useHydrateAppDefaults` resolved the server value (or its
+   *  absence). Seeding the working config waits for this so a show open
+   *  never seeds from the built-ins while the real defaults are in flight. */
+  appDefaultsReady: boolean;
+  /** True when the defaults could not be read. Writes stay blocked (we will
+   *  not overwrite settings we never saw), so the UI must say so rather than
+   *  accept edits it is going to drop. */
+  appDefaultsFailed: boolean;
+  hydrateAppDefaults: (defaults: PipelineAppDefaults | null, ok?: boolean) => void;
 
   // Working-config setters (episode panels + batch modal).
   setTranscribe: (patch: Partial<TranscribeConfig>) => void;
@@ -291,135 +423,166 @@ function working(s: PipelineConfigState): ConfigBundle {
   };
 }
 
-export const usePipelineConfigStore = create<PipelineConfigState>()(
-  persist(
-    (set) => ({
-      ...INITIAL_BUNDLE,
-      appDefaults: INITIAL_BUNDLE,
-
-      // ── Working setters ──
-      setTranscribe: (patch) => set((s) => reduceTranscribe(working(s), patch)),
-      setLLM: (patch) =>
-        set((s) => {
-          // No-op short-circuit: zustand subscribers re-render on any new
-          // `llm` reference even when every patched field equals current.
-          const changed = (Object.keys(patch) as (keyof LLMConfig)[]).some(
-            (k) => patch[k] !== s.llm[k],
-          );
-          return changed ? reduceLLM(working(s), patch) : s;
-        }),
-      setEngine: (engine) => set({ engine }),
-      setTargetLang: (targetLang) => set({ targetLang }),
-      setIndexModel: (model) => set((s) => reduceIndexModel(working(s), model)),
-      setIndexChunker: (indexChunker) => set({ indexChunker }),
-      applyTranscribePreset: (key) =>
-        set((s) => reduceTranscribePreset(working(s), key)),
-      applyLLMPreset: (key, providerProfile) =>
-        set((s) => reduceLLMPreset(working(s), key, providerProfile)),
-      applyIndexPreset: (key) => set((s) => reduceIndexPreset(working(s), key)),
-
-      // ── App-default setters ──
-      setAppTranscribe: (patch) =>
-        set((s) => ({ appDefaults: reduceTranscribe(s.appDefaults, patch) })),
-      setAppLLM: (patch) =>
-        set((s) => ({ appDefaults: reduceLLM(s.appDefaults, patch) })),
-      setAppTargetLang: (targetLang) =>
-        set((s) => ({ appDefaults: { ...s.appDefaults, targetLang } })),
-      setAppIndexModel: (model) =>
-        set((s) => ({ appDefaults: reduceIndexModel(s.appDefaults, model) })),
-      setAppIndexChunker: (indexChunker) =>
-        set((s) => ({ appDefaults: { ...s.appDefaults, indexChunker } })),
-
-      seedWorkingFromShow: (pipeline) =>
-        set((s) => effectiveBundle(s.appDefaults, pipeline)),
+export const usePipelineConfigStore = create<PipelineConfigState>()((set) => {
+  // Shared write-through shape of every app-default setter.
+  const setAppDefaults = (reduce: (b: ConfigBundle) => ConfigBundle) => {
+    set((s) => ({ appDefaults: reduce(s.appDefaults) }));
+    schedulePush();
+  };
+  return {
+  ...INITIAL_BUNDLE,
+  appDefaults: INITIAL_BUNDLE,
+  appDefaultsReady: false,
+  appDefaultsFailed: false,
+  hydrateAppDefaults: (defaults, ok = true) =>
+    set({
+      appDefaults: defaults ? serverToBundle(defaults) : INITIAL_BUNDLE,
+      appDefaultsReady: true,
+      appDefaultsFailed: !ok,
     }),
-    {
-      name: "podcodex-pipeline-config",
-      version: 7,
-      migrate(persisted: unknown, fromVersion: number) {
-        const s = persisted as Record<string, unknown>;
-        if (fromVersion < 1) {
-          const tc = s.transcribe as Record<string, unknown> | undefined;
-          if (tc && tc.clean === undefined) tc.clean = false;
-          if (!s.transcribePreset) s.transcribePreset = "";
-          if (!s.llmPreset) s.llmPreset = "";
-          if (!s.indexPreset) s.indexPreset = "";
-          if (!s.indexModel) s.indexModel = "bge-m3";
+
+  // ── Working setters ──
+  setTranscribe: (patch) => set((s) => reduceTranscribe(working(s), patch)),
+  setLLM: (patch) =>
+    set((s) => {
+      // No-op short-circuit: zustand subscribers re-render on any new
+      // `llm` reference even when every patched field equals current.
+      const changed = (Object.keys(patch) as (keyof LLMConfig)[]).some(
+        (k) => patch[k] !== s.llm[k],
+      );
+      return changed ? reduceLLM(working(s), patch) : s;
+    }),
+  setEngine: (engine) => set({ engine }),
+  setTargetLang: (targetLang) => set({ targetLang }),
+  setIndexModel: (model) => set((s) => reduceIndexModel(working(s), model)),
+  setIndexChunker: (indexChunker) => set({ indexChunker }),
+  applyTranscribePreset: (key) =>
+    set((s) => reduceTranscribePreset(working(s), key)),
+  applyLLMPreset: (key, providerProfile) =>
+    set((s) => reduceLLMPreset(working(s), key, providerProfile)),
+  applyIndexPreset: (key) => set((s) => reduceIndexPreset(working(s), key)),
+
+  // ── App-default setters (write through to the server, debounced) ──
+  setAppTranscribe: (patch) => setAppDefaults((b) => reduceTranscribe(b, patch)),
+  setAppLLM: (patch) => setAppDefaults((b) => reduceLLM(b, patch)),
+  setAppTargetLang: (targetLang) => setAppDefaults((b) => ({ ...b, targetLang })),
+  setAppIndexModel: (model) => setAppDefaults((b) => reduceIndexModel(b, model)),
+  setAppIndexChunker: (indexChunker) =>
+    setAppDefaults((b) => ({ ...b, indexChunker })),
+
+  seedWorkingFromShow: (pipeline) =>
+    set((s) => effectiveBundle(s.appDefaults, pipeline)),
+  };
+});
+
+/** localStorage key of the pre-server-config zustand persist slice. Read
+ *  once by the hydration hook to migrate old installs, then removed. */
+const LEGACY_STORAGE_KEY = "podcodex-pipeline-config";
+
+// Module-level guards: hydration runs once per app start. StrictMode mounts
+// the effect twice; a component-level cancel flag would let the surviving
+// mount skip hydration, so guard here and let the single async run land its
+// result in the store (safe after unmount — it's not component state).
+let hydrationStarted = false;
+// Only a successful read unlocks writes; see `schedulePush`.
+let hydrationSucceeded = false;
+
+/** Hydrate `appDefaults` from server config once at app startup, and keep
+ *  a pending debounced save from being lost on window close.
+ *
+ *  Server value wins. When the server has none (fresh install or first run
+ *  after the localStorage era), a legacy persisted slice is promoted to the
+ *  server once and the key removed; otherwise the built-ins stand. */
+export function useHydrateAppDefaults(): void {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (hydrationStarted) return;
+    hydrationStarted = true;
+    void (async () => {
+      let defaults: PipelineAppDefaults | null = null;
+      try {
+        // fetchQuery primes the shared ["config"] cache (HomePage, panels)
+        // instead of firing a duplicate request beside it. BOOT_RETRY because
+        // this races the sidecar's 10-30s first-launch extraction, exactly
+        // what /api/health's schedule exists for; the default `retry: 1`
+        // gives up after ~1s and would leave every session cold-started.
+        const cfg = await queryClient.fetchQuery({
+          queryKey: queryKeys.config(),
+          queryFn: getConfig,
+          ...BOOT_RETRY,
+        });
+        defaults = cfg.pipeline_defaults ?? null;
+        if (!defaults) {
+          const legacy = readLegacyAppDefaults();
+          if (legacy) defaults = await putPipelineDefaults(legacy);
         }
-        if (fromVersion < 2) {
-          // A persisted v1 record means the app was opened under the
-          // previous UI, so treat the user as having touched the setting:
-          // silently auto-upgrading their LLM config on next load would be
-          // surprising. Fresh installs never hit this branch; their initial
-          // `llmPresetTouched: false` opts them into the auto-upgrade.
-          const preset = (s.llmPreset as string | undefined) || "";
-          s.llmPresetTouched = preset !== "";
-        }
-        if (fromVersion < 3) {
-          // The old default of 16 was hardcoded and bypassed the backend's
-          // VRAM-based auto-detect; flip it to null so auto-detect runs.
-          const tc = s.transcribe as Record<string, unknown> | undefined;
-          if (tc && tc.batchSize === 16) tc.batchSize = null;
-        }
-        if (fromVersion < 4) {
-          // LLM credentials moved from provider/apiKey/apiBaseUrl on the LLM
-          // config to a named key pool + profile catalog. Old picks are no
-          // longer addressable; reset so the user re-picks from the new UI.
-          const llm = s.llm as Record<string, unknown> | undefined;
-          if (llm) {
-            delete llm.provider;
-            delete llm.apiKey;
-            delete llm.apiBaseUrl;
-            llm.providerProfile = "";
-            llm.keyName = "";
-          }
-        }
-        if (fromVersion < 5) {
-          // Per-mode model stash. Seed it from the existing `model` so the
-          // current pick lives under the current mode, losing no value.
-          const llm = s.llm as Record<string, unknown> | undefined;
-          if (llm) {
-            const mode = (llm.mode as LLMMode | undefined) ?? "manual";
-            const model = (llm.model as string | undefined) ?? "";
-            llm.modelsByMode = { api: "", ollama: "", manual: "", [mode]: model };
-          }
-        }
-        if (fromVersion < 6) {
-          // The flat config used to be both the app default and the
-          // working copy. Promote the persisted flat fields into the new
-          // `appDefaults` bundle; the working copy is now seeded per show.
-          s.appDefaults = {
-            transcribe: s.transcribe ?? INITIAL_BUNDLE.transcribe,
-            llm: s.llm ?? INITIAL_BUNDLE.llm,
-            engine: s.engine ?? INITIAL_BUNDLE.engine,
-            targetLang: s.targetLang ?? INITIAL_BUNDLE.targetLang,
-            indexModel: s.indexModel ?? INITIAL_BUNDLE.indexModel,
-            transcribePreset: s.transcribePreset ?? INITIAL_BUNDLE.transcribePreset,
-            llmPreset: s.llmPreset ?? INITIAL_BUNDLE.llmPreset,
-            llmPresetTouched: s.llmPresetTouched ?? INITIAL_BUNDLE.llmPresetTouched,
-            indexPreset: s.indexPreset ?? INITIAL_BUNDLE.indexPreset,
-          };
-        }
-        if (fromVersion < 7) {
-          // Search-index chunker became an app default to mirror indexModel.
-          // Seed it with the previous hardcoded fallback so existing installs
-          // keep the same behavior.
-          const app = s.appDefaults as Record<string, unknown> | undefined;
-          if (app && app.indexChunker === undefined) app.indexChunker = "semantic";
-        }
-        return s as unknown as PipelineConfigState;
+        localStorage.removeItem(LEGACY_STORAGE_KEY);
+        // Only now unlock writes. Unlocking before the migration PUT would
+        // let a Settings edit store the built-ins first, and the next start
+        // would take that as the server's answer and never retry the
+        // migration — the legacy values would be shadowed for good.
+        hydrationSucceeded = true;
+      } catch (err) {
+        // Unreachable server, or the migration PUT failed: stay on the
+        // built-ins for this session with writes still blocked, and let the
+        // next app start retry (the legacy key is only removed on success).
+        console.warn("Hydrating pipeline defaults failed:", err);
+      }
+      usePipelineConfigStore
+        .getState()
+        .hydrateAppDefaults(defaults, hydrationSucceeded);
+    })();
+  }, [queryClient]);
+}
+
+function readLegacyAppDefaults(): PipelineAppDefaults | null {
+  const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const state = (JSON.parse(raw) as { state?: Record<string, unknown> }).state;
+    if (!state) return null;
+    // Two shapes to accept. Slices written before the app/working split kept
+    // the bundle's fields at the top level; only later ones nest them under
+    // `appDefaults`. The zustand migration chain used to promote the old
+    // shape, and it went away with the persist layer, so handle it here or
+    // those installs silently start over on the built-in defaults.
+    const bundle = (state.appDefaults ?? state) as Partial<ConfigBundle>;
+    if (!bundle.transcribe && !bundle.llm) return null;
+    // Old slices can also predate later bundle fields; fill from the built-ins.
+    const merged: ConfigBundle = {
+      ...INITIAL_BUNDLE,
+      ...bundle,
+      transcribe: {
+        ...INITIAL_BUNDLE.transcribe,
+        ...bundle.transcribe,
+        hfToken: "",
       },
-      // Persist only the app defaults (the working copy is reseeded per
-      // show). Don't persist the Hugging Face token.
-      partialize: (s) => ({
-        appDefaults: {
-          ...s.appDefaults,
-          transcribe: { ...s.appDefaults.transcribe, hfToken: "" },
-        },
-      }),
-    },
-  ),
-);
+      llm: { ...INITIAL_BUNDLE.llm, ...bundle.llm },
+    };
+
+    // The deleted zustand `migrate` chain also normalized *values*, not just
+    // the shape. Those steps have to happen here or an old slice migrates
+    // once, permanently, with the wrong ones.
+    //   v3: a hardcoded batchSize of 16 overrode the backend's VRAM-based
+    //       auto-detect; null re-enables it.
+    if (merged.transcribe.batchSize === 16) merged.transcribe.batchSize = null;
+    //   v2: an existing preset means the user already chose, so don't let the
+    //       "switch to cloud when an API key shows up" auto-upgrade fire.
+    if (!merged.llmPresetTouched && merged.llmPreset) {
+      merged.llmPresetTouched = true;
+    }
+    //   v5: per-mode model stash, seeded from the single `model` field.
+    if (!Object.values(merged.llm.modelsByMode).some(Boolean) && merged.llm.model) {
+      merged.llm.modelsByMode = {
+        ...merged.llm.modelsByMode,
+        [merged.llm.mode]: merged.llm.model,
+      };
+    }
+    return bundleToServer(merged);
+  } catch {
+    return null;
+  }
+}
 
 /** Seed the working pipeline config from a show once per show open.
  *  Re-seeds when the folder changes; a same-show meta refetch does not
@@ -430,11 +593,15 @@ export function useSeedPipelineFromShow(
   ready: boolean,
 ): void {
   const seed = usePipelineConfigStore((s) => s.seedWorkingFromShow);
+  // Also wait for the server-owned app defaults: seeding from the built-ins
+  // while hydration is in flight would bake the wrong base into the working
+  // copy for the whole show visit.
+  const defaultsReady = usePipelineConfigStore((s) => s.appDefaultsReady);
   const seededFolder = useRef<string | null>(null);
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !defaultsReady) return;
     if (seededFolder.current === (folder ?? null)) return;
     seededFolder.current = folder ?? null;
     seed(pipeline);
-  }, [folder, ready, pipeline, seed]);
+  }, [folder, ready, defaultsReady, pipeline, seed]);
 }

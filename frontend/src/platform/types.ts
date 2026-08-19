@@ -25,7 +25,11 @@ export interface PlatformWindow {
 }
 
 export interface PlatformLifecycle {
-  /** Register a callback before the app closes. */
+  /** Register a callback just before the app closes.
+   *
+   *  Best-effort and synchronous in spirit: neither implementation waits for
+   *  async work (`beforeunload` cannot, and Tauri must not — see `tauri.ts`),
+   *  so anything that must survive has to be written earlier. */
   onBeforeClose(cb: () => void): () => void;
 }
 

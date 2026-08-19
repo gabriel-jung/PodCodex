@@ -39,6 +39,12 @@ export default defineConfig({
         target: "http://127.0.0.1:18811",
         changeOrigin: true,
         ws: true,
+        // Rewrite the host in 30x `Location` headers back to the dev server.
+        // FastAPI's trailing-slash redirect points at the target absolutely,
+        // and `changeOrigin` makes that `127.0.0.1:18811` — the browser would
+        // follow it straight to the backend, escaping this proxy and the
+        // token it injects, and land on 401 with no visible error.
+        autoRewrite: true,
         configure: (proxy) => {
           // Read per request (tiny local file, dev only) so a token that
           // appears or changes after Vite boots is picked up without a

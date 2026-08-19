@@ -24,6 +24,7 @@ export type {
   FilesImportResponse,
   GenerateRequest,
   IndexRequest,
+  PipelineAppDefaults,
   PipelineDefaultsSchema as PipelineDefaults,
   CorrectRequest,
   RSSEpisodeOut,

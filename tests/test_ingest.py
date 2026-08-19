@@ -118,6 +118,50 @@ def test_scan_folder_indexed_false(tmp_path, monkeypatch):
     assert result[0].indexed is False
 
 
+def test_note_episode_indexed_updates_cache(monkeypatch):
+    from podcodex.ingest import folder as folder_mod
+
+    class FakeStore:
+        def get_all_collection_info(self):
+            return {"show_bge": {"show": "MyShow"}, "other": {"show": "Other"}}
+
+        def collection_version(self, col):
+            return 7
+
+    monkeypatch.setattr("podcodex.rag.index_store.get_index_store", lambda: FakeStore())
+    monkeypatch.setattr(folder_mod, "_INDEXED_STEMS_CACHE", {})
+
+    # Cold cache: nothing to keep warm, next request scans anyway.
+    folder_mod.note_episode_indexed("MyShow", "ep01")
+    assert folder_mod._INDEXED_STEMS_CACHE == {}
+
+    folder_mod._INDEXED_STEMS_CACHE["MyShow"] = ((("show_bge", 3),), {"ep00"})
+    folder_mod.note_episode_indexed("MyShow", "ep01")
+    versions, stems = folder_mod._INDEXED_STEMS_CACHE["MyShow"]
+    assert stems == {"ep00", "ep01"}
+    assert versions == (("show_bge", 7),)
+
+
+def test_note_episode_indexed_drops_entry_on_error(monkeypatch):
+    from podcodex.ingest import folder as folder_mod
+
+    def _boom():
+        raise RuntimeError("index store unavailable")
+
+    monkeypatch.setattr("podcodex.rag.index_store.get_index_store", _boom)
+    monkeypatch.setattr(
+        folder_mod,
+        "_INDEXED_STEMS_CACHE",
+        {"MyShow": ((("show_bge", 3),), {"ep00"})},
+    )
+
+    folder_mod.note_episode_indexed("MyShow", "ep01")
+
+    # A fingerprint we can't refresh must not survive: the next request
+    # rebuilds from a real scan instead of serving a stale set.
+    assert "MyShow" not in folder_mod._INDEXED_STEMS_CACHE
+
+
 # ──────────────────────────────────────────────
 # Edge cases
 # ──────────────────────────────────────────────

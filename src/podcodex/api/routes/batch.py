@@ -358,6 +358,11 @@ def _batch_index(
     if not result.get("indexed"):
         logger.warning("Index produced 0 chunks for {} — not marking as indexed", stem)
         return False
+    # Keep the indexed-stems cache warm so the status poll doesn't rebuild
+    # it with a full chunk scan after every episode of the batch.
+    from podcodex.ingest.folder import note_episode_indexed
+
+    note_episode_indexed(req.show_name, stem)
     return True
 
 

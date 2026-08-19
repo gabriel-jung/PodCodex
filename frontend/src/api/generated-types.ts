@@ -98,7 +98,7 @@ export interface EpisodeStatusOut {
   provenance: Record<string, unknown>;
   verified?: VerifiedPointer | null;
   segment_count?: number | null;
-  files: string[];
+  subtitle_files: string[];
   transcribe_status: string;
   correct_status: string;
   translate_status: string;
@@ -119,7 +119,7 @@ export interface UnifiedEpisodeOut {
   provenance: Record<string, unknown>;
   verified?: VerifiedPointer | null;
   segment_count?: number | null;
-  files: string[];
+  subtitle_files: string[];
   transcribe_status: string;
   correct_status: string;
   translate_status: string;
@@ -183,6 +183,40 @@ export interface AppConfig {
   show_folders: string[];
   default_save_path: string;
   ffmpeg_exe_override: string;
+  pipeline_defaults?: PipelineAppDefaults | null;
+}
+
+export interface PipelineAppDefaults {
+  transcribe?: PipelineTranscribeDefaults;
+  llm?: PipelineLLMDefaults;
+  engine: string;
+  target_lang: string;
+  index_model: string;
+  index_chunker: string;
+  transcribe_preset: string;
+  llm_preset: string;
+  llm_preset_touched: boolean;
+  index_preset: string;
+}
+
+export interface PipelineTranscribeDefaults {
+  model_size: string;
+  batch_size?: number | null;
+  diarize: boolean;
+  clean: boolean;
+  num_speakers: string;
+  language: string;
+}
+
+export interface PipelineLLMDefaults {
+  mode: string;
+  provider_profile: string;
+  key_name: string;
+  model: string;
+  models_by_mode?: Record<string, string>;
+  context: string;
+  source_lang: string;
+  batch_minutes: number;
 }
 
 export interface ShowSummary {

@@ -7,7 +7,7 @@
  */
 
 import { useRef, useEffect, useState, useMemo, useCallback } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
 import type { Segment, VersionEntry } from "@/api/types";
 import { saveExportFile } from "@/api/client";
 import { usePlatform } from "@/platform";
@@ -199,14 +199,15 @@ export default function TranscriptViewer({
 
   const { data: versions } = useQuery({
     queryKey: queryKeys.stepVersions(editorKey, audioPath),
-    queryFn: loadVersions!,
-    enabled: !!loadVersions,
+    // skipToken, not `queryFn: x!` + `enabled`: passing an undefined queryFn
+    // makes React Query log "No queryFn was passed" on every render even
+    // while the query is disabled.
+    queryFn: loadVersions ?? skipToken,
   });
 
   const { data: compareVersionsExtra } = useQuery({
     queryKey: queryKeys.stepVersions(`${editorKey}__compare`, audioPath),
-    queryFn: loadCompareVersions!,
-    enabled: !!loadCompareVersions,
+    queryFn: loadCompareVersions ?? skipToken,
   });
   const compareVersions = compareVersionsExtra ?? versions ?? [];
 

@@ -15,7 +15,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { getEpisodeStatus } from "@/api/shows";
 import { queryKeys } from "@/api/queryKeys";
-import type { Episode, EpisodeStatus, PipelineDefaults } from "@/api/types";
+import type { Episode, EpisodeStatus } from "@/api/types";
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -41,7 +41,6 @@ function sameStatus(ep: Episode, status: EpisodeStatus): boolean {
 
 export function useEpisodeStatusPoll(
   folder: string | undefined,
-  pipelineDefaults: PipelineDefaults,
   enabled: boolean,
   /** `dataUpdatedAt` of the caller's episodes query. Only a dependency: the
    *  merge bails when the full list has not arrived yet, and the cheap poll
@@ -51,8 +50,8 @@ export function useEpisodeStatusPoll(
 ) {
   const queryClient = useQueryClient();
   const { data: statuses, dataUpdatedAt } = useQuery({
-    queryKey: queryKeys.episodeStatus(folder ?? "", pipelineDefaults),
-    queryFn: () => getEpisodeStatus(folder!, pipelineDefaults),
+    queryKey: queryKeys.episodeStatus(folder ?? ""),
+    queryFn: () => getEpisodeStatus(folder!),
     enabled: !!folder && enabled,
     refetchInterval: POLL_INTERVAL_MS,
   });
@@ -64,7 +63,7 @@ export function useEpisodeStatusPoll(
 
   useEffect(() => {
     if (!folder || !statuses) return;
-    const key = queryKeys.episodes(folder, pipelineDefaults);
+    const key = queryKeys.episodesForFolder(folder);
     const episodes = queryClient.getQueryData<Episode[]>(key);
     if (!episodes) return;
     // Polling stops and restarts across runs, so this query can hand back a
@@ -95,5 +94,5 @@ export function useEpisodeStatusPoll(
       refetchedForRef.current = signature;
       queryClient.invalidateQueries({ queryKey: key });
     }
-  }, [statuses, dataUpdatedAt, episodesUpdatedAt, folder, pipelineDefaults, queryClient]);
+  }, [statuses, dataUpdatedAt, episodesUpdatedAt, folder, queryClient]);
 }

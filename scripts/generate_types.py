@@ -44,7 +44,12 @@ from podcodex.api.schemas import (  # noqa: E402
 )
 from podcodex.api.routes.shows import VerifiedRequest as VerifiedSetRequest  # noqa: E402
 from podcodex.api.routes.batch import BatchRequest  # noqa: E402
-from podcodex.api.routes.config import AppConfig  # noqa: E402
+from podcodex.core.app_config import (  # noqa: E402
+    AppConfig,
+    PipelineAppDefaults,
+    PipelineLLMDefaults,
+    PipelineTranscribeDefaults,
+)
 from podcodex.api.routes.index import IndexRequest  # noqa: E402
 from podcodex.api.routes._helpers import (  # noqa: E402
     ApplyBatchesRequest,
@@ -125,6 +130,9 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, TaskResponse),
     # routes
     (None, AppConfig),
+    (None, PipelineAppDefaults),
+    (None, PipelineTranscribeDefaults),
+    (None, PipelineLLMDefaults),
     (None, ShowSummary),
     (None, MoveShowRequest),
     (None, FilesImportRequest),

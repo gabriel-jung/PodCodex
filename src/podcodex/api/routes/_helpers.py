@@ -32,12 +32,13 @@ __all__ = ["get_index_store"]
 AUDIO_EXTS = AUDIO_EXTENSIONS
 
 
-def list_show_stems(show_folder: Path) -> set[str]:
+def list_show_stems(show_folder: Path) -> frozenset[str]:
     """One-shot listing of stems on disk in a show folder.
 
     Pass into :func:`episode_stem` / :func:`rss_episode_to_out` from any
     loop that processes many episodes — without it, each call inside the
-    loop would do its own ``os.scandir``.
+    loop would do its own ``os.scandir``. Frozen so episode_stem's suffix
+    lookup can memoize an index keyed on it.
     """
     import os
 
@@ -57,7 +58,7 @@ def list_show_stems(show_folder: Path) -> set[str]:
                     stems.add(name[:dot])
     except OSError:
         pass
-    return stems
+    return frozenset(stems)
 
 
 def _build_source_chain(
@@ -331,7 +332,7 @@ def rss_episode_to_out(
     ep: RSSEpisode,
     show_folder: Path,
     *,
-    existing_stems: set[str] | frozenset[str] | None = None,
+    existing_stems: frozenset[str] | None = None,
 ) -> dict:
     """Convert an RSSEpisode to an RSSEpisodeOut dict.
 
@@ -382,24 +383,36 @@ def submit_subprocess_task(
     entry_path: str,
     kwargs: dict,
     req,
+    on_result=None,
 ) -> TaskResponse:
     """Submit a background task whose work runs in a spawned subprocess.
 
     Centralises the boilerplate that would otherwise be copy-pasted in every
     route handler that delegates to ``subprocess_runner``: builds the inner
     closure, extracts the cancel_event attached by the task manager, and
-    forwards the progress callback.
+    forwards the progress callback. ``on_result`` runs in the server process
+    after a successful subprocess exit with the child's result dict — for
+    cache upkeep that needs to happen where the caches live; its failure
+    must not fail the task.
     """
     from podcodex.api.subprocess_runner import run_in_subprocess
 
     def _run(progress_cb, _req):
-        return run_in_subprocess(
+        result = run_in_subprocess(
             entry_path=entry_path,
             kwargs=kwargs,
             on_progress=progress_cb,
             on_log=getattr(progress_cb, "log_cb", None),
             cancel_event=getattr(progress_cb, "cancel_event", None),
         )
+        if on_result is not None:
+            try:
+                on_result(result)
+            except Exception:
+                logger.opt(exception=True).warning(
+                    "on_result hook failed for {} task", step
+                )
+        return result
 
     return submit_task(step, audio_path, _run, req)
 

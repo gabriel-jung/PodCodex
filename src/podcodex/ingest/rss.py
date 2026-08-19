@@ -7,6 +7,7 @@ locally as ``.feed_cache.json`` in the show folder.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -191,7 +192,7 @@ def episode_stem(
     rss_episode: RSSEpisode,
     show_folder: Path | str | None = None,
     *,
-    existing_stems: set[str] | frozenset[str] | None = None,
+    existing_stems: frozenset[str] | None = None,
 ) -> str:
     """Return the filesystem stem for an RSS episode.
 
@@ -226,6 +227,10 @@ def episode_stem(
             return match
 
     # Legacy fallback (slug-only directory from before guid suffixes existed).
+    # Deliberately a directory stat rather than a lookup in `existing_stems`:
+    # that listing also carries root audio stems, and matching one of those
+    # would collapse two same-titled episodes onto a single stem — the exact
+    # collision the guid suffix exists to prevent.
     if (Path(show_folder) / slug).is_dir():
         return slug
 
@@ -235,22 +240,23 @@ def episode_stem(
 def _find_stem_with_suffix(
     show_folder: Path | str,
     suffix: str,
-    existing_stems: set[str] | frozenset[str] | None,
+    existing_stems: frozenset[str] | None,
 ) -> str | None:
     """Return the first stem ending with ``_{suffix}``, or None.
 
     Uses ``existing_stems`` if provided (caller already has the listing),
     otherwise scans ``show_folder`` once via ``os.scandir``. Inline scan is
     bounded to one syscall regardless of how many entries; the cost only
-    matters when called repeatedly for many episodes — pass the set to
-    amortise that.
+    matters when called repeatedly for many episodes — pass the set as a
+    frozenset to amortise that: the suffix index built from it is memoized,
+    turning the per-episode scan into a dict lookup.
     """
-    needle = f"_{suffix}"
     if existing_stems is not None:
-        for stem in existing_stems:
-            if stem.endswith(needle):
-                return stem
-        return None
+        # frozenset() on a frozenset returns it unchanged, so this only costs
+        # anything for a caller that still hands over a plain (unhashable,
+        # lru_cache-hostile) set.
+        return _suffix_index(frozenset(existing_stems)).get(suffix)
+    needle = f"_{suffix}"
 
     try:
         with os.scandir(show_folder) as it:
@@ -271,6 +277,27 @@ def _find_stem_with_suffix(
     except OSError:
         pass
     return None
+
+
+# Memoized suffix index, keyed on the caller's frozenset of stems. The
+# episode list resolves a stem per feed entry against the same listing,
+# which was an O(entries x stems) endswith sweep per request. A show can
+# occupy two slots (the unified route and the rss/youtube routes build
+# different frozensets), hence the roomy cap.
+@functools.lru_cache(maxsize=32)
+def _suffix_index(stems: frozenset[str]) -> dict[str, str]:
+    """Map every ``_``-separated tail of each stem to that stem.
+
+    Every tail, not just the last segment: YouTube video ids can contain
+    ``_``, so the guid suffix of ``slug_abc_def1234`` is ``abc_def1234``.
+    """
+    idx: dict[str, str] = {}
+    for stem in sorted(stems):
+        pos = stem.find("_")
+        while pos != -1:
+            idx.setdefault(stem[pos + 1 :], stem)
+            pos = stem.find("_", pos + 1)
+    return idx
 
 
 def _audio_ext_from_url(url: str) -> str:

@@ -3,7 +3,7 @@
 export { useAudioStore, selectAudioSegments, type AudioSegment } from "./audioStore";
 export { useEpisodeStore, useAudioPath } from "./episodeStore";
 export { useSearchStore } from "./searchStore";
-export { usePipelineConfigStore, useSeedPipelineFromShow } from "./pipelineConfigStore";
+export { usePipelineConfigStore, useSeedPipelineFromShow, useHydrateAppDefaults } from "./pipelineConfigStore";
 export type { TranscribeConfig } from "./pipelineConfigStore";
 export { useTaskStore, type BatchEpisode } from "./taskStore";
 export { useBatchHistoryStore, type BatchHistoryEntry } from "./batchHistoryStore";

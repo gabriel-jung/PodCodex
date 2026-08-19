@@ -133,3 +133,114 @@ def test_tauri_shell_mirrors_token_filename() -> None:
 
     src = _ts_src(TAURI_LIB_FILE)
     assert f'"{TOKEN_FILENAME}"' in src, "get_api_token must read the token file"
+
+
+def test_pipeline_defaults_converters_cover_every_server_field() -> None:
+    """The store's bundleToServer/serverToBundle must name every field of the
+    server's PipelineAppDefaults models (hf token excepted by design), so a
+    field added on one side can't silently drop out of the round-trip."""
+    from podcodex.core.app_config import (
+        PipelineAppDefaults,
+        PipelineLLMDefaults,
+        PipelineTranscribeDefaults,
+    )
+
+    store_src = _ts_src(FRONTEND_SRC / "stores" / "pipelineConfigStore.ts")
+    fields = (
+        set(PipelineAppDefaults.model_fields)
+        | set(PipelineTranscribeDefaults.model_fields)
+        | set(PipelineLLMDefaults.model_fields)
+    ) - {"transcribe", "llm"}
+    for name in sorted(fields):
+        assert f"{name}:" in store_src, (
+            f"server field '{name}' missing from the store's converters"
+        )
+
+
+def test_pipeline_defaults_values_match_frontend_initial_bundle() -> None:
+    """INITIAL_BUNDLE (TS) and PipelineAppDefaults (Python) hold the same
+    default values on purpose: a never-saved install (sentinel None) must
+    behave identically on the server and in the pre-hydration client. The
+    duplication is deliberate; this pins the values together."""
+    from podcodex.core.app_config import PipelineAppDefaults
+
+    store_src = _ts_src(FRONTEND_SRC / "stores" / "pipelineConfigStore.ts")
+    m = re.search(
+        r"const INITIAL_BUNDLE: ConfigBundle = \{(.*?)\n\};", store_src, re.DOTALL
+    )
+    assert m, "could not locate the INITIAL_BUNDLE literal"
+    block = m.group(1)
+
+    def ts_value(key: str):
+        vm = re.search(rf"\b{key}: (\"[^\"]*\"|[\d.]+|true|false|null)", block)
+        assert vm, f"could not parse INITIAL_BUNDLE.{key}"
+        raw = vm.group(1)
+        if raw.startswith('"'):
+            return raw[1:-1]
+        literals = {"true": True, "false": False, "null": None}
+        return literals[raw] if raw in literals else float(raw)
+
+    d = PipelineAppDefaults().model_dump()
+    expected = {
+        "modelSize": d["transcribe"]["model_size"],
+        "batchSize": d["transcribe"]["batch_size"],
+        "diarize": d["transcribe"]["diarize"],
+        "clean": d["transcribe"]["clean"],
+        "numSpeakers": d["transcribe"]["num_speakers"],
+        "language": d["transcribe"]["language"],
+        "mode": d["llm"]["mode"],
+        "providerProfile": d["llm"]["provider_profile"],
+        "keyName": d["llm"]["key_name"],
+        "context": d["llm"]["context"],
+        "sourceLang": d["llm"]["source_lang"],
+        "batchMinutes": d["llm"]["batch_minutes"],
+        "engine": d["engine"],
+        "targetLang": d["target_lang"],
+        "indexModel": d["index_model"],
+        "indexChunker": d["index_chunker"],
+        "transcribePreset": d["transcribe_preset"],
+        "llmPreset": d["llm_preset"],
+        "llmPresetTouched": d["llm_preset_touched"],
+        "indexPreset": d["index_preset"],
+    }
+    for key, want in expected.items():
+        got = ts_value(key)
+        if isinstance(want, float) or isinstance(got, float):
+            assert got == pytest.approx(want), f"{key}: TS {got!r} != Python {want!r}"
+        else:
+            assert got == want, f"{key}: TS {got!r} != Python {want!r}"
+
+
+def test_no_frontend_api_path_triggers_a_redirect() -> None:
+    """Every literal API path in the frontend must hit a route exactly.
+
+    A path that misses by a trailing slash still "works" in the packaged app
+    (FastAPI 307s and the browser follows it same-origin), but in dev the
+    redirect's Location is absolute and points at the backend, so the browser
+    leaves the Vite proxy — and with it the injected auth token — and gets a
+    401 that React Query swallows. The symptom is a silently empty page.
+    """
+    import re
+
+    from tests.fixtures.api_client import make_client
+
+    paths = set()
+    for f in (FRONTEND_SRC / "api").glob("*.ts"):
+        paths.update(re.findall(r'"(/api/[a-zA-Z0-9/_-]*)"', f.read_text()))
+    assert paths, "no API paths parsed out of frontend/src/api"
+
+    with pytest.MonkeyPatch.context() as mp:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = make_client(Path(tmp), mp)
+            redirecting = sorted(
+                p
+                for p in paths
+                if client.get(p, follow_redirects=False).status_code in (307, 308)
+            )
+
+    assert not redirecting, (
+        "these frontend paths redirect (usually a missing trailing slash); "
+        f"they break `make dev-no-tauri`: {redirecting}"
+    )

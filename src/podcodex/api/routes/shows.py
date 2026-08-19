@@ -48,7 +48,7 @@ from podcodex.api.schemas import (
     UnifiedEpisodeOut,
 )
 from podcodex.core.constants import AUDIO_EXTENSIONS
-from podcodex.core.llm_failures import rejected_steps
+from podcodex.core.llm_failures import FAILURES_FILENAME, rejected_steps
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
 from podcodex.core.versions import (
     PIPELINE_STEPS,
@@ -690,23 +690,16 @@ def list_episodes(show_folder: str) -> list[dict]:
     "/{show_folder:path}/unified",
     response_model=list[UnifiedEpisodeOut],
 )
-def unified_episodes(
-    show_folder: str,
-    defaults: str | None = None,
-) -> list[dict]:
+def unified_episodes(show_folder: str) -> list[dict]:
     """Return a merged list of RSS + local episodes.
 
     Pipeline status comes from the per-show SQLite DB (pipeline.db).
-    On first access the DB is populated from a filesystem scan.
-
-    Args:
-        defaults: Optional JSON string with app-level pipeline defaults
-                  (model_size, diarize, llm_mode, llm_provider,
-                  llm_models_by_mode, target_lang). Show-level overrides
-                  take precedence.
+    Step statuses are relative to the app-level pipeline defaults from
+    server config, with show-level overrides merged on top. On first
+    access the DB is populated from a filesystem scan.
     """
     path = require_show_folder(show_folder)
-    ctx = _load_status_context(path, defaults)
+    ctx = _load_status_context(path)
 
     rss = load_feed_cache(path) or []
 
@@ -756,7 +749,13 @@ def unified_episodes(
     # Pass the set of stems already on disk so episode_stem can match a
     # changed-title episode to its existing file without re-scandir-ing per
     # call. Covers root-audio stems and per-episode subdir stems.
-    existing_stems = set(ctx.local_audio) | set(ctx.episode_files)
+    # Episode *dirs*, not just the ones holding files: the suffix match in
+    # `episode_stem` has to see a suffixed-but-still-empty episode directory.
+    # (Its *legacy slug* fallback deliberately stats instead of reading this
+    # listing — see `ingest/rss.py` — because this set also carries root audio
+    # stems, which would collapse two same-titled episodes onto one stem.)
+    # frozenset: lets episode_stem's suffix lookup hit its memoized index.
+    existing_stems = frozenset(ctx.local_audio) | frozenset(ctx.episode_dirs)
 
     # RSS episodes first (preserves feed order)
     for r in rss:
@@ -793,7 +792,7 @@ def unified_episodes(
         if stem in seen_stems:
             continue
         output_dir = path / stem
-        meta = load_episode_meta(output_dir) if output_dir.is_dir() else None
+        meta = load_episode_meta(output_dir) if stem in ctx.episode_dirs else None
         ep_id = meta.guid if meta else stem
         if ep_id in seen_ids:
             continue
@@ -824,10 +823,7 @@ def unified_episodes(
     "/{show_folder:path}/status",
     response_model=list[EpisodeStatusOut],
 )
-def episode_statuses(
-    show_folder: str,
-    defaults: str | None = None,
-) -> list[dict]:
+def episode_statuses(show_folder: str) -> list[dict]:
     """Return live pipeline status for every known episode, keyed by stem.
 
     The cheap counterpart to ``/unified``, meant for the 5s poll the UI runs
@@ -837,14 +833,9 @@ def episode_statuses(
     per-feed-entry stem resolution, and the per-episode ``.episode_meta.json``
     reads. Feed-only episodes with no local footprint are omitted — they have
     no status to report, and the client already holds their static fields.
-
-    Args:
-        defaults: Same JSON string as ``/unified``; step statuses are relative
-                  to the effective defaults, so it must match or the poll
-                  would flip ``outdated`` markers back and forth.
     """
     path = require_show_folder(show_folder)
-    ctx = _load_status_context(path, defaults)
+    ctx = _load_status_context(path)
     return [
         _build_status_out(
             stem=stem,
@@ -866,10 +857,15 @@ class _StatusContext(NamedTuple):
     stems_with_speaker_map: Container[str]
     local_audio: dict[str, Path]
     episode_files: dict[str, list[str]]
+    episode_dirs: set[str]
+    # Stems whose llm_failures.json is worth reading: the file shows in the
+    # cached listing, or the walk was incomplete and the listing can't be
+    # trusted (read directly rather than wrongly hiding failures).
+    llm_failure_stems: Container[str]
     effective: dict
 
 
-def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
+def _load_status_context(path: Path) -> _StatusContext:
     """Gather everything the status half of an episode payload needs.
 
     Shared by ``/unified`` and ``/status`` so the two can never disagree about
@@ -877,13 +873,12 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
     verified pointers), which must happen on the polled endpoint too or a
     step finishing mid-batch would not surface until the next heavy fetch.
     """
-    import json as _json
+    # ── Resolve effective defaults (app config → show override) ──
+    from podcodex.core.app_config import PipelineAppDefaults, load_config
 
-    # ── Resolve effective defaults (app → show override) ──
-    try:
-        app_defaults = _json.loads(defaults) if defaults else {}
-    except _json.JSONDecodeError as exc:
-        raise HTTPException(400, f"Invalid JSON in 'defaults' parameter: {exc}")
+    app_defaults = (
+        load_config().pipeline_defaults or PipelineAppDefaults()
+    ).status_defaults()
     show_meta = load_show_meta(path)
     effective = _resolve_defaults(app_defaults, show_meta)
 
@@ -918,7 +913,14 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
         db.mark_indexed_bulk(indexed_updates)
 
     local_audio = _scan_audio_files(path)
-    episode_files = _scan_episode_files(path, local_audio)
+    episode_files, episode_dirs, incomplete = _scan_episode_files(path, local_audio)
+    # Stems worth reading llm_failures.json for: the file showed up in the
+    # listing, or the walk was incomplete so the listing can't be trusted.
+    llm_failure_stems = incomplete | {
+        stem
+        for stem, files in episode_files.items()
+        if f"{stem}/{FAILURES_FILENAME}" in files
+    }
 
     # Reconcile the per-step flags: an episode is transcribed / corrected /
     # synthesized when it has a registered version for that step *or* a file
@@ -936,7 +938,6 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
     # extra syscalls.
     # A stem whose walk failed has an untrustworthy file list: "no files" there
     # means "could not look", so leave its status alone until a clean scan.
-    incomplete = _INCOMPLETE_SCANS.get(str(path), set())
     for step, flag in STEP_FLAG.items():
         stems_with_versions = set(db.stems_with_step(step))
         ext = step_ext(step)
@@ -986,6 +987,8 @@ def _load_status_context(path: Path, defaults: str | None) -> _StatusContext:
         stems_with_speaker_map=db.stems_with_step("speaker_map"),
         local_audio=local_audio,
         episode_files=episode_files,
+        episode_dirs=episode_dirs,
+        llm_failure_stems=llm_failure_stems,
         effective=effective,
     )
 
@@ -1048,7 +1051,16 @@ def _build_status_out(
             "manual_edit": True,
         }
     cleaned_translations = clean_translations(st.get("translations", []))
-    out_dir_exists = bool(output_dir and output_dir.is_dir())
+    # The scan already listed the show folder's subdirectories; a per-episode
+    # is_dir() here would re-stat all of them on every poll.
+    out_dir_exists = bool(output_dir) and output_dir.name in ctx.episode_dirs
+    # Two deliberately different questions, do not collapse them:
+    # `subtitle_files` is what the episode panel can hand to the manual
+    # reimport (which parses .vtt and .srt alike), while `has_subtitles`
+    # gates the *batch* subtitle source — and `_batch_transcribe_from_subs`
+    # only ever reads a cached `{stem}.subtitles.{lang}.vtt`, so promising
+    # .srt there would select episodes the batch cannot process.
+    subtitle_files = [f for f in ep_files if f.lower().endswith((".vtt", ".srt"))]
     return {
         "stem": stem,
         "audio_path": str(audio_path) if audio_path else None,
@@ -1061,10 +1073,17 @@ def _build_status_out(
         "has_subtitles": any(f.endswith(".vtt") for f in ep_files),
         "translations": cleaned_translations,
         "segment_count": ctx.seg_counts.get(stem) if stem else None,
-        "files": ep_files,
+        "subtitle_files": subtitle_files,
         "provenance": prov,
         "verified": st.get("verified"),
-        "llm_failed_steps": rejected_steps(output_dir) if out_dir_exists else [],
+        # Candidate set computed once per request from the cached listing:
+        # the failures file rarely exists, and rejected_steps stats + reads
+        # it per episode.
+        "llm_failed_steps": (
+            rejected_steps(output_dir)
+            if out_dir_exists and stem in ctx.llm_failure_stems
+            else []
+        ),
         **_step_statuses(st, prov, ctx.effective, cleaned_translations),
     }
 
@@ -1706,10 +1725,15 @@ def _settled(visited: list[tuple[str, int]], now_ns: int) -> bool:
 
 def _scan_episode_files(
     show_folder: Path, local_audio: dict[str, Path]
-) -> dict[str, list[str]]:
+) -> tuple[dict[str, list[str]], set[str], set[str]]:
     """Scan episode subdirectories for user-facing files.
 
-    Returns a mapping of stem → list of filenames relative to show folder.
+    Returns ``(files, dirs, incomplete)``: a mapping of stem → list of
+    filenames relative to show folder; the set of episode directory names
+    seen (including empty ones), so callers don't have to re-stat per
+    episode to know a directory exists; and the stems whose walk hit an
+    OSError — their file list is partial (better than none for display)
+    and must not drive status reconciliation.
     Walks version subdirectories (``transcript/``, ``corrected/``,
     ``speaker_map/``, language folders, etc.) so the Pipeline file list
     surfaces version artifacts alongside legacy flat files.
@@ -1728,6 +1752,7 @@ def _scan_episode_files(
     now_ns = time.time_ns()
 
     result: dict[str, list[str]] = {}
+    dirs: set[str] = set()
     incomplete: set[str] = set()
     try:
         with os.scandir(show_folder) as it:
@@ -1737,6 +1762,7 @@ def _scan_episode_files(
                 stem = entry.name
                 if stem.startswith("."):
                     continue
+                dirs.add(stem)
                 hit = cached.get(stem)
                 if hit is not None and _dirs_unchanged(hit[0]):
                     fresh[stem] = hit
@@ -1766,14 +1792,7 @@ def _scan_episode_files(
     for stem, audio_path in local_audio.items():
         result.setdefault(stem, []).insert(0, audio_path.name)
 
-    _INCOMPLETE_SCANS[str(show_folder)] = incomplete
-    return result
-
-
-# Stems whose last walk hit an OSError, per show. The file list is still
-# returned (a partial Pipeline file list beats none) but the status reconcile
-# skips these, since "no files found" there means "could not look".
-_INCOMPLETE_SCANS: dict[str, set[str]] = {}
+    return result, dirs, incomplete
 
 
 # ── Move / rename show folder ──────────────

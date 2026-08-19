@@ -22,7 +22,7 @@ import { FeedRefreshButton } from "@/components/common/FeedRefreshButton";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { useFeedRefresh, useFeedRefreshing } from "@/hooks/useFeedRefresh";
 import { useAudioStore, useEpisodeStore, useTaskStore, usePipelineConfigStore, useLayoutStore, useSeedPipelineFromShow } from "@/stores";
-import { usePipelineConfig, usePipelineDefaults } from "@/hooks/usePipelineConfig";
+import { usePipelineConfig } from "@/hooks/usePipelineConfig";
 import { useShowActions } from "@/hooks/useShowActions";
 import { autoFillColumns, episodeCardMinWidth } from "@/lib/cardGrid";
 
@@ -90,7 +90,11 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const lastShiftClickIndex = useRef<number | null>(null);
   // Scroll container for both virtualized views; owned here so switching
   // list ↔ card keeps the same element (and therefore the scroll position).
-  const listScrollRef = useRef<HTMLDivElement>(null);
+  // State, not a ref: refs attach bottom-up, so the virtualizers below would
+  // read `null` on the mount that matters and never look again (attaching a
+  // ref triggers no re-render). That rendered an empty list whenever the tab
+  // mounted with its data already cached.
+  const [listScrollEl, setListScrollEl] = useState<HTMLDivElement | null>(null);
   // Narrow selectors so unrelated task store writes don't re-render this page.
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
   const batchTaskId = useTaskStore((s) => s.batchTaskId);
@@ -99,7 +103,6 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   // Pipeline config from store (for batch start)
   const { tc, llm, engine, targetLang } = usePipelineConfig();
 
-  const pipelineDefaults = usePipelineDefaults();
 
   const { data: meta } = useQuery({
     queryKey: queryKeys.showMeta(folder),
@@ -109,15 +112,22 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   useSeedPipelineFromShow(folder, meta?.pipeline, !!meta);
 
   const isPolling = !!(downloadTaskId || batchTaskId);
-  const { data: episodes, isLoading: episodesLoading, dataUpdatedAt: episodesUpdatedAt } = useQuery({
-    queryKey: queryKeys.episodes(folder, pipelineDefaults),
-    queryFn: () => getEpisodes(folder, pipelineDefaults),
+  const {
+    data: episodes,
+    isLoading: episodesLoading,
+    isError: episodesFailed,
+    error: episodesError,
+    refetch: refetchEpisodes,
+    dataUpdatedAt: episodesUpdatedAt,
+  } = useQuery({
+    queryKey: queryKeys.episodesForFolder(folder),
+    queryFn: () => getEpisodes(folder),
     placeholderData: keepPreviousData,
     // Heavy endpoint (full unified list); alt-tab must not refetch it, and
     // live progress arrives through the status poll below instead.
     refetchOnWindowFocus: false,
   });
-  useEpisodeStatusPoll(folder, pipelineDefaults, isPolling, episodesUpdatedAt);
+  useEpisodeStatusPoll(folder, isPolling, episodesUpdatedAt);
 
   const { downloadMutation, importSubsMutation, isYouTube } = useShowActions(folder, meta);
 
@@ -518,10 +528,10 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         ))}
 
       {/* Episode list */}
-      <div ref={listScrollRef} className="flex-1 overflow-y-auto">
+      <div ref={setListScrollEl} className="flex-1 overflow-y-auto">
         {view === "list" ? (
           <VirtualEpisodeRows
-            scrollRef={listScrollRef}
+            scrollEl={listScrollEl}
             episodes={filtered}
             renderItem={(ep, i) => {
               const isCurrent = !!ep.audio_path && ep.audio_path === audioPath;
@@ -545,7 +555,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           />
         ) : (
           <VirtualEpisodeCards
-            scrollRef={listScrollRef}
+            scrollEl={listScrollEl}
             episodes={filtered}
             cardSize={cardSize}
             gap={compact ? 8 : 16}
@@ -571,7 +581,12 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         {episodesLoading && (
           <EmptyState icon={Podcast} title="Loading episodes..." />
         )}
-        {!episodesLoading && filtered.length === 0 && (
+        {episodesFailed && (
+          <div className="p-6">
+            <ErrorAlert error={episodesError} onRetry={() => void refetchEpisodes()} />
+          </div>
+        )}
+        {!episodesLoading && !episodesFailed && filtered.length === 0 && (
           all.length === 0 ? (
             <EmptyState
               icon={Podcast}
@@ -636,7 +651,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 }
 
 interface VirtualEpisodesProps {
-  scrollRef: React.RefObject<HTMLDivElement | null>;
+  scrollEl: HTMLDivElement | null;
   episodes: Episode[];
   renderItem: (ep: Episode, index: number) => React.ReactNode;
 }
@@ -646,11 +661,11 @@ interface VirtualEpisodesProps {
  * a 500-episode show costs the same per keystroke as a 20-episode one. Row
  * heights are measured; the estimate only has to be close for first paint.
  */
-function VirtualEpisodeRows({ scrollRef, episodes, renderItem }: VirtualEpisodesProps) {
+function VirtualEpisodeRows({ scrollEl, episodes, renderItem }: VirtualEpisodesProps) {
   // eslint-disable-next-line react-hooks/incompatible-library -- virtualizer is ref-based; compiler skip is expected
   const virtualizer = useVirtualizer({
     count: episodes.length,
-    getScrollElement: () => scrollRef.current,
+    getScrollElement: () => scrollEl,
     estimateSize: () => 57,
     overscan: 8,
     getItemKey: (i) => episodes[i].id,
@@ -685,7 +700,7 @@ function VirtualEpisodeRows({ scrollRef, episodes, renderItem }: VirtualEpisodes
  * and recomputed through `autoFillColumns` (see `lib/cardGrid`).
  */
 function VirtualEpisodeCards({
-  scrollRef,
+  scrollEl,
   episodes,
   cardSize,
   gap,
@@ -710,7 +725,7 @@ function VirtualEpisodeCards({
   // eslint-disable-next-line react-hooks/incompatible-library -- virtualizer is ref-based; compiler skip is expected
   const virtualizer = useVirtualizer({
     count: rowCount,
-    getScrollElement: () => scrollRef.current,
+    getScrollElement: () => scrollEl,
     // Tiles are roughly square plus a text block; measurement corrects it.
     estimateSize: () => episodeCardMinWidth(cardSize) + 120,
     overscan: 3,

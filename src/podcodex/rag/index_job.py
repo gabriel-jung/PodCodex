@@ -108,7 +108,9 @@ def run(
     )
     mark_step(p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance})
 
-    return {"chunks_upserted": total_upserted, "source": source_label}
+    # `stem` rides along so the server-side completion hook can warm its
+    # indexed-stems cache without re-deriving the episode name.
+    return {"chunks_upserted": total_upserted, "source": source_label, "stem": episode}
 
 
 def run_for_batch(
