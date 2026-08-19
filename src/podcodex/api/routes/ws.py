@@ -12,6 +12,8 @@ router = APIRouter()
 @router.websocket("/ws")
 async def websocket_progress(ws: WebSocket) -> None:
     """Accept a WebSocket connection and stream task progress events to the client."""
+    # Host + token checks happen in LoopbackGuardMiddleware (app.py), which
+    # covers the websocket scope too.
     await ws.accept()
     await task_manager.register_ws(ws)
     try:

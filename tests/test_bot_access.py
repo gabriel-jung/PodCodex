@@ -10,10 +10,10 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient  # noqa: E402
 
 from podcodex.api.app import app  # noqa: E402
 from podcodex.rag import index_store as rag_index_store  # noqa: E402
+from tests.fixtures.api_client import client_for
 
 
 DIM = 8
@@ -59,9 +59,7 @@ def _isolated_store(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client():
-    return TestClient(
-        app, base_url="http://127.0.0.1:18811", headers={"X-PodCodex": "1"}
-    )
+    return client_for(app)
 
 
 # ── List ────────────────────────────────────────────────────────────────

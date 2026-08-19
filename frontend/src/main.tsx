@@ -5,6 +5,7 @@ import "@fontsource-variable/inter";
 import "@fontsource-variable/fraunces";
 import "@fontsource-variable/jetbrains-mono";
 import App from "./App";
+import { initApiToken } from "./api/client";
 import "./index.css";
 
 // Cache-level invalidation: mutations declare what they invalidate via
@@ -27,10 +28,14 @@ const queryClient = new QueryClient({
   },
 });
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <App />
-    </QueryClientProvider>
-  </StrictMode>,
-);
+// Resolve the loopback API token before anything renders: queries fire on
+// mount, and URL builders (artwork, audio) need the token synchronously.
+void initApiToken().finally(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <App />
+      </QueryClientProvider>
+    </StrictMode>,
+  );
+});

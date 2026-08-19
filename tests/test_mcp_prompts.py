@@ -21,6 +21,7 @@ from podcodex.mcp.prompts import (  # noqa: E402
     save_prompts,
     validate_prompt,
 )
+from tests.fixtures.api_client import client_for  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -33,9 +34,7 @@ def _isolated_store(tmp_path: Path, monkeypatch):
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(
-        app, base_url="http://127.0.0.1:18811", headers={"X-PodCodex": "1"}
-    )
+    return client_for(app)
 
 
 # ── validate_prompt ─────────────────────────────────────────────────────

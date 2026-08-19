@@ -201,6 +201,27 @@ fn restart_app(app: tauri::AppHandle) {
     app.restart();
 }
 
+/// Hand the frontend the loopback API auth token. The Python sidecar
+/// creates ``config_dir()/api_token`` (0600) during app construction, i.e.
+/// before /api/health goes live; the frontend re-invokes on a 401 so a
+/// first-boot read of a not-yet-written file self-heals.
+#[tauri::command]
+fn get_api_token() -> Result<String, String> {
+    // Same precedence as the Python side (core/api_token.py): the env var
+    // wins, else the persisted file. Without this, launching the app with
+    // PODCODEX_API_TOKEN exported would brick every request: the server
+    // authenticates against the env token while the file holds a stale one.
+    if let Ok(token) = std::env::var("PODCODEX_API_TOKEN") {
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+    let path = compute_config_dir()?.join("api_token");
+    std::fs::read_to_string(&path)
+        .map(|t| t.trim().to_string())
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -208,7 +229,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
-        .invoke_handler(tauri::generate_handler![restart_app])
+        .invoke_handler(tauri::generate_handler![restart_app, get_api_token])
         .setup(|app| {
             // Init log plugin in both debug and release. Backend draining
             // threads use log::info! / log::warn! and we want those visible

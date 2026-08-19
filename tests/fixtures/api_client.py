@@ -8,6 +8,22 @@ that name is just a re-export.
 
 from fastapi.testclient import TestClient
 
+from podcodex.core.api_token import TOKEN_HEADER
+
+
+def client_for(app) -> TestClient:
+    """TestClient over an existing app object (module-level route apps).
+
+    Sends the CSRF header and the loopback auth token the guard middleware
+    requires. The token comes from ``app.state``: module-level apps resolve
+    it at import time via ``get_or_create_api_token()``.
+    """
+    return TestClient(
+        app,
+        base_url="http://127.0.0.1:18811",
+        headers={"X-PodCodex": "1", TOKEN_HEADER: app.state.api_token},
+    )
+
 
 def make_client(tmp_path, monkeypatch, config=None) -> TestClient:
     """TestClient over a fresh app whose config lives under ``tmp_path``.
@@ -18,6 +34,9 @@ def make_client(tmp_path, monkeypatch, config=None) -> TestClient:
     from podcodex.core import app_config as app_config_mod
     from podcodex.core.app_config import save_config
 
+    # Fixed token via env so the app never touches the real config dir's
+    # api_token file during tests.
+    monkeypatch.setenv("PODCODEX_API_TOKEN", "test-token")
     monkeypatch.setattr(app_config_mod, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(app_config_mod, "_LOAD_CACHE", None)
     if config is not None:
@@ -28,5 +47,5 @@ def make_client(tmp_path, monkeypatch, config=None) -> TestClient:
     return TestClient(
         create_app(),
         base_url="http://127.0.0.1:18811",
-        headers={"X-PodCodex": "1"},
+        headers={"X-PodCodex": "1", "X-PodCodex-Token": "test-token"},
     )

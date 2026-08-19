@@ -18,6 +18,34 @@ export const BASE =
 export const CSRF_HEADER = "X-PodCodex";
 export const CSRF_VALUE = "1";
 
+// Loopback auth token. Mirrors `TOKEN_HEADER`/`TOKEN_QUERY_PARAM` in
+// src/podcodex/core/api_token.py (sync-checked by
+// tests/test_frontend_constants_sync.py). In Tauri the Rust shell reads the
+// token file and hands it over via invoke; in dev the Vite proxy injects the
+// header server-side (see vite.config.ts), so the browser holds no token.
+const TOKEN_HEADER = "X-PodCodex-Token";
+const TOKEN_QUERY_PARAM = "token";
+
+let API_TOKEN = "";
+
+/** Resolve the loopback auth token before the app renders (see main.tsx). */
+export async function initApiToken(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    API_TOKEN = await invoke<string>("get_api_token");
+  } catch {
+    API_TOKEN = "";
+  }
+}
+
+/** Append the auth token to a URL destined for src/href/WebSocket use.
+ *  No-op in dev, where the Vite proxy injects the header instead. */
+export const withToken = (url: string): string =>
+  API_TOKEN
+    ? `${url}${url.includes("?") ? "&" : "?"}${TOKEN_QUERY_PARAM}=${encodeURIComponent(API_TOKEN)}`
+    : url;
+
 /** Thrown for non-2xx responses. Carries the status and parsed JSON body
  *  (raw text when not JSON) so callers can read structured details (e.g.
  *  FastAPI's `detail`) without re-parsing the message string. */
@@ -38,7 +66,19 @@ export class ApiError extends Error {
 export async function rawFetch(url: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   headers.set(CSRF_HEADER, CSRF_VALUE);
-  const res = await fetch(`${BASE}${url}`, { ...init, headers });
+  headers.set(TOKEN_HEADER, API_TOKEN);
+  let res = await fetch(`${BASE}${url}`, { ...init, headers });
+  if (res.status === 401) {
+    // First-boot race in Tauri: the token file may not have existed when
+    // the app initialized. Retry only when re-reading actually yields a
+    // different token, so mutations are never blindly re-sent on a 401.
+    const previous = API_TOKEN;
+    await initApiToken();
+    if (API_TOKEN && API_TOKEN !== previous) {
+      headers.set(TOKEN_HEADER, API_TOKEN);
+      res = await fetch(`${BASE}${url}`, { ...init, headers });
+    }
+  }
   if (!res.ok) {
     const text = await res.text();
     let body: unknown = text;

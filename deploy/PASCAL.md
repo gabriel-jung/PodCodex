@@ -79,7 +79,9 @@ didn't take; re-run with `--reinstall --force-reinstall`.
 PodCodex's own diagnostic endpoint also reports it:
 
 ```bash
-curl http://localhost:18811/api/system/device
+# API calls need the loopback auth token (created on first app start)
+curl -H "X-PodCodex-Token: $(cat ~/.config/podcodex/api_token)" \
+  http://localhost:18811/api/system/device
 ```
 
 ```json

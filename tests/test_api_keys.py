@@ -6,7 +6,6 @@ import os
 import stat
 
 import pytest
-from fastapi.testclient import TestClient
 
 from podcodex.api.app import create_app
 from podcodex.core import api_keys as keys_mod
@@ -19,6 +18,7 @@ from podcodex.core.api_keys import (
     parse_env_var_name,
     save_keys,
 )
+from tests.fixtures.api_client import client_for  # noqa: E402
 
 
 # ── parse_env_var_name ───────────────────────────────────────────────
@@ -142,9 +142,7 @@ def client(tmp_path, monkeypatch):
         if var.endswith("_API_KEY"):
             monkeypatch.delenv(var, raising=False)
     app = create_app()
-    return TestClient(
-        app, base_url="http://127.0.0.1:18811", headers={"X-PodCodex": "1"}
-    )
+    return client_for(app)
 
 
 def test_list_keys_empty(client):

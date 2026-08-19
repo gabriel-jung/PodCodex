@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
 from podcodex.api.app import create_app
 from podcodex.core import provider_profiles as pp_mod
@@ -16,6 +15,7 @@ from podcodex.core.provider_profiles import (
     load_custom,
     save_custom,
 )
+from tests.fixtures.api_client import client_for  # noqa: E402
 
 
 # ── built-ins ────────────────────────────────────────────────────────
@@ -78,9 +78,7 @@ def client(tmp_path, monkeypatch):
         pp_mod, "provider_profiles_path", lambda: tmp_path / "provider_profiles.json"
     )
     app = create_app()
-    return TestClient(
-        app, base_url="http://127.0.0.1:18811", headers={"X-PodCodex": "1"}
-    )
+    return client_for(app)
 
 
 def test_list_returns_builtins_only_initially(client):

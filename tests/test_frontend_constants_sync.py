@@ -88,3 +88,48 @@ def test_unknown_speakers_matches() -> None:
 )
 def test_density_threshold_matches(name: str, expected: float) -> None:
     assert _number_const(name) == expected
+
+
+# ── Loopback auth constants ─────────────────────────────────────────────
+# Python: podcodex.core.api_token / podcodex.api.app. Mirrors: the frontend
+# client (header + query param + CSRF pair), the Vite dev proxy (header +
+# token filename), and the Tauri shell (token filename).
+
+CLIENT_FILE = FRONTEND_SRC / "api" / "client.ts"
+VITE_CONFIG_FILE = FRONTEND_SRC.parent / "vite.config.ts"
+TAURI_LIB_FILE = FRONTEND_SRC.parents[1] / "src-tauri" / "src" / "lib.rs"
+
+
+def _client_const(name: str) -> str:
+    m = re.search(rf'const {name}\s*=\s*"([^"]*)"', _ts_src(CLIENT_FILE))
+    assert m, f'could not parse `const {name} = "..."` in client.ts'
+    return m.group(1)
+
+
+def test_token_constants_match() -> None:
+    from podcodex.core.api_token import TOKEN_HEADER, TOKEN_QUERY_PARAM
+
+    assert _client_const("TOKEN_HEADER") == TOKEN_HEADER
+    assert _client_const("TOKEN_QUERY_PARAM") == TOKEN_QUERY_PARAM
+
+
+def test_csrf_constants_match() -> None:
+    from podcodex.api.app import CSRF_HEADER, CSRF_VALUE
+
+    assert _client_const("CSRF_HEADER") == CSRF_HEADER
+    assert _client_const("CSRF_VALUE") == CSRF_VALUE
+
+
+def test_vite_proxy_mirrors_token_header_and_filename() -> None:
+    from podcodex.core.api_token import TOKEN_FILENAME, TOKEN_HEADER
+
+    src = _ts_src(VITE_CONFIG_FILE)
+    assert f'"{TOKEN_HEADER}"' in src, "vite proxy must inject the token header"
+    assert f'"{TOKEN_FILENAME}"' in src, "vite proxy must read the token file"
+
+
+def test_tauri_shell_mirrors_token_filename() -> None:
+    from podcodex.core.api_token import TOKEN_FILENAME
+
+    src = _ts_src(TAURI_LIB_FILE)
+    assert f'"{TOKEN_FILENAME}"' in src, "get_api_token must read the token file"

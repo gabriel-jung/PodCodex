@@ -1,5 +1,5 @@
 import type { DirListing } from "./types";
-import { BASE, json } from "./client";
+import { BASE, json, withToken } from "./client";
 import type { Platform } from "@/platform";
 
 export const listDirectory = (
@@ -46,12 +46,12 @@ export const deleteFile = (path: string) =>
 // ── Artwork ────────────────────────────────
 
 export const artworkUrl = (showFolder: string) =>
-  `${BASE}/api/shows/artwork?show_folder=${encodeURIComponent(showFolder)}`;
+  withToken(`${BASE}/api/shows/artwork?show_folder=${encodeURIComponent(showFolder)}`);
 
 // ── Audio ───────────────────────────────────
 
 export const audioFileUrl = (path: string) =>
-  `${BASE}/api/audio/file?path=${encodeURIComponent(path)}`;
+  withToken(`${BASE}/api/audio/file?path=${encodeURIComponent(path)}`);
 
 export const deleteAudioFile = (path: string) =>
   json<{ status: string; path: string }>(`/api/audio/file?path=${encodeURIComponent(path)}`, {
@@ -63,25 +63,25 @@ export const deleteAudioFile = (path: string) =>
 export const exportTextUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
   const params = new URLSearchParams({ audio_path: audioPath, source });
   if (outputDir) params.set("output_dir", outputDir);
-  return `${BASE}/api/export/text?${params}`;
+  return withToken(`${BASE}/api/export/text?${params}`);
 };
 
 export const exportSrtUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
   const params = new URLSearchParams({ audio_path: audioPath, source });
   if (outputDir) params.set("output_dir", outputDir);
-  return `${BASE}/api/export/srt?${params}`;
+  return withToken(`${BASE}/api/export/srt?${params}`);
 };
 
 export const exportVttUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
   const params = new URLSearchParams({ audio_path: audioPath, source });
   if (outputDir) params.set("output_dir", outputDir);
-  return `${BASE}/api/export/vtt?${params}`;
+  return withToken(`${BASE}/api/export/vtt?${params}`);
 };
 
 export const exportZipUrl = (audioPath: string, outputDir?: string) => {
   const params = new URLSearchParams({ audio_path: audioPath });
   if (outputDir) params.set("output_dir", outputDir);
-  return `${BASE}/api/export/zip?${params}`;
+  return withToken(`${BASE}/api/export/zip?${params}`);
 };
 
 export type ExportFormat = "txt" | "srt" | "vtt" | "zip" | "audio";

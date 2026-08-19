@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from podcodex.api.app import app  # noqa: E402
 from podcodex.api.routes import integrations  # noqa: E402
+from tests.fixtures.api_client import client_for
 
 
 @pytest.fixture(autouse=True)
@@ -30,9 +31,7 @@ def _redirect_config(tmp_path: Path, monkeypatch):
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(
-        app, base_url="http://127.0.0.1:18811", headers={"X-PodCodex": "1"}
-    )
+    return client_for(app)
 
 
 def _read(path: Path) -> dict:

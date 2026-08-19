@@ -10,6 +10,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import asyncio
+import secrets
 import signal
 import sys
 from contextlib import asynccontextmanager
@@ -22,8 +23,16 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.datastructures import Headers, QueryParams
+from starlette.websockets import WebSocketClose
 from loguru import logger
 
+from podcodex import __version__
+from podcodex.core.api_token import (
+    TOKEN_HEADER,
+    TOKEN_QUERY_PARAM,
+    get_or_create_api_token,
+)
 from podcodex.api.routes import (
     api_keys,
     audio,
@@ -244,6 +253,68 @@ def _loopback_hosts(port: int) -> frozenset[str]:
     )
 
 
+class LoopbackGuardMiddleware:
+    """Pure-ASGI guard: loopback Host allowlist + API token, one place.
+
+    Host check (anti DNS-rebinding): a rebound request carries the
+    attacker's hostname, not a loopback name: the one browser vector CORS
+    and the X-PodCodex header do not cover.
+
+    Token check: loopback alone doesn't authenticate the caller; any local
+    process or OS user can reach 127.0.0.1. The shared token is required on
+    every /api route. Header for normal fetches; query param for
+    <img>/<audio>/download URLs and the browser WebSocket, which can't send
+    custom headers. Exempt: /api/health (boot probe, runs before the UI has
+    the token), OPTIONS (CORS preflights can't carry custom headers; the
+    CORSMiddleware, inner in the stack, answers them), /mcp (outside /api,
+    own access story).
+
+    Written as raw ASGI rather than ``@app.middleware("http")`` because
+    BaseHTTPMiddleware never runs on the websocket scope; this way /api/ws
+    (and any future websocket route) is covered by construction instead of
+    re-implementing the checks per route.
+    """
+
+    def __init__(self, app, allowed_hosts: frozenset[str], api_token: str) -> None:
+        self.app = app
+        self.allowed_hosts = allowed_hosts
+        self.api_token = api_token
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        if headers.get("host", "") not in self.allowed_hosts:
+            await self._reject(scope, receive, send, 421, "Bad host header")
+            return
+        path = scope.get("path", "")
+        exempt = path == "/api/health" or (
+            scope["type"] == "http" and scope.get("method") == "OPTIONS"
+        )
+        if path.startswith("/api/") and not exempt:
+            supplied = headers.get(TOKEN_HEADER) or QueryParams(
+                scope.get("query_string", b"")
+            ).get(TOKEN_QUERY_PARAM, "")
+            if not secrets.compare_digest(
+                supplied.encode("utf-8"), self.api_token.encode("utf-8")
+            ):
+                await self._reject(
+                    scope, receive, send, 401, "Missing or bad API token"
+                )
+                return
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _reject(scope, receive, send, status: int, detail: str) -> None:
+        if scope["type"] == "websocket":
+            await WebSocketClose(code=1008)(scope, receive, send)
+        else:
+            await JSONResponse({"detail": detail}, status_code=status)(
+                scope, receive, send
+            )
+
+
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     mcp_http = _mcp.streamable_http_app() if _mcp is not None else None
@@ -259,7 +330,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="PodCodex",
-        version="0.1.0",
+        version=__version__,
         description="Podcast processing pipeline API",
         lifespan=_make_lifespan(mcp_http),
     )
@@ -283,18 +354,17 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Reject any request whose Host header isn't a loopback name. Defeats DNS
-    # rebinding, which is the one browser vector CORS + X-PodCodex do not cover.
-    _allowed_hosts = _loopback_hosts(_API_PORT)
-
-    @app.middleware("http")
-    async def _host_guard(request: Request, call_next):
-        host = request.headers.get("host", "")
-        if host not in _allowed_hosts:
-            # Rejects a foreign hostname (rebinding) and also a missing/empty
-            # Host, which a compliant HTTP/1.1 client never sends anyway.
-            return JSONResponse({"detail": "Bad host header"}, status_code=421)
-        return await call_next(request)
+    # Host + token enforcement (see LoopbackGuardMiddleware). Added after
+    # CORSMiddleware so it runs outside it: real requests are authenticated
+    # before CORS, while exempt OPTIONS preflights fall through to CORS.
+    api_token = get_or_create_api_token()
+    # Test fixtures read the resolved token from here to build auth headers.
+    app.state.api_token = api_token
+    app.add_middleware(
+        LoopbackGuardMiddleware,
+        allowed_hosts=_loopback_hosts(_API_PORT),
+        api_token=api_token,
+    )
 
     # Custom header forces a CORS preflight that the origin allowlist rejects,
     # so a drive-by <form> on a malicious page can't reach mutating endpoints.

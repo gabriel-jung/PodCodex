@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getTaskStatus } from "@/api/client";
+import { getTaskStatus, withToken } from "@/api/client";
 import { isTauri } from "@/platform";
 
 export interface TaskProgress {
@@ -34,7 +34,9 @@ class ProgressManager {
     const url = isTauriProd
       ? "ws://127.0.0.1:18811/api/ws"
       : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/api/ws`;
-    this.ws = new WebSocket(url);
+    // Browser WebSocket can't send custom headers; the token rides the query
+    // string and the server route checks it before accepting.
+    this.ws = new WebSocket(withToken(url));
 
     this.ws.onmessage = (event) => {
       this.lastWsMessage = Date.now();
