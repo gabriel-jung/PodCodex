@@ -495,6 +495,13 @@ def parse_time(value: str | int | float) -> float:
     return float(hours * 3600 + minutes * 60 + secs)
 
 
+def bad_path_component(name: str) -> bool:
+    """True when *name* is unusable as a single path component: empty,
+    traversal (".", ".."), or carrying a separator. Single facility for
+    every folder/file-name safety check (API routes, bundle import)."""
+    return not name or "/" in name or "\\" in name or name in {".", ".."}
+
+
 def atomic_write(
     path: Path,
     writer_fn,

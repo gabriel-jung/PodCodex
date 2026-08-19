@@ -511,3 +511,111 @@ def test_import_atomic_temp_cleanup_on_failure(tmp_path, isolated_index, monkeyp
         p for p in archive.parent.iterdir() if p.name.startswith(".out.podcodex.")
     ]
     assert temp_artifacts == []
+
+
+# ── Zip-Slip hardening ─────────────────────────────────────────────────
+
+
+def _write_raw_archive(
+    path: Path, manifest: Manifest, members: dict[str, bytes]
+) -> Path:
+    """Hand-build an archive so tests can smuggle hostile member names."""
+    with tarfile.open(path, "w:gz") as tf:
+        data = manifest_to_json(manifest).encode("utf-8")
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+        for name, payload in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+    return path
+
+
+def _manifest(mode: Mode, folder: str = "showa") -> Manifest:
+    return Manifest(
+        mode=mode,
+        podcodex_version="0.0.0",
+        exported_at="2026-01-01T00:00:00Z",
+        shows=[ShowEntry(name="Show A", folder=folder, collections=[])],
+    )
+
+
+def test_resolve_target_rejects_traversal(tmp_path):
+    from podcodex.bundle.import_show import _resolve_target
+
+    shows = tmp_path / "shows"
+    shows.mkdir()
+    idx = tmp_path / "index"
+    idx.mkdir()
+    fmap = {"showa": "showa"}
+    assert _resolve_target("lancedb/../evil.txt", shows, idx, fmap) is None
+    assert _resolve_target("shows/showa/../../evil.txt", shows, idx, fmap) is None
+    assert (
+        _resolve_target("lancedb/c.lance/data.bin", shows, idx, fmap)
+        == idx / "c.lance" / "data.bin"
+    )
+    assert (
+        _resolve_target("shows/showa/ep1/t.txt", shows, idx, fmap)
+        == shows / "showa" / "ep1" / "t.txt"
+    )
+
+
+def test_import_skips_traversal_members(tmp_path, isolated_index):
+    archive = _write_raw_archive(
+        tmp_path / "evil.podcodex",
+        _manifest(Mode.FULL),
+        {
+            "shows/showa/ep1/t.txt": b"ok",
+            "shows/showa/../../escaped.txt": b"pwned",
+            "lancedb/../escaped2.txt": b"pwned",
+        },
+    )
+    target = tmp_path / "target"
+    import_archive(archive, shows_dir=target)
+    assert (target / "showa" / "ep1" / "t.txt").is_file()
+    index_root = rag_index_store.get_index_store().path
+    assert not (target.parent / "escaped.txt").exists()
+    assert not (index_root.parent / "escaped2.txt").exists()
+
+
+def test_import_rejects_traversal_folder_name(tmp_path, isolated_index):
+    archive = _write_raw_archive(
+        tmp_path / "evil.podcodex",
+        _manifest(Mode.FULL, folder="../evil"),
+        {"shows/../evil/ep1/t.txt": b"pwned"},
+    )
+    target = tmp_path / "target"
+    with pytest.raises(ArchiveCorruptError):
+        import_archive(archive, shows_dir=target)
+    assert not (tmp_path / "evil").exists()
+
+
+def test_import_rejects_traversal_collection_name(tmp_path, isolated_index):
+    manifest = _manifest(Mode.INDEX_ONLY)
+    manifest.shows[0].collections = [
+        CollectionEntry(
+            name="../evil", model="bge-m3", chunker="semantic", dim=DIM, rows=0
+        )
+    ]
+    archive = _write_raw_archive(
+        tmp_path / "evil.podcodex",
+        manifest,
+        {"lancedb/inside.txt": b"data"},
+    )
+    with pytest.raises(ArchiveCorruptError):
+        import_archive(archive)
+    # Rejected before extraction: nothing landed in the index.
+    index_root = rag_index_store.get_index_store().path
+    assert not (index_root / "inside.txt").exists()
+
+
+def test_import_rejects_traversal_name_override(tmp_path, isolated_index):
+    archive = _write_raw_archive(
+        tmp_path / "evil.podcodex",
+        _manifest(Mode.FULL),
+        {"shows/showa/ep1/t.txt": b"ok"},
+    )
+    target = tmp_path / "target"
+    with pytest.raises(ValueError):
+        import_archive(archive, shows_dir=target, name="../evil")

@@ -27,6 +27,7 @@ from podcodex.bundle.manifest import (
     Mode,
     manifest_from_json,
 )
+from podcodex.core._utils import bad_path_component
 from podcodex.rag.index_store import IndexStore, get_index_store
 
 ProgressCallback = Callable[[str, float], None]
@@ -95,6 +96,14 @@ def _plan_folder_targets(
     existing = {p.name for p in shows_dir.iterdir() if p.is_dir()}
     out: dict[str, str] = {}
     for show in manifest.shows:
+        # ``show.folder`` is attacker-controlled (it comes from the archive
+        # manifest); a name like ``../evil`` would let both the
+        # REPLACE-policy ``rmtree`` and the extraction step operate outside
+        # ``shows_dir``.
+        if bad_path_component(show.folder):
+            raise ArchiveCorruptError(
+                f"unsafe folder name in manifest: {show.folder!r}"
+            )
         target = name if name else show.folder
         if target in existing:
             if on_conflict == ConflictPolicy.RENAME:
@@ -130,6 +139,13 @@ def _plan_collections(
     out: list[tuple[str, str, str, str, int]] = []
     for show in manifest.shows:
         for c in show.collections:
+            # Manifest data is attacker-controlled; reject a hostile name
+            # here, before extraction, instead of failing mid-import when
+            # ensure_collection rejects it after files already landed.
+            if bad_path_component(c.name):
+                raise ArchiveCorruptError(
+                    f"unsafe collection name in manifest: {c.name!r}"
+                )
             if c.name in existing:
                 if on_conflict == ConflictPolicy.ABORT:
                     raise ConflictError(f"collection '{c.name}' already exists")
@@ -151,13 +167,30 @@ def _purge_collection_from_disk(name: str, index_root: Path) -> None:
                     pass
 
 
+def _confine(target: Path, root: Path) -> Path | None:
+    """Return *target* only if it stays inside *root* (Zip-Slip guard).
+
+    ``root`` must already be resolved; callers resolve it once, not per
+    archive member.
+    """
+    if not target.resolve().is_relative_to(root):
+        logger.warning(f"skipping archive member outside {root}: {target}")
+        return None
+    return target
+
+
 def _resolve_target(
     member_name: str,
     shows_dir: Path | None,
     index_root: Path,
     folder_map: dict[str, str],
 ) -> Path | None:
-    """Map archive member path → target filesystem path. ``None`` to skip."""
+    """Map archive member path → target filesystem path. ``None`` to skip.
+
+    Any member whose path would land outside ``shows_dir``/``index_root``
+    (via ``..`` segments or absolute names) is skipped, so a crafted
+    archive cannot write outside the two roots it is allowed to fill.
+    """
     if member_name == MANIFEST_FILENAME:
         return None
     if member_name.startswith("shows/"):
@@ -168,9 +201,9 @@ def _resolve_target(
         final = folder_map.get(original_folder)
         if not final or not tail:
             return None
-        return shows_dir / final / tail
+        return _confine(shows_dir / final / tail, shows_dir)
     if member_name.startswith("lancedb/"):
-        return index_root / member_name[len("lancedb/") :]
+        return _confine(index_root / member_name[len("lancedb/") :], index_root)
     return None
 
 
@@ -182,6 +215,9 @@ def _extract(
     progress: ProgressCallback | None,
 ) -> None:
     """Stream tar members to disk in one pass, rewriting paths via ``folder_map``."""
+    # Resolve the containment roots once; _confine runs per member.
+    shows_dir = shows_dir.resolve() if shows_dir is not None else None
+    index_root = index_root.resolve()
     written = 0
     with tarfile.open(archive_path, mode="r:*") as tf:
         for member in tf:
@@ -248,6 +284,8 @@ def import_archive(
 
     if name and len(manifest.shows) != 1:
         raise ValueError("--name only valid for single-show bundles")
+    if name and bad_path_component(name):
+        raise ValueError(f"unsafe folder name: {name!r}")
 
     is_full = manifest.mode == Mode.FULL
     if is_full:

@@ -12,6 +12,7 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.schemas import TaskResponse
+from podcodex.core._utils import bad_path_component  # noqa: F401
 from podcodex.core._utils import (
     BREAK_SPEAKER,
     REMOVE_SPEAKER,
@@ -29,12 +30,6 @@ __all__ = ["get_index_store"]
 # avoids "is_downloaded says yes, scanner says no" mismatches that hid
 # yt-dlp output behind missing-ffmpeg failures.
 AUDIO_EXTS = AUDIO_EXTENSIONS
-
-
-def bad_path_component(name: str) -> bool:
-    """True when *name* is unusable as a single path component: empty,
-    traversal (".", ".."), or carrying a separator."""
-    return not name or "/" in name or "\\" in name or name in {".", ".."}
 
 
 def list_show_stems(show_folder: Path) -> set[str]:
