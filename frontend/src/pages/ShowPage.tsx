@@ -11,8 +11,8 @@ import {
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { removeQueriesUnderPath } from "@/api/cacheInvalidation";
-import { artworkUrl } from "@/api/filesystem";
-import type { Episode } from "@/api/types";
+import { showArtworkSrc } from "@/lib/showArtwork";
+import type { Episode, FilesImportResponse } from "@/api/types";
 import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
 import { dateCmp } from "@/lib/episodeSort";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
@@ -46,6 +46,12 @@ import PipelineButtons from "@/components/show/PipelineButtons";
 import FilterDropdown from "@/components/show/FilterDropdown";
 import SortDropdown, { type SortKey } from "@/components/show/SortDropdown";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
+import DropOverlay from "@/components/common/DropOverlay";
+import ImportErrorsBanner from "@/components/show/ImportErrorsBanner";
+import ImportFileDialog from "@/components/show/ImportFileDialog";
+import { useAudioImportQueue } from "@/hooks/useAudioImportQueue";
+import { useTauriFileDrop } from "@/hooks/useTauriFileDrop";
+import { AUDIO_EXTENSIONS } from "@/api/types";
 
 type ShowTab = "episodes" | "search" | "speakers" | "settings";
 const TABS: ShowTab[] = ["episodes", "search", "speakers", "settings"];
@@ -409,7 +415,9 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     }
     audio.playEpisode(ep.audio_path, 0, {
       title: ep.title,
-      artwork: ep.artwork_url || meta?.artwork_url,
+      // Never pass raw meta.artwork_url: it can hold the "local" marker,
+      // which is not a fetchable URL. showArtworkSrc resolves it.
+      artwork: ep.artwork_url || showArtworkSrc(meta?.artwork_url, folder),
       showName,
       folder,
       stem: ep.stem || ep.id,
@@ -422,16 +430,50 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
 
   const rowDownloading = downloadMutation.isPending || !!downloadTaskId;
 
+  // Standalone audio drop: shows the server accepts imports for take audio
+  // files directly, without the home-page target picker. The flag comes from
+  // the server so the overlay can't invite a drop the endpoint then rejects.
+  const acceptsImports = !!meta?.accepts_imports;
+  const finishImports = useCallback((imported: FilesImportResponse[]) => {
+    if (imported.length > 0) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.episodesForFolder(folder) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+    }
+  }, [folder, queryClient]);
+  const {
+    run: runImports,
+    conflict: importConflict,
+    resumeAfterConflict,
+    skipConflict,
+    errors: importErrors,
+    dismissErrors,
+  } = useAudioImportQueue(finishImports);
+  const onDropAudio = useCallback((paths: string[]) => {
+    void runImports(paths, folder);
+  }, [runImports, folder]);
+  const { isHovering } = useTauriFileDrop({
+    accept: AUDIO_EXTENSIONS,
+    onDrop: onDropAudio,
+    disabled: !acceptsImports,
+  });
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
+      {isHovering && <DropOverlay message="Drop audio to add episodes to this show" />}
+      {importConflict && (
+        <ImportFileDialog
+          conflict={importConflict}
+          onImported={resumeAfterConflict}
+          onClose={skipConflict}
+        />
+      )}
       <EditorialHeader
         title={showName}
         breadcrumbs={[
           { label: "Shows", onClick: () => navigate({ to: "/" }) },
           { label: showName },
         ]}
-        artworkUrl={meta?.artwork_url ? artworkUrl(folder) : undefined}
+        artworkUrl={metaLoaded ? showArtworkSrc(meta?.artwork_url, folder) : undefined}
         fallbackIcon={Podcast}
         stats={[
           ...(all.length > 0 ? [{ value: all.length, label: `episode${all.length !== 1 ? "s" : ""}` }] : []),
@@ -458,6 +500,8 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         onItemClick={(key) => setTab(key as ShowTab)}
       />
       <div className="flex-1 flex flex-col overflow-hidden">
+
+      <ImportErrorsBanner errors={importErrors} onDismiss={dismissErrors} className="mx-6 mt-3" />
 
       {tab === "episodes" && (<>
       {/* Single toolbar: filter controls and selection actions both stay mounted (toggle via `hidden`)
@@ -630,7 +674,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           scope="show"
           showName={showName}
           folder={folder}
-          artwork={meta?.artwork_url ? artworkUrl(folder) : undefined}
+          artwork={metaLoaded ? showArtworkSrc(meta?.artwork_url, folder) : undefined}
         />
       )}
 

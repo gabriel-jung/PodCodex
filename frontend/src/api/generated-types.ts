@@ -32,6 +32,7 @@ export interface ShowMeta {
   broadcast_number_pattern: string;
   pipeline: PipelineDefaultsSchema;
   last_feed_update?: string | null;
+  accepts_imports: boolean;
 }
 
 export interface EpisodeOut {
@@ -226,6 +227,7 @@ export interface ShowSummary {
   feed_episode_count?: number | null;
   has_rss: boolean;
   has_youtube: boolean;
+  accepts_imports: boolean;
   artwork_url: string;
   last_rss_update?: string | null;
   pipeline_total_count?: number | null;
@@ -248,11 +250,21 @@ export interface MoveShowRequest {
 export interface FilesImportRequest {
   file_path: string;
   name?: string | null;
+  folder?: string | null;
 }
 
 export interface FilesImportResponse {
   folder: string;
   stem: string;
+}
+
+export interface CreateLocalShowRequest {
+  name: string;
+}
+
+export interface CreateLocalShowResponse {
+  folder: string;
+  name: string;
 }
 
 export interface TranscribeRequest {
@@ -620,3 +632,7 @@ export interface ProviderProfile {
 
 // Audio file extensions the backend accepts (src/podcodex/core/constants.py).
 export const AUDIO_EXTENSIONS = [".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm", ".wma"];
+
+// Sentinel in a show's artwork_url meaning "locally uploaded file", not a URL
+// (src/podcodex/core/constants.py).
+export const LOCAL_ARTWORK_MARKER = "local";

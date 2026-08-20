@@ -107,3 +107,17 @@ AUDIO_EXTENSIONS = {
     ".aac",
     ".wma",
 }
+
+# Sentinel value in show.toml's ``artwork_url``: the cover is a locally
+# uploaded ``artwork.{ext}`` file in the show folder, not a URL. Mirrored
+# into the frontend via ``scripts/generate_types.py``. Every feed-refresh
+# "artwork upgrade" path must leave it alone, and every export boundary
+# (index backfill, search results) must filter it with
+# ``is_remote_artwork_url`` so the marker never renders as a URL.
+LOCAL_ARTWORK_MARKER = "local"
+
+
+def is_remote_artwork_url(url: str | None) -> bool:
+    """True when *url* is a real fetchable artwork URL (not empty, not the
+    local-file marker). Single check for every artwork_url consumer."""
+    return bool(url) and url.lower().startswith(("http://", "https://"))

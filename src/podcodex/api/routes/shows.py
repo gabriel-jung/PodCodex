@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shutil
 from collections.abc import Container
@@ -13,7 +14,7 @@ from typing import NamedTuple
 import hashlib
 import urllib.request
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from loguru import logger
 from pydantic import BaseModel
@@ -47,7 +48,7 @@ from podcodex.api.schemas import (
     SpeakerRosterResponse,
     UnifiedEpisodeOut,
 )
-from podcodex.core.constants import AUDIO_EXTENSIONS
+from podcodex.core.constants import AUDIO_EXTENSIONS, LOCAL_ARTWORK_MARKER
 from podcodex.core.llm_failures import FAILURES_FILENAME, rejected_steps
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
 from podcodex.core.versions import (
@@ -59,11 +60,13 @@ from podcodex.core.versions import (
 )
 from podcodex.ingest.folder import (
     EpisodeInfo,
+    dir_holds_episode,
     invalidate_scan_cache,
     lance_indexed_stems,
     scan_folder,
 )
 from podcodex.ingest.rss import (
+    EPISODE_META_FILE,
     episode_stem,
     feed_cache_episode_count,
     fetch_feed_with_artwork,
@@ -74,7 +77,7 @@ from podcodex.ingest.rss import (
 from podcodex.core.translate import clean_translations
 from podcodex.ingest.show import PipelineDefaults as _PipelineDefaults
 from podcodex.ingest.show import ShowMeta as _ShowMeta
-from podcodex.ingest.show import load_show_meta, save_show_meta
+from podcodex.ingest.show import is_feed_backed, load_show_meta, save_show_meta
 
 router = APIRouter()
 
@@ -91,6 +94,10 @@ class ShowSummary(BaseModel):
     )
     has_rss: bool = False
     has_youtube: bool = False
+    # Read-only: whether standalone audio can be imported here. Mirrors the
+    # server's own import gate (``ingest.show.is_feed_backed``) so the target
+    # picker can't offer a destination the endpoint rejects.
+    accepts_imports: bool = False
     artwork_url: str = ""
     last_rss_update: str | None = None  # ISO timestamp of last feed cache write
     # Per-stage progress aggregates from pipeline_db. All None when no pipeline.db file.
@@ -175,6 +182,7 @@ def list_shows() -> list[ShowSummary]:
                 feed_episode_count=feed_count,
                 has_rss=has_rss,
                 has_youtube=has_youtube,
+                accepts_imports=not is_feed_backed(child, meta),
                 artwork_url=artwork,
                 last_rss_update=last_rss,
                 pipeline_total_count=pipeline_total,
@@ -200,6 +208,10 @@ FILES_BUCKET_NAME = "Files"
 class FilesImportRequest(BaseModel):
     file_path: str
     name: str | None = None
+    # Destination show folder. The app always sends one (target picker);
+    # None is kept for direct API callers and falls back to the managed
+    # "Files" bucket, created on first use.
+    folder: str | None = None
 
 
 class FilesImportResponse(BaseModel):
@@ -239,9 +251,51 @@ def _ensure_files_bucket() -> Path:
     raise HTTPException(500, "Could not allocate a Files bucket folder")
 
 
+class CreateLocalShowRequest(BaseModel):
+    name: str
+
+
+class CreateLocalShowResponse(BaseModel):
+    folder: str
+    name: str
+
+
+@router.post("/create-local", response_model=CreateLocalShowResponse)
+def create_local_show(req: CreateLocalShowRequest) -> CreateLocalShowResponse:
+    """Create + register an empty local show under the default save path.
+
+    Backs the import-target picker's "New show" option. A directory already
+    at the path is a 409 (the picker asks for a different name) rather than
+    a silent adopt: the folder might belong to an unrelated app.
+    """
+    name = req.name.strip()
+    if bad_path_component(name):
+        raise HTTPException(400, f"Invalid name: {name!r}")
+
+    cfg = _load()
+    base = Path(cfg.default_save_path or "~").expanduser()
+    folder = base / name
+    # bad_path_component blocks separators, but Windows drive-relative names
+    # ("C:evil") survive the join and would escape the save path entirely.
+    if folder.parent.resolve() != base.resolve():
+        raise HTTPException(400, f"Invalid name: {name!r}")
+    try:
+        folder.mkdir(parents=True)
+    except FileExistsError:
+        # Same 409 shape as the import collision, so the picker can offer a
+        # free name rather than making the user guess which ones are taken.
+        taken = {p.name for p in base.iterdir()} if base.is_dir() else set()
+        raise HTTPException(
+            409, detail={"suggested": rename_suffix(name, taken, suffix="")}
+        )
+    save_show_meta(folder, _ShowMeta(name=name))
+    _register_folder(cfg, str(folder))
+    return CreateLocalShowResponse(folder=str(folder), name=name)
+
+
 @router.post("/files/import", response_model=FilesImportResponse)
 async def import_local_file(req: FilesImportRequest) -> FilesImportResponse:
-    """Copy a standalone audio file into the Files bucket show."""
+    """Copy a standalone audio file into a local show (default: Files bucket)."""
     src = Path(req.file_path).expanduser()
     if not src.is_file():
         raise HTTPException(404, f"File not found: {req.file_path}")
@@ -253,7 +307,15 @@ async def import_local_file(req: FilesImportRequest) -> FilesImportResponse:
     if bad_path_component(stem):
         raise HTTPException(400, f"Invalid name: {stem!r}")
 
-    bucket = _ensure_files_bucket()
+    if req.folder is not None:
+        # Registered-show gate: the import writes into the folder, so confine
+        # it to tracked shows. Feed-backed shows are owned by their feed; a
+        # root audio file there would collide with the downloader's naming.
+        bucket = require_registered_show(req.folder)
+        if is_feed_backed(bucket):
+            raise HTTPException(400, "Cannot import files into a feed-backed show")
+    else:
+        bucket = _ensure_files_bucket()
     # The folder scanner keys episodes by stem alone, so any same-stem audio
     # file (regardless of extension) or output dir counts as a collision.
     # list_show_stems is the scanner-aligned set of both.
@@ -291,9 +353,19 @@ _MIME = {
 }
 
 
+_ARTWORK_MAX_BYTES = 5 * 1024 * 1024  # shared cap: URL download and upload
+
+
 def _url_hash(url: str) -> str:
     """Short hash of a URL — used to detect when the source URL changes."""
     return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
+def _clear_cached_artwork(show_path: Path) -> None:
+    """Remove every ``artwork.*`` variant so a new cover can't coexist with
+    a stale one under a different extension."""
+    for old_ext in _IMG_EXTENSIONS:
+        (show_path / f"{_ARTWORK_STEM}{old_ext}").unlink(missing_ok=True)
 
 
 def _find_cached_artwork(show_path: Path) -> Path | None:
@@ -311,7 +383,7 @@ def _download_artwork(url: str, show_path: Path) -> Path | None:
         req = urllib.request.Request(url, headers={"User-Agent": "PodCodex/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             content_type = resp.headers.get("Content-Type", "")
-            data = resp.read(5 * 1024 * 1024)  # cap at 5 MB
+            data = resp.read(_ARTWORK_MAX_BYTES)
     except Exception as exc:
         logger.warning("Artwork download failed for {}: {}", url, exc)
         return None
@@ -330,9 +402,7 @@ def _download_artwork(url: str, show_path: Path) -> Path | None:
                 ext = e
                 break
 
-    # Remove any old cached artwork
-    for old_ext in _IMG_EXTENSIONS:
-        (show_path / f"{_ARTWORK_STEM}{old_ext}").unlink(missing_ok=True)
+    _clear_cached_artwork(show_path)
 
     dest = show_path / f"{_ARTWORK_STEM}{ext}"
     dest.write_bytes(data)
@@ -341,6 +411,37 @@ def _download_artwork(url: str, show_path: Path) -> Path | None:
     (show_path / ".artwork_url_hash").write_text(_url_hash(url), encoding="utf-8")
 
     return dest
+
+
+@router.post("/artwork")
+async def upload_artwork(
+    show_folder: str = Query(...), file: UploadFile = File(...)
+) -> dict:
+    """Store an uploaded image as the show's cover.
+
+    Writes ``artwork.{ext}`` into the show folder (replacing any previous
+    cover) and marks ``artwork_url = "local"`` in show.toml so readers know
+    the cover is file-backed and must never be re-downloaded over.
+    """
+    # Registered-show gate: this writes into the folder.
+    path = require_registered_show(show_folder)
+
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _IMG_EXTENSIONS:
+        raise HTTPException(400, f"Not an image file: {file.filename}")
+
+    data = await file.read(_ARTWORK_MAX_BYTES + 1)
+    if len(data) > _ARTWORK_MAX_BYTES:
+        raise HTTPException(413, "Image too large (max 5 MB)")
+
+    _clear_cached_artwork(path)
+    (path / ".artwork_url_hash").unlink(missing_ok=True)
+    atomic_write(path / f"{_ARTWORK_STEM}{ext}", lambda p: p.write_bytes(data))
+
+    meta = load_show_meta(path) or _ShowMeta(name=path.name)
+    meta.artwork_url = LOCAL_ARTWORK_MARKER
+    save_show_meta(path, meta)
+    return {"status": "ok"}
 
 
 @router.get("/artwork")
@@ -353,13 +454,32 @@ async def get_artwork(show_folder: str = Query(...)):
     if not artwork_url:
         raise HTTPException(404, "No artwork URL configured")
 
+    if artwork_url == LOCAL_ARTWORK_MARKER:
+        local = _find_cached_artwork(path)
+        if not local:
+            raise HTTPException(404, "No local artwork file")
+        # no-cache (revalidate, not "don't cache"): a replaced upload keeps
+        # the same URL, so a day-long max-age would pin the old cover.
+        return FileResponse(
+            local,
+            media_type=_MIME.get(local.suffix.lower(), "image/jpeg"),
+            headers={"Cache-Control": "no-cache"},
+        )
+
     cached = _find_cached_artwork(path)
     url_hash_file = path / ".artwork_url_hash"
 
-    # Re-download if URL changed or no cache
+    # Re-download if URL changed or no cache. A cached file WITHOUT a hash
+    # file also re-downloads: that state means a local upload was replaced
+    # by a URL (upload unlinks the hash), and the stale uploaded image must
+    # not be served under the new URL.
     need_download = cached is None
-    if cached and url_hash_file.exists():
-        stored_hash = url_hash_file.read_text(encoding="utf-8").strip()
+    if cached:
+        stored_hash = (
+            url_hash_file.read_text(encoding="utf-8").strip()
+            if url_hash_file.exists()
+            else ""
+        )
         if stored_hash != _url_hash(artwork_url):
             need_download = True
 
@@ -373,11 +493,14 @@ async def get_artwork(show_folder: str = Query(...)):
     if not cached:
         raise HTTPException(502, "Failed to download artwork")
 
+    # no-cache (revalidate, not "don't cache"): the URL never changes, so a
+    # day-long max-age would keep serving the old cover after a local upload
+    # replaces it. FileResponse's ETag/Last-Modified make revalidation a 304.
     media_type = _MIME.get(cached.suffix.lower(), "image/jpeg")
     return FileResponse(
         cached,
         media_type=media_type,
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "no-cache"},
     )
 
 
@@ -545,8 +668,13 @@ def get_show_meta(show_folder: str) -> ShowMeta:
         last_feed_update = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
     except FileNotFoundError:
         pass
+    accepts_imports = not is_feed_backed(path, meta)
     if meta is None:
-        return ShowMeta(name=path.name, last_feed_update=last_feed_update)
+        return ShowMeta(
+            name=path.name,
+            last_feed_update=last_feed_update,
+            accepts_imports=accepts_imports,
+        )
     return ShowMeta(
         name=meta.name,
         rss_url=meta.rss_url,
@@ -570,6 +698,7 @@ def get_show_meta(show_folder: str) -> ShowMeta:
             rag_chunker=meta.pipeline.rag_chunker,
         ),
         last_feed_update=last_feed_update,
+        accepts_imports=accepts_imports,
     )
 
 
@@ -903,6 +1032,42 @@ def _load_status_context(path: Path) -> _StatusContext:
 
     status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
 
+    local_audio = _scan_audio_files(path)
+    episode_files, episode_dirs, incomplete = _scan_episode_files(path, local_audio)
+
+    # Heal rows for episodes that appeared on disk after the initial populate
+    # (standalone-file import, bundle import, files copied in by hand). The DB
+    # only bootstraps from a scan while it is empty, so without this pass a
+    # later arrival never gets a row and /unified never lists it. Root audio
+    # always qualifies; a bare directory only counts as an episode under the
+    # scanner's own `dir_holds_episode` rule, so stray dirs can't trigger a
+    # rescan on every poll (they cost one scandir per poll and nothing more).
+    missing = set(local_audio) - status_map.keys()
+    for name in episode_dirs - status_map.keys() - missing:
+        try:
+            names = set(os.listdir(path / name))
+        except OSError:
+            continue
+        if dir_holds_episode(names):
+            missing.add(name)
+    if missing:
+        # The stale-scan guard: these stems were found by uncached scandirs,
+        # so a cached scan_folder result that misses them must be dropped.
+        invalidate_scan_cache(path)
+        # Same invariant as the bootstrap branch above: the version index must
+        # be rebuilt before the episode rows, or a healed dir with transcript
+        # files reads "done" while its versions cannot be opened. Idempotent,
+        # registers only files without rows.
+        backfill_versions_from_disk(path)
+        new_eps = [
+            ep
+            for ep in scan_folder(path, indexed_stems=lance_indexed)
+            if ep.stem not in status_map
+        ]
+        if new_eps:
+            db.populate_from_scan(new_eps)
+            status_map = {row["stem"]: row for row in db.all_episodes()}
+
     indexed_updates: dict[str, bool] = {}
     for stem, row in status_map.items():
         truth = stem in lance_indexed
@@ -911,9 +1076,6 @@ def _load_status_context(path: Path) -> _StatusContext:
             row["indexed"] = truth
     if indexed_updates:
         db.mark_indexed_bulk(indexed_updates)
-
-    local_audio = _scan_audio_files(path)
-    episode_files, episode_dirs, incomplete = _scan_episode_files(path, local_audio)
     # Stems worth reading llm_failures.json for: the file showed up in the
     # listing, or the walk was incomplete so the listing can't be trusted.
     llm_failure_stems = incomplete | {
@@ -1255,7 +1417,6 @@ def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
 
     from podcodex.core._utils import speaker_airtime
     from podcodex.core.versions import load_version, resolve_canonical_refs
-    from podcodex.ingest.rss import EPISODE_META_FILE
 
     db = get_pipeline_db(path)
     if db.episode_count() == 0:

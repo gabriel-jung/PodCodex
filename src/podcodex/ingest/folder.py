@@ -193,6 +193,14 @@ def note_episode_indexed(show_name: str, stem: str) -> None:
     _INDEXED_STEMS_CACHE[show_name] = (versions, stems)
 
 
+def dir_holds_episode(names: set[str] | frozenset[str]) -> bool:
+    """Scanner rule for when a bare directory counts as an episode: it holds
+    transcript content or episode metadata. Single definition, shared with
+    the pipeline-DB heal pass in ``api/routes/shows.py``; if the rule changes
+    here, healing follows automatically."""
+    return "transcript" in names or EPISODE_META_FILE in names
+
+
 def _load_title(output_dir: Path) -> str:
     """Read the display title from episode metadata if it exists."""
     meta_path = output_dir / EPISODE_META_FILE
@@ -298,9 +306,7 @@ def _scan_folder_uncached(
         if name in episodes:
             continue
         existing = subdir_files[name]
-        has_transcript = "transcript" in existing
-        has_meta = EPISODE_META_FILE in existing
-        if has_transcript or has_meta:
+        if dir_holds_episode(existing):
             episodes[name] = _make_episode(name, show_folder / name, existing)
 
     if indexed_stems is None:

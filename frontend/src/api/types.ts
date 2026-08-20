@@ -20,6 +20,7 @@ export type {
   BroadcastPreviewOut,
   CreateFromRSSResponse,
   CreateFromYouTubeResponse,
+  CreateLocalShowResponse,
   EpisodeStatusOut,
   FilesImportResponse,
   GenerateRequest,
@@ -38,7 +39,7 @@ export type {
   UnifiedEpisodeOut,
 } from "./generated-types";
 
-export { AUDIO_EXTENSIONS } from "./generated-types";
+export { AUDIO_EXTENSIONS, LOCAL_ARTWORK_MARKER } from "./generated-types";
 
 // ── Frontend-only types (not backed by Pydantic models) ──
 

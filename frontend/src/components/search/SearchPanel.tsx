@@ -4,7 +4,7 @@ import type { SearchResult } from "@/api/types";
 import { useEpisodeStore, useSearchStore } from "@/stores";
 import { getSearchConfig, getIndexStats, listIndexedSpeakers, searchQuery, exactSearch, randomQuote } from "@/api/client";
 import { listIndexedEpisodes } from "@/api/episodes";
-import { artworkUrl } from "@/api/filesystem";
+import { showArtworkSrc } from "@/lib/showArtwork";
 import { queryKeys } from "@/api/queryKeys";
 import { errorMessage, getShowName } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -38,14 +38,15 @@ export default function SearchPanel(props: SearchPanelProps) {
   const showName = isShowScope ? props.showName : getShowName(storeShowMeta, storeEpisode?.audio_path ?? null);
   const episode = isShowScope ? undefined : storeEpisode;
   const showFolder = isShowScope ? props.folder : (storeFolder ?? undefined);
-  // Memoize: artworkUrl() is not referentially stable, would break SearchResultCard memo.
+  // Memoize: showArtworkSrc() is not referentially stable, would break the
+  // SearchResultCard memo.
   const propsArtwork = isShowScope ? props.artwork : undefined;
-  const hasStoreArtwork = !!storeShowMeta?.artwork_url;
+  const storeArtworkField = storeShowMeta?.artwork_url;
   const showArtwork = useMemo(
     () => isShowScope
       ? propsArtwork
-      : (hasStoreArtwork ? artworkUrl(storeFolder ?? "") : undefined),
-    [isShowScope, propsArtwork, hasStoreArtwork, storeFolder],
+      : showArtworkSrc(storeArtworkField, storeFolder ?? ""),
+    [isShowScope, propsArtwork, storeArtworkField, storeFolder],
   );
 
   const { lastQuery, setLastQuery } = useSearchStore();

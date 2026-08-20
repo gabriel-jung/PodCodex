@@ -30,6 +30,8 @@ import pyarrow as pa
 from loguru import logger
 from pydantic import ValidationError
 
+from podcodex.core.constants import is_remote_artwork_url
+
 from podcodex.core._utils import normalize_pub_date
 from podcodex.rag.hit import Hit
 
@@ -849,7 +851,10 @@ class IndexStore:
                 continue
             meta = load_show_meta(Path(show_folder))
             url = (meta.artwork_url if meta else "").strip()
-            if not url:
+            # Only real URLs may leave show.toml: the field can hold the
+            # local-file marker, which search consumers would otherwise
+            # render as a literal artwork URL.
+            if not is_remote_artwork_url(url):
                 continue
             try:
                 self._collections_table().update(

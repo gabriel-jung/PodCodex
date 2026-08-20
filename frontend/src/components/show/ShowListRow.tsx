@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { artworkUrl } from "@/api/filesystem";
+import { showArtworkSrc } from "@/lib/showArtwork";
 import type { ShowSummary } from "@/api/types";
 import { useLayoutStore } from "@/stores";
 import { SourceIcon } from "./SourceIcon";
@@ -19,11 +19,7 @@ function ShowListRowInner({ show, onClick }: ShowListRowProps) {
       onClick={() => onClick(show.path)}
       className="w-full text-left flex items-start gap-4 hover:bg-accent/50 transition border-b border-border last:border-0 px-4 py-3"
     >
-      {show.artwork_url ? (
-        <img src={artworkUrl(show.path)} alt={show.name} className="w-8 h-8 rounded shrink-0" />
-      ) : (
-        <div className="w-8 h-8 rounded bg-muted shrink-0" />
-      )}
+      <img src={showArtworkSrc(show.artwork_url, show.path)} alt={show.name} className="w-8 h-8 rounded shrink-0" />
       <div className="min-w-0 flex-1 space-y-0.5">
         <div className="flex items-center gap-1.5">
           <SourceIcon show={show} />

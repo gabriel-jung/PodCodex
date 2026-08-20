@@ -4,7 +4,8 @@ import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useS
 import { getEpisodes, getShowMeta, getEpisodeSpeakers, openFolder } from "@/api/client";
 import { invalidateSpeakerViews } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
-import { artworkUrl, deleteFile, saveExportFile } from "@/api/filesystem";
+import { deleteFile, saveExportFile } from "@/api/filesystem";
+import { showArtworkSrc } from "@/lib/showArtwork";
 import { usePlatform } from "@/platform";
 import { uploadTranscript, getSpeakerMap, deleteTranscribeVersion } from "@/api/transcribe";
 import { getSegmentsPreview as getTranscribePreview } from "@/api/transcribe";
@@ -182,7 +183,10 @@ export default function EpisodePage({
         };
 
 
-  const artwork = episode?.artwork_url || (meta?.artwork_url && folder ? artworkUrl(folder) : "");
+  // Show-level fallback goes through showArtworkSrc: meta.artwork_url can
+  // hold the local-upload marker, which is not a fetchable URL.
+  const artwork =
+    episode?.artwork_url || (folder ? showArtworkSrc(meta?.artwork_url, folder) : "");
 
   // Register meta for this episode's audio WITHOUT loading it into the player.
   // Navigation stays separate from playback: the bar keeps playing whatever is

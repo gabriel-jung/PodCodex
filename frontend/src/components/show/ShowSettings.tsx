@@ -2,7 +2,9 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
-import { updateShowMeta, moveShow, deleteShow, previewBroadcastNumber } from "@/api/client";
+import { updateShowMeta, moveShow, deleteShow, previewBroadcastNumber, uploadShowArtwork } from "@/api/client";
+import { artworkUrl as showArtworkEndpoint } from "@/api/filesystem";
+import { LOCAL_ARTWORK_MARKER } from "@/lib/showArtwork";
 import { removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useIndexConfig } from "@/hooks/useIndexConfig";
@@ -17,7 +19,7 @@ import FolderLocationFields from "@/components/common/FolderLocationFields";
 import ShowAccessSection from "./ShowAccessSection";
 import BundleExportSection from "./BundleExportSection";
 import { StatusDot } from "@/components/ui/status-dot";
-import { FolderOpen, Trash2 } from "lucide-react";
+import { FolderOpen, Trash2, Upload } from "lucide-react";
 
 interface ShowSettingsProps {
   folder: string;
@@ -67,6 +69,26 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const { keys } = useApiKeys();
   const apiProfiles = useMemo(() => profiles.filter((p) => p.type !== "ollama"), [profiles]);
 
+  // ── Artwork upload ──
+  const isLocalArtwork = artworkUrl === LOCAL_ARTWORK_MARKER;
+  const artworkFileRef = useRef<HTMLInputElement | null>(null);
+  const artworkUploadMutation = useMutation({
+    mutationFn: (file: File) => uploadShowArtwork(folder, file),
+    onSuccess: () => {
+      // Adopt the marker the upload just wrote server-side. Without this the
+      // form stays dirty against the refetched meta and the debounced save
+      // PUTs the pre-upload artwork_url back, orphaning the uploaded file.
+      setArtworkUrl(LOCAL_ARTWORK_MARKER);
+      queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+    },
+  });
+  const handleArtworkFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) artworkUploadMutation.mutate(file);
+    e.target.value = "";
+  };
+
   // ── Move folder ──
   const { parent: folderParentDefault, basename: folderBasename, sep: pathSep } = splitPath(folder);
   const moveFilesRef = useRef(true);
@@ -75,7 +97,17 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const destPath = `${parentPath.replace(/[\\/]+$/, "")}${pathSep}${folderName}`;
   const hasChanges = destPath !== folder;
 
+  // Resync the form from server metadata, but never over unsaved edits to the
+  // *same* show: a background refetch (an artwork upload landing, another
+  // window saving) would otherwise wipe what the user is mid-way through
+  // typing, and their pending autosave carries the form's version anyway. A
+  // different folder always resyncs, or one show's dirty edits would leak
+  // into another's form and get saved there.
+  const syncedFolderRef = useRef(folder);
   useEffect(() => {
+    const sameShow = syncedFolderRef.current === folder;
+    syncedFolderRef.current = folder;
+    if (sameShow && isDirtyRef.current) return;
     setName(meta.name);
     setLanguage(meta.language);
     setRssUrl(meta.rss_url);
@@ -96,7 +128,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     setPipeTargetLang(meta.pipeline?.target_lang ?? "");
     setPipeRagModel(meta.pipeline?.rag_model ?? "");
     setPipeRagChunker(meta.pipeline?.rag_chunker ?? "");
-  }, [meta]);
+  }, [meta, folder]);
 
   const isDirty =
     name !== meta.name ||
@@ -281,13 +313,43 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         <SettingRow label="YouTube URL" help="YouTube channel or playlist URL.">
           <input value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)} placeholder="https://youtube.com/..." className={`input ${inputWidth.long}`} />
         </SettingRow>
-        <SettingRow label="Artwork" help="URL to the show cover image.">
+        <SettingRow label="Artwork" help="Cover image: paste a URL or upload a file.">
           <div className="flex items-center gap-2">
-            <input value={artworkUrl} onChange={(e) => setArtworkUrl(e.target.value)} placeholder="https://..." className={`input ${inputWidth.medium}`} />
+            <input
+              value={isLocalArtwork ? "" : artworkUrl}
+              onChange={(e) => setArtworkUrl(e.target.value)}
+              placeholder={isLocalArtwork ? "Uploaded image" : "https://..."}
+              className={`input ${inputWidth.medium}`}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => artworkFileRef.current?.click()}
+              disabled={artworkUploadMutation.isPending}
+              title="Upload a cover image"
+            >
+              <Upload className="w-3 h-3" />
+              {artworkUploadMutation.isPending ? "Uploading…" : "Upload"}
+            </Button>
+            <input
+              ref={artworkFileRef}
+              type="file"
+              accept=".jpg,.jpeg,.png,.webp,.gif"
+              onChange={handleArtworkFile}
+              className="hidden"
+            />
             {artworkUrl && (
-              <img src={artworkUrl} alt="Artwork preview" className="w-7 h-7 rounded object-cover shrink-0" onError={(e) => (e.currentTarget.style.display = "none")} />
+              <img
+                src={isLocalArtwork ? showArtworkEndpoint(folder) : artworkUrl}
+                alt="Artwork preview"
+                className="w-7 h-7 rounded object-cover shrink-0"
+                onError={(e) => (e.currentTarget.style.display = "none")}
+              />
             )}
           </div>
+          {artworkUploadMutation.isError && (
+            <p className="text-destructive text-xs mt-1">{errorMessage(artworkUploadMutation.error)}</p>
+          )}
         </SettingRow>
       </SettingSection>
 

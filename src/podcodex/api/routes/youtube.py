@@ -27,6 +27,7 @@ from podcodex.ingest.rss import (
     save_episode_meta,
     save_feed_cache,
 )
+from podcodex.core.constants import LOCAL_ARTWORK_MARKER
 from podcodex.ingest.show import load_show_meta, save_show_meta
 
 router = APIRouter()
@@ -117,7 +118,9 @@ def youtube_fetch(show_folder: str) -> list[dict]:
     if fresh:
         current_meta = load_show_meta(path)
         if current_meta and fresh != (current_meta.artwork_url or ""):
-            needs_upgrade = (
+            # A locally uploaded cover (LOCAL_ARTWORK_MARKER) is the user's
+            # explicit choice; never "upgrade" over it.
+            needs_upgrade = current_meta.artwork_url != LOCAL_ARTWORK_MARKER and (
                 not current_meta.artwork_url
                 or "yt3.googleusercontent.com" not in current_meta.artwork_url
             )

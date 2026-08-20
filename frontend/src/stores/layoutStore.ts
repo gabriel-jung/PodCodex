@@ -21,6 +21,9 @@ interface LayoutState {
   /** Compact mode hides secondary metadata on show + episode lists. */
   compact: boolean;
   setCompact: (v: boolean) => void;
+  /** Show folder last chosen as the standalone-import destination. */
+  lastImportTarget: string | null;
+  setLastImportTarget: (folder: string | null) => void;
 }
 
 export const useLayoutStore = create<LayoutState>()(
@@ -36,6 +39,8 @@ export const useLayoutStore = create<LayoutState>()(
       setSidebarExpanded: (v) => set({ sidebarExpanded: v }),
       compact: false,
       setCompact: (v) => set({ compact: v }),
+      lastImportTarget: null,
+      setLastImportTarget: (folder) => set({ lastImportTarget: folder }),
     }),
     {
       name: "podcodex-layout",
@@ -45,6 +50,7 @@ export const useLayoutStore = create<LayoutState>()(
         showGroupBy: s.showGroupBy,
         sidebarExpanded: s.sidebarExpanded,
         compact: s.compact,
+        lastImportTarget: s.lastImportTarget,
       }),
     },
   ),

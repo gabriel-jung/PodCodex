@@ -11,26 +11,26 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { errorMessage, splitPath } from "@/lib/utils";
+import type { ImportConflict } from "@/hooks/useAudioImportQueue";
 
 /** Rename prompt shown when importing a standalone audio file collides with
- *  an existing episode in the Files bucket. Retries the import with the
+ *  an existing episode in the target show. Retries the import with the
  *  chosen name; a repeat collision refreshes the suggestion in place. */
 export default function ImportFileDialog({
-  filePath,
-  suggested,
+  conflict,
   onImported,
   onClose,
 }: {
-  filePath: string;
-  suggested: string;
+  conflict: ImportConflict;
   onImported: (folder: string, stem: string) => void;
   onClose: () => void;
 }) {
+  const { filePath, suggested, folder } = conflict;
   const [name, setName] = useState(suggested);
   const fileName = splitPath(filePath).basename || filePath;
 
   const retryMutation = useMutation({
-    mutationFn: (newName: string) => importLocalFile(filePath, newName),
+    mutationFn: (newName: string) => importLocalFile(filePath, newName, folder),
     onSuccess: (res) => onImported(res.folder, res.stem),
     onError: (err) => {
       const next = conflictSuggestion(err);
@@ -51,7 +51,7 @@ export default function ImportFileDialog({
         <DialogHeader>
           <DialogTitle>That name is taken</DialogTitle>
           <DialogDescription>
-            Your Files show already has an episode named after{" "}
+            That show already has an episode named after{" "}
             <span className="font-mono">{fileName}</span>. Give this one a
             different name.
           </DialogDescription>

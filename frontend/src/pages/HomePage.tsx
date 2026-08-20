@@ -1,12 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
-import {
-  conflictSuggestion,
-  getConfig,
-  importLocalFile,
-  listShows,
-} from "@/api/client";
+import { getConfig, listShows } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
 import { FeedRefreshButton } from "@/components/common/FeedRefreshButton";
@@ -18,9 +13,11 @@ import ShowCard from "@/components/show/ShowCard";
 import ShowListRow from "@/components/show/ShowListRow";
 import CompactToggle from "@/components/show/CompactToggle";
 import AddShowModal from "@/components/show/AddShowModal";
+import ImportErrorsBanner from "@/components/show/ImportErrorsBanner";
 import ImportFileDialog from "@/components/show/ImportFileDialog";
-import { Plus, List, LayoutGrid, Podcast, Group, X } from "lucide-react";
-import { errorMessage, splitPath } from "@/lib/utils";
+import ImportTargetDialog from "@/components/show/ImportTargetDialog";
+import { useAudioImportQueue } from "@/hooks/useAudioImportQueue";
+import { Plus, List, LayoutGrid, Podcast, Group } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import AppSidebar from "@/components/layout/AppSidebar";
@@ -86,6 +83,15 @@ export default function HomePage() {
     return { sections: sects, rssShows: rss, ytShows: yt, localShows: local };
   }, [sorted, groupBy]);
 
+  // Import destinations come from the server's own flag, not from the
+  // has_rss/has_youtube grouping above: the two answer different questions,
+  // and gating the picker on presentation state is how it ends up offering
+  // a show the import endpoint rejects.
+  const importTargets = useMemo(
+    () => (sorted ?? []).filter((s) => s.accepts_imports),
+    [sorted],
+  );
+
   // Oldest feed update across all shows with a feed (RSS or YouTube),
   // so the refresh button reflects staleness of either source.
   const oldestFeedUpdate = useMemo(() =>
@@ -110,23 +116,17 @@ export default function HomePage() {
     compact,
   ]);
 
-  // Standalone-file import: copy dropped audio into the managed "Files"
-  // bucket show, one file at a time. A 409 (name taken) pauses the queue and
-  // opens the rename dialog; other failures collect into a dismissible banner
-  // and the queue moves on. When every file succeeded, one import opens the
-  // episode and several open the show; any failure keeps the user here so
-  // the banner stays visible.
-  const [importConflict, setImportConflict] = useState<{
-    filePath: string;
-    suggested: string;
-    remaining: string[];
-    imported: FilesImportResponse[];
-    errors: string[];
-  } | null>(null);
-  const [importErrors, setImportErrors] = useState<string[]>([]);
+  // Standalone-file import: dropped audio first goes through the target
+  // picker (any local show, or a new one), then copies one file at a time.
+  // A 409 (name taken) pauses the queue and opens the rename dialog; other
+  // failures collect into a dismissible banner and the queue moves on. When
+  // every file succeeded, one import opens the episode and several open the
+  // show; any failure keeps the user here so the banner stays visible.
+  const [pendingImport, setPendingImport] = useState<string[] | null>(null);
+  const lastImportTarget = useLayoutStore((s) => s.lastImportTarget);
+  const setLastImportTarget = useLayoutStore((s) => s.setLastImportTarget);
 
   const finishImports = useCallback((imported: FilesImportResponse[], errors: string[]) => {
-    setImportErrors(errors);
     if (imported.length === 0) return;
     queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
     const folder = imported[imported.length - 1].folder;
@@ -142,45 +142,31 @@ export default function HomePage() {
     }
   }, [navigate, queryClient]);
 
-  const runImports = useCallback(async (
-    paths: string[],
-    imported: FilesImportResponse[] = [],
-    errors: string[] = [],
-  ) => {
-    for (let i = 0; i < paths.length; i++) {
-      try {
-        const res = await importLocalFile(paths[i]);
-        imported = [...imported, res];
-      } catch (err) {
-        const suggested = conflictSuggestion(err);
-        if (suggested) {
-          setImportConflict({
-            filePath: paths[i],
-            suggested,
-            remaining: paths.slice(i + 1),
-            imported,
-            errors,
-          });
-          return;
-        }
-        const name = splitPath(paths[i]).basename || paths[i];
-        errors = [...errors, `${name}: ${errorMessage(err)}`];
-      }
-    }
-    finishImports(imported, errors);
-  }, [finishImports]);
+  const {
+    run: runImports,
+    conflict: importConflict,
+    resumeAfterConflict,
+    skipConflict,
+    errors: importErrors,
+    dismissErrors,
+  } = useAudioImportQueue(finishImports);
+
+  // Queue a drop for the target picker. Merges rather than replaces: a second
+  // drop while the picker is still open would otherwise discard the first
+  // batch silently, and both batches want the same destination anyway.
+  const queueImport = useCallback((paths: string[]) => {
+    if (paths.length === 0) return;
+    setPendingImport((prev) => (prev ? [...prev, ...paths] : paths));
+  }, []);
 
   const { isHovering } = useTauriFileDrop({
     accept: AUDIO_EXTENSIONS,
-    onDrop: (paths) => {
-      if (paths.length === 0) return;
-      void runImports(paths);
-    },
+    onDrop: queueImport,
   });
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      {isHovering && <DropOverlay message="Drop audio to add it to your Files" />}
+      {isHovering && <DropOverlay message="Drop audio to add it to a show" />}
       {sorted && sorted.length === 0 && <OnboardingModal onAddShow={() => setAddOpen(true)} />}
       <EditorialHeader
         title="PodCodex"
@@ -217,22 +203,7 @@ export default function HomePage() {
       <div className="flex-1 overflow-y-auto">
       <div className="px-6 py-8">
 
-        {importErrors.length > 0 && (
-          <div className="mb-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-            <div className="flex-1 space-y-0.5">
-              {importErrors.map((e) => (
-                <p key={e}>Couldn't import {e}</p>
-              ))}
-            </div>
-            <button
-              onClick={() => setImportErrors([])}
-              className="shrink-0 hover:text-foreground transition"
-              aria-label="Dismiss import errors"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
+        <ImportErrorsBanner errors={importErrors} onDismiss={dismissErrors} className="mb-4" />
 
         {showsFailed && (
           <ErrorAlert
@@ -343,26 +314,30 @@ export default function HomePage() {
             }}
             onOpenFile={(path) => {
               setAddOpen(false);
-              void runImports([path]);
+              queueImport([path]);
             }}
+          />
+        )}
+
+        {pendingImport && (
+          <ImportTargetDialog
+            fileCount={pendingImport.length}
+            localShows={importTargets}
+            defaultFolder={lastImportTarget}
+            onConfirm={(folder) => {
+              setLastImportTarget(folder);
+              setPendingImport(null);
+              void runImports(pendingImport, folder);
+            }}
+            onClose={() => setPendingImport(null)}
           />
         )}
 
         {importConflict && (
           <ImportFileDialog
-            filePath={importConflict.filePath}
-            suggested={importConflict.suggested}
-            onImported={(folder, stem) => {
-              const { remaining, imported, errors } = importConflict;
-              setImportConflict(null);
-              void runImports(remaining, [...imported, { folder, stem }], errors);
-            }}
-            onClose={() => {
-              // Cancel skips this file; the rest of the queue still imports.
-              const { remaining, imported, errors } = importConflict;
-              setImportConflict(null);
-              void runImports(remaining, imported, errors);
-            }}
+            conflict={importConflict}
+            onImported={resumeAfterConflict}
+            onClose={skipConflict}
           />
         )}
       </div>

@@ -3,6 +3,7 @@ import type {
   BroadcastPreviewOut,
   CreateFromRSSResponse,
   CreateFromYouTubeResponse,
+  CreateLocalShowResponse,
   Episode,
   EpisodeSpeakersResponse,
   EpisodeStatus,
@@ -16,7 +17,7 @@ import type {
   SpeakerRosterResponse,
   TaskResponse,
 } from "./types";
-import { ApiError, json } from "./client";
+import { ApiError, json, rawFetch } from "./client";
 
 const enc = encodeURIComponent;
 
@@ -79,11 +80,18 @@ export const registerShow = (path: string) =>
     body: JSON.stringify({ path }),
   });
 
-export const importLocalFile = (filePath: string, name?: string) =>
+export const importLocalFile = (filePath: string, name?: string, folder?: string) =>
   json<FilesImportResponse>("/api/shows/files/import", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file_path: filePath, name: name ?? null }),
+    body: JSON.stringify({ file_path: filePath, name: name ?? null, folder: folder ?? null }),
+  });
+
+export const createLocalShow = (name: string) =>
+  json<CreateLocalShowResponse>("/api/shows/create-local", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
   });
 
 /** The suggested free name from an import-collision 409, else null. */
@@ -92,6 +100,15 @@ export function conflictSuggestion(err: unknown): string | null {
   const suggested = (err.body as { detail?: { suggested?: unknown } } | null)
     ?.detail?.suggested;
   return typeof suggested === "string" ? suggested : null;
+}
+
+export async function uploadShowArtwork(folder: string, file: File): Promise<void> {
+  const form = new FormData();
+  form.append("file", file);
+  await rawFetch(`/api/shows/artwork?show_folder=${enc(folder)}`, {
+    method: "POST",
+    body: form,
+  });
 }
 
 export const getShowMeta = (folder: string) =>
@@ -110,7 +127,12 @@ export const previewBroadcastNumber = (folder: string, pattern: string) =>
     `/api/shows/${enc(folder)}/broadcast-preview?pattern=${enc(pattern)}`,
   );
 
-export const updateShowMeta = (folder: string, meta: ShowMeta) =>
+/** Writable half of ShowMeta: the server derives `accepts_imports` and
+ *  `last_feed_update` per request and ignores them on PUT, so callers must
+ *  not have to invent values for them. */
+export type ShowMetaUpdate = Omit<ShowMeta, "accepts_imports" | "last_feed_update">;
+
+export const updateShowMeta = (folder: string, meta: ShowMetaUpdate) =>
   json<{ status: string }>(`/api/shows/${enc(folder)}/meta`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },

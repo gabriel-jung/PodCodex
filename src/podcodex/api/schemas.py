@@ -38,6 +38,10 @@ class ShowMeta(BaseModel):
     last_feed_update: str | None = (
         None  # ISO timestamp of last feed cache write (read-only)
     )
+    # Read-only: whether standalone audio can be imported into this show.
+    # Same rule the import endpoint enforces (``ingest.show.is_feed_backed``);
+    # the PUT handler ignores it.
+    accepts_imports: bool = False
 
 
 class BroadcastPreviewOut(BaseModel):

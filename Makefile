@@ -128,6 +128,10 @@ types:  ## Regenerate frontend TS types from Pydantic models
 icons:  ## Regenerate app icons from assets/icon.png (frontend + Tauri bundle)
 	@command -v magick >/dev/null 2>&1 || { echo "ImageMagick required: brew install imagemagick"; exit 1; }
 	magick assets/icon.png -resize 256x256 PNG32:frontend/public/icon.png
+	@# Default show cover: the icon centered on the light-mode cream canvas
+	@# (DESIGN.md --background). Shown for shows with no artwork of their own.
+	magick assets/icon.png -resize 512x512 -background "#f7f2ea" \
+		-gravity center -extent 1024x1024 PNG32:frontend/public/default-cover.png
 	npx @tauri-apps/cli icon assets/icon.png
 	@# Tauri CLI emits iOS + Android icons unconditionally; we ship desktop only.
 	rm -rf src-tauri/icons/ios src-tauri/icons/android

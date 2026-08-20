@@ -27,6 +27,7 @@ from podcodex.ingest.rss import (
     merge_with_cache,
     save_feed_cache,
 )
+from podcodex.core.constants import LOCAL_ARTWORK_MARKER
 from podcodex.ingest.show import load_show_meta, save_show_meta
 
 router = APIRouter()
@@ -68,10 +69,13 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
     episodes = merge_with_cache(episodes, load_feed_cache(path))
     save_feed_cache(path, episodes)
 
-    # Upgrade artwork if missing or low-res (e.g. old 60px iTunes thumbnails)
+    # Upgrade artwork if missing or low-res (e.g. old 60px iTunes thumbnails).
+    # A locally uploaded cover (LOCAL_ARTWORK_MARKER) is never upgraded over.
     if meta:
         current = meta.artwork_url or ""
-        if not current or "60x60" in current or "artworkUrl60" in current:
+        if current != LOCAL_ARTWORK_MARKER and (
+            not current or "60x60" in current or "artworkUrl60" in current
+        ):
             fresh = await asyncio.to_thread(feed_artwork, rss_url)
             if fresh and fresh != current:
                 meta.artwork_url = fresh

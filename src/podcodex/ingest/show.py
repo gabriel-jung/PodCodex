@@ -125,6 +125,26 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
     return meta
 
 
+def is_feed_backed(show_folder: Path, meta: ShowMeta | None = None) -> bool:
+    """True when a show's episode list comes from a feed (RSS or YouTube).
+
+    Single definition of the rule, shared by the import endpoint and the
+    ``accepts_imports`` flag both pickers gate on: three separate encodings
+    of "is this a local show" previously disagreed, so the UI could offer a
+    destination the server then rejected. A cached feed counts even without
+    a URL (the URL may have been cleared), and a URL counts even without a
+    cache (the first refresh will populate it).
+
+    Pass ``meta`` when the caller already loaded it to skip a re-read.
+    """
+    show_folder = Path(show_folder)
+    if meta is None:
+        meta = load_show_meta(show_folder)
+    if meta and (meta.rss_url or meta.youtube_url):
+        return True
+    return (show_folder / ".feed_cache.json").exists()
+
+
 def show_display(folder: Path) -> str:
     """Human-readable show name: ``show.toml.name`` if present, else folder basename."""
     folder = Path(folder)
