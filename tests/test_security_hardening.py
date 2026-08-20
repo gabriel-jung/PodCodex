@@ -7,6 +7,8 @@ Covers the loopback-only desktop hardening pass:
 - gpu/download no longer accepts a caller-supplied manifest URL
 """
 
+import platform
+
 import pytest
 
 
@@ -186,6 +188,10 @@ def test_youtube_fetch_unregistered_show_forbidden(client, tmp_path):
 # ── fs/open bundle refusal ───────────────────────────────────────────────
 
 
+@pytest.mark.skipif(
+    platform.system() != "Darwin",
+    reason="the bundle refusal is macOS-only: `open` launches .app dirs there",
+)
 def test_fs_open_rejects_app_bundle(client, tmp_path):
     """`open <bundle>` would launch the app; the route must refuse .app dirs."""
     bundle = tmp_path / "Evil.app"
