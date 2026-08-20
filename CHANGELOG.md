@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.2.11] - 2026-08-20
+
+### Bring in your own audio files
+
+- Drop audio anywhere in the app and pick where it goes. Any local show can
+  hold imported files now, not just a single "Files" folder, and you can
+  create a new show right from the picker. Dropping onto a local show's page
+  imports straight into it, no dialog. The last destination you chose is
+  preselected next time.
+- Imported files show up immediately. Previously a file could land on disk
+  without joining the episode list: it stayed invisible, opening it said
+  "Episode not found", and reimporting it silently renamed the file because
+  the collision check could see what the list could not. Episodes that arrive
+  outside the app, from a bundle import or copied in by hand, now appear too.
+- Shows without artwork get a proper cover instead of an empty tile, and you
+  can upload your own from the show settings. An uploaded cover is yours: a
+  feed refresh will not overwrite it.
+
+### Your local API is no longer open to every process on the machine
+
+- **Every API route now requires an auth token.** Listening on 127.0.0.1 was
+  never authentication: any other program or user account on the machine
+  could reach it. The token is handed to the app automatically, so nothing
+  changes for you, but **a script of your own calling the API directly will
+  now get a 401** until it sends the token. It lives in a private file in the
+  config directory.
+- A malicious web page can no longer reach the API by pointing a hostname at
+  your loopback address.
+- Deleting, moving, or writing to a show is confined to shows the app knows
+  about, instead of any folder on disk.
+- Importing a `.podcodex` bundle can no longer write outside the target
+  folders, whatever the archive claims its contents are called.
+
+### Pipeline defaults follow you, not your browser
+
+- Default transcription and correction settings are stored with the app
+  instead of in browser storage, so they are the same on every machine and
+  survive a cache clear. Existing settings migrate themselves on first
+  launch.
+
+### The running version is visible
+
+- The version shows in the sidebar footer, on the startup screens, and in a
+  new Settings > About panel with copyable details, including where your data
+  and logs live. Handy on Windows, which has no app menu.
+
+### Fixes
+
+- The episode list could come up empty for a moment, or a download could
+  refuse to start, when several requests arrived at once. Both were the same
+  class of bug and are fixed.
+- The episode list could render as blank space with no error, and a failed
+  request anywhere in the app now shows an error with a retry instead of an
+  empty page.
+- The show list could stay empty on startup because of a redirect that lost
+  the request's credentials.
+- Opening a show is faster again: about 8ms for a 269-episode show, down from
+  16ms, and the live status check went from 14ms to 6ms.
+
 ## [0.2.10] - 2026-08-15
 
 ### A faster episode list
