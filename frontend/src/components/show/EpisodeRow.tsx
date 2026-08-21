@@ -34,7 +34,7 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
   const handleDelete = () => onDelete(ep);
 
   return (
-    <div className="flex items-center gap-3 px-6 py-2 hover:bg-accent/50 transition group">
+    <div className="@container flex items-center gap-3 px-6 py-2 hover:bg-accent/50 transition group">
       <input type="checkbox" checked={selected} onMouseDown={(e) => { shiftRef.current = e.shiftKey; }} onChange={() => onToggle(ep.id, index, shiftRef.current)} className="accent-primary cursor-pointer shrink-0" />
       <div className="w-10 h-10 shrink-0">
         {ep.artwork_url && (
@@ -44,7 +44,7 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
       <span className="text-xs text-muted-foreground w-8 text-right shrink-0 tabular-nums">
         {ep.episode_number != null ? `#${ep.episode_number}` : ""}
       </span>
-      <div className="flex-[3_1_0%] min-w-[14rem] flex flex-col gap-0.5">
+      <div className="min-w-0 flex-[3_1_0%] flex flex-col gap-0.5">
         <button
           onClick={handleOpen}
           className={`text-left text-sm hover:text-primary cursor-pointer flex items-center gap-1.5 max-w-full ${ep.removed ? "text-muted-foreground" : "text-foreground"}`}
@@ -59,12 +59,15 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
         {!compact && <StatusChips ep={ep} />}
       </div>
       {/* Metadata cluster pinned right: speakers · date · duration. Date and
-          duration are fixed columns; speakers takes a share of the leftover so
-          it shrinks with the window instead of squeezing the title. It only
-          appears from lg up, where that share still leaves the title wider
-          than it is at the app's 720px minimum width. */}
+          duration are fixed columns; speakers takes a quarter of the leftover
+          so it shrinks with the window instead of squeezing the title, and it
+          caps at the old 18rem on wide rows (the title absorbs the rest).
+          Gated on the *row's* width, not the viewport: the sidebar is
+          `pl-14`/`pl-48`, so a viewport breakpoint would show it on rows too
+          narrow to afford it. Below 56rem it hides, which keeps the title
+          wider than it is at the app's 720px minimum width. */}
       <div
-        className="hidden lg:flex items-center gap-1 flex-[1_1_0%] min-w-0 max-w-72 text-xs text-muted-foreground"
+        className="hidden @[56rem]:flex items-center gap-1 flex-[1_1_0%] min-w-0 max-w-72 text-xs text-muted-foreground"
         title={speakers?.join(", ")}
       >
         {speakers && speakers.length > 0 && <SpeakerNames names={speakers} />}
