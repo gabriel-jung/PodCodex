@@ -135,6 +135,10 @@ testpaths = ["tests"]
 # ownership, heals collection metadata and runs the show-id migration), and a
 # missing isolation once rewrote real show.toml files during a test run.
 addopts = "-p tests.fixtures.realindex_guard"
+# The plugin above is imported before pytest puts rootdir on sys.path, so a
+# bare `pytest` (what CI runs) cannot find the `tests` package without this.
+# `python -m pytest` happens to work either way, which is how it got missed.
+pythonpath = ["."]
 # Belt and braces for an explicit `pytest .`, which ignores testpaths.
 # Setting this *replaces* pytest's defaults rather than extending them, so
 # they are restated here — dropping ".*" alone would send collection into
