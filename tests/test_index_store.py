@@ -928,3 +928,66 @@ def test_exact_whole_query_still_scores_full(tmp_path):
     exact, _, _ = s.search_literal(col, "williams")
     assert [h.score for h in exact] == [1.0]
     assert exact[0].text == "John Williams composed the score"
+
+
+# ── Whole-episode removal ────────────────────────────────────────────────
+
+
+def _seeded_show(tmp_path) -> IndexStore:
+    """Two collections of show S holding ep1, plus one of another show."""
+    s = _store(tmp_path)
+    for name, model in (("s__bge", "bge-m3"), ("s__e5", "e5")):
+        s.ensure_collection(name, show="S", model=model, chunker="semantic", dim=8)
+        s.save_chunks(name, "ep1", _chunks(3), _rng_embeddings(3))
+        s.save_chunks(name, "ep2", _chunks(2, episode="ep2"), _rng_embeddings(2))
+    s.ensure_collection("other", show="Other", model="m", chunker="semantic", dim=8)
+    s.save_chunks("other", "ep1", _chunks(4), _rng_embeddings(4))
+    return s
+
+
+def test_delete_episode_everywhere_covers_all_of_one_show(tmp_path):
+    """Every collection of the show, and only that show.
+
+    A show has one collection per model/chunker pair, so removing an episode
+    from a single named one leaves it answering searches.
+    """
+    s = _seeded_show(tmp_path)
+
+    touched = s.delete_episode_everywhere("S", "ep1")
+
+    assert sorted(touched) == ["s__bge", "s__e5"]
+    assert not s.episode_is_indexed("s__bge", "ep1")
+    assert not s.episode_is_indexed("s__e5", "ep1")
+    # Siblings untouched: another episode, and the same episode elsewhere.
+    assert s.episode_is_indexed("s__bge", "ep2")
+    assert s.episode_is_indexed("other", "ep1")
+
+
+def test_delete_episode_everywhere_is_idempotent(tmp_path):
+    s = _seeded_show(tmp_path)
+    s.delete_episode_everywhere("S", "ep1")
+
+    assert s.delete_episode_everywhere("S", "ep1") == []
+
+
+def test_delete_episode_everywhere_reports_only_real_hits(tmp_path):
+    """Collections that never held the episode are skipped, not reported."""
+    s = _seeded_show(tmp_path)
+
+    assert s.delete_episode_everywhere("S", "no-such-episode") == []
+    assert s.delete_episode_everywhere("no-such-show", "ep1") == []
+
+
+def test_delete_episode_everywhere_bumps_the_version_fingerprint(tmp_path):
+    """The delete must invalidate the indexed-stem cache by itself.
+
+    ``ingest/folder.py:lance_indexed_stems`` caches against
+    ``collection_version``, so a delete that did not commit would leave the
+    episode reading as indexed until some unrelated write happened.
+    """
+    s = _seeded_show(tmp_path)
+    before = s.collection_version("s__bge")
+
+    s.delete_episode_everywhere("S", "ep1")
+
+    assert s.collection_version("s__bge") != before

@@ -344,7 +344,9 @@ def resolve_inside_show_root(path: str) -> Path:
 
 def is_downloaded(show_folder: Path, stem: str) -> bool:
     """Check if an audio file with the given stem exists in the show folder."""
-    return any((show_folder / f"{stem}{ext}").exists() for ext in AUDIO_EXTS)
+    from podcodex.core.delete_episode import episode_audio_file
+
+    return episode_audio_file(show_folder, stem) is not None
 
 
 def rss_episode_to_out(

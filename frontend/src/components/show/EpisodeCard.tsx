@@ -13,6 +13,8 @@ export interface EpisodeCardProps {
   onPlay: (ep: Episode) => void;
   onDownload?: (id: string) => void;
   onDelete?: (ep: Episode) => void;
+  /** Delete the whole episode, not just its audio. */
+  onDeleteEpisode?: (ep: Episode) => void;
   downloading?: boolean;
   /** True only while audio is actively playing (paused → false). */
   isPlaying: boolean;
@@ -22,7 +24,7 @@ export interface EpisodeCardProps {
   speakers?: string[];
 }
 
-function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying, isCurrent, speakers }: EpisodeCardProps) {
+function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, onDeleteEpisode, downloading, isPlaying, isCurrent, speakers }: EpisodeCardProps) {
   const compact = useLayoutStore((s) => s.compact);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const [isWide, setIsWide] = useState(false);
@@ -41,6 +43,7 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloadin
   const handlePlay = () => onPlay(ep);
   const handleDownload = onDownload ? () => onDownload(ep.id) : undefined;
   const handleDelete = onDelete ? () => onDelete(ep) : undefined;
+  const handleDeleteEpisode = onDeleteEpisode ? () => onDeleteEpisode(ep) : undefined;
 
   return (
     <div
@@ -142,6 +145,7 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, downloadin
             onPlay={ep.audio_path ? handlePlay : undefined}
             onDownload={handleDownload}
             onDelete={handleDelete}
+            onDeleteEpisode={handleDeleteEpisode}
           >
             <button
               ref={menuTriggerRef}

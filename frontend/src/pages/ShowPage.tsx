@@ -7,17 +7,18 @@ import {
   getShowMeta,
   getSpeakerRoster,
   deleteAudioFile,
+  deleteEpisode,
   startBatch,
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
-import { removeQueriesUnderPath } from "@/api/cacheInvalidation";
+import { invalidateAfterEpisodeDelete, removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import { showArtworkSrc, useArtworkEpoch } from "@/lib/showArtwork";
 import type { Episode, FilesImportResponse } from "@/api/types";
 import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
 import { dateCmp } from "@/lib/episodeSort";
 import type { PipelineInputStep } from "@/lib/pipelineInputs";
 import { matchesStepFilter } from "@/lib/stepStatus";
-import { getEpisodeBatchPath } from "@/lib/episodeRef";
+import { getEpisodeBatchPath, getEpisodeSourceRef, getEpisodeStem } from "@/lib/episodeRef";
 import { FeedRefreshButton } from "@/components/common/FeedRefreshButton";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { useFeedRefresh, useFeedRefreshing } from "@/hooks/useFeedRefresh";
@@ -38,6 +39,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import ShowSettings from "@/components/show/ShowSettings";
 import SpeakersPanel from "@/components/show/SpeakersPanel";
+import { DeleteEpisodeSummary } from "@/components/show/DeleteEpisodeSummary";
 import { EpisodeRow } from "@/components/show/EpisodeRow";
 import { EpisodeCard } from "@/components/show/EpisodeCard";
 import CompactToggle from "@/components/show/CompactToggle";
@@ -154,6 +156,28 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
       // Drop every per-audioPath cache entry tied to the now-missing file.
       removeQueriesUnderPath(queryClient, audioPath);
+    },
+  });
+
+  const deleteEpisodeMutation = useMutation({
+    mutationFn: async (ep: Episode) => {
+      const result = await deleteEpisode(folder, getEpisodeStem(ep));
+      if (result.status !== "deleted") {
+        // Surfaced through the same ErrorAlert as a failed request, whose
+        // Retry is exactly the recovery: the delete is idempotent, so a second
+        // run finishes whatever the first could not.
+        throw new Error(result.warnings.join(" "));
+      }
+      return result;
+    },
+    // onSettled, not onSuccess: a "partial" result throws, but it has already
+    // removed the index chunks and possibly the output dir, so the row's
+    // indexed/transcribed chips would keep describing content that is gone.
+    onSettled: (_result, _error, ep) => {
+      invalidateAfterEpisodeDelete(queryClient, {
+        folder,
+        sourceRef: getEpisodeSourceRef(ep).sourceRef,
+      });
     },
   });
 
@@ -322,6 +346,18 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       onConfirm: () => deleteMutate(ep.audio_path!),
     });
   }, [isYouTube, deleteMutate]);
+
+  const deleteEpisodeMutate = deleteEpisodeMutation.mutate;
+
+  const confirmDeleteEpisode = useCallback((ep: Episode) => {
+    confirmDialog.open({
+      title: `Delete "${ep.title}"?`,
+      content: <DeleteEpisodeSummary ep={ep} isFeedBacked={!ep.removed && !!ep.audio_url} />,
+      confirmLabel: "Delete episode",
+      variant: "destructive",
+      onConfirm: () => deleteEpisodeMutate(ep),
+    });
+  }, [deleteEpisodeMutate]);
 
   const filteredRef = useRef(filtered);
   // eslint-disable-next-line react-hooks/refs
@@ -590,6 +626,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                   onPlay={playEpisode}
                   onDownload={downloadEpisode}
                   onDelete={confirmDeleteAudio}
+                  onDeleteEpisode={confirmDeleteEpisode}
                   downloading={rowDownloading}
                   isPlaying={isCurrent && audioIsPlaying}
                   isCurrent={isCurrent}
@@ -613,6 +650,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
                   onPlay={playEpisode}
                   onDownload={downloadEpisode}
                   onDelete={confirmDeleteAudio}
+                  onDeleteEpisode={confirmDeleteEpisode}
                   downloading={rowDownloading}
                   isPlaying={isCurrent && audioIsPlaying}
                   isCurrent={isCurrent}
@@ -664,6 +702,21 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
             error={refreshMutation.error}
             onRetry={() => refreshMutation.mutate()}
             onDismiss={() => refreshMutation.reset()}
+            compact
+          />
+        </div>
+      )}
+
+      {deleteEpisodeMutation.isError && (
+        <div className="px-6 py-2 border-t border-border">
+          <ErrorAlert
+            error={deleteEpisodeMutation.error}
+            onRetry={
+              deleteEpisodeMutation.variables
+                ? () => deleteEpisodeMutate(deleteEpisodeMutation.variables!)
+                : undefined
+            }
+            onDismiss={() => deleteEpisodeMutation.reset()}
             compact
           />
         </div>

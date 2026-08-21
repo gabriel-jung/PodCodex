@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
+from loguru import logger
 
 from podcodex.api.routes._helpers import AUDIO_EXTS, resolve_inside_show_root
 
@@ -87,10 +90,49 @@ def delete_audio_file(
         raise HTTPException(400, f"Not an audio file: {p.name}")
 
     show_folder = p.parent
+    stem = p.stem
     p.unlink()
 
     from podcodex.ingest.folder import invalidate_scan_cache
 
     invalidate_scan_cache(show_folder)
 
-    return {"status": "deleted", "path": str(p)}
+    # Unlinking the audio can leave a status row with nothing behind it: no
+    # output dir, no versions, no audio. /unified lists episodes straight from
+    # those rows, so the episode would stay on screen forever with every step
+    # showing "not started" and no way to act on it. Drop the row in that case
+    # only; when transcripts remain the episode is still real.
+    #
+    # Gated on the parent actually being a registered show root. The path guard
+    # above accepts anything *under* one, and .wav is an audio extension, so a
+    # synthesized `{show}/{stem}/synthesize/{id}.wav` reaches here too. Opening
+    # a pipeline DB against that directory would create a stray pipeline.db in
+    # it, because PipelineDB mkdirs and connects.
+    row_removed = False
+    if _is_show_root(show_folder):
+        from podcodex.core.delete_episode import drop_db_row, episode_has_leftovers
+
+        try:
+            if not episode_has_leftovers(show_folder, stem):
+                row_removed = drop_db_row(show_folder, stem)
+        except Exception:
+            # Best-effort cleanup: the audio really was deleted, so the request
+            # succeeded. A surviving row self-heals on the next resync.
+            logger.opt(exception=True).warning(
+                "audio delete: orphan-row cleanup failed for {!r}", stem
+            )
+
+    return {"status": "deleted", "path": str(p), "episode_removed": row_removed}
+
+
+def _is_show_root(path: Path) -> bool:
+    """True when ``path`` is itself a registered show folder, not merely inside one."""
+    from podcodex.api.routes.config import _load as _load_cfg
+
+    for folder in _load_cfg().show_folders:
+        try:
+            if path.samefile(Path(folder)):
+                return True
+        except OSError:
+            continue
+    return False

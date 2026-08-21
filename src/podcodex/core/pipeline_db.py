@@ -630,6 +630,28 @@ class PipelineDB:
             self._conn.commit()
             return cur.rowcount
 
+    def delete_episode(self, stem: str) -> bool:
+        """Delete an episode outright: its versions and its status row.
+
+        Counterpart to ``populate_from_scan``/``mark``, which are the only
+        writers that create the row. ``delete_versions`` was previously the
+        only delete, which is why a removed episode kept a status row forever
+        and stayed listed by ``/unified``.
+
+        The verified pointer needs no separate clear: it lives in two columns
+        on the ``episodes`` row being deleted. Both statements share one
+        transaction so a crash can never strand version rows behind a missing
+        episode.
+
+        Returns:
+            True if a status row was removed.
+        """
+        with self._lock:
+            self._conn.execute("DELETE FROM versions WHERE stem = ?", (stem,))
+            cur = self._conn.execute("DELETE FROM episodes WHERE stem = ?", (stem,))
+            self._conn.commit()
+            return cur.rowcount > 0
+
     @staticmethod
     def _version_to_dict(row: sqlite3.Row) -> dict:
         """Convert a versions Row to a plain dict."""

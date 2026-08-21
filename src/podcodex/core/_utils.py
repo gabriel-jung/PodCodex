@@ -130,6 +130,23 @@ def _warn_if_model_unpulled(client, model: str) -> None:
 VOICE_SAMPLES_DIR = "voice_samples"
 TTS_SEGMENTS_DIR = "tts_segments"
 
+# Fake filename for an episode that has an output dir but no audio on disk
+# (subtitle-only YouTube imports). ``AudioPaths.from_audio`` resolves it to the
+# real episode base because the fake name's stem *is* the episode stem, which
+# is what lets such an episode be batched and locked like any other.
+#
+# Owner of the suffix on the Python side. The frontend mints the same string in
+# ``frontend/src/lib/episodeRef.ts:getEpisodeBatchPath`` and the two must agree:
+# it is the key space of ``BatchRequest.audio_paths``, of its
+# ``source_version_ids`` map, and of ``task_manager``'s per-episode locks.
+# ``tests/test_batch_version_picker.py`` pins the pair.
+VIRTUAL_AUDIO_SUFFIX = ".virtual"
+
+
+def virtual_audio_path(output_dir: Path | str) -> str:
+    """The batch/lock key for an episode with an output dir but no audio."""
+    return f"{str(output_dir).rstrip('/\\')}{VIRTUAL_AUDIO_SUFFIX}"
+
 
 @dataclass
 class AudioPaths:

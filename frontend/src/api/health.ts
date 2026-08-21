@@ -6,7 +6,11 @@ import type {
   OllamaCheckResponse,
   TaskResponse,
 } from "./types";
-import { BOOT_PATIENT_RETRY, json } from "./client";
+import { json } from "./client";
+// From the leaf, not the barrel: this is read at module scope and
+// `client.ts` re-exports this module, so going through the barrel is a
+// temporal-dead-zone error under native ESM. See `api/connection.ts`.
+import { BOOT_PATIENT_RETRY } from "./connection";
 import { queryKeys } from "./queryKeys";
 
 export const getHealth = () => json<HealthResponse>("/api/health");

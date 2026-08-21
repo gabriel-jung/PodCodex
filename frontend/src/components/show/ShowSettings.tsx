@@ -2,10 +2,10 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
-import { updateShowMeta, moveShow, deleteShow, previewBroadcastNumber, uploadShowArtwork } from "@/api/client";
+import { updateShowMeta, moveShow, deleteShow, previewBroadcastNumber, uploadShowArtwork, deleteShowArtwork } from "@/api/client";
 import { artworkUrl as showArtworkEndpoint } from "@/api/filesystem";
 import { LOCAL_ARTWORK_MARKER } from "@/lib/showArtwork";
-import { removeQueriesUnderPath } from "@/api/cacheInvalidation";
+import { removeQueriesForShowName, removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useIndexConfig } from "@/hooks/useIndexConfig";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
@@ -43,6 +43,11 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const [rssUrl, setRssUrl] = useState(meta.rss_url);
   const [youtubeUrl, setYoutubeUrl] = useState(meta.youtube_url ?? "");
   const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
+  // Mirrors of the above for the resync effect, which must not take artworkUrl
+  // as a dependency (it sets it).
+  const artworkUrlRef = useRef(artworkUrl);
+  // True only while the user has typed a URL that has not reached the server.
+  const artworkTouchedRef = useRef(false);
   const [broadcastPattern, setBroadcastPattern] = useState(meta.broadcast_number_pattern ?? "");
   // ── Per-show pipeline config (show.toml [pipeline]) ──
   // Empty string / null means "inherit the app default" (Settings, Pipeline).
@@ -78,11 +83,43 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       // Adopt the marker the upload just wrote server-side. Without this the
       // form stays dirty against the refetched meta and the debounced save
       // PUTs the pre-upload artwork_url back, orphaning the uploaded file.
+      artworkTouchedRef.current = false;
       setArtworkUrl(LOCAL_ARTWORK_MARKER);
       queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
     },
   });
+  // Feed-backed shows get the feed's own cover back on the next refresh, so
+  // the same endpoint reads as "reset" there and "remove" on a local show.
+  // One copy object rather than a ternary per string, so the button label can
+  // never disagree with the dialog it opens.
+  const artworkCopy = (!!meta.rss_url || !!meta.youtube_url)
+    ? {
+        action: "Reset",
+        hint: "Reset to the feed's artwork",
+        title: "Reset to feed artwork?",
+        description:
+          "The uploaded image is deleted and the feed's own artwork comes back on the next refresh.",
+      }
+    : {
+        action: "Remove",
+        hint: "Remove the cover image",
+        title: "Remove this cover?",
+        description:
+          "The uploaded image is deleted and the default cover is used instead.",
+      };
+  const artworkRemoveMutation = useMutation({
+    mutationFn: () => deleteShowArtwork(folder),
+    onSuccess: () => {
+      // Same reason the upload adopts the marker: leaving the old value in the
+      // form would let the debounced save PUT it straight back.
+      artworkTouchedRef.current = false;
+      setArtworkUrl("");
+      queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
+    },
+  });
+
   const handleArtworkFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) artworkUploadMutation.mutate(file);
@@ -107,6 +144,23 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   useEffect(() => {
     const sameShow = syncedFolderRef.current === folder;
     syncedFolderRef.current = folder;
+
+    // Artwork resyncs on its own, ahead of the dirty guard. That guard reads
+    // "differs from meta" as "the user is mid-edit", which is false for this
+    // one field: upload and remove write it server-side, and on a feed-backed
+    // show the next refresh replaces a cleared value with the feed's own art.
+    // Without this the panel keeps showing no cover until it remounts, and the
+    // form stays permanently dirty, so the next edit to any other field
+    // autosaves the stale value back over the restored artwork.
+    //
+    // Typing in the URL box is the only artwork edit the guard has to protect,
+    // so that is what is tracked, rather than inferring intent from a diff.
+    if (artworkTouchedRef.current) {
+      if (artworkUrlRef.current === meta.artwork_url) artworkTouchedRef.current = false;
+    } else if (artworkUrlRef.current !== meta.artwork_url) {
+      setArtworkUrl(meta.artwork_url);
+    }
+
     if (sameShow && isDirtyRef.current) return;
     setName(meta.name);
     setLanguage(meta.language);
@@ -187,10 +241,15 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       invalidates: [
         queryKeys.showMeta(folder),
         queryKeys.shows(),
-        // Showname is the cache key for search/index/bot-access namespaces;
-        // a rename strands those entries under the old name.
+        // Showname is the cache key for search/index/bot-access namespaces, so
+        // a rename strands every entry under the old name. Those have to be
+        // *removed*: invalidating refetches them, and the backend no longer
+        // knows that name, so each one 404s (visible as
+        // "Unknown show '<old name>'" right after a rename). The namespace
+        // invalidations then refill them under the new name.
         (qc) => {
           if (name === meta.name) return;
+          removeQueriesForShowName(qc, meta.name);
           qc.invalidateQueries({ queryKey: ["search"] });
           qc.invalidateQueries({ queryKey: ["index"] });
           qc.invalidateQueries({ queryKey: ["bot-access"] });
@@ -203,6 +262,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const isDirtyRef = useRef(isDirty);
 
   isDirtyRef.current = isDirty;
+  artworkUrlRef.current = artworkUrl;
   const autoSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
@@ -232,6 +292,11 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       // Re-adding a show at the same folder path would otherwise hit stale
       // per-folder caches (episodes, versions, roster, ...) before refetch.
       removeQueriesUnderPath(queryClient, folder);
+      // And the same for everything keyed by the show *name* rather than its
+      // path (search, index, bot-access). Left behind, those entries answer a
+      // later namespace invalidation by refetching a show the backend no
+      // longer has, which 404s exactly like a rename did.
+      removeQueriesForShowName(queryClient, meta.name);
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
       navigate({ to: "/" });
@@ -317,7 +382,10 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
           <div className="flex items-center gap-2">
             <input
               value={isLocalArtwork ? "" : artworkUrl}
-              onChange={(e) => setArtworkUrl(e.target.value)}
+              onChange={(e) => {
+                artworkTouchedRef.current = true;
+                setArtworkUrl(e.target.value);
+              }}
               placeholder={isLocalArtwork ? "Uploaded image" : "https://..."}
               className={`input ${inputWidth.medium}`}
             />
@@ -339,16 +407,39 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
               className="hidden"
             />
             {artworkUrl && (
-              <img
-                src={isLocalArtwork ? showArtworkEndpoint(folder) : artworkUrl}
-                alt="Artwork preview"
-                className="w-7 h-7 rounded object-cover shrink-0"
-                onError={(e) => (e.currentTarget.style.display = "none")}
-              />
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    confirmDialog.open({
+                      title: artworkCopy.title,
+                      description: artworkCopy.description,
+                      confirmLabel: artworkCopy.action,
+                      variant: "destructive",
+                      onConfirm: () => artworkRemoveMutation.mutate(),
+                    })
+                  }
+                  disabled={artworkRemoveMutation.isPending}
+                  title={artworkCopy.hint}
+                >
+                  <Trash2 className="w-3 h-3" />
+                  {artworkCopy.action}
+                </Button>
+                <img
+                  src={isLocalArtwork ? showArtworkEndpoint(folder) : artworkUrl}
+                  alt="Artwork preview"
+                  className="w-7 h-7 rounded object-cover shrink-0"
+                  onError={(e) => (e.currentTarget.style.display = "none")}
+                />
+              </>
             )}
           </div>
           {artworkUploadMutation.isError && (
             <p className="text-destructive text-xs mt-1">{errorMessage(artworkUploadMutation.error)}</p>
+          )}
+          {artworkRemoveMutation.isError && (
+            <p className="text-destructive text-xs mt-1">{errorMessage(artworkRemoveMutation.error)}</p>
           )}
         </SettingRow>
       </SettingSection>

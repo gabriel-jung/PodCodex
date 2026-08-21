@@ -30,6 +30,26 @@ export function removeQueriesUnderPath(qc: QueryClient, path: string): void {
 }
 
 /**
+ * Remove every cached query keyed by `showName`.
+ *
+ * For a *rename*, dropping is the only correct move: several namespaces
+ * (`search`, `index`, `bot-access`) key on the show's display name, so after
+ * a rename those entries reference a name the backend no longer knows.
+ * Invalidating them refetches, and every refetch 404s. Removing them lets the
+ * components mount fresh queries under the new name instead.
+ *
+ * Exact segment equality, not the substring/prefix match `removeQueriesUnderPath`
+ * uses: show names are free text, so a prefix rule would let one show's rename
+ * wipe another's cache.
+ */
+export function removeQueriesForShowName(qc: QueryClient, showName: string): void {
+  if (!showName) return;
+  qc.removeQueries({
+    predicate: (q) => q.queryKey.some((k) => k === showName),
+  });
+}
+
+/**
  * Top-level query namespaces a finished pipeline step can change.
  *
  * Deliberately per-step: a transcribe run does not touch the index, and a
@@ -115,4 +135,29 @@ export function invalidateAfterStep(
     });
   }
   if (!plan || plan.speakerViews) invalidateSpeakerViews(qc);
+}
+
+/**
+ * Cache sweep after an episode is deleted outright.
+ *
+ * `remove`, not invalidate, for the per-episode queries: the episode is gone,
+ * so refetching them would only 404. Everything else goes through
+ * `invalidateAfterStep` with no step, which is the documented
+ * sweep-every-namespace fallback, and the right semantics here: a deleted
+ * episode touches every namespace at once, so enumerating them at the call
+ * site would just be a copy of the map that can drift from it.
+ *
+ * @param folder Show folder the episode belonged to.
+ * @param sourceRef The episode's per-episode query key (`getEpisodeSourceRef`).
+ */
+export function invalidateAfterEpisodeDelete(
+  qc: QueryClient,
+  { folder, sourceRef }: { folder?: string | null; sourceRef?: string | null } = {},
+): void {
+  if (sourceRef) removeQueriesUnderPath(qc, sourceRef);
+  invalidateAfterStep(qc, null, { folder });
+  // invalidateAfterStep narrows to ["episodes", folder] when a folder is
+  // given, and React Query matches by prefix, so the global ["episodes"] list
+  // is NOT a match. A deleted episode has to leave that one too.
+  if (folder) qc.invalidateQueries({ queryKey: queryKeys.episodesAll() });
 }

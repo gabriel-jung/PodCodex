@@ -5,6 +5,7 @@ import { formatDuration, formatDate } from "@/lib/utils";
 import { useLayoutStore } from "@/stores";
 import { StatusChips } from "./StatusChips";
 import { SpeakerNames } from "./SpeakerNames";
+import { EpisodeMenu } from "./EpisodeMenu";
 
 export interface EpisodeRowProps {
   ep: Episode;
@@ -15,6 +16,8 @@ export interface EpisodeRowProps {
   onPlay: (ep: Episode) => void;
   onDownload?: (id: string) => void;
   onDelete: (ep: Episode) => void;
+  /** Delete the whole episode, not just its audio. */
+  onDeleteEpisode?: (ep: Episode) => void;
   downloading?: boolean;
   /** True only while audio is actively playing (paused → false). */
   isPlaying: boolean;
@@ -24,7 +27,7 @@ export interface EpisodeRowProps {
   speakers?: string[];
 }
 
-function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDownload, onDelete, downloading, isPlaying, isCurrent, speakers }: EpisodeRowProps) {
+function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDownload, onDelete, onDeleteEpisode, downloading, isPlaying, isCurrent, speakers }: EpisodeRowProps) {
   const compact = useLayoutStore((s) => s.compact);
   const shiftRef = useRef(false);
 
@@ -32,6 +35,7 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
   const handlePlay = () => onPlay(ep);
   const handleDownload = onDownload ? () => onDownload(ep.id) : undefined;
   const handleDelete = () => onDelete(ep);
+  const handleDeleteEpisode = onDeleteEpisode ? () => onDeleteEpisode(ep) : undefined;
 
   return (
     <div className="@container flex items-center gap-3 px-6 py-2 hover:bg-accent/50 transition group">
@@ -115,6 +119,18 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
+        </span>
+        {/* Card view has always had this menu; the row only had the audio
+            trash, which left subtitle-only episodes with no actions at all. */}
+        <span className="w-5 flex justify-center">
+          <EpisodeMenu
+            ep={ep}
+            onOpen={handleOpen}
+            onPlay={handlePlay}
+            onDownload={handleDownload}
+            onDelete={handleDelete}
+            onDeleteEpisode={handleDeleteEpisode}
+          />
         </span>
       </div>
     </div>

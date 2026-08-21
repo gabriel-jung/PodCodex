@@ -102,6 +102,13 @@ export function conflictSuggestion(err: unknown): string | null {
   return typeof suggested === "string" ? suggested : null;
 }
 
+/** Remove the show's cover. On a feed-backed show the next refresh restores
+ *  the feed's own artwork; on a local show the UI falls back to the default. */
+export const deleteShowArtwork = (folder: string) =>
+  json<{ status: string }>(`/api/shows/artwork?show_folder=${enc(folder)}`, {
+    method: "DELETE",
+  });
+
 export async function uploadShowArtwork(folder: string, file: File): Promise<void> {
   const form = new FormData();
   form.append("file", file);
@@ -144,6 +151,32 @@ export const moveShow = (folder: string, newPath: string, moveFiles: boolean) =>
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ new_path: newPath, move_files: moveFiles }),
+  });
+
+/** Outcome of a whole-episode delete, per store.
+ *
+ *  `status: "partial"` means nothing was fully removed and the episode is
+ *  still listed: either the search index could not be reached (in which case
+ *  nothing at all was touched) or a file could not be removed. Retrying is
+ *  always safe and is the intended recovery. */
+export interface DeleteEpisodeResult {
+  status: "deleted" | "partial";
+  collections: number;
+  output_dir_removed: boolean;
+  audio_removed: boolean;
+  db_row_removed: boolean;
+  warnings: string[];
+}
+
+/** Delete an episode outright: chunks, output dir, audio copy, DB row.
+ *
+ *  Distinct from `deleteAudioFile`, which only frees disk and leaves the
+ *  transcripts in place. */
+export const deleteEpisode = (folder: string, stem: string) =>
+  json<DeleteEpisodeResult>(`/api/shows/${enc(folder)}/episodes/delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stem }),
   });
 
 export const deleteShow = (folder: string, deleteFiles = false) =>

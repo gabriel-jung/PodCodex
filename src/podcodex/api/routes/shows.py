@@ -7,9 +7,9 @@ import os
 import re
 import shutil
 from collections.abc import Container
-from dataclasses import fields
+from dataclasses import asdict, fields
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import hashlib
 import urllib.request
@@ -19,6 +19,9 @@ from fastapi.responses import FileResponse
 from loguru import logger
 from pydantic import BaseModel
 
+if TYPE_CHECKING:
+    from podcodex.api.tasks import TaskInfo
+
 from podcodex.api.routes._helpers import (
     apply_broadcast_pattern,
     bad_path_component,
@@ -27,7 +30,11 @@ from podcodex.api.routes._helpers import (
     require_show_folder,
 )
 from podcodex.bundle.conflicts import rename_suffix
-from podcodex.core._utils import MTIME_SETTLE_SECONDS, atomic_write
+from podcodex.core._utils import (
+    MTIME_SETTLE_SECONDS,
+    atomic_write,
+    virtual_audio_path,
+)
 from podcodex.core.app_config import AppConfig, mutate_config
 from podcodex.api.routes.config import _load, _register_folder
 from podcodex.api.schemas import (
@@ -343,6 +350,7 @@ async def import_local_file(req: FilesImportRequest) -> FilesImportResponse:
 
 
 _ARTWORK_STEM = "artwork"
+_ARTWORK_HASH_FILE = ".artwork_url_hash"
 _IMG_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 _MIME = {
     ".jpg": "image/jpeg",
@@ -362,10 +370,16 @@ def _url_hash(url: str) -> str:
 
 
 def _clear_cached_artwork(show_path: Path) -> None:
-    """Remove every ``artwork.*`` variant so a new cover can't coexist with
-    a stale one under a different extension."""
+    """Forget the cached cover: every ``artwork.*`` variant and its URL stamp.
+
+    The variants go so a new cover can't coexist with a stale one under a
+    different extension. The stamp goes with them because it is meaningless
+    without the image it describes, and a stale one suppresses the next
+    re-download. Every caller wants both, so this owns both.
+    """
     for old_ext in _IMG_EXTENSIONS:
         (show_path / f"{_ARTWORK_STEM}{old_ext}").unlink(missing_ok=True)
+    (show_path / _ARTWORK_HASH_FILE).unlink(missing_ok=True)
 
 
 def _find_cached_artwork(show_path: Path) -> Path | None:
@@ -408,7 +422,7 @@ def _download_artwork(url: str, show_path: Path) -> Path | None:
     dest.write_bytes(data)
 
     # Write URL hash so we know when to re-download
-    (show_path / ".artwork_url_hash").write_text(_url_hash(url), encoding="utf-8")
+    (show_path / _ARTWORK_HASH_FILE).write_text(_url_hash(url), encoding="utf-8")
 
     return dest
 
@@ -435,12 +449,36 @@ async def upload_artwork(
         raise HTTPException(413, "Image too large (max 5 MB)")
 
     _clear_cached_artwork(path)
-    (path / ".artwork_url_hash").unlink(missing_ok=True)
     atomic_write(path / f"{_ARTWORK_STEM}{ext}", lambda p: p.write_bytes(data))
 
     meta = load_show_meta(path) or _ShowMeta(name=path.name)
     meta.artwork_url = LOCAL_ARTWORK_MARKER
     save_show_meta(path, meta)
+    return {"status": "ok"}
+
+
+@router.delete("/artwork")
+def delete_artwork(show_folder: str = Query(...)) -> dict:
+    """Remove the show's cover.
+
+    Deliberately reverts to the *feed's* artwork rather than pinning "no
+    cover": clearing ``artwork_url`` is what the upgrade branches in
+    ``rss.py`` / ``youtube.py`` read as "missing", so the next feed refresh
+    downloads the feed's own art again. On a local show there is no feed, so
+    ``GET /artwork`` 404s and the UI falls back to ``default-cover.png``.
+
+    No re-fetch happens here: ``feed_artwork`` is a network call and would
+    make removing a cover fail whenever the feed is unreachable.
+    """
+    # Registered-show gate: this unlinks files inside the folder.
+    path = require_registered_show(show_folder)
+
+    _clear_cached_artwork(path)
+
+    meta = load_show_meta(path)
+    if meta and meta.artwork_url:
+        meta.artwork_url = ""
+        save_show_meta(path, meta)
     return {"status": "ok"}
 
 
@@ -467,7 +505,7 @@ async def get_artwork(show_folder: str = Query(...)):
         )
 
     cached = _find_cached_artwork(path)
-    url_hash_file = path / ".artwork_url_hash"
+    url_hash_file = path / _ARTWORK_HASH_FILE
 
     # Re-download if URL changed or no cache. A cached file WITHOUT a hash
     # file also re-downloads: that state means a local upload was replaced
@@ -1639,6 +1677,107 @@ def resync_pipeline_db(show_folder: str) -> dict:
         "episode_count": len(episodes),
         "versions_restored": restored,
     }
+
+
+class DeleteEpisodeRequest(BaseModel):
+    stem: str
+
+
+class DeleteEpisodeResponse(BaseModel):
+    status: str
+    collections: int = 0
+    output_dir_removed: bool = False
+    audio_removed: bool = False
+    db_row_removed: bool = False
+    warnings: list[str] = []
+
+
+def _active_task_on_episode(show_folder: str, stem: str) -> "TaskInfo | None":
+    """The task blocking a delete, or None.
+
+    ``task_manager`` locks are plain strings, and each submit path mints its
+    own, so every one that can be running against this episode has to be
+    enumerated. Missing one means ``rmtree`` runs underneath a live job.
+
+    Show-level keys:
+
+    - ``{show_folder}`` (feed refresh, move, delete)
+    - ``batch:{show_folder}`` (``batch.py``'s own key for the whole run)
+    - ``download:{show_folder}`` (``rss.py``'s bulk download; it writes
+      ``{show}/{stem}.mp3`` on completion, which would resurrect the episode
+      as a bare row right after the delete)
+
+    Episode-level keys, all three, because which one is held depends on who
+    started the job rather than on the episode:
+
+    - the real ``audio_path``, when there is audio
+    - ``{show}/{stem}.mp3``, the synthetic path the *single-episode* runs use
+      for an audio-less episode (``stores/episodeStore.ts:useAudioPath``)
+    - ``virtual_audio_path(...)``, the ``.virtual`` form the *batch* runner
+      uses for the same episode
+    """
+    from podcodex.api.tasks import task_manager
+    from podcodex.core.delete_episode import episode_audio_files
+
+    show_dir = Path(show_folder)
+    ep_base = show_dir / stem
+    refs = [
+        show_folder,
+        f"batch:{show_folder}",
+        f"download:{show_folder}",
+        f"{ep_base}.mp3",
+        virtual_audio_path(ep_base),
+        *(str(a) for a in episode_audio_files(show_dir, stem)),
+    ]
+    for ref in refs:
+        active = task_manager.get_active(ref)
+        if active:
+            return active
+    return None
+
+
+@router.post(
+    "/{show_folder:path}/episodes/delete", response_model=DeleteEpisodeResponse
+)
+def delete_episode_route(
+    show_folder: str, req: DeleteEpisodeRequest
+) -> DeleteEpisodeResponse:
+    """Delete one episode outright: chunks, output dir, audio copy, DB row.
+
+    Distinct from ``DELETE /api/audio/file``, which frees disk by removing
+    only the audio and leaves the transcripts re-usable.
+    """
+    # Registered-show gate: this runs rmtree, so confine it to a tracked show
+    # rather than any directory on disk.
+    path = require_registered_show(show_folder)
+    stem = req.stem.strip()
+    if bad_path_component(stem):
+        raise HTTPException(400, f"Invalid episode name: {stem!r}")
+    # Containment is the service's own guard (it resolves the episode dir's
+    # parent against the show), so it holds for direct callers too and there
+    # is exactly one authority rather than three overlapping ones here.
+
+    active = _active_task_on_episode(show_folder, stem)
+    if active:
+        raise HTTPException(
+            409,
+            f"Task {active.task_id} is running on this show, so wait for it to finish",
+        )
+
+    from podcodex.core.delete_episode import delete_episode
+
+    try:
+        report = delete_episode(path, stem)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+
+    # asdict, not field-by-field: DeleteReport and the response model carry the
+    # same fields, and a hand-copied constructor drops new ones silently.
+    return DeleteEpisodeResponse(
+        status="deleted" if report.files_clean else "partial", **asdict(report)
+    )
 
 
 @router.get("/best-source-segments")

@@ -931,6 +931,35 @@ class IndexStore:
             self._fts_ready.discard(collection)
         logger.debug(f"Deleted episode '{episode}' from '{collection}'")
 
+    def delete_episode_everywhere(self, show: str, episode: str) -> list[str]:
+        """Delete an episode's chunks from every collection of one show.
+
+        A show routinely has several collections (one per model/chunker pair),
+        so removing an episode from a single named one, which is all
+        ``DELETE /api/index/episode`` can do by contract, leaves it answering
+        searches. Whole-episode deletion needs the fan-out, and it belongs
+        here so the store's invariants (existence short-circuit, ``_fts_ready``
+        discard, escaping) stay in one place.
+
+        Raises on the first failure rather than collecting per-collection
+        errors: callers treat a partial index delete as a total failure, so
+        there is nothing useful to do with the rest.
+
+        Args:
+            show: Show name the collections are registered under.
+            episode: Episode identifier (stem).
+
+        Returns:
+            The collections the episode was actually removed from.
+        """
+        touched = []
+        for col in self.list_collections(show=show):
+            if not self.episode_is_indexed(col, episode):
+                continue
+            self.delete_episode(col, episode)
+            touched.append(col)
+        return touched
+
     def list_episodes(self, collection: str) -> list[str]:
         """Return a sorted list of distinct episodes in the collection.
 
