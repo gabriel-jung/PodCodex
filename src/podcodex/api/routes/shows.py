@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from podcodex.api.routes._helpers import (
     apply_broadcast_pattern,
     bad_path_component,
+    get_index_store,
     list_show_stems,
     require_registered_show,
     require_show_folder,
@@ -714,6 +715,7 @@ def get_show_meta(show_folder: str) -> ShowMeta:
             accepts_imports=accepts_imports,
         )
     return ShowMeta(
+        id=meta.id,
         name=meta.name,
         rss_url=meta.rss_url,
         youtube_url=meta.youtube_url,
@@ -746,10 +748,47 @@ def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
     # Registered-show gate: this writes show.toml unconditionally, so confine
     # it to a tracked show rather than any directory on disk.
     path = require_registered_show(show_folder)
+
+    from podcodex.ingest.show import ensure_show_id
+    from podcodex.ingest.show_registry import label_is_taken
+
+    new_label = (meta.name or "").strip()
+    current = load_show_meta(path)
+    current_label = (current.name if current else "").strip()
+
+    # Touch the index before show.toml changes. The one-shot show-id
+    # migration runs on the first store open of the process and bridges
+    # collections by their stored name, so it has to see the old name.
+    if new_label and new_label != current_label:
+        try:
+            get_index_store()
+        except Exception:
+            logger.opt(exception=True).debug("Index unavailable before rename")
+    # Only a *change* is checked. A show whose name already collides (two
+    # installs merged, a hand-edited show.toml) stays editable, so an
+    # unrelated edit like a language change is never blocked by it.
+    if (
+        new_label
+        and new_label != current_label
+        and label_is_taken(new_label, excluding=path)
+    ):
+        raise HTTPException(
+            409,
+            f"Another show is already called {new_label!r}. "
+            "Show names are labels, but the bot picks shows by name, so two "
+            "shows sharing one would be ambiguous.",
+        )
+
+    # Minted after the 409, so a rejected rename never writes to disk.
+    # Identity never comes from the request body: the client sends a label,
+    # and the id on disk is what every other store keys on.
+    show_id = ensure_show_id(path)
+
     p = meta.pipeline
     save_show_meta(
         path,
         _ShowMeta(
+            id=show_id,
             name=meta.name,
             rss_url=meta.rss_url,
             youtube_url=meta.youtube_url,
@@ -773,7 +812,35 @@ def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
             ),
         ),
     )
+
+    # The label the bot displays is reconciled from show.toml on the next
+    # index read (``IndexStore._heal_collection_meta``), so a rename writes
+    # one file and nothing else. The password row is the exception: it can
+    # exist for a show with no collection, so nothing would read it back.
+    if new_label and new_label != current_label:
+        _relabel_password(show_id, new_label, current_label)
+
     return {"status": "saved"}
+
+
+def _relabel_password(show_id: str, label: str, previous_label: str = "") -> None:
+    """Carry a renamed show's label onto its password row, if it has one.
+
+    Collections heal themselves on read; a password row may belong to a show
+    that was never indexed, so there is no read path to heal it from.
+    """
+    try:
+        store = get_index_store()
+        entries = store.get_show_password_entries()
+        entry = entries.get(show_id) or entries.get(previous_label)
+        if entry and entry.get("label") != label:
+            store.set_show_password(show_id, entry["password_hash"], show_label=label)
+    except Exception:
+        # A rename must not fail because the index is busy, absent, or a
+        # replica. Identity, the part that used to break, is already safe.
+        logger.opt(exception=True).warning(
+            f"Could not update stored label for show {show_id!r}"
+        )
 
 
 def _latest_episode_title(path: Path) -> str | None:
@@ -2207,6 +2274,15 @@ def delete_show(show_folder: str, req: DeleteShowRequest) -> dict:
             f"Task {active.task_id} is running on this show — wait for it to finish",
         )
 
+    # Identity resolved before anything is removed: once show.toml is gone
+    # there is no way back to the collections this show owns. Minted rather
+    # than merely read, because a never-minted show would otherwise have its
+    # folder deleted and its collections stranded with nothing to find them by.
+    from podcodex.ingest.show import ensure_show_id, show_display
+
+    show_label = show_display(path)
+    show_id = ensure_show_id(path)
+
     # Close DB handles and invalidate caches
     close_pipeline_db(path)
     invalidate_scan_cache(path)
@@ -2231,4 +2307,58 @@ def delete_show(show_folder: str, req: DeleteShowRequest) -> dict:
     else:
         logger.info("Unregistered show (files kept): {}", path)
 
-    return {"status": "deleted", "files_deleted": deleted_files}
+    # The index follows the files. Unregistering keeps both, so re-adding the
+    # folder restores the show intact: its id lives in show.toml, so its
+    # collections and its password are still keyed to it.
+    collections_deleted = 0
+    password_removed = False
+    if deleted_files:
+        collections_deleted, password_removed = _purge_show_from_index(
+            show_id, show_label
+        )
+
+    return {
+        "status": "deleted",
+        "files_deleted": deleted_files,
+        "collections_deleted": collections_deleted,
+        "password_removed": password_removed,
+    }
+
+
+def _purge_show_from_index(show_id: str, show_label: str = "") -> tuple[int, bool]:
+    """Drop a deleted show's collections and password. Returns what it removed.
+
+    Without this, deleting a show orphans its index exactly as renaming one
+    used to: rows nothing can reach, and a password still protecting a name
+    that no longer exists.
+    """
+    if not show_id:
+        return 0, False
+    try:
+        store = get_index_store()
+        # Label fallback included: on a partially migrated index this show's
+        # collections may not carry an id yet, and they would be stranded.
+        names = store.collections_for_show(show_id, show_label=show_label)
+        for name in names:
+            store.delete_collection(name)
+        entries = store.get_show_password_entries()
+        # id-else-label, matching collections_for_show above: a row that the
+        # migration has not rekeyed yet is still keyed by the display name,
+        # and would otherwise keep protecting a show that no longer exists.
+        pw_key = show_id if show_id in entries else (show_label or "")
+        removed = bool(pw_key) and pw_key in entries
+        if removed:
+            store.delete_show_password(pw_key)
+        if names or removed:
+            logger.info(
+                f"Purged show {show_id!r} from the index: "
+                f"{len(names)} collection(s), password removed: {removed}"
+            )
+        return len(names), removed
+    except Exception:
+        # Deleting the show itself already succeeded; a busy or read-only
+        # index must not turn that into a failed request.
+        logger.opt(exception=True).warning(
+            f"Could not purge show {show_id!r} from the index"
+        )
+        return 0, False

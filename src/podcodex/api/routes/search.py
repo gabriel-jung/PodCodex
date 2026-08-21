@@ -469,7 +469,9 @@ def index_stats(show: str = "") -> dict:
     _warm_show_async(show)
 
     local = get_index_store()
-    collections = local.list_collections(show=show)
+    from podcodex.api.routes._helpers import collections_for_show_name
+
+    collections = collections_for_show_name(show, store=local)
 
     stats: list[dict] = []
     total_episodes = 0

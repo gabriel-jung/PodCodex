@@ -111,5 +111,5 @@ class ResolutionMixin:
                     settings.chunker or DEFAULT_CHUNKING,
                 ),
             )
-            if self._show_allowed(c.show, settings)
+            if self._show_allowed_by_label(c.show, settings)
         ]

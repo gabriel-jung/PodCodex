@@ -10,6 +10,12 @@ services:
       # by default, so a single location works for everyone. Override by
       # setting PODCODEX_INDEX_HOST in .env if your index lives elsewhere.
       - ${PODCODEX_INDEX_HOST:-~/.local/share/podcodex/index}:/root/.local/share/podcodex/index
+      # Data dir, for the machine identity that marks which host owns the
+      # index. Without it the id is regenerated on every rebuild and an index
+      # claimed here would silently revert to being someone else's replica.
+      # The index bind above is nested inside this volume and still wins for
+      # its own subtree (Docker resolves the longer path first).
+      - podcodex_data:/root/.local/share/podcodex
       - model_cache:/root/.cache  # BGE-M3 model cache — persisted across rebuilds
     deploy:
       resources:
@@ -24,3 +30,4 @@ services:
 
 volumes:
   model_cache:
+  podcodex_data:

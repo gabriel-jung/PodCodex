@@ -249,8 +249,17 @@ def _canonical_index_path() -> Path:
 
 
 def _dir_has_data(path: Path) -> bool:
+    """True when *path* holds actual index content.
+
+    The ownership marker is skipped on purpose. It is written whenever a new
+    index directory is created, so counting it would make an otherwise empty
+    canonical index look populated, and ``_resolve_default_index_path`` would
+    stop falling through to the repo-local candidates.
+    """
+    from podcodex.rag.index_origin import ORIGIN_FILENAME
+
     try:
-        return path.is_dir() and any(path.iterdir())
+        return path.is_dir() and any(e.name != ORIGIN_FILENAME for e in path.iterdir())
     except OSError as exc:
         logger.warning(f"Cannot read {path}: {exc}")
         return False
@@ -303,6 +312,13 @@ def _chunk_schema(dim: int) -> pa.Schema:
 _COLLECTIONS_SCHEMA = pa.schema(
     [
         pa.field("name", pa.string()),
+        # Stable show identity (``show.toml`` id). Empty on rows written
+        # before ids existed; the migration fills them in, and readers fall
+        # back to ``show`` while it is empty so a partially migrated index
+        # (or one rsynced mid-migration) still resolves.
+        pa.field("show_id", pa.string()),
+        # Display label, carried into the index because the bot reads an
+        # rsynced copy with no show.toml anywhere.
         pa.field("show", pa.string()),
         pa.field("model", pa.string()),
         pa.field("chunker", pa.string()),
@@ -317,11 +333,20 @@ _COLLECTIONS_SCHEMA = pa.schema(
 _SHOW_PASSWORDS_TABLE = "_show_passwords"
 _SHOW_PASSWORDS_SCHEMA = pa.schema(
     [
+        pa.field("show_id", pa.string()),
+        # Display label. A show can be password-protected before it is
+        # indexed, so ``_collections`` may hold no row to look one up in.
+        pa.field("show_label", pa.string()),
+        # Legacy key, still written as a mirror of the label so an older bot
+        # build reading a newer index keeps resolving protected shows.
         pa.field("show", pa.string()),
         pa.field("password_hash", pa.string()),  # "sha256:<hex>"
     ]
 )
 
+
+# Guards the one-time show-id migration; see migrate_to_show_ids_if_owner.
+_MIGRATION_LOCK = threading.Lock()
 
 _RESERVED_META_KEYS = {
     "chunk_index",
@@ -360,6 +385,30 @@ class IndexStore:
         """Register a callable ``(show_name) -> Path | None`` for the backfill."""
         cls._show_folder_resolver = fn
 
+    def migrate_to_show_ids_if_owner(self) -> int:
+        """Run the name-keyed to id-keyed migration, if this process may.
+
+        Gated on the show-folder resolver, which only the API registers: the
+        bot reads an rsynced index with no ``show.toml`` anywhere and would
+        mint ids that diverge from the app's. Safe to call repeatedly.
+        """
+        if type(self)._show_folder_resolver is None:
+            return 0
+        from podcodex.rag.show_id_migration import migrate_index_to_show_ids
+
+        # functools.cache runs its factory outside any lock, so two threadpool
+        # workers racing the first index-touching request can each build a
+        # store and migrate concurrently. The lock is process-wide, not
+        # per-instance, for exactly that reason.
+        try:
+            with _MIGRATION_LOCK:
+                return migrate_index_to_show_ids(self)
+        except Exception:
+            logger.opt(exception=True).warning(
+                "show-id migration failed; index unchanged"
+            )
+            return 0
+
     def __init__(self, path: Path | str | None = None):
         import lancedb
 
@@ -370,8 +419,15 @@ class IndexStore:
         else:
             self._path = Path(path)
             logger.info(f"IndexStore opened: {self._path} (explicit path)")
+        # Recorded before mkdir: an index this process creates is owned by
+        # this machine, while one that already has content belongs to
+        # whoever stamped it (see rag/index_origin).
+        was_empty = not _dir_has_data(self._path)
         self._path.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self._path))
+        from podcodex.rag.index_origin import stamp_origin_if_new
+
+        stamp_origin_if_new(self._path, was_empty=was_empty)
         # Serializes mutating ops (password set/delete, episode/collection
         # delete): the store is a process-wide singleton shared across
         # threadpool handlers, LanceDB writes are not internally locked,
@@ -381,6 +437,7 @@ class IndexStore:
         self._pub_date_ready: set[str] = set()
         self._episode_title_ready: set[str] = set()
         self._collections_schema_ready = False
+        self._passwords_schema_ready = False
         # (index_mtime, collection-info); collection metadata is read on
         # every MCP tool call, bot-access request, and vector search.
         self._collection_info_cache: tuple[float, dict[str, dict]] | None = None
@@ -389,6 +446,18 @@ class IndexStore:
     def path(self) -> Path:
         """Filesystem root of the LanceDB index directory."""
         return self._path
+
+    def _require_owner(self, action: str) -> None:
+        """Refuse a write when this index belongs to another machine.
+
+        Applied to the records that survive only in the index and that two
+        machines can meaningfully disagree about: passwords, collection
+        identity and labels, and collection deletion. See
+        ``rag/index_origin`` for why derived data is deliberately exempt.
+        """
+        from podcodex.rag.index_origin import require_owner
+
+        require_owner(self._path, action)
 
     # ── External-change detection & reconnection ─────────────────────────
     #
@@ -465,16 +534,20 @@ class IndexStore:
         return self._db.create_table(_COLLECTIONS_TABLE, schema=_COLLECTIONS_SCHEMA)
 
     def _ensure_collections_schema(self, table) -> None:
-        """Add ``artwork_url`` to pre-migration ``_collections`` tables."""
+        """Add later columns (``artwork_url``, ``show_id``) to older tables."""
         if self._collections_schema_ready:
             return
         try:
-            if "artwork_url" not in set(table.schema.names):
-                table.add_columns({"artwork_url": "CAST('' AS STRING)"})
+            present = set(table.schema.names)
+            missing = {
+                col: "CAST('' AS STRING)"
+                for col in ("artwork_url", "show_id")
+                if col not in present
+            }
+            if missing:
+                table.add_columns(missing)
         except Exception:
-            logger.opt(exception=True).warning(
-                "Could not add artwork_url column to _collections"
-            )
+            logger.opt(exception=True).warning("Could not add columns to _collections")
             return
         self._collections_schema_ready = True
 
@@ -675,34 +748,120 @@ class IndexStore:
 
     def _passwords_table(self):
         if _SHOW_PASSWORDS_TABLE in self._table_names():
-            return self._db.open_table(_SHOW_PASSWORDS_TABLE)
+            table = self._db.open_table(_SHOW_PASSWORDS_TABLE)
+            self._ensure_passwords_schema(table)
+            return table
         return self._db.create_table(
             _SHOW_PASSWORDS_TABLE, schema=_SHOW_PASSWORDS_SCHEMA
         )
 
+    def _ensure_passwords_schema(self, table) -> None:
+        """Add ``show_id`` / ``show_label`` to pre-id password tables."""
+        if self._passwords_schema_ready:
+            return
+        try:
+            present = set(table.schema.names)
+            missing = {
+                col: "CAST('' AS STRING)"
+                for col in ("show_id", "show_label")
+                if col not in present
+            }
+            if missing:
+                table.add_columns(missing)
+        except Exception:
+            logger.opt(exception=True).warning(
+                "Could not add columns to _show_passwords"
+            )
+            return
+        self._passwords_schema_ready = True
+
     # ── Show password management ─────────────────────────────────────────
 
-    def get_show_passwords(self) -> dict[str, str]:
-        """Return ``{show_name: password_hash}`` for all password-protected shows."""
+    def get_show_password_entries(self) -> dict[str, dict]:
+        """Return ``{key: {show_id, label, password_hash}}`` for protected shows.
+
+        The key is the show id when the row has one, and the legacy display
+        name when it does not. Rows predating show ids, and rows in an index
+        rsynced mid-migration, therefore stay resolvable.
+        """
         if _SHOW_PASSWORDS_TABLE not in self._table_names():
             return {}
         rows = self._passwords_table().search().limit(10_000).to_list()
-        return {r["show"]: r["password_hash"] for r in rows if r.get("show")}
+        out: dict[str, dict] = {}
+        for r in rows:
+            sid = (r.get("show_id") or "").strip()
+            legacy = (r.get("show") or "").strip()
+            key = self.show_key(r)
+            if not key:
+                continue
+            out[key] = {
+                "show_id": sid,
+                "label": (r.get("show_label") or "").strip() or legacy or sid,
+                "password_hash": r.get("password_hash", ""),
+            }
+        return out
 
-    def set_show_password(self, show: str, password_hash: str) -> None:
-        """Set or replace the password hash for a show."""
+    def get_show_passwords(self) -> dict[str, str]:
+        """Return ``{key: password_hash}``; see ``get_show_password_entries``."""
+        return {
+            k: v["password_hash"] for k, v in self.get_show_password_entries().items()
+        }
+
+    def set_show_password(
+        self, show: str, password_hash: str, show_label: str = ""
+    ) -> None:
+        """Set or replace the password hash for a show.
+
+        Args:
+            show: The show's stable id (``show.toml`` id).
+            password_hash: Hash in ``sha256:<hex>`` form.
+            show_label: Display name, stored alongside so the bot can name
+                the show without a show folder to read.
+
+        Raises:
+            IndexOwnershipError: when this index is a replica of another
+                machine's, where the next sync would erase the change.
+        """
+        self._require_owner(f"set the password for show {show!r}")
+        label = (show_label or "").strip()
         with self._write_lock:
             t = self._passwords_table()
-            t.delete(f"show = '{_escape(show)}'")
-            t.add([{"show": show, "password_hash": password_hash}])
+            t.delete(f"show_id = '{_escape(show)}'")
+            # Also clears a legacy row for the same show that the migration
+            # has not rekeyed yet, which would otherwise unlock under its old
+            # name forever.
+            if label:
+                t.delete(f"show = '{_escape(label)}'")
+            t.add(
+                [
+                    {
+                        "show_id": show,
+                        "show_label": label,
+                        # Mirror of the label, so an older bot build reading
+                        # this index still sees the show as protected.
+                        "show": label,
+                        "password_hash": password_hash,
+                    }
+                ]
+            )
         logger.debug(f"Password set for show {show!r}")
 
     def delete_show_password(self, show: str) -> None:
-        """Remove password protection for a show (makes it public)."""
+        """Remove password protection for a show (makes it public).
+
+        Raises:
+            IndexOwnershipError: when this index is a replica of another
+                machine's, where the next sync would erase the change.
+        """
+        self._require_owner(f"remove the password for show {show!r}")
         with self._write_lock:
             if _SHOW_PASSWORDS_TABLE not in self._table_names():
                 return
-            self._passwords_table().delete(f"show = '{_escape(show)}'")
+            t = self._passwords_table()
+            # Matches both shapes: an id-keyed row, and a legacy row whose
+            # only key is the display name.
+            t.delete(f"show_id = '{_escape(show)}'")
+            t.delete(f"show = '{_escape(show)}'")
         logger.debug(f"Password removed for show {show!r}")
 
     # ── Collection management ────────────────────────────────────────────
@@ -710,6 +869,176 @@ class IndexStore:
     def collection_exists(self, name: str) -> bool:
         """Return True if a collection with the given name exists."""
         return name in self._table_names()
+
+    @staticmethod
+    def show_key(meta: dict) -> str:
+        """Identity of the show a ``_collections`` row belongs to.
+
+        The stable id when the row carries one, else the display label, which
+        is all a row written before ids existed has. The single definition of
+        the "id else label" rule, so the fallback that keeps a pre-migration
+        index resolvable cannot drift between call sites.
+        """
+        return (meta.get("show_id") or "").strip() or (meta.get("show") or "")
+
+    @staticmethod
+    def _row_is_show(meta: dict, show_id: str, show_label: str) -> bool:
+        """Whether a ``_collections`` row belongs to the given show.
+
+        Matching by label is case-insensitive, matching every other
+        label-to-show resolver in the codebase.
+        """
+        row_id = (meta.get("show_id") or "").strip()
+        label = (show_label or "").strip().lower()
+        row_label = (meta.get("show") or "").strip().lower()
+        if show_id:
+            # A legacy row has no id, so its label is the only way back to it
+            # until the migration stamps one on.
+            return row_id == show_id or (
+                not row_id and bool(label) and row_label == label
+            )
+        return bool(label) and row_label == label
+
+    def resolve_collection(
+        self, show_id: str, model: str, chunker: str, show_label: str = ""
+    ) -> str | None:
+        """Return the collection name for a show, or None when not indexed.
+
+        The single way to get from a show to its collection. Callers must not
+        rebuild the name themselves: the name is an internal detail, and a
+        caller that reconstructs it is exactly what a show rename used to
+        orphan.
+
+        Args:
+            show_id: The show's stable id. Empty for the bot, which reads an
+                rsynced index with no show folders to read ids from.
+            model: Embedding model key.
+            chunker: Chunking strategy key.
+            show_label: Display name, used to find collections written before
+                ids existed, and as the bot's only handle on a show.
+        """
+        for name, meta in self.get_all_collection_info().items():
+            if meta.get("model") != model or meta.get("chunker") != chunker:
+                continue
+            if self._row_is_show(meta, show_id, show_label):
+                return name
+        return None
+
+    def collections_for_show(self, show_id: str, show_label: str = "") -> list[str]:
+        """Every collection belonging to a show, across models and chunkers."""
+        return sorted(
+            name
+            for name, meta in self.get_all_collection_info().items()
+            if self._row_is_show(meta, show_id, show_label)
+        )
+
+    def show_id_for_label(self, label: str) -> str:
+        """Stable id of the show with this display name, else the label itself.
+
+        Index-backed, so it works in the bot, which has no show folders. The
+        app has a folder-backed equivalent in ``ingest.show_registry`` that
+        also covers shows with no collection yet.
+        """
+        target = (label or "").strip().lower()
+        if not target:
+            return ""
+        for meta in self.get_all_collection_info().values():
+            if (meta.get("show") or "").strip().lower() == target:
+                return self.show_key(meta)
+        return label
+
+    def label_for_show_id(self, show_id: str) -> str:
+        """Display name registered for a show id, else the id itself."""
+        if not show_id:
+            return ""
+        for meta in self.get_all_collection_info().values():
+            if (meta.get("show_id") or "").strip() == show_id:
+                return (meta.get("show") or "").strip() or show_id
+        return show_id
+
+    def collection_label(self, name: str) -> str:
+        """Display label registered for a collection ("" when unknown).
+
+        Read from ``_collections`` rather than from chunk rows, so a rename
+        needs one metadata write instead of touching every chunk.
+        """
+        return (
+            (self.get_all_collection_info().get(name) or {}).get("show") or ""
+        ).strip()
+
+    def set_show_label(self, show_id: str, label: str, previous_label: str = "") -> int:
+        """Update the carried display label for every collection of a show.
+
+        Also stamps the id onto rows that match only by the previous label:
+        a show indexed before it was minted an id has collections carrying
+        neither, and matching on the id alone would leave them behind exactly
+        as a rename used to.
+
+        Returns the number of collection rows updated. This is what a rename
+        does now: identity is untouched, only the label travels.
+        """
+        if not show_id:
+            return 0
+        self._require_owner(f"relabel the collections of show {show_id!r}")
+        names = [
+            name
+            for name, meta in self.get_all_collection_info().items()
+            if self._row_is_show(meta, show_id, previous_label)
+            and (meta.get("show") != label or not (meta.get("show_id") or "").strip())
+        ]
+        if not names:
+            return 0
+        with self._write_lock:
+            meta_table = self._collections_table()
+            for name in names:
+                meta_table.update(
+                    where=f"name = '{_escape(name)}'",
+                    values={"show": label, "show_id": show_id},
+                )
+            self._collection_info_cache = None
+        logger.info(f"Relabelled {len(names)} collection(s) for show {show_id!r}")
+        return len(names)
+
+    def set_collection_identity(self, name: str, show_id: str, show: str) -> None:
+        """Write the id and display label onto a collection's metadata row."""
+        self._require_owner(f"set the identity of collection {name!r}")
+        with self._write_lock:
+            self._collections_table().update(
+                where=f"name = '{_escape(name)}'",
+                values={"show_id": show_id, "show": show},
+            )
+            self._collection_info_cache = None
+
+    def ensure_collection_for_show(
+        self,
+        show_id: str,
+        show: str,
+        model: str,
+        chunker: str,
+        dim: int,
+    ) -> str:
+        """Return the collection for a show, creating it if it does not exist.
+
+        The only way to create a collection. Resolution runs first, so a show
+        indexed before ids existed keeps writing into the table it already
+        has (under its legacy name) instead of growing a second one beside it.
+
+        Returns:
+            The collection name.
+        """
+        from podcodex.rag.store import collection_name
+
+        existing = self.resolve_collection(show_id, model, chunker, show_label=show)
+        name = existing or collection_name(show_id or show, model, chunker)
+        self.ensure_collection(
+            name=name,
+            show=show,
+            model=model,
+            chunker=chunker,
+            dim=dim,
+            show_id=show_id,
+        )
+        return name
 
     def ensure_collection(
         self,
@@ -719,6 +1048,7 @@ class IndexStore:
         chunker: str,
         dim: int,
         artwork_url: str = "",
+        show_id: str = "",
     ) -> None:
         """Create the collection table + metadata row if missing (idempotent).
 
@@ -730,6 +1060,9 @@ class IndexStore:
             dim: Embedding vector dimensionality.
             artwork_url: Channel-level show artwork URL ("" = unknown; a
                 later call with a real URL fills it in on the existing row).
+            show_id: Stable show identity. Empty only for callers that
+                predate ids (legacy bundle imports); the migration fills
+                those in later.
         """
         tables = self._table_names()
         if name not in tables:
@@ -742,6 +1075,7 @@ class IndexStore:
                 [
                     {
                         "name": name,
+                        "show_id": show_id,
                         "show": show,
                         "model": model,
                         "chunker": chunker,
@@ -751,11 +1085,15 @@ class IndexStore:
                     }
                 ]
             )
-        elif artwork_url and not (existing[0].get("artwork_url") or "").strip():
-            meta.update(
-                where=f"name = '{_escape(name)}'",
-                values={"artwork_url": artwork_url},
-            )
+        else:
+            updates: dict[str, str] = {}
+            if artwork_url and not (existing[0].get("artwork_url") or "").strip():
+                updates["artwork_url"] = artwork_url
+            if show_id and not (existing[0].get("show_id") or "").strip():
+                updates["show_id"] = show_id
+            if updates:
+                meta.update(where=f"name = '{_escape(name)}'", values=updates)
+                self._collection_info_cache = None
 
     def list_collections(
         self, show: str = "", model: str = "", chunker: str = ""
@@ -763,7 +1101,9 @@ class IndexStore:
         """List collection names, optionally filtered by show/model/chunker.
 
         Args:
-            show: Exact match filter (empty = no filter).
+            show: Exact display-label filter (empty = no filter). This is a
+                filter, not a lookup: use ``collections_for_show`` to go from
+                a show to its collections.
             model: Embedding model key filter.
             chunker: Chunking strategy key filter.
 
@@ -788,6 +1128,7 @@ class IndexStore:
         Args:
             name: Collection name to delete.
         """
+        self._require_owner(f"delete collection {name!r}")
         with self._write_lock:
             if name in self._table_names():
                 self._db.drop_table(name)
@@ -814,6 +1155,7 @@ class IndexStore:
         rows = self._collections_table().search().limit(10_000).to_list()
         info = {
             r["name"]: {
+                "show_id": (r.get("show_id") or "").strip(),
                 "show": r["show"],
                 "model": r["model"],
                 "chunker": r["chunker"],
@@ -823,50 +1165,71 @@ class IndexStore:
             for r in rows
             if r.get("name")
         }
-        self._backfill_collection_artwork(info)
+        self._heal_collection_meta(info)
         self._collection_info_cache = (mtime, info)
         return info
 
-    def _backfill_collection_artwork(self, info: dict[str, dict]) -> None:
-        """Fill empty ``artwork_url`` rows from each show's ``show.toml``.
+    def _heal_collection_meta(self, info: dict[str, dict]) -> None:
+        """Reconcile each collection row against its show's ``show.toml``.
 
-        Collections indexed before the artwork column existed (or before the
-        show had artwork configured) carry an empty URL. On the API side the
-        show-folder resolver is registered, so heal the row in place; the bot
-        reads an rsynced index with no show folders and just serves whatever
-        is stored. No resolver, no show meta, or no artwork: leave empty and
-        retry on the next on-disk change (cheap, one cached TOML read).
+        Heals two fields the row carries only so the bot can read them
+        without show folders: ``artwork_url`` and the display label.
+
+        Pull, not push. A rename used to push the new label into the index at
+        write time, which went stale forever if that one write failed, and
+        did nothing at all for a show renamed while the index was offline,
+        hand-edited, or imported. Reading reconciles instead, so the index
+        converges on whatever ``show.toml`` currently says.
+
+        Only the app runs this: the show-folder resolver is registered by the
+        API and not by the bot, which reads an rsynced index with no show
+        folders and serves whatever is stored.
         """
         resolver = type(self)._show_folder_resolver
         if resolver is None:
             return
-        pending = {n: d for n, d in info.items() if not d["artwork_url"]}
-        if not pending:
-            return
-        from podcodex.ingest.show import load_show_meta
+        from podcodex.ingest.show import load_show_meta, show_display
+        from podcodex.ingest.show_registry import folder_for_id
 
-        for name, entry in pending.items():
-            show_folder = resolver(entry["show"]) if entry["show"] else None
-            if not show_folder:
+        for name, entry in info.items():
+            row_id = (entry.get("show_id") or "").strip()
+            # Identity first; the label is only a fallback for rows the
+            # migration has not stamped yet.
+            folder = folder_for_id(row_id) if row_id else None
+            if folder is None and entry.get("show"):
+                found = resolver(entry["show"])
+                folder = Path(found) if found else None
+            if folder is None:
                 continue
-            meta = load_show_meta(Path(show_folder))
-            url = (meta.artwork_url if meta else "").strip()
-            # Only real URLs may leave show.toml: the field can hold the
-            # local-file marker, which search consumers would otherwise
-            # render as a literal artwork URL.
-            if not is_remote_artwork_url(url):
+
+            updates: dict[str, str] = {}
+            label = show_display(folder)
+            if label and label != entry.get("show"):
+                updates["show"] = label
+            meta = load_show_meta(folder)
+            if not row_id and meta and meta.id:
+                updates["show_id"] = meta.id
+            if not entry.get("artwork_url"):
+                url = (meta.artwork_url if meta else "").strip()
+                # Only real URLs may leave show.toml: the field can hold the
+                # local-file marker, which search consumers would otherwise
+                # render as a literal artwork URL.
+                if is_remote_artwork_url(url):
+                    updates["artwork_url"] = url
+            if not updates:
                 continue
             try:
                 self._collections_table().update(
-                    where=f"name = '{_escape(name)}'",
-                    values={"artwork_url": url},
+                    where=f"name = '{_escape(name)}'", values=updates
                 )
             except Exception:
-                logger.opt(exception=True).warning(
-                    f"artwork_url backfill failed for '{name}'"
+                # Includes the ownership refusal on a replica. Healing is a
+                # convenience on a read path; never fail the read for it.
+                logger.opt(exception=True).debug(
+                    f"collection meta heal skipped for '{name}'"
                 )
                 continue
-            entry["artwork_url"] = url
+            entry.update(updates)
 
     def count_rows(self, collection: str) -> int:
         """Total chunk count for a collection. 0 if the collection is empty/unknown."""
@@ -931,7 +1294,9 @@ class IndexStore:
             self._fts_ready.discard(collection)
         logger.debug(f"Deleted episode '{episode}' from '{collection}'")
 
-    def delete_episode_everywhere(self, show: str, episode: str) -> list[str]:
+    def delete_episode_everywhere(
+        self, show: str, episode: str, show_id: str = ""
+    ) -> list[str]:
         """Delete an episode's chunks from every collection of one show.
 
         A show routinely has several collections (one per model/chunker pair),
@@ -946,14 +1311,16 @@ class IndexStore:
         there is nothing useful to do with the rest.
 
         Args:
-            show: Show name the collections are registered under.
+            show: Display name of the show.
             episode: Episode identifier (stem).
+            show_id: The show's stable id, when the caller has one. Preferred
+                over the name, which a rename can change out from under it.
 
         Returns:
             The collections the episode was actually removed from.
         """
         touched = []
-        for col in self.list_collections(show=show):
+        for col in self.collections_for_show(show_id, show_label=show):
             if not self.episode_is_indexed(col, episode):
                 continue
             self.delete_episode(col, episode)
@@ -1087,7 +1454,8 @@ class IndexStore:
             .limit(100_000)
             .to_list()
         )
-        out = [_row_to_chunk(r) for r in rows]
+        label = self.collection_label(collection)
+        out = [_row_to_chunk(r, label) for r in rows]
         out.sort(key=lambda c: c.chunk_index)
         return out
 
@@ -1110,12 +1478,13 @@ class IndexStore:
             .limit(100_000)
             .to_list()
         )
+        label = self.collection_label(collection)
         out: list[dict] = []
         for r in rows:
             v = np.asarray(r.get("vector") or [], dtype=np.float32)
             # Inspector-only projection: stays a plain dict so the vector_*
             # diagnostics keys don't pollute the Hit model.
-            chunk = _row_to_chunk(r).model_dump(exclude_none=True)
+            chunk = _row_to_chunk(r, label).model_dump(exclude_none=True)
             if v.size:
                 chunk["vector_norm"] = float(np.linalg.norm(v))
                 chunk["vector_zero_frac"] = float((v == 0.0).mean())
@@ -1242,7 +1611,9 @@ class IndexStore:
         if clause:
             q = q.where(clause)
         rows = q.select([*_FILTER_COLUMNS, "meta"]).offset(offset).limit(1).to_list()
-        return _row_to_chunk(rows[0]) if rows else None
+        return (
+            _row_to_chunk(rows[0], self.collection_label(collection)) if rows else None
+        )
 
     # ── Native search primitives ─────────────────────────────────────────
 
@@ -1307,9 +1678,10 @@ class IndexStore:
         if clause:
             q = q.where(clause)
         rows = q.limit(top_k).to_list()
+        label = self.collection_label(collection)
         out: list[Hit] = []
         for r in rows:
-            hit = _row_to_chunk(r)
+            hit = _row_to_chunk(r, label)
             # LanceDB cosine distance is 1 - cosine_sim, so 1 - distance is
             # the cosine similarity in [0, 1] (assuming non-negative dot).
             hit.score = max(0.0, 1.0 - float(r.get("_distance", 1.0)))
@@ -1372,9 +1744,10 @@ class IndexStore:
         except Exception:
             logger.opt(exception=True).warning("FTS query failed — treating as empty")
             return []
+        label = self.collection_label(collection)
         out: list[Hit] = []
         for r in rows:
-            hit = _row_to_chunk(r)
+            hit = _row_to_chunk(r, label)
             hit.score = float(r.get("_score", 0.0))
             out.append(hit)
         return out
@@ -2005,8 +2378,14 @@ def _build_where(
     return " AND ".join(parts)
 
 
-def _row_to_chunk(row: dict) -> Hit:
+def _row_to_chunk(row: dict, show_label: str = "") -> Hit:
     """Re-inflate a LanceDB row into a ``Hit``.
+
+    ``show_label`` overrides the row's own ``show`` value. The label lives in
+    ``_collections``, one row per collection, so a rename costs one metadata
+    write; the per-chunk copy is written for debuggability and goes stale the
+    moment a show is renamed. Callers always know their collection, so they
+    always have the authoritative label.
 
     The single point where hits are born: drops the vector column and
     LanceDB internals (``_distance``, ``_score``, ``_relevance_score``),
@@ -2038,6 +2417,8 @@ def _row_to_chunk(row: dict) -> Hit:
     for key in _FILTER_COLUMNS:
         if key in row and row[key] is not None:
             chunk[key] = row[key]
+    if show_label:
+        chunk["show"] = show_label
     try:
         return Hit.model_validate(chunk)
     except ValidationError as e:
@@ -2068,4 +2449,8 @@ def get_index_store() -> IndexStore:
     that need a different path should instantiate ``IndexStore(custom_path)``
     directly.
     """
-    return IndexStore()
+    store = IndexStore()
+    # Off the boot path by construction: get_index_store is lazy, and this is
+    # the first moment the app has both an open index and its show folders.
+    store.migrate_to_show_ids_if_owner()
+    return store

@@ -773,3 +773,47 @@ def format_prompt_batches(batches: list) -> list[dict]:
         }
         for i, (batch_segs, prompt) in enumerate(batches)
     ]
+
+
+def resolve_collection_for_show(
+    show: str, model: str, chunking: str, store=None
+) -> str | None:
+    """Collection for a show given its display name, or None when not indexed.
+
+    The API receives display names (from the frontend, MCP, and the bot), so
+    this is the one place that goes label -> id -> collection. Nothing
+    reconstructs a collection name from a show name any more: that is what a
+    rename used to orphan.
+
+    Args:
+        store: The store to query. Pass the one the caller already resolved,
+            so a route that swaps its store (tests do) is not bypassed by a
+            second lookup in here.
+    """
+    from podcodex.ingest.show_registry import show_id_for_label
+
+    store = store if store is not None else get_index_store()
+    return store.resolve_collection(
+        show_id_for_label(show), model, chunking, show_label=show
+    )
+
+
+def collections_for_show_name(show: str, store=None) -> list[str]:
+    """Every collection of the show with this display name.
+
+    Companion to ``resolve_collection_for_show`` for callers that want all of
+    a show's collections rather than one specific combination.
+
+    An empty *show* means "no filter" and returns every collection, matching
+    the ``list_collections(show="")`` behaviour these call sites had before
+    identity moved off the display name.
+
+    Args:
+        store: The store to query; see ``resolve_collection_for_show``.
+    """
+    from podcodex.ingest.show_registry import show_id_for_label
+
+    store = store if store is not None else get_index_store()
+    if not (show or "").strip():
+        return store.list_collections()
+    return store.collections_for_show(show_id_for_label(show), show_label=show)

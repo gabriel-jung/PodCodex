@@ -6,6 +6,9 @@ path is honored. Patching ``routes.config.CONFIG_PATH`` alone is a no-op;
 that name is just a re-export.
 """
 
+import os
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from podcodex.core.api_token import TOKEN_HEADER
@@ -39,6 +42,18 @@ def make_client(tmp_path, monkeypatch, config=None) -> TestClient:
     monkeypatch.setenv("PODCODEX_API_TOKEN", "test-token")
     monkeypatch.setattr(app_config_mod, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(app_config_mod, "_LOAD_CACHE", None)
+
+    # Isolate the index too, not just the config. Any route that opens the
+    # store would otherwise resolve the developer's real index and mutate it
+    # (the show-id migration runs on first open). Only set when the caller
+    # has not chosen a path itself, so explicit per-test indexes still win.
+    if not os.environ.get("PODCODEX_INDEX", "").strip():
+        monkeypatch.setenv("PODCODEX_INDEX", str(Path(tmp_path) / "index"))
+    from podcodex.rag import index_store as _index_store
+
+    # Defensive: some tests replace get_index_store with a plain stub, which
+    # has no cache to clear.
+    getattr(_index_store.get_index_store, "cache_clear", lambda: None)()
     if config is not None:
         save_config(config)
 

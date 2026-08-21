@@ -52,17 +52,22 @@ def resolve_collections(
     then the first collection by sorted name so a show indexed only under a
     non-default model stays reachable.
 
-    ``shows`` filters by display name, case-insensitive. ``show_prefs`` is
-    keyed by lowercased show name. Result is sorted by lowercased show name.
+    ``shows`` filters by display name, case-insensitive, because that is all
+    a Discord user or an MCP client ever types. Grouping and ``show_prefs``
+    key on the show id when the collection carries one, so a renamed show
+    keeps its preference; collections written before ids existed fall back to
+    the lowercased display name.
+
+    Result is sorted by lowercased show name.
     """
     wanted = {s.strip().lower() for s in shows} if shows is not None else None
     by_show: dict[str, list[tuple[str, dict]]] = {}
     for name in sorted(col_info):
         meta = col_info[name]
         show = meta.get("show") or name
-        key = show.lower()
-        if wanted is not None and key not in wanted:
+        if wanted is not None and show.lower() not in wanted:
             continue
+        key = (meta.get("show_id") or "").strip() or show.lower()
         by_show.setdefault(key, []).append((name, meta))
 
     def _match(cands: list[tuple[str, dict]], combo: tuple[str, str] | None):
@@ -75,9 +80,15 @@ def resolve_collections(
         return None
 
     out: list[SearchCollection] = []
-    for key in sorted(by_show):
-        cands = by_show[key]
-        pref = (show_prefs or {}).get(key)
+    prefs = show_prefs or {}
+    for key, cands in by_show.items():
+        # Keyed by id after the migration. Before it, `key` already *is* the
+        # lowercased label, so no second lookup is needed.
+        pref = prefs.get(key)
+        if pref is None and (cands[0][1].get("show_id") or "").strip():
+            # The row has an id but the show may not have been minted one in
+            # show.toml yet, in which case prefs are still label-keyed.
+            pref = prefs.get((cands[0][1].get("show") or "").strip().lower())
         picked = (
             _match(cands, override)
             or _match(cands, pref)
@@ -97,11 +108,15 @@ def resolve_collections(
                 artwork_url=(meta.get("artwork_url") or "").strip(),
             )
         )
+    out.sort(key=lambda c: c.show.lower())
     return out
 
 
 def load_show_rag_prefs() -> dict[str, tuple[str, str]]:
-    """Per-show RAG prefs from show.toml: {lower_name: (model, chunker)}.
+    """Per-show RAG prefs from show.toml: ``{show_id: (model, chunker)}``.
+
+    Shows that have not been minted an id yet are keyed by lowercased display
+    name instead, which is what ``resolve_collections`` falls back to.
 
     Only shows that set at least one of rag_model/rag_chunker appear;
     the blank half is filled with the global default. Unreadable folders and
@@ -138,7 +153,8 @@ def load_show_rag_prefs() -> dict[str, tuple[str, str]]:
         chunker = (meta.pipeline.rag_chunker or "").strip()
         if not model and not chunker:
             continue
-        prefs[(meta.name or p.name).strip().lower()] = (
+        key = meta.id or (meta.name or p.name).strip().lower()
+        prefs[key] = (
             model or DEFAULT_MODEL,
             chunker or DEFAULT_CHUNKING,
         )

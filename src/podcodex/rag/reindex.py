@@ -24,7 +24,6 @@ from podcodex.cli.resolve import resolve_show_folder
 from podcodex.ingest.folder import scan_folder
 from podcodex.rag.defaults import DEFAULT_CHUNKING, DEFAULT_MODEL
 from podcodex.rag.index_store import get_index_store
-from podcodex.rag.store import collection_name
 
 
 def _reindex_show(
@@ -41,9 +40,14 @@ def _reindex_show(
     store = get_index_store()
 
     # 1. Drop every target collection so stale rows can't linger.
+    from podcodex.ingest.show_registry import show_id_for_label
+
+    sid = show_id_for_label(show_name)
     for model in model_keys:
         for chunker in chunkers:
-            col = collection_name(show_name, model, chunker)
+            col = store.resolve_collection(sid, model, chunker, show_label=show_name)
+            if not col:
+                continue
             if dry_run:
                 logger.info(f"[dry-run] would drop collection: {col}")
             else:
@@ -88,6 +92,7 @@ def _reindex_show(
             model_keys,
             chunkers,
             store,
+            show_id=sid,
             overwrite=True,
         )
         logger.success(f"{ep.audio_path.stem}: +{n} chunks")
@@ -98,18 +103,23 @@ def _reindex_show(
 
 def _list_collections(show_name: str) -> None:
     """Print collections currently in LanceDB that belong to this show."""
+    from podcodex.ingest.show_registry import show_id_for_label
+
     store = get_index_store()
-    prefix = f"{show_name.lower().replace(' ', '_')}__"
-    info = store.get_all_collection_info()
-    matches = [row for row in info if row["name"].startswith(prefix)]
-    if not matches:
+    # Resolved, not reconstructed from the name: a collection's table name is
+    # internal to the store, and after a rename it no longer resembles the
+    # show's current name at all.
+    names = store.collections_for_show(
+        show_id_for_label(show_name), show_label=show_name
+    )
+    if not names:
         print(f"(no collections for {show_name!r})")
         return
-    for row in matches:
+    for name in names:
         print(
-            f"  {row['name']:<60} "
-            f"chunks={row.get('chunk_count', 0):>6} "
-            f"episodes={row.get('episode_count', 0):>4}"
+            f"  {name:<60} "
+            f"chunks={store.count_rows(name):>6} "
+            f"episodes={store.episode_count(name):>4}"
         )
 
 

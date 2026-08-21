@@ -72,6 +72,8 @@ def run(
 
     device = device_str()
 
+    from podcodex.ingest.show_registry import show_id_for_label
+
     total_upserted = vectorize_batch(
         transcript,
         show,
@@ -79,6 +81,7 @@ def run(
         model_keys,
         chunkings,
         local,
+        show_id=show_id_for_label(show),
         chunk_size=chunk_size,
         threshold=threshold,
         overwrite=overwrite,
@@ -138,16 +141,18 @@ def run_for_batch(
     )
     from podcodex.core._utils import AudioPaths
     from podcodex.core.pipeline_db import mark_step
+    from podcodex.ingest.show_registry import show_id_for_label
     from podcodex.rag.indexing import vectorize_batch
-    from podcodex.rag.store import collection_name
 
     p = AudioPaths.from_audio(audio_path)
     local = get_index_store()
+    show_id = show_id_for_label(show_name)
 
     if not force:
         wanted = [(m, c) for m in model_keys for c in chunkings]
         if wanted and all(
-            local.episode_is_indexed(collection_name(show_name, m, c), stem)
+            (col := local.resolve_collection(show_id, m, c, show_label=show_name))
+            and local.episode_is_indexed(col, stem)
             for m, c in wanted
         ):
             return {"upserted": 0, "indexed": False, "skipped": True}
@@ -180,6 +185,7 @@ def run_for_batch(
         model_keys,
         chunkings,
         local,
+        show_id=show_id,
         overwrite=force,
         device=device_str(),
         on_progress=on_prog,

@@ -140,11 +140,9 @@ def lance_indexed_stems(show_folder: Path) -> set[str]:
         # get_all_collection_info is cached against index_mtime, so this
         # avoids a LanceDB meta-table scan per request; list_collections
         # would rescan every call.
-        cols = [
-            name
-            for name, info in store.get_all_collection_info().items()
-            if info.get("show") == show_name
-        ]
+        # meta is already loaded above, so the id costs nothing here; resolving
+        # it by name would re-stat every registered show folder per request.
+        cols = store.collections_for_show(meta.id if meta else "", show_label=show_name)
         versions = _versions_fingerprint(store, cols)
         cached = _INDEXED_STEMS_CACHE.get(show_name)
         if cached is not None and cached[0] == versions:

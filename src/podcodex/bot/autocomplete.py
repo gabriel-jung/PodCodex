@@ -15,7 +15,6 @@ from podcodex.rag.defaults import (
     CHUNKING_STRATEGIES,
     MODELS,
 )
-from podcodex.rag.store import collection_name
 
 # ── Autocomplete cache ───────────────────────
 
@@ -162,7 +161,17 @@ class AutocompleteMixin:
 
         all_episodes: dict[str, str] = {}  # stem -> display name
         if resolved.is_specific:
-            cols = [collection_name(s, model, chunker) for s in resolved.shows]
+            # Resolved through the store, never rebuilt: the bot has no
+            # show.toml, so a display name is all it has, and the collection
+            # it maps to is the store's business.
+            cols = [
+                col
+                for col in (
+                    self.local.resolve_collection("", model, chunker, show_label=s)
+                    for s in resolved.shows
+                )
+                if col
+            ]
         else:
             cols, _ = await self._visible_collections(settings, model, chunker)
         for col in cols:
@@ -270,8 +279,9 @@ class AutocompleteMixin:
         all_speakers: set[str] = set()
         if resolved.is_specific:
             for s in resolved.shows:
-                col = collection_name(s, model, chunker)
-                all_speakers.update(await self._cached_speakers(col))
+                col = self.local.resolve_collection("", model, chunker, show_label=s)
+                if col:
+                    all_speakers.update(await self._cached_speakers(col))
         else:
             collections, _ = await self._visible_collections(settings, model, chunker)
             for col in collections:
@@ -290,8 +300,10 @@ class AutocompleteMixin:
     ) -> list[app_commands.Choice[str]]:
         """Autocomplete from allowed shows for the server."""
         settings = self._server_settings(interaction.guild_id)
+        # Stored as ids; both the label and the value users see are names.
+        labels = [self._label_for_show_id(s) for s in settings.allowed_shows]
         return [
             app_commands.Choice(name=s, value=s)
-            for s in settings.allowed_shows
+            for s in labels
             if current.lower() in s.lower()
         ][:25]

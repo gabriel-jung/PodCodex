@@ -18,7 +18,7 @@ class SettingsMixin:
     """Server-settings methods mixed into PodCodexBot (bot.py).
 
     Expects on self: ``config``, ``server_config_path``, ``_server_cfg``,
-    ``_locked_show_names``.
+    ``_locked_show_ids``.
     """
 
     def _load_server_config(self) -> dict[int, ServerSettings]:
@@ -107,7 +107,7 @@ class SettingsMixin:
         current = self._server_settings(guild_id)
 
         # Password-protected shows are managed via /unlock + /lock, not /setup
-        if self._locked_show_names and (show_add or show_remove or show_clear):
+        if self._locked_show_ids and (show_add or show_remove or show_clear):
             await interaction.response.send_message(
                 "Show access is managed via `/unlock` and `/lock`.",
                 ephemeral=True,
@@ -127,16 +127,14 @@ class SettingsMixin:
             ]
         )
         if not has_change:
-            if self._locked_show_names:
+            # allowed_shows holds ids; users read names.
+            labels = [self._label_for_show_id(s) for s in current.allowed_shows]
+            if self._locked_show_ids:
                 shows_str = (
-                    ", ".join(f"`{s}`" for s in current.allowed_shows)
-                    or "*(none — use /unlock)*"
+                    ", ".join(f"`{s}`" for s in labels) or "*(none — use /unlock)*"
                 )
             else:
-                shows_str = (
-                    ", ".join(f"`{s}`" for s in current.allowed_shows)
-                    or "*(all public)*"
-                )
+                shows_str = ", ".join(f"`{s}`" for s in labels) or "*(all public)*"
             await interaction.response.send_message(
                 f"**Current settings**\n"
                 f"Model: `{current.model}`\n"
@@ -154,10 +152,13 @@ class SettingsMixin:
         new_shows = list(current.allowed_shows)
         if show_clear:
             new_shows = []
-        if show_add and show_add not in new_shows:
-            new_shows.append(show_add)
-        if show_remove and show_remove in new_shows:
-            new_shows.remove(show_remove)
+        # The command takes display names; the list stores ids.
+        add_id = self._show_id_for_label(show_add) if show_add else ""
+        remove_id = self._show_id_for_label(show_remove) if show_remove else ""
+        if add_id and add_id not in new_shows:
+            new_shows.append(add_id)
+        if remove_id and remove_id in new_shows:
+            new_shows.remove(remove_id)
 
         updated = replace(
             current,
@@ -173,7 +174,8 @@ class SettingsMixin:
         logger.info(f"Guild {guild_id} updated: {updated}")
 
         shows_str = (
-            ", ".join(f"`{s}`" for s in updated.allowed_shows) or "*(all public)*"
+            ", ".join(f"`{self._label_for_show_id(s)}`" for s in updated.allowed_shows)
+            or "*(all public)*"
         )
         await interaction.response.send_message(
             f"✅ Settings updated\n"

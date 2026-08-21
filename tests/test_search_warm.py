@@ -53,6 +53,10 @@ class _FakeStore:
         slug = show.strip().lower()
         return [n for n, i in self._INFO.items() if not slug or i["show"] == slug]
 
+    def collections_for_show(self, show_id: str, show_label: str = "") -> list[str]:
+        label = (show_label or "").strip().lower()
+        return [n for n, i in self._INFO.items() if not label or i["show"] == label]
+
     def get_collection_info(self, collection: str) -> dict | None:
         return self._INFO.get(collection)
 

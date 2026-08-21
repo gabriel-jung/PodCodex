@@ -131,8 +131,8 @@ def _plan_collections(
     on_conflict: ConflictPolicy,
     store: IndexStore,
     resolved: dict[str, str],
-) -> list[tuple[str, str, str, str, int]]:
-    """Validate collection collisions, return planned ``(name, show, model, chunker, dim)`` tuples.
+) -> list[tuple[str, str, str, str, int, str]]:
+    """Validate collisions, return ``(name, show, model, chunker, dim, show_id)`` tuples.
 
     ``RENAME`` falls back to REPLACE for collection collisions: collection
     names embed the original show normalization, so renaming would break
@@ -140,7 +140,7 @@ def _plan_collections(
     new extraction is the same data, so overwriting is safe.
     """
     existing = set(store.list_collections())
-    out: list[tuple[str, str, str, str, int]] = []
+    out: list[tuple[str, str, str, str, int, str]] = []
     for show in manifest.shows:
         for c in show.collections:
             # Manifest data is attacker-controlled; reject a hostile name
@@ -154,8 +154,56 @@ def _plan_collections(
                 if on_conflict == ConflictPolicy.ABORT:
                     raise ConflictError(f"collection '{c.name}' already exists")
                 resolved[f"collection:{c.name}"] = "replaced"
-            out.append((c.name, show.name, c.model, c.chunker, c.dim))
+            out.append((c.name, show.name, c.model, c.chunker, c.dim, show.id))
     return out
+
+
+def _mint_ids_for_legacy_shows(
+    manifest: Manifest,
+    folder_map: dict[str, str],
+    shows_dir: Path | None,
+    store: IndexStore,
+) -> None:
+    """Give a v1 archive's shows an identity on the way in.
+
+    Archives written before ``ShowEntry.id`` existed carry collections keyed
+    only by display name. Left alone they would import as orphans: no id to
+    resolve them by, and a later rename would lose them exactly as before.
+
+    An index-only import of a legacy archive has no show folder to mint into,
+    so its collections stay unidentified until the show is registered and the
+    ordinary migration picks them up.
+    """
+    from podcodex.ingest.show import ensure_show_id, load_show_meta, save_show_meta
+
+    for show in manifest.shows:
+        if not shows_dir:
+            continue
+        folder_name = folder_map.get(show.folder)
+        if not folder_name:
+            continue
+        folder = shows_dir / folder_name
+        if not folder.is_dir():
+            continue
+
+        if show.id:
+            # Carried identity wins, so re-importing a show onto another
+            # machine lands on the same collections it left with.
+            meta = load_show_meta(folder)
+            if meta is not None and meta.id != show.id:
+                meta.id = show.id
+                save_show_meta(folder, meta)
+            sid = show.id
+        else:
+            sid = ensure_show_id(folder)
+
+        for c in show.collections:
+            try:
+                store.set_collection_identity(c.name, show_id=sid, show=show.name)
+            except Exception:
+                logger.opt(exception=True).warning(
+                    f"could not stamp identity on imported collection {c.name!r}"
+                )
 
 
 def _purge_collection_from_disk(name: str, index_root: Path) -> None:
@@ -333,10 +381,17 @@ def import_archive(
 
     store.reconnect()
 
-    for col_name, show_name, model, chunker, dim in collection_plan:
+    for col_name, show_name, model, chunker, dim, entry_id in collection_plan:
         store.ensure_collection(
-            name=col_name, show=show_name, model=model, chunker=chunker, dim=dim
+            name=col_name,
+            show=show_name,
+            model=model,
+            chunker=chunker,
+            dim=dim,
+            show_id=entry_id,
         )
+
+    _mint_ids_for_legacy_shows(manifest, folder_map, shows_dir, store)
 
     return ImportResult(
         shows_dir=str(shows_dir) if shows_dir else "",

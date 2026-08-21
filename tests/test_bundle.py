@@ -122,7 +122,8 @@ def test_manifest_corrupt_raises():
 
 
 def test_schema_version_constant():
-    assert SCHEMA_VERSION == 1
+    # v2 added ShowEntry.id.
+    assert SCHEMA_VERSION == 2
 
 
 # ── rename_suffix ──────────────────────────────────────────────────────
@@ -619,3 +620,92 @@ def test_import_rejects_traversal_name_override(tmp_path, isolated_index):
     target = tmp_path / "target"
     with pytest.raises(ValueError):
         import_archive(archive, shows_dir=target, name="../evil")
+
+
+# ── Show identity across archives ──────────────────────────────────────
+
+
+def test_export_records_the_show_id(tmp_path, isolated_index):
+    from podcodex.bundle.import_show import _read_manifest
+    from podcodex.ingest.show import show_id
+
+    show = _make_show(tmp_path / "test_show")
+    _seed_collection(rag_index_store.get_index_store())
+    out = tmp_path / "out.podcodex"
+    export_show(show, out, with_audio=False)
+
+    manifest = _read_manifest(out)
+    assert manifest.shows[0].id
+    # Minted into the source show.toml, not invented per export.
+    assert manifest.shows[0].id == show_id(show)
+
+
+def test_import_carries_the_id_onto_the_new_machine(tmp_path, isolated_index):
+    """A re-imported show must land on its own collections, not orphans."""
+    from podcodex.ingest.show import show_id
+
+    show = _make_show(tmp_path / "test_show")
+    _seed_collection(rag_index_store.get_index_store())
+    out = tmp_path / "out.podcodex"
+    export_show(show, out, with_audio=False)
+    original_id = show_id(show)
+
+    # A different machine: fresh index, fresh shows dir.
+    target_index = tmp_path / "index2"
+    rag_index_store.get_index_store.cache_clear()
+    import os
+
+    os.environ["PODCODEX_INDEX"] = str(target_index)
+    try:
+        store = rag_index_store.get_index_store()
+        import_archive(out, shows_dir=tmp_path / "shows2")
+        assert show_id(tmp_path / "shows2" / "test_show") == original_id
+        assert store.resolve_collection(original_id, "bge-m3", "semantic") is not None
+    finally:
+        rag_index_store.get_index_store.cache_clear()
+        os.environ["PODCODEX_INDEX"] = str(isolated_index)
+
+
+def test_legacy_archive_import_mints_an_id(tmp_path, isolated_index):
+    """A v1 archive has no id; its collections must not import as orphans."""
+    import json
+    import os
+    import tarfile as tf_mod
+
+    from podcodex.ingest.show import show_id
+
+    show = _make_show(tmp_path / "test_show")
+    _seed_collection(rag_index_store.get_index_store())
+    out = tmp_path / "out.podcodex"
+    export_show(show, out, with_audio=False)
+
+    # Rewrite the archive as it would have looked before ids existed.
+    legacy = tmp_path / "legacy.podcodex"
+    extract = tmp_path / "extract"
+    with tf_mod.open(out) as tf:
+        tf.extractall(extract, filter="data")
+    manifest_path = extract / "manifest.json"
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["schema_version"] = 1
+    for entry in raw["shows"]:
+        entry.pop("id", None)
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+    (extract / "shows" / "test_show" / "show.toml").write_text(
+        'name = "Test Show"\n', encoding="utf-8"
+    )
+    with tf_mod.open(legacy, "w:gz") as tf:
+        for child in sorted(extract.iterdir()):
+            tf.add(child, arcname=child.name)
+
+    target_index = tmp_path / "index3"
+    rag_index_store.get_index_store.cache_clear()
+    os.environ["PODCODEX_INDEX"] = str(target_index)
+    try:
+        store = rag_index_store.get_index_store()
+        import_archive(legacy, shows_dir=tmp_path / "shows3")
+        minted = show_id(tmp_path / "shows3" / "test_show")
+        assert minted
+        assert store.resolve_collection(minted, "bge-m3", "semantic") is not None
+    finally:
+        rag_index_store.get_index_store.cache_clear()
+        os.environ["PODCODEX_INDEX"] = str(isolated_index)

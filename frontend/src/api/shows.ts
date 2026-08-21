@@ -137,7 +137,10 @@ export const previewBroadcastNumber = (folder: string, pattern: string) =>
 /** Writable half of ShowMeta: the server derives `accepts_imports` and
  *  `last_feed_update` per request and ignores them on PUT, so callers must
  *  not have to invent values for them. */
-export type ShowMetaUpdate = Omit<ShowMeta, "accepts_imports" | "last_feed_update">;
+/** `id` is omitted on purpose: it is the show's stable identity, owned by the
+ *  server and ignored by the PUT handler. Sending it would imply a client can
+ *  change what every other store keys on. */
+export type ShowMetaUpdate = Omit<ShowMeta, "accepts_imports" | "last_feed_update" | "id">;
 
 export const updateShowMeta = (folder: string, meta: ShowMetaUpdate) =>
   json<{ status: string }>(`/api/shows/${enc(folder)}/meta`, {

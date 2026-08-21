@@ -23,6 +23,7 @@ export interface PipelineDefaultsSchema {
 }
 
 export interface ShowMeta {
+  id: string;
   name: string;
   rss_url: string;
   youtube_url: string;
@@ -555,6 +556,7 @@ export interface CollectionEntry {
 }
 
 export interface ShowEntry {
+  id: string;
   name: string;
   folder: string;
   audio_included: boolean;

@@ -95,7 +95,11 @@ def _delete_chunks(show_dir: Path, stem: str, report: DeleteReport) -> None:
         # itself raises. ingest/folder.py guards the same import the same way.
         from podcodex.rag.index_store import get_index_store
 
-        touched = get_index_store().delete_episode_everywhere(show_name, stem)
+        from podcodex.ingest.show_registry import show_id_for_label
+
+        touched = get_index_store().delete_episode_everywhere(
+            show_name, stem, show_id=show_id_for_label(show_name)
+        )
     except Exception as exc:
         report.warnings.append(f"Could not remove chunks from the index: {exc}")
         logger.opt(exception=True).warning("delete_episode: chunk delete failed")

@@ -320,16 +320,21 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     deleteFilesRef.current = false;
     confirmDialog.open({
       title: "Remove this show?",
-      description: `This will unregister "${meta.name}" from PodCodex.`,
+      description: `This will unregister "${meta.name}" from PodCodex. Its search index and bot password are kept, so adding the folder back restores the show as it was.`,
       content: (
-        <label className="flex items-center gap-2 text-sm cursor-pointer">
+        <label className="flex items-start gap-2 text-sm cursor-pointer">
           <input
             type="checkbox"
             defaultChecked={false}
             onChange={(e) => { deleteFilesRef.current = e.target.checked; }}
-            className="accent-destructive"
+            className="accent-destructive mt-0.5"
           />
-          Also delete local files on disk
+          <span>
+            Also delete local files on disk
+            <span className="block text-xs text-muted-foreground">
+              The show's search index and bot password are deleted too.
+            </span>
+          </span>
         </label>
       ),
       confirmLabel: "Remove",

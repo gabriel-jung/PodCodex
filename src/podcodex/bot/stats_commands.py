@@ -201,7 +201,7 @@ class StatsCommandsMixin:
 
         if not show:
             if settings.allowed_shows:
-                show = settings.allowed_shows[0]
+                show = self._label_for_show_id(settings.allowed_shows[0])
             else:
                 col_info = await self._cached_col_info()
                 pairs = self._resolve_show_collections(

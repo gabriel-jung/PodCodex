@@ -25,6 +25,10 @@ class PipelineDefaultsSchema(BaseModel):
 class ShowMeta(BaseModel):
     """Editable metadata for a show (read/write via the settings panel)."""
 
+    # Read-only: the show's stable identity. The PUT handler ignores whatever
+    # the client sends here and keeps what is on disk, because every other
+    # store keys on it.
+    id: str = ""
     name: str
     rss_url: str = ""
     youtube_url: str = ""

@@ -342,35 +342,33 @@ async def lifespan(app: FastAPI):
 def _register_show_folder_resolver() -> None:
     """Wire a show-name → folder resolver into the IndexStore.
 
-    Enables the ``episode_title`` backfill (``IndexStore._ensure_episode_title_backfill``)
-    to locate each episode's ``.episode_meta.json`` when healing chunks whose
-    RSS title never made it into the transcript meta.
+    This is also the "am I the app, not the bot" signal, since the bot reads
+    an rsynced index with no show folders and never registers one. It gates:
+
+    - the ``episode_title`` backfill (``_ensure_episode_title_backfill``),
+      which locates each episode's ``.episode_meta.json`` to heal chunks
+      whose RSS title never made it into the transcript meta;
+    - the collection-metadata heal (``_heal_collection_meta``), which
+      reconciles each collection's label and artwork against ``show.toml``;
+    - the one-time show-id migration (``migrate_to_show_ids_if_owner``),
+      which must never run on the bot, where it would mint ids that diverge
+      from the app's.
     """
     try:
-        from podcodex.api.routes.config import _load as _load_cfg
-        from podcodex.ingest.show import load_show_meta
         from podcodex.rag.index_store import IndexStore
     except Exception:
         logger.opt(exception=True).debug("show folder resolver: import failed")
         return
 
     def resolve(show_name: str):
+        # One definition of "which show is this", shared with every other
+        # label lookup (case-insensitive, oldest folder wins on a duplicate).
+        from podcodex.ingest.show_registry import folder_for_label
+
         try:
-            cfg = _load_cfg()
+            return folder_for_label(show_name)
         except Exception:
             return None
-        target = (show_name or "").strip().lower()
-        if not target:
-            return None
-        for folder_path in cfg.show_folders:
-            child = Path(folder_path)
-            if not child.is_dir():
-                continue
-            meta = load_show_meta(child)
-            name = (meta.name if meta else None) or child.name
-            if name.strip().lower() == target:
-                return child
-        return None
 
     IndexStore.set_show_folder_resolver(resolve)
 

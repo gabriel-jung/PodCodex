@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
     get_index_store,
     require_audio_or_output,
+    collections_for_show_name,
+    resolve_collection_for_show,
     submit_subprocess_task,
 )
 from podcodex.api.schemas import TaskResponse
@@ -145,8 +147,8 @@ def index_status(
     output_dir: str | None = Query(None),
 ) -> dict:
     """Check indexing status per (model, chunking) combination."""
+    from podcodex.ingest.show_registry import show_id_for_label
     from podcodex.rag.defaults import CHUNKING_STRATEGIES, MODELS
-    from podcodex.rag.store import collection_name
 
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
@@ -156,14 +158,24 @@ def index_status(
     # One mtime-cached read of the registry; combos without a registered
     # collection skip their LanceDB round-trip entirely (most of the
     # model x chunking grid never exists for a given install).
-    known = local.get_all_collection_info()
+    # One registry read for the whole model x chunking grid: resolving inside
+    # the loop would re-enter the (mtime-checked) collection info map 10 times
+    # per episode open.
+    info = local.get_all_collection_info()
+    owned = {
+        (meta.get("model"), meta.get("chunker")): c
+        for c in local.collections_for_show(show_id_for_label(show), show_label=show)
+        # .get, not [c]: the two reads above are independent, so a collection
+        # committed between them would KeyError and 500 this endpoint.
+        if (meta := info.get(c))
+    }
     combinations = []
     for model_key in MODELS:
         for chunking in CHUNKING_STRATEGIES:
-            col = collection_name(show, model_key, chunking)
+            col = owned.get((model_key, chunking))
             # chunk_count > 0 already implies indexed; the separate
             # episode_is_indexed query was a redundant round-trip.
-            count = local.episode_chunk_count(col, episode) if col in known else 0
+            count = local.episode_chunk_count(col, episode) if col else 0
             combinations.append(
                 {
                     "model": model_key,
@@ -185,7 +197,7 @@ def list_collections(
     """List indexed collections, optionally filtered by show."""
     local = get_index_store()
     result = []
-    for col_name in local.list_collections(show=show):
+    for col_name in collections_for_show_name(show, store=local):
         info = local.get_collection_info(col_name)
         episodes = local.list_episodes(col_name)
         result.append(
@@ -220,7 +232,7 @@ def episode_collections(
 
     local = get_index_store()
     out: list[dict] = []
-    for col_name in local.list_collections(show=show):
+    for col_name in collections_for_show_name(show, store=local):
         summary = local.episode_collection_summary(col_name, episode)
         if not summary:
             continue
@@ -260,7 +272,8 @@ def delete_episode_from_index(
 
     # If this episode is no longer in any collection of this show, clear flag.
     still_indexed = any(
-        local.episode_is_indexed(c, episode) for c in local.list_collections(show=show)
+        local.episode_is_indexed(c, episode)
+        for c in collections_for_show_name(show, store=local)
     )
     if not still_indexed:
         mark_step(p.show_dir, episode, indexed=False)
@@ -285,14 +298,16 @@ def inspect_index(
     speaker turns landed in each chunk and confirm the embedding vectors
     aren't dead (norm ≈ 0) or collapsed (mostly zeros).
     """
-    from podcodex.rag.store import collection_name
-
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
-    col = collection_name(show, model, chunking)
-
     local = get_index_store()
+    col = resolve_collection_for_show(show, model, chunking, store=local)
+    if not col:
+        raise HTTPException(
+            404, f"Show {show!r} is not indexed for {model}/{chunking}."
+        )
+
     chunks = local.load_chunks_with_vector_stats(col, episode)
     info = local.get_collection_info(col) or {}
 

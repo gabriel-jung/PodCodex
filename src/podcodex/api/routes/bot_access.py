@@ -49,6 +49,40 @@ class SetPasswordRequest(BaseModel):
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
+def _protected_ids() -> set[str]:
+    """Ids (and legacy display names) of every password-protected show."""
+    return set(get_index_store().get_show_password_entries().keys())
+
+
+def _key_for(show: str, *, mint: bool = False) -> str:
+    """Password-table key for a show named *show*.
+
+    Its stable id when the show is a registered folder, falling back to the
+    display name for a show that exists only inside the index (nothing to
+    mint an id into), which is also how a legacy row is keyed.
+
+    Args:
+        show: Display name.
+        mint: Whether to create an id when the show has none. Only the write
+            handlers pass this: a GET must not rewrite ``show.toml``, which
+            would turn a status poll into a 500 on a read-only folder.
+    """
+    from podcodex.ingest.show import load_show_meta
+    from podcodex.ingest.show_registry import folder_for_label
+
+    folder = folder_for_label(show)
+    if folder is None:
+        return show
+    meta = load_show_meta(folder)
+    if meta and meta.id:
+        return meta.id
+    if not mint:
+        return show
+    from podcodex.ingest.show import ensure_show_id
+
+    return ensure_show_id(folder)
+
+
 def _all_show_names() -> set[str]:
     """Every known show name: registered show folders plus indexed collections.
 
@@ -80,10 +114,25 @@ def _all_show_names() -> set[str]:
 @router.get("/passwords", response_model=list[ShowAccess])
 def list_passwords() -> list[ShowAccess]:
     """Return every indexed show with its password-protection status."""
-    store = get_index_store()
-    protected = set(store.get_show_passwords().keys())
+    protected = _protected_ids()
+    # One pass over the registered folders, rather than one per show: _key_for
+    # walks them all, so calling it in the comprehension is quadratic.
+    from podcodex.ingest.show import load_show_meta, show_display
+    from podcodex.ingest.show_registry import registered_folders
+
+    by_label: dict[str, set[str]] = {}
+    for folder in registered_folders():
+        meta = load_show_meta(folder)
+        # A set, not one id: two shows may share a display name, and reading
+        # the second one's status off the first one's id would be wrong.
+        by_label.setdefault(show_display(folder), set()).add(
+            (meta.id if meta else "") or show_display(folder)
+        )
     return [
-        ShowAccess(show=name, is_protected=name in protected)
+        ShowAccess(
+            show=name,
+            is_protected=bool(by_label.get(name, {name}) & protected),
+        )
         for name in sorted(_all_show_names())
     ]
 
@@ -93,8 +142,7 @@ def get_password_status(show: str) -> ShowAccess:
     """Per-show protection status."""
     if show not in _all_show_names():
         raise HTTPException(404, f"Unknown show {show!r}.")
-    protected = show in get_index_store().get_show_passwords()
-    return ShowAccess(show=show, is_protected=protected)
+    return ShowAccess(show=show, is_protected=_key_for(show) in _protected_ids())
 
 
 @router.post("/passwords/{show}", response_model=ShowPasswordSet)
@@ -122,7 +170,14 @@ def set_password(show: str, payload: SetPasswordRequest) -> ShowPasswordSet:
             )
         plaintext = supplied
 
-    get_index_store().set_show_password(show, hash_show_password(plaintext))
+    from podcodex.rag.index_origin import IndexOwnershipError
+
+    try:
+        get_index_store().set_show_password(
+            _key_for(show, mint=True), hash_show_password(plaintext), show_label=show
+        )
+    except IndexOwnershipError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return ShowPasswordSet(show=show, password=plaintext, generated=generated)
 
 
@@ -131,4 +186,9 @@ def delete_password(show: str) -> None:
     """Remove password protection — the show becomes public to the bot."""
     if show not in _all_show_names():
         raise HTTPException(404, f"Unknown show {show!r}.")
-    get_index_store().delete_show_password(show)
+    from podcodex.rag.index_origin import IndexOwnershipError
+
+    try:
+        get_index_store().delete_show_password(_key_for(show, mint=True))
+    except IndexOwnershipError as exc:
+        raise HTTPException(409, str(exc)) from exc

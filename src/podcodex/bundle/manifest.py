@@ -11,8 +11,13 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-SCHEMA_VERSION = 1
-"""Bumped on breaking manifest changes; importer rejects unknown majors."""
+SCHEMA_VERSION = 2
+"""Bumped on breaking manifest changes; importer rejects unknown majors.
+
+v2 adds ``ShowEntry.id``, the show's stable identity. A v1 archive carries
+none, so the importer mints one on the way in rather than letting the
+imported collections land with no id and read as orphans.
+"""
 
 MANIFEST_FILENAME = "manifest.json"
 """Path of the manifest within the archive root."""
@@ -38,6 +43,9 @@ class CollectionEntry(BaseModel):
 class ShowEntry(BaseModel):
     """One show packaged in the bundle."""
 
+    # Stable identity (show.toml id). Empty in v1 archives, and for a show
+    # that was never minted one; the importer mints in that case.
+    id: str = ""
     name: str  # display name (from show.toml)
     folder: str  # source folder name (basename, not full path)
     audio_included: bool = False

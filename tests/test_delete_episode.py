@@ -27,7 +27,18 @@ class FakeIndexStore:
         self.chunks = chunks or {}
         self.raise_on_delete = False
 
-    def delete_episode_everywhere(self, show: str, episode: str) -> list[str]:
+    def get_all_collection_info(self) -> dict[str, dict]:
+        return {col: {"show": "MyShow", "show_id": ""} for col in self.chunks}
+
+    def collections_for_show(self, show_id: str, show_label: str = "") -> list[str]:
+        return sorted(self.chunks)
+
+    def list_episodes(self, collection: str) -> list[str]:
+        return sorted(self.chunks.get(collection, {}))
+
+    def delete_episode_everywhere(
+        self, show: str, episode: str, show_id: str = ""
+    ) -> list[str]:
         touched = []
         for col in sorted(self.chunks):
             if episode not in self.chunks[col]:

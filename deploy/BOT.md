@@ -183,6 +183,7 @@ Notes:
 
 - The host's `~/.local/share/podcodex/index/` is mounted into the container at `/root/.local/share/podcodex/index/`, matching the bot's default, so no `PODCODEX_INDEX` override is needed.
 - To serve an index at a different host location, set `PODCODEX_INDEX_HOST=/abs/path` in `deploy/.env` before `docker compose up`.
+- The compose file declares a `podcodex_data` volume for the container's data directory, which holds the machine identity that marks the index as owned here. If you run the container without that volume, set `PODCODEX_MACHINE_ID` to any fixed string in `deploy/.env` so the identity survives a rebuild.
 - BGE-M3 lives in the `model_cache` named volume; survives rebuilds.
 - `restart: unless-stopped` handles crashes and host reboots.
 - Logs rotate at 50 MB × 3 files via the json-file driver.
@@ -197,9 +198,23 @@ You only need passwords when you're running a single bot process that carries **
 
 How it works: passwords flip a show to invisible by default. An admin in each Discord server runs `/unlock password:****` once to reveal the corresponding show only there. Passwords live in `_show_passwords.lance` inside the index directory and ship with the index via rsync.
 
+### Who may set a password
+
+Because that sync is one-way, the index has an owner: the machine that created it. Passwords are set on the owner and travel outward. A machine reading someone else's index refuses password writes rather than accepting a change the next sync would erase.
+
+| Your setup | Where to set passwords |
+| ---------- | ---------------------- |
+| Index created by the desktop app (the usual case) | The app's bot access screen. Passwords reach the bot on the next sync. |
+| Index created on the bot host, no desktop anywhere | `podcodex-bot --manage-passwords` on that host. It owns its index. |
+| Index copied here once, now maintained here | Run `podcodex-bot --claim-index` once, then use `--manage-passwords`. |
+
+Indexes created before this rule existed carry no owner and keep accepting writes from anywhere, so nothing changes for an existing install until you create a new index.
+
+Claiming is not reversible by syncing: after `--claim-index`, rsyncing again from the old owner overwrites this index, passwords included.
+
 ### Set, rotate, or remove passwords
 
-Stop the bot, then run:
+On the machine that owns the index, stop the bot, then run:
 
 ```bash
 # Path A (uv)
@@ -210,6 +225,8 @@ docker compose run --rm bot --manage-passwords
 ```
 
 Interactive prompt lists all indexed shows and lets you set, generate (`g`), or remove passwords. Generated passwords print once; copy them before dismissing.
+
+If the command reports that the index is a replica, set the password on the owning machine instead, or claim the index here first.
 
 Restart the bot so it picks up the new password map:
 
@@ -229,6 +246,8 @@ Per Discord server, an admin with `manage_guild` runs:
 ```
 
 All three responses are ephemeral; other users see nothing.
+
+`/changepassword` writes to the index, so it works only when the bot host owns it. On a bot reading a synced copy it declines and points you at the app, since the rotation would be undone by the next sync.
 
 ---
 

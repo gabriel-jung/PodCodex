@@ -997,3 +997,92 @@ def test_build_provenance_shape():
     assert prov["model"] == "large-v3"
     assert prov["params"] == {}
     assert prov["manual_edit"] is False
+
+
+# ── Show identity (rename safety) ───────────────────────────────────────
+
+
+def test_rename_keeps_the_show_id(tmp_path, monkeypatch):
+    """The label changes; identity, which every store keys on, does not."""
+    from podcodex.api.routes import shows as shows_routes
+    from podcodex.ingest.show import ShowMeta as DiskShowMeta
+    from podcodex.ingest.show import save_show_meta, show_id
+    from podcodex.api.schemas import ShowMeta as ApiShowMeta
+
+    folder = tmp_path / "My Show"
+    folder.mkdir()
+    save_show_meta(folder, DiskShowMeta(name="My Show"))
+    monkeypatch.setattr(shows_routes, "require_registered_show", lambda _f: folder)
+    monkeypatch.setattr(shows_routes, "_relabel_password", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "podcodex.ingest.show_registry.label_is_taken", lambda *a, **k: False
+    )
+
+    shows_routes.update_show_meta(str(folder), ApiShowMeta(name="My Show"))
+    first = show_id(folder)
+    assert first
+
+    shows_routes.update_show_meta(str(folder), ApiShowMeta(name="Renamed"))
+    assert show_id(folder) == first
+
+
+def test_rename_to_a_taken_name_is_rejected(tmp_path, monkeypatch):
+    import pytest as _pytest
+    from fastapi import HTTPException
+
+    from podcodex.api.routes import shows as shows_routes
+    from podcodex.ingest.show import ShowMeta as DiskShowMeta
+    from podcodex.ingest.show import save_show_meta
+    from podcodex.api.schemas import ShowMeta as ApiShowMeta
+
+    a = tmp_path / "A"
+    b = tmp_path / "B"
+    a.mkdir()
+    b.mkdir()
+    save_show_meta(a, DiskShowMeta(name="Alpha"))
+    save_show_meta(b, DiskShowMeta(name="Beta"))
+
+    import podcodex.core.app_config as app_config
+
+    cfg = app_config.AppConfig()
+    cfg.show_folders = [str(a), str(b)]
+    monkeypatch.setattr(app_config, "load_config", lambda: cfg)
+    monkeypatch.setattr(shows_routes, "require_registered_show", lambda _f: b)
+    monkeypatch.setattr(shows_routes, "_relabel_password", lambda *a, **k: None)
+
+    with _pytest.raises(HTTPException) as exc:
+        shows_routes.update_show_meta(str(b), ApiShowMeta(name="Alpha"))
+    assert exc.value.status_code == 409
+
+    # A pre-existing collision must not block unrelated edits: B is already
+    # called Alpha here, so saving it again (with a language change) is fine.
+    save_show_meta(b, DiskShowMeta(name="Alpha"))
+    shows_routes.update_show_meta(str(b), ApiShowMeta(name="Alpha", language="en"))
+    from podcodex.ingest.show import load_show_meta
+
+    assert load_show_meta(b).language == "en"
+
+
+def test_inspect_unindexed_show_is_a_clean_404(tmp_path, monkeypatch):
+    """The not-indexed path raised NameError before HTTPException was imported."""
+    from fastapi import HTTPException
+
+    from podcodex.api.routes import index as index_routes
+
+    monkeypatch.setenv("PODCODEX_INDEX", str(tmp_path / "index"))
+    monkeypatch.setattr(
+        index_routes, "resolve_collection_for_show", lambda *a, **k: None
+    )
+    monkeypatch.setattr(index_routes, "require_audio_or_output", lambda *a: None)
+
+    audio = tmp_path / "ep1.mp3"
+    audio.write_bytes(b"x")
+    with pytest.raises(HTTPException) as exc:
+        index_routes.inspect_index(
+            show="Nope",
+            model="bge-m3",
+            chunking="semantic",
+            audio_path=str(audio),
+            output_dir=None,
+        )
+    assert exc.value.status_code == 404

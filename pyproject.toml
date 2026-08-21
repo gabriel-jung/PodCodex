@@ -130,6 +130,11 @@ build-backend = "hatchling.build"
 # whole frozen payload — including torch's and numba's own vendored
 # test modules, which error out at collection.
 testpaths = ["tests"]
+# Always-on guard: fails any test that resolves the developer's real index
+# instead of an isolated one. Opening the real index is not passive (it stamps
+# ownership, heals collection metadata and runs the show-id migration), and a
+# missing isolation once rewrote real show.toml files during a test run.
+addopts = "-p tests.fixtures.realindex_guard"
 # Belt and braces for an explicit `pytest .`, which ignores testpaths.
 # Setting this *replaces* pytest's defaults rather than extending them, so
 # they are restated here — dropping ".*" alone would send collection into

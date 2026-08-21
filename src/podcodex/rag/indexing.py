@@ -16,7 +16,6 @@ from podcodex.rag.chunker import semantic_chunks, speaker_chunks
 from podcodex.rag.defaults import CHUNK_SIZE, CHUNK_THRESHOLD, MODELS
 from podcodex.rag.embedder import get_embedder
 from podcodex.rag.index_store import IndexStore
-from podcodex.rag.store import collection_name
 
 
 # ──────────────────────────────────────────────
@@ -53,6 +52,7 @@ def vectorize_episode(
     chunking: str,
     local: IndexStore,
     *,
+    show_id: str = "",
     chunks: list[dict] | None = None,
     chunk_size: int = CHUNK_SIZE,
     threshold: float = CHUNK_THRESHOLD,
@@ -64,7 +64,9 @@ def vectorize_episode(
 
     Args:
         transcript : parsed transcript dict (with meta.show / meta.episode set)
-        show, episode : identifiers
+        show, episode : display label and episode identifier
+        show_id : the show's stable id; the key the collection is registered
+            under. Empty only for callers that have no show folder to read.
         model_key, chunking : which model and chunker to use
         local : IndexStore instance (LanceDB)
         chunks : pre-computed chunks for this chunking strategy (avoids re-chunking)
@@ -78,9 +80,10 @@ def vectorize_episode(
     Raises:
         ValueError: if no chunks could be produced.
     """
-    col = collection_name(show, model_key, chunking)
     dim = MODELS[model_key].dim
-    local.ensure_collection(col, show=show, model=model_key, chunker=chunking, dim=dim)
+    # Resolve-or-create: a show indexed before ids existed keeps writing into
+    # the collection it already has, instead of growing a second one beside it.
+    col = local.ensure_collection_for_show(show_id, show, model_key, chunking, dim)
 
     if local.episode_is_indexed(col, episode) and not overwrite:
         new_source = transcript.get("meta", {}).get("source", "")
@@ -144,6 +147,7 @@ def vectorize_batch(
     chunkings: list[str],
     local: IndexStore,
     *,
+    show_id: str = "",
     chunk_size: int = CHUNK_SIZE,
     threshold: float = CHUNK_THRESHOLD,
     overwrite: bool = False,
@@ -183,6 +187,7 @@ def vectorize_batch(
                     model_key,
                     chunking,
                     local,
+                    show_id=show_id,
                     chunks=chunks_for_strategy,
                     chunk_size=chunk_size,
                     threshold=threshold,

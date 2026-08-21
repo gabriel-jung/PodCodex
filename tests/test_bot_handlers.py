@@ -65,6 +65,9 @@ def _chunk(episode="ep1", idx=0, text="hello world", show="Alpha Show", start=1.
     )
 
 
+from podcodex.rag.index_store import IndexStore  # noqa: E402
+
+
 class _FakeLocal:
     """Stand-in for IndexStore: pre-canned answers, no LanceDB."""
 
@@ -77,6 +80,17 @@ class _FakeLocal:
 
     def get_all_collection_info(self):
         return dict(COL_INFO)
+
+    # Label <-> id resolution lives on IndexStore, so the double answers it
+    # the same way the real store does, off the collection registry.
+    def show_key(self, meta):
+        return IndexStore.show_key(meta)
+
+    def show_id_for_label(self, label):
+        return IndexStore.show_id_for_label(self, label)
+
+    def label_for_show_id(self, show_id):
+        return IndexStore.label_for_show_id(self, show_id)
 
     def load_chunks_no_embeddings(self, collection, episode):
         return [

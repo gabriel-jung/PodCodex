@@ -8,6 +8,7 @@ an optional RSS feed URL, a speaker roster, and a primary language.
 from __future__ import annotations
 
 import tomllib
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,9 +52,16 @@ class PipelineDefaults:
 
 @dataclass
 class ShowMeta:
-    """Show-level metadata persisted in ``show.toml``."""
+    """Show-level metadata persisted in ``show.toml``.
 
-    name: str
+    ``id`` is the show's stable identity: minted once, never rewritten, and
+    the key every other store uses (LanceDB collections, bot passwords, RAG
+    preferences). ``name`` is a pure display label that users may change at
+    will; ``show_display`` is its only reader.
+    """
+
+    id: str = ""
+    name: str = ""
     rss_url: str = ""
     youtube_url: str = ""
     speakers: list[str] = field(default_factory=list)
@@ -112,6 +120,7 @@ def load_show_meta(show_folder: Path) -> ShowMeta | None:
         rag_chunker=pipe_raw.get("rag_chunker", ""),
     )
     meta = ShowMeta(
+        id=str(raw.get("id", "") or "").strip(),
         name=raw.get("name", ""),
         rss_url=raw.get("rss_url", ""),
         youtube_url=raw.get("youtube_url", ""),
@@ -152,18 +161,84 @@ def show_display(folder: Path) -> str:
     return (meta.name if meta else None) or folder.name
 
 
+def show_id(folder: Path) -> str:
+    """Stable id from ``show.toml``, or "" when the show has never been minted."""
+    meta = load_show_meta(Path(folder))
+    return meta.id if meta else ""
+
+
+# Keeps ids readable in ``ls`` and log lines without letting a long folder
+# name dominate the collection table name.
+_MAX_SLUG_LEN = 40
+
+
+def _slug(text: str) -> str:
+    """Lowercase, collapse anything else to underscores, bound the length.
+
+    Built on the same normalizer collection names use, deliberately: an id is
+    embedded verbatim in a collection name, so it has to be a fixed point of
+    that function. If the two drifted, two distinct ids could normalize onto
+    one table.
+    """
+    from podcodex.rag.store import _normalize_show
+
+    return _normalize_show(text)[:_MAX_SLUG_LEN].strip("_") or "show"
+
+
+def _mint_id(name: str) -> str:
+    """Build a fresh show id from a display name."""
+    return f"{_slug(name)}_{uuid.uuid4().hex[:8]}"
+
+
+def ensure_show_id(folder: Path) -> str:
+    """Return the show's stable id, minting and persisting one if absent.
+
+    The id is ``{slug}_{8 hex}``: the slug is frozen from whatever the show
+    is called at mint time and never updated afterwards, so it stays readable
+    without ever being authoritative. The random suffix is what makes the id
+    unique, because two shows can genuinely carry the same name and a
+    mint-time uniqueness check cannot see a show being minted on another
+    machine.
+
+    Creates ``show.toml`` when the folder has none. Idempotent.
+    """
+    folder = Path(folder)
+    meta = load_show_meta(folder)
+    if meta and meta.id:
+        return meta.id
+    if meta is None:
+        meta = ShowMeta(name=folder.name)
+    save_show_meta(folder, meta)  # mints on write
+    logger.info(f"Minted show id {meta.id!r} for {folder}")
+    return meta.id
+
+
 def _toml_string(s: str) -> str:
     """Escape a string for TOML double-quoted format."""
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def save_show_meta(show_folder: Path, meta: ShowMeta) -> Path:
-    """Write ``show.toml`` to *show_folder*. Creates the directory if needed."""
+    """Write ``show.toml`` to *show_folder*. Creates the directory if needed.
+
+    Mints an ``id`` when the metadata has none, so identity is established
+    the moment a show first exists on disk. Minting anywhere else made it a
+    side effect of whichever reader touched the show first, and a show
+    created and indexed before any of them ran got collections with no id,
+    which a later rename then orphaned.
+    """
     folder = Path(show_folder)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / SHOW_META_FILENAME
+    if not meta.id:
+        meta.id = _mint_id(meta.name or folder.name)
 
-    lines: list[str] = [f'name = "{_toml_string(meta.name)}"']
+    lines: list[str] = []
+    # Written first: it is the show's identity, and a human opening the file
+    # should see it before the fields they are allowed to edit.
+    if meta.id:
+        lines.append(f'id = "{_toml_string(meta.id)}"')
+    lines.append(f'name = "{_toml_string(meta.name)}"')
     if meta.rss_url:
         lines.append(f'rss_url = "{_toml_string(meta.rss_url)}"')
     if meta.youtube_url:

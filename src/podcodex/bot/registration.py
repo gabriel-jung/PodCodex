@@ -512,7 +512,7 @@ class RegistrationMixin:
                 ),
                 inline=False,
             )
-            if self._locked_show_names:
+            if self._locked_show_ids:
                 embed.add_field(
                     name="/unlock *(admin)*",
                     value="Unlock a show for this server — provide the password, the bot identifies the show automatically.",

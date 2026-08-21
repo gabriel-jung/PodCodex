@@ -286,17 +286,34 @@ def _manage_passwords_cli(index_path: str | None) -> None:
     from podcodex.rag.index_store import IndexStore
 
     store = IndexStore(index_path)
+    from podcodex.rag.index_origin import is_replica, read_origin
+
+    if is_replica(store.path):
+        print(
+            f"\nThis index is a replica: it is owned by machine "
+            f"{read_origin(store.path)!r}, not this one.\n"
+            "Passwords set here would be destroyed by the next rsync from the owner.\n"
+            "Set them on the owning machine (the PodCodex app's bot access screen),\n"
+            "or re-run with --claim-index to take ownership here."
+        )
+        return
     col_info = store.get_all_collection_info()
     if not col_info:
         print("No indexed shows found.")
         return
 
-    show_names = sorted({info.get("show") or name for name, info in col_info.items()})
+    # Display name -> stable id. The CLI speaks names because that is what an
+    # operator knows; the password table is keyed by id.
+    keys: dict[str, str] = {}
+    for col_name, info in col_info.items():
+        keys.setdefault(info.get("show") or col_name, store.show_key(info))
+    show_names = sorted(keys)
     existing = store.get_show_passwords()
 
     print(f"\nFound {len(show_names)} show(s):\n")
     for name in show_names:
-        status = "🔒 password set" if name in existing else "🔓 no password (public)"
+        protected = keys[name] in existing
+        status = "🔒 password set" if protected else "🔓 no password (public)"
         print(f"  {name}  —  {status}")
 
     print("\nEnter a show name to set/update its password, or press Enter to quit.")
@@ -315,7 +332,9 @@ def _manage_passwords_cli(index_path: str | None) -> None:
         )
         if choice == "g":
             password = secrets.token_urlsafe(16)
-            store.set_show_password(name, hash_show_password(password))
+            store.set_show_password(
+                keys[name], hash_show_password(password), show_label=name
+            )
             print(f"  Password for '{name}': {password}")
             print("  (copy this — it cannot be recovered from the stored hash)")
         elif choice == "s":
@@ -332,13 +351,38 @@ def _manage_passwords_cli(index_path: str | None) -> None:
             if password != confirm:
                 print("  Mismatch — skipped.")
                 continue
-            store.set_show_password(name, hash_show_password(password))
+            store.set_show_password(
+                keys[name], hash_show_password(password), show_label=name
+            )
             print(f"  Password set for '{name}'.")
         elif choice == "r":
-            store.delete_show_password(name)
+            store.delete_show_password(keys[name])
             print(f"  Password removed — '{name}' is now public.")
         else:
             print("  Skipped.")
+
+
+def _claim_index_cli(index_path: str | None) -> None:
+    """Take ownership of the index on this machine, then exit.
+
+    For the case where an index was copied here once and is now maintained
+    here. Syncing again from the previous owner overwrites it, passwords
+    included, so the previous owner is named explicitly.
+    """
+    from podcodex.rag.index_origin import claim_origin
+    from podcodex.rag.index_store import IndexStore
+
+    store = IndexStore(index_path)
+    previous = claim_origin(store.path)
+    print(
+        f"Index at {store.path} is now owned by this machine "
+        f"(previous owner: {previous or 'none'})."
+    )
+    if previous:
+        print(
+            "Syncing this index again from the previous owner will overwrite "
+            "it, including any passwords set here."
+        )
 
 
 def main() -> None:
@@ -378,11 +422,24 @@ def main() -> None:
         help="Minutes between checks for new episodes to announce",
     )
     parser.add_argument(
+        "--claim-index",
+        action="store_true",
+        help=(
+            "Take ownership of the index on this machine and exit. Only needed "
+            "when an index copied from another machine is now maintained here; "
+            "syncing again from the old owner will overwrite it."
+        ),
+    )
+    parser.add_argument(
         "--manage-passwords",
         action="store_true",
         help="Interactively manage show passwords in the index and exit",
     )
     args = parser.parse_args()
+
+    if args.claim_index:
+        _claim_index_cli(args.index)
+        return
 
     if args.manage_passwords:
         _manage_passwords_cli(args.index)

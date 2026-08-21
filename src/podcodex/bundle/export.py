@@ -50,17 +50,22 @@ def _show_collections(
     show_name: str,
     store: IndexStore,
     info: dict[str, dict] | None = None,
+    show_id: str = "",
 ) -> list[CollectionEntry]:
-    """LanceDB collections registered to ``show_name`` (display name match).
+    """LanceDB collections belonging to a show.
+
+    Matched by id when the show has one, and by display name otherwise, so a
+    renamed show still exports its own collections instead of nothing.
 
     ``info`` is the cached output of :meth:`IndexStore.get_all_collection_info`;
     pass it in when iterating over many shows to avoid one query per show.
     """
     if info is None:
         info = store.get_all_collection_info()
+    mine = set(store.collections_for_show(show_id, show_label=show_name))
     out: list[CollectionEntry] = []
     for col, meta in sorted(info.items()):
-        if meta.get("show") != show_name:
+        if col not in mine:
             continue
         out.append(
             CollectionEntry(
@@ -208,7 +213,10 @@ def export_show(
     from podcodex.rag.index_store import get_index_store
 
     store = get_index_store()
-    collections = _show_collections(show_name, store)
+    from podcodex.ingest.show import ensure_show_id
+
+    export_show_id = ensure_show_id(show_folder)
+    collections = _show_collections(show_name, store, show_id=export_show_id)
 
     mode = Mode.INDEX_ONLY if index_only else Mode.FULL
     if mode == Mode.INDEX_ONLY and not collections:
@@ -222,6 +230,7 @@ def export_show(
         exported_at=_now_iso(),
         shows=[
             ShowEntry(
+                id=export_show_id,
                 name=show_name,
                 folder=folder_name,
                 audio_included=audio_in_bundle,
@@ -292,12 +301,16 @@ def export_index(
         if not folder.is_dir():
             raise FileNotFoundError(f"show folder not found: {folder}")
         name = show_display(folder)
-        cols = _show_collections(name, store, info=info)
+        from podcodex.ingest.show import ensure_show_id
+
+        entry_show_id = ensure_show_id(folder)
+        cols = _show_collections(name, store, info=info, show_id=entry_show_id)
         if not cols:
             logger.warning(f"show '{name}' has no collections — skipping")
             continue
         shows.append(
             ShowEntry(
+                id=entry_show_id,
                 name=name,
                 folder=folder.name,
                 audio_included=False,

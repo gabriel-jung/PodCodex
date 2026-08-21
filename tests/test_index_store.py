@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from podcodex.rag.index_store import IndexStore, chunk_map_from_chunks
+from tests.fixtures.show_resolver import show_folder_resolver
 
 
 def _store(tmp_path: Path) -> IndexStore:
@@ -92,6 +93,7 @@ def test_get_collection_info(tmp_path):
     s = _store(tmp_path)
     s.ensure_collection("c", show="S", model="bge-m3", chunker="semantic", dim=1024)
     assert s.get_collection_info("c") == {
+        "show_id": "",
         "show": "S",
         "model": "bge-m3",
         "chunker": "semantic",
@@ -136,21 +138,17 @@ def test_collection_artwork_backfilled_from_show_meta(tmp_path):
         'name = "My Show"\nartwork_url = "https://cdn.example/show.jpg"\n',
         encoding="utf-8",
     )
-    IndexStore.set_show_folder_resolver(
-        lambda name: str(show_dir) if name == "My Show" else None
-    )
-    try:
+    resolve = lambda name: str(show_dir) if name == "My Show" else None  # noqa: E731
+    with show_folder_resolver(resolve) as set_resolver:
         info = s.get_all_collection_info()
         assert info["c"]["artwork_url"] == "https://cdn.example/show.jpg"
         # Persisted in the _collections table: a fresh store with no resolver
         # (the bot's situation, reading an rsynced index) still sees it.
-        IndexStore.set_show_folder_resolver(None)
+        set_resolver(None)
         s2 = _store(tmp_path)
         assert (
             s2.get_collection_info("c")["artwork_url"] == "https://cdn.example/show.jpg"
         )
-    finally:
-        IndexStore.set_show_folder_resolver(None)
 
 
 def test_legacy_collections_table_gains_artwork_column(tmp_path):
@@ -495,9 +493,13 @@ def test_index_mtime_rises_on_new_table(tmp_path):
 
 
 def test_index_mtime_empty_dir(tmp_path):
+    from podcodex.rag.index_origin import ORIGIN_FILENAME
+
     s = _store(tmp_path)
     index_dir = tmp_path / "index"
-    assert not any(index_dir.iterdir())  # guards the branch under test
+    # A new index carries only its ownership marker, which is not index
+    # content: the mtime falls back to the directory's own stamp.
+    assert [e.name for e in index_dir.iterdir()] == [ORIGIN_FILENAME]
     assert s.index_mtime() == index_dir.stat().st_mtime
 
 

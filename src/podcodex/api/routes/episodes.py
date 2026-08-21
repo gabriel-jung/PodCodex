@@ -11,9 +11,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from podcodex.api.routes._helpers import get_index_store
+from podcodex.api.routes._helpers import get_index_store, resolve_collection_for_show
 from podcodex.core._utils import episode_display
-from podcodex.rag.store import collection_name
 
 router = APIRouter()
 
@@ -54,8 +53,10 @@ def list_show_episodes(
     title_contains: str | None = None,
 ) -> list[dict]:
     """List episodes in a collection, optionally filtered by date / title."""
-    col = collection_name(show, model, chunking)
     local = get_index_store()
+    col = resolve_collection_for_show(show, model, chunking, store=local)
+    if not col:
+        return []
     try:
         items = local.list_episodes_filtered(
             col,
@@ -76,9 +77,9 @@ def get_show_episode(
     chunking: str = "semantic",
 ) -> dict:
     """Return metadata for a single episode in a collection."""
-    col = collection_name(show, model, chunking)
     local = get_index_store()
-    meta = local.get_episode(col, episode_stem)
+    col = resolve_collection_for_show(show, model, chunking, store=local)
+    meta = local.get_episode(col, episode_stem) if col else None
     if meta is None:
         raise HTTPException(404, f"Episode not found: {episode_stem}")
     return _fill_title(dict(meta))
