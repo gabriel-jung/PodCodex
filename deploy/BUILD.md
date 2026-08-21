@@ -73,8 +73,35 @@ Without these, releases ship without `latest.json` (auto-update disabled, manual
 ### macOS gotchas
 
 - WhisperX runs CPU-only on Apple Silicon (no MPS support upstream).
-- First launch each session pays a 10-30 s cold start while PyInstaller
-  extracts to `/tmp/_MEIxxx/`. Warm launches are <1 s.
+- `bundle_dmg.sh` can fail on the last step with nothing but
+  `failed to run bundle_dmg.sh` in the tauri output. The real error is one
+  line further down and tauri swallows it:
+
+  ```
+  hdiutil: couldn't unmount "diskN" - Resource busy
+  ```
+
+  The script mounts the staging image, has Finder lay the window out over
+  AppleScript, then unmounts. Spotlight or Finder can still hold the volume
+  at that point, and the script gives up on the first refusal. Recover
+  without redoing the ~5 min of resource copying:
+
+  ```bash
+  cd src-tauri/target/release/bundle
+  hdiutil detach /dev/diskN -force
+  hdiutil convert macos/rw.*.dmg -format UDZO -imagekey zlib-level=9 \
+      -o dmg/PodCodex_X.Y.Z_aarch64.dmg
+  rm macos/rw.*.dmg
+  ```
+
+  Every failed run leaves its `rw.*.dmg` **attached**, and deleting the file
+  does not return the space while the kernel holds it. `hdiutil info` lists
+  the leaks; detach them before retrying, or the next run finds
+  `/Volumes/PodCodex` taken and fails again for a different reason.
+- `zlib-level=9` in the recovery above is not decoration: it is what tauri
+  itself passes. Converting the same staging image without it yields a DMG
+  about 50 MB larger, so dropping it would silently ship a fatter download
+  than a normal `make bundle`.
 
 ---
 

@@ -152,7 +152,15 @@ function refetchFailedQueriesOnceBackendIsUp(restoredEarlyContent: boolean): voi
 // `initApiToken` keeps polling for it. Anything already rendered embedded an
 // unauthenticated URL (artwork, audio, exports), so refetch once it lands and
 // let those rebuild.
-onApiTokenAcquired(() => void queryClient.invalidateQueries());
+//
+// Covers need the epoch bump as well, for the same reason they need it after
+// a boot: invalidating a query whose refetch returns structurally equal data
+// hands back the identical object, nothing re-renders, and the <img> keeps
+// the 401'd URL it was born with.
+onApiTokenAcquired(() => {
+  bumpArtworkEpoch();
+  void queryClient.invalidateQueries();
+});
 
 // Resolve the loopback API token before anything renders: queries fire on
 // mount, and URL builders (artwork, audio) need the token synchronously.

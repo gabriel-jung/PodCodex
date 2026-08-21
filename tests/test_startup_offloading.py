@@ -93,3 +93,86 @@ def test_importing_the_api_pulls_no_heavy_optional_stack() -> None:
     )
 
     assert out.stdout.strip() == "[]", f"pulled in at import: {out.stdout.strip()}"
+
+
+def test_reporting_the_gpu_backend_does_not_import_torch() -> None:
+    """The sidebar's GPU badge polls ``/api/gpu/status`` on mount, so a torch
+    import inside ``status()`` lands ~4s into every launch — for a badge that
+    renders on Windows hosts with an NVIDIA card and nowhere else. Subprocess,
+    since this session has torch loaded already."""
+    code = (
+        "import sys;"
+        "from podcodex.api import gpu_backend;"
+        "gpu_backend.status();"
+        "print('torch' in sys.modules)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+
+    assert out.stdout.strip() == "False", "status() put torch back on the boot path"
+
+
+def test_the_backend_report_still_matches_what_torch_says() -> None:
+    """Parsing ``torch/version.py`` has to give the same answer as reading the
+    attribute, or the badge is fast and wrong.
+
+    Subprocess, and the parse runs *before* torch is imported: in-process it
+    would take the ``sys.modules`` shortcut and never exercise the parser.
+    """
+    code = (
+        "from podcodex.api.gpu_backend import current_torch_backend;"
+        "parsed = current_torch_backend();"
+        "import torch;"
+        "print(parsed, 'gpu' if (torch.version.cuda or '') else 'cpu')"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    parsed, truth = out.stdout.split()
+
+    assert parsed in {"gpu", "cpu"}, f"parser bailed out: {parsed}"
+    assert parsed == truth
+
+
+def test_the_version_parser_only_accepts_shapes_it_understands() -> None:
+    """Both real torch layouts, and a hard "no" on anything else: an
+    unrecognised right-hand side has to fall through to importing torch
+    rather than be read as a CUDA build."""
+    from podcodex.api.gpu_backend import _TORCH_CUDA_LINE
+
+    cases = {
+        "cuda: Optional[str] = None": "None",
+        "cuda: Optional[str] = '12.8'": "'12.8'",
+        "cuda = '11.8'": "'11.8'",
+        'cuda = "12.1"': '"12.1"',
+        "cuda: str | None = None  # trailing": "None",
+        # Not the cuda assignment, must not match.
+        "cuda_version = '12.8'": None,
+        "__all__ = ['cuda']": None,
+        "hip: Optional[str] = '6.0'": None,
+        # Computed rather than literal: unreadable, so no answer.
+        "cuda = get_cuda()": None,
+    }
+    for source, expected in cases.items():
+        match = _TORCH_CUDA_LINE.search(source)
+        assert (match.group(1) if match else None) == expected, source
+
+
+def test_a_half_imported_torch_does_not_break_the_badge(monkeypatch) -> None:
+    """A module is in sys.modules before its body has run, so the warm-up
+    thread importing torch can expose one without a bound ``version`` while
+    the sidebar polls the badge. Reading through it must not raise."""
+    import importlib.util
+    import types
+
+    from podcodex.api.gpu_backend import current_torch_backend
+
+    # Faithful to the real window: the import machinery binds __spec__ before
+    # running the body, so the stand-in carries one too. Without it the test
+    # would exercise the "torch is not installed" branch instead.
+    partial = types.ModuleType("torch")
+    partial.__spec__ = importlib.util.find_spec("torch")
+    monkeypatch.setitem(sys.modules, "torch", partial)
+
+    assert current_torch_backend() in {"gpu", "cpu"}

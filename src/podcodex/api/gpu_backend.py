@@ -27,8 +27,10 @@ guard so the dev-no-tauri pipeline keeps working untouched.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -125,12 +127,60 @@ def detect_nvidia_gpu() -> GPUInfo | None:
     return GPUInfo(name=parts[0], vram_mb=vram_mb)
 
 
+# ``cuda: Optional[str] = '12.8'`` in torch/version.py, or ``cuda = None``.
+# The annotation is absent on older torch, hence the optional group. Only
+# those two right-hand sides are accepted: anything else means the layout
+# changed, and falling through to the import is better than guessing.
+_TORCH_CUDA_LINE = re.compile(
+    r"^cuda\s*(?::[^=]*)?=\s*(None|'[^']*'|\"[^\"]*\")\s*(?:#.*)?$",
+    re.MULTILINE,
+)
+
+
 def current_torch_backend() -> str:
-    """Report the active torch backend: ``"gpu"``, ``"cpu"``, or ``"missing"``."""
+    """Report the active torch backend: ``"gpu"``, ``"cpu"``, or ``"missing"``.
+
+    Read out of ``torch/version.py`` rather than by importing torch: this is
+    called by ``status()``, which the sidebar's GPU badge polls on mount, and
+    importing torch there would put ~4s of ML import back on every launch for
+    a badge that is usually not even rendered. ``version.py`` is a flat file
+    of literals, so parsing it is equivalent to reading the attributes.
+
+    The distribution version cannot answer this: the default PyPI wheel is
+    the CUDA build on Linux and Windows and still reports a bare ``2.8.0``.
+    """
+    # Already paid for elsewhere in this process, so ask it directly. Via
+    # getattr: a module lands in sys.modules *before* its body runs, so a
+    # concurrent import (the search warm-up thread) can expose a torch whose
+    # ``version`` submodule is not bound yet. Falling through to the parse
+    # is correct there; raising AttributeError at the badge is not.
+    torch = sys.modules.get("torch")
+    version = getattr(torch, "version", None)
+    if version is not None:
+        return "gpu" if (getattr(version, "cuda", None) or "") else "cpu"
+
     try:
-        import torch
-    except ImportError:
+        spec = importlib.util.find_spec("torch")
+    except (ImportError, ValueError):
         return "missing"
+    if spec is None or not spec.origin:
+        return "missing"
+
+    # Present on disk in the frozen sidecar too: hooks-contrib's torch hook
+    # sets ``module_collection_mode = "pyz+py"``, so the sources land beside
+    # the archive copy (the same reason ``inspect.getsource`` works there).
+    try:
+        source = (Path(spec.origin).parent / "version.py").read_text(encoding="utf-8")
+    except OSError:
+        source = ""
+    if match := _TORCH_CUDA_LINE.search(source):
+        return "cpu" if match.group(1) == "None" else "gpu"
+
+    # Unrecognised layout. Correctness wins over the import cost here; the
+    # regression test above keeps this from becoming the normal path.
+    logger.debug("torch/version.py unreadable, falling back to importing torch")
+    import torch
+
     return "gpu" if (torch.version.cuda or "") else "cpu"
 
 
