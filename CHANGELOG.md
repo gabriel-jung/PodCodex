@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.2.12] - 2026-08-22
+
+### The app opens in about two seconds
+
+- Cold start went from about 78 seconds to roughly 2. The backend used to
+  unpack a gigabyte into a temp folder on every launch, and loaded the whole
+  machine-learning stack before it would answer anything; now it ships
+  unpacked and loads those pieces only when something actually needs them.
+- The window no longer waits on the backend to draw. Covers and the show list
+  fill in as soon as it answers, and a slow start shows patient retries
+  instead of an error.
+- Nothing moved onto your first search: the embedding model starts loading the
+  moment you open the search panel, while you are still typing.
+
+### Renaming a show is safe
+
+- **Renaming a show used to quietly break it.** Its search index was left
+  behind under the old name, so search and the Discord bot returned nothing
+  for it, the old data stayed on disk, and an access-protected show lost its
+  password and became visible to every server the bot was in. Shows now keep
+  a stable identity of their own, so a rename is just a rename. Existing shows
+  are migrated automatically the first time you open the app.
+- Two shows are allowed to have similar names again, and renaming one to a
+  name already in use is refused instead of quietly colliding.
+- The bot keeps a show unlocked across a rename, rather than re-locking every
+  server that had unlocked it.
+
+### Removing things actually removes them
+
+- Deleting an episode now clears everything belonging to it: the audio, the
+  transcripts and versions, its row in the pipeline database, and its search
+  chunks. Previously the episode stayed in the list with no way to clear it,
+  and its chunks kept answering searches.
+- Deleting a show and its files now removes its search index and bot password
+  too. Removing a show from the app while keeping the files leaves both in
+  place, so adding the folder back restores the show as it was.
+- A show cover you uploaded can be removed again, and the feed's own artwork
+  comes back on the next refresh.
+
+### For anyone running the Discord bot
+
+- **Show passwords now belong to the machine that holds the index.** Setting
+  one on a bot host that syncs its index from a desktop was silently undone by
+  the next sync. That machine now declines the change and says where to make
+  it. If your bot host is the only machine you use, nothing changes, and an
+  index created before this release keeps accepting passwords from anywhere.
+- `podcodex-bot --claim-index` takes ownership when an index was copied to a
+  host once and is now maintained there.
+- `podcodex-reindex --list` shows a renamed show's collections again.
+
+### Fixes
+
+- The speakers column no longer squeezes episode titles in the episode list.
+- Episodes that arrive from a bundle import keep their identity, so a show
+  re-imported onto another machine lands on its own search index instead of a
+  fresh empty one.
+
 ## [0.2.11] - 2026-08-20
 
 ### Bring in your own audio files
