@@ -1,9 +1,14 @@
-"""Create placeholder sidecar binaries so ``cargo tauri dev`` can compile.
+"""Create placeholder sidecars so ``cargo tauri dev`` can compile.
 
-Tauri requires every externalBin file to exist at build/dev time even when the
-backend is started separately (``PODCODEX_SKIP_BACKEND_SPAWN=1``). Rebuilding
-the ~500 MB PyInstaller bundle on every dev iteration is unworkable, so we
-drop tiny stub binaries that Tauri can checksum and copy.
+Tauri requires every externalBin file *and* every declared resource path to
+exist at build/dev time, even when the backend is started separately
+(``PODCODEX_SKIP_BACKEND_SPAWN=1``). Rebuilding the ~1 GB PyInstaller bundle
+on every dev iteration is unworkable, so we drop tiny stubs that Tauri can
+checksum and copy.
+
+Two shapes, because the two sidecars are bundled differently: ``yt-dlp`` is
+an externalBin file (triple-suffixed), while the server is a PyInstaller
+--onedir tree bundled as the ``binaries/server/`` resource.
 
 The stubs are never actually run — ``PODCODEX_SKIP_BACKEND_SPAWN`` short-
 circuits the spawn path in ``src-tauri/src/lib.rs``, and the frontend talks
@@ -78,20 +83,21 @@ def write_windows_stub(dest: Path) -> None:
     dest.write_bytes(b"MZ" + b"\x00" * 60 + b"PE\x00\x00")
 
 
-def ensure_placeholder(short_name: str, triple: str) -> None:
-    """Create or refresh a single placeholder sidecar entry."""
-    is_win = "windows" in triple
-    ext = ".exe" if is_win else ""
-    dest = SIDECAR_DIR / f"{short_name}-{triple}{ext}"
+def ensure_stub(dest: Path, triple: str) -> None:
+    """Write a placeholder at ``dest`` unless a real build is already there.
 
+    Size is the discriminator: a real PyInstaller output is hundreds of MB,
+    a stub is under a kilobyte.
+    """
     if dest.exists() and dest.stat().st_size > MIN_REAL_BINARY_SIZE:
         print(
-            f"Real {short_name} already present, leaving alone: {dest} "
+            f"Real binary already present, leaving alone: {dest} "
             f"({dest.stat().st_size / 1024 / 1024:.1f} MB)"
         )
         return
 
-    if is_win:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if "windows" in triple:
         write_windows_stub(dest)
         print(f"Wrote Windows placeholder: {dest}")
     else:
@@ -99,12 +105,31 @@ def ensure_placeholder(short_name: str, triple: str) -> None:
         print(f"Wrote dev placeholder: {dest}")
 
 
+def server_stub_path(triple: str) -> Path:
+    """Where the --onedir server tree's executable lives.
+
+    Also creates the ``_internal/`` sibling: Tauri checks that the declared
+    ``binaries/server/`` resource path exists, and PyInstaller's real layout
+    has the two side by side.
+    """
+    server_dir = SIDECAR_DIR / "server"
+    internal = server_dir / "_internal"
+    internal.mkdir(parents=True, exist_ok=True)
+    (internal / ".keep").write_text(
+        "Placeholder for the PyInstaller --onedir payload.\n"
+    )
+    return server_dir / (
+        "podcodex-server.exe" if "windows" in triple else "podcodex-server"
+    )
+
+
 def main() -> int:
     triple = host_target_triple()
     SIDECAR_DIR.mkdir(parents=True, exist_ok=True)
 
-    for name in ("podcodex-server", "yt-dlp"):
-        ensure_placeholder(name, triple)
+    ensure_stub(server_stub_path(triple), triple)
+    suffix = ".exe" if "windows" in triple else ""
+    ensure_stub(SIDECAR_DIR / f"yt-dlp-{triple}{suffix}", triple)
 
     if "windows" in triple:
         print(

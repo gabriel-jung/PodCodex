@@ -711,7 +711,7 @@ def main() -> None:
     logger.info("podcodex-mcp starting (stdio)")
     # Embedder loads lazily on first tool call — Claude Desktop's
     # initialize handshake has a 60s timeout that we'd otherwise blow on
-    # cold-starts of the PyInstaller --onefile bundle.
+    # cold-starts of the PyInstaller bundle.
     mcp.run()
 
 

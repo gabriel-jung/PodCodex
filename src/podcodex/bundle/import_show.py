@@ -6,6 +6,8 @@ Pure functions — no argparse, no prompts. CLI/API map their own UX onto
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import shutil
 import tarfile
 from collections.abc import Callable
@@ -28,7 +30,9 @@ from podcodex.bundle.manifest import (
     manifest_from_json,
 )
 from podcodex.core._utils import bad_path_component
-from podcodex.rag.index_store import IndexStore, get_index_store
+
+if TYPE_CHECKING:
+    from podcodex.rag.index_store import IndexStore
 
 ProgressCallback = Callable[[str, float], None]
 
@@ -293,6 +297,11 @@ def import_archive(
             raise ValueError("shows_dir required for full bundle import")
         shows_dir = Path(shows_dir).resolve()
         shows_dir.mkdir(parents=True, exist_ok=True)
+
+    # Imported here, not at module scope: index_store pulls pyarrow and
+    # numpy (~150 ms), and podcodex.bundle's package __init__ puts this
+    # module on the API's startup import path via routes/shows.py.
+    from podcodex.rag.index_store import get_index_store
 
     store = get_index_store()
     resolved: dict[str, str] = {}

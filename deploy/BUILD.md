@@ -4,14 +4,15 @@ How to produce a distributable PodCodex `.dmg` (macOS) or `.msi`
 (Windows) from a clean checkout. Linux is not shipped; see [Linux](#linux-build-from-source)
 below.
 
-> **Status:** macOS arm64 verified end-to-end (~500 MB bundle).
+> **Status:** macOS arm64 verified end-to-end (~530 MB DMG, ~1.4 GB installed).
 > Windows path is documented but not yet smoke-tested. Expect minor gaps;
 > report what breaks.
 
 The flow is the same on every shipped target:
 
-1. **Freeze the Python backend** with PyInstaller → single
-   `podcodex-server` binary (CPU-only).
+1. **Freeze the Python backend** with PyInstaller (`--onedir`) →
+   `src-tauri/binaries/server/` (CPU-only), bundled by Tauri as a
+   resource rather than an externalBin file.
 2. **Fetch the `yt-dlp` static binary** for the host triple. ffmpeg is **not** bundled; the app shells out to the user's system install (see [LICENSE_AUDIT.md](../LICENSE_AUDIT.md)).
 3. **Build the frontend** (`npm run build`).
 4. **Bundle with Tauri** (`cargo tauri build`) → native installer.

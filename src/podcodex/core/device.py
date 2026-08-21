@@ -33,7 +33,10 @@ this module safe to import before ``bootstrap_for_*()`` runs.
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any, Literal
+
+from loguru import logger
 
 DeviceOverride = Literal["auto", "cpu", "cuda"]
 _VALID_OVERRIDES: frozenset[str] = frozenset({"auto", "cpu", "cuda"})
@@ -71,6 +74,7 @@ def cuda_available() -> bool:
     here — ``resolve_device`` does the validation), else falls through
     to torch's own check.
     """
+    ensure_kernel_guard()
     forced = user_override()
     if forced == "cpu":
         return False
@@ -110,8 +114,12 @@ def resolve_device() -> tuple[str, str]:
     Validates ``PODCODEX_DEVICE=cuda`` against actual availability — raises
     if the caller demanded CUDA but none is present.
     """
+    ensure_kernel_guard()
     forced = user_override()
     if forced == "cuda":
+        guard_error = kernel_guard_error()
+        if guard_error is not None:
+            raise guard_error
         try:
             import torch
 
@@ -200,6 +208,67 @@ def assert_kernels_available() -> None:
         f"(see deploy/PASCAL.md for older GPUs), or set "
         f"PODCODEX_DEVICE=cpu to skip GPU initialization."
     )
+
+
+_kernel_guard_lock = threading.Lock()
+_kernel_guard_done = False
+_kernel_guard_error: RuntimeError | None = None
+
+
+def ensure_kernel_guard() -> None:
+    """Run ``assert_kernels_available`` once, demoting the device on failure.
+
+    Idempotent and never raises. On a wheel/GPU mismatch it sets
+    ``PODCODEX_DEVICE=cpu`` (so every later ``user_override()`` reads the
+    degraded value) unless the user explicitly forced ``cuda`` — that
+    override is left standing and ``resolve_device`` raises instead.
+
+    This has to run *before* any caller reads the override, not merely
+    before the first CUDA op: ``cuda_available`` reads ``user_override()``
+    and only then imports torch, so a guard that fires during that import
+    lands too late to affect the very call that triggered it. Every entry
+    point that can be wrong therefore calls this first. It is cheap: it
+    returns without touching torch when the override is already ``cpu``,
+    and every other path was about to import torch anyway.
+    """
+    global _kernel_guard_done, _kernel_guard_error
+    if _kernel_guard_done:
+        return
+
+    # Held across the check, not just around the flag. The check imports
+    # torch and queries the device, which takes seconds on first call; a
+    # second threadpool thread that saw the flag already set would read an
+    # override this has not demoted yet and go on to run a kernel the wheel
+    # does not have — the exact crash the guard exists to prevent. Routes
+    # are sync `def`, so concurrent callers here are the normal case.
+    with _kernel_guard_lock:
+        if _kernel_guard_done:
+            return
+        _run_kernel_guard()
+        _kernel_guard_done = True
+
+
+def _run_kernel_guard() -> None:
+    global _kernel_guard_error
+    try:
+        # assert_kernels_available is itself a no-op when the override is
+        # already "cpu", and returns before touching torch.
+        assert_kernels_available()
+    except RuntimeError as exc:
+        _kernel_guard_error = exc
+        if user_override() == "cuda":
+            return  # honor the explicit request; resolve_device raises
+        os.environ["PODCODEX_DEVICE"] = "cpu"
+        logger.warning(
+            "device-guard: degrading to CPU because the installed torch wheel "
+            "lacks kernels for this GPU. Original error: {}",
+            exc,
+        )
+
+
+def kernel_guard_error() -> RuntimeError | None:
+    """The mismatch ``ensure_kernel_guard`` found, if any."""
+    return _kernel_guard_error
 
 
 def device_info() -> dict[str, Any]:

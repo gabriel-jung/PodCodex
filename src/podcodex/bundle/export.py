@@ -28,7 +28,6 @@ from podcodex.bundle.manifest import (
 from podcodex.core._utils import atomic_write
 from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.ingest.show import show_display
-from podcodex.rag.index_store import get_index_store
 
 if TYPE_CHECKING:
     from podcodex.rag.index_store import IndexStore
@@ -203,6 +202,11 @@ def export_show(
     show_name = show_display(show_folder)
     folder_name = show_folder.name
 
+    # Imported here, not at module scope: index_store pulls pyarrow and
+    # numpy (~150 ms), and podcodex.bundle's package __init__ puts this
+    # module on the API's startup import path via routes/shows.py.
+    from podcodex.rag.index_store import get_index_store
+
     store = get_index_store()
     collections = _show_collections(show_name, store)
 
@@ -271,6 +275,11 @@ def export_index(
     """
     if not show_folders:
         raise ValueError("no shows to export")
+
+    # Imported here, not at module scope: index_store pulls pyarrow and
+    # numpy (~150 ms), and podcodex.bundle's package __init__ puts this
+    # module on the API's startup import path via routes/shows.py.
+    from podcodex.rag.index_store import get_index_store
 
     store = get_index_store()
     info = store.get_all_collection_info()

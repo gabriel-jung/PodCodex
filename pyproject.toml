@@ -124,6 +124,34 @@ build-backend = "hatchling.build"
 # on macOS. GPU-less Linux hosts want --extra cpu, not the default.
 # ──────────────────────────────────────────────────────────────────────
 
+[tool.pytest.ini_options]
+# Pin collection to tests/. Without this, a bare `pytest` walks
+# src-tauri/binaries/server/, which since the --onedir switch holds the
+# whole frozen payload — including torch's and numba's own vendored
+# test modules, which error out at collection.
+testpaths = ["tests"]
+# Belt and braces for an explicit `pytest .`, which ignores testpaths.
+# Setting this *replaces* pytest's defaults rather than extending them, so
+# they are restated here — dropping ".*" alone would send collection into
+# .git/ and .ruff_cache/. Matched against directory *basenames*, so a
+# path-shaped entry would never fire; "dist" covers packaging/dist.
+norecursedirs = [
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "node_modules",
+    "venv",
+    "{arch}",
+    # Ours: the PyInstaller output tree, which carries torch's and numba's
+    # own test modules and errors out at collection.
+    "src-tauri",
+    "build_work",
+    ".venv",
+]
+
 [tool.uv]
 conflicts = [
     [

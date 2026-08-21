@@ -63,6 +63,32 @@ jobs:
       - name: Fetch native sidecar (yt-dlp)
         run: make bundle-natives
 
+      # Same guard as the Windows job: catch a missing/stale sidecar tree
+      # here rather than shipping a DMG whose backend never starts.
+      - name: Verify bundled sidecars are present
+        run: |
+          set -euo pipefail
+          exe=src-tauri/binaries/server/podcodex-server
+          for p in "$exe" src-tauri/binaries/yt-dlp-aarch64-apple-darwin; do
+            [ -e "$p" ] || { echo "Missing: $p" >&2; exit 1; }
+          done
+          test -x "$exe"
+          # Size floor, not mere existence: scripts/setup_dev_sidecar.py
+          # leaves an executable 3-line shell stub at the same path, and a
+          # stub tree passes every presence check while producing a bundle
+          # whose backend never starts.
+          size=$(stat -f%z "$exe")
+          [ "$size" -ge 10000000 ] || {
+            echo "$exe is $size bytes — dev placeholder, not a real build" >&2
+            exit 1
+          }
+          count=$(find src-tauri/binaries/server/_internal -type f | wc -l)
+          [ "$count" -ge 1000 ] || {
+            echo "_internal holds $count files — incomplete PyInstaller tree" >&2
+            exit 1
+          }
+          echo "✓ $exe ($size bytes), _internal ($count files)"
+
       - uses: tauri-apps/tauri-action@v0.6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -136,21 +162,31 @@ jobs:
       - name: Fetch native sidecar (yt-dlp)
         run: .venv/Scripts/python.exe scripts/fetch_native_binaries.py
 
-      - name: Verify externalBin sidecars are present
+      # The server sidecar is a --onedir tree bundled as a Tauri resource,
+      # not an externalBin file — check the exe inside it, plus the one
+      # externalBin entry that is still a single file.
+      - name: Verify bundled sidecars are present
         run: |
-          $expected = @(
-            "src-tauri\binaries\podcodex-server-x86_64-pc-windows-msvc.exe",
-            "src-tauri\binaries\yt-dlp-x86_64-pc-windows-msvc.exe"
-          )
-          $missing = @()
-          foreach ($p in $expected) {
-            if (-not (Test-Path $p)) { $missing += $p }
-            else { Write-Host "✓ $p ($((Get-Item $p).Length) bytes)" }
+          $exe = "src-tauri\binaries\server\podcodex-server.exe"
+          $ytdlp = "src-tauri\binaries\yt-dlp-x86_64-pc-windows-msvc.exe"
+          foreach ($p in @($exe, $ytdlp)) {
+            if (-not (Test-Path $p)) { Write-Error "Missing: $p"; exit 1 }
           }
-          if ($missing.Count -gt 0) {
-            Write-Error "Missing externalBin files: $($missing -join ', ')"
+          # Size floor, not mere existence: scripts/setup_dev_sidecar.py
+          # leaves a 66-byte stub at the same path, and a stub tree passes
+          # every presence check while producing a bundle whose backend
+          # never starts.
+          $size = (Get-Item $exe).Length
+          if ($size -lt 10MB) {
+            Write-Error "$exe is $size bytes — dev placeholder, not a real build"
             exit 1
           }
+          $count = (Get-ChildItem "src-tauri\binaries\server\_internal" -Recurse -File).Count
+          if ($count -lt 1000) {
+            Write-Error "_internal holds $count files — incomplete PyInstaller tree"
+            exit 1
+          }
+          Write-Host "✓ $exe ($size bytes), _internal ($count files), $ytdlp"
 
       - uses: tauri-apps/tauri-action@v0.6
         env:

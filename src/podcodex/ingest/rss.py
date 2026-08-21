@@ -20,7 +20,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import feedparser
-import httpx
 from loguru import logger
 
 from podcodex.core._utils import mtime_settled
@@ -328,6 +327,11 @@ def _fetch_feed_bytes(url: str, timeout: float = 15.0) -> bytes:
     or proxy stack misbehaves). Always download the bytes ourselves and
     hand them to feedparser as content.
     """
+    # Imported here, not at module scope: httpx costs ~50 ms and this
+    # module sits on the API's startup import path through five route
+    # modules, none of which fetch a feed to serve a page.
+    import httpx
+
     _require_http_scheme(url, "Feed URL")
     with httpx.Client(
         timeout=httpx.Timeout(
@@ -349,6 +353,8 @@ def _artwork_from_parsed(parsed) -> str:
 
 def feed_artwork(url: str) -> str:
     """Extract the channel-level artwork URL from an RSS feed."""
+    import httpx
+
     _require_http_scheme(url, "Feed URL")
     try:
         content = _fetch_feed_bytes(url)

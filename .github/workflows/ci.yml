@@ -108,16 +108,18 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # tauri.conf.json declares externalBin sidecars (podcodex-server, yt-dlp).
-      # Tauri's build script appends the target triple and requires the file to
-      # exist. We don't ship Linux, so create empty stubs here just to satisfy
-      # cargo check.
+      # tauri.conf.json declares one externalBin file (yt-dlp, triple-suffixed)
+      # and one resource directory (binaries/server/, the --onedir sidecar).
+      # tauri-build resolves *both* during `cargo check`, and a missing
+      # resource path is a hard error, so stub the shapes here. We don't ship
+      # Linux; these only exist to satisfy the build script.
       - name: Stub Linux sidecars (Linux not shipped)
         run: |
-          mkdir -p binaries
-          touch binaries/podcodex-server-x86_64-unknown-linux-gnu
+          mkdir -p binaries/server/_internal
+          touch binaries/server/podcodex-server
+          touch binaries/server/_internal/.keep
           touch binaries/yt-dlp-x86_64-unknown-linux-gnu
-          chmod +x binaries/podcodex-server-x86_64-unknown-linux-gnu \
+          chmod +x binaries/server/podcodex-server \
                    binaries/yt-dlp-x86_64-unknown-linux-gnu
 
       - name: Cargo check

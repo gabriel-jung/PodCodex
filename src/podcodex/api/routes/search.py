@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -11,14 +12,14 @@ from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import AUDIO_EXTS, get_index_store
 from podcodex.rag.hit import Hit, SpeakerTurn
-from podcodex.rag.search_service import (
-    SearchCollection,
-    exact_search as svc_exact_search,
-    hybrid_search as svc_hybrid_search,
-    load_show_rag_prefs,
-    random_quote as svc_random_quote,
-    resolve_collections,
-)
+
+# podcodex.rag.search_service is imported inside the handlers below, not
+# here: it pulls lancedb, pyarrow and numpy (~300 ms) and this module is on
+# the API's startup import path, while none of it is needed to answer
+# anything but a search. The store is opened at startup anyway by the
+# lifespan's warmup thread, so the first search does not wait on it either.
+if TYPE_CHECKING:
+    from podcodex.rag.search_service import SearchCollection
 
 router = APIRouter()
 
@@ -39,6 +40,11 @@ def _resolve_req_cols(show: str, model: str, chunking: str) -> list[SearchCollec
     through show prefs and defaults so a show indexed only under a
     non-default model stays reachable.
     """
+    from podcodex.rag.search_service import (
+        load_show_rag_prefs,
+        resolve_collections,
+    )
+
     return resolve_collections(
         get_index_store().get_all_collection_info(),
         shows=[show],
@@ -102,12 +108,93 @@ def _build_audio_lookup() -> dict[str, dict]:
     return out
 
 
+# ── Embedder warm-up ─────────────────────────────────────
+
+
+_warm_started = False
+_warm_lock = threading.Lock()
+
+
+def _warm_show_sync(show: str) -> None:
+    """Resolve the show the way a search does, then load that embedder.
+
+    Runs on a worker thread, which is what lets it call ``_resolve_req_cols``
+    — that reaches ``rag.search_service`` (lancedb + pyarrow + numpy), the
+    import this whole change moved off the request path. Resolution has to
+    go through the same helper the handlers use: a show can pin a
+    non-default model through its RAG prefs, and guessing from the raw
+    collection list would warm a multi-GB model no search then uses.
+    """
+    try:
+        from podcodex.rag.defaults import DEFAULT_CHUNKING, DEFAULT_MODEL
+
+        cols = _resolve_req_cols(show, DEFAULT_MODEL, DEFAULT_CHUNKING)
+        if not cols:
+            # Nothing indexed for this show, so there is no model to load and
+            # a search would return nothing either. Release the latch: on a
+            # fresh install the first show opened is usually un-indexed, and
+            # burning the one shot here would leave every later search cold.
+            _release_warm_latch()
+            return
+
+        from podcodex.rag.retriever import get_retriever
+
+        get_retriever(cols[0].model).embedder
+        logger.info(f"search warm: retriever ready (model={cols[0].model})")
+    except Exception:
+        # Best-effort: the search path builds it on demand anyway, so a
+        # failure costs latency, never correctness.
+        _release_warm_latch()
+        logger.opt(exception=True).debug("search warm failed")
+
+
+def _release_warm_latch() -> None:
+    global _warm_started
+    with _warm_lock:
+        _warm_started = False
+
+
+def _warm_show_async(show: str) -> None:
+    """Load the show's embedder in the background, once per process.
+
+    A cold first search costs ~6 s: torch and sentence_transformers import
+    (~3 s), then the model loads from disk (~2.5 s). Every search after it
+    is ~60 ms. Starting on the signal that the search panel opened spends
+    that while the user types instead of after they hit enter, and a
+    session that never opens search never pays it.
+
+    Once per process, not once per model: the expensive half is the import,
+    which is shared, and residency is already bounded by the caches in
+    ``rag.retriever`` and ``rag.embedder``. A second cap here would be a
+    second answer about the same memory. The latch is released again if the
+    attempt loaded nothing, so a no-op does not spend it.
+    """
+    global _warm_started
+    if not show:
+        return
+    with _warm_lock:
+        if _warm_started:
+            return
+        _warm_started = True
+    threading.Thread(
+        target=_warm_show_sync, args=(show,), name="search-warm", daemon=True
+    ).start()
+
+
 # ── Config ────────────────────────────────────────────────
 
 
 @router.get("/config")
 def search_config() -> dict:
-    """Return available models, chunking strategies, and defaults."""
+    """Return available models, chunking strategies, and defaults.
+
+    Deliberately does *not* warm the embedder, even though it is fetched on
+    mount: it carries no show, so it could only guess at the model, and
+    ``SearchPanel`` fetches ``/stats`` alongside it. Warming from both meant
+    loading the index-wide default *and* the show's model — up to ~5 GB
+    resident, one of it useless. ``/stats`` knows which one a search will
+    actually use.
+    """
     from podcodex.rag.defaults import (
         ALPHA,
         CHUNKING_STRATEGIES,
@@ -189,6 +276,7 @@ class SearchResult(BaseModel):
 def search_query(req: SearchRequest) -> list[dict]:
     """Hybrid search over the global LanceDB index."""
     from podcodex.rag.defaults import MODELS
+    from podcodex.rag.search_service import hybrid_search as svc_hybrid_search
 
     if req.model not in MODELS:
         raise HTTPException(400, f"Unknown model: {req.model}")
@@ -278,6 +366,8 @@ class ExactRequest(BaseModel):
 @router.post("/exact", response_model=list[SearchResult])
 def exact_search(req: ExactRequest) -> list[dict]:
     """Phrase search: returns all exact, accent-variant, and near-typo matches."""
+    from podcodex.rag.search_service import exact_search as svc_exact_search
+
     cols = _resolve_req_cols(req.show, req.model, req.chunking)
     if not cols:
         return []
@@ -317,6 +407,8 @@ class RandomRequest(BaseModel):
 @router.post("/random", response_model=SearchResult | None)
 def random_quote(req: RandomRequest) -> dict | None:
     """Pick a random indexed chunk (optionally filtered)."""
+    from podcodex.rag.search_service import random_quote as svc_random_quote
+
     cols = _resolve_req_cols(req.show, req.model, req.chunking)
     if not cols:
         return None
@@ -367,7 +459,15 @@ def list_indexed_speakers(
 
 @router.get("/stats")
 def index_stats(show: str = "") -> dict:
-    """Return index statistics, optionally scoped to one show."""
+    """Return index statistics, optionally scoped to one show.
+
+    Also the embedder warm signal: ``SearchPanel`` fetches this when it
+    mounts, which is the earliest indication a search is coming, and unlike
+    ``/config`` it knows the show — so the warm can resolve the model that
+    show will actually search with.
+    """
+    _warm_show_async(show)
+
     local = get_index_store()
     collections = local.list_collections(show=show)
 

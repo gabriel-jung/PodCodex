@@ -4,7 +4,7 @@ import type { SearchResult } from "@/api/types";
 import { useEpisodeStore, useSearchStore } from "@/stores";
 import { getSearchConfig, getIndexStats, listIndexedSpeakers, searchQuery, exactSearch, randomQuote } from "@/api/client";
 import { listIndexedEpisodes } from "@/api/episodes";
-import { showArtworkSrc } from "@/lib/showArtwork";
+import { showArtworkSrc, useArtworkEpoch } from "@/lib/showArtwork";
 import { queryKeys } from "@/api/queryKeys";
 import { errorMessage, getShowName } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -42,11 +42,12 @@ export default function SearchPanel(props: SearchPanelProps) {
   // SearchResultCard memo.
   const propsArtwork = isShowScope ? props.artwork : undefined;
   const storeArtworkField = storeShowMeta?.artwork_url;
+  const artworkEpoch = useArtworkEpoch();
   const showArtwork = useMemo(
     () => isShowScope
       ? propsArtwork
-      : showArtworkSrc(storeArtworkField, storeFolder ?? ""),
-    [isShowScope, propsArtwork, storeArtworkField, storeFolder],
+      : showArtworkSrc(storeArtworkField, storeFolder ?? "", artworkEpoch),
+    [isShowScope, propsArtwork, storeArtworkField, storeFolder, artworkEpoch],
   );
 
   const { lastQuery, setLastQuery } = useSearchStore();

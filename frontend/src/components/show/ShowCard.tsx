@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { showArtworkSrc } from "@/lib/showArtwork";
+import { showArtworkSrc, useArtworkEpoch } from "@/lib/showArtwork";
 import type { ShowSummary } from "@/api/types";
 import { useLayoutStore } from "@/stores";
 import { SourceIcon } from "./SourceIcon";
@@ -14,6 +14,7 @@ export interface ShowCardProps {
 
 function ShowCardInner({ show, onClick, vertical }: ShowCardProps) {
   const compact = useLayoutStore((s) => s.compact);
+  const artworkEpoch = useArtworkEpoch();
   const handleClick = () => onClick(show.path);
   const countLabel = showEpisodeCountLabel(show);
 
@@ -25,7 +26,7 @@ function ShowCardInner({ show, onClick, vertical }: ShowCardProps) {
         className="text-left rounded-lg bg-card border border-border hover:border-muted-foreground/30 transition group overflow-hidden flex flex-col"
       >
         <div className="p-3 pb-0 shrink-0">
-          <img src={showArtworkSrc(show.artwork_url, show.path)} alt={show.name} className="w-full aspect-square object-cover rounded-lg" />
+          <img src={showArtworkSrc(show.artwork_url, show.path, artworkEpoch)} alt={show.name} className="w-full aspect-square object-cover rounded-lg" />
         </div>
         <div className="p-3 space-y-1 flex-1">
           <h3 className="font-medium text-sm truncate group-hover:text-primary transition flex items-center gap-1.5">
@@ -48,7 +49,7 @@ function ShowCardInner({ show, onClick, vertical }: ShowCardProps) {
     >
       <div className="h-20 w-20 shrink-0 rounded-lg overflow-hidden bg-muted">
         <img
-          src={showArtworkSrc(show.artwork_url, show.path)}
+          src={showArtworkSrc(show.artwork_url, show.path, artworkEpoch)}
           alt={show.name}
           className="w-full h-full object-cover"
         />

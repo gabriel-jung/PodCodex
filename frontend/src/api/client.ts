@@ -109,13 +109,86 @@ export class ApiError extends Error {
   }
 }
 
+/** Thrown when the request never reached the server: connection refused,
+ *  socket reset, DNS. `fetch` rejects with a bare `TypeError` for these
+ *  ("Failed to fetch" in Chromium, "Load failed" in WebKit) and gives no
+ *  machine-readable code, so it is tagged at the one place that knows the
+ *  rejection came from `fetch` rather than from our own code. */
+export class ConnectionError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "ConnectionError";
+    this.cause = cause;
+  }
+}
+
+/** True when the backend has not answered at all — as opposed to answering
+ *  with a status we did not like.
+ *
+ *  This is what lets a query tell "the backend has not finished booting"
+ *  apart from "the backend said no": the first deserves a patient retry,
+ *  the second an error state right away. Matched on our own tag rather than
+ *  on `TypeError`, because a genuine bug inside a queryFn (reading a
+ *  property of undefined) is also a TypeError, and would otherwise be
+ *  retried for three minutes instead of surfacing. */
+export function isConnectionError(error: unknown): boolean {
+  return error instanceof ConnectionError;
+}
+
+/**
+ * How patient a query is while the backend is still coming up.
+ *
+ * One policy, applied by the QueryClient defaults in `main.tsx`, so every
+ * query agrees. It lives here rather than beside a particular query because
+ * it is about the connection, not about any endpoint — and because callers
+ * spreading their own copy is what let `/api/health` retry a genuine 500
+ * sixty times.
+ *
+ * The delay ramp matters more than the count: a cold first launch takes
+ * seconds, so backing off to a few seconds and staying there beats
+ * exponential growth that overshoots.
+ */
+export const CONNECT_RETRY = {
+  limit: 4,
+  delay: (attempt: number) => Math.min(500 + attempt * 500, 3000),
+} as const;
+
+/**
+ * The exception to `CONNECT_RETRY`: queries that must survive a slow first
+ * launch rather than give up and be refetched later.
+ *
+ * There are exactly two. `/api/health` drives the boot banner and the
+ * "Backend not reachable" screen, and its first success is what refetches
+ * everything else. The pipeline-defaults hydration is the other: giving up
+ * there leaves the store on built-ins, and the user's next settings edit
+ * writes those over their real values (see `stores/pipelineConfigStore`).
+ *
+ * Connection failures only — a status the server actually returned is a
+ * real failure and must surface, not hide behind three minutes of retries.
+ */
+export const BOOT_PATIENT_RETRY = {
+  retry: (failureCount: number, error: unknown) =>
+    isConnectionError(error) && failureCount < 60,
+  retryDelay: (attempt: number) => CONNECT_RETRY.delay(attempt),
+} as const;
+
+/** `fetch`, with a transport failure re-thrown as a `ConnectionError`.
+ *  Everything the server answered — any status — comes back normally. */
+async function fetchOrThrow(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    throw new ConnectionError(error);
+  }
+}
+
 /** Fetch with the CSRF header already set. Use for non-JSON responses or
  *  FormData uploads where `json()` doesn't fit. Throws ApiError on `!res.ok`. */
 export async function rawFetch(url: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   headers.set(CSRF_HEADER, CSRF_VALUE);
   headers.set(TOKEN_HEADER, API_TOKEN);
-  let res = await fetch(`${BASE}${url}`, { ...init, headers });
+  let res = await fetchOrThrow(`${BASE}${url}`, { ...init, headers });
   if (res.status === 401) {
     // First-boot race in Tauri: the token file may not have existed when
     // the app initialized. Retry only when re-reading actually yields a
@@ -124,7 +197,7 @@ export async function rawFetch(url: string, init?: RequestInit): Promise<Respons
     await initApiToken();
     if (API_TOKEN && API_TOKEN !== previous) {
       headers.set(TOKEN_HEADER, API_TOKEN);
-      res = await fetch(`${BASE}${url}`, { ...init, headers });
+      res = await fetchOrThrow(`${BASE}${url}`, { ...init, headers });
     }
   }
   if (!res.ok) {

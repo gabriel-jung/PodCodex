@@ -163,9 +163,17 @@ def main() -> None:
 
     bootstrap_for_bundled_sidecar()
 
+    # Off the critical path on purpose. log_ffmpeg_status spawns
+    # ``ffmpeg -version`` (3 s timeout) purely to write one startup log
+    # line — nothing reads its result, and bootstrap's own
+    # _check_system_ffmpeg already set the capability flag with a cheap
+    # PATH walk. Running it inline delayed the uvicorn bind by ~0.3 s on
+    # every launch. Daemon thread, so it can never hold up shutdown.
+    import threading
+
     from podcodex.core._ffmpeg import log_ffmpeg_status
 
-    log_ffmpeg_status()
+    threading.Thread(target=log_ffmpeg_status, name="ffmpeg-probe", daemon=True).start()
 
     import uvicorn
 

@@ -6,7 +6,7 @@ import type {
   OllamaCheckResponse,
   TaskResponse,
 } from "./types";
-import { json } from "./client";
+import { BOOT_PATIENT_RETRY, json } from "./client";
 import { queryKeys } from "./queryKeys";
 
 export const getHealth = () => json<HealthResponse>("/api/health");
@@ -15,21 +15,23 @@ export const getHealth = () => json<HealthResponse>("/api/health");
  * Shared /api/health query options: use these everywhere instead of
  * re-declaring the query.
  *
- * The PyInstaller sidecar can take 10-30 s to extract and boot on the first
- * launch of a session, so every observer must agree on the generous retry
- * schedule. React Query shares one fetch per key: a stricter observer
- * mounting first would abort the boot fetch for the whole app.
+ * This is the one query that waits a slow launch out. Everything else gives
+ * up after a few connection retries (`CONNECT_RETRY`) and is refetched when
+ * this one first succeeds, so the whole app does not run eighteen separate
+ * retry ladders against the same closed port. React Query shares one fetch
+ * per key: a stricter observer mounting first would abort the boot fetch for
+ * the whole app, which is why the schedule lives here and not at call sites.
+ *
+ * Only connection failures are retried this long. A status the server
+ * actually returned is a real failure and falls through to the default, so
+ * the "Backend not reachable" screen still appears instead of hiding behind
+ * three minutes of pointless retries.
  */
-export const BOOT_RETRY = {
-  retry: 60,
-  retryDelay: (attempt: number) => Math.min(500 + attempt * 500, 3000),
-} as const;
-
 export const healthQueryOptions = {
   queryKey: queryKeys.health(),
   queryFn: getHealth,
   staleTime: 30_000,
-  ...BOOT_RETRY,
+  ...BOOT_PATIENT_RETRY,
 } as const;
 
 export const getAbout = () => json<AboutResponse>("/api/system/about");

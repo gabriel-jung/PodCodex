@@ -10,11 +10,18 @@ Usage:
     .venv/bin/python packaging/build_server.py --clean    # wipe dist/ and build_work/ first
 
 CPU vs GPU:
-    CPU: --onefile, excludes nvidia.* (~500 MB sidecar). Output:
-         dist/podcodex-server → src-tauri/binaries/podcodex-server-<triple>.
-    GPU: --onedir, no nvidia excludes (~3 GB tree). Output:
+    CPU: excludes nvidia.* (~1 GB tree). Output:
+         dist/podcodex-server/ → src-tauri/binaries/server/, bundled by
+         tauri.conf.json as a resource (not externalBin — that takes a
+         single file, and this is a directory).
+    GPU: no nvidia excludes (~3 GB tree). Output:
          dist/podcodex-server-gpu/ ready for packaging/package_gpu.py to
          split into server-core + cuda-libs archives (Phase M.3).
+
+Both are --onedir. --onefile was dropped: its bootloader re-extracts the
+entire payload to a temp dir on every launch (1 GB / 9.7k files, ~66 s on
+a warm macOS box), which dominated desktop app startup, and the temp tree
+leaks whenever the shell SIGKILLs the process group on quit.
 
 Torch swap:
     On Linux/Windows hosts where the venv has GPU torch installed, the CPU
@@ -154,6 +161,9 @@ COLLECT_SUBMODULES = [
 # Order matters: pyi_rth_aaa_anaconda_sysver runs first because it patches
 # sys.version before pyi_rth_nltk's auto-injected hook hits cloudpickle's
 # strict version parser.
+# --runtime-hook only *appends*. The hooks that *replace* an auto-injected
+# upstream one (nltk, setuptools) are declared in
+# packaging/pyi_hooks/rthooks.dat instead, picked up via --additional-hooks-dir.
 RUNTIME_HOOKS = [
     PYI_HOOKS_DIR / "pyi_rth_aaa_anaconda_sysver.py",
     PYI_HOOKS_DIR / "pyi_rth_torch_compiler_disable.py",
@@ -193,13 +203,6 @@ GPU_HIDDEN_IMPORTS = [
 ]
 
 # ── Helpers ─────────────────────────────────────────────────────────────
-
-
-def host_target_triple() -> str:
-    out = subprocess.check_output(["rustc", "--print", "host-tuple"], text=True).strip()
-    if not out:
-        raise RuntimeError("rustc --print host-tuple returned empty")
-    return out
 
 
 def is_windows() -> bool:
@@ -316,7 +319,10 @@ def build_pyinstaller_args(*, gpu: bool, clean: bool) -> list[str]:
         str(ENTRY_SCRIPT),
         "--name",
         name,
-        "--onedir" if gpu else "--onefile",
+        # Both builds are --onedir. --onefile re-extracts the whole ~1 GB
+        # payload (9.7k files) into a temp dir on *every* launch, which was
+        # 66 of the 78 seconds the desktop app took to reach /api/health.
+        "--onedir",
         # Stubs first — shadow real packages in modulegraph (first hit wins).
         "--paths",
         str(PYI_STUBS_DIR),
@@ -332,6 +338,12 @@ def build_pyinstaller_args(*, gpu: bool, clean: bool) -> list[str]:
     ]
     if clean:
         args.append("--clean")
+    # PyInstaller auto-enables UPX when it finds the binary on PATH. It
+    # costs CPU at every process start and breaks code signatures on
+    # macOS dylibs, so pin it off rather than depend on the build host.
+    args.append("--noupx")
+    # Deliberately no --strip: measured a no-op, because PyInstaller only
+    # strips Analysis.binaries and torch's dylibs arrive as package data.
     if is_windows():
         # Build the sidecar with GUI subsystem on Windows so spawning it from
         # the Tauri shell doesn't pop a cmd.exe window. stdout/stderr pipes
@@ -376,37 +388,60 @@ def run_pyinstaller(*, gpu: bool, clean: bool) -> Path:
     print(f"$ {' '.join(args)}")
     subprocess.check_call(args, cwd=PACKAGING_DIR)
 
-    if gpu:
-        # --onedir: the directory itself is the artifact. The exe inside is
-        # named podcodex-server-gpu(.exe); package_gpu.py walks the dir.
-        out = DIST_DIR / "podcodex-server-gpu"
-        if not out.is_dir():
-            raise RuntimeError(f"PyInstaller --onedir output not found: {out}")
-        return out
-
-    # CPU --onefile: single binary at dist/podcodex-server[.exe]
-    for c in (DIST_DIR / "podcodex-server", DIST_DIR / "podcodex-server.exe"):
-        if c.is_file():
-            return c
-    raise RuntimeError(f"PyInstaller --onefile output not found in {DIST_DIR}")
+    # --onedir for both: the directory itself is the artifact. GPU is named
+    # podcodex-server-gpu(.exe) and package_gpu.py walks the dir; CPU is
+    # copied wholesale into src-tauri/binaries/server/ by copy_to_sidecar.
+    out = DIST_DIR / ("podcodex-server-gpu" if gpu else "podcodex-server")
+    if not out.is_dir():
+        raise RuntimeError(f"PyInstaller --onedir output not found: {out}")
+    return out
 
 
-def copy_to_sidecar(source: Path, triple: str) -> None:
-    """Place the CPU binary at src-tauri/binaries/podcodex-server-<triple>.
+def copy_to_sidecar(source: Path) -> None:
+    """Place the CPU --onedir tree at src-tauri/binaries/server/.
 
-    Tauri's externalBin convention requires the -<triple> suffix in the
-    project tree; the .app/.msi bundler strips it on copy. GPU builds skip
-    this — they're packaged separately by package_gpu.py.
+    This is a Tauri *resource*, not an externalBin entry: externalBin takes
+    a single file (and renames it by target triple), which a --onedir build
+    is not. tauri.conf.json bundles ``binaries/server/`` verbatim, so the
+    launcher finds it under resource_dir() at runtime with the PyInstaller
+    layout (exe + _internal/ as siblings) intact.
+
+    GPU builds skip this — they're packaged separately by package_gpu.py.
     """
-    SIDECAR_OUT_DIR.mkdir(parents=True, exist_ok=True)
-    suffix = ".exe" if "windows" in triple else ""
-    dest = SIDECAR_OUT_DIR / f"podcodex-server-{triple}{suffix}"
+    dest = SIDECAR_OUT_DIR / "server"
     if dest.exists():
-        dest.unlink()
-    shutil.copy2(source, dest)
-    dest.chmod(0o755)
-    size_mb = dest.stat().st_size / 1024 / 1024
-    print(f"Sidecar binary written: {dest}  ({size_mb:.1f} MB)")
+        shutil.rmtree(dest)
+    # Sweep the pre-onedir single-file sidecar. tauri.conf.json no longer
+    # lists it, so a leftover is 400+ MB of dead weight that also makes a
+    # stale tree look like a working build.
+    for legacy in SIDECAR_OUT_DIR.glob("podcodex-server-*"):
+        if legacy.is_file():
+            legacy.unlink()
+            print(f"Removed legacy externalBin sidecar: {legacy.name}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, dest, symlinks=True)
+
+    exe = next(
+        (
+            c
+            for c in (dest / "podcodex-server", dest / "podcodex-server.exe")
+            if c.is_file()
+        ),
+        None,
+    )
+    if exe is None:
+        raise RuntimeError(f"No podcodex-server executable in {dest}")
+    exe.chmod(0o755)
+
+    # lstat, not stat: PyInstaller links duplicate payloads (torch ships
+    # several names for the same dylib) and following them reports a tree
+    # that is ~1.1 GB on disk as ~1.5 GB.
+    files = [f for f in dest.rglob("*") if not f.is_dir()]
+    total = sum(f.lstat().st_size for f in files)
+    print(
+        f"Sidecar tree written: {dest}  "
+        f"({total / 1024 / 1024:.1f} MB, {len(files)} files)"
+    )
 
 
 # ── Entry ───────────────────────────────────────────────────────────────
@@ -432,10 +467,7 @@ def main() -> None:
             if d.exists():
                 shutil.rmtree(d)
 
-    triple = host_target_triple()
-    mode = "GPU (--onedir)" if args.gpu else "CPU (--onefile)"
-    print(f"Target triple: {triple}")
-    print(f"Build mode:    {mode}")
+    print(f"Build mode:    {'GPU' if args.gpu else 'CPU'} (--onedir)")
 
     restore_cuda: str | None = None
     if not args.gpu and not args.no_torch_swap:
@@ -453,7 +485,7 @@ def main() -> None:
             "Next: run packaging/package_gpu.py to split into server-core + cuda-libs archives."
         )
     else:
-        copy_to_sidecar(output, triple)
+        copy_to_sidecar(output)
 
 
 if __name__ == "__main__":

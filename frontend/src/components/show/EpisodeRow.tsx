@@ -44,7 +44,7 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
       <span className="text-xs text-muted-foreground w-8 text-right shrink-0 tabular-nums">
         {ep.episode_number != null ? `#${ep.episode_number}` : ""}
       </span>
-      <div className="min-w-0 flex-1 flex flex-col gap-0.5">
+      <div className="flex-[3_1_0%] min-w-[14rem] flex flex-col gap-0.5">
         <button
           onClick={handleOpen}
           className={`text-left text-sm hover:text-primary cursor-pointer flex items-center gap-1.5 max-w-full ${ep.removed ? "text-muted-foreground" : "text-foreground"}`}
@@ -54,14 +54,17 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
               <CloudOff className="w-3 h-3 text-muted-foreground" />
             </span>
           )}
-          <span className="truncate">{ep.title}</span>
+          <span className="truncate" title={ep.title}>{ep.title}</span>
         </button>
         {!compact && <StatusChips ep={ep} />}
       </div>
-      {/* Metadata cluster pinned right: speakers · date · duration, each a
-          fixed-width column so they line up across rows. */}
+      {/* Metadata cluster pinned right: speakers · date · duration. Date and
+          duration are fixed columns; speakers takes a share of the leftover so
+          it shrinks with the window instead of squeezing the title. It only
+          appears from lg up, where that share still leaves the title wider
+          than it is at the app's 720px minimum width. */}
       <div
-        className="hidden md:flex items-center gap-1 w-72 shrink-0 text-xs text-muted-foreground"
+        className="hidden lg:flex items-center gap-1 flex-[1_1_0%] min-w-0 max-w-72 text-xs text-muted-foreground"
         title={speakers?.join(", ")}
       >
         {speakers && speakers.length > 0 && <SpeakerNames names={speakers} />}

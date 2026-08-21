@@ -93,7 +93,7 @@ Scoping the broadcast patch to the synth subprocess preserves the bootstrap rece
 2. **`RuntimeError: vmap ... .item()`** → MiMi path. Confirm `_patch_sdpa_mask_for_mimi_vmap_bug` is running in the synth subprocess (look for the function in `synthesize.py`; called from `load_tts_model`).
 3. **`NameError: TransformGetItemToIndex`** → bootstrap torch-check patch didn't apply or transformers version drifted. Check `bootstrap.py:_install_transformers_torch_check_patch` logged its rebind.
 4. **Pyannote hangs at diarize step** → missing `HF_TOKEN`.
-5. **Silent CPU fallback after CUDA was expected** → kernel guard fired; check `bootstrap.py:_check_cuda_kernels_or_degrade` logs and `PODCODEX_DEVICE` env.
+5. **Silent CPU fallback after CUDA was expected** → kernel guard fired; check `core/device.py:ensure_kernel_guard` logs and `PODCODEX_DEVICE` env.
 
 ## When transformers / qwen-tts upgrades
 

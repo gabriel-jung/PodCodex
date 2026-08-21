@@ -19,7 +19,7 @@ import { create } from "zustand";
 import type { PipelineAppDefaults, PipelineDefaults } from "@/api/types";
 import { queryKeys } from "@/api/queryKeys";
 import { getConfig, putPipelineDefaults } from "@/api/shows";
-import { BOOT_RETRY } from "@/api/health";
+import { BOOT_PATIENT_RETRY } from "@/api/client";
 
 export type LLMMode = "api" | "ollama" | "manual";
 
@@ -502,14 +502,14 @@ export function useHydrateAppDefaults(): void {
       let defaults: PipelineAppDefaults | null = null;
       try {
         // fetchQuery primes the shared ["config"] cache (HomePage, panels)
-        // instead of firing a duplicate request beside it. BOOT_RETRY because
-        // this races the sidecar's 10-30s first-launch extraction, exactly
-        // what /api/health's schedule exists for; the default `retry: 1`
-        // gives up after ~1s and would leave every session cold-started.
+        // instead of firing a duplicate request beside it. The patient
+        // schedule because this races the sidecar's first-launch boot: the
+        // default gives up in seconds, and a failure here is data loss, not
+        // just a cold start.
         const cfg = await queryClient.fetchQuery({
           queryKey: queryKeys.config(),
           queryFn: getConfig,
-          ...BOOT_RETRY,
+          ...BOOT_PATIENT_RETRY,
         });
         defaults = cfg.pipeline_defaults ?? null;
         if (!defaults) {

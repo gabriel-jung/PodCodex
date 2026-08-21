@@ -28,6 +28,7 @@ from starlette.websockets import WebSocketClose
 from loguru import logger
 
 from podcodex import __version__
+from podcodex.bootstrap import defer_until_imported
 from podcodex.core.api_token import (
     TOKEN_HEADER,
     TOKEN_QUERY_PARAM,
@@ -70,14 +71,124 @@ if _secrets_env.exists():
     load_dotenv(_secrets_env, override=True)
 
 
-# ── Optional MCP (desktop extra) ────────────────────────────────────────
-try:
-    from podcodex.mcp.server import mcp as _mcp  # type: ignore[import-not-found]
-except Exception as exc:
-    _mcp = None
-    _mcp_import_error: Exception | None = exc
-else:
-    _mcp_import_error = None
+# ── Optional MCP (desktop extra), mounted lazily ────────────────────────
+#
+# Importing ``podcodex.mcp.server`` pulls in ``mcp.server.fastmcp``, which
+# costs ~0.75 s (most of it jsonschema loading its rfc3987_syntax format
+# checker) — measured as 45% of this module's whole import time. Nothing
+# reaches /mcp during an app launch; only Claude Desktop or Claude Code
+# connecting does, and that happens minutes later if at all. So the sub-app
+# is built on the first request instead of at startup.
+
+
+def _mcp_installed() -> bool:
+    """Whether the MCP extra looks importable, without importing it.
+
+    ``find_spec`` resolves the module without executing it, which is the
+    whole point: answering "is MCP available?" must not cost what importing
+    MCP costs. It is therefore optimistic — it cannot see a broken
+    transitive dependency or an error inside ``podcodex.mcp.server``. The
+    first ``/mcp`` request finds out for real and corrects
+    ``app.state.mcp_available`` (see ``_run_mcp_when_requested``).
+    """
+    from importlib.util import find_spec
+
+    try:
+        return find_spec("mcp") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+class _LazyMCPMount:
+    """ASGI app that hands off to an MCP sub-app built on first request.
+
+    It does not build the sub-app itself. The streamable-http session
+    manager runs on anyio cancel scopes, and anyio requires the task that
+    *enters* a scope to be the task that exits it — so a request handler
+    cannot open the sub-app's lifespan and leave shutdown to close it. All
+    of that is owned by :func:`_run_mcp_when_requested`, one task spawned by
+    the parent lifespan; this class only signals it and waits.
+
+    Starlette's ``Mount`` does not forward lifespan scopes to sub-apps, so
+    this only ever sees http/websocket scopes.
+    """
+
+    #: Generous: the deferred import alone is ~0.75 s and a cold filesystem
+    #: makes it slower. Only a genuinely wedged startup should hit this.
+    START_TIMEOUT_S = 30.0
+
+    def __init__(self) -> None:
+        self.requested = asyncio.Event()
+        self.ready = asyncio.Event()
+        self.app = None
+
+    async def __call__(self, scope, receive, send) -> None:
+        self.requested.set()
+        if not self.ready.is_set():
+            try:
+                # Bounded so a sub-app that wedges during startup answers the
+                # client instead of holding its connection open indefinitely.
+                await asyncio.wait_for(self.ready.wait(), self.START_TIMEOUT_S)
+            except TimeoutError:
+                logger.warning("MCP sub-app did not start within the timeout")
+        if self.app is None:
+            await JSONResponse(
+                {"detail": "MCP support is not available in this build"},
+                status_code=503,
+            )(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def _build_mcp_app():
+    """Import the MCP server and build its streamable-http ASGI app.
+
+    Blocking and slow (the ~0.75 s import this whole dance exists to defer),
+    so callers run it on a worker thread rather than stalling the loop.
+    """
+    from podcodex.mcp.server import mcp as _mcp
+
+    return _mcp.streamable_http_app()
+
+
+async def _run_mcp_when_requested(app: FastAPI, mount: _LazyMCPMount) -> None:
+    """Own the MCP sub-app's whole life in a single task.
+
+    Waits for the first /mcp request, builds the sub-app off-loop, enters
+    its lifespan, and holds until the parent lifespan cancels this task —
+    at which point the ``async with`` unwinds in the same task that opened
+    it, which is what anyio's cancel scopes require. Ordering therefore
+    matches the old eager nesting: the sub-app shuts down with the app.
+    """
+    await mount.requested.wait()
+    try:
+        sub = await asyncio.to_thread(_build_mcp_app)
+        async with sub.router.lifespan_context(app):
+            mount.app = sub
+            mount.ready.set()
+            logger.info("MCP sub-app mounted on first request")
+            await asyncio.Event().wait()  # hold open until cancelled
+    except Exception as exc:
+        # Logged once and not retried: a missing extra will not appear
+        # mid-process, and repeating the slow import per request would turn
+        # a misconfiguration into a performance problem too. CancelledError
+        # is a BaseException, so shutdown passes straight through here.
+        #
+        # Correct the advertised capability too. It was answered by
+        # find_spec, which only proves the `mcp` package resolves — it
+        # cannot see a broken transitive dep or an error inside
+        # podcodex.mcp.server. Without this the Settings panel keeps
+        # offering the Claude Desktop wiring for a surface that answers 503.
+        app.state.mcp_available = False
+        logger.warning(f"MCP sub-app unavailable: {exc!r}")
+    finally:
+        # Released on every exit path, including the failures above: a
+        # waiter that never gets this event blocks its request forever, so
+        # a failed startup has to end as a 503 rather than a hang. The
+        # streamable-http session manager in particular refuses to start
+        # twice in one process.
+        mount.app = None
+        mount.ready.set()
 
 
 async def _watch_parent(parent_pid: int) -> None:
@@ -106,8 +217,23 @@ async def _watch_parent(parent_pid: int) -> None:
             pass
 
 
+def _run_recovery_sync() -> None:
+    """Delete atomic-write temp orphans left by a prior hard crash."""
+    try:
+        from podcodex.core.recovery import run_startup_recovery
+
+        run_startup_recovery()
+    except Exception:
+        logger.opt(exception=True).debug("startup recovery failed")
+
+
 def _warmup_caches_sync() -> None:
-    """Pre-open LanceDB and per-show pipeline.db connections.
+    """Pre-open LanceDB and the per-show pipeline.db connections.
+
+    Runs on a worker thread, which is the only part of startup that is
+    genuinely after the bind: uvicorn awaits ``lifespan.startup()`` *before*
+    it opens the socket, so anything awaited there still counts against
+    time-to-``/api/health``.
 
     Without this, the first ``GET /api/shows/{folder}/unified`` after a
     process boot pays the ``import lancedb`` + ``lancedb.connect()`` cost
@@ -145,52 +271,72 @@ def _warmup_caches_sync() -> None:
         logger.opt(exception=True).debug("warmup: pipeline_db pass failed")
 
 
-def _make_lifespan(mcp_http):
-    """Nest the mounted MCP sub-app's lifespan under FastAPI's."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Post-bind startup and shutdown.
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        # Task submission happens on the threadpool (routes are sync `def`),
-        # so the progress broadcaster's loop has to be captured here, the one
-        # place we are reliably in async context.
-        from podcodex.api.tasks import task_manager
+    Everything here runs *after* uvicorn awaits it but before it binds,
+    so keep the body to scheduling: the actual work belongs on the
+    worker threads below, which are the only part that runs after the
+    socket is listening.
+    """
+    # Task submission happens on the threadpool (routes are sync `def`),
+    # so the progress broadcaster's loop has to be captured here, the one
+    # place we are reliably in async context.
+    from podcodex.api.tasks import task_manager
 
-        task_manager.bind_loop()
+    task_manager.bind_loop()
 
-        watcher_task: asyncio.Task | None = None
-        parent_pid_raw = os.environ.get("PODCODEX_PARENT_PID", "").strip()
-        if parent_pid_raw and sys.platform != "win32":
-            try:
-                parent_pid = int(parent_pid_raw)
-            except ValueError:
-                parent_pid = 0
-            if parent_pid > 0:
-                watcher_task = asyncio.create_task(_watch_parent(parent_pid))
-
-        # Fire-and-forget on a worker thread. ``asyncio.to_thread`` cannot
-        # actually interrupt the underlying thread, so there's no point trying
-        # to cancel; on shutdown we just await whatever is left.
-        warmup_task = asyncio.create_task(asyncio.to_thread(_warmup_caches_sync))
-
+    watcher_task: asyncio.Task | None = None
+    parent_pid_raw = os.environ.get("PODCODEX_PARENT_PID", "").strip()
+    if parent_pid_raw and sys.platform != "win32":
         try:
-            if mcp_http is not None:
-                async with mcp_http.router.lifespan_context(app):
-                    yield
-            else:
-                yield
-        finally:
-            try:
-                await warmup_task
-            except Exception:
-                pass
-            if watcher_task is not None:
-                watcher_task.cancel()
-                try:
-                    await watcher_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+            parent_pid = int(parent_pid_raw)
+        except ValueError:
+            parent_pid = 0
+        if parent_pid > 0:
+            watcher_task = asyncio.create_task(_watch_parent(parent_pid))
 
-    return lifespan
+    # Crash-recovery sweep, on a worker thread. It walks the show tree
+    # to delete atomic-write temp orphans from a prior hard crash, which
+    # measured 190 ms — a third of the whole startup — and it ran inside
+    # create_app, delaying the uvicorn bind. Nothing needs it to serve a
+    # request: the orphans it removes are files no reader looks at.
+    recovery_task = asyncio.create_task(asyncio.to_thread(_run_recovery_sync))
+
+    # Fire-and-forget on a worker thread. ``asyncio.to_thread`` cannot
+    # actually interrupt the underlying thread, so there's no point trying
+    # to cancel; on shutdown we just await whatever is left.
+    warmup_task = asyncio.create_task(asyncio.to_thread(_warmup_caches_sync))
+
+    mcp_task: asyncio.Task | None = None
+    mcp_mount = getattr(app.state, "mcp_mount", None)
+    if mcp_mount is not None:
+        mcp_task = asyncio.create_task(_run_mcp_when_requested(app, mcp_mount))
+
+    try:
+        yield
+    finally:
+        try:
+            await recovery_task
+        except Exception:
+            pass
+        if mcp_task is not None:
+            mcp_task.cancel()
+            try:
+                await mcp_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        try:
+            await warmup_task
+        except Exception:
+            pass
+        if watcher_task is not None:
+            watcher_task.cancel()
+            try:
+                await watcher_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 def _register_show_folder_resolver() -> None:
@@ -325,26 +471,26 @@ class LoopbackGuardMiddleware:
 
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
-    mcp_http = _mcp.streamable_http_app() if _mcp is not None else None
-    _register_show_folder_resolver()
-
-    # Clean up atomic-write temp orphans left by any prior hard-crash.
-    try:
-        from podcodex.core.recovery import run_startup_recovery
-
-        run_startup_recovery()
-    except Exception:
-        logger.opt(exception=True).debug("startup recovery failed")
+    # Attached to the import rather than called here: registering reaches
+    # IndexStore, and importing that costs ~150 ms of pyarrow + numpy that
+    # has no business on the startup path. Deferring it to a worker thread
+    # was worse than slow — it races the first request, and
+    # ``get_all_collection_info`` caches its result against the collections
+    # mtime, so a request that wins the race pins an un-backfilled
+    # ``artwork_url`` for the rest of the process. Binding to the import
+    # means whoever loads index_store first has the resolver in place by the
+    # time they get the module back.
+    defer_until_imported("podcodex.rag.index_store", _register_show_folder_resolver)
 
     app = FastAPI(
         title="PodCodex",
         version=__version__,
         description="Podcast processing pipeline API",
-        lifespan=_make_lifespan(mcp_http),
+        lifespan=lifespan,
     )
-    app.state.mcp_available = _mcp is not None
-    if _mcp_import_error is not None:
-        logger.warning(f"MCP extra unavailable: {_mcp_import_error}")
+    app.state.mcp_available = _mcp_installed()
+    if not app.state.mcp_available:
+        logger.warning("MCP extra not installed; /mcp will answer 503")
 
     # ── Middleware stack ──
     # Added last runs outermost, so these read inside-out: CSRF guard, then
@@ -431,8 +577,10 @@ def create_app() -> FastAPI:
     app.include_router(mcp_prompts_route.router, prefix="/api/mcp", tags=["mcp"])
     app.include_router(bot_access.router, prefix="/api/bot-access", tags=["bot-access"])
 
-    if mcp_http is not None:
-        app.mount("/mcp", mcp_http)
+    if app.state.mcp_available:
+        # Held on app.state so the lifespan can spawn the task that owns it.
+        app.state.mcp_mount = _LazyMCPMount()
+        app.mount("/mcp", app.state.mcp_mount)
 
     return app
 

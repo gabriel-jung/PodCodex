@@ -85,10 +85,14 @@ fn compute_data_dir() -> Result<PathBuf, String> {
     }
 }
 
-/// Tauri externalBin sidecar basename. Project tree carries
-/// ``src-tauri/binaries/podcodex-server-<triple>``; the bundler strips the
-/// triple suffix when copying into the .app, leaving a bare ``podcodex-server``
-/// alongside the host exe.
+/// Bundled CPU sidecar location, relative to the app's resource dir.
+/// ``packaging/build_server.py`` writes the PyInstaller --onedir tree to
+/// ``src-tauri/binaries/server/`` and tauri.conf.json bundles it as a
+/// resource. It is deliberately *not* an externalBin entry: externalBin
+/// takes a single triple-suffixed file, and a --onedir build is a directory
+/// (exe + ``_internal/`` sibling, which PyInstaller resolves relative to the
+/// executable, so the two must stay together).
+const SERVER_RESOURCE_SUBDIR: &str = "binaries/server";
 const SERVER_SIDECAR: &str = "podcodex-server";
 
 /// Optional GPU sidecar — installed at runtime into <app_data>/backends/gpu/
@@ -295,17 +299,18 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
     // because we deliberately omit `version` from tauri.conf.json so it derives from
     // Cargo.toml — config().version is None at runtime in that setup.
     let app_version = app.package_info().version.to_string();
-    let (server_exe, gpu_install_dir, backend_label) =
+    let (server_exe, server_dir, backend_label) =
         match locate_gpu_sidecar(&data_dir, &app_version) {
-            Some((binary, install_dir)) => (binary, Some(install_dir), "GPU"),
+            Some((binary, install_dir)) => (binary, install_dir, "GPU"),
             None => {
-                let cpu = locate_sidecar(SERVER_SIDECAR).ok_or_else(|| {
+                let (cpu, cpu_dir) = locate_bundled_server(app).ok_or_else(|| {
                     format!(
-                        "Cannot find {SERVER_SIDECAR} sidecar next to host binary. \
-                         Did `packaging/build_server.py` run before `cargo tauri build`?"
+                        "Cannot find {SERVER_SIDECAR} under {SERVER_RESOURCE_SUBDIR}/ in the \
+                         app resources. Did `packaging/build_server.py` run before \
+                         `cargo tauri build`?"
                     )
                 })?;
-                (cpu, None, "CPU")
+                (cpu, cpu_dir, "CPU")
             }
         };
 
@@ -321,14 +326,10 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
     );
 
     let mut cmd = Command::new(&server_exe);
-    // PyInstaller --onedir (used by the GPU build) resolves _internal/ and
-    // the bundled NVIDIA libs relative to cwd. Without setting current_dir,
-    // the binary may fail to find its support files. CPU --onefile uses
-    // _MEIPASS for all resolution and doesn't care about cwd, so we leave
-    // it inherited from the Tauri parent in that case.
-    if let Some(ref dir) = gpu_install_dir {
-        cmd.current_dir(dir);
-    }
+    // PyInstaller --onedir resolves ``_internal/`` and the bundled NVIDIA
+    // libs relative to cwd. Without current_dir the binary may fail to find
+    // its support files. Both backends are --onedir now, so both get it.
+    cmd.current_dir(&server_dir);
     cmd.env("PODCODEX_DATA_DIR", &data_dir)
         .env("PODCODEX_API_PORT", API_PORT.to_string())
         // Sidecar polls this PID and self-terminates if the shell dies
@@ -413,6 +414,73 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+/// Locate the bundled CPU sidecar in the app's resource dir, returning
+/// ``(binary_path, install_dir)`` so the caller can set cwd — PyInstaller
+/// --onedir needs cwd at the tree root.
+///
+/// Also repairs the executable bit: the Tauri resource copier is not
+/// guaranteed to preserve file modes, and a resource that lost +x spawns
+/// as ``Permission denied`` with no other symptom. Failure to chmod is
+/// logged and ignored — on a read-only install the bit is usually already
+/// correct, and letting the spawn attempt proceed gives a better error.
+fn locate_bundled_server(app: &tauri::AppHandle) -> Option<(PathBuf, PathBuf)> {
+    let dir = app
+        .path()
+        .resource_dir()
+        .ok()?
+        .join(SERVER_RESOURCE_SUBDIR);
+    let binary = exe_in_dir(&dir, SERVER_SIDECAR).or_else(|| {
+        log::warn!("Bundled CPU sidecar not found under {:?}", dir);
+        None
+    })?;
+    Some((binary, dir))
+}
+
+/// Find ``<dir>/<name>`` or ``<dir>/<name>.exe``, repairing the execute bit.
+///
+/// Shared by all three sidecar locators. Both --onedir trees reach a user's
+/// disk through a copier that is not guaranteed to preserve modes (Tauri's
+/// resource copy for the bundled one, archive extraction for the downloaded
+/// GPU one), and a lost +x spawns as a bare "Permission denied" with no
+/// other symptom.
+fn exe_in_dir(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+    let bare = dir.join(name);
+    let exe = dir.join(format!("{name}.exe"));
+    let binary = if bare.is_file() {
+        bare
+    } else if exe.is_file() {
+        exe
+    } else {
+        return None;
+    };
+    ensure_executable(&binary);
+    Some(binary)
+}
+
+/// Ensure the file carries the owner-execute bit. No-op off unix.
+#[cfg(unix)]
+fn ensure_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    let mode = meta.permissions().mode();
+    if mode & 0o111 != 0 {
+        return;
+    }
+    let mut perms = meta.permissions();
+    perms.set_mode(mode | 0o755);
+    if let Err(e) = std::fs::set_permissions(path, perms) {
+        log::warn!("Could not set +x on {:?}: {e}", path);
+    } else {
+        log::info!("Restored +x on {:?}", path);
+    }
+}
+
+#[cfg(not(unix))]
+fn ensure_executable(_path: &std::path::Path) {}
+
 /// Look for an installed + activated GPU sidecar at
 /// ``<data_dir>/backends/gpu/podcodex-server-gpu``. Returns ``None`` (fall
 /// back to CPU) on any of:
@@ -439,14 +507,9 @@ fn locate_gpu_sidecar(
         );
         return None;
     }
-    let binary = {
-        let bare = install_dir.join(GPU_SIDECAR_NAME);
-        let exe = install_dir.join(format!("{GPU_SIDECAR_NAME}.exe"));
-        if bare.is_file() {
-            bare
-        } else if exe.is_file() {
-            exe
-        } else {
+    let binary = match exe_in_dir(&install_dir, GPU_SIDECAR_NAME) {
+        Some(path) => path,
+        None => {
             log::warn!(
                 "GPU activated but sidecar binary not found at {:?}",
                 install_dir
@@ -546,13 +609,8 @@ fn augmented_path() -> Option<String> {
 fn locate_sidecar(short_name: &str) -> Option<PathBuf> {
     let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
 
-    let exact = exe_dir.join(short_name);
-    if exact.is_file() {
-        return Some(exact);
-    }
-    let exact_exe = exe_dir.join(format!("{short_name}.exe"));
-    if exact_exe.is_file() {
-        return Some(exact_exe);
+    if let Some(path) = exe_in_dir(&exe_dir, short_name) {
+        return Some(path);
     }
 
     let prefix = format!("{short_name}-");

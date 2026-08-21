@@ -1,0 +1,11 @@
+# Overrides for PyInstaller's auto-injected runtime hooks.
+#
+# _merge_rthooks keeps the FIRST definition it finds for a module and skips
+# the rest, and --additional-hooks-dir takes precedence over the entry-point
+# directories (see PyInstaller/building/build_main.py, "Prepend directories
+# in `hookspath`"). So an entry here replaces the hooks-contrib one, which
+# is then skipped with a warning in the build log.
+{
+    'nltk': ['pyi_rth_nltk_lazy.py'],
+    'setuptools': ['pyi_rth_setuptools_lite.py'],
+}

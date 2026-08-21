@@ -21,14 +21,22 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from loguru import logger
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.prompts import Prompt
-from mcp.server.fastmcp.prompts.base import PromptArgument
 
 from podcodex.core._utils import write_json_atomic
+
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp.prompts import Prompt
+
+# ``mcp.server.fastmcp`` costs ~0.75 s to import, most of it jsonschema
+# pulling in the rfc3987_syntax format checker. Only the registration half
+# of this module (everything below "Registration with FastMCP") touches it;
+# the CRUD half that ``api/routes/mcp_prompts.py`` uses does not. Keeping
+# the import inside those functions is what lets the desktop API start
+# without paying for a surface no launch reaches.
 
 
 SlotType = Literal["string", "enum", "int", "bool"]
@@ -314,6 +322,9 @@ def _builtin_prompts() -> list[PromptDef]:
 
 def _build_prompt(pdef: PromptDef) -> Prompt:
     """Wrap a ``PromptDef`` as a FastMCP ``Prompt`` object."""
+    from mcp.server.fastmcp.prompts import Prompt
+    from mcp.server.fastmcp.prompts.base import PromptArgument
+
     # The FastMCP prompt fn renders the template with provided kwargs.
     template = pdef.template
 

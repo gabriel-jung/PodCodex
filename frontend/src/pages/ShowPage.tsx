@@ -11,7 +11,7 @@ import {
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { removeQueriesUnderPath } from "@/api/cacheInvalidation";
-import { showArtworkSrc } from "@/lib/showArtwork";
+import { showArtworkSrc, useArtworkEpoch } from "@/lib/showArtwork";
 import type { Episode, FilesImportResponse } from "@/api/types";
 import { languageToISO, isOutdated, splitPath } from "@/lib/utils";
 import { dateCmp } from "@/lib/episodeSort";
@@ -70,6 +70,7 @@ const SIDEBAR_SECTIONS: SidebarSection[] = [
 ];
 
 export default function ShowPage({ folder, initialTab }: { folder: string; initialTab?: string }) {
+  const artworkEpoch = useArtworkEpoch();
   const navigate = useNavigate();
   const audioPath = useAudioStore((s) => s.audioPath);
   const audioIsPlaying = useAudioStore((s) => s.isPlaying);
@@ -417,12 +418,12 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       title: ep.title,
       // Never pass raw meta.artwork_url: it can hold the "local" marker,
       // which is not a fetchable URL. showArtworkSrc resolves it.
-      artwork: ep.artwork_url || showArtworkSrc(meta?.artwork_url, folder),
+      artwork: ep.artwork_url || showArtworkSrc(meta?.artwork_url, folder, artworkEpoch),
       showName,
       folder,
       stem: ep.stem || ep.id,
     });
-  }, [meta?.artwork_url, showName, folder]);
+  }, [meta?.artwork_url, showName, folder, artworkEpoch]);
 
   const downloadEpisode = useCallback((id: string) => {
     downloadMutate({ guids: [id] });
@@ -473,7 +474,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           { label: "Shows", onClick: () => navigate({ to: "/" }) },
           { label: showName },
         ]}
-        artworkUrl={metaLoaded ? showArtworkSrc(meta?.artwork_url, folder) : undefined}
+        artworkUrl={metaLoaded ? showArtworkSrc(meta?.artwork_url, folder, artworkEpoch) : undefined}
         fallbackIcon={Podcast}
         stats={[
           ...(all.length > 0 ? [{ value: all.length, label: `episode${all.length !== 1 ? "s" : ""}` }] : []),
@@ -674,7 +675,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           scope="show"
           showName={showName}
           folder={folder}
-          artwork={metaLoaded ? showArtworkSrc(meta?.artwork_url, folder) : undefined}
+          artwork={metaLoaded ? showArtworkSrc(meta?.artwork_url, folder, artworkEpoch) : undefined}
         />
       )}
 

@@ -22,9 +22,28 @@ from podcodex.core._utils import (
 )
 from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.ingest.rss import RSSEpisode, episode_stem
-from podcodex.rag.index_store import get_index_store  # re-export
 
 __all__ = ["get_index_store"]
+
+
+def get_index_store():
+    """Lazy re-export of ``podcodex.rag.index_store.get_index_store``.
+
+    A wrapper, not a plain re-export, because importing ``index_store``
+    pulls pyarrow and numpy (~150 ms) and this module is the first thing
+    the API's route package loads. A ``from _helpers import
+    get_index_store`` at another module's top level would resolve a plain
+    re-export — or a module ``__getattr__`` — at import time and pay it
+    anyway; a wrapper defers to the first actual call, which only happens
+    inside a request handler.
+
+    The store is opened at startup regardless, by the lifespan's warmup
+    thread (``app._warmup_caches_sync``), so no request waits on this.
+    """
+    from podcodex.rag.index_store import get_index_store as _get_index_store
+
+    return _get_index_store()
+
 
 # Single source of truth — keeping this aligned with the scanner's set
 # avoids "is_downloaded says yes, scanner says no" mismatches that hid

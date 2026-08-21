@@ -28,10 +28,12 @@ unrelated concerns (filesystem layout vs. monkey-patching).
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import shutil
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from loguru import logger
@@ -53,7 +55,8 @@ def bootstrap_for_bundled_sidecar() -> None:
     so we deliberately do NOT add an extra stderr sink (would write every
     line twice).
     """
-    _install_all_patches()
+    _install_eager_patches()
+    _arm_ml_patch_hook()
     _check_system_ffmpeg()
     _setup_loguru_file_sink()
     _install_stdlib_intercept()
@@ -66,7 +69,8 @@ def bootstrap_for_mcp_stdio() -> None:
     Logs to stderr (Claude captures it). Stdout is the JSON-RPC channel
     and must stay clean — never touch it from here.
     """
-    _install_all_patches()
+    _install_eager_patches()
+    _arm_ml_patch_hook()
     _check_system_ffmpeg()
     _setup_loguru_stderr_sink()
     _install_stdlib_intercept()
@@ -148,22 +152,209 @@ def _patch_missing_stdio() -> None:
 
 
 def _install_all_patches() -> None:
-    """Apply every monkey-patch we install at startup.
+    """Apply every monkey-patch eagerly, ML ones included.
+
+    Used by the dev server, the bot, and multiprocessing children — all
+    contexts that either start ML work immediately or want a broken CUDA
+    wheel to fail loudly at startup rather than mid-request.
 
     ``_install_torch_from_numpy_patch`` runs before the transformers
     patches because both end up importing torch and we want the numpy ABI
     fallback installed before any caller hits ``torch.from_numpy``.
     """
+    _install_eager_patches()
+    _install_ml_patches()
+    logger.info("bootstrap: all patches installed")
+
+
+def _install_ml_patches() -> None:
+    """The patches that need torch or transformers loaded."""
+    _install_torch_patches()
+    _install_transformers_patches()
+    _check_cuda_kernels_or_degrade()
+
+
+def _install_eager_patches() -> None:
+    """The patches that cost nothing: no torch, no transformers, no model IO."""
     logger.info("bootstrap: installing platform patches (pid={})", os.getpid())
     _wire_ssl_certs()
     _apply_persisted_device_override()
     _install_hf_symlink_patch()
     _install_subprocess_console_patch()
-    _install_torch_from_numpy_patch()
+
+
+def _install_transformers_patches() -> None:
     _install_transformers_doc_patch()
     _install_transformers_torch_check_patch()
-    _check_cuda_kernels_or_degrade()
-    logger.info("bootstrap: all patches installed")
+
+
+def _install_torch_patches() -> None:
+    """Fired once ``torch`` has finished importing.
+
+    Deliberately does *not* run the kernel guard: this executes inside an
+    ``import torch`` statement, where raising would make importlib evict
+    torch and force a full multi-second re-import on the next try. The
+    guard is instead owned by ``core.device``, which runs it lazily before
+    reading the override and raises from ``resolve_device`` — the place
+    that already validates a forced CUDA request.
+    """
+    _install_torch_from_numpy_patch()
+
+
+class _PostExecLoader:
+    """Loader proxy that runs ``callback`` after the wrapped loader execs.
+
+    Everything not overridden is delegated, so PyInstaller's FrozenImporter
+    (which is finder and loader both) keeps working as itself.
+    """
+
+    def __init__(self, inner, callback) -> None:
+        self._inner = inner
+        self._callback = callback
+
+    def create_module(self, spec):
+        create = getattr(self._inner, "create_module", None)
+        return create(spec) if create is not None else None
+
+    def exec_module(self, module) -> None:
+        self._inner.exec_module(module)
+        try:
+            self._callback()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "deferred callback failed after importing {}: {!r}",
+                module.__name__,
+                exc,
+            )
+        finally:
+            # Step out of the way. Left in place this proxy stays as
+            # ``torch.__loader__`` for the process lifetime, routing every
+            # later loader call (get_source, get_data — linecache,
+            # importlib.resources, and the inspect.getsource paths the
+            # transformers doc patch exists for) through an extra
+            # ``__getattr__`` hop, and pinning the callback.
+            module.__loader__ = self._inner
+            if module.__spec__ is not None:
+                module.__spec__.loader = self._inner
+            self._callback = None
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class _DeferredImportFinder:
+    """``sys.meta_path`` finder that runs a callback the moment a named
+    module finishes importing.
+
+    This is the single facility for "do X, but only once someone actually
+    pays for Y". Three registrations use it today, all for the same reason:
+    the setup work is cheap, the import that makes it necessary is not, and
+    a launch pays for neither unless it uses the feature.
+
+      torch          ~4 s in the frozen bundle
+      transformers   ~3 s
+      nltk           ~1.6 s
+
+    Why a hook rather than an ``ensure_patches()`` call at each entry
+    point: a forgotten call site does not fail visibly, it fails as an
+    ``inspect.getsource`` OSError while a model class is being defined, or
+    as a vmap RuntimeError inside a forward pass. Hooking the import makes
+    the guarantee structural instead of a convention to remember.
+
+    Ordering: a callback runs *after* the module body executes, so
+    ``transformers``' own ``import torch`` fires the torch callback first
+    and the transformers callback never sees a half-initialised package.
+
+    The finder stays on ``sys.meta_path`` once its callbacks have fired
+    rather than unhooking itself. ``importlib._bootstrap._find_spec``
+    iterates the live list by index, so removing an entry from inside
+    another module's ``exec_module`` can shift a concurrent importer's
+    cursor past a finder it still needed — a spurious ModuleNotFoundError
+    in an unrelated module, and the API serves imports from a threadpool.
+    Staying costs one dict lookup per import.
+    """
+
+    def __init__(self) -> None:
+        self._pending: dict[str, Callable[[], None]] = {}
+
+    def register(self, module_name: str, callback: Callable[[], None]) -> None:
+        self._pending[module_name] = callback
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname not in self._pending:
+            return None
+
+        # Delegate to the finders that actually know where the module is
+        # (PathFinder in dev, PyInstaller's FrozenImporter when bundled).
+        spec = None
+        for finder in sys.meta_path:
+            if finder is self:
+                continue
+            find = getattr(finder, "find_spec", None)
+            if find is None:
+                continue
+            spec = find(fullname, path, target)
+            if spec is not None:
+                break
+        if spec is None or spec.loader is None:
+            return None
+
+        # Bind the callback to *execution*, not resolution. transformers
+        # probes for torch with a bare ``importlib.util.find_spec("torch")``
+        # (that is how ``is_torch_available()`` works) and throws the spec
+        # away — consuming the callback here would arm a trigger that never
+        # fires and leave torch unpatched.
+        spec.loader = _PostExecLoader(
+            spec.loader, functools.partial(self._fire, fullname)
+        )
+        return spec
+
+    def _fire(self, fullname: str) -> None:
+        callback = self._pending.pop(fullname, None)
+        if callback is None:
+            return  # already fired; a re-import is not a second chance
+        callback()
+
+
+def _get_deferred_finder() -> _DeferredImportFinder:
+    """The one finder instance, installed on first use."""
+    for finder in sys.meta_path:
+        if isinstance(finder, _DeferredImportFinder):
+            return finder
+    finder = _DeferredImportFinder()
+    sys.meta_path.insert(0, finder)
+    return finder
+
+
+def defer_until_imported(module_name: str, callback: Callable[[], None]) -> None:
+    """Run ``callback`` right after ``module_name`` next finishes importing.
+
+    Calls it immediately instead when the module is already in
+    ``sys.modules``, since the hook would then never fire. Public because
+    the PyInstaller runtime hook for nltk uses it too — see
+    ``packaging/pyi_hooks/rthooks/pyi_rth_nltk_lazy.py``.
+    """
+    if module_name in sys.modules:
+        callback()
+        return
+    _get_deferred_finder().register(module_name, callback)
+
+
+def _arm_ml_patch_hook() -> None:
+    """Defer the torch / transformers patches to first use of either."""
+    for name in ("torch", "transformers"):
+        if name in sys.modules:
+            # Already imported by something upstream — the hook would never
+            # fire, so patch now and keep the eager guarantee. Only the ML
+            # half: the caller ran _install_eager_patches one line ago, and
+            # repeating it would re-wire ssl and log "installing platform
+            # patches" twice, which reads as a bug in a support log.
+            logger.info("bootstrap: {} already imported, patching eagerly", name)
+            _install_ml_patches()
+            return
+    defer_until_imported("torch", _install_torch_patches)
+    defer_until_imported("transformers", _install_transformers_patches)
+    logger.info("bootstrap: ML patches deferred to first torch/transformers import")
 
 
 def _wire_ssl_certs() -> None:
@@ -205,26 +396,25 @@ def _apply_persisted_device_override() -> None:
 
 
 def _check_cuda_kernels_or_degrade() -> None:
-    """Degrade to CPU if installed torch wheel lacks kernels for this GPU,
-    unless the user explicitly forced CUDA — then re-raise so the mismatch
-    surfaces at bootstrap instead of mid-pipeline."""
-    from podcodex.core.device import assert_kernels_available, user_override
+    """Run the device kernel guard eagerly and re-raise a forced-CUDA mismatch.
 
-    override = user_override()
-    if override == "cpu":
-        return
+    The degrade logic itself lives in ``core.device.ensure_kernel_guard``
+    so the lazy path (bundled sidecar / MCP, where torch is imported on
+    first use) gets the same answer. This wrapper adds only the eager
+    contract the dev server and multiprocessing children want: if the user
+    forced ``PODCODEX_DEVICE=cuda`` on a wheel without kernels for their
+    GPU, fail at startup rather than mid-pipeline.
+    """
+    from podcodex.core.device import (
+        ensure_kernel_guard,
+        kernel_guard_error,
+        user_override,
+    )
 
-    try:
-        assert_kernels_available()
-    except RuntimeError as exc:
-        if override == "cuda":
-            raise
-        os.environ["PODCODEX_DEVICE"] = "cpu"
-        logger.warning(
-            "device-guard: degrading to CPU because installed torch wheel "
-            "lacks kernels for this GPU. Original error: {}",
-            exc,
-        )
+    ensure_kernel_guard()
+    error = kernel_guard_error()
+    if error is not None and user_override() == "cuda":
+        raise error
 
 
 def _check_system_ffmpeg() -> None:

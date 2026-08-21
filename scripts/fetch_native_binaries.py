@@ -1,5 +1,6 @@
 """Download yt-dlp static binary for the current host into
 ``src-tauri/binaries/`` so Tauri's externalBin discovery picks it up.
+(The server sidecar is not an externalBin entry; see build_server.py.)
 
 Run once before ``make bundle``. Re-run to refresh yt-dlp (gets bot-detection
 patches every couple weeks).
