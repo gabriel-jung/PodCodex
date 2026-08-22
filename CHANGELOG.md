@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.13] - 2026-08-22
+
+### Upgrading no longer warns that the upgrade failed
+
+- Updating on macOS means dragging the new app over the running one, and
+  0.2.12 read that as a half-applied install: it warned "Incomplete update"
+  and told you to reinstall. Nothing was wrong, and reinstalling did not help
+  because the warning was reading a version cached before the upgrade. It now
+  says what actually applies, which is usually just to restart the app, and
+  it stops being wrong after a restart.
+- The saved copy of the app's data is now discarded whenever the version
+  changes, so no part of the interface can keep answering with what the
+  previous version knew.
+
 ## [0.2.12] - 2026-08-22
 
 ### The app opens in about two seconds
