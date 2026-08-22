@@ -25,7 +25,23 @@ function readApiToken(): string {
   }
 }
 
+// Build-time app version, read from the single source `make bump` writes.
+// It busts the persisted query cache on every upgrade: entries written by a
+// previous version describe the previous backend, and several of them never
+// refetch (`staleTime: Infinity`), so without this they outlive the thing
+// they describe. `frontend/package.json` is not the source; it stays 0.0.0
+// and is not one of the four files `make bump` keeps in sync.
+function appVersion(): string {
+  try {
+    const toml = readFileSync(path.resolve(__dirname, "../pyproject.toml"), "utf-8");
+    return /^version\s*=\s*"([^"]+)"/m.exec(toml)?.[1] ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 export default defineConfig({
+  define: { __APP_VERSION__: JSON.stringify(appVersion()) },
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

@@ -15,7 +15,7 @@ import { useState } from "react";
  * exists so bug reports arrive with the environment already attached.
  */
 export default function AboutPanel() {
-  const { shell, backend, mismatch } = useVersions();
+  const { shell, backend, mismatch, needsRestart } = useVersions();
   const { data: about } = useQuery({
     queryKey: queryKeys.about(),
     queryFn: getAbout,
@@ -66,14 +66,24 @@ export default function AboutPanel() {
         <div className="rounded-lg border border-warning/40 bg-warning/5 p-4 text-sm space-y-1">
           <div className="flex items-center gap-2 font-medium text-warning">
             <AlertCircle className="w-4 h-4" />
-            Incomplete update
+            {needsRestart ? "Restart to finish updating" : "Incomplete update"}
           </div>
-          <p className="text-xs text-muted-foreground">
-            The app is version <code className="font-mono text-2xs">{shell}</code> but its
-            backend is still <code className="font-mono text-2xs">{backend}</code>. An
-            installer run replaced only part of the app. Reinstall the latest
-            version to get the two back in step.
-          </p>
+          {needsRestart ? (
+            <p className="text-xs text-muted-foreground">
+              Version <code className="font-mono text-2xs">{backend}</code> is installed,
+              but this window is still running{" "}
+              <code className="font-mono text-2xs">{shell}</code> because the app was
+              open while it updated. Quit PodCodex and open it again. There is no
+              need to reinstall.
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              The app is version <code className="font-mono text-2xs">{shell}</code> but
+              its backend is <code className="font-mono text-2xs">{backend}</code>. An
+              installer run replaced only part of the app. Reinstall the latest
+              version to get the two back in step.
+            </p>
+          )}
         </div>
       )}
 

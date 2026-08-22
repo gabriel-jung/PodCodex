@@ -154,14 +154,16 @@ function FfmpegMissingWarning({ expanded, onClick }: { expanded: boolean; onClic
  * About panel, which carries the full diagnostics.
  *
  * Collapsed sidebar has no room for the number, so it only claims space there
- * when the shell and backend versions disagree (a half-applied upgrade),
- * which is worth interrupting for.
+ * when the shell and backend versions disagree, which is worth interrupting
+ * for: either the app is waiting on a restart to finish an update, or an
+ * installer half-applied one.
  */
 function VersionLine({ expanded, onClick }: { expanded: boolean; onClick: () => void }) {
-  const { display, mismatch } = useVersions();
+  const { display, mismatch, needsRestart } = useVersions();
   if (!display) return null;
   if (!expanded && !mismatch) return null;
-  const label = mismatch ? `Version mismatch (v${display})` : `Version ${display}`;
+  const warning = needsRestart ? "Restart to finish updating" : "Version mismatch";
+  const label = mismatch ? `${warning} (v${display})` : `Version ${display}`;
   if (mismatch) {
     return (
       <button
@@ -171,7 +173,7 @@ function VersionLine({ expanded, onClick }: { expanded: boolean; onClick: () => 
         className={`mx-2 my-1 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 text-warning px-2 py-2 text-xs transition hover:bg-warning/20 ${expanded ? "" : "justify-center"}`}
       >
         <AlertCircle className="w-4 h-4 shrink-0" />
-        {expanded && <span className="truncate font-medium">Version mismatch</span>}
+        {expanded && <span className="truncate font-medium">{warning}</span>}
       </button>
     );
   }

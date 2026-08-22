@@ -98,6 +98,10 @@ const persistOptions = {
   queryClient,
   persister,
   maxAge: PERSIST_MAX_AGE_MS,
+  // Discard everything written by a different build. Persisted entries
+  // describe the backend (capabilities, versions) and several never refetch,
+  // so an upgrade must not inherit the previous build's answers.
+  buster: __APP_VERSION__,
   dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
 };
 

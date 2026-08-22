@@ -21,7 +21,12 @@ import { queryKeys } from "./queryKeys";
 
 /** localStorage key. Bump the version suffix when a persisted response
  *  shape changes, so an old entry is dropped rather than hydrated into
- *  components that no longer understand it. */
+ *  components that no longer understand it.
+ *
+ *  Upgrades do not need a bump: `buster` in main.tsx is the app version, so
+ *  every release discards the previous build's entries. The allowlist only
+ *  filters what is *written*; restore hydrates whatever is in storage, which
+ *  is why invalidation has to be explicit. */
 export const PERSIST_KEY = "podcodex-query-cache-v1";
 
 /** A stale entry is still worth showing for a moment, but a week-old show
@@ -44,7 +49,6 @@ const PERSISTED_KEYS: ReadonlySet<string> = new Set(
     queryKeys.shows(), // the home screen's content
     queryKeys.config(), // settings, so that screen is not blank
     queryKeys.capabilities(), // ffmpeg/extras, which gate UI affordances
-    queryKeys.shellVersion(), // not a network call; free to keep
   ].map((key) => JSON.stringify(key)),
 );
 
@@ -54,6 +58,13 @@ const PERSISTED_KEYS: ReadonlySet<string> = new Set(
 const PERSISTED_NAMESPACE = queryKeys.showMetaAll()[0];
 
 /**
+ * Deliberately not persisted: `shellVersion`. It is a local IPC call, so
+ * there is nothing to save, and persisting it survives the one event that
+ * changes it. An upgrade would restore the *previous* version from disk and
+ * never refetch it (`staleTime: Infinity`), while `health` reports the new
+ * one, so the version-mismatch banner would fire forever and a restart could
+ * not clear it.
+ *
  * Deliberately not persisted: `health`. It is the one query the boot banner
  * keys on, so a persisted copy would make the app claim the backend is up
  * before it is, and render capabilities from a day-old answer. It costs one
