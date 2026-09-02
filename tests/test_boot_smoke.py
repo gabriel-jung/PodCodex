@@ -30,7 +30,7 @@ def app(tmp_path, monkeypatch):
 # One representative path per route module in src/podcodex/api/routes/.
 # A missing entry means the router was never included in create_app().
 REPRESENTATIVE_PATHS = [
-    "/api/audio/clip",  # audio
+    "/api/audio/file",  # audio
     "/api/batch/start",  # batch
     "/api/bundle/preview",  # bundle
     "/api/config",  # config

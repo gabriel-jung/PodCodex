@@ -17,6 +17,7 @@ import "@fontsource-variable/jetbrains-mono";
 import App from "./App";
 import { queryKeys } from "./api/queryKeys";
 import { bumpArtworkEpoch, markArtworkOffline } from "./lib/showArtwork";
+import { useMutationErrorStore } from "./stores/mutationErrorStore";
 import {
   PERSIST_KEY,
   PERSIST_MAX_AGE_MS,
@@ -47,6 +48,19 @@ const queryClient = new QueryClient({
     },
   }),
   mutationCache: new MutationCache({
+    // Same reasoning for writes: a mutation whose component unmounted (or
+    // only reads `data`) rejects into nothing. Log it once here and hand it
+    // to the shell banner (pages/RootLayout.tsx), which is the one surface
+    // every route shares; per-site ErrorAlerts add context and retry where
+    // they exist, but this is the floor.
+    onError: (error, _variables, _context, mutation) => {
+      console.error(
+        "Mutation failed:",
+        mutation.options.mutationKey ? JSON.stringify(mutation.options.mutationKey) : "",
+        error,
+      );
+      useMutationErrorStore.getState().report(error);
+    },
     onSuccess: (_data, _variables, _context, mutation) => {
       for (const entry of mutation.meta?.invalidates ?? []) {
         if (typeof entry === "function") entry(queryClient);

@@ -464,40 +464,44 @@ def annotate_flags(segments: list[dict]) -> list[dict]:
 def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
     """Resolve source segments from the version DB.
 
-    Returns (segments, source_label).  Priority for 'auto':
-    verified pointer → corrected → transcript.  Raises ValueError if
-    nothing found.
+    Returns (segments, source_label). ``auto`` is ``versions.resolve_canonical_ref``,
+    the single definition of the canonical seglist (verified pointer, then
+    edited-first ``corrected``, then newest ``transcript``), so index,
+    translate, synthesize and the batch runner pick the same version the
+    speaker roster does. Raises ValueError if nothing found.
     """
     from podcodex.core._utils import normalize_lang
-    from podcodex.core.transcribe import load_transcript
     from podcodex.core.versions import (
         load_latest,
         load_version,
-        resolve_verified_source,
+        resolve_canonical_ref,
     )
 
     if source == "auto":
-        # Verified pointer wins when present; downstream consumers honor the
-        # user's canonical pick over the freshest output.
-        verified = resolve_verified_source(p.base)
-        if verified is not None:
-            v_step, v_id, _ = verified
+        ref = resolve_canonical_ref(p.base)
+        if ref is not None:
+            step, vid = ref
             try:
-                segs = load_version(p.base, v_step, v_id)
-                if segs:
-                    return segs, v_step
-            except Exception:
-                pass  # stale pointer; reconcile pass clears it asynchronously
-        segs = load_latest(p.base, "corrected")
-        if segs:
-            return segs, "corrected"
-        segs = load_transcript(str(p.audio_path))
-        if segs:
-            return segs, "transcript"
+                segs = load_version(p.base, step, vid)
+            except FileNotFoundError:
+                segs = None
+            if segs:
+                return segs, step
+        # The canonical ref is DB-only, so its file can be missing or
+        # truncated (a sync conflict). Walk the remaining versions rather
+        # than fail while a readable transcript sits on disk.
+        for step in ("corrected", "transcript"):
+            segs = load_latest(p.base, step)
+            if segs:
+                return segs, step
         raise ValueError("No transcript found — transcribe first")
 
+    # Explicit steps read from ``p.base`` directly. Going through the audio
+    # path would rebuild AudioPaths from ``p.audio_path``, which for an
+    # output_dir-only episode (no audio; the synthetic path *is* the base)
+    # lands one level too deep and never finds the transcript.
     if source == "transcript":
-        segs = load_transcript(str(p.audio_path))
+        segs = load_latest(p.base, "transcript")
         if segs:
             return segs, "transcript"
         raise ValueError("No transcript found — transcribe first")
@@ -519,7 +523,7 @@ def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
 def load_best_source(
     audio_path: str | None = None, output_dir: str | None = None
 ) -> list[dict]:
-    """Load the best available source segments (corrected → transcript fallback).
+    """Load the canonical source segments (see ``_resolve_source_segments``).
 
     Raises ValueError if no source segments are found.
     """

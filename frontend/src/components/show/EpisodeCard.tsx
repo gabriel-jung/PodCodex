@@ -138,7 +138,7 @@ function EpisodeCardInner({ ep, onOpen, onPlay, onDownload, onDelete, onDeleteEp
         </div>
 
         {/* Top-right: actions menu (visible on hover) */}
-        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition">
+        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition">
           <EpisodeMenu
             ep={ep}
             onOpen={handleOpen}

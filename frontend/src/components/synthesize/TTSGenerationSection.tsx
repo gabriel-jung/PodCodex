@@ -1,4 +1,5 @@
 import type { UseMutationResult } from "@tanstack/react-query";
+import { countLabel } from "@/lib/showCounts";
 import type { PipelineConfig, GeneratedSegment, SynthesisStatus } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import AdvancedToggle from "@/components/common/AdvancedToggle";
@@ -175,7 +176,7 @@ export default function TTSGenerationSection({
         {status?.voice_samples_extracted && (
           <span className="text-xs text-muted-foreground">
             From {sourceSummary}
-            {onlySpeakers.length > 0 && ` · ${onlySpeakers.length} speaker${onlySpeakers.length !== 1 ? "s" : ""}`}
+            {onlySpeakers.length > 0 && ` · ${countLabel(onlySpeakers.length, "speaker")}`}
             {force && " · force"}
           </span>
         )}

@@ -1,4 +1,5 @@
 import { CheckCircle2, AlertCircle } from "lucide-react";
+import { countLabel } from "@/lib/showCounts";
 import { RefreshIconButton } from "@/components/common/RefreshIconButton";
 import type { OllamaCheckResponse } from "@/api/types";
 
@@ -29,7 +30,7 @@ export default function OllamaStatus({ data, isFetching, onRefresh }: OllamaStat
         {reachable ? (
           <p className="font-medium">
             {modelCount > 0
-              ? `Connected, ${modelCount} model${modelCount === 1 ? "" : "s"}`
+              ? `Connected, ${countLabel(modelCount, "model")}`
               : "Connected, no models pulled yet"}
           </p>
         ) : (

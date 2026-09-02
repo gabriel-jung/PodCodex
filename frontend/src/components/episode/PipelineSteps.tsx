@@ -6,7 +6,7 @@
 
 import { lazy, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Episode } from "@/api/types";
-import { isEdited } from "@/lib/stepStatus";
+import { plainStatus, reviewStatus, translationsStatus, type PanelStatus } from "@/lib/stepStatus";
 import {
   Mic, Sparkles, Languages, AudioLines, Database,
 } from "lucide-react";
@@ -19,8 +19,6 @@ const IndexPanel = lazy(() => import("@/components/index/IndexPanel"));
 
 // ── Types ────────────────────────────────────────────────────────────────
 
-export type StepStatus = "done" | "partial" | false;
-
 export interface PipelineStepDef {
   key: "transcribe" | "correct" | "translate" | "synthesize" | "index";
   label: string;
@@ -29,27 +27,12 @@ export interface PipelineStepDef {
   section: "core" | "bonus";
   headerBadge: boolean;
   component: () => ReactNode;
-  status: (e: Episode) => StepStatus;
+  /** Review state from lib/stepStatus, the single vocabulary the StageCards,
+   *  PipelinePanel headers and sidebar dots share; callers map it to colour. */
+  status: (e: Episode) => PanelStatus;
   matchFiles?: (e: Episode, f: string) => boolean;
   detail?: (e: Episode) => string | undefined;
   provenanceKey?: "transcript" | "corrected";
-}
-
-/** Dot color tracks review progress, not freshness: a hand-edited version
- *  is "done" (green, reviewed), an untouched raw transcript/correction is
- *  "partial" (blue, needs review), absent is `false` (gray). */
-function editedStatus(present: boolean, provenance: unknown): StepStatus {
-  if (!present) return false;
-  return isEdited(provenance) ? "done" : "partial";
-}
-
-function translateStatus(e: Episode): StepStatus {
-  if (e.translations.length === 0) return false;
-  if (e.translate_status === "outdated") return "partial";
-  // Prefer provenance of the currently-targeted lang (first translation as
-  // fallback) so partial ↔ done tracks whether that version was edited.
-  const lang = e.translations[0];
-  return isEdited(e.provenance?.[lang]) ? "done" : "partial";
 }
 
 export type PipelineStepKey = PipelineStepDef["key"];
@@ -66,7 +49,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     section: "core",
     headerBadge: true,
     component: () => <TranscribePanel />,
-    status: (e) => editedStatus(!!e.transcribed, e.provenance?.transcript),
+    status: (e) => reviewStatus(!!e.transcribed, e.provenance?.transcript),
     // Kept legacy flat-file patterns (`.transcript.`, `.segments.`, …) so
     // pre-version-DB episodes still surface their artifacts.
     matchFiles: (_e, f) =>
@@ -87,7 +70,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     section: "core",
     headerBadge: true,
     component: () => <CorrectPanel />,
-    status: (e) => editedStatus(!!e.corrected, e.provenance?.corrected),
+    status: (e) => reviewStatus(!!e.corrected, e.provenance?.corrected),
     matchFiles: (_e, f) => f.includes("/corrected/") || f.includes(".corrected."),
     provenanceKey: "corrected",
   },
@@ -99,7 +82,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     section: "core",
     headerBadge: true,
     component: () => <IndexPanel />,
-    status: (e) => (e.indexed ? "done" : false),
+    status: (e) => plainStatus(!!e.indexed),
   },
   {
     key: "translate",
@@ -109,7 +92,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     section: "bonus",
     headerBadge: false,
     component: () => <TranslatePanel />,
-    status: translateStatus,
+    status: (e) => translationsStatus(e.translations, e.provenance),
     matchFiles: (e, f) =>
       f.includes(".translated.") ||
       e.translations.some((lang) => f.includes(`/${lang}/`) || f.includes(`.${lang}.`)),
@@ -123,7 +106,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     section: "bonus",
     headerBadge: false,
     component: () => <SynthesizePanel />,
-    status: (e) => (e.synthesized ? "done" : false),
+    status: (e) => plainStatus(!!e.synthesized),
     matchFiles: (_e, f) => f.includes("/synthesized/") || f.includes(".synthesized."),
   },
 ];
@@ -135,7 +118,7 @@ export const STEP_BY_KEY: Record<PipelineStepKey, PipelineStepDef> = Object.from
 // ── Small components ─────────────────────────────────────────────────────
 
 export function PipelineStatus({ episode }: { episode: Episode }) {
-  const prevStatus = useRef<Partial<Record<PipelineStepKey, StepStatus>>>({});
+  const prevStatus = useRef<Partial<Record<PipelineStepKey, PanelStatus>>>({});
   const timers = useRef<Partial<Record<PipelineStepKey, ReturnType<typeof setTimeout>>>>({});
   const [flashing, setFlashing] = useState<Set<PipelineStepKey>>(new Set());
 
@@ -144,7 +127,7 @@ export function PipelineStatus({ episode }: { episode: Episode }) {
     for (const s of PIPELINE_STEPS) {
       const prev = prevStatus.current[s.key];
       const curr = s.status(episode);
-      if (prev !== undefined && prev !== "done" && curr === "done") {
+      if (prev !== undefined && prev !== "ready" && curr === "ready") {
         justCompleted.push(s.key);
       }
       prevStatus.current[s.key] = curr;
@@ -171,7 +154,7 @@ export function PipelineStatus({ episode }: { episode: Episode }) {
     for (const t of Object.values(timers.current)) if (t) clearTimeout(t);
   }, []);
 
-  const visible = PIPELINE_STEPS.filter((s) => s.headerBadge && s.status(episode));
+  const visible = PIPELINE_STEPS.filter((s) => s.headerBadge && s.status(episode) !== "none");
   if (visible.length === 0) return null;
   return (
     <div className="flex gap-1.5">
@@ -182,7 +165,7 @@ export function PipelineStatus({ episode }: { episode: Episode }) {
           <span
             key={s.key}
             className={`text-2xs px-1.5 py-0.5 rounded-full ${
-              status === "partial"
+              status === "review"
                 ? "bg-info/15 text-info"
                 : "bg-success/15 text-success"
             } ${isFlashing ? "complete-flash" : ""}`}

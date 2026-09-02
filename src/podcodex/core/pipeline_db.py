@@ -789,22 +789,6 @@ def close_pipeline_db(show_folder: Path | str) -> None:
             db.close()
 
 
-def reset_pipeline_db(show_folder: Path | str) -> None:
-    """Close the cached instance AND delete the DB file, atomically.
-
-    Holding ``_dbs_lock`` across close + unlink stops a concurrent
-    ``get_pipeline_db`` (threadpool status poll) from re-opening the file
-    between the two steps and then writing every subsequent update to a
-    deleted inode until process restart.
-    """
-    show_folder = Path(show_folder)
-    with _dbs_lock:
-        db = _dbs.pop(show_folder, None)
-        if db:
-            db.close()
-        (show_folder / DB_FILENAME).unlink(missing_ok=True)
-
-
 def mark_step(show_dir: Path, stem: str, **fields: object) -> None:
     """Safely update pipeline status — logs and swallows errors.
 

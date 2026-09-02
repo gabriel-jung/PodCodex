@@ -1,6 +1,7 @@
 /** Browsable history of recent batch runs. Shows outcomes and links to affected episodes. */
 
 import { useState } from "react";
+import { countLabel } from "@/lib/showCounts";
 import { useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -30,7 +31,7 @@ export default function BatchHistoryModal() {
           <div className="flex items-center justify-between">
             <div>
               <DialogTitle>Recent batches</DialogTitle>
-              <DialogDescription>Last {entries.length} batch run{entries.length === 1 ? "" : "s"}. Click an episode to open it.</DialogDescription>
+              <DialogDescription>Last {countLabel(entries.length, "batch run")}. Click an episode to open it.</DialogDescription>
             </div>
             {entries.length > 0 && (
               <Button onClick={clear} variant="ghost" size="sm" className="text-muted-foreground">
@@ -102,7 +103,7 @@ function BatchHistoryRow({ entry, onNavigate }: { entry: BatchHistoryEntry; onNa
           <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
             <span>{timeAgo(entry.timestamp) || "just now"}</span>
             <span>·</span>
-            <span>{entry.totalCount} episode{entry.totalCount === 1 ? "" : "s"}</span>
+            <span>{countLabel(entry.totalCount, "episode")}</span>
             {entry.successCount > 0 && (
               <span className="text-success">{entry.successCount} done</span>
             )}

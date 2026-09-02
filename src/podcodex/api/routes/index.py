@@ -49,94 +49,6 @@ def index_config() -> dict:
     }
 
 
-# ── Sources (available files to index) ───────────────────
-
-
-@router.get("/sources")
-def index_sources(
-    audio_path: str | None = Query(None),
-    output_dir: str | None = Query(None),
-) -> list[dict]:
-    """List available source files for indexing (transcript, corrected, translations).
-
-    Returns a list of {key, label, detail, exists} dicts, ordered from most to
-    least advanced.  The first entry with exists=True is the recommended default.
-    Includes provenance detail (model, provider) when available.
-    """
-    from podcodex.core.translate import list_translations
-    from podcodex.core.versions import get_latest_provenance, is_edited
-
-    require_audio_or_output(audio_path, output_dir)
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-
-    def _version_detail(step: str, lang: str | None = None) -> str:
-        """Build a short human-readable detail string from the latest version's provenance."""
-        try:
-            meta = get_latest_provenance(p.base, step)
-            if not meta:
-                return ""
-            parts: list[str] = []
-            if meta.get("model"):
-                parts.append(meta["model"])
-            params = meta.get("params") or {}
-            if params.get("llm_provider_profile"):
-                parts.append(str(params["llm_provider_profile"]))
-            elif params.get("llm_provider"):
-                # Backward-compat with old provenance entries.
-                parts.append(str(params["llm_provider"]))
-            elif params.get("llm_mode"):
-                parts.append(str(params["llm_mode"]))
-            if lang:
-                parts.append(lang.replace("_", " ").title())
-            if is_edited(meta):
-                parts.append("edited")
-            return ", ".join(parts)
-        except Exception:
-            return ""
-
-    sources: list[dict] = []
-
-    # Translations (most advanced) — one entry per language
-    for lang in list_translations(audio_path, output_dir=output_dir):
-        detail = _version_detail(lang, lang)
-        sources.append(
-            {
-                "key": lang,
-                "label": lang.replace("_", " ").title(),
-                "detail": detail,
-                "exists": True,
-            }
-        )
-
-    # Corrected
-    from podcodex.core.versions import has_version as _has_version
-
-    corrected_exists = _has_version(p.base, "corrected")
-    detail = _version_detail("corrected") if corrected_exists else ""
-    sources.append(
-        {
-            "key": "corrected",
-            "label": "Corrected",
-            "detail": detail,
-            "exists": corrected_exists,
-        }
-    )
-
-    # Transcript
-    transcript_exists = _has_version(p.base, "transcript")
-    detail = _version_detail("transcript") if transcript_exists else ""
-    sources.append(
-        {
-            "key": "transcript",
-            "label": "Transcript",
-            "detail": detail,
-            "exists": transcript_exists,
-        }
-    )
-
-    return sources
-
-
 # ── Status ───────────────────────────────────────────────
 
 
@@ -188,27 +100,6 @@ def index_status(
 
 
 # ── Collections ──────────────────────────────────────────
-
-
-@router.get("/collections")
-def list_collections(
-    show: str = Query(""),
-) -> list[dict]:
-    """List indexed collections, optionally filtered by show."""
-    local = get_index_store()
-    result = []
-    for col_name in collections_for_show_name(show, store=local):
-        info = local.get_collection_info(col_name)
-        episodes = local.list_episodes(col_name)
-        result.append(
-            {
-                "name": col_name,
-                "model": info.get("model", "") if info else "",
-                "chunker": info.get("chunker", "") if info else "",
-                "episode_count": len(episodes),
-            }
-        )
-    return result
 
 
 @router.get("/episode-collections")

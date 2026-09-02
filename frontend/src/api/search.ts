@@ -1,5 +1,6 @@
 import type { BatchRequest, IndexRequest, IndexStatus, SearchRequest, SearchResult, TaskResponse, VersionEntry } from "./types";
 import { json } from "./client";
+import { episodeParams } from "./versions";
 
 // ── Batch ──────────────────────────────────
 
@@ -24,9 +25,7 @@ export const getIndexStatus = (
   show: string,
   outputDir?: string | null,
 ) => {
-  const params = new URLSearchParams({ show });
-  if (audioPath) params.set("audio_path", audioPath);
-  if (outputDir) params.set("output_dir", outputDir);
+  const params = episodeParams(audioPath, outputDir, { show });
   return json<{ combinations: IndexStatus[]; db_exists: boolean }>(
     `/api/index/status?${params}`,
   );
@@ -34,9 +33,7 @@ export const getIndexStatus = (
 
 /** Fetch all versions across all steps for an episode (newest first). */
 export const getAllVersions = (audioPath?: string | null, outputDir?: string | null) => {
-  const params = new URLSearchParams();
-  if (audioPath) params.set("audio_path", audioPath);
-  if (outputDir) params.set("output_dir", outputDir);
+  const params = episodeParams(audioPath, outputDir);
   return json<VersionEntry[]>(`/api/shows/versions?${params}`);
 };
 
@@ -46,9 +43,7 @@ export const deleteAnyVersion = (
   versionId: string,
   outputDir?: string | null,
 ) => {
-  const params = new URLSearchParams();
-  if (audioPath) params.set("audio_path", audioPath);
-  if (outputDir) params.set("output_dir", outputDir);
+  const params = episodeParams(audioPath, outputDir);
   return json<{ status: string; version_id: string }>(
     `/api/shows/versions/${encodeURIComponent(versionId)}?${params}`,
     { method: "DELETE" },
@@ -62,9 +57,7 @@ export const setVerifiedVersion = (
   step: "transcript" | "corrected" | null,
   versionId: string | null,
 ) => {
-  const params = new URLSearchParams();
-  if (audioPath) params.set("audio_path", audioPath);
-  if (outputDir) params.set("output_dir", outputDir);
+  const params = episodeParams(audioPath, outputDir);
   return json<{
     status: string;
     verified: { step: string; version_id: string } | null;
@@ -89,9 +82,7 @@ export const getEpisodeCollections = (
   show: string,
   outputDir?: string | null,
 ) => {
-  const params = new URLSearchParams({ show });
-  if (audioPath) params.set("audio_path", audioPath);
-  if (outputDir) params.set("output_dir", outputDir);
+  const params = episodeParams(audioPath, outputDir, { show });
   return json<EpisodeCollection[]>(`/api/index/episode-collections?${params}`);
 };
 
@@ -101,9 +92,7 @@ export const deleteEpisodeCollection = (
   collection: string,
   outputDir?: string | null,
 ) => {
-  const params = new URLSearchParams({ show, collection });
-  if (audioPath) params.set("audio_path", audioPath);
-  if (outputDir) params.set("output_dir", outputDir);
+  const params = episodeParams(audioPath, outputDir, { show, collection });
   return json<{ status: string; still_indexed: boolean }>(
     `/api/index/episode?${params}`,
     { method: "DELETE" },
@@ -158,9 +147,7 @@ export const getIndexInspect = (
   chunking: string,
   outputDir?: string | null,
 ) => {
-  const params = new URLSearchParams({ show, model, chunking });
-  if (audioPath) params.set("audio_path", audioPath);
-  if (outputDir) params.set("output_dir", outputDir);
+  const params = episodeParams(audioPath, outputDir, { show, model, chunking });
   return json<InspectResponse>(`/api/index/inspect?${params}`);
 };
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { sourceRefFor } from "@/lib/episodeRef";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
@@ -38,9 +39,10 @@ export default function IndexPanel() {
   const { data: config } = useIndexConfig();
 
   const { data: status } = useQuery({
-    queryKey: queryKeys.indexStatus(audioPath ?? outputDir, showName),
+    queryKey: queryKeys.indexStatus(sourceRefFor(audioPath, outputDir), showName),
     queryFn: () => getIndexStatus(audioPath, showName, outputDir),
-    enabled: !!audioPath || !!outputDir,
+    // `show` is a required query param; an empty one is a 422, not a miss.
+    enabled: (!!audioPath || !!outputDir) && !!showName,
   });
 
   const expanded = task.expanded || !episode?.indexed;

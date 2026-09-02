@@ -1199,10 +1199,10 @@ def _load_status_context(path: Path) -> _StatusContext:
     # The on-disk half is not optional: `populate_from_scan` above derives
     # these very flags from the step directories, and a DB bootstrapped that
     # way has no `versions` rows at all. Reconciling against rows alone would
-    # undo the bootstrap in the same call, and `POST /resync` (which deletes
-    # the DB file, versions table included) would report a whole library as
-    # not started. Read from the already-cached file list, so this costs no
-    # extra syscalls.
+    # undo the bootstrap in the same call, and a DB lost to a sync conflict
+    # (rebuilt from scan, versions table included) would report a whole
+    # library as not started. Read from the already-cached file list, so this
+    # costs no extra syscalls.
     # A stem whose walk failed has an untrustworthy file list: "no files" there
     # means "could not look", so leave its status alone until a clean scan.
     for step, flag in STEP_FLAG.items():
@@ -1719,31 +1719,6 @@ async def episode_speakers(show_folder: str, stem: str) -> EpisodeSpeakersRespon
     return await asyncio.get_running_loop().run_in_executor(
         None, _compute_episode_speakers, path, stem
     )
-
-
-@router.post("/{show_folder:path}/resync")
-def resync_pipeline_db(show_folder: str) -> dict:
-    """Force-rebuild pipeline.db from filesystem scan."""
-    # Registered-show gate: resync deletes and rewrites pipeline.db, so confine
-    # it to a tracked show rather than any directory on disk.
-    path = require_registered_show(show_folder)
-    from podcodex.core.pipeline_db import reset_pipeline_db
-
-    reset_pipeline_db(path)
-    db = get_pipeline_db(path)
-    # Resync deletes the DB file, versions table included, so the index has to
-    # be rebuilt from disk or the repair would strand every transcript. Before
-    # the episode rows, so an interrupted resync retries rather than leaving a
-    # populated DB with a half-rebuilt index.
-    restored = backfill_versions_from_disk(path)
-    episodes = scan_folder(path)
-    if episodes:
-        db.populate_from_scan(episodes)
-    return {
-        "status": "resynced",
-        "episode_count": len(episodes),
-        "versions_restored": restored,
-    }
 
 
 class DeleteEpisodeRequest(BaseModel):

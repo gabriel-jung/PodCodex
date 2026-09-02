@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { countLabel } from "@/lib/showCounts";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { SearchResult } from "@/api/types";
 import { useEpisodeStore, useSearchStore } from "@/stores";
@@ -8,6 +9,7 @@ import { showArtworkSrc, useArtworkEpoch } from "@/lib/showArtwork";
 import { queryKeys } from "@/api/queryKeys";
 import { errorMessage, getShowName } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import { ArrowDownNarrowWide, ArrowUpNarrowWide, Settings2, Shuffle } from "lucide-react";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import MissingDependency from "@/components/common/MissingDependency";
@@ -75,7 +77,13 @@ export default function SearchPanel(props: SearchPanelProps) {
     queryFn: getSearchConfig,
   });
 
-  const { data: stats } = useQuery({
+  const {
+    data: stats,
+    isPending: statsPending,
+    isError: statsFailed,
+    error: statsError,
+    refetch: refetchStats,
+  } = useQuery({
     queryKey: queryKeys.searchStats(showName),
     queryFn: () => getIndexStats(showName),
     enabled: !!showName && isShowScope,
@@ -225,9 +233,11 @@ export default function SearchPanel(props: SearchPanelProps) {
   const { has: hasCap, isLoaded: capsLoaded } = useCapabilities();
   const hasRAG = hasCap("embeddings") && hasCap("torch");
 
-  // Prerequisite checks
+  // Prerequisite checks. Show scope waits for the stats request to settle:
+  // a pending or failed request must not read as "nothing indexed", which
+  // would send the user off to re-index episodes they already indexed.
   const prereq = isShowScope
-    ? (stats?.total_chunks ?? 0) === 0
+    ? !statsPending && !statsFailed && (stats?.total_chunks ?? 0) === 0
       ? "No indexed episodes yet. Index episodes first from the episode page."
       : undefined
     : !episode?.indexed
@@ -251,7 +261,7 @@ export default function SearchPanel(props: SearchPanelProps) {
       {/* Stats bar (show scope only) */}
       {isShowScope && stats && stats.total_chunks > 0 && (
         <div className="px-6 py-2 border-b border-border flex items-center gap-4 text-xs text-muted-foreground">
-          <span>{stats.total_episodes} episode{stats.total_episodes !== 1 ? "s" : ""} indexed</span>
+          <span>{countLabel(stats.total_episodes, "episode")} indexed</span>
           <span>{stats.total_chunks} chunks</span>
           {stats.collections.length > 1 && (
             <span>{stats.collections.length} collections</span>
@@ -272,6 +282,13 @@ export default function SearchPanel(props: SearchPanelProps) {
             description="Semantic search requires torch, sentence-transformers, and other dependencies from the rag extra."
           />
         </div>
+      ) : isShowScope && statsFailed ? (
+        <div className="p-12">
+          <ErrorAlert error={statsError} onRetry={() => void refetchStats()} />
+        </div>
+      ) : isShowScope && statsPending ? (
+        // Neutral placeholder, same reasoning as the capabilities gate above.
+        <div className="flex-1" />
       ) : prereq ? (
         <div className={`${isShowScope ? "p-12 text-center" : "p-6"} text-muted-foreground text-sm`}>{prereq}</div>
       ) : (<>
@@ -585,16 +602,16 @@ export default function SearchPanel(props: SearchPanelProps) {
                     <>No results found{timingLabel ? ` in ${timingLabel}.` : "."}</>
                   ) : mode === "exact" ? (
                     <>
-                      {`Found ${displayed.length} result${displayed.length !== 1 ? "s" : ""}`}
+                      {`Found ${countLabel(displayed.length, "result")}`}
                       {timingLabel ? ` in ${timingLabel}` : ""}
                       {` (`}
                       {exact.length} exact
-                      {accent.length > 0 && `, ${accent.length} variant${accent.length !== 1 ? "s" : ""}`}
-                      {fuzzy.length > 0 && `, ${fuzzy.length} near-typo${fuzzy.length !== 1 ? "s" : ""}`}
+                      {accent.length > 0 && `, ${countLabel(accent.length, "variant")}`}
+                      {fuzzy.length > 0 && `, ${countLabel(fuzzy.length, "near-typo")}`}
                       {`)`}
                     </>
                   ) : (
-                    <>{`Found ${results.length} result${results.length !== 1 ? "s" : ""}`}{timingLabel ? ` in ${timingLabel}.` : "."}</>
+                    <>{`Found ${countLabel(results.length, "result")}`}{timingLabel ? ` in ${timingLabel}.` : "."}</>
                   )}
                 </div>
                 {displayed.map((r) => (

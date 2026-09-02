@@ -437,7 +437,7 @@ function DirRow({
         <button
           onClick={onSelect}
           className="text-xs text-primary hover:text-primary/80 opacity-0
-                     group-hover:opacity-100 transition px-2"
+                     group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100 transition px-2"
         >
           Select
         </button>

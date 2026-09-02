@@ -379,6 +379,10 @@ const SegmentRow = memo(function SegmentRow({
         </div>
       </div>
 
+      {isChanged && !isPendingRemoval && (
+        <div className="mt-0.5 text-2xs leading-none text-info/80">changed</div>
+      )}
+
       {isFlagged && flagReasonText && (
         <div className="flex items-center gap-1 mt-0.5 text-2xs leading-none text-warning/80">
           <AlertTriangle className="w-2.5 h-2.5" />

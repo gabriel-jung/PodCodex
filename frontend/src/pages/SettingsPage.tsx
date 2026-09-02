@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { countLabel } from "@/lib/showCounts";
 import { useNavigate } from "@tanstack/react-router";
 import { settingsRoute } from "@/router";
 import { getModels, deleteModel, getExtras, installExtra, removeExtra, getSecretsStatus, updateSecrets, healthQueryOptions } from "@/api/client";
@@ -45,6 +46,7 @@ import { usePipelineConfigStore } from "@/stores/pipelineConfigStore";
 import { useFlagPatternsStore } from "@/stores/flagPatternsStore";
 import { inputWidth, selectClass } from "@/lib/utils";
 import { ErrorAlert } from "@/components/ui/error-alert";
+import InlineConfirm from "@/components/common/InlineConfirm";
 
 // Plugins panel runs `uv sync --extra X` to install Python extras — only
 // meaningful when a venv exists (dev mode). The bundled sidecar has its
@@ -536,38 +538,44 @@ function FlagPatternsSection() {
 
 // ── Plugins ──────────────────────────────────
 
+/** What an extra install or removal changes. Extras gate which whisper and
+ *  embedding models pipelineConfig serves, and the model cache list. */
+const EXTRAS_INVALIDATIONS = [
+  queryKeys.capabilities(),
+  queryKeys.health(),
+  queryKeys.pipelineConfig(),
+  queryKeys.models(),
+] as const;
+
 function PluginsPanel() {
   const qc = useQueryClient();
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: queryKeys.capabilities(),
     queryFn: getExtras,
   });
 
   const [pendingAction, setPendingAction] = useState<string | null>(null);
 
+  // Cache-level so the sweep survives leaving the panel mid-install. That
+  // only runs on success; a `uv sync` that fails halfway has still changed
+  // the venv, so the error path sweeps too.
+  const invalidateExtras = () => {
+    for (const key of EXTRAS_INVALIDATIONS) qc.invalidateQueries({ queryKey: key });
+  };
   const installMut = useMutation({
     mutationFn: (extra: string) => installExtra(extra),
     onMutate: (extra) => setPendingAction(extra),
-    onSettled: () => {
-      setPendingAction(null);
-      qc.invalidateQueries({ queryKey: queryKeys.capabilities() });
-      qc.invalidateQueries({ queryKey: queryKeys.health() });
-      // Extras gate which whisper / embedding models pipelineConfig serves.
-      qc.invalidateQueries({ queryKey: queryKeys.pipelineConfig() });
-      qc.invalidateQueries({ queryKey: queryKeys.models() });
-    },
+    onError: invalidateExtras,
+    onSettled: () => setPendingAction(null),
+    meta: { invalidates: EXTRAS_INVALIDATIONS },
   });
 
   const removeMut = useMutation({
     mutationFn: (extra: string) => removeExtra(extra),
     onMutate: (extra) => setPendingAction(extra),
-    onSettled: () => {
-      setPendingAction(null);
-      qc.invalidateQueries({ queryKey: queryKeys.capabilities() });
-      qc.invalidateQueries({ queryKey: queryKeys.health() });
-      qc.invalidateQueries({ queryKey: queryKeys.pipelineConfig() });
-      qc.invalidateQueries({ queryKey: queryKeys.models() });
-    },
+    onError: invalidateExtras,
+    onSettled: () => setPendingAction(null),
+    meta: { invalidates: EXTRAS_INVALIDATIONS },
   });
 
   const extras = data?.extras ?? {};
@@ -580,7 +588,7 @@ function PluginsPanel() {
         <h2 className="text-base font-semibold flex items-center gap-2">
           <Puzzle className="w-4 h-4" /> Plugins
         </h2>
-        <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-7">
+        <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-7" aria-label="Refresh" title="Refresh">
           <RefreshCw className="w-3.5 h-3.5" />
         </Button>
       </div>
@@ -591,11 +599,13 @@ function PluginsPanel() {
       </p>
 
       <div className="text-xs text-muted-foreground">
-        {installedCount} of {entries.length} plugin{entries.length !== 1 ? "s" : ""} installed
+        {installedCount} of {countLabel(entries.length, "plugin")} installed
       </div>
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : isError ? (
+        <ErrorAlert error={error} onRetry={() => void refetch()} />
       ) : (
         <div className="border border-border rounded-lg divide-y divide-border">
           {entries.map(([name, info]) => {
@@ -655,7 +665,7 @@ function PluginsPanel() {
 
 function ModelCachePanel() {
   const qc = useQueryClient();
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: queryKeys.models(),
     queryFn: getModels,
   });
@@ -680,7 +690,7 @@ function ModelCachePanel() {
         <h2 className="text-base font-semibold flex items-center gap-2">
           <HardDrive className="w-4 h-4" /> Model Cache
         </h2>
-        <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-7">
+        <Button variant="ghost" size="sm" onClick={() => refetch()} className="h-7" aria-label="Refresh" title="Refresh">
           <RefreshCw className="w-3.5 h-3.5" />
         </Button>
       </div>
@@ -724,6 +734,8 @@ function ModelCachePanel() {
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : isError ? (
+        <ErrorAlert error={error} onRetry={() => void refetch()} />
       ) : models.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No cached models yet. Models are downloaded automatically the first
@@ -732,7 +744,7 @@ function ModelCachePanel() {
       ) : (
         <>
           <div className="text-xs text-muted-foreground">
-            {models.length} model{models.length !== 1 ? "s" : ""} &middot; {totalMB.toFixed(1)} MB total
+            {countLabel(models.length, "model")} &middot; {totalMB.toFixed(1)} MB total
           </div>
           <div className="border border-border rounded-lg overflow-hidden">
             <table className="w-full text-sm">
@@ -781,6 +793,8 @@ function ModelCachePanel() {
                           size="sm"
                           className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
                           onClick={() => setDeleting(m.id)}
+                          aria-label={`Delete ${m.name}`}
+                          title="Delete cached model"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </Button>
@@ -817,7 +831,7 @@ const SECRET_LABELS: Record<string, { label: string; hint: React.ReactNode; used
 
 function CredentialsPanel() {
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: queryKeys.secrets(),
     queryFn: getSecretsStatus,
   });
@@ -868,6 +882,8 @@ function CredentialsPanel() {
           <div className="text-sm text-muted-foreground flex items-center gap-2">
             <Loader2 className="w-4 h-4 animate-spin" /> Loading…
           </div>
+        ) : isError ? (
+          <ErrorAlert error={error} onRetry={() => void refetch()} />
         ) : (
           <div className="space-y-4">
             {data?.items.map((item) => {
@@ -1018,6 +1034,14 @@ function ApiKeysSection() {
           ))}
         </div>
       )}
+      {deleteMut.isError && (
+        <ErrorAlert
+          error={deleteMut.error}
+          onRetry={deleteMut.variables ? () => deleteMut.mutate(deleteMut.variables!) : undefined}
+          onDismiss={() => deleteMut.reset()}
+          compact
+        />
+      )}
 
       {adding ? (
         <div className="border border-border rounded-lg p-4 space-y-3">
@@ -1112,6 +1136,7 @@ function ApiKeyRow({
 }) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [draftValue, setDraftValue] = useState("");
   const [draftProvider, setDraftProvider] = useState(entry.suggested_provider ?? "");
 
@@ -1124,6 +1149,20 @@ function ApiKeyRow({
       setDraftValue("");
     },
   });
+
+  // The stored value cannot be recovered from the UI, so the same row-level
+  // confirm the model cache uses stands between the icon and the delete.
+  if (confirmingDelete) {
+    return (
+      <div className="px-4 py-3">
+        <InlineConfirm
+          message={`Delete the "${entry.name}" key? The stored value cannot be recovered.`}
+          onConfirm={() => { setConfirmingDelete(false); onDelete(); }}
+          onCancel={() => setConfirmingDelete(false)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="px-4 py-3 space-y-2">
@@ -1152,7 +1191,7 @@ function ApiKeyRow({
             variant="ghost"
             size="sm"
             className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
-            onClick={onDelete}
+            onClick={() => setConfirmingDelete(true)}
             aria-label="Delete key"
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -1270,6 +1309,14 @@ function ProviderProfilesSection() {
           />
         ))}
       </div>
+      {deleteMut.isError && (
+        <ErrorAlert
+          error={deleteMut.error}
+          onRetry={deleteMut.variables ? () => deleteMut.mutate(deleteMut.variables!) : undefined}
+          onDismiss={() => deleteMut.reset()}
+          compact
+        />
+      )}
 
       {adding ? (
         <div className="border border-border rounded-lg p-4 space-y-3">
@@ -1329,7 +1376,20 @@ function ProviderProfileRow({
   saving: boolean;
 }) {
   const [editing, setEditing] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [draft, setDraft] = useState(profile.base_url ?? "");
+
+  if (confirmingDelete) {
+    return (
+      <div className="px-4 py-3">
+        <InlineConfirm
+          message={`Delete the "${profile.name}" profile?`}
+          onConfirm={() => { setConfirmingDelete(false); onDelete(); }}
+          onCancel={() => setConfirmingDelete(false)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="px-4 py-3 space-y-2">
@@ -1363,7 +1423,7 @@ function ProviderProfileRow({
               variant="ghost"
               size="sm"
               className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
-              onClick={onDelete}
+              onClick={() => setConfirmingDelete(true)}
               aria-label="Delete profile"
             >
               <Trash2 className="w-3.5 h-3.5" />

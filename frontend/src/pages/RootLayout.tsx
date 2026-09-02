@@ -3,10 +3,15 @@ import { useQuery } from "@tanstack/react-query";
 import { Outlet } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import { healthQueryOptions } from "@/api/client";
+import { Button } from "@/components/ui/button";
+import { errorMessage } from "@/lib/utils";
+import { restartApp } from "@/lib/restartApp";
+import { isTauri } from "@/platform/isTauri";
 import PanelLoading from "@/components/common/PanelLoading";
 import AudioBar from "@/components/layout/AudioBar";
 import { sidebarPad } from "@/lib/sidebar";
 import TaskBar from "@/components/layout/TaskBar";
+import MutationErrorBanner from "@/components/layout/MutationErrorBanner";
 import CommandPalette from "@/components/CommandPalette";
 import ShortcutsHelp from "@/components/ShortcutsHelp";
 import BatchHistoryModal from "@/components/BatchHistoryModal";
@@ -69,7 +74,7 @@ export default function RootLayout() {
   // patient enough to wait out a slow first launch, and its first success
   // is what refetches everything else (see main.tsx). Every observer of
   // this key must agree on the schedule.
-  const { data: health, error } = useQuery(healthQueryOptions);
+  const { data: health, error, refetch, isFetching } = useQuery(healthQueryOptions);
 
   const elapsedMs = useElapsedMs(!health);
 
@@ -81,9 +86,24 @@ export default function RootLayout() {
             Backend not reachable
           </h1>
           <p className="text-muted-foreground text-sm">
-            Make sure the API is running on port 18811
+            PodCodex could not reach its local backend.
           </p>
-          <code className="text-xs text-muted-foreground block">make dev-api</code>
+          <p className="text-xs text-muted-foreground/80">{errorMessage(error)}</p>
+          <div className="flex items-center justify-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => void refetch()} disabled={isFetching}>
+              {isFetching ? "Retrying..." : "Retry"}
+            </Button>
+            {isTauri() && (
+              <Button size="sm" onClick={() => void restartApp()}>
+                Restart app
+              </Button>
+            )}
+          </div>
+          {!import.meta.env.PROD && (
+            <code className="text-xs text-muted-foreground block">
+              make dev-api (port 18811)
+            </code>
+          )}
           {displayVersion && (
             <p className="font-mono text-xs text-muted-foreground/60">v{displayVersion}</p>
           )}
@@ -120,6 +140,7 @@ export default function RootLayout() {
             <Outlet />
           </Suspense>
         </main>
+        <MutationErrorBanner />
         <TaskBar />
         <AudioBar />
         <ConfirmDialogHost />

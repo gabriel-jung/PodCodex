@@ -418,8 +418,8 @@ def test_status_reconcile_keeps_flags_bootstrapped_from_disk(tmp_path):
 
     `populate_from_scan` derives transcribed/synthesized from the step
     directories and writes no `versions` rows, so reconciling against rows
-    alone would undo the bootstrap in the same call, and `POST /resync`
-    (which deletes the DB file) would report a whole library as not started.
+    alone would undo the bootstrap in the same call, and a DB rebuilt from
+    scan would report a whole library as not started.
     """
     from podcodex.api.routes.shows import _load_status_context
     from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db

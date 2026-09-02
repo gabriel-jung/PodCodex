@@ -1,6 +1,7 @@
 /** Global task progress bar — pinned above the audio bar like a persistent status strip. */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { countLabel } from "@/lib/showCounts";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useAudioStore, useTaskStore, useBatchHistoryStore } from "@/stores";
@@ -238,7 +239,7 @@ function BatchResultSummary({ result, onDismiss }: { result: BatchResult; onDism
                 className="flex items-center gap-1 text-xs text-destructive hover:underline"
               >
                 {showErrors ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                {result.errors.length} error{result.errors.length !== 1 ? "s" : ""}
+                {countLabel(result.errors.length, "error")}
               </button>
               {showErrors && (
                 <div className="mt-2 max-h-40 overflow-y-auto space-y-1.5">
@@ -360,10 +361,21 @@ function BatchStrip() {
           className="px-4 py-2 flex items-center gap-3 text-xs cursor-pointer hover:bg-accent/30 transition"
           onClick={() => batchEpisodes.length > 0 && setExpanded(!expanded)}
         >
-          <Loader2
-            className={`w-3.5 h-3.5 shrink-0 ${isFinished ? "text-muted-foreground" : "text-primary animate-spin"}`}
-          />
-          <span className="text-foreground font-medium shrink-0">{stepLabel}</span>
+          {/* The row keeps its whole-surface click; the label is the
+              keyboard target, a real button so the Cancel/Dismiss buttons
+              beside it are not nested inside another control. */}
+          <button
+            type="button"
+            disabled={batchEpisodes.length === 0}
+            aria-expanded={batchEpisodes.length > 0 ? expanded : undefined}
+            onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+            className="flex items-center gap-3 shrink-0 rounded outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+          >
+            <Loader2
+              className={`w-3.5 h-3.5 shrink-0 ${isFinished ? "text-muted-foreground" : "text-primary animate-spin"}`}
+            />
+            <span className="text-foreground font-medium">{stepLabel}</span>
+          </button>
           <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
             <div
               className={`h-full rounded-full transition-all duration-300 ${progressBarColor({ isFailed, isCancelled, isDone })}`}
@@ -410,10 +422,14 @@ function BatchStrip() {
           <div className="px-4 pb-2 max-h-48 overflow-y-auto">
             {episodeStatuses.map(({ title, stem, status, error }, i) => {
               const Icon = STATUS_ICON[status];
+              // A real button when it navigates: the row is the only way to
+              // reach the episode a batch entry belongs to.
+              const Row: "button" | "div" = batchFolder ? "button" : "div";
               return (
-                <div
+                <Row
                   key={i}
-                  className={`flex items-center gap-2 py-0.5 text-xs ${batchFolder ? "cursor-pointer hover:bg-accent/50 -mx-2 px-2 rounded" : ""}`}
+                  type={batchFolder ? "button" : undefined}
+                  className={`flex items-center gap-2 py-0.5 text-xs w-full text-left ${batchFolder ? "cursor-pointer hover:bg-accent/50 focus-visible:bg-accent/50 outline-none -mx-2 px-2 rounded" : ""}`}
                   onClick={(e) => {
                     if (!batchFolder) return;
                     e.stopPropagation();
@@ -432,7 +448,7 @@ function BatchStrip() {
                       {error}
                     </span>
                   )}
-                </div>
+                </Row>
               );
             })}
           </div>
@@ -512,10 +528,17 @@ function EpisodeStrip() {
         className="px-4 py-2 flex items-center gap-3 text-xs cursor-pointer hover:bg-accent/30 transition"
         onClick={() => (canExpand ? setExpanded(!expanded) : goToEpisode())}
       >
-        <Loader2
-          className={`w-3.5 h-3.5 shrink-0 ${isFinished ? "text-muted-foreground" : "text-primary animate-spin"}`}
-        />
-        <span className="text-foreground font-medium shrink-0">{stepLabel}</span>
+        <button
+          type="button"
+          aria-expanded={canExpand ? expanded : undefined}
+          onClick={(e) => { e.stopPropagation(); if (canExpand) setExpanded(!expanded); else goToEpisode(); }}
+          className="flex items-center gap-3 shrink-0 rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Loader2
+            className={`w-3.5 h-3.5 shrink-0 ${isFinished ? "text-muted-foreground" : "text-primary animate-spin"}`}
+          />
+          <span className="text-foreground font-medium">{stepLabel}</span>
+        </button>
         {title && (
           <button
             type="button"

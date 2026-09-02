@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
@@ -83,17 +82,6 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
 
     stems = list_show_stems(path)
     return [rss_episode_to_out(ep, path, existing_stems=stems) for ep in episodes]
-
-
-@router.get("/{show_folder:path}/rss/cache", response_model=list[RSSEpisodeOut])
-def rss_cache(show_folder: str) -> list[dict]:
-    """Return cached RSS feed data (no network call)."""
-    path = Path(show_folder)
-    cached = load_feed_cache(path)
-    if cached is None:
-        return []
-    stems = list_show_stems(path)
-    return [rss_episode_to_out(ep, path, existing_stems=stems) for ep in cached]
 
 
 @router.post(

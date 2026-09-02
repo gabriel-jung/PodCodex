@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { sourceRefFor } from "@/lib/episodeRef";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, Play } from "lucide-react";
 import {
@@ -37,7 +38,7 @@ interface Props {
 export default function IndexInspectorModal({
   open, onClose, audioPath, outputDir, show, model, modelLabel, chunking,
 }: Props) {
-  const sourceKey = audioPath ?? outputDir ?? null;
+  const sourceKey = sourceRefFor(audioPath, outputDir);
   const { data, isLoading, isError, error } = useQuery({
     queryKey: queryKeys.indexInspect(sourceKey, show, model, chunking),
     queryFn: () => getIndexInspect(audioPath, show, model, chunking, outputDir),

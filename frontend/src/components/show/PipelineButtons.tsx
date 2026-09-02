@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { countLabel } from "@/lib/showCounts";
 import type { Episode } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import StepConfigEditor, { STEPS, type StepKey, type TranscribeSource } from "./StepConfigEditor";
@@ -49,7 +50,7 @@ export default function PipelineButtons({
               size="sm"
               className={`text-xs h-7 px-2 ${hasWork ? "" : "opacity-60"}`}
               title={hasWork
-                ? `${label} ${count} episode${count === 1 ? "" : "s"}`
+                ? `${label} ${countLabel(count, "episode")}`
                 : `${label} — all up to date (open to reprocess)`}
             >
               <Icon className="w-3 h-3" />

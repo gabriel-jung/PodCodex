@@ -1,4 +1,5 @@
 import type { UseMutationResult } from "@tanstack/react-query";
+import { countLabel } from "@/lib/showCounts";
 import type { AssembleStrategy, PipelineConfig, SynthesisStatus } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import AdvancedToggle from "@/components/common/AdvancedToggle";
@@ -95,7 +96,7 @@ export default function AssemblySection({
         )}
         {status?.tts_segments_generated && missingGeneratedCount > 0 && (
           <span className="text-xs text-warning w-full">
-            {missingGeneratedCount} segment{missingGeneratedCount !== 1 ? "s" : ""} in scope have no TTS audio yet. Assembly will skip them. Re-generate to include.
+            {countLabel(missingGeneratedCount, "segment")} in scope have no TTS audio yet. Assembly will skip them. Re-generate to include.
           </span>
         )}
         {assembleMutation.isError && (

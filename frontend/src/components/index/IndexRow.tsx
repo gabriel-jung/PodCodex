@@ -63,7 +63,7 @@ export default function IndexRow({
       {deletion && (
         <button
           onClick={() => setConfirming(true)}
-          className="shrink-0 text-muted-foreground/40 hover:text-destructive p-0.5 opacity-0 group-hover/row:opacity-100 transition"
+          className="shrink-0 text-muted-foreground/40 hover:text-destructive p-0.5 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 group-focus-within/row:opacity-100 transition"
           title="Remove from this collection"
         >
           <Trash2 className="w-3 h-3" />

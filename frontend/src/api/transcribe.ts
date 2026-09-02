@@ -1,6 +1,6 @@
 import type { Segment, TaskResponse, TranscribeRequest } from "./types";
 import { json, rawFetch } from "./client";
-import { createVersionApi } from "./versions";
+import { createVersionApi, episodeParams } from "./versions";
 
 type AudioRef = string | null | undefined;
 
@@ -20,10 +20,7 @@ export const deleteTranscribeVersion = (audioPath: AudioRef, versionId: string, 
   api.deleteVersion(audioPath, versionId, { output_dir: outputDir });
 
 function qs(audioPath: AudioRef, outputDir?: string) {
-  const p = new URLSearchParams();
-  if (audioPath) p.set("audio_path", audioPath);
-  if (outputDir) p.set("output_dir", outputDir);
-  return p.toString();
+  return episodeParams(audioPath, outputDir).toString();
 }
 
 export const getSpeakerMap = (audioPath: AudioRef, outputDir?: string) =>

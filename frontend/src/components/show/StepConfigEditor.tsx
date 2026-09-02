@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useState } from "react";
+import { countLabel } from "@/lib/showCounts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Episode } from "@/api/types";
 import { getAllVersions } from "@/api/search";
@@ -401,8 +402,8 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
           <span className="text-sm font-semibold">{stepInfo.label}</span>
           <span className="text-xs text-muted-foreground">
             {filteredEpisodes.length === episodes.length
-              ? `${episodes.length} episode${episodes.length !== 1 ? "s" : ""}`
-              : `${filteredEpisodes.length} of ${episodes.length} episode${episodes.length !== 1 ? "s" : ""}`}
+              ? `${countLabel(episodes.length, "episode")}`
+              : `${filteredEpisodes.length} of ${countLabel(episodes.length, "episode")}`}
           </span>
           <div className="flex-1" />
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-lg leading-none" aria-label="Close">&times;</button>
@@ -443,7 +444,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
             <div className="py-4 text-center">
               <p className="text-sm text-muted-foreground">
                 {manualApplied.size > 0
-                  ? `Done — ${manualApplied.size} episode${manualApplied.size !== 1 ? "s" : ""} processed.`
+                  ? `Done — ${countLabel(manualApplied.size, "episode")} processed.`
                   : cantRun > 0
                     ? `All ${episodes.length} selected episode${episodes.length !== 1 ? "s are" : " is"} ${cantRunReason}.`
                     : "Nothing to process."}
@@ -1025,7 +1026,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
           {/* Manual mode: "Next" on step 1, "Generate"/"Apply" on step 2 */}
           {filteredEpisodes.length > 0 && isLLMStep && llm.mode === "manual" && !manualActive && selectedSource !== "custom" && (
             <Button onClick={() => { setManualActive(true); setManualCurrentEp(0); setManualCurrentBatch(0); }} size="sm">
-              {stepInfo.label} {filteredEpisodes.length} episode{filteredEpisodes.length !== 1 ? "s" : ""}
+              {stepInfo.label} {countLabel(filteredEpisodes.length, "episode")}
             </Button>
           )}
           {filteredEpisodes.length > 0 && isLLMStep && manualActive && (() => {
@@ -1105,7 +1106,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
                 {pending.length > 0 ? (
                   <Button onClick={() => runWith()} size="sm">
                     <Play className="w-3.5 h-3.5 mr-1" />
-                    {stepInfo.label} {pending.length} episode{pending.length !== 1 ? "s" : ""}
+                    {stepInfo.label} {countLabel(pending.length, "episode")}
                   </Button>
                 ) : (
                   <span className="flex items-center gap-1.5 text-xs text-success">

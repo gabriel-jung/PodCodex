@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { sourceRefFor } from "@/lib/episodeRef";
 import { useQuery } from "@tanstack/react-query";
 import type { Segment } from "@/api/types";
 import { getSegments as getTranscribeSegs, loadTranscribeVersion } from "@/api/transcribe";
@@ -83,7 +84,7 @@ export default function SegmentContextDialog({
   const step = sourceToStep(source);
   const lang = step === "translate" ? source : "";
   const editorKey = step === "translate" ? `translate-${lang}` : step;
-  const sourceKey = audioPath ?? outputDir ?? null;
+  const sourceKey = sourceRefFor(audioPath, outputDir);
 
   const { data: segments, isLoading, isError, error } = useQuery({
     queryKey: [...queryKeys.stepSegments(editorKey, sourceKey), versionId ?? "active"],

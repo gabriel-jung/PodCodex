@@ -81,18 +81,6 @@ def save_translated_segments(
     return {"status": "saved", "count": len(seg_dicts)}
 
 
-@router.get("/languages")
-def list_languages(
-    audio_path: str | None = Query(None),
-    output_dir: str | None = Query(None),
-) -> list[str]:
-    """List available translation languages."""
-    from podcodex.core.translate import list_translations
-
-    require_audio_or_output(audio_path, output_dir)
-    return list_translations(audio_path, output_dir=output_dir)
-
-
 # ── Pipeline execution ───────────────────────────────────
 
 
@@ -116,19 +104,19 @@ def start_translate(req: TranslateRequest) -> TaskResponse:
     def run_translate(progress_cb, req_data):
         """Load source segments, run translation in batches, and save the raw output."""
         from podcodex.core.translate import save_translation_raw, translate_segments
-        from podcodex.core.versions import load_version
+        from podcodex.core.versions import load_version_by_id
 
         progress_cb(0.0, "Loading source segments...")
         if req_data.source_version_id:
             p = AudioPaths.from_audio(
                 req_data.audio_path, output_dir=req_data.output_dir
             )
-            try:
-                segments = load_version(p.base, "corrected", req_data.source_version_id)
-            except FileNotFoundError:
-                segments = load_version(
-                    p.base, "transcript", req_data.source_version_id
+            resolved_source = load_version_by_id(p.base, req_data.source_version_id)
+            if resolved_source is None:
+                raise FileNotFoundError(
+                    f"Source version not found: {req_data.source_version_id}"
                 )
+            segments, _ = resolved_source
         else:
             segments = load_best_source(req_data.audio_path, req_data.output_dir)
 
@@ -187,15 +175,16 @@ def start_translate(req: TranslateRequest) -> TaskResponse:
 def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     """Generate batched prompts for manual translation."""
     from podcodex.core.translate import build_manual_prompts_batched
-    from podcodex.core.versions import load_version
+    from podcodex.core.versions import load_version_by_id
 
     if req.source_version_id:
         p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
-        # Determine which step the version belongs to (corrected or transcript)
-        try:
-            segments = load_version(p.base, "corrected", req.source_version_id)
-        except FileNotFoundError:
-            segments = load_version(p.base, "transcript", req.source_version_id)
+        resolved_source = load_version_by_id(p.base, req.source_version_id)
+        if resolved_source is None:
+            raise HTTPException(
+                404, f"Source version not found: {req.source_version_id}"
+            )
+        segments, _ = resolved_source
     else:
         try:
             segments = load_best_source(req.audio_path, req.output_dir)

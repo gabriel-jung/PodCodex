@@ -212,10 +212,8 @@ def save_version(
     if not provenance:
         return ""
 
-    now = datetime.now(timezone.utc)
-    ts_str = now.strftime("%Y%m%dT%H%M%S") + f"{now.microsecond:06d}Z"
     vtype = provenance.get("type", "raw")
-    version_id = f"{ts_str}_{vtype}"
+    now, version_id = new_version_id(vtype)
 
     meta = VersionMeta(
         step=step,
@@ -282,8 +280,8 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
     The DB is the version index: every read path resolves an id through it,
     so files whose rows are gone cannot be opened even though the content is
     right there. That happens whenever the DB is rebuilt from a filesystem
-    scan (`POST /resync`, a first open of a pre-DB library, a DB lost to a
-    sync conflict), because `populate_from_scan` restores the per-episode
+    scan (a first open of a pre-DB library, a DB lost to a sync conflict),
+    because `populate_from_scan` restores the per-episode
     flags but not the version index.
 
     Provenance cannot be recovered, so rows come back with no model and no

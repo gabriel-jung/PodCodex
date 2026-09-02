@@ -18,6 +18,8 @@ import {
 } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
+import { versionOption } from "@/lib/utils";
 import { useCapabilities } from "@/hooks/useCapabilities";
 import MissingDependency from "@/components/common/MissingDependency";
 import ProgressBar from "@/components/editor/ProgressBar";
@@ -428,11 +430,15 @@ export default function SynthesizePanel() {
               {activeSynthVersion && synthVersions.length > 1 && (
                 <button
                   type="button"
-                  onClick={() => {
-                    if (confirm("Delete this synthesized version?")) {
-                      deleteSynthVersionMutation.mutate(activeSynthVersion.id);
-                    }
-                  }}
+                  onClick={() =>
+                    confirmDialog.open({
+                      title: "Delete this synthesized version?",
+                      description: `${versionOption(activeSynthVersion)}. Removes both the audio file and the database entry, and cannot be undone.`,
+                      confirmLabel: "Delete",
+                      variant: "destructive",
+                      onConfirm: () => deleteSynthVersionMutation.mutate(activeSynthVersion.id),
+                    })
+                  }
                   className="text-xs text-muted-foreground hover:text-destructive transition px-1"
                   title="Delete this version"
                   disabled={deleteSynthVersionMutation.isPending}

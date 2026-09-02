@@ -154,6 +154,21 @@
   }
 }
 
+/* Flash, sweep, zoom and the sidebar width are decorative. The spinner is
+   not: next to a progress bar that can sit still for minutes it is the one
+   cue that a task is running, so it keeps turning, slower. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .animate-spin {
+    animation-duration: 3s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
 @keyframes complete-flash {
   0%   { transform: scale(1); box-shadow: 0 0 0 0 var(--success); }
   40%  { transform: scale(1.1); box-shadow: 0 0 0 5px color-mix(in oklch, var(--success) 35%, transparent); }

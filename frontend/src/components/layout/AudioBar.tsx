@@ -8,6 +8,9 @@ import { getBestSegments, toAudioSegments } from "@/api/segments";
 import { Button } from "@/components/ui/button";
 import { Play, Pause, X, Volume2, VolumeX, MessageSquareText, Loader2 } from "lucide-react";
 import { formatTime } from "@/lib/utils";
+
+/** Arrow-key seek distance on the slider; Shift multiplies it. */
+const SEEK_KEY_STEP_S = 5;
 import { speakerColor } from "@/lib/speakerColor";
 
 function findActiveSegment(segments: AudioSegment[] | null, time: number): AudioSegment | null {
@@ -320,7 +323,7 @@ export default function AudioBar() {
             )}
           </button>
           <div
-            className="absolute bottom-full left-1/2 -translate-x-1/2 pb-1 opacity-0 pointer-events-none group-hover/vol:opacity-100 group-hover/vol:pointer-events-auto transition-opacity"
+            className="absolute bottom-full left-1/2 -translate-x-1/2 pb-1 opacity-0 pointer-events-none group-hover/vol:opacity-100 group-hover/vol:pointer-events-auto group-focus-within/vol:opacity-100 group-focus-within/vol:pointer-events-auto transition-opacity"
           >
             <div className="px-2 py-3 rounded-md bg-popover border border-border shadow-md">
               <input
@@ -380,13 +383,40 @@ export default function AudioBar() {
           {formatTime(currentTime, false)}
         </span>
         <div
-          className="flex-1 h-4 flex items-center cursor-pointer relative group"
+          role="slider"
+          tabIndex={0}
+          aria-label="Seek"
+          aria-valuemin={0}
+          aria-valuemax={Math.max(0, Math.round(duration))}
+          aria-valuenow={Math.round(currentTime)}
+          aria-valuetext={formatTime(currentTime, false)}
+          className="flex-1 h-4 flex items-center cursor-pointer relative group rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onClick={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
             const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
             if (audioRef.current && duration > 0) {
               audioRef.current.currentTime = frac * duration;
             }
+          }}
+          onKeyDown={(e) => {
+            if (!audioRef.current || duration <= 0) return;
+            // The global Space shortcut yields to focused controls, so the
+            // slider handles it itself; a seek bar that ignores Space is
+            // the one place users would not expect that.
+            if (e.key === " ") {
+              e.preventDefault();
+              togglePlay();
+              return;
+            }
+            const step = e.shiftKey ? SEEK_KEY_STEP_S * 6 : SEEK_KEY_STEP_S;
+            let next: number | null = null;
+            if (e.key === "ArrowRight" || e.key === "ArrowUp") next = currentTime + step;
+            else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = currentTime - step;
+            else if (e.key === "Home") next = 0;
+            else if (e.key === "End") next = duration;
+            if (next === null) return;
+            e.preventDefault();
+            audioRef.current.currentTime = Math.max(0, Math.min(duration, next));
           }}
           onMouseMove={(e) => {
             if (duration <= 0) return;
@@ -402,7 +432,7 @@ export default function AudioBar() {
               style={{ width: duration > 0 ? `${(currentTime / duration) * 100}%` : "0%" }}
             />
             <div
-              className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-primary rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+              className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-primary rounded-full opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity"
               style={{ left: duration > 0 ? `calc(${(currentTime / duration) * 100}% - 6px)` : "0" }}
             />
           </div>

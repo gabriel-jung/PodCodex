@@ -2,7 +2,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { useNavigate } from "@tanstack/react-router";
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getEpisodes, getShowMeta, getEpisodeSpeakers, openFolder } from "@/api/client";
-import { invalidateSpeakerViews } from "@/api/cacheInvalidation";
+import { invalidateAfterStep } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { deleteFile, saveExportFile } from "@/api/filesystem";
 import { showArtworkSrc, useArtworkEpoch } from "@/lib/showArtwork";
@@ -19,8 +19,10 @@ import {
 } from "@/api/search";
 import { useShowActions } from "@/hooks/useShowActions";
 import { isVerifiedVersion, VERIFIED_CAPTION } from "@/lib/verified";
+import type { PanelStatus } from "@/lib/stepStatus";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { isSoloDefaultSpeaker } from "@/lib/speakers";
+import { getEpisodeSourceRef } from "@/lib/episodeRef";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
 import InlineConfirm from "@/components/common/InlineConfirm";
 import { useDropZone } from "@/hooks/useDropZone";
@@ -30,6 +32,8 @@ import AppSidebar from "@/components/layout/AppSidebar";
 import type { Episode, ShowMeta, VersionEntry } from "@/api/types";
 import { useAudioStore, useEpisodeStore, useTaskStore, useSeedPipelineFromShow } from "@/stores";
 import { Button } from "@/components/ui/button";
+import { ErrorAlert } from "@/components/ui/error-alert";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
 import PanelLoading from "@/components/common/PanelLoading";
 
 const SearchPanel = lazy(() => import("@/components/search/SearchPanel"));
@@ -37,7 +41,7 @@ const SegmentContextDialog = lazy(() => import("@/components/search/SegmentConte
 const IndexInspectorModal = lazy(() => import("@/components/index/IndexInspectorModal"));
 import IndexRow from "@/components/index/IndexRow";
 import { STAGE_CLASSES, type StageKey } from "@/lib/stageClasses";
-import { formatDuration, formatDate, formatTime, formatBytes, stripHtml, errorMessage, langLabel, versionDate, versionLabel, isEdited, shortVersionId, splitPath, STEP_LABELS } from "@/lib/utils";
+import { formatDuration, formatDate, formatTime, formatBytes, stripHtml, errorMessage, langLabel, versionDate, versionLabel, versionOption, isEdited, shortVersionId, splitPath, STEP_LABELS } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 import { byDefaultOrder } from "@/lib/episodeSort";
 import {
@@ -67,20 +71,19 @@ import {
   PipelineStatus,
   type ActiveStep,
   type PipelineStepKey,
-  type StepStatus,
 } from "@/components/episode/PipelineSteps";
 
 type SidebarItem = {
   key: ActiveStep;
   label: string;
   icon: typeof Mic;
-  status: StepStatus;
+  status?: PanelStatus;
 };
 
 function buildSidebarSections(episode: Episode) {
   const meta: SidebarItem[] = [
-    { key: "overview", label: "Overview", icon: LayoutGrid, status: false as StepStatus },
-    { key: "search", label: "Search", icon: Search, status: false as StepStatus },
+    { key: "overview", label: "Overview", icon: LayoutGrid },
+    { key: "search", label: "Search", icon: Search },
   ];
   const core: SidebarItem[] = [];
   const bonus: SidebarItem[] = [];
@@ -127,7 +130,13 @@ export default function EpisodePage({
 
   useSeedPipelineFromShow(folder, meta?.pipeline, !!meta);
 
-  const { data: episodes, dataUpdatedAt: episodesUpdatedAt } = useQuery({
+  const {
+    data: episodes,
+    isError: episodesFailed,
+    error: episodesError,
+    refetch: refetchEpisodes,
+    dataUpdatedAt: episodesUpdatedAt,
+  } = useQuery({
     queryKey: queryKeys.episodesForFolder(folder ?? ""),
     queryFn: () => getEpisodes(folder!),
     placeholderData: keepPreviousData,
@@ -213,24 +222,27 @@ export default function EpisodePage({
     setShowMeta(meta ?? null);
   }, [meta, setShowMeta]);
 
+  // A mutation rather than a bare async handler so a rejected upload (wrong
+  // format, wrong episode) has an error state to render under the header;
+  // the drop overlay invites the file, so silence reads as "nothing happened".
+  const dropImportMutation = useMutation({
+    mutationFn: ({ audioPath, file }: { audioPath: string; file: File }) =>
+      uploadTranscript(audioPath, file),
+    onSuccess: (_data, { audioPath }) => {
+      // An uploaded transcript is a finished transcribe step as far as the
+      // cache is concerned.
+      invalidateAfterStep(queryClient, "transcribe", { folder, audioPath });
+      setActiveStep("transcribe");
+    },
+  });
+  const dropImport = dropImportMutation.mutate;
   const handleFileDrop = useCallback(
-    async (files: File[]) => {
+    (files: File[]) => {
       const audioPath = episode?.audio_path;
       if (!audioPath || files.length === 0) return;
-      try {
-        await uploadTranscript(audioPath, files[0]);
-        // Invalidate step-scoped segment queries for every editor step (the
-        // previous `["segments"]` prefix never matched `[editorKey, "segments", ...]`).
-        queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("transcribe", audioPath) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", audioPath) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.transcribeSegments(audioPath) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-        setActiveStep("transcribe");
-      } catch (e) {
-        console.error("Transcript drop import failed:", e);
-      }
+      dropImport({ audioPath, file: files[0] });
     },
-    [episode?.audio_path, queryClient, setActiveStep],
+    [episode?.audio_path, dropImport],
   );
 
   const { isDragging } = useDropZone({
@@ -244,17 +256,33 @@ export default function EpisodePage({
     [episode],
   );
 
-  if (!episodes) {
-    return <div className="p-6 text-muted-foreground">Loading...</div>;
-  }
+  const goToShow = folder
+    ? () => navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } })
+    : undefined;
 
-  if (!episode) {
+  // Before the episode resolves the page has no header; the sidebar still
+  // mounts so the Back / Home / show links exist, otherwise a failed episode
+  // list would leave a screen with no way out but the command palette.
+  if (!episodes || !episode) {
     return (
-      <div className="p-6 text-muted-foreground">
-        Episode not found.{" "}
-        <Button onClick={() => window.history.back()} variant="link" size="sm">
-          Go back
-        </Button>
+      <div className="flex flex-col h-full">
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <AppSidebar parentLabel={meta?.name ?? "Show"} onParent={goToShow} />
+          <div className="p-6 text-sm text-muted-foreground">
+            {episodesFailed ? (
+              <ErrorAlert error={episodesError} onRetry={() => void refetchEpisodes()} />
+            ) : !episodes ? (
+              "Loading..."
+            ) : (
+              <>
+                Episode not found.{" "}
+                <Button onClick={() => window.history.back()} variant="link" size="sm">
+                  Go back
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
       </div>
     );
   }
@@ -313,10 +341,25 @@ export default function EpisodePage({
         }
       />
 
+      {dropImportMutation.isError && (
+        <div className="px-6 py-2 border-b border-border">
+          <ErrorAlert
+            error={dropImportMutation.error}
+            onRetry={
+              dropImportMutation.variables
+                ? () => dropImport(dropImportMutation.variables!)
+                : undefined
+            }
+            onDismiss={() => dropImportMutation.reset()}
+            compact
+          />
+        </div>
+      )}
+
       <div className="flex-1 flex flex-col overflow-hidden">
         <AppSidebar
           parentLabel={meta?.name ?? "Show"}
-          onParent={folder ? () => navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(folder) } }) : undefined}
+          onParent={goToShow}
           pageSections={sidebarSections}
           activeItem={activeStep}
           onItemClick={(key) => setActiveStep(key as ActiveStep)}
@@ -458,7 +501,7 @@ function SourceFileRow({
       {onDelete && (
         <button
           onClick={() => setConfirming(true)}
-          className="shrink-0 text-muted-foreground/40 hover:text-destructive p-0.5 opacity-0 group-hover/row:opacity-100 transition"
+          className="shrink-0 text-muted-foreground/40 hover:text-destructive p-0.5 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 group-focus-within/row:opacity-100 transition"
           title={`Delete ${label}`}
         >
           <Trash2 className="w-3 h-3" />
@@ -479,15 +522,15 @@ function StageCard({
   stage: StageColor;
   icon: typeof Mic;
   label: string;
-  status: StepStatus;
+  status: PanelStatus;
   summary?: string;
   muted?: boolean;
   onOpen: () => void;
 }) {
   const c = STAGE_CLASSES[stage];
-  const isEmpty = !status;
-  const statusText = status === "done" ? "ready" : status === "partial" ? "needs review" : "not started";
-  const statusColor = status === "done" ? "text-success" : status === "partial" ? "text-info" : "text-muted-foreground/60";
+  const isEmpty = status === "none";
+  const statusText = status === "ready" ? "ready" : status === "review" ? "needs review" : "not started";
+  const statusColor = status === "ready" ? "text-success" : status === "review" ? "text-info" : "text-muted-foreground/60";
 
   return (
     <button
@@ -598,7 +641,7 @@ function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPrev
   firstColLabel: string;
   countColLabel: string;
   onPreview?: (previewKey: string, versionId?: string) => void;
-  onDelete: (step: string, id: string) => void;
+  onDelete: (version: VersionEntry) => void;
   showEdited?: boolean;
   /** When set, the row whose version id matches gets a "verified" star. */
   verifiedVersionId?: string | null;
@@ -640,7 +683,18 @@ function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPrev
         <td className="px-3 py-2">
           <span className={`flex items-center gap-1.5${isChild ? " pl-5" : ""}`}>
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${c.dot}`} />
-            <span className="text-foreground flex-1 min-w-0 truncate">{label}</span>
+            {clickable ? (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onPreview!(v.step ?? "", v.id); }}
+                className="text-foreground flex-1 min-w-0 truncate text-left hover:underline"
+                title="Preview this version"
+              >
+                {label}
+              </button>
+            ) : (
+              <span className="text-foreground flex-1 min-w-0 truncate">{label}</span>
+            )}
             {isVerified && (
               <span className="ml-0.5 inline-flex items-center gap-0.5 text-2xs text-verified shrink-0" title={`Verified version: ${VERIFIED_CAPTION}`}>
                 <Star className="w-2.5 h-2.5" fill="currentColor" />
@@ -674,8 +728,8 @@ function VersionsTable({ versions, heading, firstColLabel, countColLabel, onPrev
         <td className="px-3 py-2 text-right whitespace-nowrap">
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onDelete(v.step ?? "", v.id); }}
-            className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover/vrow:opacity-100 transition"
+            onClick={(e) => { e.stopPropagation(); onDelete(v); }}
+            className="text-muted-foreground/40 hover:text-destructive opacity-0 group-hover/vrow:opacity-100 focus-visible:opacity-100 group-focus-within/vrow:opacity-100 transition"
             title="Delete this version"
           >
             <Trash2 className="w-3 h-3 inline-block" />
@@ -849,7 +903,7 @@ function ShowNotesCard({ description }: { description: string }) {
 
 function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImportSubs, downloadDisabled, downloadError, onNavigateStep }: { episode: Episode; folder?: string; meta?: ShowMeta; isYouTube: boolean; onDownloadAudio: () => void; onImportSubs: (lang: string) => void; downloadDisabled: boolean; downloadError?: string; onNavigateStep: (step: ActiveStep) => void }) {
   const platform = usePlatform();
-  const audioPath = episode.audio_path;
+  const { audioPath, outputDir, sourceRef } = getEpisodeSourceRef(episode);
   const hasTranscript = !!episode.transcribed;
   const seekTo = useAudioStore((s) => s.seekTo);
   const [previewSource, setPreviewSource] = useState<string | null>(null);
@@ -870,9 +924,8 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
   });
   const previewStep = episode.corrected ? "correct" : "transcribe";
   const PREVIEW_LIMIT = 5;
-  const outputDir = episode.output_dir;
   const { data: previewSegments } = useQuery({
-    queryKey: [...queryKeys.stepSegments(previewStep, audioPath ?? outputDir), "preview"],
+    queryKey: [...queryKeys.stepSegments(previewStep, sourceRef), "preview"],
     queryFn: () =>
       previewStep === "correct"
         ? getCorrectPreview(audioPath, PREVIEW_LIMIT, outputDir ?? undefined)
@@ -881,29 +934,23 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
   });
 
   const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(audioPath ?? outputDir),
+    queryKey: queryKeys.allVersions(sourceRef),
     queryFn: () => getAllVersions(audioPath, outputDir),
     enabled: (!!audioPath || !!outputDir) && hasTranscript,
   });
 
   const showName = meta?.name ?? "";
   const { data: indexEntries } = useQuery({
-    queryKey: queryKeys.episodeCollections(audioPath ?? outputDir, showName),
+    queryKey: queryKeys.episodeCollections(sourceRef, showName),
     queryFn: () => getEpisodeCollections(audioPath, showName, outputDir),
     enabled: (!!audioPath || !!outputDir) && !!showName && !!episode.indexed,
   });
 
+  // A version or collection delete can touch any step's output, so this is
+  // the documented sweep-every-namespace fallback, narrowed to this episode.
   const invalidateAll = useCallback(() => {
-    const key = audioPath ?? outputDir;
-    queryClient.invalidateQueries({ queryKey: queryKeys.allVersions(key) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.episodeCollections(key, showName) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
-    queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("transcribe", audioPath) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.stepSegments("correct", audioPath) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.speakerMap(audioPath) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.bestSourceSegments(audioPath) });
-    invalidateSpeakerViews(queryClient);
-  }, [audioPath, outputDir, showName, queryClient]);
+    invalidateAfterStep(queryClient, null, { audioPath: sourceRef });
+  }, [sourceRef, queryClient]);
 
   const translations = episode.translations ?? EMPTY_LANGS;
 
@@ -918,8 +965,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
     onMutate: async ({ id }) => {
       // Optimistic remove so the trash click feels instant; rollback below
       // restores the prior list if the server rejects the delete.
-      const key = audioPath ?? outputDir;
-      const qk = queryKeys.allVersions(key);
+      const qk = queryKeys.allVersions(sourceRef);
       await queryClient.cancelQueries({ queryKey: qk });
       const prev = queryClient.getQueryData<VersionEntry[]>(qk);
       if (prev) {
@@ -927,20 +973,32 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
       }
       return { prev, qk };
     },
-    onError: (err, _vars, ctx) => {
+    onError: (_err, _vars, ctx) => {
       if (ctx?.prev && ctx.qk) {
         queryClient.setQueryData(ctx.qk, ctx.prev);
       }
-      console.error("Delete version failed:", err);
     },
     onSuccess: invalidateAll,
   });
 
+  // Same dialog and wording as the editor's VersionControlBar: the hover
+  // trash icon is one click, and the row it removes may be the hand-edited
+  // version.
+  const deleteVersion = deleteVersionMutation.mutate;
+  const confirmDeleteVersion = (v: VersionEntry) => {
+    confirmDialog.open({
+      title: "Delete this version?",
+      description: `${versionOption(v)}. Removes both the file and the database entry, and cannot be undone.`,
+      confirmLabel: "Delete",
+      variant: "destructive",
+      onConfirm: () => deleteVersion({ step: v.step ?? "", id: v.id }),
+    });
+  };
+
   const deleteCollectionMutation = useMutation({
     mutationFn: (collection: string) =>
       deleteEpisodeCollection(audioPath, showName, collection, outputDir),
-    // Dropping an episode from a collection really does change the index.
-    meta: { invalidates: [invalidateAll, ["search"], ["index"]] },
+    meta: { invalidates: [invalidateAll] },
   });
 
   const deleteFileMutation = useMutation({
@@ -1075,17 +1133,23 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
 
   // versionId targets a specific version row; omit it to preview the step's
   // current (active) version, e.g. from the transcript-preview card.
-  const openPreview = useCallback((previewKey: string, versionId?: string) => {
-    if (audioPath || outputDir) {
+  const openPreview = (previewKey: string, versionId?: string) => {
+    if (sourceRef) {
       setPreviewSource(previewKey);
       setPreviewVersionId(versionId ?? null);
       return;
     }
     onNavigateStep(stepDisplay(previewKey).editorStep);
-  }, [audioPath, outputDir, onNavigateStep]);
+  };
 
   return (
     <div className="p-6 space-y-5 max-w-6xl">
+      {[deleteVersionMutation, deleteCollectionMutation, deleteFileMutation]
+        .filter((m) => m.isError)
+        .map((m, i) => (
+          <ErrorAlert key={i} error={m.error} onDismiss={() => m.reset()} compact />
+        ))}
+
       {/* Folder + Export ZIP */}
       {(folder || episode.audio_path || outputDir) && (
         <nav className="flex items-baseline gap-2 text-2xs text-muted-foreground/70 min-w-0">
@@ -1188,7 +1252,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
               ? translations.map(langLabel).join(", ")
               : undefined
           }
-          muted={!translateStatus}
+          muted={translateStatus === "none"}
           onOpen={() => {
             const onlyLang = translations.length === 1 ? translations[0] : null;
             if (onlyLang && (versionGroups.translations[onlyLang] ?? []).length > 0) {
@@ -1203,8 +1267,8 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
           icon={AudioLines}
           label="Synthesized audio"
           status={synthStatus}
-          summary={synthStatus ? "audio ready" : undefined}
-          muted={!synthStatus}
+          summary={synthStatus !== "none" ? "audio ready" : undefined}
+          muted={synthStatus === "none"}
           onOpen={() => onNavigateStep("synthesize")}
         />
       </div>
@@ -1253,7 +1317,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
                         </span>
                       )}
                     </div>
-                    <span className="text-2xs text-primary opacity-0 group-hover:opacity-100 transition shrink-0">
+                    <span className="text-2xs text-primary opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition shrink-0">
                       Open &rarr;
                     </span>
                   </div>
@@ -1310,7 +1374,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
         firstColLabel="Step"
         countColLabel="Segments"
         onPreview={openPreview}
-        onDelete={(step, id) => deleteVersionMutation.mutate({ step, id })}
+        onDelete={confirmDeleteVersion}
         childrenByVersionId={childrenByTranscriptId}
         verifiedVersionId={episode.verified?.version_id ?? null}
       />
@@ -1365,7 +1429,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
         countColLabel="Size"
         showEdited={false}
         sizeColumn
-        onDelete={(step, id) => deleteVersionMutation.mutate({ step, id })}
+        onDelete={confirmDeleteVersion}
       />
 
       {(audioPath || outputDir) && previewSource && (

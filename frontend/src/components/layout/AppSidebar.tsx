@@ -12,17 +12,21 @@ import type { LucideIcon } from "lucide-react";
 
 import { sidebarWidth } from "@/lib/sidebar";
 import { useVersions } from "@/hooks/useVersions";
+import type { PanelStatus } from "@/lib/stepStatus";
 
 export interface SidebarItem {
   key: string;
   label: string;
   icon: LucideIcon;
-  status?: "done" | "partial" | false;
+  status?: PanelStatus;
 }
 
 export interface SidebarSection {
   items: SidebarItem[];
 }
+
+/** Spoken form of the status dot; same vocabulary as the StageCards. */
+const STATUS_TEXT = { ready: "ready", review: "needs review", none: "not started" } as const;
 
 export default function AppSidebar({ parentLabel, onParent, pageSections, activeItem, onItemClick }: {
   /** Optional parent link shown between Back and Home (e.g. "Show name" on episode pages). */
@@ -67,7 +71,8 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
                 key={key}
                 onClick={() => onItemClick?.(key)}
                 title={expanded ? undefined : label}
-                aria-label={label}
+                aria-label={status && status !== "none" ? `${label}, ${STATUS_TEXT[status]}` : label}
+                aria-current={activeItem === key ? "page" : undefined}
                 className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition ${
                   activeItem === key
                     ? "bg-accent text-accent-foreground"
@@ -76,8 +81,8 @@ export default function AppSidebar({ parentLabel, onParent, pageSections, active
               >
                 <Icon className="w-5 h-5 shrink-0" />
                 {expanded && <span className="truncate">{label}</span>}
-                {status && (
-                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${expanded ? "ml-auto" : ""} ${status === "partial" ? "bg-info" : "bg-success"}`} />
+                {status && status !== "none" && (
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${expanded ? "ml-auto" : ""} ${status === "review" ? "bg-info" : "bg-success"}`} />
                 )}
               </button>
             ))}

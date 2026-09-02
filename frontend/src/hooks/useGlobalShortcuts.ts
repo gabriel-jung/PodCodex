@@ -1,6 +1,10 @@
 import { useEffect } from "react";
 import { useAudioStore } from "@/stores";
 
+/** Elements for which bare Space is an activation key. */
+const INTERACTIVE_SELECTOR =
+  "button, a, input, select, textarea, summary, [role], [tabindex], [contenteditable]";
+
 /** Global keyboard shortcuts registered once at the app root. */
 export function useGlobalShortcuts() {
   useEffect(() => {
@@ -47,8 +51,13 @@ export function useGlobalShortcuts() {
 
       if (inEditable) return;
 
-      // Space — toggle play/pause
-      if (e.key === " " && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // Space toggles play/pause, but only from the page itself. On a
+      // focused button, checkbox, select, link or role=button row, Space is
+      // that control's activation key; claiming it there would make every
+      // control in the app play audio instead. Shift/Ctrl+Space above stay
+      // the anywhere shortcut.
+      const onControl = !!target?.closest(INTERACTIVE_SELECTOR);
+      if (e.key === " " && !onControl && !e.metaKey && !e.ctrlKey && !e.altKey) {
         const { audioPath, isPlaying, pauseAudio, currentTime } = useAudioStore.getState();
         if (!audioPath) return;
         e.preventDefault();

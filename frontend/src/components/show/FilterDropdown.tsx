@@ -90,6 +90,7 @@ export default function FilterDropdown({ languages = [] }: { languages?: string[
                   value={minDurationMinutes || ""}
                   onChange={(e) => setMinDurationMinutes(Math.max(0, Number(e.target.value)))}
                   placeholder="min"
+                  aria-label="Minimum duration in minutes"
                   className="input w-16 text-xs text-center"
                 />
                 <span className="text-xs text-muted-foreground">to</span>
@@ -98,12 +99,13 @@ export default function FilterDropdown({ languages = [] }: { languages?: string[
                   value={maxDurationMinutes || ""}
                   onChange={(e) => setMaxDurationMinutes(Math.max(0, Number(e.target.value)))}
                   placeholder="max"
+                  aria-label="Maximum duration in minutes"
                   className="input w-16 text-xs text-center"
                 />
                 <span className="text-xs text-muted-foreground">min</span>
               </div>
             </div>
-            <div className="space-y-2">
+            <label className="block space-y-2">
               <span className="text-xs font-medium">Title contains</span>
               <input
                 value={titleInclude}
@@ -111,8 +113,8 @@ export default function FilterDropdown({ languages = [] }: { languages?: string[
                 placeholder="word or phrase..."
                 className="input w-full text-xs"
               />
-            </div>
-            <div className="space-y-2">
+            </label>
+            <label className="block space-y-2">
               <span className="text-xs font-medium">Title excludes</span>
               <input
                 value={titleExclude}
@@ -120,7 +122,7 @@ export default function FilterDropdown({ languages = [] }: { languages?: string[
                 placeholder="word or phrase..."
                 className="input w-full text-xs"
               />
-            </div>
+            </label>
             <div className="space-y-2">
               <span className="text-xs font-medium">Pipeline step</span>
               <div className="flex items-center gap-2">

@@ -1,4 +1,5 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { pluralize } from "@/lib/showCounts";
 import { useNavigate } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -113,7 +114,12 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   const { tc, llm, engine, targetLang } = usePipelineConfig();
 
 
-  const { data: meta } = useQuery({
+  const {
+    data: meta,
+    isError: metaFailed,
+    error: metaError,
+    refetch: refetchMeta,
+  } = useQuery({
     queryKey: queryKeys.showMeta(folder),
     queryFn: () => getShowMeta(folder),
   });
@@ -513,9 +519,9 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         artworkUrl={metaLoaded ? showArtworkSrc(meta?.artwork_url, folder, artworkEpoch) : undefined}
         fallbackIcon={Podcast}
         stats={[
-          ...(all.length > 0 ? [{ value: all.length, label: `episode${all.length !== 1 ? "s" : ""}` }] : []),
+          ...(all.length > 0 ? [{ value: all.length, label: pluralize(all.length, "episode") }] : []),
           ...(meta?.speakers && meta.speakers.length > 0
-            ? [{ value: meta.speakers.length, label: `speaker${meta.speakers.length !== 1 ? "s" : ""}` }]
+            ? [{ value: meta.speakers.length, label: pluralize(meta.speakers.length, "speaker") }]
             : []),
           ...(meta?.language ? [{ value: meta.language }] : []),
         ]}
@@ -707,6 +713,21 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
         </div>
       )}
 
+      {deleteMutation.isError && (
+        <div className="px-6 py-2 border-t border-border">
+          <ErrorAlert
+            error={deleteMutation.error}
+            onRetry={
+              deleteMutation.variables
+                ? () => deleteMutate(deleteMutation.variables!)
+                : undefined
+            }
+            onDismiss={() => deleteMutation.reset()}
+            compact
+          />
+        </div>
+      )}
+
       {deleteEpisodeMutation.isError && (
         <div className="px-6 py-2 border-t border-border">
           <ErrorAlert
@@ -730,6 +751,15 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
           folder={folder}
           artwork={metaLoaded ? showArtworkSrc(meta?.artwork_url, folder, artworkEpoch) : undefined}
         />
+      )}
+
+      {/* Both panes need the meta; a failed request must say so rather than
+          leave the tab blank with the header quietly falling back to the
+          folder name. */}
+      {(tab === "speakers" || tab === "settings") && !meta && metaFailed && (
+        <div className="p-6">
+          <ErrorAlert error={metaError} onRetry={() => void refetchMeta()} />
+        </div>
       )}
 
       {tab === "speakers" && meta && (

@@ -8,6 +8,7 @@
  */
 
 import { useMutation } from "@tanstack/react-query";
+import { sourceRefFor } from "@/lib/episodeRef";
 import { setVerifiedVersion } from "@/api/search";
 import { invalidateSpeakerViews } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
@@ -28,7 +29,7 @@ export function useSetVerifiedVersion(
     meta: {
       invalidates: [
         queryKeys.episodesAll(),
-        queryKeys.allVersions(audioPath ?? outputDir),
+        queryKeys.allVersions(sourceRefFor(audioPath, outputDir)),
         queryKeys.bestSourceSegments(audioPath),
         queryKeys.shows(),
         invalidateSpeakerViews,

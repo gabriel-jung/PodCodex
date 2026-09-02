@@ -31,7 +31,7 @@ import { exactSearch } from "@/api/client";
 import { queryKeys } from "@/api/queryKeys";
 import { useAudioStore, useBatchHistoryStore } from "@/stores";
 import { useTheme } from "@/hooks/useTheme";
-import { formatTime } from "@/lib/utils";
+import { errorMessage, formatTime } from "@/lib/utils";
 import { speakerColor } from "@/lib/speakerColor";
 
 export default function CommandPalette() {
@@ -112,6 +112,11 @@ export default function CommandPalette() {
   }, [shows, transcriptQueries]);
 
   const transcriptLoading = canSearchTranscripts && transcriptQueries.some((q) => q.isFetching);
+  // These run with retry: false, so a backend error or a missing rag extra
+  // rejects at once; reading `data ?? []` alone would report it as a miss.
+  const transcriptError = canSearchTranscripts
+    ? transcriptQueries.find((q) => q.isError)?.error
+    : undefined;
 
   const handleOpenChange = useCallback((next: boolean) => {
     setOpen(next);
@@ -164,7 +169,13 @@ export default function CommandPalette() {
         onValueChange={setQuery}
       />
       <CommandList>
-        <CommandEmpty>{transcriptLoading ? "Searching transcripts…" : "No results found."}</CommandEmpty>
+        <CommandEmpty>
+          {transcriptLoading
+            ? "Searching transcripts…"
+            : transcriptError
+              ? `Transcript search failed: ${errorMessage(transcriptError)}`
+              : "No results found."}
+        </CommandEmpty>
 
         {transcriptHits.length > 0 && (
           <CommandGroup heading="Transcripts">

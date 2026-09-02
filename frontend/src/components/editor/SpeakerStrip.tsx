@@ -8,6 +8,7 @@
  */
 
 import { useState, useEffect, useMemo, useRef } from "react";
+import { countLabel } from "@/lib/showCounts";
 import {
   Plus,
   Trash2,
@@ -179,8 +180,8 @@ export default function SpeakerStrip({
       confirmDialog.open({
         title: `Merge "${from}" into "${to}"?`,
         description:
-          `${fromCount} segment${fromCount === 1 ? "" : "s"} currently labelled "${from}" will be reassigned to "${to}"` +
-          (targetCount > 0 ? ` (which already has ${targetCount} segment${targetCount === 1 ? "" : "s"})` : "") +
+          `${countLabel(fromCount, "segment")} currently labelled "${from}" will be reassigned to "${to}"` +
+          (targetCount > 0 ? ` (which already has ${countLabel(targetCount, "segment")})` : "") +
           ". This is applied when you save.",
         confirmLabel: "Merge",
         variant: "destructive",
@@ -382,7 +383,7 @@ export default function SpeakerStrip({
                   className={`flex items-center gap-0.5 shrink-0 transition-opacity ${
                     isRemoved || isRenamed
                       ? "opacity-100"
-                      : "opacity-0 group-hover:opacity-100"
+                      : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                   }`}
                 >
                   {!isRemoved && !chip.added && (

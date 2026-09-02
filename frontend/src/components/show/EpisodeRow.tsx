@@ -114,7 +114,7 @@ function EpisodeRowInner({ ep, index, selected, onToggle, onOpen, onPlay, onDown
               onClick={handleDelete}
               title="Delete audio"
               aria-label="Delete audio"
-              className="text-muted-foreground hover:text-destructive transition opacity-0 group-hover:opacity-100"
+              className="text-muted-foreground hover:text-destructive transition opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100"
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>

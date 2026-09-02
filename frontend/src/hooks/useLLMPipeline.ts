@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo } from "react";
+import { sourceRefFor } from "@/lib/episodeRef";
 import { useQuery } from "@tanstack/react-query";
 import { getAllVersions } from "@/api/search";
 import { getBestSegments } from "@/api/segments";
@@ -158,7 +159,7 @@ export function useInputVersions(
   verified?: { step: string; version_id: string } | null,
 ) {
   const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(audioPath ?? outputDir),
+    queryKey: queryKeys.allVersions(sourceRefFor(audioPath, outputDir)),
     queryFn: () => getAllVersions(audioPath, outputDir),
     enabled: (!!audioPath || !!outputDir) && enabled,
   });

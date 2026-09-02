@@ -10,10 +10,20 @@ export interface EpisodeSourceRef {
   noAudio: boolean;
 }
 
+/** The per-episode query key from a bare (audioPath, outputDir) pair, for
+ *  components and hooks that receive the two props rather than an Episode.
+ *  Same rule as `getEpisodeSourceRef`; keep them together. */
+export function sourceRefFor(
+  audioPath: string | null | undefined,
+  outputDir: string | null | undefined,
+): string | null {
+  return audioPath ?? outputDir ?? null;
+}
+
 export function getEpisodeSourceRef(episode: Episode | null | undefined): EpisodeSourceRef {
   const audioPath = episode?.audio_path ?? null;
   const outputDir = episode?.output_dir ?? null;
-  const sourceRef = audioPath ?? outputDir;
+  const sourceRef = sourceRefFor(audioPath, outputDir);
   return {
     audioPath,
     outputDir,

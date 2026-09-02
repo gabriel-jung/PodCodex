@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { countLabel } from "@/lib/showCounts";
 import type { UseMutationResult } from "@tanstack/react-query";
 import type { Segment, VoiceSample, SynthesisStatus } from "@/api/types";
 import { Button } from "@/components/ui/button";
@@ -152,8 +153,8 @@ export default function VoiceExtractionSection({
             {extractMutation.isPending
               ? "Extracting…"
               : status?.voice_samples_extracted
-                ? `Re-extract ${selected.size} sample${selected.size !== 1 ? "s" : ""}`
-                : `Extract ${selected.size} sample${selected.size !== 1 ? "s" : ""}`}
+                ? `Re-extract ${countLabel(selected.size, "sample")}`
+                : `Extract ${countLabel(selected.size, "sample")}`}
           </Button>
           {selected.size === 0 && !extractMutation.isPending && (
             <span className="text-xs text-muted-foreground">Pick at least one segment above</span>
@@ -241,9 +242,9 @@ function SpeakerBlock({
         <span className="text-muted-foreground text-xs flex-1 min-w-0 truncate">
           {segments.length === 0
             ? "no segments"
-            : `${segments.length} segment${segments.length !== 1 ? "s" : ""}`}
+            : `${countLabel(segments.length, "segment")}`}
           {speakerSelected > 0 && ` · ${speakerSelected} selected`}
-          {samples.length > 0 && ` · ${samples.length} sample${samples.length !== 1 ? "s" : ""} extracted`}
+          {samples.length > 0 && ` · ${countLabel(samples.length, "sample")} extracted`}
         </span>
         <label
           className="shrink-0 flex items-center gap-1 cursor-pointer text-xs text-muted-foreground hover:text-foreground transition"

@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { countLabel } from "@/lib/showCounts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta, SpeakerRosterEntry } from "@/api/types";
@@ -106,7 +107,7 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
           <h3 className="text-sm font-medium">Speakers</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
             {roster.data
-              ? `${roster.data.episodes_with_transcripts} of ${roster.data.episodes_scanned} episode${roster.data.episodes_scanned === 1 ? "" : "s"} transcribed`
+              ? `${roster.data.episodes_with_transcripts} of ${countLabel(roster.data.episodes_scanned, "episode")} transcribed`
               : roster.isLoading ? "Scanning transcripts…" : "\u00A0"}
             {saveMutation.isPending && <span className="ml-2 text-warning">Saving…</span>}
             {saveMutation.isError && (
@@ -175,11 +176,23 @@ export default function SpeakersPanel({ folder, meta }: SpeakersPanelProps) {
                 className={`flex items-center gap-3 px-3 py-2 ${hasEpisodes ? "cursor-pointer hover:bg-muted/40" : ""} transition`}
                 onClick={() => hasEpisodes && toggleExpand(sp.name)}
               >
-                <ChevronRight
-                  className={`w-3.5 h-3.5 shrink-0 text-muted-foreground transition-transform ${
-                    hasEpisodes ? "" : "opacity-0"
-                  } ${isExpanded ? "rotate-90" : ""}`}
-                />
+                {/* Keyboard target for the expand; a real button rather than
+                    role=button on the row, which also holds the star and
+                    delete buttons. */}
+                <button
+                  type="button"
+                  disabled={!hasEpisodes}
+                  aria-expanded={hasEpisodes ? isExpanded : undefined}
+                  aria-label={isExpanded ? `Collapse ${sp.name}` : `Expand ${sp.name}`}
+                  onClick={(e) => { e.stopPropagation(); toggleExpand(sp.name); }}
+                  className="shrink-0 rounded outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+                >
+                  <ChevronRight
+                    className={`w-3.5 h-3.5 shrink-0 text-muted-foreground transition-transform ${
+                      hasEpisodes ? "" : "opacity-0"
+                    } ${isExpanded ? "rotate-90" : ""}`}
+                  />
+                </button>
 
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   <span

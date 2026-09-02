@@ -188,25 +188,6 @@ def ollama_check() -> dict:
         }
 
 
-@router.post("/system/free-vram")
-def free_vram_endpoint() -> dict:
-    """Flush GPU VRAM — call before heavy pipeline steps if memory is tight."""
-    from podcodex.core._utils import free_vram
-    from podcodex.core.device import cuda_available
-
-    free_vram()
-    if cuda_available():
-        import torch
-
-        mem = torch.cuda.mem_get_info()
-        return {
-            "freed": True,
-            "free_mb": mem[0] // (1024 * 1024),
-            "total_mb": mem[1] // (1024 * 1024),
-        }
-    return {"freed": True}
-
-
 @router.get("/system/device")
 def get_device_info() -> dict:
     """Return resolved device, dtype, GPU name, compute capability, env override.

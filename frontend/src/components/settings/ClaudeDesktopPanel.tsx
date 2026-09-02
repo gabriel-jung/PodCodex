@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { countLabel } from "@/lib/showCounts";
 import {
   ChevronRight,
   Loader2,
@@ -183,7 +184,7 @@ function PromptsSection({
           <p className="text-xs text-muted-foreground">
             {isLoading
               ? "Loading..."
-              : `${prompts?.length ?? 0} prompt${prompts?.length === 1 ? "" : "s"}`}
+              : countLabel(prompts?.length ?? 0, "prompt")}
           </p>
           <Button
             size="sm"

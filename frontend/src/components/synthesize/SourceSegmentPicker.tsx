@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { sourceRefFor } from "@/lib/episodeRef";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Play } from "lucide-react";
 import type { Episode, Segment, VersionEntry } from "@/api/types";
@@ -83,7 +84,7 @@ export default function SourceSegmentPicker({
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [listOpen, setListOpen] = useState(false);
 
-  const ref = audioPath ?? outputDir ?? null;
+  const ref = sourceRefFor(audioPath, outputDir);
 
   const { data: allVersions } = useQuery({
     queryKey: queryKeys.allVersions(ref),

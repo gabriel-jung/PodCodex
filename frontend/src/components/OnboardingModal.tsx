@@ -48,9 +48,9 @@ export default function OnboardingModal({ onAddShow }: OnboardingModalProps) {
       <DialogContent className="sm:max-w-lg h-[440px] flex flex-col">
         <VisuallyHidden.Root>
           <DialogTitle>{stepTitle}</DialogTitle>
-          <DialogDescription>First-launch walkthrough</DialogDescription>
+          <DialogDescription>First-launch walkthrough, step {step + 1} of 3</DialogDescription>
         </VisuallyHidden.Root>
-        <div className="flex items-center justify-center gap-2 pt-2 pb-4">
+        <div className="flex items-center justify-center gap-2 pt-2 pb-4" aria-hidden>
           {[0, 1, 2].map((i) => (
             <div
               key={i}

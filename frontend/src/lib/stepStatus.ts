@@ -21,14 +21,19 @@ export function plainStatus(present: boolean): PanelStatus {
   return present ? "ready" : "none";
 }
 
-/** Aggregate status across multiple translation langs — "ready" only when
- *  every present lang is edited; "review" if any is raw; "none" when empty. */
+/** Aggregate status across multiple translation langs: "ready" only when
+ *  every present lang is ready by `reviewStatus`, "review" if any needs it,
+ *  "none" when empty. A reduction of `reviewStatus`, not a second rule, so
+ *  a change to what "ready" means lands here too. */
 export function translationsStatus(
   translations: readonly string[],
   provenance: Record<string, unknown> | null | undefined,
 ): PanelStatus {
   if (translations.length === 0) return "none";
-  return translations.every((l) => isEdited(provenance?.[l])) ? "ready" : "review";
+  const allReady = translations.every(
+    (l) => reviewStatus(true, provenance?.[l]) === "ready",
+  );
+  return allReady ? "ready" : "review";
 }
 
 /** True if the episode still needs work for the given step. */

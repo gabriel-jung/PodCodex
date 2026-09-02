@@ -14,15 +14,31 @@ import { json } from "./client";
 type Extra = Record<string, string | undefined> | undefined;
 type AudioRef = string | null | undefined;
 
-function build(path: string, audioPath: AudioRef, extra: Extra) {
+/**
+ * Query string identifying an episode to the backend: `audio_path` when the
+ * episode has audio, `output_dir` when it does not (subtitle-only imports),
+ * plus any endpoint-specific keys. The one builder every per-episode call
+ * goes through, so the output_dir-only case cannot be forgotten by a new
+ * endpoint copying the wrong template.
+ */
+export function episodeParams(
+  audioPath: AudioRef,
+  outputDir?: string | null,
+  extra?: Extra,
+): URLSearchParams {
   const params = new URLSearchParams();
   if (audioPath) params.set("audio_path", audioPath);
+  if (outputDir) params.set("output_dir", outputDir);
   if (extra) {
     for (const [k, v] of Object.entries(extra)) {
       if (v !== undefined && v !== "") params.set(k, v);
     }
   }
-  return `${path}?${params}`;
+  return params;
+}
+
+function build(path: string, audioPath: AudioRef, extra: Extra) {
+  return `${path}?${episodeParams(audioPath, undefined, extra)}`;
 }
 
 export function createVersionApi(step: string) {
