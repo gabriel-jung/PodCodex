@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
-from podcodex.core._utils import AudioPaths, normalize_lang
+from podcodex.core._utils import AudioPaths, bad_path_component, normalize_lang
 
 
 def register_version_routes(
@@ -29,7 +29,16 @@ def register_version_routes(
         s = normalize_lang(lang) if lang_param and lang else step
         if not s:
             raise HTTPException(400, "Missing step or lang parameter")
+        # normalize_lang only lowercases and de-spaces, so the lang param is
+        # still an arbitrary string that becomes a directory name below.
+        if bad_path_component(s):
+            raise HTTPException(400, f"Invalid lang parameter: {lang!r}")
         return p, s
+
+    def _check_version_id(version_id: str) -> None:
+        """A version id becomes a filename; keep it one path component."""
+        if bad_path_component(version_id):
+            raise HTTPException(400, f"Invalid version id: {version_id!r}")
 
     @router.get("/versions")
     def list_step_versions(
@@ -51,6 +60,7 @@ def register_version_routes(
     ) -> list[dict]:
         from podcodex.core.versions import load_version
 
+        _check_version_id(version_id)
         p, s = _resolve(audio_path, output_dir, lang)
         try:
             return load_version(p.base, s, version_id)
@@ -66,6 +76,7 @@ def register_version_routes(
     ) -> dict:
         from podcodex.core.versions import delete_version
 
+        _check_version_id(version_id)
         p, s = _resolve(audio_path, output_dir, lang)
         if not delete_version(p.base, s, version_id):
             raise HTTPException(404, f"Version {version_id} not found")

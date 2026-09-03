@@ -282,7 +282,7 @@ def extract_selected_samples(
     Returns:
         {speaker: [{"file", "start", "end", "duration", "text"}, ...]}
     """
-    from podcodex.core._utils import fill_narrator_speaker
+    from podcodex.core._utils import fill_narrator_speaker, speaker_file_slug
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     samples_dir = p.ensure_voice_samples_dir()
@@ -296,16 +296,21 @@ def extract_selected_samples(
         seg = {**sel, "duration": sel["end"] - sel["start"]}
         by_speaker.setdefault(speaker, []).append(seg)
 
+    # The label only reaches disk through ``speaker_file_slug``: an imported
+    # subtitle can name a speaker "../../x", which would otherwise write the
+    # clips outside voice_samples/ and let the cleanup glob below follow the
+    # ".." segments into ancestor directories. The raw label stays the dict key.
     plan: list[tuple[str, dict, Path]] = []
     for speaker, segs in by_speaker.items():
+        slug = speaker_file_slug(speaker)
         for i, seg in enumerate(segs):
-            plan.append((speaker, seg, samples_dir / f"{speaker}_{i:02d}.wav"))
+            plan.append((speaker, seg, samples_dir / f"{slug}_{i:02d}.wav"))
 
     # Clear old samples for these speakers. Preserve uploaded files
     # (suffixed with ``_custom_``) so a Re-extract doesn't wipe the user's
     # manual uploads — same filter ``load_voice_samples`` applies.
     for speaker in by_speaker:
-        for old in samples_dir.glob(f"{speaker}_*.wav"):
+        for old in samples_dir.glob(f"{speaker_file_slug(speaker)}_*.wav"):
             if "_custom_" in old.name:
                 continue
             old.unlink()
@@ -727,7 +732,7 @@ def load_voice_samples(
     Returns:
         {speaker: [{"file": Path, "duration": float, "text": ""}, ...]}
     """
-    from podcodex.core._utils import VOICE_SAMPLES_DIR
+    from podcodex.core._utils import VOICE_SAMPLES_DIR, speaker_file_slug
 
     samples_dir = Path(output_dir) / VOICE_SAMPLES_DIR
     if not samples_dir.exists():
@@ -738,11 +743,13 @@ def load_voice_samples(
 
     result: dict[str, list[dict]] = {}
     for speaker in speakers:
-        files = sorted(samples_dir.glob(f"{speaker}_*.wav"))
+        files = sorted(samples_dir.glob(f"{speaker_file_slug(speaker)}_*.wav"))
         if not files:
             speaker_id = reverse_map.get(speaker)
             if speaker_id:
-                files = sorted(samples_dir.glob(f"{speaker_id}_*.wav"))
+                files = sorted(
+                    samples_dir.glob(f"{speaker_file_slug(speaker_id)}_*.wav")
+                )
         if files:
             result[speaker] = [
                 {"file": f, "duration": wav_duration(f), "text": ""} for f in files

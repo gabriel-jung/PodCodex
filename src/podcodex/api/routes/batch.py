@@ -224,11 +224,23 @@ def _batch_llm_step(
     step_name = normalize_lang(req.target_lang) if is_translate else "corrected"
     sw = _STEP_WEIGHTS[step]
 
+    # Correct records the transcript-derived source language in its provenance
+    # (see enrich_correct_kwargs), not the request value, so the already-done
+    # check has to compare against the same thing the save writes or every
+    # episode is corrected again on every run.
+    tc_kwargs = (
+        None
+        if is_translate
+        else enrich_correct_kwargs(audio_path, None, req.source_lang)
+    )
+
     match_params = {
         "model": req.llm_model,
         "llm_mode": req.llm_mode,
         "llm_provider_profile": req.llm_provider_profile,
-        "source_lang": req.source_lang,
+        "source_lang": req.source_lang
+        if tc_kwargs is None
+        else tc_kwargs["source_lang"],
     }
     if is_translate:
         match_params["target_lang"] = req.target_lang
@@ -314,7 +326,7 @@ def _batch_llm_step(
     else:
         from podcodex.core.correct import correct_segments, save_corrected
 
-        tc_kwargs = enrich_correct_kwargs(audio_path, None, req.source_lang)
+        assert tc_kwargs is not None  # non-translate branch computed it above
         llm_kwargs.update(tc_kwargs)
         prov_params["engine"] = tc_kwargs["engine"]
         prov_params["source_lang"] = tc_kwargs["source_lang"]

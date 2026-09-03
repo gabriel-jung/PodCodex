@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useDirtyEdit } from "@/lib/dirtyEdits";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
@@ -14,6 +15,7 @@ import { useApiKeys } from "@/hooks/useApiKeys";
 import { Button } from "@/components/ui/button";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import { errorMessage, inputWidth, selectClass, splitPath } from "@/lib/utils";
 import FolderLocationFields from "@/components/common/FolderLocationFields";
 import ShowAccessSection from "./ShowAccessSection";
@@ -270,18 +272,59 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     }, 1500);
   }, [saveMutation]);
 
+  // Flush on unmount. The debounce cleanup below also runs on unmount, so an
+  // edit made within its window (then a tab switch, an episode click, closing
+  // the show) was silently dropped while the indicator still said "Saving...".
+  // The mutation cache keeps the PUT alive after unmount. Skipped once the
+  // show was moved or deleted: the folder is no longer at this path.
+  const goneRef = useRef(false);
+  const saveRef = useRef(saveMutation.mutate);
+  saveRef.current = saveMutation.mutate;
+  useEffect(() => {
+    return () => {
+      if (isDirtyRef.current && !goneRef.current) saveRef.current();
+    };
+  }, []);
+
   useEffect(() => {
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [name, language, rssUrl, youtubeUrl, artworkUrl, broadcastPattern, pipeModelSize, pipeDiarize, pipeNumSpeakers, pipeLlmMode, pipeLlmProviderProfile, pipeLlmKeyName, pipeLlmModels, pipeLlmBatchMinutes, pipeContext, pipeTargetLang, pipeRagModel, pipeRagChunker]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Set when the backend copied the show but could not delete the source: a
+  // full duplicate is still on disk and only the user can remove it, so the
+  // navigation waits until the sentence has been read.
+  const [moveLeftover, setMoveLeftover] = useState<
+    { message: string; newPath: string } | null
+  >(null);
+
+  // Navigation is deferred to an effect rather than run inline, so the
+  // dirty-edit entry registered from `hasChanges` is released first. The
+  // move form is dirty by definition while it is being submitted (the
+  // button needs `hasChanges`), and `folder` still names the old path in
+  // onSuccess, so navigating there directly hit the global blocker and
+  // asked the user to discard a move that had already succeeded.
+  const [movedTo, setMovedTo] = useState<string | null>(null);
+  // Not `hasChanges` alone: once the move landed there is nothing left to
+  // discard, and the entry has to be gone before the effect navigates.
+  useDirtyEdit(hasChanges && movedTo === null, "folder move");
+  useEffect(() => {
+    if (!movedTo) return;
+    navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(movedTo) } });
+  }, [movedTo, navigate]);
+
   const moveMutation = useMutation({
     mutationFn: ({ newPath, moveFiles: mf }: { newPath: string; moveFiles: boolean }) =>
       moveShow(folder, newPath, mf),
     onSuccess: (data) => {
+      goneRef.current = true;
       removeQueriesUnderPath(queryClient, folder);
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
-      navigate({ to: "/show/$folder", params: { folder: encodeURIComponent(data.new_path) } });
+      if (data.warning) {
+        setMoveLeftover({ message: data.warning, newPath: data.new_path });
+        return;
+      }
+      setMovedTo(data.new_path);
     },
   });
 
@@ -289,6 +332,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const deleteMutation = useMutation({
     mutationFn: (deleteFiles: boolean) => deleteShow(folder, deleteFiles),
     onSuccess: () => {
+      goneRef.current = true;
       // Re-adding a show at the same folder path would otherwise hit stale
       // per-folder caches (episodes, versions, roster, ...) before refetch.
       removeQueriesUnderPath(queryClient, folder);
@@ -496,6 +540,17 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
               <span className="text-xs text-destructive">{errorMessage(moveMutation.error)}</span>
             )}
           </div>
+        )}
+        {moveLeftover && (
+          <ErrorAlert
+            error={moveLeftover.message}
+            onDismiss={() => {
+              const { newPath } = moveLeftover;
+              setMoveLeftover(null);
+              setMovedTo(newPath);
+            }}
+            className="mt-3"
+          />
         )}
       </SettingSection>
 

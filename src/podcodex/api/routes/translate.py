@@ -229,18 +229,34 @@ def apply_manual_corrections(req: ApplyManualRequest) -> dict:
     """Apply manually-obtained translation corrections and save as raw."""
     from podcodex.core._utils import validate_manual
     from podcodex.core.translate import save_translation_raw
+    from podcodex.core.versions import load_version_by_id
+
+    if req.source_version_id:
+        p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
+        resolved_source = load_version_by_id(p.base, req.source_version_id)
+        if resolved_source is None:
+            raise HTTPException(
+                404, f"Source version not found: {req.source_version_id}"
+            )
+        original = resolved_source[0]
+    else:
+        try:
+            original = load_best_source(req.audio_path, req.output_dir)
+        except ValueError:
+            raise HTTPException(404, "No source segments found")
 
     try:
-        original = load_best_source(req.audio_path, req.output_dir)
-    except ValueError:
-        raise HTTPException(404, "No source segments found")
-
-    translated = validate_manual(req.corrections, original)
+        translated = validate_manual(req.corrections, original)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     lang_norm = normalize_lang(req.lang)
+    # manual_edit stays False: applying a manual LLM prompt is still an LLM
+    # pass, not a reviewed hand-edit. Marking it edited made an unreviewed
+    # paste outrank every later auto translation. The correct route already
+    # does it this way; params llm_mode=manual records the provenance.
     provenance = build_provenance(
         lang_norm,
         params=llm_prov_params("manual"),
-        manual_edit=True,
         audio_path=req.audio_path,
         output_dir=req.output_dir,
     )

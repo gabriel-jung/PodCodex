@@ -1,15 +1,7 @@
 import { json, rawFetch } from "./client";
+import type { ShowAccess, ShowPasswordSet } from "./generated-types";
 
-export interface ShowAccess {
-  show: string;
-  is_protected: boolean;
-}
-
-export interface ShowPasswordSet {
-  show: string;
-  password: string;
-  generated: boolean;
-}
+export type { ShowAccess, ShowPasswordSet };
 
 const jsonHeaders = { "Content-Type": "application/json" };
 

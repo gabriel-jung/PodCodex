@@ -778,8 +778,45 @@ def test_verified_rejects_partial_body(client, tmp_path):
 # ──────────────────────────────────────────────
 
 
+def _register_show_folder(ep_dir: str) -> None:
+    """Register the episode's show folder so the export guard accepts it.
+
+    The export routes confine ``audio_path``/``output_dir`` to a registered
+    show root, the same way /api/audio/file does.
+    """
+    from podcodex.core.app_config import AppConfig, save_config
+
+    save_config(AppConfig(show_folders=[str(Path(ep_dir).parent)]))
+
+
+def test_export_outside_show_root_is_refused(client, tmp_path):
+    """An unregistered directory is not zippable or readable through export."""
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    segs = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "secret"}]
+    save_version(
+        Path(ep_dir) / "ep", "transcript", segs, {"step": "transcript", "type": "raw"}
+    )
+    # No show folder registered at all.
+    r = client.get(
+        "/api/export/text", params={"audio_path": audio, "source": "transcript"}
+    )
+    assert r.status_code == 403
+    r = client.get("/api/export/zip", params={"audio_path": audio})
+    assert r.status_code == 403
+
+    # Registering an unrelated folder does not open the door either.
+    other = tmp_path / "other"
+    other.mkdir()
+    from podcodex.core.app_config import AppConfig, save_config
+
+    save_config(AppConfig(show_folders=[str(other)]))
+    r = client.get("/api/export/zip", params={"audio_path": audio})
+    assert r.status_code == 403
+
+
 def test_export_text_from_transcript(client, tmp_path):
     audio, ep_dir = _make_audio_dir(tmp_path)
+    _register_show_folder(ep_dir)
     segs = [
         {"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "hello"},
         {"speaker": "Bob", "start": 2.0, "end": 4.0, "text": "world"},
@@ -800,6 +837,7 @@ def test_export_text_from_transcript(client, tmp_path):
 
 def test_export_srt_has_timestamps(client, tmp_path):
     audio, ep_dir = _make_audio_dir(tmp_path)
+    _register_show_folder(ep_dir)
     segs = [{"speaker": "A", "start": 0.0, "end": 1.5, "text": "go"}]
     save_version(
         Path(ep_dir) / "ep", "transcript", segs, {"step": "transcript", "type": "raw"}
@@ -816,6 +854,7 @@ def test_export_srt_has_timestamps(client, tmp_path):
 
 def test_export_vtt_has_header(client, tmp_path):
     audio, ep_dir = _make_audio_dir(tmp_path)
+    _register_show_folder(ep_dir)
     segs = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hey"}]
     save_version(
         Path(ep_dir) / "ep", "transcript", segs, {"step": "transcript", "type": "raw"}
@@ -830,7 +869,8 @@ def test_export_vtt_has_header(client, tmp_path):
 
 
 def test_export_missing_source_returns_404(client, tmp_path):
-    audio, _ = _make_audio_dir(tmp_path)
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    _register_show_folder(ep_dir)
     r = client.get(
         "/api/export/text",
         params={"audio_path": audio, "source": "transcript"},
@@ -1086,3 +1126,188 @@ def test_inspect_unindexed_show_is_a_clean_404(tmp_path, monkeypatch):
             output_dir=None,
         )
     assert exc.value.status_code == 404
+
+
+# ──────────────────────────────────────────────
+# Transcript upload (SRT / VTT)
+# ──────────────────────────────────────────────
+
+_SRT_BODY = (
+    "1\n00:00:00,000 --> 00:00:02,000\nAlice: Hello there\n\n"
+    "2\n00:00:02,000 --> 00:00:04,000\nBob: Café au lait\n"
+)
+
+
+def test_upload_srt_transcript(client, tmp_path):
+    """SRT uploads used to 500: the original-subtitle copy was written under
+    p.base, which is a path prefix and not a directory."""
+    audio, ep_dir = _make_audio_dir(tmp_path)
+
+    r = client.post(
+        "/api/transcribe/upload",
+        params={"audio_path": audio},
+        files={"file": ("ep.srt", _SRT_BODY.encode("utf-8"), "text/plain")},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["count"] == 2
+
+    # The reference copy lands beside the version root, not inside it.
+    assert (Path(ep_dir) / "ep.subtitles.srt").exists()
+
+    segs = client.get("/api/transcribe/segments", params={"audio_path": audio}).json()
+    assert [s["text"] for s in segs] == ["Hello there", "Café au lait"]
+
+
+def test_upload_srt_non_utf8(client, tmp_path):
+    """cp1252 is what Windows subtitle tools emit; a strict decode 500s."""
+    audio, _ = _make_audio_dir(tmp_path)
+
+    r = client.post(
+        "/api/transcribe/upload",
+        params={"audio_path": audio},
+        files={"file": ("ep.srt", _SRT_BODY.encode("cp1252"), "text/plain")},
+    )
+    assert r.status_code == 200, r.text
+    segs = client.get("/api/transcribe/segments", params={"audio_path": audio}).json()
+    assert segs[1]["text"] == "Café au lait"
+
+
+# ──────────────────────────────────────────────
+# Manual-mode apply (correct / translate)
+# ──────────────────────────────────────────────
+
+
+def _seed_transcript(ep_dir: str, n: int = 2) -> None:
+    save_version(
+        Path(ep_dir) / Path(ep_dir).name,
+        "transcript",
+        [
+            {"speaker": "A", "start": float(i), "end": float(i + 1), "text": f"t{i}"}
+            for i in range(n)
+        ],
+        {"step": "transcript", "type": "raw"},
+    )
+
+
+def test_apply_manual_rejects_a_count_mismatch(client, tmp_path):
+    """A short paste used to be accepted: validate_manual kept the originals
+    and the route saved untouched source text as a finished step."""
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    _seed_transcript(ep_dir, n=3)
+
+    r = client.post(
+        "/api/correct/apply-manual",
+        json={"audio_path": audio, "corrections": [{"text": "only one"}]},
+    )
+    assert r.status_code == 400
+    assert "mismatch" in r.json()["detail"].lower()
+
+    r = client.post(
+        "/api/translate/apply-manual",
+        json={
+            "audio_path": audio,
+            "lang": "French",
+            "corrections": [{"text": "un seul"}],
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_translate_apply_manual_is_not_marked_edited(client, tmp_path):
+    """manual_edit made an unreviewed paste outrank every later auto run; the
+    correct route already keeps it False."""
+    from podcodex.core.versions import is_edited, list_versions
+
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    _seed_transcript(ep_dir, n=2)
+
+    r = client.post(
+        "/api/translate/apply-manual",
+        json={
+            "audio_path": audio,
+            "lang": "French",
+            "corrections": [{"text": "un"}, {"text": "deux"}],
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    versions = list_versions(Path(ep_dir) / "ep", "french")
+    assert len(versions) == 1
+    assert not is_edited(versions[0])
+
+
+# ──────────────────────────────────────────────
+# Batch correct: already-done check
+# ──────────────────────────────────────────────
+
+
+def test_batch_correct_skips_a_transcript_language_match(tmp_path):
+    """Correct's provenance records the transcript-derived source language, so
+    the already-done check has to compare against that, not the request value.
+    Otherwise every episode whose transcribe language differs from the LLM
+    source-language setting is corrected again on every batch run."""
+    from podcodex.api.routes.batch import BatchRequest, _batch_llm_step
+    from podcodex.core._utils import AudioPaths
+
+    show = tmp_path / "show"
+    (show / "ep").mkdir(parents=True)
+    audio = show / "ep.mp3"
+    audio.touch()
+    base = show / "ep" / "ep"
+
+    save_version(
+        base,
+        "transcript",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "bonjour"}],
+        {"step": "transcript", "type": "raw", "params": {"language": "fr"}},
+    )
+    save_version(
+        base,
+        "corrected",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "Bonjour"}],
+        {
+            "step": "corrected",
+            "type": "raw",
+            "model": "qwen3:4b",
+            # What the save path writes: iso_to_language("fr").
+            "params": {
+                "llm_mode": "ollama",
+                "llm_provider_profile": None,
+                "source_lang": "French",
+            },
+        },
+    )
+
+    # The request still carries the default source language.
+    req = BatchRequest(
+        show_folder=str(show),
+        audio_paths=[str(audio)],
+        llm_mode="ollama",
+        llm_model="qwen3:4b",
+        source_lang="English",
+    )
+    p = AudioPaths.from_audio(str(audio))
+    did_work = _batch_llm_step(
+        str(audio),
+        p,
+        req,
+        lambda: False,
+        lambda *a, **k: None,
+        0,
+        0.0,
+        step="correct",
+    )
+    assert did_work is False
+
+
+def test_has_subtitles_only_counts_what_the_batch_can_read(tmp_path, monkeypatch):
+    """A hand-uploaded `{stem}.subtitles.vtt` has no language code, so the
+    batch's glob never finds it; the flag must not promise otherwise."""
+    from podcodex.api.routes.shows import _BATCH_SUBS_RE
+
+    assert _BATCH_SUBS_RE.search("ep1.subtitles.en.vtt")
+    assert _BATCH_SUBS_RE.search("ep1.subtitles.pt-BR.VTT")
+    # Written by the transcript upload route, not by the subtitle importer.
+    assert not _BATCH_SUBS_RE.search("ep1.subtitles.vtt")
+    assert not _BATCH_SUBS_RE.search("ep1.subtitles.srt")
+    assert not _BATCH_SUBS_RE.search("ep1.vtt")

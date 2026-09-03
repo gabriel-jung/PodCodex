@@ -24,6 +24,20 @@ router = APIRouter()
 register_version_routes(router, "transcript")
 
 
+def _decode_subtitle(content: bytes) -> str:
+    """Decode subtitle bytes, tolerating the encodings Windows tools emit.
+
+    SRT and VTT files in the wild are frequently cp1252 or latin-1 rather than
+    UTF-8; a strict decode turns those uploads into a server error.
+    """
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise HTTPException(400, "Could not decode the subtitle file as text")
+
+
 # ── Load / save ──────────────────────────────────────────
 
 
@@ -114,14 +128,14 @@ def upload_transcript(
     filename = (file.filename or "").lower()
 
     if filename.endswith(".vtt"):
-        text = content.decode("utf-8")
+        text = _decode_subtitle(content)
         segments = vtt_to_segments(text)
         if not segments:
             raise HTTPException(400, "No segments found in VTT file")
         source = "vtt"
         original_text = text
     elif filename.endswith(".srt"):
-        text = content.decode("utf-8")
+        text = _decode_subtitle(content)
         segments = srt_to_segments(text)
         if not segments:
             raise HTTPException(400, "No segments found in SRT file")
@@ -166,7 +180,9 @@ def upload_transcript(
     # Save original subtitle file for reference
     if original_text is not None:
         ext = "vtt" if source == "vtt" else "srt"
-        orig_path = p.base / f"{p.base.name}.subtitles.{ext}"
+        # p.base is the version-root prefix ({ep_dir}/{stem}), not a directory;
+        # the sidecar belongs next to it, the layout batch.py and youtube.py use.
+        orig_path = p.base.parent / f"{p.base.name}.subtitles.{ext}"
         orig_path.write_text(original_text, encoding="utf-8")
 
     provenance = build_provenance(
@@ -204,8 +220,11 @@ def import_transcript(
     if not src.exists():
         raise HTTPException(404, f"File not found: {file_path}")
 
-    content = src.read_text(encoding="utf-8")
     filename = src.name.lower()
+    if filename.endswith((".vtt", ".srt")):
+        content = _decode_subtitle(src.read_bytes())
+    else:
+        content = src.read_text(encoding="utf-8")
 
     if filename.endswith(".vtt"):
         segments = vtt_to_segments(content)

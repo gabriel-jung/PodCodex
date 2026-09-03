@@ -80,6 +80,12 @@ export const queryKeys = {
 
   bestSourceSegments: (audioPath: AudioPath) =>
     ["best-source-segments", audioPath] as const,
+  /** Rejected-batch records written by the last auto correct run. */
+  llmFailuresCorrect: (audioPath: AudioPath) =>
+    ["llmFailures", "correct", audioPath] as const,
+  /** Rejected-batch records written by the last auto translate run, per language. */
+  llmFailuresTranslate: (audioPath: AudioPath, lang: string) =>
+    ["llmFailures", "translate", audioPath, lang] as const,
 
   synthesizeAll: () => ["synthesize"] as const,
   synthesizeStatus: (audioPath: AudioPath) =>

@@ -442,6 +442,31 @@ def test_import_collection_conflict_replace(tmp_path, isolated_index):
     assert result.conflicts_resolved.get(f"collection:{col}") == "replaced"
 
 
+def test_import_into_a_replica_index_is_refused(tmp_path, monkeypatch, isolated_index):
+    """Half-succeeding is worse than not starting.
+
+    REPLACE used to catch the refused ``delete_collection``, log a warning,
+    purge the table directory anyway and then leave the stale ``_collections``
+    row in place, so the collection stayed registered with the old dim/model.
+    """
+    from podcodex.rag.index_origin import IndexOwnershipError
+
+    monkeypatch.setenv("PODCODEX_MACHINE_ID", "desktop")
+    show = _make_show(tmp_path / "test_show")
+    store = rag_index_store.get_index_store()
+    col = _seed_collection(store)
+    archive = tmp_path / "out.podcodex"
+    export_show(show, archive, index_only=True)
+
+    monkeypatch.setenv("PODCODEX_MACHINE_ID", "bot-host")
+    with pytest.raises(IndexOwnershipError) as exc:
+        import_archive(archive, on_conflict=ConflictPolicy.REPLACE)
+    assert "--claim-index" in str(exc.value)
+    # Nothing was touched on the way to the refusal.
+    assert col in store.list_collections()
+    assert (isolated_index / f"{col}.lance").exists()
+
+
 def test_import_collection_conflict_rename_falls_back_to_replace(
     tmp_path, isolated_index
 ):
@@ -549,35 +574,73 @@ def test_resolve_target_rejects_traversal(tmp_path):
     shows.mkdir()
     idx = tmp_path / "index"
     idx.mkdir()
-    fmap = {"showa": "showa"}
-    assert _resolve_target("lancedb/../evil.txt", shows, idx, fmap) is None
-    assert _resolve_target("shows/showa/../../evil.txt", shows, idx, fmap) is None
+    roots = {"showa": (shows / "showa").resolve()}
+    cols = frozenset({"c"})
+    assert _resolve_target("lancedb/../evil.txt", roots, idx, cols) is None
+    assert _resolve_target("shows/showa/../../evil.txt", roots, idx, cols) is None
     assert (
-        _resolve_target("lancedb/c.lance/data.bin", shows, idx, fmap)
+        _resolve_target("lancedb/c.lance/data.bin", roots, idx, cols)
         == idx / "c.lance" / "data.bin"
     )
+    assert _resolve_target("lancedb/c.txn", roots, idx, cols) == idx / "c.txn"
     assert (
-        _resolve_target("shows/showa/ep1/t.txt", shows, idx, fmap)
+        _resolve_target("shows/showa/ep1/t.txt", roots, idx, cols)
         == shows / "showa" / "ep1" / "t.txt"
     )
 
 
+def test_resolve_target_confines_show_members_to_their_own_folder(tmp_path):
+    """Inside shows_dir is not enough: a sibling show must be untouchable."""
+    from podcodex.bundle.import_show import _resolve_target
+
+    shows = tmp_path / "shows"
+    roots = {"showa": (shows / "showa").resolve()}
+    assert (
+        _resolve_target("shows/showa/../showb/show.toml", roots, tmp_path, ()) is None
+    )
+    assert _resolve_target("shows/showb/show.toml", roots, tmp_path, ()) is None
+
+
+def test_resolve_target_accepts_only_planned_collections(tmp_path):
+    from podcodex.bundle.import_show import _resolve_target
+
+    idx = tmp_path / "index"
+    cols = frozenset({"c"})
+    for member in (
+        "lancedb/_show_passwords.lance/data.bin",
+        "lancedb/_collections.lance/data.bin",
+        "lancedb/index_origin.json",
+        "lancedb/other.lance/data.bin",
+        "lancedb/cc.lance/data.bin",
+    ):
+        assert _resolve_target(member, None, idx, cols) is None, member
+
+
 def test_import_skips_traversal_members(tmp_path, isolated_index):
+    target = tmp_path / "target"
+    sibling = target / "showb"
+    sibling.mkdir(parents=True)
+    (sibling / "show.toml").write_text('name = "Sibling"\n', encoding="utf-8")
     archive = _write_raw_archive(
         tmp_path / "evil.podcodex",
         _manifest(Mode.FULL),
         {
             "shows/showa/ep1/t.txt": b"ok",
             "shows/showa/../../escaped.txt": b"pwned",
+            "shows/showa/../showb/show.toml": b"pwned",
             "lancedb/../escaped2.txt": b"pwned",
+            "lancedb/_show_passwords.lance/data.bin": b"pwned",
+            "lancedb/index_origin.json": b"pwned",
         },
     )
-    target = tmp_path / "target"
     import_archive(archive, shows_dir=target)
     assert (target / "showa" / "ep1" / "t.txt").is_file()
     index_root = rag_index_store.get_index_store().path
     assert not (target.parent / "escaped.txt").exists()
+    assert (sibling / "show.toml").read_text(encoding="utf-8") == 'name = "Sibling"\n'
     assert not (index_root.parent / "escaped2.txt").exists()
+    assert not (index_root / "_show_passwords.lance" / "data.bin").exists()
+    assert (index_root / "index_origin.json").read_bytes() != b"pwned"
 
 
 def test_import_rejects_traversal_folder_name(tmp_path, isolated_index):
@@ -709,3 +772,38 @@ def test_legacy_archive_import_mints_an_id(tmp_path, isolated_index):
     finally:
         rag_index_store.get_index_store.cache_clear()
         os.environ["PODCODEX_INDEX"] = str(isolated_index)
+
+
+# ── Episode metadata dotfiles ──────────────────────────────────────────
+
+
+def test_export_import_carries_episode_metadata(tmp_path, isolated_index):
+    """`.feed_cache.json` and `.episode_meta.json` must survive the round trip.
+
+    The dot rule used to reject file names too, so an imported show came back
+    with no titles, dates or descriptions and no feed cache to refresh from.
+    """
+    show = _make_show(tmp_path / "test_show", audio=False)
+    (show / ".feed_cache.json").write_text('{"episodes": []}', encoding="utf-8")
+    (show / "ep1" / ".episode_meta.json").write_text(
+        '{"title": "Episode One", "pub_date": "2026-01-02"}', encoding="utf-8"
+    )
+    # A dotfile that is not metadata stays out.
+    (show / ".DS_Store").write_bytes(b"junk")
+    # A dot directory stays out whole.
+    (show / ".versions").mkdir()
+    (show / ".versions" / "stale.json").write_text("{}", encoding="utf-8")
+
+    archive = tmp_path / "out.podcodex"
+    export_show(show, archive, with_audio=False)
+
+    target_dir = tmp_path / "imported_shows"
+    import_archive(archive, shows_dir=target_dir)
+
+    imported = target_dir / "test_show"
+    assert (imported / ".feed_cache.json").is_file()
+    meta = imported / "ep1" / ".episode_meta.json"
+    assert meta.is_file()
+    assert "Episode One" in meta.read_text(encoding="utf-8")
+    assert not (imported / ".DS_Store").exists()
+    assert not (imported / ".versions").exists()

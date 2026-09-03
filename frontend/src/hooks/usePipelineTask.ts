@@ -88,9 +88,10 @@ export function usePipelineTask(
         folder,
         title: ep.title,
         step: stepKey,
+        audioPath,
       });
     }
-  }, [stepKey]);
+  }, [stepKey, audioPath]);
 
   return {
     activeTaskId,

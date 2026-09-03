@@ -17,6 +17,7 @@ from podcodex.bot.announce import (
     commit_subjects,
     repo_url,
 )
+from podcodex.bot.ui import clear_chunk_cache
 
 
 class AnnounceMixin:
@@ -53,6 +54,7 @@ class AnnounceMixin:
         if current_mtime == self._announce_mtime_seen:
             return
         await loop.run_in_executor(None, self.local.reconnect)
+        clear_chunk_cache()
         await loop.run_in_executor(None, self._reload_shows)
         col_info = await loop.run_in_executor(None, self.local.get_all_collection_info)
         # Advanced only once the reload succeeded, so a tick that dies mid-rsync

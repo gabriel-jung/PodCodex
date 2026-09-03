@@ -15,8 +15,11 @@ services:
       # claimed here would silently revert to being someone else's replica.
       # The index bind above is nested inside this volume and still wins for
       # its own subtree (Docker resolves the longer path first).
+      # It also carries the per-guild bot state and the HF model cache
+      # (<data_dir>/models/huggingface/), so BGE-M3 survives rebuilds. Docker
+      # seeds a freshly created volume from the image, which is where the
+      # Dockerfile's pre-download lands.
       - podcodex_data:/root/.local/share/podcodex
-      - model_cache:/root/.cache  # BGE-M3 model cache — persisted across rebuilds
     deploy:
       resources:
         limits:
@@ -29,5 +32,4 @@ services:
         max-file: "3"
 
 volumes:
-  model_cache:
   podcodex_data:

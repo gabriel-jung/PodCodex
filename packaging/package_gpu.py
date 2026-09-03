@@ -10,9 +10,10 @@ Takes ``packaging/dist/podcodex-server-gpu/`` (produced by
                                    Versioned independently; only redownloaded
                                    when the CUDA toolkit / torch major
                                    version changes.
-  3. ``cuda-libs.json``         — manifest with version + sha256 + torch
-                                   compatibility range, consumed by the
-                                   runtime downloader (Phase M.4).
+  3. ``cuda-libs.json``         : manifest with version, both archive
+                                   sha256s and the torch compatibility
+                                   range, consumed by the runtime
+                                   downloader (Phase M.4).
 
 Usage:
     .venv/bin/python packaging/package_gpu.py
@@ -191,11 +192,15 @@ def package(
 
     # Manifest — the runtime downloader fetches this first to know which
     # archive to pull, verify, and extract.
+    # ``server_sha256`` is required by the runtime installer: server-core is
+    # the archive that becomes the executed sidecar, so its digest travels in
+    # the manifest rather than in an optional ``.sha256`` sidecar fetch.
     manifest = {
         "version": cuda_libs_version,
         "torch_compat": torch_compat,
         "archive": cuda_archive.name,
         "sha256": cuda_sha,
+        "server_sha256": core_sha,
     }
     manifest_path = output_dir / "cuda-libs.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")

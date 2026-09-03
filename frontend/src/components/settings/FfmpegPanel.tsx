@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useDirtyEdit } from "@/lib/dirtyEdits";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getConfig, healthQueryOptions, updateConfig, validateFfmpegPath } from "@/api/client";
 import type { AppConfig } from "@/api/types";
@@ -127,6 +128,7 @@ function OverrideRow({ config, platform }: { config: AppConfig; platform: Return
   const persisted = config.ffmpeg_exe_override ?? "";
   const trimmed = draft.trim();
   const dirty = trimmed !== persisted;
+  useDirtyEdit(dirty, "ffmpeg override");
   const onPick = async () => {
     const picked = await platform.fs.openFileDialog();
     if (picked) {

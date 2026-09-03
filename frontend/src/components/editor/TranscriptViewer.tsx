@@ -10,6 +10,7 @@ import { useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
 import type { Segment, VersionEntry } from "@/api/types";
 import { saveExportFile } from "@/api/client";
+import { useDirtyEdit } from "@/lib/dirtyEdits";
 import { usePlatform } from "@/platform";
 import { invalidateSpeakerViews } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
@@ -27,6 +28,7 @@ const REF_DEFAULT = "default";
 type RefChoice = typeof REF_NONE | typeof REF_DEFAULT | string;
 import { BREAK_SPEAKER, isSoloDefaultSpeaker } from "@/lib/speakers";
 import { Button } from "@/components/ui/button";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import {
   Dialog,
   DialogContent,
@@ -192,7 +194,12 @@ export default function TranscriptViewer({
 }: TranscriptViewerProps) {
   // ── Data loading ──────────────────────────────────────────────────────────
 
-  const { data: latestSegments } = useQuery({
+  const {
+    data: latestSegments,
+    isError: segmentsFailed,
+    error: segmentsError,
+    refetch: refetchSegments,
+  } = useQuery({
     queryKey: queryKeys.stepSegments(editorKey, audioPath),
     queryFn: loadSegments,
   });
@@ -226,7 +233,12 @@ export default function TranscriptViewer({
     if (showFlagSettings) setPatternDraft(useFlagPatternsStore.getState().patterns.join("\n"));
   }, [showFlagSettings]);
 
-  const { data: versionSegments } = useQuery({
+  const {
+    data: versionSegments,
+    isError: versionFailed,
+    error: versionError,
+    refetch: refetchVersion,
+  } = useQuery({
     queryKey: queryKeys.stepVersionSegments(editorKey, audioPath, selectedVersionId),
     queryFn: () => {
       const v = versions?.find((x) => x.id === selectedVersionId);
@@ -922,14 +934,9 @@ export default function TranscriptViewer({
         }
       : { label: "Reviewed", title: "Latest version is already marked as reviewed", Icon: CheckCheck };
 
-  useEffect(() => {
-    if (!isDirty) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-    };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, [isDirty]);
+  // In-app navigation and tab close both ask before discarding; the panel is
+  // remounted per step and episode, so without this every edit is lost.
+  useDirtyEdit(isDirty, "transcript edits");
 
   const canUndo = editor.canUndo;
   const undo = editor.undo;
@@ -962,7 +969,27 @@ export default function TranscriptViewer({
     [referenceSegments, referenceLabel],
   );
 
-  // ── Loading state ─────────────────────────────────────────────────────────
+  // ── Loading / error state ─────────────────────────────────────────────────
+
+  // A failed load (deleted version, stale editing language, backend error)
+  // used to sit on "Loading transcript..." forever with no way back.
+  // Judged on the query the view actually depends on. Letting a present
+  // `latestSegments` suppress a failed *pinned* version showed a different
+  // version's text under a picker still naming the pinned one, and a save
+  // then wrote that text back as the step's newest version.
+  const loadFailed = selectedVersionId
+    ? versionFailed && !versionSegments
+    : segmentsFailed && !latestSegments;
+  if (loadFailed) {
+    return (
+      <div className="p-6">
+        <ErrorAlert
+          error={selectedVersionId ? versionError : segmentsError}
+          onRetry={() => void (selectedVersionId ? refetchVersion() : refetchSegments())}
+        />
+      </div>
+    );
+  }
 
   if (!sourceSegments) {
     return (

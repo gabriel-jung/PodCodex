@@ -366,6 +366,11 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
   }, [deleteEpisodeMutate]);
 
   const filteredRef = useRef(filtered);
+  // The anchor is an index into the list as it was when the row was clicked.
+  // Search, filter, sort and the step filter all reshuffle it, so a stale
+  // anchor points at a row that no longer exists there; drop it instead.
+  // eslint-disable-next-line react-hooks/refs
+  if (filteredRef.current !== filtered) lastShiftClickIndex.current = null;
   // eslint-disable-next-line react-hooks/refs
   filteredRef.current = filtered;
 
@@ -374,16 +379,18 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
     lastShiftClickIndex.current = idx;
     setSelected((prev) => {
       const next = new Set(prev);
-      if (shiftKey && lastIdx != null) {
+      const list = filteredRef.current;
+      if (shiftKey && lastIdx != null && lastIdx < list.length) {
         // Mirror the clicked item's toggle direction across the whole range:
         // clicking an already-selected item → unselect range; otherwise select.
         const shouldSelect = !next.has(id);
-        const from = Math.min(lastIdx, idx);
-        const to = Math.max(lastIdx, idx);
-        const list = filteredRef.current;
+        const from = Math.max(0, Math.min(lastIdx, idx));
+        const to = Math.min(Math.max(lastIdx, idx), list.length - 1);
         for (let i = from; i <= to; i++) {
-          if (shouldSelect) next.add(list[i].id);
-          else next.delete(list[i].id);
+          const row = list[i];
+          if (!row) continue;
+          if (shouldSelect) next.add(row.id);
+          else next.delete(row.id);
         }
       } else {
         if (next.has(id)) next.delete(id); else next.add(id);

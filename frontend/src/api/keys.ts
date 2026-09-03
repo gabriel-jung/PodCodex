@@ -1,17 +1,12 @@
 import { json, rawFetch } from "./client";
-import type { APIKeyPublic } from "./generated-types";
+import type {
+  APIKeyPublic,
+  APIKeysListResponse,
+  APIKeysScanResponse,
+} from "./generated-types";
 
-export type { APIKeyPublic };
-
-export interface APIKeysListResponse {
-  path: string;
-  keys: APIKeyPublic[];
-}
-
-export interface ScanResponse {
-  added: string[];
-  keys: APIKeyPublic[];
-}
+export type { APIKeyPublic, APIKeysListResponse };
+export type ScanResponse = APIKeysScanResponse;
 
 export const listApiKeys = () => json<APIKeysListResponse>("/api/keys");
 

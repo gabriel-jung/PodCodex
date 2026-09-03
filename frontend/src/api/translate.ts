@@ -30,7 +30,7 @@ export const getTranslateManualPrompts = (params: {
   source_version_id?: string;
 }) => api.getManualPrompts(params);
 
-export const applyTranslateManual = (params: { audio_path?: string; output_dir?: string; lang: string; corrections: unknown[] }) =>
+export const applyTranslateManual = (params: { audio_path?: string; output_dir?: string; lang: string; corrections: unknown[]; source_version_id?: string }) =>
   api.applyManual(params);
 
 export const applyTranslateBatches = (params: {

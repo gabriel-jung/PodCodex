@@ -138,6 +138,40 @@ export interface UnifiedEpisodeOut {
   artwork_url: string;
 }
 
+export interface SpeakerEpisodeEntry {
+  stem: string;
+  title: string;
+  segment_count: number;
+  total_seconds: number;
+}
+
+export interface SpeakerRosterEntry {
+  name: string;
+  is_known: boolean;
+  episode_count: number;
+  segment_count: number;
+  total_seconds: number;
+  episodes: SpeakerEpisodeEntry[];
+}
+
+export interface SpeakerRosterResponse {
+  speakers: SpeakerRosterEntry[];
+  episodes_scanned: number;
+  episodes_with_transcripts: number;
+}
+
+export interface EpisodeSpeakerEntry {
+  name: string;
+  total_seconds: number;
+  pct: number;
+}
+
+export interface EpisodeSpeakersResponse {
+  speakers: EpisodeSpeakerEntry[];
+  episode_seconds: number;
+  has_transcript: boolean;
+}
+
 export interface VerifiedSetRequest {
   step?: string | null;
   version_id?: string | null;
@@ -268,6 +302,80 @@ export interface CreateLocalShowResponse {
   name: string;
 }
 
+export interface DeleteEpisodeResponse {
+  status: "deleted" | "partial";
+  collections: number;
+  output_dir_removed: boolean;
+  audio_removed: boolean;
+  db_row_removed: boolean;
+  warnings: string[];
+}
+
+export interface SecretStatus {
+  key: string;
+  set: boolean;
+  masked: string;
+  source: "file" | "env" | "none";
+}
+
+export interface SecretsStatusResponse {
+  path: string;
+  items: SecretStatus[];
+}
+
+export interface FfmpegValidateResponse {
+  ok: boolean;
+  path?: string | null;
+  version: string;
+  error: string;
+}
+
+export interface PodcastSearchResultOut {
+  name: string;
+  artist: string;
+  feed_url: string;
+  artwork_url: string;
+}
+
+export interface ShowAccess {
+  show: string;
+  is_protected: boolean;
+}
+
+export interface ShowPasswordSet {
+  show: string;
+  password: string;
+  generated: boolean;
+}
+
+export interface SlotIn {
+  name: string;
+  type: "string" | "enum" | "int" | "bool";
+  required: boolean;
+  default?: string | null;
+  options?: string[];
+}
+
+export interface PromptOut {
+  id: string;
+  name: string;
+  title: string;
+  description: string;
+  template: string;
+  slots: SlotIn[];
+  enabled: boolean;
+  is_builtin: boolean;
+}
+
+export interface ClaudeDesktopStatus {
+  enabled: boolean;
+  config_path: string;
+  command_path: string;
+  claude_desktop_installed: boolean;
+  mcp_available: boolean;
+  needs_restart_hint: string;
+}
+
 export interface TranscribeRequest {
   audio_path: string;
   output_dir?: string | null;
@@ -312,6 +420,7 @@ export interface CorrectApplyManualRequest {
   output_dir?: string | null;
   corrections: Record<string, unknown>[];
   lang?: string;
+  source_version_id?: string | null;
 }
 
 export interface BatchFix {
@@ -377,6 +486,7 @@ export interface TranslateApplyManualRequest {
   output_dir?: string | null;
   corrections: Record<string, unknown>[];
   lang?: string;
+  source_version_id?: string | null;
 }
 
 export interface TranslateApplyBatchesRequest {
@@ -625,11 +735,25 @@ export interface APIKeyPublic {
   source: "ui" | "env";
 }
 
+export interface APIKeysListResponse {
+  path: string;
+  keys: APIKeyPublic[];
+}
+
+export interface APIKeysScanResponse {
+  added: string[];
+  keys: APIKeyPublic[];
+}
+
 export interface ProviderProfile {
   name: string;
   type: "openai" | "anthropic" | "mistral" | "ollama" | "openai-compatible";
   base_url?: string | null;
   builtin: boolean;
+}
+
+export interface ProviderProfilesListResponse {
+  profiles: ProviderProfile[];
 }
 
 // Audio file extensions the backend accepts (src/podcodex/core/constants.py).

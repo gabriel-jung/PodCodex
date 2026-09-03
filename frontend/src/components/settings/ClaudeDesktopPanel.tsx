@@ -37,6 +37,7 @@ import { queryKeys } from "@/api/queryKeys";
 import PromptEditorModal from "@/components/settings/PromptEditorModal";
 import { Button } from "@/components/ui/button";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 
 const HOW_IT_WORKS_KEY = "podcodex.claudeDesktopHowItWorksSeen";
@@ -142,7 +143,7 @@ function PromptsSection({
   onMutationSucceeded: () => void;
 }) {
   const qc = useQueryClient();
-  const { data: prompts, isLoading } = useQuery({
+  const { data: prompts, isLoading, isError, error, refetch } = useQuery({
     queryKey: queryKeys.mcpPrompts(),
     queryFn: getMcpPrompts,
   });
@@ -270,7 +271,18 @@ function PromptsSection({
                   </td>
                 </tr>
               ))}
-              {!isLoading && prompts?.length === 0 && (
+              {isError && (
+                <tr>
+                  <td colSpan={5} className="px-3 py-3">
+                    <ErrorAlert
+                      compact
+                      error={error}
+                      onRetry={() => void refetch()}
+                    />
+                  </td>
+                </tr>
+              )}
+              {!isLoading && !isError && prompts?.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-3 py-4 text-center text-xs text-muted-foreground">
                     No prompts yet.

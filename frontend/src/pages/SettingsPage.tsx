@@ -33,6 +33,7 @@ import BundleExportPanel from "@/components/settings/BundleExportPanel";
 import GPUBackendPanel from "@/components/settings/GPUBackendPanel";
 import FfmpegPanel from "@/components/settings/FfmpegPanel";
 import { useEffect, useMemo, useState } from "react";
+import { useDirtyEdit } from "@/lib/dirtyEdits";
 import { useTheme } from "@/hooks/useTheme";
 import { Kbd } from "@/components/ShortcutsHelp";
 import { SHORTCUTS } from "@/lib/shortcuts";
@@ -850,7 +851,17 @@ function CredentialsPanel() {
     },
   });
 
-  const dirty = Object.values(drafts).some((v) => v !== undefined);
+  // A draft counts as a change only if saving it would alter what is
+  // stored: a non-empty value always would, an empty one only for a key
+  // that is currently set (the Clear button's "remove on next save").
+  // Testing against undefined marked the panel dirty forever, because the
+  // values are always strings and a field typed into then emptied leaves
+  // its key behind, so every later navigation asked to discard nothing.
+  const dirty = Object.entries(drafts).some(
+    ([key, value]) =>
+      value !== "" || (data?.items ?? []).some((i) => i.key === key && i.set),
+  );
+  useDirtyEdit(dirty, "Hugging Face token");
 
   return (
     <section className="space-y-10">
@@ -973,6 +984,8 @@ function ApiKeysSection() {
   const [draftValue, setDraftValue] = useState("");
   const [draftProvider, setDraftProvider] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  useDirtyEdit(adding && (draftName !== "" || draftValue !== ""), "new API key");
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: queryKeys.apiKeys() });
@@ -1261,6 +1274,8 @@ function ProviderProfilesSection() {
   const [draftUrl, setDraftUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  useDirtyEdit(adding && (draftName !== "" || draftUrl !== ""), "new provider profile");
+
   const refresh = () => {
     qc.invalidateQueries({ queryKey: queryKeys.providerProfiles() });
   };
@@ -1378,6 +1393,7 @@ function ProviderProfileRow({
   const [editing, setEditing] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [draft, setDraft] = useState(profile.base_url ?? "");
+  useDirtyEdit(editing && draft !== (profile.base_url ?? ""), "provider profile");
 
   if (confirmingDelete) {
     return (

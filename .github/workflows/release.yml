@@ -216,6 +216,12 @@ jobs:
           $msi = Get-ChildItem src-tauri\target\release\bundle\msi\PodCodex_*_x64_en-US.msi | Select-Object -First 1
           Move-Item $msi.FullName PodCodex-windows-x64.msi
           gh release upload "${{ github.ref_name }}" PodCodex-windows-x64.msi --clobber
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "gh release upload failed for PodCodex-windows-x64.msi; the README's stable download link would 404"
+            exit 1
+          }
+          # Only the delete of the versioned original is best-effort: the alias
+          # above is what the README resolves to, so its upload must fail loudly.
           gh release delete-asset "${{ github.ref_name }}" $msi.Name --yes 2>$null
           exit 0
 

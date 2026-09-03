@@ -204,9 +204,9 @@ class SearchCommandsMixin:
         refs = [_chunk_to_ref(chunk, col) for chunk, col in results]
         sid = self.results.save(CachedSearch(kind, label, query, refs))
         built = (
-            await build_compact_view(self, sid)
+            await build_compact_view(self, sid, interaction.guild_id)
             if prefer_list
-            else await build_results_view(self, sid, 0)
+            else await build_results_view(self, sid, 0, interaction.guild_id)
         )
         if built is None:  # episode vanished between search and render
             await interaction.followup.send(

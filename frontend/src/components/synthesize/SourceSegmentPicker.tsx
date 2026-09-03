@@ -26,6 +26,7 @@ import {
 import { queryKeys } from "@/api/queryKeys";
 import SectionHeader from "@/components/common/SectionHeader";
 import VersionPicker from "@/components/common/VersionPicker";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import { formatTime, isEdited } from "@/lib/utils";
 import { segKey } from "@/lib/segKey";
 import { speakerColor } from "@/lib/speakerColor";
@@ -86,7 +87,12 @@ export default function SourceSegmentPicker({
 
   const ref = sourceRefFor(audioPath, outputDir);
 
-  const { data: allVersions } = useQuery({
+  const {
+    data: allVersions,
+    isError: versionsFailed,
+    error: versionsError,
+    refetch: refetchVersions,
+  } = useQuery({
     queryKey: queryKeys.allVersions(ref),
     queryFn: () => getAllVersions(audioPath, outputDir),
     enabled: !!ref,
@@ -164,7 +170,12 @@ export default function SourceSegmentPicker({
 
   const od = outputDir ?? undefined;
 
-  const { data: segments } = useQuery({
+  const {
+    data: segments,
+    isError: segmentsFailed,
+    error: segmentsError,
+    refetch: refetchSegments,
+  } = useQuery({
     queryKey: segmentsQueryKey,
     queryFn: async (): Promise<Segment[]> => {
       // Load the pinned version when provided; otherwise the step's latest.
@@ -269,13 +280,24 @@ export default function SourceSegmentPicker({
         1. Source
       </SectionHeader>
 
-      <VersionPicker
-        versions={inputVersions}
-        value={sourceVersionId}
-        onChange={setSourceVersionId}
-        title="Which version of the episode the cloned voices will read aloud."
-        emptyMessage="No transcript, correction, or translation versions available yet."
-      />
+      {/* A failed load must not read as "nothing to synthesize yet": the
+          version list's empty message and the segment list's "Loading…"
+          placeholder both look like normal states. */}
+      {versionsFailed ? (
+        <ErrorAlert error={versionsError} onRetry={() => void refetchVersions()} />
+      ) : (
+        <VersionPicker
+          versions={inputVersions}
+          value={sourceVersionId}
+          onChange={setSourceVersionId}
+          title="Which version of the episode the cloned voices will read aloud."
+          emptyMessage="No transcript, correction, or translation versions available yet."
+        />
+      )}
+
+      {selectedVersion && segmentsFailed && (
+        <ErrorAlert error={segmentsError} onRetry={() => void refetchSegments()} />
+      )}
 
       {selectedVersion && (
         <div className="space-y-1.5">
@@ -321,7 +343,11 @@ export default function SourceSegmentPicker({
               <div className="max-h-80 overflow-y-auto border border-border/60 rounded-md divide-y divide-border/30 bg-background/40">
                 {visibleSegments.length === 0 && (
                   <p className="p-3 text-xs text-muted-foreground italic">
-                    {segments ? "No segments in this version." : "Loading…"}
+                    {segments
+                      ? "No segments in this version."
+                      : segmentsFailed
+                        ? "Could not load this version."
+                        : "Loading…"}
                   </p>
                 )}
                 {visibleSegments.map((seg, index) => {

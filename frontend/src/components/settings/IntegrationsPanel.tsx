@@ -6,6 +6,7 @@ import { getClaudeDesktopStatus } from "@/api/integrations";
 import { getShowAccessList } from "@/api/botAccess";
 import { queryKeys } from "@/api/queryKeys";
 import ClaudeDesktopPanel from "./ClaudeDesktopPanel";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import { IntegrationCard } from "./IntegrationCard";
 import { StatusDot } from "@/components/ui/status-dot";
 
@@ -41,18 +42,21 @@ function Gallery({ onOpen }: { onOpen: (view: View) => void }) {
     queryKey: queryKeys.claudeDesktop(),
     queryFn: getClaudeDesktopStatus,
   });
-  const { data: accessList } = useQuery({
+  const { data: accessList, isError: accessFailed } = useQuery({
     queryKey: queryKeys.showAccessList(),
     queryFn: getShowAccessList,
     retry: false,
   });
 
   const protectedCount = accessList?.filter((a) => a.is_protected).length ?? 0;
-  const discordState = protectedCount > 0 ? "ok" : "idle";
-  const discordLabel =
-    protectedCount > 0
-      ? `${protectedCount} protected ${protectedCount === 1 ? "show" : "shows"}`
-      : "Public access";
+  // A failed lookup must not read as "nothing is protected"; the card opens
+  // the overview, which shows the error and a retry.
+  const discordState = accessFailed ? "warn" : protectedCount > 0 ? "ok" : "idle";
+  const discordLabel = accessFailed
+    ? "Access unavailable"
+    : protectedCount > 0
+    ? `${protectedCount} protected ${protectedCount === 1 ? "show" : "shows"}`
+    : "Public access";
 
   const claudeState = claudeStatus?.mcp_available === false
     ? "warn"
@@ -113,7 +117,7 @@ function BackLink({ onClick }: { onClick: () => void }) {
 
 
 function DiscordOverview() {
-  const { data: accessList, isLoading } = useQuery({
+  const { data: accessList, isLoading, isError, error, refetch } = useQuery({
     queryKey: queryKeys.showAccessList(),
     queryFn: getShowAccessList,
     retry: false,
@@ -154,7 +158,18 @@ function DiscordOverview() {
                 </td>
               </tr>
             )}
-            {!isLoading && accessList?.length === 0 && (
+            {isError && (
+              <tr>
+                <td colSpan={2} className="px-3 py-3">
+                  <ErrorAlert
+                    compact
+                    error={error}
+                    onRetry={() => void refetch()}
+                  />
+                </td>
+              </tr>
+            )}
+            {!isLoading && !isError && accessList?.length === 0 && (
               <tr>
                 <td colSpan={2} className="px-3 py-4 text-center text-xs text-muted-foreground">
                   No shows yet.

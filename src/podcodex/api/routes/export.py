@@ -52,8 +52,23 @@ def _declared_speakers(audio_path: str, output_dir: str | None) -> set[str]:
     return set(meta.speakers) if meta else set()
 
 
+def _confined_paths(audio_path: str, output_dir: str | None) -> tuple[str, str | None]:
+    """Confine the caller-supplied episode paths to a registered show folder.
+
+    Without this an absolute ``output_dir`` makes the episode directory any
+    directory on disk, which ``/zip`` then streams back wholesale. Same guard
+    ``/api/audio/file`` applies to its own ``path`` param.
+    """
+    from podcodex.api.routes._helpers import resolve_inside_show_root
+
+    safe_audio = str(resolve_inside_show_root(audio_path))
+    safe_out = str(resolve_inside_show_root(output_dir)) if output_dir else None
+    return safe_audio, safe_out
+
+
 def _load_segments(audio_path: str, output_dir: str | None, source: str) -> list[dict]:
     """Load segments for the given source (transcript, corrected, or a language code)."""
+    audio_path, output_dir = _confined_paths(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     step = normalize_lang(source)
     segments = load_latest(p.base, step)
@@ -122,6 +137,7 @@ def export_vtt(
 
 def _write_episode_zip(audio_path: str, output_dir: str | None, target) -> None:
     """Write the episode dir as a ZIP archive into ``target`` (a path or file-like)."""
+    audio_path, output_dir = _confined_paths(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode_dir = Path(p.base).parent
     if not episode_dir.exists():

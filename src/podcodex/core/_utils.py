@@ -519,6 +519,29 @@ def bad_path_component(name: str) -> bool:
     return not name or "/" in name or "\\" in name or name in {".", ".."}
 
 
+_UNSAFE_FILENAME_CHARS = re.compile(r'[/\\:*?"<>|\[\]\x00-\x1f]')
+
+
+def speaker_file_slug(speaker: str) -> str:
+    """Make a speaker label safe to use as one filename component.
+
+    Speaker labels reach disk verbatim (``{speaker}_00.wav`` under
+    ``voice_samples/``, plus the glob that clears old samples). Subtitle
+    imports keep whatever sits inside a ``<v ...>`` tag, so a label can carry
+    path separators or glob metacharacters: ``../../x`` wrote the clips
+    outside the samples directory and let the cleanup glob follow the ``..``
+    segments into ancestor directories.
+
+    Single facility for every site that turns a label into a path
+    (extraction, the upload route, the loader that globs them back); they
+    must agree or the samples go missing. Only the dangerous characters are
+    replaced, so ordinary names (spaces, dots, accents) keep the filenames
+    they already have on disk. The label always stays a *prefix* of the
+    filename, so a leading "." or ".." cannot become a path component.
+    """
+    return _UNSAFE_FILENAME_CHARS.sub("_", speaker or "")
+
+
 def atomic_write(
     path: Path,
     writer_fn,
@@ -1805,8 +1828,7 @@ def validate_manual(
 
     Uses position-based mapping — corrections must be in the same order as
     the (non-[BREAK]) source segments. The LLM-supplied ``index`` field, if
-    present, is ignored. Count must match exactly or the whole batch is
-    rejected and originals are kept.
+    present, is ignored.
 
     Args:
         corrections       : list of {"text": "..."} entries from the LLM, in order
@@ -1814,6 +1836,11 @@ def validate_manual(
 
     Returns:
         List of segments with text field updated from corrections.
+
+    Raises:
+        ValueError: the response is empty, has no ``text`` field, or its entry
+            count does not match the source segments. Saving a count-mismatched
+            response would persist untouched source text as a finished step.
     """
     if not isinstance(corrections, list) or not corrections:
         raise ValueError("Expected a non-empty JSON array from the LLM.")
@@ -1825,16 +1852,17 @@ def validate_manual(
 
     _, real_segs = _separate_breaks(original_segments)
     if len(corrections) != len(real_segs):
-        logger.warning(
-            f"Correction count mismatch: {len(corrections)} corrections "
-            f"vs {len(real_segs)} segments (excluding "
-            f"{len(original_segments) - len(real_segs)} breaks) — "
-            "rejecting to avoid index drift; keeping original text."
+        # Rejecting silently used to keep the originals and let the caller save
+        # them as a "translation" or "correction" that had never been touched.
+        raise ValueError(
+            f"Count mismatch: {len(corrections)} entries from the LLM "
+            f"vs {len(real_segs)} source segments (excluding "
+            f"{len(original_segments) - len(real_segs)} breaks). "
+            "Paste the response for this exact source version, or re-generate "
+            "the prompts."
         )
-        by_index: dict[int, dict] = {}
-    else:
-        # Position-based mapping (LLM's index field is advisory only).
-        by_index = {i: item for i, item in enumerate(corrections)}
+    # Position-based mapping (LLM's index field is advisory only).
+    by_index = {i: item for i, item in enumerate(corrections)}
     results = apply_corrections(original_segments, by_index, min_length_ratio=0)
 
     logger.info(f"Manual corrections validated — {len(results)} segments")

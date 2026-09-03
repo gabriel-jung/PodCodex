@@ -183,8 +183,9 @@ Notes:
 
 - The host's `~/.local/share/podcodex/index/` is mounted into the container at `/root/.local/share/podcodex/index/`, matching the bot's default, so no `PODCODEX_INDEX` override is needed.
 - To serve an index at a different host location, set `PODCODEX_INDEX_HOST=/abs/path` in `deploy/.env` before `docker compose up`.
+- Per-guild bot state (`server_config.json` with each server's `/setup` defaults, unlocked shows and announcement channel, plus `search_cache.db` and `announce_state.db`) lives in `<data_dir>/bot/`, which is `/root/.local/share/podcodex/bot/` in the container and therefore on the `podcodex_data` volume. Pass `--server-config PATH` to put it elsewhere.
 - The compose file declares a `podcodex_data` volume for the container's data directory, which holds the machine identity that marks the index as owned here. If you run the container without that volume, set `PODCODEX_MACHINE_ID` to any fixed string in `deploy/.env` so the identity survives a rebuild.
-- BGE-M3 lives in the `model_cache` named volume; survives rebuilds.
+- The BGE-M3 embedding model is cached under `<data_dir>/models/huggingface/`, which is `/root/.local/share/podcodex/models/huggingface/` in the container and therefore on the `podcodex_data` volume, so it survives rebuilds. The image pre-downloads it into that same path and Docker seeds a newly created volume from the image, so the first search never waits on the ~2.5 GB fetch.
 - `restart: unless-stopped` handles crashes and host reboots.
 - Logs rotate at 50 MB × 3 files via the json-file driver.
 

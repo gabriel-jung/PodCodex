@@ -418,16 +418,6 @@ def _fetch_text(url: str, *, timeout: int = 15) -> str:
         return resp.read().decode("utf-8")
 
 
-def _try_fetch_sha256(url: str) -> str | None:
-    """Fetch a ``<archive>.sha256`` sidecar file. Returns the digest string
-    or None if the sidecar isn't published (older release, network glitch)."""
-    try:
-        text = _fetch_text(url, timeout=10)
-    except Exception:
-        return None
-    return text.strip().split()[0] if text.strip() else None
-
-
 def download_and_install(
     progress_cb: Callable[[float, str], None],
     manifest_url: str,
@@ -461,9 +451,15 @@ def download_and_install(
     cuda_archive_name = manifest.get("archive")
     cuda_sha = manifest.get("sha256")
     cuda_libs_version = manifest.get("version")
-    if not cuda_archive_name or not cuda_sha or not cuda_libs_version:
+    # server-core.tar.gz is the archive that becomes the executed sidecar, so
+    # its digest is required, not optional: the hash used to come from a
+    # ``.sha256`` sidecar fetch whose 404 (stale mirror, network blip) silently
+    # downgraded the check on the one archive that carries code.
+    server_sha = manifest.get("server_sha256")
+    if not cuda_archive_name or not cuda_sha or not cuda_libs_version or not server_sha:
         raise RuntimeError(
-            f"Manifest missing required fields (archive, sha256, version): {manifest}"
+            "Manifest missing required fields "
+            f"(archive, sha256, server_sha256, version): {manifest}"
         )
 
     target_app_version = _app_version()
@@ -517,18 +513,11 @@ def download_and_install(
                 progress_end=server_band[1] - 0.02,
                 label="server core",
             )
-            # Verify against sidecar .sha256 if published; warn otherwise.
-            expected = _try_fetch_sha256(server_url + ".sha256")
-            if expected:
-                progress_cb(server_band[1] - 0.01, "Verifying server core hash…")
-                actual = _sha256(server_tar)
-                if actual != expected:
-                    raise RuntimeError(
-                        f"server-core sha256 mismatch: expected {expected[:16]}…, got {actual[:16]}…"
-                    )
-            else:
-                logger.warning(
-                    "server-core.tar.gz.sha256 not published; skipping integrity check"
+            progress_cb(server_band[1] - 0.01, "Verifying server core hash…")
+            actual = _sha256(server_tar)
+            if actual != server_sha:
+                raise RuntimeError(
+                    f"server-core sha256 mismatch: expected {server_sha[:16]}…, got {actual[:16]}…"
                 )
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("Install cancelled before extraction")

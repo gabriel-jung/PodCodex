@@ -19,6 +19,8 @@ interface ConfirmOptions {
   cancelLabel?: string;
   variant?: "default" | "destructive";
   onConfirm: () => void | Promise<void>;
+  /** Cancel button, Escape or the backdrop. Not called after a confirm. */
+  onCancel?: () => void;
 }
 
 // ── Global state (like Whispering's confirmationDialog) ──
@@ -42,6 +44,13 @@ export const confirmDialog = {
   close() {
     current = null;
     notify();
+  },
+  /** Dismiss without confirming, and tell the requester so. */
+  cancel() {
+    const req = current;
+    current = null;
+    notify();
+    req?.onCancel?.();
   },
 };
 
@@ -88,7 +97,7 @@ function ConfirmDialogBody({ request }: { request: ConfirmRequest }) {
       open
       onOpenChange={(open) => {
         // Escape and the backdrop: keep a running onConfirm undisturbed.
-        if (!open && !pending) confirmDialog.close();
+        if (!open && !pending) confirmDialog.cancel();
       }}
     >
       <DialogContent
@@ -110,7 +119,7 @@ function ConfirmDialogBody({ request }: { request: ConfirmRequest }) {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => confirmDialog.close()}
+            onClick={() => confirmDialog.cancel()}
             disabled={pending}
           >
             {request.cancelLabel || "Cancel"}

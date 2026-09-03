@@ -150,3 +150,55 @@ def test_local_marker_without_file_404(client, show):
     assert r.status_code == 200, r.text
     r = client.get("/api/shows/artwork", params={"show_folder": str(show)})
     assert r.status_code == 404
+
+
+# ── _download_artwork size cap ─────────────────────────────────────────
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes):
+        self._body = body
+        self.headers = {"Content-Type": "image/png"}
+
+    def read(self, n: int) -> bytes:
+        return self._body[:n]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _patch_urlopen(monkeypatch, body: bytes) -> None:
+    from podcodex.api.routes import shows as shows_routes
+
+    monkeypatch.setattr(
+        shows_routes.urllib.request,
+        "urlopen",
+        lambda req, timeout=0: _FakeResponse(body),
+    )
+
+
+def test_download_artwork_rejects_an_oversized_body(tmp_path, monkeypatch):
+    """An over-limit cover used to be truncated to the cap, written, and its
+    URL hash stamped, so the corrupt file was served forever."""
+    from podcodex.api.routes import shows as shows_routes
+
+    _patch_urlopen(monkeypatch, b"x" * (shows_routes._ARTWORK_MAX_BYTES + 1))
+    folder = tmp_path / "show"
+    folder.mkdir()
+
+    assert shows_routes._download_artwork("http://x/cover.png", folder) is None
+    assert list(folder.iterdir()) == []
+
+
+def test_download_artwork_accepts_a_body_at_the_cap(tmp_path, monkeypatch):
+    from podcodex.api.routes import shows as shows_routes
+
+    _patch_urlopen(monkeypatch, b"x" * shows_routes._ARTWORK_MAX_BYTES)
+    folder = tmp_path / "show"
+    folder.mkdir()
+
+    dest = shows_routes._download_artwork("http://x/cover.png", folder)
+    assert dest is not None and dest.exists()

@@ -59,11 +59,19 @@ class _FakeLocal:
     def load_chunks_no_embeddings(self, collection, episode):
         return [Hit.model_validate(c) for c in _EPISODES[(collection, episode)]]
 
+    def get_all_collection_info(self):
+        return {
+            "col_a": {"show_id": "alpha_1234", "show": "Alpha Show"},
+            "col_b": {"show_id": "beta_5678", "show": "Beta Show"},
+        }
+
 
 class _FakeBot:
     def __init__(self, store):
         self.results = store
         self.local = _FakeLocal()
+        # No password-protected shows: ui._refs_allowed short-circuits.
+        self._locked_show_ids: set[str] = set()
 
 
 # ── Fake Discord Interaction ───────────────────
@@ -85,14 +93,15 @@ class _FakeResponse:
 
 
 class _FakeInteraction:
-    def __init__(self, client):
+    def __init__(self, client, guild_id=None):
         self.client = client
+        self.guild_id = guild_id
         self.response = _FakeResponse()
 
 
-async def _click(client, custom_id, *, select_value=None):
+async def _click(client, custom_id, *, select_value=None, guild_id=None):
     """Dispatch a click the way discord.py routes a component interaction."""
-    interaction = _FakeInteraction(client)
+    interaction = _FakeInteraction(client, guild_id=guild_id)
     for cls in ui.DYNAMIC_ITEMS:
         m = cls.__discord_ui_compiled_template__.fullmatch(custom_id)
         if m:
@@ -269,5 +278,73 @@ def test_random_expand_opens_at_its_chunk():
         resp = await _click(bot, _cid(view, prefix="pcx:rx:"))
         assert resp.action == "send" and resp.ephemeral
         assert "4 of 8" in _footer(resp.embed)
+
+    _run(go())
+
+
+# ── Locking a show revokes the buttons already on screen ────────────────
+
+
+class _ServerSettings:
+    def __init__(self, allowed_shows=()):
+        self.allowed_shows = list(allowed_shows)
+
+
+class _LockingBot(_FakeBot):
+    """A bot where "alpha_1234" is password-protected, unlocked only in guild 7."""
+
+    def __init__(self, store):
+        super().__init__(store)
+        self._locked_show_ids = {"alpha_1234"}
+
+    def _server_settings(self, guild_id):
+        return _ServerSettings(["alpha_1234"] if guild_id == 7 else [])
+
+    def _show_allowed(self, show_id, settings):
+        return show_id not in self._locked_show_ids or show_id in settings.allowed_shows
+
+
+def _locking_bot():
+    store = _store()
+    alpha = _EPISODES[("col_a", "ep_alpha")]
+    refs = [_chunk_to_ref(Hit.model_validate(c), "col_a") for c in alpha]
+    sid = store.save(CachedSearch("search", "α=0.50", "coffee", refs))
+    return _LockingBot(store), sid
+
+
+def test_persistent_buttons_recheck_show_access():
+    """A /lock after the search must kill the existing message's buttons.
+
+    The views are persistent for the cache's whole life (30 days), so the
+    access check has to run on every rebuild; without it 'Show context' and
+    the transcript pager kept serving a show the guild no longer has.
+    """
+    bot, sid = _locking_bot()
+
+    async def go():
+        # The guild that unlocked the show still gets its pages.
+        assert await ui.build_results_view(bot, sid, 0, 7) is not None
+        assert await ui.build_compact_view(bot, sid, 7) is not None
+        assert await ui.build_transcript_view(bot, sid, 0, None, 7) is not None
+
+        # Any other guild (and a DM, guild_id=None) is refused.
+        for guild_id in (99, None):
+            assert await ui.build_results_view(bot, sid, 0, guild_id) is None
+            assert await ui.build_compact_view(bot, sid, guild_id) is None
+            assert await ui.build_transcript_view(bot, sid, 0, None, guild_id) is None
+
+    _run(go())
+
+
+def test_locked_show_transcript_click_reports_expired():
+    """The click path, not just the builder: a locked show gets the miss message."""
+    bot, sid = _locking_bot()
+
+    async def go():
+        view = discord.ui.View(timeout=None)
+        view.add_item(ui.ExpandResult(sid, 0))
+        cid = _cid(view, prefix="pcx:rx:")
+        assert (await _click(bot, cid, guild_id=7)).embed is not None
+        assert (await _click(bot, cid, guild_id=99)).content == ui.EXPIRED_MSG
 
     _run(go())

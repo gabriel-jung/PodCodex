@@ -27,13 +27,17 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      - name: Sync dependencies (dev + desktop + bot + mcp + rag + youtube)
-        # Skip the `pipeline` extra (whisperx + torch + pyannote) — ~3 GB and
-        # not needed for the pure-Python tests. Re-add if pipeline-level
-        # integration tests land.
+      - name: Sync dependencies (dev + desktop + bot + mcp + rag + youtube + cpu)
+        # Skip the `pipeline` extra (whisperx + pyannote), not needed for the
+        # pure-Python tests. Re-add if pipeline-level integration tests land.
+        # `rag` still pulls torch, and on Linux the default PyPI wheel is the
+        # CUDA build (~6 GB of nvidia-* + triton) that no runner can use, so
+        # `cpu` routes torch to the CPU index instead. `cpu` is declared
+        # conflict-free with everything synced here (only gpu / gpu-pascal
+        # conflict with it).
         # `dev` lives in [dependency-groups], everything else in
         # [project.optional-dependencies], so the flags differ.
-        run: uv sync --group dev --extra desktop --extra bot --extra mcp --extra rag --extra youtube
+        run: uv sync --group dev --extra desktop --extra bot --extra mcp --extra rag --extra youtube --extra cpu
 
       # Whole-repo lint — pre-commit's ruff hook only sees staged files, so
       # dead imports in untouched files never resurface there.
@@ -67,9 +71,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Strict TS is clean; ESLint is at 0 errors + a small warning baseline.
-      # Both steps are blocking so regressions surface as red CI rather than
-      # silently piling up.
+      # Strict TS is clean and ESLint runs with --max-warnings 0, so neither
+      # errors nor warnings have a baseline. Both steps are blocking, which is
+      # what CONTRIBUTING.md and CLAUDE.md promise contributors.
       - name: Typecheck
         run: npx tsc -b
 

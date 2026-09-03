@@ -69,6 +69,19 @@ class TaskInfo:
         self.log.append(message)
 
 
+# Lock-key prefixes whose remainder is a show folder rather than an audio
+# path: ``batch.py`` and ``rss.py`` mint these for whole-show runs. Every
+# reader of the key space goes through these two names, because a caller
+# that re-spells a shape (``_active_task_on_episode`` used to) silently
+# stops blocking the run it was meant to wait for.
+SHOW_LOCK_PREFIXES = ("batch:", "download:")
+
+
+def show_lock_keys(show_folder: str) -> list[str]:
+    """Every lock key that is keyed on the show folder itself."""
+    return [show_folder, *(f"{p}{show_folder}" for p in SHOW_LOCK_PREFIXES)]
+
+
 class TaskManager:
     """Manages background pipeline tasks with WebSocket progress updates.
 
@@ -108,6 +121,21 @@ class TaskManager:
             audio_path: Filesystem path to unlock.
         """
         self._audio_locks.pop(audio_path, None)
+
+    def _unlock_if_owner(self, audio_path: str, task_id: str) -> None:
+        """Release *audio_path* only if *task_id* is still the holder.
+
+        Locks are keyed by path, so a blind ``pop`` by a finished task can
+        evict the lock a *newer* task took on the same path and let a third
+        task start alongside it, two subprocesses then writing the same
+        version dirs and ``pipeline.db`` rows.
+
+        Args:
+            audio_path: Filesystem path to unlock.
+            task_id: Task that expects to hold the lock.
+        """
+        if self._audio_locks.get(audio_path) == task_id:
+            del self._audio_locks[audio_path]
 
     def release_locks_for_task(self, task_id: str) -> None:
         """Release all locks held by a given task.
@@ -153,7 +181,7 @@ class TaskManager:
         for tid in stale:
             t = self._tasks.pop(tid, None)
             if t:
-                self._audio_locks.pop(t.audio_path, None)
+                self._unlock_if_owner(t.audio_path, tid)
 
     def submit(
         self,
@@ -189,11 +217,15 @@ class TaskManager:
         # No loop capture here: route handlers are sync `def` and run on
         # FastAPI's threadpool, where `get_running_loop()` raises. The loop
         # is bound once at startup by `bind_loop`.
-        # Check for existing task on this audio_path
+        # Check for existing task on this audio_path. Gate on `finished_at`
+        # rather than the status: `cancel` flips the status to "cancelled"
+        # while the child is still winding down (cancel grace, then join and
+        # terminate), and the lock is what says that subprocess may still be
+        # writing versions and pipeline.db rows for this stem.
         if audio_path in self._audio_locks:
             existing_id = self._audio_locks[audio_path]
             existing = self._tasks.get(existing_id)
-            if existing and existing.status in ("pending", "running"):
+            if existing and existing.finished_at is None:
                 raise ValueError(f"Task {existing_id} already running on {audio_path}")
 
         task_id = f"{step}_{uuid.uuid4().hex[:8]}"
@@ -226,6 +258,19 @@ class TaskManager:
         progress_cb.log_cb = log_cb  # type: ignore[attr-defined]
 
         def run() -> None:
+            # Cancelled before a worker picked it up. The pool is bounded,
+            # so a task can sit queued long enough to be cancelled first;
+            # starting it anyway would run work the user called off, and
+            # would flip the status from "cancelled" back to "running" with
+            # nothing left to move it on again.
+            if info.cancel_event.is_set():
+                info.message = "Cancelled"
+                if info.finished_at is None:
+                    info.finished_at = time.monotonic()
+                self._unlock_if_owner(audio_path, task_id)
+                self.release_locks_for_task(task_id)
+                self._broadcast_sync(task_id)
+                return
             info.status = "running"
             self._broadcast_sync(task_id)
             # Bind log capture to this worker thread so concurrent tasks
@@ -262,7 +307,10 @@ class TaskManager:
                 _remove_loguru_sink(loguru_sink_id)
                 if info.finished_at is None:
                     info.finished_at = time.monotonic()
-                self._audio_locks.pop(audio_path, None)
+                # Sole release point, including for a cancelled task: the
+                # child only stops writing once fn() returns.
+                self._unlock_if_owner(audio_path, task_id)
+                self.release_locks_for_task(task_id)
                 # Belt-and-suspenders: also invalidate on the failure / cancel
                 # path so a partially-written file is still reflected.
                 _invalidate_scan_for(audio_path)
@@ -324,15 +372,52 @@ class TaskManager:
         if not task_id:
             return None
         info = self._tasks.get(task_id)
-        if info and info.status in ("pending", "running"):
+        # Same gate as ``submit``: a cancelled task keeps its lock until
+        # ``run()``'s finally releases it, because the child may still be
+        # writing. Going by status here would let a move or delete proceed
+        # during that window while a re-run is correctly refused.
+        if info and info.finished_at is None:
             return info
+        return None
+
+    def get_active_in_show(self, show_folder: str) -> TaskInfo | None:
+        """Return an active task holding any lock that touches *show_folder*.
+
+        Locks are plain strings and every submit path mints its own shape,
+        so a caller about to move or delete a whole show cannot ask for one
+        key. This answers for all of them: the bare folder (feed refresh),
+        ``batch:``/``download:`` keyed on the folder, and any per-episode
+        audio or virtual path inside the folder. Missing one means
+        ``rmtree`` or ``shutil.move`` runs underneath a live job that keeps
+        writing versions and ``pipeline.db`` into the old path.
+        """
+        from pathlib import Path
+
+        root = Path(show_folder)
+        for key in list(self._audio_locks):
+            path_part = key
+            for prefix in SHOW_LOCK_PREFIXES:
+                if key.startswith(prefix):
+                    path_part = key[len(prefix) :]
+                    break
+            candidate = Path(path_part)
+            if candidate != root and root not in candidate.parents:
+                continue
+            info = self.get_active(key)
+            if info:
+                return info
         return None
 
     def cancel(self, task_id: str) -> bool:
         """Request cooperative cancellation of a running task.
 
-        Sets the task's ``cancel_event``, marks it as cancelled, releases
-        all locks, and broadcasts the final state.
+        Sets the task's ``cancel_event``, marks it as cancelled and
+        broadcasts. Locks and ``finished_at`` are deliberately left to
+        ``run()``'s finally block: the child keeps running for up to the
+        cancel grace plus terminate window, so releasing here would let a
+        re-run of the same episode start alongside a subprocess still
+        writing its version dirs and ``pipeline.db`` rows, and would stamp
+        an end time before the work actually stopped.
 
         Args:
             task_id: Task to cancel.
@@ -349,10 +434,6 @@ class TaskManager:
         info.cancel_event.set()
         info.status = "cancelled"
         info.message = "Cancelling (waiting for current step to finish)…"
-        info.finished_at = time.monotonic()
-        # Release primary lock + any per-episode locks held by this task
-        self._audio_locks.pop(info.audio_path, None)
-        self.release_locks_for_task(task_id)
         self._broadcast_sync(task_id)
         return True
 

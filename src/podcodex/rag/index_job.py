@@ -95,6 +95,12 @@ def run(
             "The transcript may be too short or have unsupported format."
         )
 
+    # Lance keeps every superseded fragment until something reclaims it, and
+    # a re-index is a delete plus an add. Compacting here, at the end of the
+    # job that wrote them, keeps the index directory (and the rsync to the
+    # bot host) from growing with every run.
+    local.compact()
+
     provenance = build_provenance(
         "indexed",
         model=(model_keys or ["bge-m3"])[0],
@@ -193,6 +199,8 @@ def run_for_batch(
 
     if upserted == 0:
         return {"upserted": 0, "indexed": False, "skipped": False}
+
+    local.compact()
 
     provenance = build_provenance(
         "indexed",

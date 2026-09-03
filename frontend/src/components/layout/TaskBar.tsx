@@ -477,9 +477,12 @@ function EpisodeStrip() {
   const folder = useTaskStore((s) => s.episodeFolder);
   const title = useTaskStore((s) => s.episodeTitle);
   const step = useTaskStore((s) => s.episodeStep);
+  const audioPath = useTaskStore((s) => s.episodeAudioPath);
   const setEpisodeTask = useTaskStore((s) => s.setEpisodeTask);
   const progress = useProgress(taskId);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const invalidatedRef = useRef<string | null>(null);
   const [expanded, setExpanded] = useState(false);
 
   const log = progress?.log ?? [];
@@ -509,6 +512,17 @@ function EpisodeStrip() {
     const t = setTimeout(() => setEpisodeTask(null), 5_000);
     return () => clearTimeout(t);
   }, [isFinished, setEpisodeTask]);
+
+  // The panel's ProgressBar normally runs invalidateAfterStep on completion,
+  // but it is mounted only inside the step panel. When the run finishes while
+  // the user is elsewhere nothing refreshes the cache, so the show list keeps
+  // reporting "not transcribed" for up to the 5 min staleTime. Mirror
+  // BatchStrip and sweep once per task id.
+  useEffect(() => {
+    if (!isDone || !taskId || invalidatedRef.current === taskId) return;
+    invalidatedRef.current = taskId;
+    invalidateAfterStep(queryClient, step, { folder, audioPath });
+  }, [isDone, taskId, step, folder, audioPath, queryClient]);
 
   if (!taskId) return null;
 

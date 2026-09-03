@@ -55,6 +55,10 @@ UNAVAILABLE_MSG = "This result is no longer available (the episode may have chan
 _chunk_cache: dict[tuple[str, str], list[Hit]] = {}
 _cache_lock = asyncio.Lock()
 _MAX_CACHE = 64
+# Bumped by every clear. A fetch reads it before going to the index and
+# refuses to memoise if it changed while it was awaiting, because those
+# rows describe the index as it was before the reindex.
+_cache_generation = 0
 
 
 async def _fetch_episode_chunks(store, collection: str, episode: str) -> list[Hit]:
@@ -62,6 +66,7 @@ async def _fetch_episode_chunks(store, collection: str, episode: str) -> list[Hi
     async with _cache_lock:
         if key in _chunk_cache:
             return _chunk_cache[key]
+        generation = _cache_generation
 
     loop = asyncio.get_running_loop()
     chunks = await loop.run_in_executor(
@@ -69,12 +74,33 @@ async def _fetch_episode_chunks(store, collection: str, episode: str) -> list[Hi
     )
 
     async with _cache_lock:
-        if len(_chunk_cache) >= _MAX_CACHE:
-            oldest = next(iter(_chunk_cache))
-            del _chunk_cache[oldest]
-        _chunk_cache[key] = chunks
+        # A clear landed while this fetch was in flight, so `chunks` predates
+        # the new index. Serve them to this caller (the message is already
+        # being rendered) but do not let them outlive the request: writing
+        # them back would reinstate exactly what the clear removed, and the
+        # only other bound is a 64-entry eviction.
+        if generation == _cache_generation:
+            if len(_chunk_cache) >= _MAX_CACHE:
+                oldest = next(iter(_chunk_cache))
+                del _chunk_cache[oldest]
+            _chunk_cache[key] = chunks
 
     return chunks
+
+
+def clear_chunk_cache() -> None:
+    """Drop every memoised episode's chunks.
+
+    The cache has no TTL, so it must be cleared wherever the bot reconnects to
+    a changed index; otherwise Show context and the transcript pager keep
+    serving pre-reindex text (and ``_locate`` silently snaps to a stale chunk)
+    until the process restarts. Safe to call off the event loop: dict.clear()
+    is atomic, so it does not need ``_cache_lock``, and the generation bump
+    that stops an in-flight fetch from repopulating it is a plain int write.
+    """
+    global _cache_generation
+    _cache_generation += 1
+    _chunk_cache.clear()
 
 
 def _locate(chunks: list[Hit], chunk_index: int) -> int:
@@ -676,11 +702,13 @@ class ListNav(
 
 
 async def build_list_view(
-    client: PodCodexBot, sid: str, index: int
+    client: PodCodexBot, sid: str, index: int, guild_id: int | None = None
 ) -> tuple[discord.Embed, discord.ui.View] | None:
     """Build the (embed, view) for verbatim-embed page ``index`` of ``sid``."""
     cached = client.results.load(sid)
     if cached is None or not cached.embeds:
+        return None
+    if not await _collections_allowed(client, guild_id, cached.collections):
         return None
     n = len(cached.embeds)
     index = max(0, min(index, n - 1))
@@ -692,12 +720,73 @@ async def build_list_view(
     return embed, view
 
 
+async def _collections_allowed(
+    client: PodCodexBot, guild_id: int | None, collections: list[str]
+) -> bool:
+    """Whether this guild may still read ``collections``.
+
+    The embeds-backed counterpart of :func:`_refs_allowed`: a page cached
+    as rendered embeds has no refs to read a collection from, so the names
+    travel on the cache entry instead. An entry that records none is a row
+    written before that field existed, and there is no way to tell which
+    show it describes, so it is refused once anything is locked rather
+    than trusted; re-running the command rebuilds it with the names.
+    """
+    if not client._locked_show_ids:
+        return True
+    if not collections:
+        return False
+
+    from podcodex.rag.index_store import IndexStore
+
+    settings = client._server_settings(guild_id)
+    loop = asyncio.get_running_loop()
+    col_info = await loop.run_in_executor(None, client.local.get_all_collection_info)
+    for name in collections:
+        meta = col_info.get(name)
+        if meta is None or not client._show_allowed(
+            IndexStore.show_key(meta), settings
+        ):
+            return False
+    return True
+
+
+async def _refs_allowed(
+    client: PodCodexBot, guild_id: int | None, refs: list[ResultRef]
+) -> bool:
+    """Whether this guild may still read the shows behind ``refs``.
+
+    These views are persistent: the buttons on a result message keep working
+    for the cache's whole lifetime, so the access check has to run again on
+    every rebuild. Without it an admin's /lock revoked nothing that was
+    already on screen. ``guild_id=None`` falls back to the default settings,
+    which unlock nothing, so an unknown guild is refused rather than allowed.
+    """
+    if not client._locked_show_ids:
+        return True
+
+    from podcodex.rag.index_store import IndexStore
+
+    settings = client._server_settings(guild_id)
+    loop = asyncio.get_running_loop()
+    col_info = await loop.run_in_executor(None, client.local.get_all_collection_info)
+    for ref in refs:
+        meta = col_info.get(ref.collection)
+        if meta is None or not client._show_allowed(
+            IndexStore.show_key(meta), settings
+        ):
+            return False
+    return True
+
+
 async def build_results_view(
-    client: PodCodexBot, sid: str, index: int
+    client: PodCodexBot, sid: str, index: int, guild_id: int | None = None
 ) -> tuple[discord.Embed, discord.ui.View] | None:
     """Build the (embed, view) for result page ``index`` of search ``sid``."""
     cached = client.results.load(sid)
     if cached is None:
+        return None
+    if not await _refs_allowed(client, guild_id, cached.refs):
         return None
     n = len(cached.refs)
     if n == 0:
@@ -736,7 +825,7 @@ async def build_results_view(
 
 
 async def build_compact_view(
-    client: PodCodexBot, sid: str
+    client: PodCodexBot, sid: str, guild_id: int | None = None
 ) -> tuple[discord.Embed, discord.ui.View] | None:
     """Build the single-embed compact list for search ``sid`` (up to 25 rows).
 
@@ -746,6 +835,8 @@ async def build_compact_view(
     """
     cached = client.results.load(sid)
     if cached is None or not cached.refs:
+        return None
+    if not await _refs_allowed(client, guild_id, cached.refs):
         return None
     chunks: list[Hit] = []
     for ref in cached.refs[:25]:
@@ -781,7 +872,11 @@ async def build_compact_view(
 
 
 async def build_transcript_view(
-    client: PodCodexBot, sid: str, ridx: int, pos: int | None
+    client: PodCodexBot,
+    sid: str,
+    ridx: int,
+    pos: int | None,
+    guild_id: int | None = None,
 ) -> tuple[discord.Embed, discord.ui.View] | None:
     """Build the transcript (embed, view) for result ``ridx`` at segment ``pos``.
 
@@ -791,6 +886,8 @@ async def build_transcript_view(
     if cached is None or not (0 <= ridx < len(cached.refs)):
         return None
     ref = cached.refs[ridx]
+    if not await _refs_allowed(client, guild_id, [ref]):
+        return None
     chunks = await _fetch_episode_chunks(client.local, ref.collection, ref.episode)
     if not chunks:
         return None
@@ -833,17 +930,23 @@ async def _render_results(
     interaction: discord.Interaction, sid: str, index: int
 ) -> None:
     client: PodCodexBot = interaction.client  # type: ignore[assignment]
-    await _respond(interaction, await build_results_view(client, sid, index))
+    await _respond(
+        interaction, await build_results_view(client, sid, index, interaction.guild_id)
+    )
 
 
 async def _render_list(interaction: discord.Interaction, sid: str, index: int) -> None:
     client: PodCodexBot = interaction.client  # type: ignore[assignment]
-    await _respond(interaction, await build_list_view(client, sid, index))
+    await _respond(
+        interaction, await build_list_view(client, sid, index, interaction.guild_id)
+    )
 
 
 async def _render_list_compact(interaction: discord.Interaction, sid: str) -> None:
     client: PodCodexBot = interaction.client  # type: ignore[assignment]
-    await _respond(interaction, await build_compact_view(client, sid))
+    await _respond(
+        interaction, await build_compact_view(client, sid, interaction.guild_id)
+    )
 
 
 async def _render_transcript(
@@ -857,7 +960,7 @@ async def _render_transcript(
     client: PodCodexBot = interaction.client  # type: ignore[assignment]
     await _respond(
         interaction,
-        await build_transcript_view(client, sid, ridx, pos),
+        await build_transcript_view(client, sid, ridx, pos, interaction.guild_id),
         ephemeral=ephemeral,
         miss_msg=EXPIRED_MSG if ephemeral else UNAVAILABLE_MSG,
     )
@@ -868,6 +971,9 @@ async def _render_details(interaction: discord.Interaction, sid: str, idx: int) 
     client: PodCodexBot = interaction.client  # type: ignore[assignment]
     cached = client.results.load(sid)
     if cached is None or not (0 <= idx < len(cached.refs)):
+        await interaction.response.send_message(EXPIRED_MSG, ephemeral=True)
+        return
+    if not await _refs_allowed(client, interaction.guild_id, [cached.refs[idx]]):
         await interaction.response.send_message(EXPIRED_MSG, ephemeral=True)
         return
     chunk = await _result_chunk(client.local, cached.refs[idx])

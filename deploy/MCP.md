@@ -168,7 +168,7 @@ Multi-step is fine: *"Compare how each of my shows talks about minimalism"* will
 
 ## Limits
 
-- Only collections built with the **default model** (`bge-m3`) and **default chunker** (`semantic`) are visible. Reindex if you used a different combo.
+- One collection per show is queried, not all of them. The server picks the show's RAG preference from its `show.toml`, else the default combo (`bge-m3` + `semantic`), else the first collection by name, so a show indexed under a non-default model or chunker still answers. Reindexing to change the combo is a choice, never a requirement for visibility.
 - No write access. Claude cannot mutate your index.
 - HTTP endpoint is bound to 127.0.0.1 only. Remote/VPS exposure is not supported.
 
@@ -187,7 +187,7 @@ Multi-step is fine: *"Compare how each of my shows talks about minimalism"* will
 **Tools appear but return empty results**
 
 - Verify `PODCODEX_INDEX` (or the default path) is a real LanceDB folder (contains `_collections.lance/` and per-show directories).
-- Ask Claude to call `list_shows` first; an empty list confirms the server can open the index but finds nothing indexed under the default model + chunker. Reindex via the desktop app if needed.
+- Ask Claude to call `list_shows` first; an empty list confirms the server can open the index but finds no collections at all, so nothing has been indexed yet. Run the Index step in the desktop app, or point `PODCODEX_INDEX` at the index you meant.
 
 **Claude sees the tools but never calls them**
 

@@ -181,6 +181,40 @@ def test_provenance_overwrite_same_step(db):
     assert row["provenance"]["transcript"]["model"] == "large-v3"
 
 
+def test_provenance_merge_runs_in_an_immediate_transaction(db):
+    """The read-modify-write must take the write lock before it reads.
+
+    Provenance is one JSON blob merged key by key, and pipeline steps run in
+    spawned subprocesses writing this same file while the API process writes
+    manual saves. Without BEGIN IMMEDIATE both sides read the blob, each
+    updates its own key and the second commit discards the first's, leaving a
+    step whose status pills show no model.
+    """
+    seen: list[str] = []
+    db._conn.set_trace_callback(seen.append)
+    try:
+        db.mark("ep1", provenance={"transcript": {"model": "large-v3"}})
+    finally:
+        db._conn.set_trace_callback(None)
+
+    begin = next(i for i, sql in enumerate(seen) if "BEGIN IMMEDIATE" in sql)
+    read = next(i for i, sql in enumerate(seen) if "SELECT provenance" in sql)
+    assert begin < read
+    assert db.get_episode("ep1")["provenance"]["transcript"]["model"] == "large-v3"
+
+
+def test_plain_mark_opens_no_explicit_transaction(db):
+    """Only the merge needs the extra round trip; flag writes stay one INSERT."""
+    seen: list[str] = []
+    db._conn.set_trace_callback(seen.append)
+    try:
+        db.mark("ep1", transcribed=True)
+    finally:
+        db._conn.set_trace_callback(None)
+
+    assert not any("BEGIN IMMEDIATE" in sql for sql in seen)
+
+
 def test_provenance_empty_by_default(db):
     db.mark("ep1", transcribed=True)
     row = db.get_episode("ep1")
@@ -365,6 +399,25 @@ class TestStepStatuses:
         effective = {"target_lang": "english"}
         result = self._step_statuses(st, {}, effective)
         assert result["translate_status"] == "none"
+
+    def test_translate_multi_word_target_lang(self):
+        """Translations are stored under normalize_lang (spaces → underscores);
+        a bare lower() never matched a multi-word target and reported 'none'."""
+        prov = {
+            "brazilian_portuguese": {
+                "model": "gpt-4o",
+                "params": {"llm_mode": "api", "llm_provider": "openai"},
+            }
+        }
+        st = _make_status_row(translations=["brazilian_portuguese"], provenance=prov)
+        effective = {
+            "target_lang": "Brazilian Portuguese",
+            "llm_mode": "api",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o",
+        }
+        result = self._step_statuses(st, prov, effective)
+        assert result["translate_status"] == "done"
 
     def test_translate_outdated_model(self):
         prov = {

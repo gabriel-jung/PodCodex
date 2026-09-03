@@ -47,34 +47,24 @@ add both.
 
 ---
 
-## Install path B: pre-built bundle + manual swap
+## Install path B: pre-built bundle
 
-If you installed the `.dmg` / `.msi` and don't want to clone the repo,
-swap torch in the GPU backend's pip target after the in-app GPU
-activation completes. GPU backend install path per OS:
+There is no Pascal path here. The in-app GPU activation downloads a frozen PyInstaller backend to `<data_dir>/backends/gpu/` (Windows: `%APPDATA%\podcodex\backends\gpu\`), and that tree is not a Python environment: torch lives inside `_internal/`, there is no interpreter to install into and no pip target, so a `uv pip install` run there would only touch whatever environment happened to be active in your shell. The cu128 torch the backend ships with has no Pascal kernels, and nothing in the bundle can replace it.
 
-- **macOS:** N/A, Apple Silicon doesn't have CUDA. Pascal is x86 NVIDIA only.
-- **Linux:** `~/.local/share/podcodex/backends/gpu/`
-- **Windows:** `%APPDATA%\podcodex\backends\gpu\`
+Two supported options for bundle users:
 
-```bash
-# from the GPU backend directory shown above
-uv pip install torch torchaudio \
-    --index-url https://download.pytorch.org/whl/cu126 \
-    --reinstall --no-deps
-```
+- **Use the GPU:** install from source instead, following path A above. It is the only way to get cu126 wheels onto a Pascal card.
+- **Stay on the bundle:** run in CPU mode. The bootstrap kernel guard already detects the missing kernels and sets `PODCODEX_DEVICE=cpu` for you, so the installed app keeps working without any change. See the CPU fallback section below for what to expect.
 
 ---
 
-## Verify it worked
+## Verify it worked (path A)
 
 ```bash
 uv run python -c "import torch; print(torch.cuda.get_arch_list()); print(torch.cuda.get_device_name(0))"
 ```
 
-Expected output includes `sm_60` (P100) or `sm_61` (everything else
-listed above), and your GPU's name. If `sm_61` is missing, the install
-didn't take; re-run with `--reinstall --force-reinstall`.
+Expected output includes `sm_60` (P100) or `sm_61` (everything else listed above), and your GPU's name. If `sm_61` is missing, the `gpu-pascal` extra didn't take; re-run the `uv sync` above with `--reinstall`, and check that no `gpu` extra is still in the command.
 
 PodCodex's own diagnostic endpoint also reports it:
 
@@ -108,8 +98,7 @@ sweet spot.
 
 ## CPU fallback
 
-If the swap doesn't work, or you want to skip GPU entirely on this
-machine, set the env var before launch:
+This is where the bundle lands on Pascal, and it is also what to set to skip the GPU entirely on a source install. The env var is read at launch:
 
 ```bash
 PODCODEX_DEVICE=cpu          # Linux/macOS

@@ -30,11 +30,22 @@ repos:
         language: system
         pass_filenames: false
 
+  # Vendors its own environment. As a `local` / `language: system` hook this
+  # needed codespell on PATH, which nothing installs (it is in no dependency
+  # group and no lockfile), so a fresh checkout could never run it.
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
+    hooks:
       - id: codespell
         name: Check spelling
-        entry: uv run codespell
-        language: system
-        types: [markdown, python, text]
+        # `types` is an AND, so the old [markdown, python, text] triple matched
+        # no file at all and the hook was silently skipped on every commit.
+        types_or: [markdown, python]
+        # Deliberate strings, not typos: fuzzy-match and non-ASCII test
+        # fixtures, a Tolkien name, language-code keys, a PyInstaller API
+        # name, and words codespell only flags as style preferences.
+        args:
+          - --ignore-words-list=abd,sittin,durin,caf,datas,unparseable,browseable,re-use,re-usable,portugues,aranges
         exclude: ^(Data/|Results/)
 
   - repo: https://github.com/astral-sh/ruff-pre-commit

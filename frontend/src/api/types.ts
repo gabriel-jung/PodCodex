@@ -21,18 +21,25 @@ export type {
   CreateFromRSSResponse,
   CreateFromYouTubeResponse,
   CreateLocalShowResponse,
+  EpisodeSpeakerEntry,
+  EpisodeSpeakersResponse,
   EpisodeStatusOut,
   FilesImportResponse,
   GenerateRequest,
   IndexRequest,
   PipelineAppDefaults,
   PipelineDefaultsSchema as PipelineDefaults,
+  PodcastSearchResultOut as PodcastSearchResult,
   CorrectRequest,
   RSSEpisodeOut,
   SearchRequest,
+  SearchResultSchema as SearchResult,
   Segment,
   ShowMeta,
   ShowSummary,
+  SpeakerEpisodeEntry,
+  SpeakerRosterEntry,
+  SpeakerRosterResponse,
   TaskResponse,
   TranscribeRequest,
   TranslateRequest,
@@ -97,13 +104,6 @@ export type Episode = import("./generated-types").UnifiedEpisodeOut;
  *  one over an `Episode` is type-safe because `UnifiedEpisodeOut` extends it. */
 export type EpisodeStatus = import("./generated-types").EpisodeStatusOut;
 
-export interface PodcastSearchResult {
-  name: string;
-  artist: string;
-  feed_url: string;
-  artwork_url: string;
-}
-
 export interface VersionEntry {
   id: string;
   step?: string;
@@ -162,63 +162,6 @@ export interface IndexStatus {
   chunking: string;
   indexed: boolean;
   chunk_count: number;
-}
-
-// ── Search (response shape) ──────────────────────────────
-
-export interface SearchResult {
-  text: string;
-  episode: string;
-  episode_stem: string;
-  episode_number: number | null;
-  audio_path: string;
-  output_dir: string;
-  speaker: string;
-  start: number;
-  end: number;
-  score: number;
-  source: string;
-  pub_date: string;
-  speakers: { speaker: string; text: string; start: number; end: number }[] | null;
-  accent_match: boolean;
-  fuzzy_match: boolean;
-  match_text: string | null;
-}
-
-// ── Speaker roster ───────────────────────────────────────
-
-export interface SpeakerEpisodeEntry {
-  stem: string;
-  title: string;
-  segment_count: number;
-  total_seconds: number;
-}
-
-export interface SpeakerRosterEntry {
-  name: string;
-  is_known: boolean;
-  episode_count: number;
-  segment_count: number;
-  total_seconds: number;
-  episodes: SpeakerEpisodeEntry[];
-}
-
-export interface SpeakerRosterResponse {
-  speakers: SpeakerRosterEntry[];
-  episodes_scanned: number;
-  episodes_with_transcripts: number;
-}
-
-export interface EpisodeSpeakerEntry {
-  name: string;
-  total_seconds: number;
-  pct: number; // share of episode duration (0-100); may total < 100 (music/gaps)
-}
-
-export interface EpisodeSpeakersResponse {
-  speakers: EpisodeSpeakerEntry[]; // sorted by total_seconds desc
-  episode_seconds: number;
-  has_transcript: boolean;
 }
 
 // ── Filesystem ───────────────────────────────────────────

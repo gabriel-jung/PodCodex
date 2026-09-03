@@ -31,7 +31,7 @@ export const getCorrectManualPrompts = (params: {
   source_version_id?: string;
 }) => api.getManualPrompts(params);
 
-export const applyCorrectManual = (params: { audio_path?: string; output_dir?: string; corrections: unknown[] }) =>
+export const applyCorrectManual = (params: { audio_path?: string; output_dir?: string; corrections: unknown[]; source_version_id?: string }) =>
   api.applyManual(params);
 
 export const applyCorrectBatches = (params: {

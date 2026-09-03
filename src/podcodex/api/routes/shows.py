@@ -9,7 +9,7 @@ import shutil
 from collections.abc import Container
 from dataclasses import asdict, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import hashlib
 import urllib.request
@@ -34,6 +34,7 @@ from podcodex.bundle.conflicts import rename_suffix
 from podcodex.core._utils import (
     MTIME_SETTLE_SECONDS,
     atomic_write,
+    normalize_lang,
     virtual_audio_path,
 )
 from podcodex.core.app_config import AppConfig, mutate_config
@@ -394,13 +395,31 @@ def _find_cached_artwork(show_path: Path) -> Path | None:
 
 def _download_artwork(url: str, show_path: Path) -> Path | None:
     """Download artwork from *url* into *show_path*, return the local path."""
+    from podcodex.ingest.rss import _require_http_scheme
+
     try:
+        # A feed controls this URL. Without the scheme guard the feed and
+        # audio fetches already carry, ``file://`` would copy a local file
+        # into artwork.jpg, which GET /api/shows/artwork then serves.
+        _require_http_scheme(url, "Artwork URL")
         req = urllib.request.Request(url, headers={"User-Agent": "PodCodex/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             content_type = resp.headers.get("Content-Type", "")
-            data = resp.read(_ARTWORK_MAX_BYTES)
+            # Read one byte past the cap: an over-limit body is a failed
+            # download, not a file to truncate. Writing the first 5 MB of a
+            # large cover stored a corrupt image and stamped the URL hash, so
+            # it was served forever without ever being re-fetched.
+            data = resp.read(_ARTWORK_MAX_BYTES + 1)
     except Exception as exc:
         logger.warning("Artwork download failed for {}: {}", url, exc)
+        return None
+
+    if len(data) > _ARTWORK_MAX_BYTES:
+        logger.warning(
+            "Artwork too large for {} (over {} bytes), skipping",
+            url,
+            _ARTWORK_MAX_BYTES,
+        )
         return None
 
     # Determine extension from Content-Type or URL
@@ -543,6 +562,55 @@ async def get_artwork(show_folder: str = Query(...)):
     )
 
 
+def _merge_into_existing_show(show_path: Path, fresh: _ShowMeta) -> _ShowMeta:
+    """Reconcile a feed-create request with a ``show.toml`` already on disk.
+
+    Unregistering a show keeps its folder, and re-adding the feed is meant
+    to restore it intact: the id in ``show.toml`` is what its collections
+    and bot password are keyed on. Writing the request's id-less metadata
+    over that file would mint a new id and orphan both, and also drop the
+    speakers and pipeline defaults the user set. So the existing metadata
+    wins and only the request-supplied fields are overlaid.
+
+    A folder that already belongs to a *different* feed is refused (409),
+    the same way ``create_local_show`` refuses an existing directory: the
+    picker asks for another folder name rather than repointing that show.
+    A local show (no feed URL) is adopted, keeping its id.
+
+    A show can carry an RSS *and* a YouTube URL, so the request's feed kind
+    decides which existing URL it has to match, and only that URL is
+    rewritten. Comparing against whichever URL happened to be set refused a
+    legitimate re-add of the second feed, and overwriting both cleared the
+    one the request says nothing about (leaving the show's other source
+    unusable until the user retyped it).
+    """
+    existing = load_show_meta(show_path)
+    if existing is None:
+        return fresh
+    if fresh.rss_url:
+        same_kind, other_kind = existing.rss_url, existing.youtube_url
+    else:
+        same_kind, other_kind = existing.youtube_url, existing.rss_url
+    blocking = same_kind or other_kind
+    if blocking and same_kind != (fresh.rss_url or fresh.youtube_url):
+        raise HTTPException(
+            409,
+            f"Folder already holds the show {existing.name!r} ({blocking}). "
+            "Pick a different folder name.",
+        )
+    if fresh.rss_url:
+        existing.rss_url = fresh.rss_url
+    if fresh.youtube_url:
+        existing.youtube_url = fresh.youtube_url
+    if fresh.name:
+        existing.name = fresh.name
+    if fresh.artwork_url:
+        existing.artwork_url = fresh.artwork_url
+    if fresh.language:
+        existing.language = fresh.language
+    return existing
+
+
 @router.post("/from-rss", response_model=CreateFromRSSResponse)
 async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
     """Fetch an RSS feed and create a show folder for it."""
@@ -566,13 +634,12 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
         folder_name = re.sub(r"[^a-zA-Z0-9]+", "_", folder_name).strip("_")[:40]
 
     show_path = save_base / folder_name
-    show_path.mkdir(parents=True, exist_ok=True)
-
     artwork = req.artwork_url or feed_art
 
-    # Save show metadata — use the display name from search, fall back to folder name
+    # Display name from search, falling back to the folder name. Merged
+    # before anything touches the folder so a 409 leaves it untouched.
     show_name = req.name.strip() or folder_name
-    save_show_meta(
+    meta = _merge_into_existing_show(
         show_path,
         _ShowMeta(
             name=show_name,
@@ -581,6 +648,9 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
             language=req.language,
         ),
     )
+    show_path.mkdir(parents=True, exist_ok=True)
+    save_show_meta(show_path, meta)
+    _ROSTER_CACHE.pop(str(show_path), None)
 
     # Cache the feed
     save_feed_cache(show_path, episodes)
@@ -632,12 +702,11 @@ def create_from_youtube(
         )[:40]
 
     show_path = save_base / folder_name
-    show_path.mkdir(parents=True, exist_ok=True)
 
-    # Save show metadata
+    # Merged before anything touches the folder so a 409 leaves it untouched.
     show_name = req.name.strip() or info.get("name", "") or folder_name
     artwork = req.artwork_url or info.get("artwork_url", "")
-    save_show_meta(
+    meta = _merge_into_existing_show(
         show_path,
         _ShowMeta(
             name=show_name,
@@ -646,6 +715,9 @@ def create_from_youtube(
             language=req.language,
         ),
     )
+    show_path.mkdir(parents=True, exist_ok=True)
+    save_show_meta(show_path, meta)
+    _ROSTER_CACHE.pop(str(show_path), None)
 
     # Cache the episode list (same format as RSS)
     save_feed_cache(show_path, episodes)
@@ -1328,6 +1400,11 @@ def _build_status_out(
     # only ever reads a cached `{stem}.subtitles.{lang}.vtt`, so promising
     # .srt there would select episodes the batch cannot process.
     subtitle_files = [f for f in ep_files if f.lower().endswith((".vtt", ".srt"))]
+    # The batch's glob carries a language code, so a hand-uploaded
+    # `{stem}.subtitles.vtt` (no code) satisfied the flag without satisfying
+    # the run: the episode was selected as a subtitle source and then found
+    # nothing to read.
+    batch_ready_subs = any(_BATCH_SUBS_RE.search(f) for f in ep_files)
     return {
         "stem": stem,
         "audio_path": str(audio_path) if audio_path else None,
@@ -1337,7 +1414,7 @@ def _build_status_out(
         "corrected": st.get("corrected", False),
         "indexed": st.get("indexed", False),
         "synthesized": st.get("synthesized", False),
-        "has_subtitles": any(f.endswith(".vtt") for f in ep_files),
+        "has_subtitles": batch_ready_subs,
         "translations": cleaned_translations,
         "segment_count": ctx.seg_counts.get(stem) if stem else None,
         "subtitle_files": subtitle_files,
@@ -1490,7 +1567,10 @@ def _step_statuses(
     def _check_translate() -> str:
         if not translations:
             return "none"
-        target = effective.get("target_lang", "").strip().lower()
+        # Translations are stored under normalize_lang, which also turns
+        # spaces into underscores; a bare lower() never matches a multi-word
+        # target such as "Brazilian Portuguese".
+        target = normalize_lang(effective.get("target_lang", ""))
         if target and target not in translations:
             return "none"
         lang_key = target or (translations[0] if translations else "")
@@ -1514,6 +1594,10 @@ def _step_statuses(
 # two bulk DB queries plus per-stem stats, so a cache hit skips the N seglist
 # reads. Any version save/delete, verified-pointer change, show.toml speaker
 # edit, or episode-meta (title) refresh shifts the signature.
+# What ``_batch_transcribe_from_subs`` can actually consume: the cached
+# ``{stem}.subtitles.{lang}.vtt`` that ``youtube.py`` and ``batch.py`` write.
+_BATCH_SUBS_RE = re.compile(r"\.subtitles\.[^.]+\.vtt$", re.IGNORECASE)
+
 _ROSTER_CACHE: dict[str, tuple[object, SpeakerRosterResponse]] = {}
 
 
@@ -1726,7 +1810,8 @@ class DeleteEpisodeRequest(BaseModel):
 
 
 class DeleteEpisodeResponse(BaseModel):
-    status: str
+    # "partial": nothing was fully removed and the episode is still listed.
+    status: Literal["deleted", "partial"]
     collections: int = 0
     output_dir_removed: bool = False
     audio_removed: bool = False
@@ -1749,6 +1834,10 @@ def _active_task_on_episode(show_folder: str, stem: str) -> "TaskInfo | None":
       ``{show}/{stem}.mp3`` on completion, which would resurrect the episode
       as a bare row right after the delete)
 
+    The three show-level shapes come from ``tasks.show_lock_keys`` rather
+    than being spelled again here, so this and ``get_active_in_show`` cannot
+    drift apart.
+
     Episode-level keys, all three, because which one is held depends on who
     started the job rather than on the episode:
 
@@ -1758,15 +1847,13 @@ def _active_task_on_episode(show_folder: str, stem: str) -> "TaskInfo | None":
     - ``virtual_audio_path(...)``, the ``.virtual`` form the *batch* runner
       uses for the same episode
     """
-    from podcodex.api.tasks import task_manager
+    from podcodex.api.tasks import show_lock_keys, task_manager
     from podcodex.core.delete_episode import episode_audio_files
 
     show_dir = Path(show_folder)
     ep_base = show_dir / stem
     refs = [
-        show_folder,
-        f"batch:{show_folder}",
-        f"download:{show_folder}",
+        *show_lock_keys(show_folder),
         f"{ep_base}.mp3",
         virtual_audio_path(ep_base),
         *(str(a) for a in episode_audio_files(show_dir, stem)),
@@ -2161,14 +2248,15 @@ def move_show(show_folder: str, req: MoveShowRequest) -> dict:
             409, f"Destination already exists and is not empty: {new_path}"
         )
 
-    # Check no tasks are running on this show
+    # Any lock touching the show blocks: a batch, a bulk download or a
+    # single-episode run all keep writing into the folder being moved.
     from podcodex.api.tasks import task_manager
 
-    active = task_manager.get_active(show_folder)
+    active = task_manager.get_active_in_show(show_folder)
     if active:
         raise HTTPException(
             409,
-            f"Task {active.task_id} is running on this show — wait for it to finish",
+            f"Task {active.task_id} is running on this show, wait for it to finish",
         )
 
     # Release any cached file handles BEFORE the move. On Windows, SQLite (WAL)
@@ -2239,14 +2327,15 @@ def delete_show(show_folder: str, req: DeleteShowRequest) -> dict:
     # a folder the app actually tracks rather than any directory on disk.
     path = require_registered_show(show_folder)
 
-    # Check no tasks are running on this show
+    # Any lock touching the show blocks: a batch, a bulk download or a
+    # single-episode run all keep writing into the folder being deleted.
     from podcodex.api.tasks import task_manager
 
-    active = task_manager.get_active(show_folder)
+    active = task_manager.get_active_in_show(show_folder)
     if active:
         raise HTTPException(
             409,
-            f"Task {active.task_id} is running on this show — wait for it to finish",
+            f"Task {active.task_id} is running on this show, wait for it to finish",
         )
 
     # Identity resolved before anything is removed: once show.toml is gone

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 
@@ -291,3 +292,91 @@ def test_protected_show_stays_locked_for_other_guilds(tmp_path):
     store.set_show_label("alpha_1234abcd", "Renamed")
     bot._reload_shows()
     assert bot._show_allowed_by_label("Renamed", other) is False
+
+
+# ── DM guard: guild_id is None outside a guild ──────────────────────────
+
+
+class _DMResponse:
+    def __init__(self):
+        self.messages: list[str] = []
+
+    async def send_message(self, content, *, ephemeral=False):
+        self.messages.append(content)
+
+
+class _DMInteraction:
+    def __init__(self):
+        self.guild_id = None
+        self.response = _DMResponse()
+
+
+def _dm_bot():
+    from podcodex.bot.bot import BotConfig, PodCodexBot
+
+    bot = PodCodexBot.__new__(PodCodexBot)
+    bot._shows = {}
+    bot._server_cfg = {}
+    bot.config = BotConfig()
+    saved: list[bool] = []
+    bot._save_server_config = lambda: saved.append(True)
+    return bot, saved
+
+
+def test_unlock_in_a_dm_writes_no_settings(tmp_path):
+    """guild_id None used to be stored as the JSON key "None", which the next
+    bot start could not parse back into an int."""
+    bot, saved = _dm_bot()
+
+    async def _noop_refresh():
+        return None
+
+    bot._refresh_if_stale = _noop_refresh
+    bot._reload_shows = lambda: None
+    interaction = _DMInteraction()
+
+    asyncio.run(bot._handle_unlock(interaction, "x" * 16))
+
+    assert bot._server_cfg == {}
+    assert saved == []
+    assert "server" in interaction.response.messages[0]
+
+
+def test_setup_in_a_dm_writes_no_settings(tmp_path):
+    bot, saved = _dm_bot()
+    interaction = _DMInteraction()
+
+    asyncio.run(bot._handle_setup(interaction, "bge-m3", None, None))
+
+    assert bot._server_cfg == {}
+    assert saved == []
+
+
+def test_lock_in_a_dm_writes_no_settings(tmp_path):
+    bot, saved = _dm_bot()
+    interaction = _DMInteraction()
+
+    asyncio.run(bot._handle_lock(interaction, "Alpha"))
+
+    assert bot._server_cfg == {}
+    assert saved == []
+
+
+def test_load_server_config_skips_a_non_guild_key(tmp_path):
+    """Configs written before the DM guard carry a literal "None" key; the bot
+    must start anyway instead of dying in int('None')."""
+    import json
+
+    from podcodex.bot.bot import PodCodexBot
+
+    path = tmp_path / "server_config.json"
+    path.write_text(
+        json.dumps({"None": {"top_k": 3}, "42": {"top_k": 7}}), encoding="utf-8"
+    )
+    bot = PodCodexBot.__new__(PodCodexBot)
+    bot.server_config_path = path
+
+    cfg = bot._load_server_config()
+
+    assert list(cfg) == [42]
+    assert cfg[42].top_k == 7

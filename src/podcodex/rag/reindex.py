@@ -57,7 +57,10 @@ def _reindex_show(
                 except Exception as exc:
                     logger.debug(f"Nothing to drop for {col}: {exc}")
 
-    # 2. Re-vectorize every episode that has audio + a transcript.
+    # 2. Re-vectorize every episode with a transcript. Audio-less episodes
+    #    (YouTube subtitle imports, flat extraction) index through output_dir
+    #    exactly as the app does; skipping them emptied a subtitle-driven show
+    #    on every rebuild while still reporting success.
     episodes = scan_folder(folder)
     if not episodes:
         logger.warning(f"No episodes found in {folder}")
@@ -66,20 +69,22 @@ def _reindex_show(
     reindexed = 0
     skipped = 0
     for ep in episodes:
-        if not getattr(ep, "audio_path", None):
-            continue
+        audio = getattr(ep, "audio_path", None)
         try:
             transcript = build_index_transcript(
-                str(ep.audio_path), show_name, ep.audio_path.stem
+                str(audio) if audio else None,
+                show_name,
+                ep.stem,
+                output_dir=None if audio else str(ep.output_dir),
             )
         except Exception as exc:
-            logger.warning(f"[skip] {ep.audio_path.stem}: {exc}")
+            logger.warning(f"[skip] {ep.stem}: {exc}")
             skipped += 1
             continue
 
         if dry_run:
             logger.info(
-                f"[dry-run] would re-index {ep.audio_path.stem} "
+                f"[dry-run] would re-index {ep.stem} "
                 f"(chunks={len(transcript.get('segments') or [])} segments)"
             )
             reindexed += 1
@@ -88,15 +93,20 @@ def _reindex_show(
         n = vectorize_batch(
             transcript,
             show_name,
-            ep.audio_path.stem,
+            ep.stem,
             model_keys,
             chunkers,
             store,
             show_id=sid,
             overwrite=True,
         )
-        logger.success(f"{ep.audio_path.stem}: +{n} chunks")
+        logger.success(f"{ep.stem}: +{n} chunks")
         reindexed += 1
+
+    if not dry_run:
+        # A full rebuild is the biggest producer of superseded Lance
+        # fragments; reclaim them before the index is shipped anywhere.
+        store.compact()
 
     logger.info(f"Done: {reindexed} re-indexed, {skipped} skipped")
 

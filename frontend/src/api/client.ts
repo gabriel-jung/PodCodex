@@ -120,6 +120,27 @@ async function fetchOrThrow(url: string, init: RequestInit): Promise<Response> {
   }
 }
 
+/** Render FastAPI's `detail` as a sentence.
+ *
+ *  A string comes through unchanged. A 422 validation payload is a list of
+ *  `{loc, msg}` entries instead, so join those into "field: message" lines;
+ *  without this the serialized JSON reaches the user through ErrorAlert.
+ *  Returns null when `detail` carries nothing readable. */
+function detailToMessage(detail: unknown): string | null {
+  if (typeof detail === "string") return detail;
+  if (!Array.isArray(detail)) return null;
+  const lines = detail
+    .map((entry) => {
+      const { msg, loc } = (entry ?? {}) as { msg?: unknown; loc?: unknown };
+      if (typeof msg !== "string") return null;
+      // loc is ["body", "<field>", ...]; the tail names the offending field.
+      const field = Array.isArray(loc) && loc.length > 1 ? String(loc[loc.length - 1]) : "";
+      return field ? `${field}: ${msg}` : msg;
+    })
+    .filter((line): line is string => line !== null);
+  return lines.length > 0 ? lines.join("; ") : null;
+}
+
 /** Fetch with the CSRF header already set. Use for non-JSON responses or
  *  FormData uploads where `json()` doesn't fit. Throws ApiError on `!res.ok`. */
 export async function rawFetch(url: string, init?: RequestInit): Promise<Response> {
@@ -144,10 +165,10 @@ export async function rawFetch(url: string, init?: RequestInit): Promise<Respons
     try {
       body = JSON.parse(text);
     } catch { /* keep raw text */ }
-    // Prefer FastAPI's `detail` string so surfaced errors read as plain
-    // sentences, not status codes and JSON.
+    // Prefer FastAPI's `detail` so surfaced errors read as plain sentences,
+    // not status codes and JSON.
     const detail = (body as { detail?: unknown } | null)?.detail;
-    const message = typeof detail === "string" ? detail : `${res.status}: ${text}`;
+    const message = detailToMessage(detail) ?? `${res.status}: ${text}`;
     throw new ApiError(res.status, body, message);
   }
   return res;

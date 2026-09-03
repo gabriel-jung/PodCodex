@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { useDirtyEdit } from "@/lib/dirtyEdits";
 import { useMutation } from "@tanstack/react-query";
 import { errorMessage } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -62,6 +63,13 @@ export default function ManualModePanel({
       onApplied?.();
     },
   });
+
+  // Validated batches live only in this panel until Apply; a pasted reply
+  // that is not yet validated is work too.
+  useDirtyEdit(
+    pastedText.trim() !== "" || Object.keys(batchResults).length > 0,
+    "pasted LLM batches",
+  );
 
   const copyToClipboard = async (text: string, idx: number) => {
     await navigator.clipboard.writeText(text);

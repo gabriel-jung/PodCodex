@@ -71,11 +71,11 @@ const STEP_INVALIDATIONS: Record<
     speakerViews: true,
   },
   correct: {
-    namespaces: ["correct", "versions", "best-source-segments"],
+    namespaces: ["correct", "versions", "best-source-segments", "llmFailures"],
     speakerViews: true,
   },
   translate: {
-    namespaces: ["versions", "best-source-segments"],
+    namespaces: ["versions", "best-source-segments", "llmFailures"],
     translations: true,
   },
   synthesize: { namespaces: ["synthesize", "versions"] },

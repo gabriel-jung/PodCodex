@@ -753,6 +753,11 @@ def download_audio(
         "Accept": "*/*",
     }
     last_error: str = "unknown error"
+    # Stream into a sibling and rename on completion: a SIGKILL, app quit or
+    # power loss mid-write used to leave a truncated {stem}.mp3 that
+    # is_downloaded happily reported as "exists".
+    part = dest.with_name(dest.name + ".part")
+    _cleanup_partial(part)
     logger.info(f"Downloading {rss_episode.audio_url} → {dest.name}")
     for attempt in range(1, max_retries + 1):
         try:
@@ -764,9 +769,10 @@ def download_audio(
                 headers=headers,
             ) as resp:
                 resp.raise_for_status()
-                with open(dest, "wb") as f:
+                with open(part, "wb") as f:
                     for chunk in resp.iter_bytes(chunk_size=65536):
                         f.write(chunk)
+            os.replace(part, dest)
             break  # success
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
@@ -783,7 +789,7 @@ def download_audio(
             logger.warning(
                 f"Download failed for {dest.name} ({last_error}, attempt {attempt}/{max_retries})"
             )
-            _cleanup_partial(dest)
+            _cleanup_partial(part)
             if attempt == max_retries:
                 return None, last_error
             if status in (429, 503):
@@ -797,7 +803,7 @@ def download_audio(
             logger.warning(
                 f"Download failed for {dest.name}: {exc} (attempt {attempt}/{max_retries})"
             )
-            _cleanup_partial(dest)
+            _cleanup_partial(part)
             if attempt == max_retries:
                 return None, last_error
             _time.sleep(2 * attempt)
@@ -806,7 +812,7 @@ def download_audio(
             logger.warning(
                 f"Download failed for {dest.name}: {exc} (attempt {attempt}/{max_retries})"
             )
-            _cleanup_partial(dest)
+            _cleanup_partial(part)
             if attempt == max_retries:
                 return None, last_error
             _time.sleep(2 * attempt)

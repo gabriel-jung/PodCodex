@@ -69,6 +69,12 @@ class CachedSearch:
     query: str
     refs: list[ResultRef] = field(default_factory=list)
     embeds: list[dict] = field(default_factory=list)
+    # Collections the page draws on. Refs carry their own, but an
+    # embeds-backed page has none to read, and the persistent buttons on it
+    # still have to re-check access on every rebuild: without this a show
+    # locked after the message was sent kept paging. Empty on rows written
+    # before this field existed, which the access check treats as unknown.
+    collections: list[str] = field(default_factory=list)
 
 
 def _intern(values: list[str]) -> tuple[list[str], dict[str, int]]:
@@ -129,16 +135,18 @@ def _encode(search: CachedSearch) -> str:
     """Serialize a cached page to compact JSON (refs- or embeds-backed)."""
     if search.embeds:
         payload: dict = {"embeds": search.embeds}
+        if search.collections:
+            payload["cols"] = search.collections
     else:
         payload = _encode_refs(search.refs)
     return json.dumps(payload, separators=(",", ":"))
 
 
-def _decode(payload: str) -> tuple[list[ResultRef], list[dict]]:
+def _decode(payload: str) -> tuple[list[ResultRef], list[dict], list[str]]:
     data = json.loads(payload)
     if "embeds" in data:
-        return [], data["embeds"]
-    return _decode_refs(data), []
+        return [], data["embeds"], list(data.get("cols") or [])
+    return _decode_refs(data), [], []
 
 
 class SearchCacheStore:
@@ -228,7 +236,7 @@ class SearchCacheStore:
                 return None
             kind, label, query, payload = row
             try:
-                refs, embeds = _decode(payload)
+                refs, embeds, cols = _decode(payload)
             except (ValueError, KeyError, TypeError):
                 # Corrupt or legacy-format row: treat as a cache miss so the
                 # button reports "expired" instead of throwing in the callback.
@@ -237,7 +245,7 @@ class SearchCacheStore:
                     "DELETE FROM search_cache WHERE search_id = ?", (search_id,)
                 )
                 return None
-            search = CachedSearch(kind, label, query, refs, embeds)
+            search = CachedSearch(kind, label, query, refs, embeds, cols)
             self._ram[search_id] = (now + _RAM_TTL_SECONDS, search)
             return search
 

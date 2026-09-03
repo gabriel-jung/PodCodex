@@ -516,6 +516,124 @@ class TestBackfillFromDisk:
         close_pipeline_db(show_dir)
 
 
+class TestStaleVersionRows:
+    """A row whose file is gone must not hide the readable versions behind it."""
+
+    def test_provenance_and_segments_name_the_same_version(self, episode_dir):
+        """The status surfaces must not describe a version load_latest walked past."""
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import (
+            get_latest_provenance,
+            load_latest,
+            version_path,
+        )
+
+        save_version(
+            episode_dir,
+            "transcript",
+            SAMPLE_SEGMENTS,
+            _prov(step="transcript", model="kept-model"),
+        )
+        newest = save_version(
+            episode_dir,
+            "transcript",
+            SAMPLE_SEGMENTS,
+            _prov(step="transcript", model="lost-model"),
+        )
+        version_path(episode_dir, "transcript", newest).unlink()
+
+        assert load_latest(episode_dir, "transcript") == SAMPLE_SEGMENTS
+        prov = get_latest_provenance(episode_dir, "transcript")
+        assert prov is not None
+        assert prov["model"] == "kept-model"
+        close_pipeline_db(episode_dir.parent.parent)
+
+    def test_provenance_is_none_when_every_file_is_gone(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import (
+            get_latest_provenance,
+            load_latest,
+            version_path,
+        )
+
+        only = save_version(
+            episode_dir, "transcript", SAMPLE_SEGMENTS, _prov(step="transcript")
+        )
+        version_path(episode_dir, "transcript", only).unlink()
+
+        assert load_latest(episode_dir, "transcript") is None
+        assert get_latest_provenance(episode_dir, "transcript") is None
+        close_pipeline_db(episode_dir.parent.parent)
+
+    def test_canonical_ref_skips_a_row_without_a_file(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import (
+            load_canonical_segments,
+            resolve_canonical_ref,
+            version_path,
+        )
+
+        old = save_version(
+            episode_dir, "transcript", SAMPLE_SEGMENTS, _prov(step="transcript")
+        )
+        newest = save_version(
+            episode_dir, "transcript", SAMPLE_SEGMENTS, _prov(step="transcript")
+        )
+        # Lost out of band (sync conflict, manual cleanup, a crash between the
+        # unlink and the row delete): the row survives, the file does not.
+        version_path(episode_dir, "transcript", newest).unlink()
+
+        assert resolve_canonical_ref(episode_dir) == ("transcript", old)
+        assert load_canonical_segments(episode_dir) == SAMPLE_SEGMENTS
+        close_pipeline_db(episode_dir.parent.parent)
+
+    def test_bulk_canonical_refs_skip_a_row_without_a_file(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import resolve_canonical_refs, version_path
+
+        old = save_version(
+            episode_dir, "corrected", SAMPLE_SEGMENTS, _prov(step="corrected")
+        )
+        newest = save_version(
+            episode_dir, "corrected", SAMPLE_SEGMENTS, _prov(step="corrected")
+        )
+        version_path(episode_dir, "corrected", newest).unlink()
+
+        show_dir = episode_dir.parent.parent
+        refs = resolve_canonical_refs(show_dir, [episode_dir.name])
+        assert refs[episode_dir.name] == ("corrected", old)
+        close_pipeline_db(show_dir)
+
+    def test_reconcile_prunes_rows_without_files_and_demotes(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import (
+            backfill_versions_from_disk,
+            version_path,
+        )
+
+        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.mark(episode_dir.name, corrected=True)
+        version_path(episode_dir, "corrected", vid).unlink()
+
+        backfill_versions_from_disk(show_dir)
+
+        assert list_versions(episode_dir, "corrected") == []
+        assert db.get_episode(episode_dir.name)["corrected"] is False
+        close_pipeline_db(show_dir)
+
+    def test_reconcile_keeps_rows_whose_files_are_present(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import backfill_versions_from_disk
+
+        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        show_dir = episode_dir.parent.parent
+        backfill_versions_from_disk(show_dir)
+        assert [v["id"] for v in list_versions(episode_dir, "corrected")] == [vid]
+        close_pipeline_db(show_dir)
+
+
 class TestStatusDemotionOnDelete:
     """Deleting the last version of a step demotes its pipeline_db flag."""
 
@@ -586,3 +704,126 @@ class TestStatusDemotionOnDelete:
         delete_version(episode_dir, "english", vid)
         assert db.get_episode(episode_dir.name)["translations"] == ["french"]
         close_pipeline_db(show_dir)
+
+
+class TestSynthesizeVersions:
+    """The synthesize step's four touchpoints: path, save, delete, demotion.
+
+    Its version file is a ``.wav`` and its content hash is a stat hash, so it
+    is the one step that does not go through ``save_version``. Per-step
+    symmetry still has to hold: same ``version_path`` layout, same
+    ``delete_version``, same flag demotion.
+    """
+
+    def _assemble(self, episode_dir, *, payload=b"RIFFfake-audio-bytes"):
+        """Write a .wav where the route would, and register it."""
+        from podcodex.core.versions import (
+            new_version_id,
+            save_synthesize_version,
+            version_path,
+        )
+
+        now, version_id = new_version_id()
+        path = version_path(episode_dir, "synthesize", version_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        save_synthesize_version(
+            episode_dir,
+            path,
+            version_id=version_id,
+            now=now,
+            strategy="pad",
+            silence_duration=0.5,
+            source_version_id="20260101T000000000000Z_raw",
+            language="french",
+            model_size="qwen-tts",
+            segment_count=len(SAMPLE_SEGMENTS),
+            duration_s=12.345,
+        )
+        return version_id, path
+
+    def test_version_path_is_a_wav_beside_the_other_steps(self, episode_dir):
+        from podcodex.core.versions import step_ext, version_path
+
+        path = version_path(episode_dir, "synthesize", "20260101T000000000000Z_raw")
+        assert step_ext("synthesize") == ".wav"
+        assert path.suffix == ".wav"
+        assert path.parent == episode_dir.parent / "synthesize"
+
+    def test_save_round_trips_through_list_versions(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        payload = b"RIFF" + b"\0" * 40
+        version_id, path = self._assemble(episode_dir, payload=payload)
+
+        versions = list_versions(episode_dir, "synthesize")
+        assert [v["id"] for v in versions] == [version_id]
+        meta = versions[0]
+        assert meta["step"] == "synthesize"
+        assert meta["type"] == "raw"
+        assert meta["manual_edit"] is False
+        # Stat hash, not a sha256 of the audio.
+        assert meta["content_hash"] == f"size:{len(payload)}"
+        assert meta["segment_count"] == len(SAMPLE_SEGMENTS)
+        assert meta["params"]["strategy"] == "pad"
+        assert meta["params"]["language"] == "french"
+        assert meta["params"]["duration_s"] == 12.35
+        assert meta["params"]["file_size_bytes"] == len(payload)
+        assert path.is_file()
+        close_pipeline_db(episode_dir.parent.parent)
+
+    def test_synthesize_version_path_resolves_only_a_present_file(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import synthesize_version_path
+
+        version_id, path = self._assemble(episode_dir)
+        assert synthesize_version_path(episode_dir, version_id) == path
+        path.unlink()
+        assert synthesize_version_path(episode_dir, version_id) is None
+        close_pipeline_db(episode_dir.parent.parent)
+
+    def test_delete_removes_the_wav_and_the_row(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        version_id, path = self._assemble(episode_dir)
+        assert delete_version(episode_dir, "synthesize", version_id) is True
+        assert not path.exists()
+        assert list_versions(episode_dir, "synthesize") == []
+        close_pipeline_db(episode_dir.parent.parent)
+
+    def test_last_delete_demotes_the_synthesized_flag(self, episode_dir):
+        """Otherwise the UI keeps showing a synthesized episode with no audio."""
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        version_id, _ = self._assemble(episode_dir)
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.mark(episode_dir.name, synthesized=True)
+
+        delete_version(episode_dir, "synthesize", version_id)
+
+        assert db.get_episode(episode_dir.name)["synthesized"] is False
+        close_pipeline_db(show_dir)
+
+    def test_demote_skipped_while_another_wav_survives(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+
+        first, _ = self._assemble(episode_dir)
+        self._assemble(episode_dir, payload=b"RIFFother")
+        show_dir = episode_dir.parent.parent
+        db = get_pipeline_db(show_dir)
+        db.mark(episode_dir.name, synthesized=True)
+
+        delete_version(episode_dir, "synthesize", first)
+
+        assert db.get_episode(episode_dir.name)["synthesized"] is True
+        close_pipeline_db(show_dir)
+
+    def test_delete_by_id_resolves_the_step_from_the_db(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import delete_version_by_id
+
+        version_id, path = self._assemble(episode_dir)
+        assert delete_version_by_id(episode_dir, version_id) is True
+        assert not path.exists()
+        close_pipeline_db(episode_dir.parent.parent)

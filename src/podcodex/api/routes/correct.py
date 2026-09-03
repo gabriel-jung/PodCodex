@@ -217,12 +217,20 @@ def apply_manual_corrections(req: ApplyManualRequest) -> dict:
     from podcodex.core._utils import validate_manual
     from podcodex.core.correct import save_corrected
     from podcodex.core.transcribe import load_transcript
+    from podcodex.core.versions import load_version
 
-    original = load_transcript(req.audio_path, output_dir=req.output_dir)
+    if req.source_version_id:
+        p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
+        original = load_version(p.base, "transcript", req.source_version_id)
+    else:
+        original = load_transcript(req.audio_path, output_dir=req.output_dir)
     if not original:
         raise HTTPException(404, "No transcript found")
 
-    corrected = validate_manual(req.corrections, original)
+    try:
+        corrected = validate_manual(req.corrections, original)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     # Applying manual LLM prompts is still an LLM correction, not a hand-edit —
     # manual_edit stays False so the review workflow can distinguish an
     # unreviewed LLM pass from a user-validated one.

@@ -331,3 +331,44 @@ def test_scan_folder_metadata_only_episode(tmp_path):
     assert result[0].title == "My Episode"
     assert result[0].audio_path is None
     assert not result[0].transcribed
+
+
+# ──────────────────────────────────────────────
+# download_youtube_audio: force
+# ──────────────────────────────────────────────
+
+
+def test_download_youtube_audio_force_replaces_an_existing_file(tmp_path, monkeypatch):
+    """The route documents force as re-downloading, but the ingest function
+    short-circuited on output_path.exists() and never saw the flag."""
+    from podcodex.ingest import youtube as yt
+
+    calls: list[str] = []
+
+    class _FakeYDL:
+        def __init__(self, opts):
+            self._opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def download(self, urls):
+            calls.append(urls[0])
+            (tmp_path / "ep.mp3").write_bytes(b"fresh")
+            return 0
+
+    monkeypatch.setattr(
+        yt, "_require_yt_dlp", lambda: type("M", (), {"YoutubeDL": _FakeYDL})
+    )
+    (tmp_path / "ep.mp3").write_bytes(b"stale")
+
+    out = yt.download_youtube_audio("vid", tmp_path, "ep")
+    assert calls == []
+    assert out.read_bytes() == b"stale"
+
+    out = yt.download_youtube_audio("vid", tmp_path, "ep", force=True)
+    assert len(calls) == 1
+    assert out.read_bytes() == b"fresh"

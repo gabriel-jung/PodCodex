@@ -58,12 +58,15 @@ Each show is a self-contained folder under a user-chosen root:
 │   ├── segments/<id>.parquet              Word-level ASR segments (parquet substep)
 │   ├── diarization/<id>.parquet           Pyannote diarization output (parquet substep)
 │   ├── diarized_segments/<id>.parquet     Segments + speaker assignment merged (parquet substep)
+│   ├── speaker_map/<id>.json              Diarization label to speaker name mapping
 │   ├── corrected/<id>.json                Every LLM-corrected save
 │   ├── <lang>/<id>.json                   Every translation save per language (e.g. english/)
 │   └── synthesize/<id>.wav                Every assembled episode synthesis
 ├── pipeline.db                            Per-show SQLite (episodes + versions)
-└── show.json                              Show config (RSS URL, defaults)
+└── show.toml                              Show config (stable show id, RSS URL, defaults)
 ```
+
+`show.toml` carries the stable show `id` (`{slug}_{8 hex}`) minted by `save_show_meta`. That id, not the display `name`, is what collections, bot passwords and `.podcodex` manifests key on, so renaming a show is a label change only.
 
 Every step uses the same storage layout: `{ep_dir}/{step}/{version_id}.{json|parquet|wav}` resolved by `version_path(base, step, id)` in `core/versions.py`. Versions are content-hashed; metadata (model, params, timestamp, segment count, input hash for lineage) lives in the `versions` table of `pipeline.db`. The `versions` table is the truth; the directory listing is incidental.
 
@@ -98,27 +101,25 @@ Step status (`transcribed`, `corrected`, `synthesized`, and entries in the `tran
 
 ## RAG layer
 
-All embeddings for all shows live in **one** LanceDB index at `<data_dir>/index/`. Collections within the index are named:
+All embeddings for all shows live in **one** LanceDB index at `<data_dir>/index/`. A collection name is built from the show **id** (`{show_id}__{model}__{chunker}`, e.g. `myshow_3f2a9c11__bge-m3__semantic`), so a rename never orphans one. LanceDB OSS cannot rename a table, so collections created before ids existed keep their name-derived table names and carry a `show_id` column in the `_collections` metadata table instead; the one-time migration in `rag/show_id_migration.py` backfills that column on the first `IndexStore` open.
 
-```
-{show}__{model}__{chunker}
-```
+Because of those two shapes, a table name is never something a caller reconstructs. `rag/store.collection_name` is internal to `IndexStore`; readers go through `resolve_collection`, writers through `ensure_collection_for_show` (which resolves before creating). Rebuilding the name from a show's display name is exactly the bug the id migration exists to close.
 
-Example: `myshow__bge-m3__semantic`.
-
-This means changing the embedding model or chunker creates a new collection rather than overwriting; old collections stick around until explicitly removed. The desktop app's Index step writes here; the bot and MCP server read.
+Changing the embedding model or chunker creates a new collection rather than overwriting; old collections stick around until explicitly removed. The desktop app's Index step writes here; the bot and MCP server read.
 
 **Truth-of-record:** indexed status comes from LanceDB itself, not from filesystem markers. `lance_indexed_stems()` returns the set of stems present in the index; `unified_episodes()` reconciles this against the per-show `pipeline.db` on each call. There is no `.rag_indexed` marker file.
 
 **Hybrid retrieval:** vector ANN (cosine on embeddings) + BM25 full-text on the raw segment text, fused with reciprocal rank. Both indexes are maintained inside the single LanceDB table per collection.
 
+**Compaction:** Lance tables are copy-on-write, so every re-index (a delete plus an add per episode), every `pub_date`/`episode_title` backfill and every metadata heal leaves the previous data files behind. `IndexStore.compact()` runs `optimize()` over the chunk tables the process wrote to, reclaiming them while keeping a week of history so an open reader elsewhere is unaffected. It is called at the end of an index job, of a batch index, and of `podcodex-reindex`, never on a read path.
+
 **Shared search service:** all three query surfaces (the desktop app's HTTP API, the Discord bot, the MCP server) resolve shows to collections and fan queries across them through one module, `podcodex.rag.search_service`. Surfaces keep their own transport, access control, and response shaping; the service owns collection picking, per-model query encoding, cross-collection merging, and result ordering. `resolve_collections()` picks one collection per show from `IndexStore.get_all_collection_info()`, in this precedence, each rung skipped when no collection matches: an explicit override (a caller-supplied model/chunker, e.g. a user's request params) beats the show's `show.toml` RAG preference (`load_show_rag_prefs()`) beats a caller-supplied default beats the global `DEFAULT_MODEL`/`DEFAULT_CHUNKING` combo beats the first collection by sorted name. That last rung keeps a show reachable even when it's indexed only under a non-default model. `hybrid_search()`, `exact_search()`, and `random_quote()` then query the resolved collections; a `ValueError` from the retriever (bad filter, dim mismatch) re-raises, any other per-collection failure is logged and skipped so one broken table never blanks the whole answer.
 
 ## Frontend ↔ backend type sync
 
-Pydantic request/response models in `src/podcodex/api/` are the source of truth. Run `make types` to regenerate `frontend/src/api/types.ts`. The frontend's API client (`createVersionApi`, `createLLMPipelineApi`) consumes these types.
+Pydantic request/response models in `src/podcodex/api/` are the source of truth. Run `make types` to regenerate `frontend/src/api/generated-types.ts`. The frontend's API client (`createVersionApi`, `createLLMPipelineApi`) consumes these types.
 
-Don't hand-edit `frontend/src/api/types.ts`; it's overwritten by `make types`. Pydantic models inherit from `LLMRequest` for any endpoint that talks to an LLM; that base carries model, params, and provider routing.
+Don't hand-edit `frontend/src/api/generated-types.ts`; it's overwritten by `make types`. `frontend/src/api/types.ts` is the hand-maintained layer next to it: it re-exports the generated names and defines the frontend-only types that have no Pydantic model, so that is the file to edit when a type is not backed by the API. Pydantic models inherit from `LLMRequest` for any endpoint that talks to an LLM; that base carries model, params, and provider routing.
 
 ## Bot and MCP
 

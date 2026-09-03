@@ -176,7 +176,7 @@ CUDA. Default is `auto`.
 A few files are checked in but auto-generated. Re-run after editing the source:
 
 ```bash
-make types     # frontend/src/api/types.ts from Pydantic models
+make types     # frontend/src/api/generated-types.ts from Pydantic models
 make icons     # src-tauri/icons/ + frontend/public/icon.png from assets/icon.png
 ```
 

@@ -1,18 +1,7 @@
 import { json } from "./client";
+import type { SecretsStatusResponse, SecretStatus } from "./generated-types";
 
-export type SecretSource = "file" | "env" | "none";
-
-export interface SecretStatus {
-  key: string;
-  set: boolean;
-  masked: string;
-  source: SecretSource;
-}
-
-export interface SecretsStatusResponse {
-  path: string;
-  items: SecretStatus[];
-}
+export type { SecretsStatusResponse, SecretStatus };
 
 export const getSecretsStatus = () =>
   json<SecretsStatusResponse>("/api/config/secrets");

@@ -32,12 +32,17 @@ from podcodex.api.schemas import (  # noqa: E402
     CreateFromYouTubeRequest,
     CreateFromYouTubeResponse,
     EpisodeOut,
+    EpisodeSpeakerEntry,
+    EpisodeSpeakersResponse,
     EpisodeStatusOut,
     PipelineDefaultsSchema,
     RegisterShowRequest,
     RSSEpisodeOut,
     Segment,
     ShowMeta,
+    SpeakerEpisodeEntry,
+    SpeakerRosterEntry,
+    SpeakerRosterResponse,
     TaskResponse,
     UnifiedEpisodeOut,
     VerifiedPointer,
@@ -71,10 +76,27 @@ from podcodex.api.routes.search import (  # noqa: E402
 from podcodex.api.routes.shows import (  # noqa: E402
     CreateLocalShowRequest,
     CreateLocalShowResponse,
+    DeleteEpisodeResponse,
     FilesImportRequest,
     FilesImportResponse,
     MoveShowRequest,
     ShowSummary,
+)
+from podcodex.api.routes.config import (  # noqa: E402
+    FfmpegValidateResponse,
+    PodcastSearchResultOut,
+    SecretsStatusResponse,
+    SecretStatus,
+)
+from podcodex.api.routes.bot_access import ShowAccess, ShowPasswordSet  # noqa: E402
+from podcodex.api.routes.integrations import ClaudeDesktopStatus  # noqa: E402
+from podcodex.api.routes.mcp_prompts import PromptOut, SlotIn  # noqa: E402
+from podcodex.api.routes.api_keys import (  # noqa: E402
+    ListResponse as APIKeysListResponse,
+    ScanResponse as APIKeysScanResponse,
+)
+from podcodex.api.routes.provider_profiles import (  # noqa: E402
+    ListResponse as ProviderProfilesListResponse,
 )
 from podcodex.api.routes.synthesize import (  # noqa: E402
     AssembleRequest,
@@ -126,6 +148,11 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, VerifiedPointer),
     (None, EpisodeStatusOut),
     (None, UnifiedEpisodeOut),
+    (None, SpeakerEpisodeEntry),
+    (None, SpeakerRosterEntry),
+    (None, SpeakerRosterResponse),
+    (None, EpisodeSpeakerEntry),
+    (None, EpisodeSpeakersResponse),
     ("VerifiedSetRequest", VerifiedSetRequest),
     (None, CreateFromRSSRequest),
     (None, RegisterShowRequest),
@@ -144,6 +171,16 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, FilesImportResponse),
     (None, CreateLocalShowRequest),
     (None, CreateLocalShowResponse),
+    (None, DeleteEpisodeResponse),
+    (None, SecretStatus),
+    (None, SecretsStatusResponse),
+    (None, FfmpegValidateResponse),
+    (None, PodcastSearchResultOut),
+    (None, ShowAccess),
+    (None, ShowPasswordSet),
+    (None, SlotIn),
+    (None, PromptOut),
+    (None, ClaudeDesktopStatus),
     (None, TranscribeRequest),
     ("CorrectRequest", CorrectRequest),
     ("CorrectManualPromptsRequest", CorrectManualPromptsRequest),
@@ -182,7 +219,10 @@ MODELS: list[tuple[str | None, type[BaseModel]]] = [
     (None, ImportRequest),
     # api keys + provider profiles
     (None, APIKeyPublic),
+    ("APIKeysListResponse", APIKeysListResponse),
+    ("APIKeysScanResponse", APIKeysScanResponse),
     (None, ProviderProfile),
+    ("ProviderProfilesListResponse", ProviderProfilesListResponse),
 ]
 
 # ── JSON Schema → TypeScript converter ──────────────────────────────────────

@@ -1,25 +1,11 @@
 import { json, rawFetch } from "./client";
+import type { PromptOut, SlotIn } from "./generated-types";
 
-export type SlotType = "string" | "enum" | "int" | "bool";
-
-export interface SlotDef {
-  name: string;
-  type?: SlotType;
-  required?: boolean;
-  default?: string | null;
-  options?: string[];
-}
-
-export interface McpPrompt {
-  id: string;
-  name: string;
-  title: string;
-  description: string;
-  template: string;
-  slots: SlotDef[];
-  enabled: boolean;
-  is_builtin: boolean;
-}
+/** A prompt slot. `SlotIn` on the Python side; the create/update payloads
+ *  below reuse it, which is why `type` and `required` stay writable. */
+export type SlotDef = SlotIn;
+export type SlotType = SlotIn["type"];
+export type McpPrompt = PromptOut;
 
 export interface McpPromptCreate {
   id: string;

@@ -46,7 +46,7 @@ _REFS = [
 
 
 def test_refs_roundtrip_preserves_all_fields():
-    refs, embeds = _decode(_encode(CachedSearch("search", "l", "q", _REFS)))
+    refs, embeds, _cols = _decode(_encode(CachedSearch("search", "l", "q", _REFS)))
     assert embeds == []
     assert refs == _REFS
 
@@ -54,7 +54,7 @@ def test_refs_roundtrip_preserves_all_fields():
 def test_flags_bitpack():
     ref = ResultRef("c", "e", 0, fuzzy_match=True, accent_match=True)
     assert ref.flags == 3
-    refs, _ = _decode(_encode(CachedSearch("exact", "l", "q", [ref])))
+    refs, _, _cols = _decode(_encode(CachedSearch("exact", "l", "q", [ref])))
     assert refs[0].fuzzy_match and refs[0].accent_match
 
 
@@ -71,7 +71,9 @@ def test_episode_titles_are_deduped():
 def test_embeds_payload_roundtrip():
     e1 = discord.Embed(title="Show A").to_dict()
     e2 = discord.Embed(title="Show A pg2").to_dict()
-    refs, embeds = _decode(_encode(CachedSearch("list", "l", "", embeds=[e1, e2])))
+    refs, embeds, _cols = _decode(
+        _encode(CachedSearch("list", "l", "", embeds=[e1, e2]))
+    )
     assert refs == []
     assert embeds == [e1, e2]
 
@@ -129,6 +131,8 @@ class _FakeBot:
     def __init__(self, store):
         self.results = store
         self.local = _FakeLocal()
+        # No password-protected shows: ui._refs_allowed short-circuits.
+        self._locked_show_ids: set[str] = set()
 
 
 def _run(coro):
@@ -229,3 +233,22 @@ def test_dynamic_templates_match_and_dont_collide():
     assert not nav.fullmatch("pcx:rj:abc123")
     assert not nav.fullmatch("pcx:rx:abc123:1")
     assert not nav.fullmatch("pcx:l:abc123:1:p")
+
+
+def test_embeds_payload_carries_its_collections():
+    """The persistent nav buttons re-check access, so the page must say what it shows."""
+    from podcodex.bot.result_store import CachedSearch, _decode, _encode
+
+    entry = CachedSearch("list", "", "", embeds=[{"title": "p1"}], collections=["c1"])
+    _refs, embeds, cols = _decode(_encode(entry))
+    assert embeds == [{"title": "p1"}]
+    assert cols == ["c1"]
+
+
+def test_legacy_embeds_payload_decodes_with_no_collections():
+    """Rows written before the field existed stay readable and record nothing."""
+    from podcodex.bot.result_store import _decode
+
+    _refs, embeds, cols = _decode('{"embeds":[{"title":"old"}]}')
+    assert embeds == [{"title": "old"}]
+    assert cols == []

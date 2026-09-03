@@ -243,6 +243,7 @@ export default function SynthesizePanel() {
           folder,
           title: episode.title,
           step: "synthesize",
+          audioPath,
         });
       }
     },

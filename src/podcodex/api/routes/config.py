@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from typing import Literal
 
 from dotenv import dotenv_values, load_dotenv
 from fastapi import APIRouter, HTTPException
@@ -123,7 +124,7 @@ class SecretStatus(BaseModel):
     key: str  # env-var name, e.g. HF_TOKEN
     set: bool  # is a non-empty value available to the backend
     masked: str = ""  # first 4 chars + **** when set
-    source: str = "none"  # "file" | "env" | "none"
+    source: Literal["file", "env", "none"] = "none"
 
 
 class SecretsStatusResponse(BaseModel):

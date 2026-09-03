@@ -339,3 +339,224 @@ def test_token_file_created_0600(tmp_path, monkeypatch):
         assert get_or_create_api_token() == token
     finally:
         app_paths.config_dir.cache_clear()
+
+
+# ── Version routes: lang / version_id stay one path component ────────────
+
+
+def _episode(tmp_path):
+    """Stub show folder + episode dir, returning (audio_path, ep_dir)."""
+    show = tmp_path / "show"
+    show.mkdir()
+    audio = show / "ep.mp3"
+    audio.touch()
+    (show / "ep").mkdir()
+    return str(audio), str(show / "ep")
+
+
+def test_translate_version_lang_traversal_rejected(client, tmp_path):
+    """`lang` becomes a directory name, so traversal must 400, not read files.
+
+    `normalize_lang` only lowercases and de-spaces, so a lang of
+    "../../../../.config/podcodex" used to resolve version_path onto any
+    JSON file on disk: the GET returned it and the DELETE unlinked it.
+    """
+    audio, _ = _episode(tmp_path)
+    secret = tmp_path / "api_keys.json"
+    secret.write_text('{"openai": "sk-secret"}', encoding="utf-8")
+
+    params = {"audio_path": audio, "lang": "../../../.."}
+    r = client.get("/api/translate/versions/api_keys", params=params)
+    assert r.status_code == 400
+    r = client.delete("/api/translate/versions/api_keys", params=params)
+    assert r.status_code == 400
+    assert secret.exists()
+
+    r = client.get("/api/translate/versions", params=params)
+    assert r.status_code == 400
+
+
+def test_version_path_rejects_traversal_components():
+    from podcodex.core.versions import version_path
+
+    with pytest.raises(ValueError):
+        version_path(__import__("pathlib").Path("/tmp/x/ep"), "../..", "api_keys")
+    with pytest.raises(ValueError):
+        version_path(__import__("pathlib").Path("/tmp/x/ep"), "english", "../../x")
+
+
+# ── Voice-sample filenames are confined to voice_samples/ ────────────────
+
+
+def test_speaker_file_slug_neutralizes_paths_and_globs():
+    from podcodex.core._utils import speaker_file_slug
+
+    assert speaker_file_slug("../../x") == ".._.._x"
+    assert speaker_file_slug("/tmp/x") == "_tmp_x"
+    assert speaker_file_slug(r"..\..\x") == ".._.._x"
+    assert speaker_file_slug("*") == "_"
+    assert speaker_file_slug("[a-z]") == "_a-z_"
+    # Ordinary labels keep the filenames they already have on disk.
+    assert speaker_file_slug("Dr. Smith") == "Dr. Smith"
+    assert speaker_file_slug("SPEAKER_00") == "SPEAKER_00"
+    assert speaker_file_slug("") == ""
+
+
+def test_extract_selected_samples_keeps_hostile_speaker_inside_dir(
+    tmp_path, monkeypatch
+):
+    """A subtitle-supplied "../../x" speaker must not write outside the dir."""
+    from podcodex.core import synthesize as synth
+
+    show = tmp_path / "show"
+    (show / "ep").mkdir(parents=True)
+    audio = show / "ep.mp3"
+    audio.touch()
+
+    written: list = []
+    monkeypatch.setattr(
+        synth,
+        "_extract_clip",
+        lambda src, seg, out: (
+            written.append(out),
+            out.write_bytes(b""),
+            {"file": out, "duration": 1.0, "text": ""},
+        )[-1],
+    )
+    # samples_dir.glob("../../x_*.wav") resolves to <show>/x_*.wav: pathlib
+    # follows ".." segments, so an unslugged label unlinked this file.
+    victim = show / "x_00.wav"
+    victim.write_bytes(b"keep")
+
+    synth.extract_selected_samples(
+        audio,
+        [{"speaker": "../../x", "start": 0.0, "end": 1.0, "text": "hi"}],
+    )
+    samples_dir = show / "ep" / "voice_samples"
+    assert written and all(p.parent == samples_dir for p in written)
+    assert victim.exists()
+
+
+def test_upload_sample_rejects_path_speaker(client, tmp_path):
+    audio, _ = _episode(tmp_path)
+    r = client.post(
+        "/api/synthesize/upload-sample",
+        data={"audio_path": audio, "speaker": "../../evil"},
+        files={"file": ("a.wav", b"RIFF", "audio/wav")},
+    )
+    assert r.status_code == 400
+
+
+# ── Artwork downloads are http(s)-only ───────────────────────────────────
+
+
+def test_download_artwork_refuses_file_scheme(tmp_path):
+    """A feed-controlled artwork URL must not read a local file."""
+    from podcodex.api.routes.shows import _download_artwork
+
+    secret = tmp_path / "secret.jpg"
+    secret.write_bytes(b"\xff\xd8\xffnot-yours")
+    show = tmp_path / "show"
+    show.mkdir()
+
+    assert _download_artwork(secret.as_uri(), show) is None
+    assert not list(show.iterdir())
+
+
+# ── GPU sidecar archive is verified, never on a best-effort basis ────────
+
+
+def test_gpu_install_refuses_manifest_without_server_hash(tmp_path, monkeypatch):
+    """server-core.tar.gz becomes the executed sidecar, so its hash is required.
+
+    The digest used to come from an optional ``<archive>.sha256`` sidecar
+    fetch, so a 404 or a network blip downgraded the integrity check on the
+    one archive that carries code to a log warning.
+    """
+    import json
+
+    from podcodex.api import gpu_backend
+
+    monkeypatch.setattr(gpu_backend, "_ensure_bundle_mode", lambda: None)
+    monkeypatch.setattr(gpu_backend, "_ensure_platform_supported", lambda: None)
+    monkeypatch.setattr(gpu_backend, "gpu_install_dir", lambda: tmp_path / "gpu")
+    monkeypatch.setattr(
+        gpu_backend,
+        "_fetch_text",
+        lambda url, **kw: json.dumps(
+            {
+                "version": "cu128-v1",
+                "archive": "cuda-libs-cu128-v1.tar.gz",
+                "sha256": "a" * 64,
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="server_sha256"):
+        gpu_backend.download_and_install(lambda *a: None, "https://x/cuda-libs.json")
+
+
+def test_gpu_packager_publishes_the_server_hash():
+    """The packager must emit what the installer now requires."""
+    from pathlib import Path
+
+    src = Path("packaging/package_gpu.py").read_text(encoding="utf-8")
+    assert '"server_sha256": core_sha,' in src
+
+
+# ── Reserved index names in an imported manifest ─────────────────
+
+
+def test_reserved_collection_names_are_refused_by_the_member_filter():
+    """`bad_path_component` passes these, so the allowlist has to refuse them itself."""
+    from podcodex.bundle.import_show import _collection_member
+    from podcodex.core._utils import bad_path_component
+    from podcodex.rag.index_store import reserved_index_names
+
+    for name in reserved_index_names():
+        # Not a traversal, so the path check alone would let it through.
+        assert not bad_path_component(name)
+        for member in (f"{name}.lance", f"{name}.json", f"{name}.txn"):
+            assert not _collection_member(member, {name}), member
+    # A real collection is still admitted.
+    assert _collection_member("myshow.lance", {"myshow"})
+    assert _collection_member("myshow.txn", {"myshow"})
+
+
+def test_import_refuses_a_manifest_declaring_a_reserved_collection(
+    tmp_path, monkeypatch
+):
+    """A crafted bundle must not overwrite the ownership marker or the sidecar tables."""
+    import pytest
+
+    from podcodex.bundle.import_show import _plan_collections
+    from podcodex.bundle.manifest import ArchiveCorruptError, CollectionEntry, Manifest
+    from podcodex.bundle.manifest import Mode, ShowEntry
+
+    class _Store:
+        def list_collections(self):
+            return []
+
+    for reserved in ("index_origin", "_show_passwords", "_collections"):
+        manifest = Manifest(
+            mode=Mode.INDEX_ONLY,
+            podcodex_version="0.0.0",
+            exported_at="2026-01-01T00:00:00Z",
+            shows=[
+                ShowEntry(
+                    name="Evil",
+                    folder="evil",
+                    collections=[
+                        CollectionEntry(
+                            name=reserved,
+                            model="bge-m3",
+                            chunker="semantic",
+                            dim=8,
+                            rows=0,
+                        )
+                    ],
+                )
+            ],
+        )
+        with pytest.raises(ArchiveCorruptError):
+            _plan_collections(manifest, None, _Store(), {})

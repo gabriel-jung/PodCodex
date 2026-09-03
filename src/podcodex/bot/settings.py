@@ -9,6 +9,7 @@ import discord
 from loguru import logger
 
 from podcodex.bot.config import ServerSettings
+from podcodex.bot.guards import require_guild
 from podcodex.rag.defaults import (
     MODELS,
 )
@@ -28,11 +29,19 @@ class SettingsMixin:
         valid_keys = {f.name for f in fields(ServerSettings)}
         result: dict[int, ServerSettings] = {}
         for sid, d in raw.items():
+            # A guild-less write (a DM before the handlers guarded against it)
+            # left the literal key "None" behind. Skip anything that is not a
+            # guild id rather than failing the whole bot start on it.
+            try:
+                guild_id = int(sid)
+            except (TypeError, ValueError):
+                logger.warning(f"Ignoring non-guild key {sid!r} in server config")
+                continue
             # Backward compat: rename old "default_shows" → "allowed_shows"
             if "default_shows" in d and "allowed_shows" not in d:
                 d["allowed_shows"] = d.pop("default_shows")
             filtered = {k: v for k, v in d.items() if k in valid_keys}
-            result[int(sid)] = ServerSettings(**filtered)
+            result[guild_id] = ServerSettings(**filtered)
         return result
 
     def _save_server_config(self) -> None:
@@ -103,7 +112,9 @@ class SettingsMixin:
         default_source: str = "",
         compact: str = "",
     ) -> None:
-        guild_id = interaction.guild_id
+        guild_id = await require_guild(interaction)
+        if guild_id is None:
+            return
         current = self._server_settings(guild_id)
 
         # Password-protected shows are managed via /unlock + /lock, not /setup
@@ -196,11 +207,8 @@ class SettingsMixin:
         channel: discord.TextChannel | None,
         off: bool,
     ) -> None:
-        guild_id = interaction.guild_id
+        guild_id = await require_guild(interaction)
         if guild_id is None:
-            await interaction.response.send_message(
-                "Use this command in a server.", ephemeral=True
-            )
             return
         settings = self._server_cfg.get(guild_id) or self._server_settings(guild_id)
 

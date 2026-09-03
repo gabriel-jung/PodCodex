@@ -319,28 +319,44 @@ class PipelineDB:
         if "translations" in fields and isinstance(fields["translations"], list):
             fields["translations"] = json.dumps(fields["translations"])
 
+        # Provenance is a dict keyed by step, so writing it is a
+        # read-modify-write of one JSON blob. The in-process lock cannot
+        # order that against the spawned pipeline children (index_job,
+        # transcribe) which write this same file: without a transaction,
+        # both read the blob, each updates its own key and the second
+        # commit drops the first one's, leaving a step whose status pills
+        # show no model. ``BEGIN IMMEDIATE`` takes the write lock before
+        # the read, exactly as ``demote_step_if_no_versions`` does.
+        merges_provenance = "provenance" in fields and isinstance(
+            fields["provenance"], dict
+        )
+
         with self._lock:
-            # Provenance is a dict keyed by step — merge with existing.
-            if "provenance" in fields and isinstance(fields["provenance"], dict):
-                existing = self._get_provenance(stem)
-                existing.update(fields["provenance"])
-                fields["provenance"] = json.dumps(existing)
+            try:
+                if merges_provenance:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    existing = self._get_provenance(stem)
+                    existing.update(fields["provenance"])
+                    fields["provenance"] = json.dumps(existing)
 
-            cols = list(fields.keys())
-            vals = [fields[c] for c in cols]
+                cols = list(fields.keys())
+                vals = [fields[c] for c in cols]
 
-            set_clause = ", ".join(f"{c} = excluded.{c}" for c in cols)
-            placeholders = ", ".join("?" for _ in cols)
-            col_names = ", ".join(cols)
+                set_clause = ", ".join(f"{c} = excluded.{c}" for c in cols)
+                placeholders = ", ".join("?" for _ in cols)
+                col_names = ", ".join(cols)
 
-            sql = f"""
-                INSERT INTO episodes (stem, {col_names}, updated_at)
-                VALUES (?, {placeholders}, ?)
-                ON CONFLICT(stem) DO UPDATE SET {set_clause}, updated_at = excluded.updated_at
-            """
-            vals_full = [stem, *vals, time.time()]
-            self._conn.execute(sql, vals_full)
-            self._conn.commit()
+                sql = f"""
+                    INSERT INTO episodes (stem, {col_names}, updated_at)
+                    VALUES (?, {placeholders}, ?)
+                    ON CONFLICT(stem) DO UPDATE SET {set_clause}, updated_at = excluded.updated_at
+                """
+                vals_full = [stem, *vals, time.time()]
+                self._conn.execute(sql, vals_full)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def demote_step_if_no_versions(
         self, stem: str, step: str, flag: str | None

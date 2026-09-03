@@ -271,9 +271,17 @@ class StatsCommandsMixin:
             # Self-contained pages: cache the rendered embeds verbatim so the
             # nav buttons stay persistent and survive restarts.
             sid = self.results.save(
-                CachedSearch("list", "", "", embeds=[e.to_dict() for e in embeds])
+                CachedSearch(
+                    "list",
+                    "",
+                    "",
+                    embeds=[e.to_dict() for e in embeds],
+                    # The buttons outlive the command, so the page has to
+                    # carry what it draws on for the access re-check.
+                    collections=[col],
+                )
             )
-            built = await build_list_view(self, sid, 0)
+            built = await build_list_view(self, sid, 0, interaction.guild_id)
             assert built is not None  # just saved; cannot miss
             embed, view = built
             await interaction.followup.send(embed=embed, view=view)

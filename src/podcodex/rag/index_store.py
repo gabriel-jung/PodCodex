@@ -331,6 +331,32 @@ _COLLECTIONS_SCHEMA = pa.schema(
 )
 
 _SHOW_PASSWORDS_TABLE = "_show_passwords"
+
+
+def reserved_index_names() -> frozenset[str]:
+    """Names a collection may never take, because index state already owns them.
+
+    The index root holds the two sidecar tables and the ownership marker
+    next to the chunk tables, and on-disk entries are addressed by prefix
+    (``<name>.lance`` for the table directory, ``<name>.<ext>`` for its
+    sidecars). A collection called ``index_origin`` therefore claims
+    ``index_origin.json``, and one called ``_show_passwords`` claims that
+    table, so an importer that only checks for path traversal would let a
+    crafted archive replace the very files its allowlist exists to protect.
+
+    Returned as stems, not filenames: the collision is on the prefix.
+    """
+    from podcodex.rag.index_origin import ORIGIN_FILENAME
+
+    return frozenset(
+        {
+            _COLLECTIONS_TABLE,
+            _SHOW_PASSWORDS_TABLE,
+            ORIGIN_FILENAME.rsplit(".", 1)[0],
+        }
+    )
+
+
 _SHOW_PASSWORDS_SCHEMA = pa.schema(
     [
         pa.field("show_id", pa.string()),
@@ -434,6 +460,8 @@ class IndexStore:
         # and e.g. set_show_password is a non-atomic delete-then-add.
         self._write_lock = threading.Lock()
         self._fts_ready: set[str] = set()
+        # Chunk tables this process has written to and not yet compacted.
+        self._uncompacted: set[str] = set()
         self._pub_date_ready: set[str] = set()
         self._episode_title_ready: set[str] = set()
         self._collections_schema_ready = False
@@ -612,6 +640,8 @@ class IndexStore:
                     where=f"episode = '{_escape(ep)}'",
                     values={"pub_date": dt},
                 )
+            if per_ep:
+                self._uncompacted.add(collection)
             sentinel.touch()
             logger.info(
                 f"pub_date column backfilled for '{collection}' "
@@ -736,6 +766,8 @@ class IndexStore:
                     )
             healed += 1
 
+        if healed:
+            self._uncompacted.add(collection)
         try:
             sentinel.touch()
         except OSError:
@@ -1292,6 +1324,7 @@ class IndexStore:
             t = self._table(collection)
             t.delete(f"episode = '{_escape(episode)}'")
             self._fts_ready.discard(collection)
+            self._uncompacted.add(collection)
         logger.debug(f"Deleted episode '{episode}' from '{collection}'")
 
     def delete_episode_everywhere(
@@ -1325,7 +1358,52 @@ class IndexStore:
                 continue
             self.delete_episode(col, episode)
             touched.append(col)
+        # A delete is the one write that frees space, and it was the only
+        # one no caller compacted after: index jobs compact at the end of a
+        # run, but deleting episodes without re-indexing left every removed
+        # chunk's data files on disk (and in the rsync to the bot host).
+        if touched:
+            self.compact(touched)
         return touched
+
+    def compact(self, collections: list[str] | None = None) -> list[str]:
+        """Merge fragments and drop superseded versions of chunk tables.
+
+        Lance is copy-on-write: every ``add``, ``delete`` and ``update``
+        commits a new table version and leaves the previous data files in
+        place. Nothing reclaims them on its own, so without this the index
+        directory grows monotonically with every re-index (a delete plus an
+        add per episode), every pub_date/episode_title backfill and every
+        heal, and the whole history is what an rsync to the bot host ships.
+
+        Called at the end of an index job, a batch and ``podcodex-reindex``,
+        not on the read path: it rewrites data files, so it belongs where a
+        write already happened. ``optimize`` keeps a week of history by
+        default, which is what makes it safe to run while another process
+        holds an open reader.
+
+        Args:
+            collections: Tables to compact. Defaults to the chunk tables this
+                store has written to since the last call.
+
+        Returns:
+            The collections that were compacted.
+        """
+        names = list(self._uncompacted if collections is None else collections)
+        done: list[str] = []
+        for name in names:
+            self._uncompacted.discard(name)
+            if not self.collection_exists(name):
+                continue
+            try:
+                with self._write_lock:
+                    self._table(name).optimize()
+                done.append(name)
+            except Exception:
+                logger.opt(exception=True).warning(f"Compaction skipped for '{name}'")
+        if done:
+            logger.info(f"Compacted {len(done)} collection(s): {', '.join(done)}")
+        return done
 
     def list_episodes(self, collection: str) -> list[str]:
         """Return a sorted list of distinct episodes in the collection.
@@ -1428,6 +1506,7 @@ class IndexStore:
             )
         t.add(rows)
         self._fts_ready.discard(collection)
+        self._uncompacted.add(collection)
         logger.debug(f"Saved {len(rows)} chunks for '{episode}' in '{collection}'")
 
     # ── Read helpers ─────────────────────────────────────────────────────

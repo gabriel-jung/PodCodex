@@ -254,6 +254,26 @@ def test_collection_version_advances_on_write(tmp_path):
     assert s.collection_version("c") == after  # stable without writes
 
 
+# ── Compaction ───────────────────────────────────────────────────────────
+
+
+def test_compact_targets_written_collections_then_clears(tmp_path):
+    """Lance never reclaims superseded fragments on its own; compact does."""
+    s = _store(tmp_path)
+    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
+    assert s.compact() == []  # nothing written yet
+    s.save_chunks("c", "ep1", _chunks(2, "ep1"), _rng_embeddings(2))
+    s.delete_episode("c", "ep1")
+    assert s.compact() == ["c"]
+    assert s.compact() == []  # the dirty set is consumed
+    assert s.collection_exists("c")
+
+
+def test_compact_ignores_missing_collection(tmp_path):
+    s = _store(tmp_path)
+    assert s.compact(["nope"]) == []
+
+
 # ── save_chunks ──────────────────────────────────────────────────────────
 
 

@@ -15,7 +15,12 @@ from podcodex.api.routes._helpers import (
 )
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._ffmpeg import ffmpeg_exe
-from podcodex.core._utils import AudioPaths, SAMPLE_RATE
+from podcodex.core._utils import (
+    AudioPaths,
+    SAMPLE_RATE,
+    bad_path_component,
+    speaker_file_slug,
+)
 from podcodex.core.constants import AssembleStrategy
 
 router = APIRouter()
@@ -108,6 +113,8 @@ def upload_voice_sample(
     file: UploadFile = File(...),
 ) -> dict:
     """Upload an external audio file as a voice sample for a speaker."""
+    if bad_path_component(speaker):
+        raise HTTPException(400, f"Invalid speaker name: {speaker!r}")
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     samples_dir = p.ensure_voice_samples_dir()
@@ -116,10 +123,13 @@ def upload_voice_sample(
     # the same speaker arrive concurrently (a sequential next_idx counter
     # raced under that pattern). The ``_custom_`` infix marks uploads so
     # ``extract_selected_samples`` won't unlink them when the user re-runs
-    # extraction on the same speaker.
+    # extraction on the same speaker. The label goes through the same slug
+    # helper the extractor and loader use, so ffmpeg cannot be pointed
+    # outside voice_samples/ and the sample is found again on read.
     import uuid
 
-    out_path = samples_dir / f"{speaker}_custom_{uuid.uuid4().hex[:8]}.wav"
+    slug = speaker_file_slug(speaker)
+    out_path = samples_dir / f"{slug}_custom_{uuid.uuid4().hex[:8]}.wav"
 
     # Save uploaded file to a temp location, then convert to 16kHz mono WAV
     import tempfile

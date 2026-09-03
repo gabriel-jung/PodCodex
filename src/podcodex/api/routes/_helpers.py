@@ -535,7 +535,7 @@ def load_best_source(
 
 
 def build_index_transcript(
-    audio_path: str,
+    audio_path: str | None,
     show_name: str,
     stem: str,
     segments: list[dict] | None = None,
@@ -689,6 +689,10 @@ class ApplyManualRequest(BaseModel):
     output_dir: str | None = None
     corrections: list[dict]
     lang: str = ""
+    # Pin the same source the prompts were built from (ManualPromptsRequest
+    # carries it too); validating against a different default-pick is exactly
+    # the case where the entry counts disagree.
+    source_version_id: str | None = None
 
 
 class BatchFix(BaseModel):

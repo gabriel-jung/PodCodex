@@ -17,7 +17,13 @@ import type {
   SpeakerRosterResponse,
   TaskResponse,
 } from "./types";
+import type {
+  DeleteEpisodeResponse,
+  FfmpegValidateResponse,
+} from "./generated-types";
 import { ApiError, json, rawFetch } from "./client";
+
+export type { FfmpegValidateResponse };
 
 const enc = encodeURIComponent;
 
@@ -43,12 +49,6 @@ export const putPipelineDefaults = (defaults: PipelineAppDefaults) =>
     body: JSON.stringify(defaults),
   });
 
-export interface FfmpegValidateResponse {
-  ok: boolean;
-  path: string | null;
-  version: string;
-  error: string;
-}
 
 export const validateFfmpegPath = (path: string) =>
   json<FfmpegValidateResponse>("/api/config/validate-ffmpeg", {
@@ -149,8 +149,14 @@ export const updateShowMeta = (folder: string, meta: ShowMetaUpdate) =>
     body: JSON.stringify(meta),
   });
 
+/** Move or rename a show folder.
+ *
+ *  `warning` is set when the copy fallback ran and the source folder could
+ *  not be removed afterwards (Windows locks, cross-volume moves): the show
+ *  lives at `new_path`, but a full copy is still sitting at the old path and
+ *  only the user can delete it. Surface it, never drop it. */
 export const moveShow = (folder: string, newPath: string, moveFiles: boolean) =>
-  json<{ status: string; new_path: string }>(`/api/shows/${enc(folder)}/move`, {
+  json<{ status: string; new_path: string; warning?: string }>(`/api/shows/${enc(folder)}/move`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ new_path: newPath, move_files: moveFiles }),
@@ -162,14 +168,7 @@ export const moveShow = (folder: string, newPath: string, moveFiles: boolean) =>
  *  still listed: either the search index could not be reached (in which case
  *  nothing at all was touched) or a file could not be removed. Retrying is
  *  always safe and is the intended recovery. */
-export interface DeleteEpisodeResult {
-  status: "deleted" | "partial";
-  collections: number;
-  output_dir_removed: boolean;
-  audio_removed: boolean;
-  db_row_removed: boolean;
-  warnings: string[];
-}
+export type DeleteEpisodeResult = DeleteEpisodeResponse;
 
 /** Delete an episode outright: chunks, output dir, audio copy, DB row.
  *

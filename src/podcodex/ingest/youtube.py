@@ -285,6 +285,7 @@ def download_youtube_audio(
     show_folder: Path,
     stem: str,
     progress_cb: Callable[[float, str], None] | None = None,
+    force: bool = False,
 ) -> Path:
     """Download audio from a YouTube video via yt-dlp.
 
@@ -295,6 +296,9 @@ def download_youtube_audio(
         show_folder: Show folder to save the MP3 into.
         stem: Filename stem for the output file.
         progress_cb: Optional ``(fraction, message)`` callback for progress.
+        force: Re-download even when the MP3 already exists (the existing file
+            is removed first, so a truncated or wrong-format download can be
+            replaced).
 
     Returns:
         Path to the downloaded MP3 file.
@@ -309,8 +313,10 @@ def download_youtube_audio(
     output_path = show_folder / f"{stem}.mp3"
 
     if output_path.exists():
-        logger.debug("Audio already exists: {}", output_path)
-        return output_path
+        if not force:
+            logger.debug("Audio already exists: {}", output_path)
+            return output_path
+        output_path.unlink()
 
     url = _YT_VIDEO_URL.format(video_id=video_id)
 

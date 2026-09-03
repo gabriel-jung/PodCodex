@@ -30,9 +30,20 @@ from loguru import logger
 # interpreter; fork on macOS is unsafe with those libs.
 _CTX = mp.get_context("spawn")
 
-# Sentinel task timeout so a runaway child does not wedge the thread forever.
-# Most steps finish in minutes; 4 hours is a very loose ceiling.
-_HARD_TIMEOUT_SEC = 4 * 60 * 60
+# Sentinel timeout so a wedged child does not hold the worker thread forever.
+# It bounds *silence*, not total runtime: every progress or log message the
+# child emits pushes the deadline back. A fixed wall-clock ceiling killed
+# healthy work, since the shipped installer is CPU-only and whisperx plus
+# pyannote on CPU run near real time, so a long episode can legitimately
+# exceed four hours while still reporting progress every few seconds.
+_NO_PROGRESS_TIMEOUT_SEC = 4 * 60 * 60
+
+# Absolute ceiling, kept alongside the silence bound. Silence alone is not
+# enough: a child stuck in a retry or a poll loop keeps emitting log lines,
+# which push the silence deadline back forever, so the worker thread is
+# held for good by exactly the wedged run this is meant to catch. Set far
+# above any legitimate CPU-only run so it only ever fires on a real hang.
+_MAX_RUNTIME_SEC = 24 * 60 * 60
 
 # Seconds the parent waits after cancel_event is set before breaking the
 # polling loop and letting the finally block SIGTERM the child. Bounds the
@@ -192,7 +203,8 @@ def run_in_subprocess(
     logger.debug("subprocess_runner: started pid={} for {}", proc.pid, entry_path)
 
     poll_ms = 250
-    deadline = time.monotonic() + _HARD_TIMEOUT_SEC
+    deadline = time.monotonic() + _NO_PROGRESS_TIMEOUT_SEC
+    hard_deadline = time.monotonic() + _MAX_RUNTIME_SEC
     cancel_deadline: float | None = None
     grace_expired = False
     try:
@@ -215,8 +227,24 @@ def run_in_subprocess(
                 break
 
             if time.monotonic() > deadline:
-                logger.error("subprocess_runner: hard timeout pid={}", proc.pid)
-                raise TimeoutError("Subprocess exceeded hard timeout")
+                logger.error(
+                    "subprocess_runner: no progress for {}s, pid={}",
+                    _NO_PROGRESS_TIMEOUT_SEC,
+                    proc.pid,
+                )
+                raise TimeoutError(
+                    f"Subprocess emitted no progress for {_NO_PROGRESS_TIMEOUT_SEC}s"
+                )
+
+            if time.monotonic() > hard_deadline:
+                logger.error(
+                    "subprocess_runner: exceeded {}s of runtime, pid={}",
+                    _MAX_RUNTIME_SEC,
+                    proc.pid,
+                )
+                raise TimeoutError(
+                    f"Subprocess exceeded the {_MAX_RUNTIME_SEC}s runtime ceiling"
+                )
 
             try:
                 msg = prog_q.get(timeout=poll_ms / 1000.0)
@@ -224,6 +252,9 @@ def run_in_subprocess(
                 if not proc.is_alive():
                     break
                 continue
+
+            # The child is alive and talking: restart the silence window.
+            deadline = time.monotonic() + _NO_PROGRESS_TIMEOUT_SEC
 
             if not msg:
                 continue

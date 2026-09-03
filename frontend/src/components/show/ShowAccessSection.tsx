@@ -11,6 +11,7 @@ import type { ShowAccess, ShowPasswordSet } from "@/api/botAccess";
 import { queryKeys } from "@/api/queryKeys";
 import { Button } from "@/components/ui/button";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import {
   Dialog,
   DialogContent,
@@ -28,7 +29,13 @@ interface Props {
 
 export default function ShowAccessSection({ show }: Props) {
   const qc = useQueryClient();
-  const { data: access, isLoading } = useQuery<ShowAccess>({
+  const {
+    data: access,
+    isLoading,
+    isError: accessFailed,
+    error: accessError,
+    refetch: refetchAccess,
+  } = useQuery<ShowAccess>({
     queryKey: queryKeys.showAccess(show),
     queryFn: () => getShowAccess(show),
     retry: false,
@@ -68,8 +75,11 @@ export default function ShowAccessSection({ show }: Props) {
     onError: (e: Error) => setError(e.message),
   });
 
+  // An unreadable status can't be acted on: the labels below would claim the
+  // show is public and the actions would run against a state we never read.
   const busy =
     isLoading ||
+    accessFailed ||
     generateMut.isPending ||
     removeMut.isPending ||
     setManualMut.isPending;
@@ -80,16 +90,25 @@ export default function ShowAccessSection({ show }: Props) {
         title="Discord bot access"
         description="Restrict this show to Discord servers that know the password. Leave public for anyone who can reach your bot."
       >
-        <SettingRow
-          label="Access"
-          help={
-            access?.is_protected
-              ? "Discord servers must run /unlock <password> before querying this show."
-              : "Anyone with access to your bot can search this show."
-          }
-        >
-          <AccessChip access={access} isLoading={isLoading} />
-        </SettingRow>
+        {accessFailed ? (
+          <div className="py-3">
+            <ErrorAlert
+              error={accessError}
+              onRetry={() => void refetchAccess()}
+            />
+          </div>
+        ) : (
+          <SettingRow
+            label="Access"
+            help={
+              access?.is_protected
+                ? "Discord servers must run /unlock <password> before querying this show."
+                : "Anyone with access to your bot can search this show."
+            }
+          >
+            <AccessChip access={access} isLoading={isLoading} />
+          </SettingRow>
+        )}
 
         <div className="py-3 flex flex-wrap gap-2">
           <Button

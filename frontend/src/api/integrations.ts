@@ -1,13 +1,7 @@
 import { json } from "./client";
+import type { ClaudeDesktopStatus } from "./generated-types";
 
-export interface ClaudeDesktopStatus {
-  enabled: boolean;
-  config_path: string;
-  command_path: string;
-  claude_desktop_installed: boolean;
-  mcp_available: boolean;
-  needs_restart_hint: string;
-}
+export type { ClaudeDesktopStatus };
 
 export const getClaudeDesktopStatus = () =>
   json<ClaudeDesktopStatus>("/api/integrations/claude-desktop");

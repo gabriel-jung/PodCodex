@@ -14,6 +14,9 @@ interface EpisodeTaskInfo {
   folder: string;
   title: string;
   step: string;
+  /** The per-episode query key the panel used (see usePipelineTask), so the
+   *  global strip can invalidate exactly what the panel would have. */
+  audioPath?: string | null;
 }
 
 interface TaskBarState {
@@ -37,6 +40,7 @@ interface TaskBarState {
   episodeFolder: string | null;
   episodeTitle: string | null;
   episodeStep: string | null;
+  episodeAudioPath: string | null;
   setEpisodeTask: (taskId: string | null, info?: EpisodeTaskInfo) => void;
 }
 
@@ -60,6 +64,7 @@ export const useTaskStore = create<TaskBarState>()(
       episodeFolder: null,
       episodeTitle: null,
       episodeStep: null,
+      episodeAudioPath: null,
       setEpisodeTask: (taskId, info) =>
         set({
           episodeTaskId: taskId,
@@ -67,6 +72,7 @@ export const useTaskStore = create<TaskBarState>()(
           episodeFolder: info?.folder ?? null,
           episodeTitle: info?.title ?? null,
           episodeStep: info?.step ?? null,
+          episodeAudioPath: info?.audioPath ?? null,
         }),
     }),
     { name: "podcodex-tasks" },

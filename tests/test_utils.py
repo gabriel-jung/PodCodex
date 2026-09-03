@@ -435,3 +435,128 @@ def test_exports_keep_a_declared_narrator_named():
     assert "Alice: bonjour" in segments_to_srt(segs)
     # Declared, it is a name like any other.
     assert "Narrator: plus tard" in segments_to_srt(segs, declared={"Narrator"})
+
+
+# ──────────────────────────────────────────────
+# srt_to_segments / vtt_to_segments
+# ──────────────────────────────────────────────
+#
+# The whole YouTube subtitle import path rides on these two parsers, and the
+# empty-speaker footgun lives here: an untagged cue must come out as
+# NARRATOR_SPEAKER, never as "". NARRATOR_SPEAKER's value itself changed in
+# 0.2.10, so the tests assert against the constant, not the string.
+
+
+def test_srt_parses_timestamps_and_speaker_prefix():
+    from podcodex.core._utils import srt_to_segments
+
+    srt = (
+        "1\n"
+        "00:00:00,000 --> 00:00:01,500\n"
+        "Alice: Hello there\n"
+        "\n"
+        "2\n"
+        "00:01:02,250 --> 00:01:03,000\n"
+        "Bob: Hi\n"
+    )
+    segs = srt_to_segments(srt)
+    assert [s["speaker"] for s in segs] == ["Alice", "Bob"]
+    assert [s["text"] for s in segs] == ["Hello there", "Hi"]
+    assert segs[0]["start"] == 0.0 and segs[0]["end"] == 1.5
+    assert segs[1]["start"] == 62.25
+
+
+def test_srt_without_a_speaker_prefix_defaults_to_narrator():
+    from podcodex.core._utils import NARRATOR_SPEAKER, srt_to_segments
+
+    srt = "1\n00:00:00,000 --> 00:00:02,000\nJust narration\n"
+    segs = srt_to_segments(srt)
+    assert segs[0]["speaker"] == NARRATOR_SPEAKER
+    assert segs[0]["speaker"] != ""
+
+
+def test_srt_does_not_mistake_punctuated_text_for_a_speaker():
+    """ "Wait, what?: no" is a sentence, not a "Speaker: text" prefix."""
+    from podcodex.core._utils import NARRATOR_SPEAKER, srt_to_segments
+
+    srt = "1\n00:00:00,000 --> 00:00:02,000\nWait, what: no\n"
+    segs = srt_to_segments(srt)
+    assert segs[0]["speaker"] == NARRATOR_SPEAKER
+    assert segs[0]["text"] == "Wait, what: no"
+
+
+def test_vtt_voice_tag_becomes_the_speaker():
+    from podcodex.core._utils import vtt_to_segments
+
+    vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n<v Alice>Hello there</v>\n"
+    segs = vtt_to_segments(vtt)
+    assert segs == [
+        {"speaker": "Alice", "text": "Hello there", "start": 0.0, "end": 1.0}
+    ]
+
+
+def test_vtt_without_a_voice_tag_defaults_to_narrator():
+    """The YouTube import case: no <v> tag anywhere in the track."""
+    from podcodex.core._utils import NARRATOR_SPEAKER, vtt_to_segments
+
+    vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nplain line\n"
+    segs = vtt_to_segments(vtt)
+    assert segs[0]["speaker"] == NARRATOR_SPEAKER
+    assert segs[0]["speaker"] != ""
+
+
+def test_vtt_strips_cue_settings_markup_and_entities():
+    from podcodex.core._utils import vtt_to_segments
+
+    vtt = (
+        "WEBVTT\n\n"
+        "00:00:01.000 --> 00:00:02.000 align:start position:0%\n"
+        "plain <i>line</i> &amp; more\n"
+    )
+    segs = vtt_to_segments(vtt)
+    assert segs[0]["text"] == "plain line & more"
+    assert segs[0]["start"] == 1.0 and segs[0]["end"] == 2.0
+
+
+def test_overlapping_youtube_cues_collapse_into_one_segment():
+    """Repeated consecutive cues extend the previous one instead of doubling."""
+    from podcodex.core._utils import vtt_to_segments
+
+    vtt = (
+        "WEBVTT\n\n"
+        "00:00:00.000 --> 00:00:01.000\nhello\n\n"
+        "00:00:01.000 --> 00:00:02.000\nhello\n\n"
+        "00:00:02.000 --> 00:00:03.000\nworld\n"
+    )
+    segs = vtt_to_segments(vtt)
+    assert [s["text"] for s in segs] == ["hello", "world"]
+    assert segs[0]["end"] == 2.0
+
+
+def test_both_parsers_ignore_blocks_without_a_timestamp():
+    from podcodex.core._utils import srt_to_segments, vtt_to_segments
+
+    assert srt_to_segments("") == []
+    assert vtt_to_segments("WEBVTT\n\nNOTE nothing to see\n") == []
+
+
+def test_srt_round_trips_through_the_formatter():
+    from podcodex.core._utils import segments_to_srt, srt_to_segments
+
+    segments = [
+        {"speaker": "Alice", "start": 0.0, "end": 1.5, "text": "Hi"},
+        {"speaker": "Bob", "start": 1.5, "end": 3.0, "text": "Hello"},
+    ]
+    parsed = srt_to_segments(segments_to_srt(segments))
+    assert parsed == segments
+
+
+def test_vtt_round_trips_through_the_formatter():
+    from podcodex.core._utils import segments_to_vtt, vtt_to_segments
+
+    segments = [
+        {"speaker": "Alice", "start": 0.0, "end": 1.0, "text": "Hi"},
+        {"speaker": "Bob", "start": 1.0, "end": 2.0, "text": "Hello"},
+    ]
+    parsed = vtt_to_segments(segments_to_vtt(segments))
+    assert parsed == segments

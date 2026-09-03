@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Outlet } from "@tanstack/react-router";
+import { Outlet, useBlocker } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import { healthQueryOptions } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import CommandPalette from "@/components/CommandPalette";
 import ShortcutsHelp from "@/components/ShortcutsHelp";
 import BatchHistoryModal from "@/components/BatchHistoryModal";
 import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
+import { confirmDiscard, dirtyEdits } from "@/lib/dirtyEdits";
 import { PlatformProvider } from "@/platform";
 import { useGlobalShortcuts } from "@/hooks/useGlobalShortcuts";
 import { useVersions } from "@/hooks/useVersions";
@@ -63,6 +64,16 @@ function pickPhaseLabel(elapsedMs: number): string {
 
 export default function RootLayout() {
   useGlobalShortcuts();
+  // The one navigation guard. Every navigate() and <Link> in the app goes
+  // through the router's history, so blocking here covers step switches,
+  // prev/next, sidebar, breadcrumbs, the command palette and Settings tabs
+  // at once; surfaces only declare their dirty state (lib/dirtyEdits.ts).
+  // enableBeforeUnload covers a browser tab close for the web build.
+  useBlocker({
+    shouldBlockFn: () =>
+      dirtyEdits.isDirty() ? confirmDiscard().then((discard) => !discard) : false,
+    enableBeforeUnload: () => dirtyEdits.isDirty(),
+  });
   // Shown on the backend-unreachable screen: the shell version resolves
   // without the backend, so users can identify their build even when the
   // sidecar never comes up. On Windows there is no app menu to fall back on.

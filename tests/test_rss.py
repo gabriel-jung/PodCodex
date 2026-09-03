@@ -1,8 +1,12 @@
 """Tests for podcodex.ingest.rss — RSS parsing, caching, slug generation."""
 
+import pytest
+
 from podcodex.ingest.rss import (
     RSSEpisode,
+    _BACKFILL_FIELDS,
     _parse_duration,
+    fill_empty_fields,
     load_episode_meta,
     load_feed_cache,
     parse_feed_content,
@@ -226,3 +230,174 @@ def test_new_meta_with_explicit_empty_field_not_bridged(tmp_path):
     save_episode_meta(tmp_path, ep)
     loaded = load_episode_meta(tmp_path)
     assert loaded.youtube_id == ""
+
+
+# ──────────────────────────────────────────────
+# download_audio: partial writes
+# ──────────────────────────────────────────────
+
+
+def test_download_audio_never_leaves_a_truncated_file(tmp_path, monkeypatch):
+    """A crash mid-stream must not leave a {stem}.mp3 that is_downloaded then
+    reports as 'exists'. The bytes land in a .part sibling until the rename."""
+    import httpx
+
+    from podcodex.ingest import rss as rss_mod
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self, chunk_size=0):
+            yield b"partial"
+            raise httpx.ReadTimeout("connection dropped")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(httpx, "stream", lambda *a, **k: _Resp())
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    ep = RSSEpisode(
+        guid="abc",
+        title="Ep One",
+        pub_date="2026-01-01",
+        audio_url="https://example.com/ep.mp3",
+    )
+    path, error = rss_mod.download_audio(ep, tmp_path)
+
+    assert path is None
+    assert error == "timeout"
+    assert not list(tmp_path.glob("*.mp3"))
+    assert not list(tmp_path.glob("*.part"))
+
+
+# ──────────────────────────────────────────────
+# fill_empty_fields
+# ──────────────────────────────────────────────
+#
+# The single facility for episode-meta merges. Three sites used to roll their
+# own and drift on which keys count; a sparse .episode_meta.json silently
+# breaks the RAG date filters, so _BACKFILL_FIELDS membership is pinned here.
+
+
+def _episode(**overrides) -> RSSEpisode:
+    base = dict(guid="g", title="Ep One", pub_date="")
+    base.update(overrides)
+    return RSSEpisode(**base)
+
+
+RICH_VALUES = {
+    "pub_date": "2026-01-01T00:00:00Z",
+    "duration": 1800.0,
+    "artwork_url": "https://example.com/art.jpg",
+    "episode_number": 12,
+    "season_number": 3,
+    "youtube_id": "abc123",
+}
+
+
+def test_backfill_field_list_is_the_documented_one():
+    """Adding a field here means every merge site starts copying it."""
+    assert set(_BACKFILL_FIELDS) == set(RICH_VALUES)
+    assert "pub_date" in _BACKFILL_FIELDS  # the RAG date filters ride on it
+    assert "description" not in _BACKFILL_FIELDS  # its rule is caller-specific
+
+
+@pytest.mark.parametrize("field", sorted(RICH_VALUES))
+def test_empty_target_field_is_filled_from_the_source(field):
+    target = _episode()
+    source = _episode(**RICH_VALUES)
+    changed = fill_empty_fields(target, source)
+    assert field in changed
+    assert getattr(target, field) == RICH_VALUES[field]
+
+
+@pytest.mark.parametrize("field", sorted(RICH_VALUES))
+def test_non_empty_target_field_is_kept(field):
+    kept = {
+        "pub_date": "1999-12-31T00:00:00Z",
+        "duration": 60.0,
+        "artwork_url": "https://example.com/mine.jpg",
+        "episode_number": 1,
+        "season_number": 1,
+        "youtube_id": "mine",
+    }[field]
+    target = _episode(**{field: kept})
+    source = _episode(**RICH_VALUES)
+    changed = fill_empty_fields(target, source)
+    assert field not in changed
+    assert getattr(target, field) == kept
+
+
+def test_zero_and_blank_count_as_empty():
+    """0 duration / 0 episode number / whitespace-only strings are 'missing'."""
+    target = _episode(duration=0.0, episode_number=0, artwork_url="   ")
+    source = _episode(duration=42.0, episode_number=7, artwork_url="https://a/b.jpg")
+    changed = fill_empty_fields(target, source)
+    assert target.duration == 42.0
+    assert target.episode_number == 7
+    assert target.artwork_url == "https://a/b.jpg"
+    assert set(changed) >= {"duration", "episode_number", "artwork_url"}
+
+
+def test_empty_source_leaves_the_target_alone():
+    target = _episode(**RICH_VALUES)
+    changed = fill_empty_fields(target, _episode())
+    assert changed == []
+    for field, value in RICH_VALUES.items():
+        assert getattr(target, field) == value
+
+
+def test_description_fills_only_when_empty_by_default():
+    """RSS refetch: a hand-enriched description must survive the merge."""
+    target = _episode(description="mine")
+    changed = fill_empty_fields(target, _episode(description="a much longer one"))
+    assert changed == []
+    assert target.description == "mine"
+
+    blank = _episode(description="  ")
+    changed = fill_empty_fields(blank, _episode(description="from the feed"))
+    assert changed == ["description"]
+    assert blank.description == "from the feed"
+
+
+def test_prefer_longer_description_adopts_the_richer_text():
+    """YouTube subtitle enrichment: the full extract beats the flat one."""
+    target = _episode(description="short")
+    changed = fill_empty_fields(
+        target,
+        _episode(description="a considerably longer description"),
+        prefer_longer_description=True,
+    )
+    assert changed == ["description"]
+    assert target.description == "a considerably longer description"
+
+
+def test_prefer_longer_description_keeps_the_longer_target():
+    target = _episode(description="a considerably longer description")
+    changed = fill_empty_fields(
+        target, _episode(description="short"), prefer_longer_description=True
+    )
+    assert changed == []
+    assert target.description == "a considerably longer description"
+
+
+def test_prefer_longer_description_ignores_a_blank_source():
+    target = _episode(description="")
+    changed = fill_empty_fields(
+        target, _episode(description="   "), prefer_longer_description=True
+    )
+    assert changed == []
+    assert target.description == ""
+
+
+def test_removed_and_feed_order_are_never_backfilled():
+    """``removed`` is live-feed state and ``feed_order`` is per-fetch."""
+    target = _episode(removed=True, feed_order=None)
+    fill_empty_fields(target, _episode(removed=False, feed_order=5))
+    assert target.removed is True
+    assert target.feed_order is None

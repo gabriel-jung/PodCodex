@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useState } from "react";
+import { confirmDiscard, useDirtyEdit } from "@/lib/dirtyEdits";
 import { countLabel } from "@/lib/showCounts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Episode } from "@/api/types";
@@ -258,6 +259,23 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
   const [manualApplied, setManualApplied] = useState<Set<string>>(new Set());
   const [manualError, setManualError] = useState<string | null>(null);
 
+  // Pasted replies and validated batches exist only in this dialog until
+  // they are applied; the backdrop, the close button and Cancel all ask first.
+  const manualDirty =
+    manualActive &&
+    (manualPasted.trim() !== "" ||
+      Object.keys(manualResults).some((ek) => !manualApplied.has(ek)));
+  useDirtyEdit(manualDirty, "pasted LLM batches");
+  const requestClose = () => {
+    if (!manualDirty) {
+      onClose();
+      return;
+    }
+    void confirmDiscard(["pasted LLM batches"]).then((discard) => {
+      if (discard) onClose();
+    });
+  };
+
   // Sync languages from show metadata
   useEffect(() => {
     if (showLanguage && isLLMStep && llm.sourceLang !== showLanguage) setLLM({ sourceLang: showLanguage });
@@ -340,6 +358,12 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
       if (Array.isArray(batch)) corrections.push(...batch);
     }
     const params = { audio_path: ep.audio_path || undefined, output_dir: ep.output_dir || undefined, corrections } as Record<string, unknown>;
+    // Must pin the same version the prompts were generated from (see the
+    // generate effect below). Without it the route validates the pasted
+    // replies against its own default pick, which now rejects a count
+    // mismatch outright, so every apply with a pinned source 400s.
+    const cvId = customVersions[k];
+    if (cvId) params.source_version_id = cvId;
     if (step === "translate") {
       await applyTranslateManual({ ...params, lang: targetLang } as Parameters<typeof applyTranslateManual>[0]);
     } else {
@@ -394,7 +418,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
   }, [manualActive, currentEpKey, currentBatchCount, customVersions[currentEpKey]]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={requestClose}>
       <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border">
@@ -406,7 +430,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
               : `${filteredEpisodes.length} of ${countLabel(episodes.length, "episode")}`}
           </span>
           <div className="flex-1" />
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-lg leading-none" aria-label="Close">&times;</button>
+          <button onClick={requestClose} className="text-muted-foreground hover:text-foreground text-lg leading-none" aria-label="Close">&times;</button>
         </div>
 
         <div className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
@@ -1018,7 +1042,7 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
             </Button>
           )}
           {selectedSource !== "custom" && !manualActive && (
-            <Button onClick={onClose} variant="ghost" size="sm">
+            <Button onClick={requestClose} variant="ghost" size="sm">
               {canRun.length === 0 ? "Close" : "Cancel"}
             </Button>
           )}

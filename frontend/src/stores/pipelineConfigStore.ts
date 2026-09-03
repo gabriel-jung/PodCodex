@@ -14,9 +14,9 @@
  */
 
 import { useEffect, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
-import type { PipelineAppDefaults, PipelineDefaults } from "@/api/types";
+import type { AppConfig, PipelineAppDefaults, PipelineDefaults } from "@/api/types";
 import { queryKeys } from "@/api/queryKeys";
 import { getConfig, putPipelineDefaults } from "@/api/shows";
 import { BOOT_PATIENT_RETRY } from "@/api/client";
@@ -338,13 +338,25 @@ const PUSH_DEBOUNCE_MS = 600;
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let lastPushAt = 0;
 
+// The query client `useHydrateAppDefaults` ran under. `pushNow` has no hook
+// context, but it must write the saved defaults back into the ["config"]
+// query: that query is persisted to localStorage and read on the next
+// launch, so leaving it untouched would hydrate the pre-save defaults and
+// the first Settings edit of the new session would push them back over the
+// server, silently reverting the previous session's save.
+let boundQueryClient: QueryClient | null = null;
+
 function pushNow(): Promise<void> {
   pushTimer = null;
   lastPushAt = Date.now();
   return putPipelineDefaults(
     bundleToServer(usePipelineConfigStore.getState().appDefaults),
   ).then(
-    () => undefined,
+    (saved) => {
+      boundQueryClient?.setQueryData<AppConfig>(queryKeys.config(), (cfg) =>
+        cfg ? { ...cfg, pipeline_defaults: saved } : cfg,
+      );
+    },
     (err: unknown) => {
       console.warn("Saving pipeline defaults failed:", err);
     },
@@ -496,6 +508,7 @@ let hydrationSucceeded = false;
 export function useHydrateAppDefaults(): void {
   const queryClient = useQueryClient();
   useEffect(() => {
+    boundQueryClient = queryClient;
     if (hydrationStarted) return;
     hydrationStarted = true;
     void (async () => {
@@ -505,10 +518,13 @@ export function useHydrateAppDefaults(): void {
         // instead of firing a duplicate request beside it. The patient
         // schedule because this races the sidecar's first-launch boot: the
         // default gives up in seconds, and a failure here is data loss, not
-        // just a cold start.
+        // just a cold start. staleTime 0: the ["config"] entry is restored
+        // from localStorage before this runs, and a restored copy must never
+        // satisfy the read that decides what the server currently holds.
         const cfg = await queryClient.fetchQuery({
           queryKey: queryKeys.config(),
           queryFn: getConfig,
+          staleTime: 0,
           ...BOOT_PATIENT_RETRY,
         });
         defaults = cfg.pipeline_defaults ?? null;

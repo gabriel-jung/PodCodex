@@ -1,11 +1,10 @@
 import { json, rawFetch } from "./client";
-import type { ProviderProfile } from "./generated-types";
+import type {
+  ProviderProfile,
+  ProviderProfilesListResponse,
+} from "./generated-types";
 
-export type { ProviderProfile };
-
-export interface ProviderProfilesListResponse {
-  profiles: ProviderProfile[];
-}
+export type { ProviderProfile, ProviderProfilesListResponse };
 
 export const listProviderProfiles = () =>
   json<ProviderProfilesListResponse>("/api/provider-profiles");

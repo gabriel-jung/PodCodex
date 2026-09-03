@@ -1,6 +1,8 @@
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { confirmDiscard, useDirtyEdit } from "@/lib/dirtyEdits";
+
 import type {
   McpPrompt,
   McpPromptCreate,
@@ -59,6 +61,25 @@ export default function PromptEditorModal({
     setSlots(editing?.slots ?? []);
     setError(null);
   }, [open, editing]);
+
+  const dirty =
+    open &&
+    (id !== (editing?.id ?? "") ||
+      title !== (editing?.title ?? "") ||
+      description !== (editing?.description ?? "") ||
+      template !== (editing?.template ?? "") ||
+      JSON.stringify(slots) !== JSON.stringify(editing?.slots ?? []));
+  useDirtyEdit(dirty, "prompt");
+  // Escape, the backdrop and Cancel all land here; a submit closes directly.
+  const requestClose = () => {
+    if (!dirty) {
+      onClose();
+      return;
+    }
+    void confirmDiscard(["prompt"]).then((discard) => {
+      if (discard) onClose();
+    });
+  };
 
   const usedSlotNames = useMemo(() => {
     const names = new Set<string>();
@@ -140,7 +161,7 @@ export default function PromptEditorModal({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+    <Dialog open={open} onOpenChange={(o) => !o && requestClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>{isEdit ? `Edit ${editing?.id}` : "New prompt"}</DialogTitle>
@@ -270,7 +291,7 @@ export default function PromptEditorModal({
         )}
 
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose} disabled={submitting}>
+          <Button variant="ghost" onClick={requestClose} disabled={submitting}>
             Cancel
           </Button>
           <Button onClick={handleSubmit} disabled={!canSubmit}>

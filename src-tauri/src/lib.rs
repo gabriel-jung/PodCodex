@@ -553,11 +553,9 @@ fn probe_sidecar_version(
     }
     let stdout = String::from_utf8(output.stdout).ok()?;
     // Output format: "podcodex-server X.Y.Z\n"
-    stdout
-        .trim()
-        .split_whitespace()
-        .last()
-        .map(|w| w.to_string())
+    // split_whitespace already ignores leading and trailing runs, so a
+    // trim() in front of it is dead work (clippy::trim_split_whitespace).
+    stdout.split_whitespace().last().map(|w| w.to_string())
 }
 
 /// Augment PATH with the standard package-manager bin dirs that GUI apps

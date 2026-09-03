@@ -44,6 +44,7 @@ import argparse
 import asyncio
 import os
 import secrets
+import shutil
 import time
 from pathlib import Path
 
@@ -61,6 +62,7 @@ from podcodex.bot.announce import AnnounceStore
 from podcodex.bot.announce_tasks import AnnounceMixin
 from podcodex.bot.autocomplete import AutocompleteMixin, _AutocompleteCache
 from podcodex.bot.config import BotConfig, ServerSettings
+from podcodex.core.app_paths import data_dir
 from podcodex.core.show_passwords import hash_show_password
 from podcodex.bot.registration import RegistrationMixin
 from podcodex.bot.resolution import ResolutionMixin
@@ -69,7 +71,7 @@ from podcodex.bot.settings import SettingsMixin
 from podcodex.bot.stats_commands import StatsCommandsMixin
 from podcodex.bot.formatting import CooldownManager
 from podcodex.bot.result_store import SearchCacheStore
-from podcodex.bot.ui import DYNAMIC_ITEMS
+from podcodex.bot.ui import DYNAMIC_ITEMS, clear_chunk_cache
 from podcodex.rag.defaults import (
     CHUNKING_STRATEGIES,
     DEFAULT_CHUNKING,
@@ -157,6 +159,7 @@ class PodCodexBot(
             return
         await loop.run_in_executor(None, self.local.reconnect)
         self._ac_cache.reset()
+        clear_chunk_cache()
         await loop.run_in_executor(None, self._reload_shows)
         # Advanced only once the reload succeeded. A sweep landing mid-rsync
         # can open a manifest whose data files haven't arrived; advancing
@@ -257,6 +260,7 @@ class PodCodexBot(
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self.local.reconnect)
         self._ac_cache.reset()
+        clear_chunk_cache()
         await loop.run_in_executor(None, self._reload_shows)
         self._index_mtime_seen = await loop.run_in_executor(
             None, self.local.index_mtime
@@ -385,6 +389,46 @@ def _claim_index_cli(index_path: str | None) -> None:
         )
 
 
+# Per-guild state written by the bot: /setup defaults, unlocked shows,
+# announcement channels, the durable search cache and the announce baseline.
+_STATE_FILES = ("server_config.json", "search_cache.db", "announce_state.db")
+
+
+def _resolve_state_path(override: str | None) -> Path:
+    """Return the server-config path, defaulting to ``<data_dir>/bot/``.
+
+    The default used to be the relative ``server_config.json``, which put
+    every guild's settings in the working directory. Under Docker that is
+    ``/app`` in the container layer, so ``docker compose up -d --build``
+    (the documented update command) silently dropped every server's
+    ``/setup`` defaults, unlocked shows and announce channel. ``data_dir()``
+    resolves to the ``podcodex_data`` volume there, and to the platform
+    app-data dir everywhere else.
+
+    A bare-metal deploy started before this change keeps its state: the
+    legacy files in the working directory are moved into the new location
+    once, on the first run that finds them. ``shutil.move``, not ``replace``,
+    because the two can sit on different filesystems (a container layer and
+    a mounted volume).
+    """
+    if override:
+        return Path(override)
+    target_dir = data_dir() / "bot"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / "server_config.json"
+    legacy = Path.cwd() / "server_config.json"
+    if not target.exists() and legacy.is_file():
+        try:
+            for filename in _STATE_FILES:
+                source = Path.cwd() / filename
+                if source.is_file() and not (target_dir / filename).exists():
+                    shutil.move(str(source), str(target_dir / filename))
+            logger.info(f"Migrated bot state from {Path.cwd()} to {target_dir}")
+        except OSError as exc:
+            logger.warning(f"Could not migrate bot state to {target_dir}: {exc}")
+    return target
+
+
 def main() -> None:
     from podcodex.bootstrap import bootstrap_for_dev
 
@@ -411,7 +455,14 @@ def main() -> None:
     parser.add_argument(
         "--cooldown", default=5.0, type=float, help="Per-user cooldown (seconds)"
     )
-    parser.add_argument("--server-config", default="server_config.json")
+    parser.add_argument(
+        "--server-config",
+        default=None,
+        help=(
+            "Path to server_config.json (default: <data_dir>/bot/server_config.json; "
+            "search_cache.db and announce_state.db live beside it)"
+        ),
+    )
     parser.add_argument(
         "--dev-guild", default=None, type=int, help="Guild ID for instant dev sync"
     )
@@ -460,7 +511,9 @@ def main() -> None:
         announce_interval_minutes=args.announce_interval,
     )
 
-    bot = PodCodexBot(config, server_config_path=Path(args.server_config))
+    bot = PodCodexBot(
+        config, server_config_path=_resolve_state_path(args.server_config)
+    )
     logger.info(f"Starting PodCodex bot (model={config.model}, top_k={config.top_k})")
     bot.run(token, log_handler=None)
 

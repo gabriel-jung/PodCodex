@@ -34,6 +34,12 @@ if TYPE_CHECKING:
 
 ProgressCallback = Callable[[str, float], None]
 
+# Dotfiles that carry episode metadata (titles, dates, descriptions) and the
+# per-show feed cache. Everything else starting with a dot stays out of the
+# archive. Kept as literals rather than imported from ingest.rss so export
+# does not pull the feed parser onto the bundle path.
+_META_DOTFILES = frozenset({".feed_cache.json", ".episode_meta.json"})
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -96,20 +102,25 @@ def _walk_show_files(folder: Path, *, with_audio: bool) -> list[tuple[str, Path]
     """Files in show folder as ``(relative_path_str, abs_path)`` pairs.
 
     Filters audio extensions when ``with_audio=False``. Skips ``__pycache__``
-    and dotfile directories at any depth.
+    and dotfile *directories* at any depth. Dotfiles themselves are skipped
+    too, except the two episode-metadata carriers in ``_META_DOTFILES``:
+    without them an imported show loses every title, date and description
+    (and a feed-backed show loses the cache it refreshes from).
     """
     pairs: list[tuple[str, Path]] = []
     for path in sorted(folder.rglob("*")):
         if not path.is_file():
             continue
+        rel = path.relative_to(folder)
         if any(
-            part == "__pycache__" or part.startswith(".")
-            for part in path.relative_to(folder).parts
+            part == "__pycache__" or part.startswith(".") for part in rel.parts[:-1]
         ):
+            continue
+        if rel.name.startswith(".") and rel.name not in _META_DOTFILES:
             continue
         if not with_audio and path.suffix.lower() in AUDIO_EXTENSIONS:
             continue
-        pairs.append((str(path.relative_to(folder)), path))
+        pairs.append((str(rel), path))
     return pairs
 
 

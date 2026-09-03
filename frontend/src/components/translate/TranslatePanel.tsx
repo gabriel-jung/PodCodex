@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
 import {
@@ -53,6 +53,15 @@ export default function TranslatePanel() {
   const [editingLang, setEditingLang] = useState("");
   const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
 
+  const translations = episode?.translations ?? [];
+  const hasTranslations = translations.length > 0;
+  const translateStatus = translationsStatus(translations, episode?.provenance);
+  // Derived, never seeded from an effect: deleting the last version of a
+  // language prunes it from episode.translations, and a panel still holding
+  // that language rendered a blank select while the editor kept loading
+  // segments for a language that is gone.
+  const activeLang = translations.includes(editingLang) ? editingLang : (translations[0] ?? "");
+
   const task = usePipelineTask(audioPath, "translate", {
     onComplete: () => setEditingLang(langKey(targetLang)),
     targetStem: episode?.stem,
@@ -101,15 +110,15 @@ export default function TranslatePanel() {
   });
 
   const { data: translateFailures } = useQuery({
-    queryKey: ["llmFailures", "translate", audioPath, editingLang],
-    queryFn: () => getTranslateFailures(audioPath!, editingLang),
-    enabled: !!audioPath && !!editingLang,
+    queryKey: queryKeys.llmFailuresTranslate(audioPath, activeLang),
+    queryFn: () => getTranslateFailures(audioPath!, activeLang),
+    enabled: !!audioPath && !!activeLang,
   });
   const dismissFailures = useMutation({
-    mutationFn: () => dismissTranslateFailures(audioPath!, editingLang),
+    mutationFn: () => dismissTranslateFailures(audioPath!, activeLang),
     meta: {
       invalidates: [
-        ["llmFailures", "translate", audioPath, editingLang],
+        queryKeys.llmFailuresTranslate(audioPath, activeLang),
         // Overview's "Rejected batches" section reads episode.llm_failed_steps.
         queryKeys.episodesAll(),
       ],
@@ -130,16 +139,6 @@ export default function TranslatePanel() {
       onConfirm: async () => { await dismissFailures.mutateAsync(); },
     });
   };
-
-  // Sync editingLang from episode on first load
-  const hasTranslations = (episode?.translations.length ?? 0) > 0;
-  const translateStatus = translationsStatus(episode?.translations ?? [], episode?.provenance);
-  useEffect(() => {
-    if (episode && editingLang === "" && hasTranslations) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- sync editing lang from episode on first load
-      setEditingLang(episode.translations[0]);
-    }
-  }, [episode, editingLang, hasTranslations]);
 
   if (!episode) return null;
 
@@ -167,7 +166,7 @@ export default function TranslatePanel() {
           {hasTranslations && !expanded && (
             <div className="px-4 pb-2 flex justify-end">
               <select
-                value={editingLang}
+                value={activeLang}
                 onChange={(e) => setEditingLang(e.target.value)}
                 className={selectClass}
               >
@@ -242,6 +241,10 @@ export default function TranslatePanel() {
                         audio_path: audioPath!,
                         lang: targetLang,
                         corrections,
+                        // Same source the prompts were built from: the backend
+                        // now rejects a count mismatch instead of saving the
+                        // untouched source as a translation.
+                        source_version_id: sourceVersionId ?? undefined,
                       })
                     }
                     onApplied={() => {
@@ -257,7 +260,7 @@ export default function TranslatePanel() {
         </>
       }
     >
-      {hasTranslations && editingLang && !task.activeTaskId && !expanded &&
+      {hasTranslations && activeLang && !task.activeTaskId && !expanded &&
         translateFailures && translateFailures.rejected > 0 && (
         <div className="px-4 pt-3">
           <LlmFailuresBanner
@@ -266,22 +269,22 @@ export default function TranslatePanel() {
             onDismiss={() => dismissFailures.mutate()}
             dismissing={dismissFailures.isPending}
             onApplyFixes={async (fixes) => {
-              await applyTranslateBatches({ audio_path: audioPath!, lang: editingLang, fixes });
-              queryClient.invalidateQueries({ queryKey: ["llmFailures", "translate", audioPath, editingLang] });
+              await applyTranslateBatches({ audio_path: audioPath!, lang: activeLang, fixes });
+              queryClient.invalidateQueries({ queryKey: queryKeys.llmFailuresTranslate(audioPath, activeLang) });
               task.refreshQueries();
             }}
           />
         </div>
       )}
-      {hasTranslations && editingLang && !task.activeTaskId && !expanded && (
+      {hasTranslations && activeLang && !task.activeTaskId && !expanded && (
         <TranscriptViewer
-          editorKey={`translate-${editingLang}`}
+          editorKey={`translate-${activeLang}`}
           audioPath={audioPath ?? undefined}
-          loadSegments={() => getTranslateSegments(audioPath!, editingLang)}
-          saveSegments={(segs) => saveTranslateSegments(audioPath!, editingLang, segs)}
+          loadSegments={() => getTranslateSegments(audioPath!, activeLang)}
+          saveSegments={(segs) => saveTranslateSegments(audioPath!, activeLang, segs)}
           onSaved={handleSaved}
-          exportSource={`translated_${editingLang}`}
-          exportFilename={episode.stem ? `${episode.stem}_${editingLang}` : undefined}
+          exportSource={`translated_${activeLang}`}
+          exportFilename={episode.stem ? `${episode.stem}_${activeLang}` : undefined}
           showDelete
           showFlags={false}
           showSpeaker
@@ -289,9 +292,9 @@ export default function TranslatePanel() {
           referenceLabel="Source text"
           defaultShowDiff={false}
           speakers={showMeta?.speakers}
-          loadVersions={() => getTranslateVersions(audioPath!, editingLang)}
-          loadVersion={(id) => loadTranslateVersion(audioPath!, editingLang, id)}
-          deleteVersion={(id) => deleteTranslateVersion(audioPath!, editingLang, id)}
+          loadVersions={() => getTranslateVersions(audioPath!, activeLang)}
+          loadVersion={(id) => loadTranslateVersion(audioPath!, activeLang, id)}
+          deleteVersion={(id) => deleteTranslateVersion(audioPath!, activeLang, id)}
         />
       )}
     </PipelinePanel>

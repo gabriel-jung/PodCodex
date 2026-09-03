@@ -6,8 +6,9 @@ instead of scattering across ~/.cache/huggingface/.
 
 Resolution order:
   1. ``PODCODEX_CACHE_DIR`` env var (explicit override)
-  2. ``PODCODEX_DATA_DIR/models`` (Tauri shell sets PODCODEX_DATA_DIR)
-  3. ``~/.podcodex/models`` (dev fallback)
+  2. ``app_paths.data_dir() / "models"`` (the one definition of the data
+     dir: ``PODCODEX_DATA_DIR`` when the Tauri shell sets it, otherwise
+     the platform app-data directory)
 """
 
 from __future__ import annotations
@@ -16,26 +17,23 @@ import os
 import shutil
 from pathlib import Path
 
+from podcodex.core.app_paths import data_dir
+
 
 def get_cache_dir() -> Path:
     """Return (and create) the PodCodex model cache directory.
 
-    The bundled sidecar inherits ``PODCODEX_DATA_DIR`` from the Tauri
-    shell pointing at the OS-native app data dir (e.g.
-    ``%APPDATA%\\podcodex`` on Windows). Without this fall-through,
-    models would land under ``~/.podcodex/`` even though Tauri set
-    ``HF_HOME`` to ``<data_dir>/models/huggingface`` — split-brain
-    cache where HF Hub and our code disagree on where models live.
+    Everything but the explicit override goes through
+    ``app_paths.data_dir()``, so the models tree sits next to the index
+    and the logs no matter who started the process. The bundled sidecar
+    inherits ``PODCODEX_DATA_DIR`` from the Tauri shell; the bot, the
+    MCP server and dev checkouts get the platform app-data dir instead
+    of a separate ``~/.podcodex``. A second definition of the data dir
+    here is what used to send the bot's HF cache to a path on no compose
+    volume, so BGE-M3 was re-downloaded on every container recreate.
     """
     explicit = os.environ.get("PODCODEX_CACHE_DIR", "").strip()
-    if explicit:
-        path = Path(explicit)
-    else:
-        data_dir = os.environ.get("PODCODEX_DATA_DIR", "").strip()
-        if data_dir:
-            path = Path(data_dir) / "models"
-        else:
-            path = Path.home() / ".podcodex" / "models"
+    path = Path(explicit) if explicit else data_dir() / "models"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

@@ -45,9 +45,6 @@ if [[ ! -d "$APP_PATH" ]]; then
     exit 1
 fi
 
-echo "==> Verifying signature"
-codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-
 # Each PyInstaller-bundled .so / .dylib needs its own signature under hardened
 # runtime. cargo tauri build signs the outer .app, but nested PyInstaller
 # binaries shipped via externalBin sometimes get missed. Re-sign defensively.
@@ -61,6 +58,14 @@ find "$APP_PATH/Contents" -type f \( -name "*.so" -o -name "*.dylib" \) -print0 
 codesign --force --deep --sign "$APPLE_SIGNING_IDENTITY" \
     --options runtime --timestamp \
     --entitlements "$REPO_ROOT/src-tauri/Entitlements.plist" "$APP_PATH"
+
+# Verified *after* the re-signing, not before. --deep --strict is exactly the
+# check that catches an unsigned nested binary, so running it first meant
+# `set -e` aborted the script on the one failure the re-signing above exists
+# to repair. Here it gates notarization instead, which is where a bad
+# signature actually costs something (Apple rejects the submission).
+echo "==> Verifying signature"
+codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
 if ! $run_notary; then
     echo "==> Skipping notarization (--no-notary)"

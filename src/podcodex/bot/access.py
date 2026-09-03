@@ -12,6 +12,7 @@ from loguru import logger
 
 from podcodex.bot.config import ServerSettings
 from podcodex.core.show_passwords import hash_show_password, verify_show_password
+from podcodex.bot.guards import require_guild
 
 # ── Access control ───────────────────────────
 
@@ -188,6 +189,8 @@ class AccessMixin:
         interaction: discord.Interaction,
         password: str,
     ) -> None:
+        if await require_guild(interaction) is None:
+            return
         # Refresh from disk so passwords set via the desktop app (while the
         # bot is already running) are picked up without a restart. The
         # staleness check also reconnects LanceDB if the index was rsynced
@@ -237,7 +240,9 @@ class AccessMixin:
         interaction: discord.Interaction,
         show: str,
     ) -> None:
-        guild_id = interaction.guild_id
+        guild_id = await require_guild(interaction)
+        if guild_id is None:
+            return
         settings = self._server_settings(guild_id)
         show_id = self._show_id_for_label(show)
         if show_id in settings.allowed_shows:

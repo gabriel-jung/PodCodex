@@ -167,7 +167,16 @@ def version_path(base: Path, step: str, version_id: str) -> Path:
     Public entry point for callers that need the destination of a future
     save (assemble_episode) or the resolved location of an existing
     version (existence-checking helpers).
+
+    ``step`` and ``version_id`` reach here straight from request paths and
+    query strings, so both are checked as single path components: a ``lang``
+    of ``../../../../.config/podcodex`` otherwise resolved to any JSON file
+    on disk, which the version routes then read or unlinked.
     """
+    from podcodex.core._utils import bad_path_component
+
+    if bad_path_component(step) or bad_path_component(version_id):
+        raise ValueError(f"Invalid version path: step={step!r}, id={version_id!r}")
     return _step_dir(base, step) / f"{version_id}{_step_ext(step)}"
 
 
@@ -288,6 +297,14 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
     params. The ``type`` suffix in the filename is preserved, which is what
     decides whether a version reads as edited.
 
+    The pass also runs the other way: rows whose file is gone are dropped.
+    Nothing else prunes them (``delete_version`` removes file and row
+    together, so only an out-of-band loss strands one), and a stale row at
+    the head of a step's order used to hide every older readable version
+    from ``resolve_canonical_ref``. Removing the last row of a step goes
+    through ``_refresh_status_after_delete``, the same hook a normal delete
+    uses, so the step's flag demotes instead of pointing at nothing.
+
     Returns the number of rows inserted.
     """
     from podcodex.core.pipeline_db import get_pipeline_db
@@ -348,10 +365,12 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
         )
         inserted += 1
 
+    walked: list[str] = []
     for ep_dir in sorted(p for p in show_folder.iterdir() if p.is_dir()):
         if ep_dir.name.startswith("."):
             continue
         stem = ep_dir.name
+        walked.append(stem)
         # Label sources first: a speaker_map's input_hash points at whichever
         # of them is current, so they must carry their (rebuilt) hashes before
         # any map is registered.
@@ -380,9 +399,31 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
             for path in sorted(map_dir.glob(f"*{_step_ext('speaker_map')}")):
                 _register(stem, "speaker_map", path, input_hash=bucket)
 
+    pruned = 0
+    for stem in walked:
+        base = show_folder / stem / stem
+        missing: dict[str, list[str]] = {}
+        for meta in db.list_all_versions(stem):
+            step, version_id = meta["step"], meta["id"]
+            try:
+                exists = version_path(base, step, version_id).exists()
+            except ValueError:
+                exists = False
+            if not exists:
+                missing.setdefault(step, []).append(version_id)
+        for step, ids in missing.items():
+            pruned += db.delete_versions(stem, step, ids)
+            _refresh_status_after_delete(base, step)
+
     if inserted:
         logger.info(
             "Rebuilt {} version rows from disk for {}", inserted, show_folder.name
+        )
+    if pruned:
+        logger.info(
+            "Dropped {} version rows with no file on disk for {}",
+            pruned,
+            show_folder.name,
         )
     return inserted
 
@@ -537,19 +578,25 @@ def resolve_canonical_ref(base: Path) -> tuple[str, str] | None:
 
     The user's verified pick (``resolve_verified_source``) always wins; failing
     that, the newest ``corrected`` (honoring the "edited beats freshness"
-    ordering), then the newest ``transcript``. DB-only (it does not read the
-    seglist file), so batched callers (e.g. the speaker roster) can resolve
-    every episode's ref single-threaded and then parallelize the file loads.
-    Returns None when the episode has no version of either step.
+    ordering), then the newest ``transcript``. Candidates whose file is gone
+    are skipped, the way ``load_latest`` walks past them: rows outlive their
+    files (a sync conflict, a manual cleanup, a crash between the unlink and
+    the row delete) and nothing prunes them, so one stale row at the head of
+    the order would otherwise hide every older readable version and the
+    episode would read as having no transcript at all. Only stats the
+    candidates it considers, so batched callers (e.g. the speaker roster) can
+    still resolve every episode's ref single-threaded and then parallelize
+    the file loads. Returns None when the episode has no readable version of
+    either step.
     """
     verified = resolve_verified_source(base)
     if verified:
         step, vid, _ = verified
         return step, vid
     for step in ("corrected", "transcript"):
-        ordered = _default_ordered_versions(base, step)
-        if ordered:
-            return step, ordered[0]["id"]
+        for meta in _default_ordered_versions(base, step):
+            if version_path(base, step, meta["id"]).exists():
+                return step, meta["id"]
     return None
 
 
@@ -560,9 +607,10 @@ def resolve_canonical_refs(
 
     Same ladder per stem (verified pointer, then edited-first ``corrected``,
     then newest ``transcript``) but resolved from two bulk queries instead of
-    2-3 per stem, so per-show consumers (speaker roster) scale. The verified
-    pointer's on-disk check mirrors ``resolve_verified_source`` and only costs
-    a stat for episodes that actually have a pointer.
+    2-3 per stem, so per-show consumers (speaker roster) scale. Candidates
+    are stat-checked and rows without a file are skipped, matching
+    :func:`resolve_canonical_ref`; the verified pointer's check mirrors
+    ``resolve_verified_source``.
     """
     from podcodex.core.pipeline_db import get_pipeline_db
 
@@ -585,8 +633,11 @@ def resolve_canonical_refs(
                 versions = by_step.get((stem, step)) or []
                 if step not in _STRICT_NEWEST_STEPS:
                     versions = sort_versions_for_default(versions)
-                if versions:
-                    ref = (step, versions[0]["id"])
+                for meta in versions:
+                    if version_path(base, step, meta["id"]).exists():
+                        ref = (step, meta["id"])
+                        break
+                if ref is not None:
                     break
         out[stem] = ref
     return out
@@ -641,11 +692,27 @@ _STRICT_NEWEST_STEPS = {"transcript"}
 
 
 def _default_ordered_versions(base: Path, step: str) -> list[dict]:
-    """Versions ordered so index 0 is the default pick for *step*."""
+    """Versions ordered so index 0 is the default pick for *step*.
+
+    Rows whose file is gone are dropped here rather than in each reader.
+    A version can lose its file out of band (a sync, a manual delete, a
+    half-finished restore), and every consumer of this order has to agree
+    on which version is "current": ``get_latest_provenance`` reading a
+    dead head row while ``load_latest`` walked past it to the next one is
+    how the status surfaces came to describe a different version than the
+    one whose segments were actually loaded.
+    """
     versions = _get_db(base).list_versions(base.name, step)
+    live: list[dict] = []
+    for meta in versions:
+        try:
+            if version_path(base, step, meta["id"]).exists():
+                live.append(meta)
+        except (ValueError, OSError):
+            continue
     if step in _STRICT_NEWEST_STEPS:
-        return versions  # list_versions is already newest-first
-    return sort_versions_for_default(versions)
+        return live  # list_versions is already newest-first
+    return sort_versions_for_default(live)
 
 
 def load_latest(base: Path, step: str) -> list[dict] | None:
@@ -674,7 +741,8 @@ def get_latest_provenance(base: Path, step: str) -> dict | None:
     """Return the provenance dict of the default-pick version, or None.
 
     Uses the same ordering as ``load_latest`` so status surfaces and
-    pipeline defaults agree on which version is "current".
+    pipeline defaults agree on which version is "current", including the
+    skip of rows whose file is missing.
     """
     versions = _default_ordered_versions(base, step)
     if not versions:

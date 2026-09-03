@@ -200,6 +200,7 @@ def youtube_download(
                         ep.guid,
                         show_path,
                         stem,
+                        force=force,
                     )
                     # Save episode metadata
                     episode_dir = show_path / stem

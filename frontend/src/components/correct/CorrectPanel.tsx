@@ -77,7 +77,7 @@ export default function CorrectPanel() {
   );
 
   const { data: correctFailures } = useQuery({
-    queryKey: ["llmFailures", "correct", audioPath],
+    queryKey: queryKeys.llmFailuresCorrect(audioPath),
     queryFn: () => getCorrectFailures(audioPath!),
     enabled: !!audioPath && !!episode?.corrected,
   });
@@ -85,7 +85,7 @@ export default function CorrectPanel() {
     mutationFn: () => dismissCorrectFailures(audioPath!),
     meta: {
       invalidates: [
-        ["llmFailures", "correct", audioPath],
+        queryKeys.llmFailuresCorrect(audioPath),
         // Overview's "Rejected batches" section reads episode.llm_failed_steps.
         queryKeys.episodesAll(),
       ],
@@ -193,7 +193,14 @@ export default function CorrectPanel() {
                   })
                 }
                 applyCorrections={(corrections) =>
-                  applyCorrectManual({ audio_path: audioPath!, corrections })
+                  applyCorrectManual({
+                    audio_path: audioPath!,
+                    corrections,
+                    // Same source the prompts were built from: the backend now
+                    // rejects a count mismatch instead of saving the untouched
+                    // transcript as a correction.
+                    source_version_id: sourceVersionId ?? undefined,
+                  })
                 }
                 onApplied={() => {
                   task.refreshQueries();
@@ -214,7 +221,7 @@ export default function CorrectPanel() {
             dismissing={dismissFailures.isPending}
             onApplyFixes={async (fixes) => {
               await applyCorrectBatches({ audio_path: audioPath!, fixes });
-              queryClient.invalidateQueries({ queryKey: ["llmFailures", "correct", audioPath] });
+              queryClient.invalidateQueries({ queryKey: queryKeys.llmFailuresCorrect(audioPath) });
               task.refreshQueries();
             }}
           />
