@@ -183,7 +183,7 @@ Notes:
 
 - The host's `~/.local/share/podcodex/index/` is mounted into the container at `/root/.local/share/podcodex/index/`, matching the bot's default, so no `PODCODEX_INDEX` override is needed.
 - To serve an index at a different host location, set `PODCODEX_INDEX_HOST=/abs/path` in `deploy/.env` before `docker compose up`.
-- Per-guild bot state (`server_config.json` with each server's `/setup` defaults, unlocked shows and announcement channel, plus `search_cache.db` and `announce_state.db`) lives in `<data_dir>/bot/`, which is `/root/.local/share/podcodex/bot/` in the container and therefore on the `podcodex_data` volume. Pass `--server-config PATH` to put it elsewhere.
+- Per-guild bot state (`server_config.json` with each server's `/setup` defaults, its two show lists and its announcement channel, plus `search_cache.db` and `announce_state.db`) lives in `<data_dir>/bot/`, which is `/root/.local/share/podcodex/bot/` in the container and therefore on the `podcodex_data` volume. Pass `--server-config PATH` to put it elsewhere.
 - The compose file declares a `podcodex_data` volume for the container's data directory, which holds the machine identity that marks the index as owned here. If you run the container without that volume, set `PODCODEX_MACHINE_ID` to any fixed string in `deploy/.env` so the identity survives a rebuild.
 - The BGE-M3 embedding model is cached under `<data_dir>/models/huggingface/`, which is `/root/.local/share/podcodex/models/huggingface/` in the container and therefore on the `podcodex_data` volume, so it survives rebuilds. The image pre-downloads it into that same path and Docker seeds a newly created volume from the image, so the first search never waits on the ~2.5 GB fetch.
 - `restart: unless-stopped` handles crashes and host reboots.
@@ -247,6 +247,8 @@ Per Discord server, an admin with `manage_guild` runs:
 ```
 
 All three responses are ephemeral; other users see nothing.
+
+`server_config.json` keeps two separate show lists per guild, and the commands do not overlap: `unlocked_shows` holds the password-protected shows `/unlock` has revealed here (and `/lock` revokes), while `pinned_shows` holds the defaults `/setup show_add` pins for commands that need a show when the user names none. A pin grants no access, so a protected show still has to be unlocked, and `/lock` on a public show does nothing. Configs written before the split carry a single `allowed_shows` list. The bot does not rewrite it: nothing in it records which command created an entry, so it is read as an unlock while that show has a password and as a pin while it does not, which is exactly what the single list meant before. Expect the key to stay in `server_config.json`; an entry leaves only when an admin runs `/lock` or `/setup show_remove` on that show.
 
 `/changepassword` writes to the index, so it works only when the bot host owns it. On a bot reading a synced copy it declines and points you at the app, since the rotation would be undone by the next sync.
 
@@ -361,10 +363,10 @@ Bundle format records each collection's embedding model + chunker in a manifest 
 | `/episodes show`                     | Everyone | List episodes for a show with segment count + duration |
 | `/speakers [show]`                   | Everyone | Chunk count and airtime per speaker              |
 | `/help`                              | Everyone | Show available commands                          |
-| `/setup [model] [top_k] …`           | Admin    | Configure server defaults                        |
+| `/setup [model] [top_k] [show_add] …`| Admin    | Server defaults, including the pinned shows      |
 | `/announcements [channel] [off]`     | Admin    | Channel for new-episode and bot-version updates  |
 | `/unlock password`                   | Admin    | Unlock a show (password identifies the show)     |
-| `/lock show`                         | Admin    | Remove a show from this server                   |
+| `/lock show`                         | Admin    | Revoke a protected show unlocked here            |
 | `/changepassword show`               | Admin    | Rotate password for an unlocked show             |
 | `/sync`                              | Admin    | Manually re-sync slash commands                  |
 | `/admin-reload`                      | Admin    | Reconnect to the index and reload show passwords |

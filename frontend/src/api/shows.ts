@@ -16,6 +16,7 @@ import type {
   ShowSummary,
   SpeakerRosterResponse,
   TaskResponse,
+  VersionEntry,
 } from "./types";
 import type {
   DeleteEpisodeResponse,
@@ -140,6 +141,12 @@ export const previewBroadcastNumber = (folder: string, pattern: string) =>
 /** `id` is omitted on purpose: it is the show's stable identity, owned by the
  *  server and ignored by the PUT handler. Sending it would imply a client can
  *  change what every other store keys on. */
+/** Every episode's versions in one request, keyed by stem. The per-episode
+ *  `getAllVersions` is right for one episode; a batch selection asks for this
+ *  instead, or it issues one request per selected episode. */
+export const getShowVersions = (folder: string) =>
+  json<Record<string, VersionEntry[]>>(`/api/shows/${enc(folder)}/versions`);
+
 export type ShowMetaUpdate = Omit<ShowMeta, "accepts_imports" | "last_feed_update" | "id">;
 
 export const updateShowMeta = (folder: string, meta: ShowMetaUpdate) =>

@@ -133,11 +133,15 @@ def test_load_returns_empty_for_corrupt_file(tmp_path, monkeypatch):
 def client(tmp_path, monkeypatch):
     """TestClient with isolated api_keys.json + secrets.env."""
     from podcodex.api.routes import config as config_mod
+    from podcodex.core import app_paths
 
     monkeypatch.setattr(keys_mod, "api_keys_path", lambda: tmp_path / "api_keys.json")
+    # Both: the route module bound the name at import time (writes), while
+    # `core.api_keys.read_secrets_file` resolves it per call (reads).
     monkeypatch.setattr(
         config_mod, "secrets_env_path", lambda: tmp_path / "secrets.env"
     )
+    monkeypatch.setattr(app_paths, "secrets_env_path", lambda: tmp_path / "secrets.env")
     for var in list(os.environ):
         if var.endswith("_API_KEY"):
             monkeypatch.delenv(var, raising=False)

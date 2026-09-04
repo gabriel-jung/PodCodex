@@ -286,8 +286,8 @@ def test_random_expand_opens_at_its_chunk():
 
 
 class _ServerSettings:
-    def __init__(self, allowed_shows=()):
-        self.allowed_shows = list(allowed_shows)
+    def __init__(self, unlocked_shows=()):
+        self.unlocked_shows = list(unlocked_shows)
 
 
 class _LockingBot(_FakeBot):
@@ -301,7 +301,9 @@ class _LockingBot(_FakeBot):
         return _ServerSettings(["alpha_1234"] if guild_id == 7 else [])
 
     def _show_allowed(self, show_id, settings):
-        return show_id not in self._locked_show_ids or show_id in settings.allowed_shows
+        return (
+            show_id not in self._locked_show_ids or show_id in settings.unlocked_shows
+        )
 
 
 def _locking_bot():

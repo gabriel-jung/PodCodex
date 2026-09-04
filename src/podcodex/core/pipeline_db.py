@@ -618,6 +618,22 @@ class PipelineDB:
         ).fetchall()
         return [self._version_to_dict(r) for r in rows]
 
+    def list_all_versions_by_stem(self) -> dict[str, list[dict]]:
+        """Every version in the show, grouped by stem (newest first).
+
+        One pass for the whole show, for callers that would otherwise ask
+        per episode: the batch editor opened on a 300-episode selection
+        issued 300 requests before its source picker could render.
+        """
+        rows = self._read(
+            "SELECT * FROM versions ORDER BY stem, timestamp DESC"
+        ).fetchall()
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            d = self._version_to_dict(r)
+            out.setdefault(r["stem"], []).append(d)
+        return out
+
     def list_steps(self, stem: str) -> list[str]:
         """Return distinct step names for an episode (sorted)."""
         rows = self._read(

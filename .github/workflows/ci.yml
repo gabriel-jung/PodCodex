@@ -54,7 +54,7 @@ jobs:
         run: uv run pytest -q
 
   frontend:
-    name: Frontend (tsc + eslint)
+    name: Frontend (tsc + eslint + vitest)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -79,6 +79,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Unit tests
+        run: npm test
 
       # Dead-code guard: unused files, exports, and dependencies.
       # Config in frontend/knip.json (generated-types.ts and shadcn ui/

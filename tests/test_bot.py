@@ -504,6 +504,8 @@ def test_cooldown_zero_seconds_never_blocks():
 
 def test_server_settings_new_fields_default():
     s = ServerSettings()
+    assert s.unlocked_shows == []
+    assert s.pinned_shows == []
     assert s.allowed_shows == []
     assert s.default_source == ""
     assert s.compact is False
@@ -511,9 +513,13 @@ def test_server_settings_new_fields_default():
 
 def test_server_settings_with_new_fields():
     s = ServerSettings(
-        allowed_shows=["Show A"], default_source="corrected", compact=True
+        unlocked_shows=["show_a"],
+        pinned_shows=["show_b"],
+        default_source="corrected",
+        compact=True,
     )
-    assert s.allowed_shows == ["Show A"]
+    assert s.unlocked_shows == ["show_a"]
+    assert s.pinned_shows == ["show_b"]
     assert s.default_source == "corrected"
     assert s.compact is True
 
@@ -532,7 +538,8 @@ def test_server_settings_backwards_compat_missing_new_keys():
     """Old config files won't have new fields; defaults should fill in."""
     raw = {"model": "bge-m3", "chunker": "semantic", "top_k": 5}
     s = ServerSettings(**raw)
-    assert s.allowed_shows == []
+    assert s.unlocked_shows == []
+    assert s.pinned_shows == []
     assert s.default_source == ""
     assert s.compact is False
 
@@ -582,10 +589,14 @@ def test_compact_embed_field_names_have_rank_and_episode():
     assert "Podcast A" in embed.fields[0].name
 
 
-def test_compact_embed_field_values_have_speaker_and_score():
+def test_compact_embed_field_values_have_speaker_but_no_telemetry():
+    """Score belongs behind the card's Search info button, not on every row;
+    /exact opens on this view and pins every score at 100%."""
     embed = build_compact_embed(_COMPACT_RESULTS, "test")
-    assert "Alice" in embed.fields[0].value
-    assert "85%" in embed.fields[0].value
+    value = embed.fields[0].value
+    assert "Alice" in value
+    assert "85%" not in value
+    assert "█" not in value and "░" not in value
 
 
 def test_compact_embed_max_25_fields():
@@ -637,7 +648,7 @@ def test_compact_embed_truncates_long_text():
 
 
 def test_effective_settings_carries_new_fields(tmp_path):
-    """_effective_settings must propagate allowed_shows/source/compact from server config."""
+    """_effective_settings must propagate the show lists/source/compact."""
     cfg_path = tmp_path / "server_config.json"
     import json
 
@@ -648,7 +659,8 @@ def test_effective_settings_carries_new_fields(tmp_path):
                     "model": "bge-m3",
                     "chunker": "semantic",
                     "top_k": 5,
-                    "allowed_shows": ["ShowA", "ShowB"],
+                    "unlocked_shows": ["show_a"],
+                    "pinned_shows": ["show_b"],
                     "default_source": "corrected",
                     "compact": True,
                 }
@@ -662,14 +674,16 @@ def test_effective_settings_carries_new_fields(tmp_path):
 
         bot = PodCodexBot(BotConfig(), server_config_path=cfg_path)
     eff = bot._effective_settings(guild_id=1, model="", top_k=0)
-    assert eff.allowed_shows == ["ShowA", "ShowB"]
+    assert eff.unlocked_shows == ["show_a"]
+    assert eff.pinned_shows == ["show_b"]
     assert eff.default_source == "corrected"
     assert eff.compact is True
     # Per-query model override should still work
     eff2 = bot._effective_settings(guild_id=1, model="e5-small", top_k=10)
     assert eff2.model == "e5-small"
     assert eff2.top_k == 10
-    assert eff2.allowed_shows == ["ShowA", "ShowB"]
+    assert eff2.unlocked_shows == ["show_a"]
+    assert eff2.pinned_shows == ["show_b"]
 
 
 # ──────────────────────────────────────────────

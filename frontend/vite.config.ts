@@ -41,6 +41,8 @@ function appVersion(): string {
 }
 
 export default defineConfig({
+  // Vitest reads this same config, so tests resolve `@/` and see
+  // `__APP_VERSION__` exactly as the app does.
   define: { __APP_VERSION__: JSON.stringify(appVersion()) },
   plugins: [react(), tailwindcss()],
   resolve: {

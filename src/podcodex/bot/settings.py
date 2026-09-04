@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, fields, replace
+from difflib import get_close_matches
 
 import discord
 from loguru import logger
@@ -19,7 +20,8 @@ class SettingsMixin:
     """Server-settings methods mixed into PodCodexBot (bot.py).
 
     Expects on self: ``config``, ``server_config_path``, ``_server_cfg``,
-    ``_locked_show_ids``.
+    ``_locked_show_ids``, ``_label_for_show_id``, ``_show_id_for_label``,
+    ``_known_show_labels``.
     """
 
     def _load_server_config(self) -> dict[int, ServerSettings]:
@@ -115,15 +117,17 @@ class SettingsMixin:
         guild_id = await require_guild(interaction)
         if guild_id is None:
             return
+        # Deferred up front: validating `show_add` reads the collection list,
+        # which on a cold autocomplete cache and a large index can outrun
+        # Discord's 3-second first-response window and show the admin "The
+        # application did not respond" whether or not the save happened.
+        await interaction.response.defer(ephemeral=True)
+        # Same two steps the show autocompletes run, so a name the picker
+        # offered is never rejected here: reconnect after an external index
+        # change, then drop a cached collection list past its TTL.
+        await self._refresh_if_stale()
+        self._cache_clear_if_stale()
         current = self._server_settings(guild_id)
-
-        # Password-protected shows are managed via /unlock + /lock, not /setup
-        if self._locked_show_ids and (show_add or show_remove or show_clear):
-            await interaction.response.send_message(
-                "Show access is managed via `/unlock` and `/lock`.",
-                ephemeral=True,
-            )
-            return
 
         has_change = any(
             [
@@ -138,45 +142,85 @@ class SettingsMixin:
             ]
         )
         if not has_change:
-            # allowed_shows holds ids; users read names.
-            labels = [self._label_for_show_id(s) for s in current.allowed_shows]
+            lines = [
+                "**Current settings**",
+                f"Model: `{current.model}`",
+                f"Chunker: `{current.chunker}`",
+                f"Top-k: `{current.top_k}`",
+                f"Pinned shows: {self._pinned_shows_str(current)}",
+            ]
+            # Only worth a line where something is actually protected;
+            # otherwise it is a row of "(none)" that means nothing.
             if self._locked_show_ids:
-                shows_str = (
-                    ", ".join(f"`{s}`" for s in labels) or "*(none — use /unlock)*"
-                )
-            else:
-                shows_str = ", ".join(f"`{s}`" for s in labels) or "*(all public)*"
-            await interaction.response.send_message(
-                f"**Current settings**\n"
-                f"Model: `{current.model}`\n"
-                f"Chunker: `{current.chunker}`\n"
-                f"Top-k: `{current.top_k}`\n"
-                f"Shows: {shows_str}\n"
-                f"Default source: `{current.default_source or '(any)'}`\n"
-                f"Compact: `{current.compact}`\n"
+                unlocked = self._show_labels_str(self._unlocked_ids(current))
+                lines.append(f"Unlocked shows: {unlocked or '*(none — use /unlock)*'}")
+            lines += [
+                f"Default source: `{current.default_source or '(any)'}`",
+                f"Compact: `{current.compact}`",
                 f"Merge: `{self.config.merge_strategy}`",
-                ephemeral=True,
-            )
+            ]
+            await interaction.followup.send("\n".join(lines), ephemeral=True)
             return
 
-        # Build updated shows list (only when access control is off)
-        new_shows = list(current.allowed_shows)
-        if show_clear:
-            new_shows = []
-        # The command takes display names; the list stores ids.
-        add_id = self._show_id_for_label(show_add) if show_add else ""
-        remove_id = self._show_id_for_label(show_remove) if show_remove else ""
-        if add_id and add_id not in new_shows:
-            new_shows.append(add_id)
-        if remove_id and remove_id in new_shows:
-            new_shows.remove(remove_id)
+        # Pins are this guild's default shows; they grant no access, so a
+        # protected show has to be unlocked before it can be pinned (it is
+        # simply not in the visible set below, which is also why an unknown
+        # name never confirms that a protected show exists).
+        # `pinned_shows` only. The legacy entries `_pinned_ids` also reports
+        # stay where they are and are settled separately below — seeding this
+        # list from `_pinned_ids` copied them in while leaving the originals,
+        # so one show ended up in both lists and `_pinned_ids` returned it
+        # twice.
+        new_shows = [] if show_clear else list(current.pinned_shows)
+        remove_id = ""
+        if show_add:
+            add_id = await self._resolve_pinnable_show(interaction, current, show_add)
+            if add_id is None:
+                return
+            # Against the full set, so re-pinning a legacy entry is a no-op
+            # rather than a second copy of it.
+            if add_id not in self._pinned_ids(current):
+                new_shows.append(add_id)
+        if show_remove:
+            # Validated against the guild's own pins, not the index: a show
+            # that has since left the index must still be un-pinnable.
+            remove_id = self._show_id_for_label(show_remove)
+            # Against the guild's pins as they were, not `new_shows`: with
+            # `show_clear` also set, the list is already empty here and a
+            # redundant removal would fail the whole call instead of being
+            # the no-op it is.
+            if remove_id not in self._pinned_ids(current):
+                await interaction.followup.send(
+                    f"**{show_remove}** is not pinned on this server. "
+                    f"Pinned: {self._pinned_shows_str(current)}",
+                    ephemeral=True,
+                )
+                return
+            if remove_id in new_shows:
+                new_shows.remove(remove_id)
 
+        # The legacy list is rewritten only by a command that names what to
+        # do with it. It used to be recomputed on every `/setup`, classifying
+        # against `_locked_show_ids` at that instant — so a `/setup top_k:10`
+        # issued while the password table was unreadable (an index rsynced
+        # mid-transfer reports no protected shows without erroring) filed
+        # every legacy unlock as a pin and cleared the list, and the guild
+        # lost its access for good. The read path re-derives instead, which
+        # is why it survives that window; this must not undo it.
+        new_legacy = list(current.allowed_shows)
+        if show_clear:
+            # Settles the entries `_pinned_ids` was offering as pins; a
+            # protected one is an unlock, so `/lock` settles that instead.
+            new_legacy = [s for s in new_legacy if s in self._locked_show_ids]
+        if show_remove and remove_id:
+            new_legacy = [s for s in new_legacy if s != remove_id]
         updated = replace(
             current,
             model=model or current.model,
             chunker=chunker or current.chunker,
             top_k=top_k or current.top_k,
-            allowed_shows=new_shows,
+            pinned_shows=new_shows,
+            allowed_shows=new_legacy,
             default_source=default_source if default_source else current.default_source,
             compact=compact == "true" if compact else current.compact,
         )
@@ -184,20 +228,53 @@ class SettingsMixin:
         self._save_server_config()
         logger.info(f"Guild {guild_id} updated: {updated}")
 
-        shows_str = (
-            ", ".join(f"`{self._label_for_show_id(s)}`" for s in updated.allowed_shows)
-            or "*(all public)*"
-        )
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Settings updated\n"
             f"Model: `{updated.model}`\n"
             f"Chunker: `{updated.chunker}`\n"
             f"Top-k: `{updated.top_k}`\n"
-            f"Shows: {shows_str}\n"
+            f"Pinned shows: {self._pinned_shows_str(updated)}\n"
             f"Default source: `{updated.default_source or '(any)'}`\n"
             f"Compact: `{updated.compact}`",
             ephemeral=True,
         )
+
+    def _show_labels_str(self, show_ids: list[str]) -> str:
+        """Ids rendered as the display names users read, or ``""``."""
+        return ", ".join(f"`{self._label_for_show_id(s)}`" for s in show_ids)
+
+    def _pinned_shows_str(self, settings: ServerSettings) -> str:
+        return self._show_labels_str(self._pinned_ids(settings)) or "*(none)*"
+
+    async def _resolve_pinnable_show(
+        self,
+        interaction: discord.Interaction,
+        settings: ServerSettings,
+        label: str,
+    ) -> str | None:
+        """Show id for a user-typed name, or None after answering the user.
+
+        A name that resolves to nothing used to be stored verbatim and echoed
+        back as if it were pinned, so the admin believed the default was set
+        while every later command ignored it.
+        """
+        known = await self._known_show_labels(settings)
+        match = next(
+            (k for k in known if k.strip().lower() == label.strip().lower()), None
+        )
+        if match is not None:
+            return self._show_id_for_label(match)
+        close = get_close_matches(label, known, n=3, cutoff=0.5)
+        hint = (
+            f" Did you mean {', '.join(f'**{c}**' for c in close)}?"
+            if close
+            else " Nothing on this server matches that name."
+        )
+        await interaction.followup.send(
+            f"No show called **{label}** is available here.{hint}",
+            ephemeral=True,
+        )
+        return None
 
     # ── /announcements handler ────────────────
 

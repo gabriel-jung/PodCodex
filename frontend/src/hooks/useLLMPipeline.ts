@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo } from "react";
-import { sourceRefFor } from "@/lib/episodeRef";
+import { sourceRefFor, type EpisodeSourceRef } from "@/lib/episodeRef";
 import { useQuery } from "@tanstack/react-query";
 import { getAllVersions } from "@/api/search";
 import { getBestSegments } from "@/api/segments";
@@ -80,9 +80,12 @@ export function useLLMConfig(
  * Panels spread this into their step-specific request, adding only
  * the extra fields they need (engine for correct, target_lang for translate).
  */
-export function buildLLMRequest(audioPath: string, config: LLMConfig) {
+export function buildLLMRequest(ref: EpisodeSourceRef, config: LLMConfig) {
   return {
-    audio_path: audioPath,
+    // `taskKey`, not `sourceRef`: this is the server's identifier for the
+    // episode, and it is what the run's lock is taken on.
+    audio_path: ref.taskKey ?? "",
+    output_dir: ref.outputDir ?? undefined,
     mode: config.mode === "api" ? "api" : "ollama",
     provider_profile: config.providerProfile || undefined,
     key_name: config.keyName || undefined,

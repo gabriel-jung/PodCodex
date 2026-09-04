@@ -69,7 +69,7 @@ class AccessMixin:
             for key, entry in raw.items()
         }
         logger.info(f"Shows loaded: {len(self._shows)} password-protected")
-        self._migrate_allowed_shows()
+        self._normalize_show_ids()
 
     # ── Label <-> id ─────────────────────────────
     #
@@ -101,25 +101,87 @@ class AccessMixin:
         entry = self._shows.get(show_id.lower())
         return entry.name if entry else show_id
 
-    def _migrate_allowed_shows(self) -> None:
-        """Rewrite guild unlock lists from display names to show ids.
+    def _normalize_show_ids(self) -> None:
+        """Rewrite guild show lists from display names to show ids.
 
-        Without this the first rename after the index migration would silently
-        re-lock every guild that had unlocked the show, which is the same bug
-        one layer out.
+        Names only; nothing is reclassified or removed. Without this the
+        first rename after the index migration would silently re-lock every
+        guild that had unlocked the show, which is the same bug one layer
+        out.
         """
-        known_ids = self._locked_show_ids
         changed = False
         for settings in self._server_cfg.values():
-            if all(e in known_ids for e in settings.allowed_shows):
-                continue  # already ids; re-resolving would be a no-op scan
-            migrated = [self._show_id_for_label(e) for e in settings.allowed_shows]
-            if migrated != settings.allowed_shows:
-                settings.allowed_shows = migrated
-                changed = True
+            for field in ("unlocked_shows", "pinned_shows", "allowed_shows"):
+                current = getattr(settings, field)
+                migrated = [self._show_id_for_label(e) for e in current]
+                if migrated != current:
+                    setattr(settings, field, migrated)
+                    changed = True
         if changed:
             self._save_server_config()
-            logger.info("Migrated guild unlock lists to show ids")
+            logger.info("Migrated guild show lists to show ids")
+
+    # ── The two meanings, and the legacy list that holds both ────
+    #
+    # `allowed_shows` predates the split and cannot be classified after the
+    # fact: nothing in it records whether `/unlock` or `/setup show_add`
+    # wrote an entry. Guessing is not safe in either direction — reading a
+    # legacy unlock as a pin silently revokes access, and reading a legacy
+    # pin as an unlock hands out access nobody entered a password for (a
+    # public show could be pinned, then protected later).
+    #
+    # So it is not classified at write time. It is read the way the code
+    # before the split read it: a legacy entry counts as an unlock exactly
+    # while its show is password-protected, and as a pin exactly while it is
+    # not. That is what `_show_allowed` did with the single list, so no
+    # upgrade changes anyone's access, and it is re-derived on every read —
+    # a reload that lands mid-rsync with an empty password set persists
+    # nothing and corrects itself on the next one.
+    #
+    # It leaves one case the data cannot resolve: a public show pinned via
+    # `/setup`, then password-protected later, keeps granting that guild
+    # access. Identical before the split for the same reason, so it is
+    # preserved rather than introduced; `/lock` settles it.
+    #
+    # The list drains only when an admin acts on a show by name, which is
+    # the one moment its meaning is known.
+
+    def _unlocked_ids(self, settings: ServerSettings) -> list[str]:
+        """Protected shows this guild may see."""
+        locked = self._locked_show_ids
+        legacy = [s for s in settings.allowed_shows if s in locked]
+        return [*settings.unlocked_shows, *legacy]
+
+    def _pinned_ids(self, settings: ServerSettings) -> list[str]:
+        """Shows pinned as this guild's defaults.
+
+        A protected legacy entry is not offered as a pin: it is an unlock as
+        far as anything can tell, and counting it here made
+        `/setup show_remove` report success while the entry stayed.
+        """
+        locked = self._locked_show_ids
+        legacy = [s for s in settings.allowed_shows if s not in locked]
+        return [*settings.pinned_shows, *legacy]
+
+    def _drop_unlock(self, settings: ServerSettings, show_id: str) -> bool:
+        """Revoke an unlock, legacy entry included. True if anything went.
+
+        The legacy entry goes only when the show is actually protected: for
+        a public one `_pinned_ids` is reading that entry as a pin, and
+        deleting it here would silently drop the guild's search default
+        while reporting an access change — the exact confusion the split
+        exists to end.
+        """
+        fields = ["unlocked_shows"]
+        if show_id in self._locked_show_ids:
+            fields.append("allowed_shows")
+        removed = False
+        for name in fields:
+            lst = getattr(settings, name)
+            if show_id in lst:
+                lst.remove(show_id)
+                removed = True
+        return removed
 
     def _resolve_shows(
         self, settings: ServerSettings, explicit_show: str = ""
@@ -132,7 +194,9 @@ class AccessMixin:
         if not explicit_show:
             return ResolvedShows(ShowAccess.ALL)
         show_id = self._show_id_for_label(explicit_show)
-        if show_id in self._locked_show_ids and show_id not in settings.allowed_shows:
+        if show_id in self._locked_show_ids and show_id not in self._unlocked_ids(
+            settings
+        ):
             return ResolvedShows(ShowAccess.LOCKED)
         # Downstream resolves collections by label, so the label travels.
         return ResolvedShows(ShowAccess.SPECIFIC, (explicit_show,))
@@ -143,7 +207,9 @@ class AccessMixin:
         Takes the show's id, not its name: a rename must not silently make a
         protected show public.
         """
-        return show_id not in self._locked_show_ids or show_id in settings.allowed_shows
+        return show_id not in self._locked_show_ids or show_id in self._unlocked_ids(
+            settings
+        )
 
     def _show_allowed_by_label(self, label: str, settings: ServerSettings) -> bool:
         """``_show_allowed`` for callers holding only a display name.
@@ -224,8 +290,8 @@ class AccessMixin:
 
         guild_id = interaction.guild_id
         settings = self._server_settings(guild_id)
-        if entry.show_id not in settings.allowed_shows:
-            settings.allowed_shows.append(entry.show_id)
+        if entry.show_id not in self._unlocked_ids(settings):
+            settings.unlocked_shows.append(entry.show_id)
             self._server_cfg[guild_id] = settings
             self._save_server_config()
             logger.info(f"Guild {guild_id} unlocked show {entry.name!r}")
@@ -245,13 +311,22 @@ class AccessMixin:
             return
         settings = self._server_settings(guild_id)
         show_id = self._show_id_for_label(show)
-        if show_id in settings.allowed_shows:
-            settings.allowed_shows.remove(show_id)
+        if self._drop_unlock(settings, show_id):
             self._server_cfg[guild_id] = settings
             self._save_server_config()
             logger.info(f"Guild {guild_id} locked show {show!r}")
             await interaction.response.send_message(
                 f"Show **{show}** has been removed from this server.",
+                ephemeral=True,
+            )
+        elif show_id not in self._locked_show_ids:
+            # Nothing to revoke: the show is public. Saying "removed" here is
+            # what the old shared list made this branch do, and it read as an
+            # access change when only a search default had moved.
+            await interaction.response.send_message(
+                f"Show **{show}** is not password-protected, so there is "
+                "nothing to lock. Use `/setup show_remove` to drop it as a "
+                "default.",
                 ephemeral=True,
             )
         else:
@@ -269,7 +344,21 @@ class AccessMixin:
         guild_id = interaction.guild_id
         settings = self._server_settings(guild_id)
 
-        if self._show_id_for_label(show) not in settings.allowed_shows:
+        show_id = self._show_id_for_label(show)
+        if show_id not in self._locked_show_ids:
+            # `unlocked_shows` is never pruned when the app makes a show
+            # public, so a stale entry (which the unlocked picker still
+            # offers) would otherwise let this call `set_show_password` on a
+            # public show — re-protecting it index-wide and locking every
+            # other guild out, with the new password DM'd only to whoever
+            # ran the command.
+            await interaction.response.send_message(
+                f"Show **{show}** is not password-protected, so there is no "
+                "password to rotate.",
+                ephemeral=True,
+            )
+            return
+        if show_id not in self._unlocked_ids(settings):
             await interaction.response.send_message(
                 f"Show **{show}** is not unlocked on this server. Unlock it first with /unlock.",
                 ephemeral=True,
@@ -282,7 +371,7 @@ class AccessMixin:
 
         try:
             self.local.set_show_password(
-                self._show_id_for_label(show),
+                show_id,
                 hash_show_password(password),
                 show_label=show,
             )

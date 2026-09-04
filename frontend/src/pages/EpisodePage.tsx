@@ -1,28 +1,31 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getEpisodes, getShowMeta, getEpisodeSpeakers, openFolder } from "@/api/client";
+import { getEpisodes, getShowMeta, openFolder } from "@/api/client";
 import { invalidateAfterStep } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { deleteFile, saveExportFile } from "@/api/filesystem";
 import { showArtworkSrc, useArtworkEpoch } from "@/lib/showArtwork";
 import { usePlatform } from "@/platform";
-import { uploadTranscript, getSpeakerMap, deleteTranscribeVersion } from "@/api/transcribe";
-import { getSegmentsPreview as getTranscribePreview } from "@/api/transcribe";
-import { getCorrectSegmentsPreview as getCorrectPreview, deleteCorrectVersion } from "@/api/correct";
+import { uploadTranscript, deleteTranscribeVersion } from "@/api/transcribe";
+import { deleteCorrectVersion } from "@/api/correct";
 import { deleteTranslateVersion } from "@/api/translate";
-import {
-  deleteAnyVersion,
-  deleteEpisodeCollection,
-  getAllVersions,
-  getEpisodeCollections,
-} from "@/api/search";
+import { deleteAnyVersion, deleteEpisodeCollection } from "@/api/search";
 import { useShowActions } from "@/hooks/useShowActions";
 import { isVerifiedVersion, VERIFIED_CAPTION } from "@/lib/verified";
 import type { PanelStatus } from "@/lib/stepStatus";
 import { useEpisodeStatusPoll } from "@/hooks/useEpisodeStatusPoll";
 import { isSoloDefaultSpeaker } from "@/lib/speakers";
 import { getEpisodeSourceRef } from "@/lib/episodeRef";
+import { useEpisodeOverview } from "@/hooks/useEpisodeOverview";
+import {
+  TRANSCRIBE_INTERMEDIATE_STEPS,
+  groupVersions,
+  otherFilesOf,
+  pairIntermediatesWithRuns,
+  recentActivityOf,
+  transcriptVersionsOf,
+} from "@/lib/versionGroups";
 import DownloadDropdown from "@/components/common/DownloadDropdown";
 import InlineConfirm from "@/components/common/InlineConfirm";
 import { useDropZone } from "@/hooks/useDropZone";
@@ -417,35 +420,6 @@ function StepContent({ step, episode, folder, meta, isYouTube, onDownloadAudio, 
 
 const EMPTY_LANGS: string[] = [];
 
-interface VersionGroups {
-  transcript: VersionEntry[];
-  corrected: VersionEntry[];
-  translations: Record<string, VersionEntry[]>;
-  synthesize: VersionEntry[];
-  other: VersionEntry[];
-}
-
-function groupVersions(
-  versions: VersionEntry[] | undefined,
-  languages: string[],
-): VersionGroups {
-  const groups: VersionGroups = { transcript: [], corrected: [], translations: {}, synthesize: [], other: [] };
-  for (const lang of languages) groups.translations[lang] = [];
-  if (!versions) return groups;
-  for (const v of versions) {
-    if (v.step === "transcript") groups.transcript.push(v);
-    else if (v.step === "corrected") groups.corrected.push(v);
-    else if (v.step === "synthesize") groups.synthesize.push(v);
-    else if (v.step && languages.includes(v.step)) {
-      (groups.translations[v.step] ??= []).push(v);
-    } else {
-      groups.other.push(v);
-    }
-  }
-  return groups;
-}
-
-
 
 function latestSummary(v: VersionEntry): string {
   return `${versionLabel(v)} · ${versionDate(v)}${isEdited(v) ? " · edited" : ""}`;
@@ -557,13 +531,6 @@ function StageCard({
     </button>
   );
 }
-
-const TRANSCRIBE_INTERMEDIATE_STEPS = new Set(["segments", "diarization", "diarized_segments", "speaker_map"]);
-
-// A diarized run writes its two transcript versions back-to-back (seconds
-// apart). Two transcripts further apart than this belong to separate runs —
-// catches a json/subtitle import, which has no intermediates to split runs.
-const RUN_GAP_MS = 2 * 60 * 1000;
 
 function stepDisplay(step: string | undefined): { stage: StageColor; label: string; editorStep: ActiveStep } {
   if (step === "transcript") return { stage: "transcribe", label: "Transcribe", editorStep: "transcribe" };
@@ -911,46 +878,16 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
   const [inspectTarget, setInspectTarget] = useState<{ model: string; chunking: string } | null>(null);
   const queryClient = useQueryClient();
 
-  const { data: speakerMap } = useQuery({
-    queryKey: queryKeys.speakerMap(audioPath),
-    queryFn: () => getSpeakerMap(audioPath!),
-    enabled: !!audioPath && hasTranscript,
-  });
-  // Speakers of the canonical transcript with per-speaker airtime share.
-  const { data: episodeSpeakers } = useQuery({
-    queryKey: queryKeys.episodeSpeakers(folder ?? "", episode.stem ?? ""),
-    queryFn: () => getEpisodeSpeakers(folder!, episode.stem!),
-    enabled: !!folder && !!episode.stem && hasTranscript,
-  });
-  const previewStep = episode.corrected ? "correct" : "transcribe";
-  const PREVIEW_LIMIT = 5;
-  const { data: previewSegments } = useQuery({
-    queryKey: [...queryKeys.stepSegments(previewStep, sourceRef), "preview"],
-    queryFn: () =>
-      previewStep === "correct"
-        ? getCorrectPreview(audioPath, PREVIEW_LIMIT, outputDir ?? undefined)
-        : getTranscribePreview(audioPath, PREVIEW_LIMIT, outputDir ?? undefined),
-    enabled: (!!audioPath || !!outputDir) && hasTranscript,
-  });
-
-  const { data: allVersions } = useQuery({
-    queryKey: queryKeys.allVersions(sourceRef),
-    queryFn: () => getAllVersions(audioPath, outputDir),
-    enabled: (!!audioPath || !!outputDir) && hasTranscript,
-  });
-
   const showName = meta?.name ?? "";
-  const { data: indexEntries } = useQuery({
-    queryKey: queryKeys.episodeCollections(sourceRef, showName),
-    queryFn: () => getEpisodeCollections(audioPath, showName, outputDir),
-    enabled: (!!audioPath || !!outputDir) && !!showName && !!episode.indexed,
-  });
-
-  // A version or collection delete can touch any step's output, so this is
-  // the documented sweep-every-namespace fallback, narrowed to this episode.
-  const invalidateAll = useCallback(() => {
-    invalidateAfterStep(queryClient, null, { audioPath: sourceRef });
-  }, [sourceRef, queryClient]);
+  const {
+    speakerMap,
+    episodeSpeakers,
+    previewSegments,
+    previewStep,
+    allVersions,
+    indexEntries,
+    invalidateAll,
+  } = useEpisodeOverview(episode, folder, showName);
 
   const translations = episode.translations ?? EMPTY_LANGS;
 
@@ -1028,99 +965,23 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
   const synthStatus = STEP_BY_KEY.synthesize.status(episode);
 
   const transcriptVersions = useMemo(
-    () => [
-      ...versionGroups.transcript,
-      ...versionGroups.corrected,
-      ...Object.values(versionGroups.translations).flat(),
-    ].sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
+    () => transcriptVersionsOf(versionGroups),
     [versionGroups],
   );
 
-  // Each intermediate parquet (segments / diarization / diarized_segments /
-  // speaker_map) is a by-product of one transcribe run. A diarized batch run
-  // emits TWO transcript versions (undiarized + diarized) from a single set
-  // of intermediates, so a plain "closest later transcript" pairing files the
-  // diarization intermediates under the undiarized transcript. Group by run
-  // instead: raw whisper `segments` belong under every transcript of the run;
-  // diarization-derived intermediates belong under the diarized transcript(s).
-  // Orphans (no later transcript) stay in "All other files".
-  const { childrenByTranscriptId, orphanIntermediates } = useMemo(() => {
-    const stream = [
-      ...versionGroups.transcript.map((v) => ({ v, inter: false })),
-      ...versionGroups.other
-        .filter((v) => v.step && TRANSCRIBE_INTERMEDIATE_STEPS.has(v.step))
-        .map((v) => ({ v, inter: true })),
-    ].sort((a, b) => a.v.timestamp.localeCompare(b.v.timestamp));
-
-    const map = new Map<string, VersionEntry[]>();
-    const orphans: VersionEntry[] = [];
-    let pending: VersionEntry[] = [];
-    let runTx: VersionEntry[] = [];
-
-    const flush = () => {
-      const diarizedTx = runTx.filter(
-        (t) => (t.params as { diarize?: unknown } | undefined)?.diarize === true,
-      );
-      for (const inter of pending) {
-        // Whisper `segments` → every transcript of the run; diarization data
-        // → the diarized transcript(s), falling back to all when untagged.
-        const targets =
-          inter.step !== "segments" && diarizedTx.length > 0 ? diarizedTx : runTx;
-        if (targets.length === 0) {
-          orphans.push(inter);
-          continue;
-        }
-        for (const t of targets) {
-          const arr = map.get(t.id) ?? [];
-          arr.push(inter);
-          map.set(t.id, arr);
-        }
-      }
-      pending = [];
-      runTx = [];
-    };
-
-    for (const { v, inter } of stream) {
-      if (inter) {
-        if (runTx.length > 0) flush(); // an intermediate after a run begins the next
-        pending.push(v);
-      } else {
-        // A transcript far in time from the current run's transcripts is a
-        // separate run — a json/subtitle import emits no intermediates, so
-        // without this it would absorb the previous run's intermediates.
-        const prev = runTx[runTx.length - 1];
-        if (prev && Date.parse(v.timestamp) - Date.parse(prev.timestamp) > RUN_GAP_MS) {
-          flush();
-        }
-        runTx.push(v);
-      }
-    }
-    flush();
-
-    for (const arr of map.values()) {
-      arr.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-    }
-    return { childrenByTranscriptId: map, orphanIntermediates: orphans };
-  }, [versionGroups.transcript, versionGroups.other]);
-
-  const otherFilesVersions = useMemo(
-    () => [
-      ...versionGroups.synthesize,
-      ...versionGroups.other.filter(
-        (v) => !v.step || !TRANSCRIBE_INTERMEDIATE_STEPS.has(v.step),
-      ),
-      ...orphanIntermediates,
-    ].sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
-    [versionGroups.synthesize, versionGroups.other, orphanIntermediates],
+  const { childrenByTranscriptId, orphanIntermediates } = useMemo(
+    () => pairIntermediatesWithRuns(versionGroups),
+    [versionGroups],
   );
 
-  // Activity feed shows all step events, including synth. The "All transcript
-  // versions" table uses transcriptVersions (no synth).
+  const otherFilesVersions = useMemo(
+    () => otherFilesOf(versionGroups, orphanIntermediates),
+    [versionGroups, orphanIntermediates],
+  );
+
   const recentActivityVersions = useMemo(
-    () => [...transcriptVersions, ...versionGroups.synthesize].sort(
-      (a, b) => b.timestamp.localeCompare(a.timestamp),
-    ),
-    [transcriptVersions, versionGroups.synthesize],
+    () => recentActivityOf(transcriptVersions, versionGroups),
+    [transcriptVersions, versionGroups],
   );
 
   const indexSummary = useMemo(() => {

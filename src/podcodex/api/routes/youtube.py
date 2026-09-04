@@ -13,6 +13,7 @@ from podcodex.api.routes._helpers import (
     counted_progress,
     is_downloaded,
     list_show_stems,
+    scan_show_stems,
     require_registered_show,
     rss_episode_to_out,
     submit_task,
@@ -59,6 +60,25 @@ class YouTubeSubsRequest(BaseModel):
 
 
 # ── Routes ─────────────────────────────────────
+
+
+def _abort_reason(error: str | None) -> str:
+    """Why a run stopped after repeated failures, in the user's words.
+
+    The `except Exception` above catches everything `download_youtube_audio`
+    and `cache_youtube_subtitles` can raise: a missing ffmpeg, a full disk, a
+    geo-block, a private video, a yt-dlp extractor break. Naming all of them
+    "YouTube is rate-limiting requests" gave wrong advice for every cause but
+    one, so only say that when the error actually looks like a throttle.
+    """
+    text = (error or "").lower()
+    throttled = any(
+        marker in text
+        for marker in ("429", "too many requests", "rate limit", "throttl")
+    )
+    if throttled or not error:
+        return "YouTube is rate-limiting requests. "
+    return f"{error.strip()[:200]} "
 
 
 @router.post("/{show_folder:path}/youtube/fetch", response_model=list[RSSEpisodeOut])
@@ -128,9 +148,12 @@ def youtube_fetch(show_folder: str) -> list[dict]:
                 current_meta.artwork_url = fresh
                 save_show_meta(path, current_meta)
 
-    existing_stems = list_show_stems(path)
+    existing_stems, audio_stems = scan_show_stems(path)
     return [
-        rss_episode_to_out(ep, path, existing_stems=existing_stems) for ep in episodes
+        rss_episode_to_out(
+            ep, path, existing_stems=existing_stems, audio_stems=audio_stems
+        )
+        for ep in episodes
     ]
 
 
@@ -170,23 +193,26 @@ def youtube_download(
     def run_downloads(progress_cb, episodes=targets, show_path=path):
         """Download each episode, optionally importing subtitles."""
         from podcodex.ingest.folder import invalidate_scan_cache
-        from podcodex.ingest.youtube import (
-            _CONSECUTIVE_FAIL_LIMIT,
-            _pace_request,
-            reset_pace,
-        )
+        from podcodex.ingest.youtube import _CONSECUTIVE_FAIL_LIMIT, Pacer
 
         cancel = getattr(progress_cb, "cancel_event", None)
         results = []
         consecutive_fails = 0
+        last_error: str | None = None
         total = len(episodes)
         report = counted_progress(progress_cb, total)
         existing_stems = list_show_stems(show_path)
-        reset_pace()
+        pacer = Pacer()
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
                 progress_cb(i / total, "Cancelled")
                 break
+            # After the cancel check but before the request, not at the loop
+            # bottom: the failure branch below `continue`s, which skipped the
+            # delay on exactly the iterations where a throttled request makes
+            # it matter. Waiting ahead of the cancel check instead would make
+            # Cancel take up to _MAX_DELAY to be acknowledged.
+            pacer.wait()
 
             stem = episode_stem(ep, show_path, existing_stems=existing_stems)
             report(i, f"Downloading: {ep.title[:40]}")
@@ -222,11 +248,12 @@ def youtube_download(
                         {"stem": stem, "status": "failed", "error": str(exc)}
                     )
                     consecutive_fails += 1
+                    last_error = str(exc)
                     if consecutive_fails >= _CONSECUTIVE_FAIL_LIMIT:
                         remaining = total - i - 1
                         progress_cb(
                             (i + 1) / total,
-                            f"Stopped — YouTube is rate-limiting requests. "
+                            f"Stopped — {_abort_reason(last_error)}"
                             f"{len(results)}/{total} processed, {remaining} skipped. "
                             f"Try again later with fewer episodes.",
                         )
@@ -248,8 +275,6 @@ def youtube_download(
                         invalidate_scan_cache(show_path)
                 except Exception as exc:
                     logger.warning("Subtitle download failed for {}: {}", stem, exc)
-
-            _pace_request()
 
         return results
 
@@ -280,21 +305,18 @@ def youtube_import_subs(
     def run_import(progress_cb, episodes=targets, show_path=path):
         """Download subtitles for each episode, reporting progress."""
         from podcodex.ingest.folder import invalidate_scan_cache
-        from podcodex.ingest.youtube import (
-            _CONSECUTIVE_FAIL_LIMIT,
-            _pace_request,
-            reset_pace,
-        )
+        from podcodex.ingest.youtube import _CONSECUTIVE_FAIL_LIMIT, Pacer
 
         cancel = getattr(progress_cb, "cancel_event", None)
         imported = 0
         failed = 0
         consecutive_fails = 0
+        last_error: str | None = None
         total = len(episodes)
         report = counted_progress(progress_cb, total)
         existing_stems = list_show_stems(show_path)
         results: list[dict] = []
-        reset_pace()
+        pacer = Pacer()
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
                 progress_cb(i / total, "Cancelled")
@@ -306,7 +328,7 @@ def youtube_import_subs(
             episode_dir.mkdir(parents=True, exist_ok=True)
             save_episode_meta(episode_dir, ep)
             try:
-                _pace_request()
+                pacer.wait()
                 if cache_youtube_subtitles(ep.guid, episode_dir, stem, lang=req.lang):
                     imported += 1
                     consecutive_fails = 0
@@ -323,6 +345,7 @@ def youtube_import_subs(
                 logger.warning("Subtitle download failed for {}: {}", stem, exc)
                 failed += 1
                 consecutive_fails += 1
+                last_error = str(exc)
                 results.append(
                     {
                         "stem": stem,
@@ -340,7 +363,7 @@ def youtube_import_subs(
                 remaining = total - i - 1
                 progress_cb(
                     (i + 1) / total,
-                    f"Stopped — YouTube is rate-limiting requests. "
+                    f"Stopped — {_abort_reason(last_error)}"
                     f"Imported {imported}/{total}, {remaining} skipped. "
                     f"Try again later with fewer episodes.",
                 )

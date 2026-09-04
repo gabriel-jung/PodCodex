@@ -31,6 +31,16 @@ OLLAMA_TEMPERATURE = 0.1
 OLLAMA_NUM_PREDICT_MAX = 8192
 OLLAMA_NUM_CTX_MAX = 16384
 
+# Bounded retry for the hosted-API path, matching `run_ollama`'s shape. A
+# long episode is many batches and every one already completed is lost when
+# a call raises out of the loop, so a single provider hiccup used to throw
+# away a whole paid run.
+API_MAX_ATTEMPTS = 3
+API_BACKOFF_BASE_S = 2.0
+# Ceiling on a provider-supplied Retry-After. Some return minutes, which is
+# longer than a user will sit in front of a progress bar.
+API_RETRY_AFTER_MAX_S = 60.0
+
 
 def ollama_host() -> str:
     """Return the Ollama daemon URL, honoring the ``OLLAMA_HOST`` env var.
@@ -1735,6 +1745,93 @@ def run_ollama(
     return results
 
 
+def _api_retry_delay(exc, attempt: int) -> float:
+    """Seconds to wait before the next attempt.
+
+    Honours a provider ``Retry-After`` when the exception carries one (429s
+    usually do), capped, and otherwise falls back to the same 2s/4s ladder
+    ``run_ollama`` uses.
+    """
+    fallback = API_BACKOFF_BASE_S**attempt
+    try:
+        raw = exc.response.headers.get("retry-after")
+    except Exception:
+        return fallback
+    if not raw:
+        return fallback
+    try:
+        # Seconds is the common form; an HTTP-date is legal but rare, and
+        # the fallback is a fine answer for it.
+        return min(max(float(raw), 0.0), API_RETRY_AFTER_MAX_S)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _api_is_retryable(exc) -> bool:
+    """Whether this OpenAI-client error is worth another attempt.
+
+    Rate limits, connection drops, timeouts and 5xx are transient. Every
+    other 4xx (bad key, unknown model, context length) will fail the same
+    way three times, so retrying only delays the error the user needs.
+    """
+    import openai
+
+    if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
+        return True
+    if isinstance(exc, openai.RateLimitError):
+        return True
+    if isinstance(exc, openai.APIStatusError):
+        return (getattr(exc, "status_code", 0) or 0) >= 500
+    return False
+
+
+def _api_call_with_retry(client, model: str, messages: list[dict], label: str):
+    """One chat completion, retried on transient provider failures."""
+    import time
+
+    last: Exception | None = None
+    for attempt in range(API_MAX_ATTEMPTS):
+        try:
+            return client.chat.completions.create(
+                model=model, messages=messages, temperature=DEFAULT_TEMPERATURE
+            )
+        except Exception as exc:
+            if not _api_is_retryable(exc) or attempt == API_MAX_ATTEMPTS - 1:
+                raise
+            last = exc
+            delay = _api_retry_delay(exc, attempt)
+            logger.warning(
+                f"{label} API call failed (attempt {attempt + 1}/"
+                f"{API_MAX_ATTEMPTS}): {exc}. Retrying in {delay:g}s."
+            )
+            time.sleep(delay)
+    raise last  # unreachable: the last attempt re-raises above
+
+
+def _api_response_text(response, model: str) -> str:
+    """Assistant text from a completion, or ``""`` for an unusable one.
+
+    OpenAI-compatible endpoints (gemini, groq, openrouter, anthropic's compat
+    route) answer a refusal or a reasoning length-stop with ``content: null``,
+    and can return an empty ``choices`` array. Indexing and stripping those
+    blindly raised out of the batch loop and lost every completed batch;
+    returning "" lets ``call_and_parse`` record one rejected batch instead.
+    """
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        logger.warning(f"Empty choices from {model}; recording batch as rejected.")
+        return ""
+    choice = choices[0]
+    content = getattr(choice.message, "content", None)
+    if not content:
+        logger.warning(
+            f"Empty content from {model}. finish_reason="
+            f"{getattr(choice, 'finish_reason', None)!r}"
+        )
+        return ""
+    return content.strip()
+
+
 def run_api(
     segments: list[dict],
     system_prompt: str,
@@ -1778,11 +1875,18 @@ def run_api(
         model = model or spec["model"]
         api_key = api_key or os.environ.get(spec["env_var"])
 
-    key = api_key or os.environ.get("API_KEY")
-    if not key:
+    # No bare `API_KEY` fallback. A name that generic is very likely already
+    # set in a developer's shell for something else, and it was used for
+    # whatever base_url the profile happened to carry — sending an unrelated
+    # key to a third-party endpoint, with nothing in the docs to say the
+    # variable was even read.
+    if not api_key:
+        names = ", ".join(sorted(s["env_var"] for s in LLM_PROVIDER_DEFAULTS.values()))
         raise ValueError(
-            "No API key found. Set the provider's API key env variable or pass api_key=."
+            "No API key found. Add one in Settings, or set the provider's "
+            f"env variable ({names})."
         )
+    key = api_key
 
     logger.debug(
         f"API config: base_url={api_base_url}, model={model}, provider={provider}"
@@ -1798,10 +1902,8 @@ def run_api(
         _, real_segs = _separate_breaks(batch)
 
         def call_fn(messages):
-            response = client.chat.completions.create(
-                model=model, messages=messages, temperature=DEFAULT_TEMPERATURE
-            )
-            return response.choices[0].message.content.strip()
+            response = _api_call_with_retry(client, model, messages, label)
+            return _api_response_text(response, model)
 
         results.extend(
             call_and_parse(

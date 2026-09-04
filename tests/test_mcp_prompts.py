@@ -297,3 +297,20 @@ def test_disabled_prompt_is_not_registered(client):
     # Re-enable
     client.post("/api/mcp/prompts/brief/toggle")
     assert "brief" in mcp._prompt_manager._prompts
+
+
+def test_reserved_prompt_ids_cover_every_registered_tool():
+    """Prompt ids must not collide with a tool name.
+
+    The set used to be four names typed by hand while eight tools were
+    registered, so a prompt called `list_episodes` or `speaker_stats` gave
+    the client two entries under one name. Derived now; this pins both the
+    derivation and the fallback list beside it.
+    """
+    from podcodex.mcp import prompts as prompts_mod
+    from podcodex.mcp import server as server_mod
+
+    registered = {t.name for t in server_mod.mcp._tool_manager.list_tools()}
+    assert registered, "no MCP tools registered — the derivation would be vacuous"
+    assert prompts_mod._reserved_ids() == registered
+    assert prompts_mod._RESERVED_IDS_FALLBACK == registered

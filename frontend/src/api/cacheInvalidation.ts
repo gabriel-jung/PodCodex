@@ -124,6 +124,17 @@ export function invalidateAfterStep(
   for (const namespace of namespaces) {
     const scoped = audioPath ? PER_EPISODE_KEY[namespace] : undefined;
     qc.invalidateQueries({ queryKey: scoped ? scoped(audioPath!) : [namespace] });
+    // The show-scoped versions list (the batch editor's one request) lives
+    // under the same namespace but is not per-episode, so narrowing to one
+    // episode's key skips it — and the batch editor opened right after a
+    // single-episode run would then build its source groups from a list
+    // missing the version that run just produced. Swept by prefix, not by
+    // folder: the per-episode callers (usePipelineTask, useEpisodeOverview)
+    // know the episode's sourceRef but not which show folder it belongs to,
+    // so gating on `folder` here meant this never fired for them at all.
+    if (scoped && namespace === "versions") {
+      qc.invalidateQueries({ queryKey: ["versions", "show"] });
+    }
   }
 
   // Translation editors are keyed per language ("translate-pl"), so they can

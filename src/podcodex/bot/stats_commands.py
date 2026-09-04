@@ -186,7 +186,7 @@ class StatsCommandsMixin:
         )
         loop = asyncio.get_running_loop()
 
-        # Auto-resolve show: explicit > unlocked > single accessible show > ask
+        # Auto-resolve show: explicit > single pinned > single accessible > ask
         show_auto_resolved = not show
         # Check access control for explicit show
         if show:
@@ -200,8 +200,24 @@ class StatsCommandsMixin:
                 return
 
         if not show:
-            if settings.allowed_shows:
-                show = self._label_for_show_id(settings.allowed_shows[0])
+            # Pins narrow the candidates; they do not pick for the user. The
+            # old code took pinned_shows[0], so a server with three pins got
+            # an answer about whichever sorted first and never heard about
+            # the others, while the option description promised the opposite.
+            pinned = [
+                self._label_for_show_id(s)
+                for s in self._pinned_ids(settings)
+                if self._show_allowed(s, settings)
+            ]
+            if len(pinned) == 1:
+                show = pinned[0]
+            elif len(pinned) > 1:
+                names = "\n".join(f"🎙 {s}" for s in pinned)
+                await interaction.followup.send(
+                    f"Several shows are pinned here — please specify one:\n{names}",
+                    ephemeral=True,
+                )
+                return
             else:
                 col_info = await self._cached_col_info()
                 pairs = self._resolve_show_collections(

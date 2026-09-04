@@ -2,6 +2,12 @@
  * Source picker for synthesis — same "Source text" dropdown pattern as the
  * Translate / Correct panels, plus a compact per-segment list.
  *
+ * Presentational: the versions and segments it shows are fetched by
+ * `useSynthSource` in the panel above and handed down, so this component
+ * owns only the list's own UI state. It used to run both queries itself and
+ * copy the results up through effects, which left the panel a render behind
+ * and gave the shared data no single owner.
+ *
  * Checkboxes default to ON (everything kept). Unchecking a row drops that
  * segment from the synthesis scope: it is NOT used for voice sampling and
  * NOT included in the generated output. Shift-click a checkbox to apply
@@ -9,218 +15,51 @@
  * Clicking a row body (outside the checkbox) expands/collapses long text.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { sourceRefFor } from "@/lib/episodeRef";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Play } from "lucide-react";
-import type { Episode, Segment, VersionEntry } from "@/api/types";
-import {
-  getAllVersions,
-  getCorrectSegments,
-  getSegments,
-  getTranslateSegments,
-  loadCorrectVersion,
-  loadTranscribeVersion,
-  loadTranslateVersion,
-} from "@/api/client";
-import { queryKeys } from "@/api/queryKeys";
 import SectionHeader from "@/components/common/SectionHeader";
 import VersionPicker from "@/components/common/VersionPicker";
 import { ErrorAlert } from "@/components/ui/error-alert";
-import { formatTime, isEdited } from "@/lib/utils";
+import { formatTime } from "@/lib/utils";
 import { segKey } from "@/lib/segKey";
 import { speakerColor } from "@/lib/speakerColor";
 import { BREAK_SPEAKER } from "@/lib/speakers";
-
-/** Module-level stable reference so the onSegmentsChange effect doesn't fire
- *  a fresh `[]` literal on every render while the query is still loading. */
-const EMPTY_SEGMENTS: Segment[] = [];
-
-/** Resolved source info: which step the selected version belongs to, plus
- *  the payload fields the generate endpoint needs. */
-export interface ResolvedSource {
-  step: "transcript" | "corrected" | "translate";
-  lang: string;
-  sourceLang: string | undefined;
-  sourceVersionId: string | null;
-}
+import type { SynthSource } from "./useSynthSource";
 
 export interface SourceSegmentPickerProps {
   audioPath: string | null;
-  outputDir?: string | null;
-  episode: Episode;
+  /** Everything fetched for the chosen source; see `useSynthSource`. */
+  source: SynthSource;
 
   sourceVersionId: string | null;
   setSourceVersionId: (v: string | null) => void;
 
-  onResolvedSourceChange: (resolved: ResolvedSource) => void;
-  onSegmentsChange: (segments: Segment[]) => void;
-
   selectedKeys: Set<string>;
   setSelectedKeys: (s: Set<string>) => void;
-  /**
-   * Parent-owned ref tracking the last (editorKey|versionId|length) stamp
-   * that seeded the selection. Must live above this component since the
-   * picker unmounts/remounts while a pipeline task is running; otherwise
-   * remounting would re-seed "all selected" and clobber the user's scope.
-   */
-  selectionStampRef: React.MutableRefObject<string>;
 
   seekTo: (path: string, time: number) => void;
 }
 
 export default function SourceSegmentPicker({
   audioPath,
-  outputDir,
-  episode,
+  source,
   sourceVersionId,
   setSourceVersionId,
-  onResolvedSourceChange,
-  onSegmentsChange,
   selectedKeys,
   setSelectedKeys,
-  selectionStampRef,
   seekTo,
 }: SourceSegmentPickerProps) {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [listOpen, setListOpen] = useState(false);
 
-  const ref = sourceRefFor(audioPath, outputDir);
+  const { inputVersions, selectedVersion, segments } = source;
 
-  const {
-    data: allVersions,
-    isError: versionsFailed,
-    error: versionsError,
-    refetch: refetchVersions,
-  } = useQuery({
-    queryKey: queryKeys.allVersions(ref),
-    queryFn: () => getAllVersions(audioPath, outputDir),
-    enabled: !!ref,
-  });
-
-  const translationSet = useMemo(
-    () => new Set(episode.translations),
-    [episode.translations],
-  );
-
-  const inputVersions = useMemo<VersionEntry[]>(() => {
-    if (!allVersions) return [];
-    // Ordering: translation > corrected > transcript; edited before raw
-    // within each step; newest first within each (step, edited) bucket.
-    const stepRank = (step: string | undefined): number => {
-      if (!step) return 3;
-      if (step === "transcript") return 2;
-      if (step === "corrected") return 1;
-      return 0;
-    };
-    return allVersions
-      .filter((v) => {
-        if (!v.step) return false;
-        if (v.step === "transcript" || v.step === "corrected") return true;
-        return translationSet.has(v.step);
-      })
-      .sort((a, b) => {
-        const sr = stepRank(a.step) - stepRank(b.step);
-        if (sr !== 0) return sr;
-        const er = (isEdited(a) ? 0 : 1) - (isEdited(b) ? 0 : 1);
-        if (er !== 0) return er;
-        return b.timestamp.localeCompare(a.timestamp);
-      });
-  }, [allVersions, translationSet]);
-
-  const selectedVersion = useMemo<VersionEntry | null>(() => {
-    if (!inputVersions.length) return null;
-    if (sourceVersionId) {
-      return inputVersions.find((v) => v.id === sourceVersionId) ?? inputVersions[0];
-    }
-    return inputVersions[0];
-  }, [inputVersions, sourceVersionId]);
-
-  const resolved = useMemo<ResolvedSource>(() => {
-    if (!selectedVersion) {
-      return { step: "transcript", lang: "", sourceLang: undefined, sourceVersionId: null };
-    }
-    const step = selectedVersion.step ?? "transcript";
-    if (step === "transcript" || step === "corrected") {
-      return { step, lang: "", sourceLang: undefined, sourceVersionId };
-    }
-    // Translation versions store the language as the step name.
-    return { step: "translate", lang: step, sourceLang: step, sourceVersionId };
-  }, [selectedVersion, sourceVersionId]);
-
-  useEffect(() => {
-    onResolvedSourceChange(resolved);
-  }, [resolved, onResolvedSourceChange]);
-
-  // Editor key matches the per-step editor pages so React Query dedupes
-  // with Transcribe / Correct / Translate panels when the user later opens
-  // one of them.
-  const editorKey =
-    resolved.step === "transcript"
-      ? "transcribe"
-      : resolved.step === "corrected"
-        ? "correct"
-        : `translate-${resolved.lang}`;
-
-  // Segment cache is shared with the editors: stepVersionSegments for a
-  // pinned version, stepSegments for "latest".
-  const segmentsQueryKey = sourceVersionId
-    ? queryKeys.stepVersionSegments(editorKey, ref, sourceVersionId)
-    : queryKeys.stepSegments(editorKey, ref);
-
-  const od = outputDir ?? undefined;
-
-  const {
-    data: segments,
-    isError: segmentsFailed,
-    error: segmentsError,
-    refetch: refetchSegments,
-  } = useQuery({
-    queryKey: segmentsQueryKey,
-    queryFn: async (): Promise<Segment[]> => {
-      // Load the pinned version when provided; otherwise the step's latest.
-      if (sourceVersionId) {
-        if (resolved.step === "transcript")
-          return loadTranscribeVersion(audioPath, sourceVersionId, od);
-        if (resolved.step === "corrected")
-          return loadCorrectVersion(audioPath, sourceVersionId, od);
-        return loadTranslateVersion(audioPath, resolved.lang, sourceVersionId, od);
-      }
-      if (resolved.step === "transcript") return getSegments(audioPath, od);
-      if (resolved.step === "corrected") return getCorrectSegments(audioPath, od);
-      return getTranslateSegments(audioPath, resolved.lang, od);
-    },
-    enabled: !!selectedVersion,
-  });
-
-  useEffect(() => {
-    onSegmentsChange(segments ?? EMPTY_SEGMENTS);
-  }, [segments, onSegmentsChange]);
-
-  // Default-all-selected whenever the underlying source changes. Stamp
-  // combines editorKey, version id, and segment count so a fresh source
-  // resets scope to "all kept" without clobbering the user's unchecks on
-  // a same-source revalidation. Stamp lives on a parent-owned ref so it
-  // survives this component unmounting while a pipeline task runs.
-  useEffect(() => {
-    if (!segments) return;
-    const stamp = `${editorKey}|${sourceVersionId ?? "latest"}|${segments.length}`;
-    if (selectionStampRef.current === stamp) return;
-    selectionStampRef.current = stamp;
-    const all = new Set<string>();
-    for (const s of segments) {
-      if (s.speaker === BREAK_SPEAKER) continue;
-      all.add(segKey(s));
-    }
-    setSelectedKeys(all);
-  }, [segments, editorKey, sourceVersionId, selectionStampRef, setSelectedKeys]);
-
-  // Same predicate as the default-seed loop above: non-BREAK rows are
+  // Same predicate the panel's default-seed loop uses: non-BREAK rows are
   // candidate segments. Empty-speaker rows count (narrator fallback handles
   // them at synth time); excluding them here would silently drop their keys
   // from selectAll/None/invert despite being seeded into selectedKeys.
   const visibleSegments = useMemo(
-    () => (segments ?? []).filter((s) => s.speaker !== BREAK_SPEAKER),
+    () => segments.filter((s) => s.speaker !== BREAK_SPEAKER),
     [segments],
   );
 
@@ -283,8 +122,8 @@ export default function SourceSegmentPicker({
       {/* A failed load must not read as "nothing to synthesize yet": the
           version list's empty message and the segment list's "Loading…"
           placeholder both look like normal states. */}
-      {versionsFailed ? (
-        <ErrorAlert error={versionsError} onRetry={() => void refetchVersions()} />
+      {source.versions.isError ? (
+        <ErrorAlert error={source.versions.error} onRetry={source.versions.refetch} />
       ) : (
         <VersionPicker
           versions={inputVersions}
@@ -295,8 +134,11 @@ export default function SourceSegmentPicker({
         />
       )}
 
-      {selectedVersion && segmentsFailed && (
-        <ErrorAlert error={segmentsError} onRetry={() => void refetchSegments()} />
+      {selectedVersion && source.segmentsQuery.isError && (
+        <ErrorAlert
+          error={source.segmentsQuery.error}
+          onRetry={source.segmentsQuery.refetch}
+        />
       )}
 
       {selectedVersion && (
@@ -343,11 +185,11 @@ export default function SourceSegmentPicker({
               <div className="max-h-80 overflow-y-auto border border-border/60 rounded-md divide-y divide-border/30 bg-background/40">
                 {visibleSegments.length === 0 && (
                   <p className="p-3 text-xs text-muted-foreground italic">
-                    {segments
-                      ? "No segments in this version."
-                      : segmentsFailed
-                        ? "Could not load this version."
-                        : "Loading…"}
+                    {source.segmentsQuery.isError
+                      ? "Could not load this version."
+                      : source.segmentsQuery.isPending
+                        ? "Loading…"
+                        : "No segments in this version."}
                   </p>
                 )}
                 {visibleSegments.map((seg, index) => {

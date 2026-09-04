@@ -7,27 +7,12 @@ the show-level guard has to answer for all of them.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 
 import pytest
 
 from podcodex.core.app_config import AppConfig
 from tests.fixtures.api_client import make_client
-
-
-@contextmanager
-def active_task(key: str, task_id: str = "t1"):
-    from podcodex.api.tasks import TaskInfo, task_manager
-
-    info = TaskInfo(task_id=task_id, audio_path=key)
-    info.status = "running"
-    task_manager._tasks[task_id] = info
-    task_manager.lock(key, task_id)
-    try:
-        yield
-    finally:
-        task_manager.unlock(key)
-        task_manager._tasks.pop(task_id, None)
+from tests.fixtures.tasks import active_task
 
 
 @pytest.fixture

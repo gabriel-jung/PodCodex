@@ -139,10 +139,14 @@ def list_shows() -> list[ShowSummary]:
         name = (meta.name if meta else None) or child.name
         artwork = (meta.artwork_url if meta else "") or ""
 
+        # AUDIO_EXTENSIONS, lowercased, is what the scanner and the show page
+        # count; five hardcoded suffixes left the home card reporting 0 for a
+        # show whose episodes are .opus/.webm (what yt-dlp leaves behind with
+        # no ffmpeg) or simply named .MP3.
         audio_count = sum(
             1
             for f in child.iterdir()
-            if f.is_file() and f.suffix in (".mp3", ".m4a", ".wav", ".ogg", ".flac")
+            if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
         )
 
         feed_cache = child / ".feed_cache.json"
@@ -1947,6 +1951,23 @@ def list_all_versions(
     versions = list_all_versions(p.base)
     backfill_version_sizes(p.base, versions)
     return versions
+
+
+@router.get("/{show_folder:path}/versions")
+def list_show_versions(show_folder: str) -> dict[str, list[dict]]:
+    """Every episode's versions in one pass, keyed by stem.
+
+    The per-episode ``GET /versions`` above is right for one episode and
+    wrong for a batch: opening the batch editor over a 300-episode
+    selection fired 300 of them, each hitting the same SQLite file and
+    running its own size backfill, before the source-group picker could
+    render. Sizes are not backfilled here — that is a per-file stat the
+    batch picker does not read.
+    """
+    from podcodex.core.versions import list_all_versions_by_stem
+
+    path = require_registered_show(show_folder)
+    return list_all_versions_by_stem(path)
 
 
 class VerifiedRequest(BaseModel):

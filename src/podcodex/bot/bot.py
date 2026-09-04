@@ -7,34 +7,41 @@ Entrypoint:
     podcodex-bot --manage-passwords [--index PATH]
 
 
-Slash commands (user-facing):
-    /search   question [show] [episode] [speaker] [alpha] [model] [top_k] [source] [compact]
-              Hybrid search: alpha blends keyword (0) ↔ semantic (1).
-    /exact    query [show] [episode] [speaker] [top_k] [source] [compact]
-              Literal substring match (case-insensitive, like Ctrl+F).
-    /random   [show] [episode] [speaker] [source]
-              Pull a random quote from the transcripts.
-    /stats    [show] [model]
-              Index overview: shows, episodes, excerpts, duration.
-    /episodes show [model]
-              List episodes for a show with excerpt counts.
-    /speakers [show] [model]
-              Per-speaker chunk counts and airtime, ranked.
+Slash commands. The registered tree is in ``registration.py``; that file is
+the source of truth, and this list exists so an operator reading the entry
+point sees the real surface.
 
-Slash commands (info):
+  Everyone:
+    /search   query
+    /exact    query
+    /random
+              The three plain forms take no options beyond the query and use
+              this server's defaults.
+    /search-advanced query [show] [episode] [speaker] [source] [after]
+              [before] [alpha] [model] [chunker] [top_k] [compact]
+    /exact-advanced  query [show] [episode] [speaker] [source] [after]
+              [before] [model] [chunker] [top_k] [compact]
+    /random-advanced [show] [episode] [speaker] [source] [after] [before]
+              The -advanced forms carry every filter and tuning option.
+    /stats    [show] [model]
+    /episodes [show] [model]
+    /speakers [show] [model]
     /help     Show available commands and how to use them.
 
-Slash commands (admin):
+  Admin (manage_guild):
     /setup    [model] [chunker] [top_k] [show_add] [show_remove] [show_clear]
               [default_source] [compact]
-              Configure server defaults.
+              Server defaults, including the pinned default shows.
+    /announcements [channel] [off]
+              Channel for new-episode and version announcements.
     /unlock         password
-                    Unlock a show for this server (password identifies the show).
+              Unlock a password-protected show here (the password identifies
+              the show, so no name is ever exposed).
     /lock           show
-                    Remove a show from this server.
+              Revoke a show unlocked here.
     /changepassword show
-                    Rotate the password for an already-unlocked show; sends new
-                    password via DM.
+              Rotate the password for an unlocked show; DMs the new one.
+    /admin-reload   Reconnect to the index and reload show passwords.
     /sync           Manually sync the command tree.
 """
 
@@ -498,7 +505,12 @@ def main() -> None:
 
     token = os.environ.get("DISCORD_TOKEN", "").strip()
     if not token:
-        raise RuntimeError("DISCORD_TOKEN not set — add it to .env or environment.")
+        # The most common first-run misconfiguration, so answer it with a
+        # sentence rather than a traceback, the way the other entry points do.
+        raise SystemExit(
+            "DISCORD_TOKEN not set. Put it in deploy/.env (or export it) and "
+            "start podcodex-bot again."
+        )
 
     config = BotConfig(
         model=args.model,

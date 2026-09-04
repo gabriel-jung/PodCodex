@@ -32,7 +32,7 @@ def run(
     clean: bool,
 ) -> dict[str, Any]:
     """Single-episode transcribe. Returns ``{count}``."""
-    from podcodex.api.routes._helpers import build_provenance, transcribe_prov_params
+    from podcodex.core.provenance import build_provenance, transcribe_prov_params
     from podcodex.core._utils import default_batch_size
     from podcodex.core.transcribe import (
         assign_speakers,
@@ -111,7 +111,7 @@ def run_for_batch(
     Returns ``{"did_work": bool}``. ``did_work`` is False when every
     sub-step was skipped (version already matches).
     """
-    from podcodex.api.routes._helpers import build_provenance, transcribe_prov_params
+    from podcodex.core.provenance import build_provenance, transcribe_prov_params
     from podcodex.core._utils import AudioPaths, default_batch_size
     from podcodex.core.transcribe import (
         assign_speakers,

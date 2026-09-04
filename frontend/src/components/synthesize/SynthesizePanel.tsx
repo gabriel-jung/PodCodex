@@ -26,8 +26,9 @@ import ProgressBar from "@/components/editor/ProgressBar";
 import PipelinePanel from "@/components/common/PipelinePanel";
 import VersionPicker from "@/components/common/VersionPicker";
 import { segKey } from "@/lib/segKey";
-import { resolveSynthSpeaker } from "@/lib/speakers";
-import SourceSegmentPicker, { type ResolvedSource } from "./SourceSegmentPicker";
+import { BREAK_SPEAKER, resolveSynthSpeaker } from "@/lib/speakers";
+import SourceSegmentPicker from "./SourceSegmentPicker";
+import { useSynthSource } from "./useSynthSource";
 import VoiceExtractionSection from "./VoiceExtractionSection";
 import TTSGenerationSection from "./TTSGenerationSection";
 import AssemblySection from "./AssemblySection";
@@ -67,20 +68,36 @@ export default function SynthesizePanel() {
   const [showCount, setShowCount] = useState<Record<string, number>>({});
   const [speakerOverrides, setSpeakerOverrides] = useState<Record<string, string>>({});
 
-  // Source picker: null == "latest valid version". Resolved step/lang
-  // come back via onResolvedSourceChange so the generate request knows
-  // exactly what to send.
+  // Source picker: null == "latest valid version".
   const [sourceVersionId, setSourceVersionId] = useState<string | null>(null);
-  const [resolvedSource, setResolvedSource] = useState<ResolvedSource>({
-    step: "transcript",
-    lang: "",
-    sourceLang: undefined,
-    sourceVersionId: null,
-  });
   const [sourceSelection, setSourceSelection] = useState<Set<string>>(() => new Set());
   const sourceSelectionStampRef = useRef<string>("");
-  const [sourceSegments, setSourceSegments] = useState<Segment[]>([]);
   const [selectedSynthVersionId, setSelectedSynthVersionId] = useState<string | null>(null);
+
+  const { audioPath, outputDir, sourceRef, hasSourceRef, noAudio } = getEpisodeSourceRef(episode);
+
+  // One owner for the source data the picker shows and the generate request
+  // sends; both used to read it out of state the picker wrote through effects.
+  const source = useSynthSource(episode, audioPath, outputDir, sourceVersionId);
+  const { resolved: resolvedSource, segments: sourceSegments } = source;
+
+  // Default-all-selected whenever the underlying source changes. The stamp
+  // combines editor key, version id and segment count so a fresh source
+  // resets scope to "all kept" without clobbering the user's unchecks on a
+  // same-source revalidation. It is a ref rather than state because the
+  // picker unmounts while a pipeline task runs, and remounting must not
+  // re-seed.
+  useEffect(() => {
+    const stamp = `${source.editorKey}|${sourceVersionId ?? "latest"}|${sourceSegments.length}`;
+    if (!sourceSegments.length || sourceSelectionStampRef.current === stamp) return;
+    sourceSelectionStampRef.current = stamp;
+    const all = new Set<string>();
+    for (const s of sourceSegments) {
+      if (s.speaker === BREAK_SPEAKER) continue;
+      all.add(segKey(s));
+    }
+    setSourceSelection(all);
+  }, [sourceSegments, source.editorKey, sourceVersionId]);
 
   // Selection / overrides / per-speaker UI state are keyed by segKey, which
   // depends on speaker + timestamps of the CURRENT source. Switching the
@@ -104,7 +121,6 @@ export default function SynthesizePanel() {
     staleTime: Infinity,
   });
 
-  const { audioPath, outputDir, sourceRef, hasSourceRef, noAudio } = getEpisodeSourceRef(episode);
 
   const { data: status, refetch: refetchStatus } = useQuery({
     queryKey: queryKeys.synthesizeStatus(sourceRef),
@@ -323,15 +339,11 @@ export default function SynthesizePanel() {
         <div className="px-4 pb-3 space-y-4">
           <SourceSegmentPicker
             audioPath={audioPath}
-            outputDir={outputDir}
-            episode={episode}
+            source={source}
             sourceVersionId={sourceVersionId}
             setSourceVersionId={setSourceVersionId}
-            onResolvedSourceChange={setResolvedSource}
-            onSegmentsChange={setSourceSegments}
             selectedKeys={sourceSelection}
             setSelectedKeys={setSourceSelection}
-            selectionStampRef={sourceSelectionStampRef}
             seekTo={seekTo}
           />
 

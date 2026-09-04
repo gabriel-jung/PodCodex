@@ -19,7 +19,7 @@ def resolve_show_folder(arg: str) -> tuple[Path, str]:
     if candidate.is_dir():
         return candidate.resolve(), show_display(candidate)
 
-    from podcodex.api.routes.config import _load as _load_cfg
+    from podcodex.core.app_config import load_config as _load_cfg
 
     cfg = _load_cfg()
     target = arg.strip().lower()
@@ -36,7 +36,7 @@ def resolve_show_folder(arg: str) -> tuple[Path, str]:
 
 def all_registered_show_folders() -> list[Path]:
     """Registered show folders that exist on disk, in registration order."""
-    from podcodex.api.routes.config import _load as _load_cfg
+    from podcodex.core.app_config import load_config as _load_cfg
 
     cfg = _load_cfg()
     out: list[Path] = []

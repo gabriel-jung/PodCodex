@@ -35,8 +35,6 @@ _BASE_DELAY = 2.0  # seconds between requests (first batch)
 _BACKOFF_AFTER = 20  # start increasing delay after this many requests
 _MAX_DELAY = 8.0  # maximum delay between requests
 _CONSECUTIVE_FAIL_LIMIT = 3  # abort batch after this many consecutive failures
-_request_count = 0
-_pace_lock = threading.Lock()
 
 # Channel/playlist extraction is a full paginated crawl; running many in
 # parallel (home page "update feeds") from one IP trips YouTube throttling.
@@ -44,32 +42,42 @@ _pace_lock = threading.Lock()
 _EXTRACT_SEMAPHORE = threading.Semaphore(2)
 
 
-def _pace_request() -> None:
-    """Sleep between YouTube API calls to avoid rate limiting."""
-    import time
+class Pacer:
+    """Escalating delay between YouTube calls, scoped to one crawl.
 
-    global _request_count
-    with _pace_lock:
-        _request_count += 1
-        count = _request_count
+    One instance per task. This used to be a module-global counter with a
+    ``reset_pace()`` that zeroed it for the whole process, so a second task
+    (a home-page feed update, an import-subs run, a batch step) restarted
+    the first task's backoff at ``_BASE_DELAY`` exactly when two crawls were
+    hitting YouTube from one IP, while a task that paced without resetting
+    inherited a stale high count and slept the maximum on every call.
 
-    if count <= 1:
-        return
+    Thread-safe: a single crawl's requests can come from more than one
+    thread, and the count has to be shared between them.
+    """
 
-    if count <= _BACKOFF_AFTER:
-        delay = _BASE_DELAY
-    else:
-        extra = min((count - _BACKOFF_AFTER) / 30.0, 1.0)
-        delay = _BASE_DELAY + extra * (_MAX_DELAY - _BASE_DELAY)
+    def __init__(self) -> None:
+        self._count = 0
+        self._lock = threading.Lock()
 
-    time.sleep(delay)
+    def wait(self) -> None:
+        """Sleep the current delay, then advance the count. First call is free."""
+        import time
 
+        with self._lock:
+            self._count += 1
+            count = self._count
 
-def reset_pace() -> None:
-    """Reset the request counter (call at the start of a new batch)."""
-    global _request_count
-    with _pace_lock:
-        _request_count = 0
+        if count <= 1:
+            return
+
+        if count <= _BACKOFF_AFTER:
+            delay = _BASE_DELAY
+        else:
+            extra = min((count - _BACKOFF_AFTER) / 30.0, 1.0)
+            delay = _BASE_DELAY + extra * (_MAX_DELAY - _BASE_DELAY)
+
+        time.sleep(delay)
 
 
 def _base_ydl_opts(**extra: Any) -> dict[str, Any]:
@@ -140,9 +148,10 @@ def _entry_to_episode(entry: dict[str, Any], idx: int) -> RSSEpisode:
 
     description = entry.get("description", "") or ""
     duration = float(entry.get("duration") or 0)
-    thumbnail = entry.get("thumbnail") or entry.get("thumbnails", [{}])[-1].get(
-        "url", ""
-    )
+    # `thumbnails` can be [] or null for upcoming, members-only and removed
+    # videos; a positional index on that aborted the whole channel fetch, so
+    # go through the helper that already handles both.
+    thumbnail = entry.get("thumbnail") or _best_thumbnail(entry)
 
     return RSSEpisode(
         guid=video_id,

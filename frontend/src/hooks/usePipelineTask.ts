@@ -5,7 +5,7 @@ import { cancelTask } from "@/api/client";
 import { invalidateAfterStep } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useEpisodeStore, useTaskStore } from "@/stores";
-import { getEpisodeStem } from "@/lib/episodeRef";
+import { getEpisodeStem, type EpisodeSourceRef } from "@/lib/episodeRef";
 import type { Episode } from "@/api/types";
 
 /**
@@ -24,12 +24,19 @@ interface PipelineTaskOpts {
 }
 
 export function usePipelineTask(
-  audioPath: string | null | undefined,
+  ref: EpisodeSourceRef,
   stepKey: string,
   opts?: PipelineTaskOpts,
 ) {
+  // Two identifiers, deliberately: `taskKey` is what the server locks on
+  // (and what the batch runner uses for the same episode), `sourceRef` is
+  // what every per-episode query is keyed on. The panels used to pass one
+  // fabricated `<folder>/<stem>.mp3` for both, which took a different lock
+  // than a batch run and cached the episode under a key the Overview and
+  // the delete sweep never looked at.
+  const { taskKey, sourceRef } = ref;
   const queryClient = useQueryClient();
-  const [resumedTaskId, setResumedTaskId] = useActiveTask(audioPath, stepKey);
+  const [resumedTaskId, setResumedTaskId] = useActiveTask(taskKey, stepKey);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const activeTaskId = taskId || resumedTaskId;
@@ -45,8 +52,8 @@ export function usePipelineTask(
   }, [setResumedTaskId]);
 
   const refreshQueries = useCallback(() => {
-    invalidateAfterStep(queryClient, stepKey, { audioPath });
-  }, [queryClient, stepKey, audioPath]);
+    invalidateAfterStep(queryClient, stepKey, { audioPath: sourceRef });
+  }, [queryClient, stepKey, sourceRef]);
 
   const applyOptimisticPatch = useCallback(() => {
     const { targetStem, optimisticPatch } = optsRef.current ?? {};
@@ -88,10 +95,10 @@ export function usePipelineTask(
         folder,
         title: ep.title,
         step: stepKey,
-        audioPath,
+        audioPath: sourceRef,
       });
     }
-  }, [stepKey, audioPath]);
+  }, [stepKey, sourceRef]);
 
   return {
     activeTaskId,

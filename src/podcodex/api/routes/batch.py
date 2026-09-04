@@ -145,7 +145,7 @@ def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_
 
 
 def _batch_transcribe_from_subs(
-    audio_path, stem, p, req, cancelled, ep_progress, i, step_offset
+    audio_path, stem, p, req, cancelled, ep_progress, i, step_offset, pacer=None
 ):
     """Import cached VTT subtitles as a transcript version. Returns True if work was done."""
     from podcodex.core._utils import vtt_to_segments
@@ -159,7 +159,7 @@ def _batch_transcribe_from_subs(
     vtt_path = p.base.parent / f"{stem}.subtitles.{req.sub_lang}.vtt"
     if not vtt_path.exists():
         # Try downloading if not cached yet
-        from podcodex.ingest.youtube import cache_youtube_subtitles, _pace_request
+        from podcodex.ingest.youtube import Pacer, cache_youtube_subtitles
 
         ep_progress(i, step_offset, sw, 0.2, "Downloading subtitles...")
         # Extract video_id from feed cache
@@ -167,7 +167,11 @@ def _batch_transcribe_from_subs(
         if not video_id:
             logger.warning("No video ID found for {}, skipping subtitle import", stem)
             return False
-        _pace_request()
+        # The run's pacer, not a fresh one: a new Pacer's first wait is free
+        # by design (nothing has been requested yet), so constructing one per
+        # episode paced nothing at all and fired every subtitle fetch
+        # back-to-back.
+        (pacer or Pacer()).wait()
         if not cache_youtube_subtitles(
             video_id, p.base.parent, stem, lang=req.sub_lang
         ):
@@ -201,11 +205,18 @@ def _batch_transcribe_from_subs(
 
 
 def _resolve_video_id(episode_dir: Path) -> str | None:
-    """Extract YouTube video ID from episode metadata."""
+    """The episode's YouTube video id, or None if it is not a YouTube episode.
+
+    ``youtube_id`` exists precisely so nothing downstream has to infer an id
+    from a guid's shape; ``load_episode_meta`` bridges files written before
+    the field via ``_bridge_legacy_youtube_id``. Reading ``guid`` here handed
+    an RSS episode's URL guid to yt-dlp as a video id, producing a nonsense
+    watch URL and an extractor error instead of a clean skip.
+    """
     from podcodex.ingest.rss import load_episode_meta
 
     meta = load_episode_meta(episode_dir)
-    return meta.guid if meta else None
+    return (meta.youtube_id or None) if meta else None
 
 
 def _batch_llm_step(
@@ -378,6 +389,13 @@ def _batch_index(
     return True
 
 
+def _new_subs_pacer():
+    """A ``Pacer`` for one batch run's subtitle fetches, imported lazily."""
+    from podcodex.ingest.youtube import Pacer
+
+    return Pacer()
+
+
 def _run_batch(progress_cb, req: BatchRequest):
     """Sequential batch pipeline: loop episodes, run enabled steps."""
     from podcodex.core._utils import AudioPaths
@@ -405,6 +423,8 @@ def _run_batch(progress_cb, req: BatchRequest):
     _cancelled.log_cb = getattr(progress_cb, "log_cb", None)  # type: ignore[attr-defined]
 
     report = counted_progress(progress_cb, total)
+    # One escalating backoff for the whole run's YouTube calls; see Pacer.
+    subs_pacer = _new_subs_pacer() if req.transcribe_source == "subtitles" else None
 
     def ep_progress(
         ep_idx: int, step_offset: float, step_weight: float, frac: float, msg: str
@@ -445,6 +465,7 @@ def _run_batch(progress_cb, req: BatchRequest):
                         ep_progress,
                         i,
                         step_offset,
+                        pacer=subs_pacer,
                     ):
                         ep_had_work = True
                 elif not has_audio:

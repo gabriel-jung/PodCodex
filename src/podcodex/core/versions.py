@@ -770,6 +770,13 @@ def list_all_versions(base: Path) -> list[dict]:
     return _get_db(base).list_all_versions(base.name)
 
 
+def list_all_versions_by_stem(show_dir: Path) -> dict[str, list[dict]]:
+    """Every version in a show, grouped by episode stem (newest first)."""
+    from podcodex.core.pipeline_db import get_pipeline_db
+
+    return get_pipeline_db(show_dir).list_all_versions_by_stem()
+
+
 def version_count(base: Path, step: str) -> int:
     """Return the number of versions for a step."""
     db = _get_db(base)

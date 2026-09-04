@@ -5,6 +5,18 @@ export interface EpisodeSourceRef {
   outputDir: string | null;
   /** Single identifier for query keys: audio_path if present, else output_dir. */
   sourceRef: string | null;
+  /**
+   * The backend's key for this episode: what a task lock is taken on and what
+   * a batch request lists. `audio_path`, or the `.virtual` form for an
+   * audio-less episode (see `getEpisodeBatchPath`).
+   *
+   * Distinct from `sourceRef` on purpose. `sourceRef` identifies the episode
+   * to the *cache*; this identifies it to the *server*, and the two must not
+   * be swapped: keying a query on the `.virtual` path splits it from every
+   * other per-episode query, and sending `sourceRef` as a task key takes a
+   * different lock than the batch runner does for the same episode.
+   */
+  taskKey: string | null;
   hasSourceRef: boolean;
   /** Episode has output_dir but no audio file (e.g. YouTube subtitle import). */
   noAudio: boolean;
@@ -28,6 +40,7 @@ export function getEpisodeSourceRef(episode: Episode | null | undefined): Episod
     audioPath,
     outputDir,
     sourceRef,
+    taskKey: episode ? getEpisodeBatchPath(episode) : null,
     hasSourceRef: !!sourceRef,
     noAudio: !audioPath && !!outputDir,
   };

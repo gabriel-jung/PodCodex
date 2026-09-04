@@ -489,7 +489,7 @@ export const usePipelineConfigStore = create<PipelineConfigState>()((set) => {
 
 /** localStorage key of the pre-server-config zustand persist slice. Read
  *  once by the hydration hook to migrate old installs, then removed. */
-const LEGACY_STORAGE_KEY = "podcodex-pipeline-config";
+export const LEGACY_STORAGE_KEY = "podcodex-pipeline-config";
 
 // Module-level guards: hydration runs once per app start. StrictMode mounts
 // the effect twice; a component-level cancel flag would let the surviving
@@ -551,7 +551,12 @@ export function useHydrateAppDefaults(): void {
   }, [queryClient]);
 }
 
-function readLegacyAppDefaults(): PipelineAppDefaults | null {
+/** Promote a pre-server localStorage slice to the server's shape.
+ *
+ *  Exported for its test: it runs once per install and then the key is
+ *  removed, so a wrong result migrates once, permanently, and no real user
+ *  flow can re-run it. `useHydrateAppDefaults` is its only caller. */
+export function readLegacyAppDefaults(): PipelineAppDefaults | null {
   const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
   if (!raw) return null;
   try {

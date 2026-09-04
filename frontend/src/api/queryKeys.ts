@@ -56,6 +56,8 @@ export const queryKeys = {
   shows: () => ["shows"] as const,
   /** All show metas: broad invalidation (every folder). */
   showMetaAll: () => ["showMeta"] as const,
+  /** Every episode's versions in one show, keyed by stem. */
+  showVersions: (folder: string) => ["versions", "show", folder] as const,
   showMeta: (folder: string) => ["showMeta", folder] as const,
   speakerRoster: (folder: string) => ["speakerRoster", folder] as const,
   episodeSpeakers: (folder: string, stem: string) =>

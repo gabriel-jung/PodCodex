@@ -24,6 +24,8 @@ Environment:
 
 from __future__ import annotations
 
+import os
+
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
@@ -87,12 +89,27 @@ def _resolve_collections(show: str | None = None) -> list[SearchCollection]:
     RAG preference (falling back to the default model+chunker). Optionally
     filtered to a single show (case-insensitive name match). Thin wrapper
     over the shared search_service resolver.
+
+    Raises:
+        ValueError: when ``show`` is given and names nothing indexed. Every
+            tool funnels through here, so the client gets one clear answer
+            instead of ``[]``: an empty result is indistinguishable from "no
+            matches", and a mistyped or hallucinated show name was being
+            reported to the user as "your transcripts contain nothing on
+            this topic" — the exact wrong answer the tool descriptions spend
+            paragraphs trying to prevent.
     """
-    return resolve_collections(
-        get_index_store().get_all_collection_info(),
+    info = get_index_store().get_all_collection_info()
+    resolved = resolve_collections(
+        info,
         shows=[show] if show else None,
         show_prefs=load_show_rag_prefs(),
     )
+    if show and not resolved:
+        known = sorted({i["show"] for i in info.values() if i.get("show")})
+        listing = ", ".join(known) if known else "(nothing is indexed yet)"
+        raise ValueError(f"No indexed show called {show!r}. Indexed shows: {listing}")
+    return resolved
 
 
 # Cache for ``list_shows`` date ranges. Keyed by (collection_name,
@@ -705,6 +722,28 @@ def main() -> None:
     not, so bootstrap here is idempotent for the bundled case (loguru
     sinks are reset before re-adding) and necessary for the dev case.
     """
+    import argparse
+
+    from podcodex import __version__
+
+    ap = argparse.ArgumentParser(
+        prog="podcodex-mcp",
+        description=(
+            "PodCodex MCP server (stdio). Normally spawned by an MCP client "
+            "rather than run by hand; run it directly and it blocks on stdin, "
+            "which is the smoke test deploy/MCP.md describes."
+        ),
+    )
+    ap.add_argument("--version", action="version", version=f"podcodex {__version__}")
+    ap.add_argument(
+        "--index",
+        default=None,
+        help="Index directory (overrides PODCODEX_INDEX for this process).",
+    )
+    args = ap.parse_args()
+    if args.index:
+        os.environ["PODCODEX_INDEX"] = args.index
+
     from podcodex.bootstrap import bootstrap_for_mcp_stdio
 
     bootstrap_for_mcp_stdio()

@@ -10,6 +10,7 @@ import { create } from "zustand";
 import { persist, type PersistOptions } from "zustand/middleware";
 import type { Episode, ShowMeta } from "@/api/types";
 import type { StepFilterState, StepFilterStep } from "@/lib/stepStatus";
+import { getEpisodeSourceRef, type EpisodeSourceRef } from "@/lib/episodeRef";
 
 interface EpisodeState {
   // ── Runtime context (not persisted) ──
@@ -94,10 +95,21 @@ export const useEpisodeStore = create<EpisodeState>()(
   ),
 );
 
-/** Resolved episode path — real audio_path, or virtual path from folder+stem. */
-export function useAudioPath(): string | null {
+/**
+ * The current episode's source reference: `audio_path` when it has audio,
+ * `output_dir` when it does not (YouTube subtitle imports).
+ *
+ * This used to fabricate `<folder>/<stem>.mp3` for the audio-less case. The
+ * backend tolerated it (`AudioPaths.from_audio` derives the same episode
+ * root either way), but the frontend did not: the step panels keyed every
+ * query and invalidation on the fabricated path while the Overview, the
+ * version hooks and `invalidateAfterEpisodeDelete` keyed on `sourceRef`
+ * (`<folder>/<stem>`, no suffix). One episode, two cache entries, neither
+ * invalidating the other. Every per-episode key is built from `sourceRef`;
+ * `audioPath`/`outputDir` go to the API helpers, which send whichever the
+ * backend needs.
+ */
+export function useEpisodeRef(): EpisodeSourceRef {
   const episode = useEpisodeStore((s) => s.episode);
-  const folder = useEpisodeStore((s) => s.folder);
-  if (!episode) return null;
-  return episode.audio_path || (folder && episode.stem ? `${folder}/${episode.stem}.mp3` : null);
+  return getEpisodeSourceRef(episode);
 }

@@ -3,9 +3,10 @@ import { confirmDiscard, useDirtyEdit } from "@/lib/dirtyEdits";
 import { countLabel } from "@/lib/showCounts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Episode } from "@/api/types";
-import { getAllVersions } from "@/api/search";
+import { getShowVersions } from "@/api/shows";
 import type { VersionEntry } from "@/api/types";
 import { queryKeys } from "@/api/queryKeys";
+import { getEpisodeStem } from "@/lib/episodeRef";
 import { usePipelineConfig } from "@/hooks/usePipelineConfig";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
 import { useApiKeys } from "@/hooks/useApiKeys";
@@ -208,9 +209,11 @@ function ToggleButton({ checked, onClick, title, children, description }: {
 
 export type TranscribeSource = "audio" | "subtitles";
 
-export default function StepConfigEditor({ step, episodes, showLanguage, onRun, onClose }: {
+export default function StepConfigEditor({ step, episodes, folder, showLanguage, onRun, onClose }: {
   step: StepKey;
   episodes: Episode[];
+  /** Show folder, for the one folder-scoped versions request. */
+  folder: string;
   showLanguage: string;
   onRun: (filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: TranscribeSource, force?: boolean) => void;
   onClose: () => void;
@@ -308,21 +311,26 @@ export default function StepConfigEditor({ step, episodes, showLanguage, onRun, 
 
   // Fetch all versions per episode (for source groups + custom picker)
   const isLLMStep = step === "correct" || step === "translate";
-  const { data: epVersionsMap } = useQuery({
-    queryKey: ["epVersions", step, canRun.map(epKey).join(",")],
-    queryFn: async () => {
-      const map: Record<string, VersionEntry[]> = {};
-      await Promise.all(canRun.map(async (ep) => {
-        if (!ep.audio_path && !ep.output_dir) return;
-        try {
-          map[epKey(ep)] = await getAllVersions(ep.audio_path, ep.output_dir);
-        } catch { map[epKey(ep)] = []; }
-      }));
-      return map;
-    },
+  // One folder-scoped request, not one per selected episode: this used to
+  // fan out a GET per episode (300 of them on a 300-episode batch, each
+  // hitting the same SQLite file) before the source picker could render,
+  // and the key embedded every episode path, so changing the selection
+  // re-ran the whole fan-out.
+  const { data: versionsByStem } = useQuery({
+    queryKey: queryKeys.showVersions(folder),
+    queryFn: () => getShowVersions(folder),
     enabled: step !== "transcribe",
     staleTime: 30_000,
   });
+
+  const epVersionsMap = useMemo(() => {
+    const map: Record<string, VersionEntry[]> = {};
+    if (!versionsByStem) return map;
+    for (const ep of canRun) {
+      map[epKey(ep)] = versionsByStem[getEpisodeStem(ep)] ?? [];
+    }
+    return map;
+  }, [versionsByStem, canRun]);
 
   // Source groups for the input selector (correct, translate, index)
   const sourceGroups = useMemo(

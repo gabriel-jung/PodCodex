@@ -323,7 +323,6 @@ def build_compact_embed(
     for i, (chunk, _col) in enumerate(results[:25], 1):
         show = chunk.show
         episode = chunk.display_title
-        score = chunk.score or 0.0
         start = chunk.start
         text = chunk.text
         if len(text) > _COMPACT_TEXT_MAX:
@@ -339,11 +338,11 @@ def build_compact_embed(
         # Both the name and the timestamp can be absent; join what is left so
         # the line never opens on a separator.
         meta = " · ".join(p for p in (speaker(chunk), ts_label) if p)
-        value = (
-            f"{meta + ' · ' if meta else ''}"
-            f"{score_bar(score)} {min(1.0, score):.0%}\n"
-            f'*"{text}"*'
-        )
+        # No score bar here. The paged card deliberately moved score, match
+        # tier and search label behind the Search info button so a reader is
+        # never shown telemetry, and this list is the view /exact opens on,
+        # where the score is pinned at 1.0 and carries no information at all.
+        value = (f"{meta}\n" if meta else "") + f'*"{text}"*'
         if len(embed) + len(name) + len(value) > _COMPACT_EMBED_BUDGET:
             break
         embed.add_field(name=name, value=value, inline=False)

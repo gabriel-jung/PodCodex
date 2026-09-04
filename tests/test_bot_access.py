@@ -228,19 +228,70 @@ def _bare_bot(store, server_cfg):
     return bot
 
 
-def test_allowed_shows_migrates_from_names_to_ids(tmp_path):
+def test_a_protected_legacy_entry_reads_as_an_unlock(tmp_path):
+    """`allowed_shows` predates the split and records nothing about which
+    command wrote it, so it is read the way the pre-split code read it: an
+    unlock exactly while the show is protected. No upgrade can silently
+    revoke access."""
     from podcodex.bot.config import ServerSettings
+    from podcodex.core.show_passwords import hash_show_password
 
     store = rag_index_store.get_index_store()
     store.set_collection_identity(
         "alpha__bge-m3__semantic", show_id="alpha_1234abcd", show="Alpha"
+    )
+    store.set_show_password(
+        "alpha_1234abcd", hash_show_password("x" * 16), show_label="Alpha"
     )
     settings = ServerSettings(allowed_shows=["Alpha"])
     bot = _bare_bot(store, {1: settings})
 
     bot._reload_shows()
 
+    assert settings.allowed_shows == ["alpha_1234abcd"]  # names → ids, nothing more
+    assert bot._show_allowed_by_label("Alpha", settings) is True
+    # Not offered as a pin: it is an unlock as far as anything can tell, and
+    # counting it as both made `/setup show_remove` silently fail to unpin.
+    assert bot._pinned_ids(settings) == []
+
+
+def test_a_reload_never_reclassifies_or_drops_a_legacy_entry(tmp_path):
+    """The drain this replaces was one-shot and destructive: a reload that
+    landed mid-rsync, on an index whose password table had not arrived, read
+    every unlock as a pin and saved that, with no recovery but re-running
+    `/unlock` per guild."""
+    from podcodex.bot.config import ServerSettings
+
+    store = rag_index_store.get_index_store()
+    store.set_collection_identity(
+        "alpha__bge-m3__semantic", show_id="alpha_1234abcd", show="Alpha"
+    )
+    settings = ServerSettings(allowed_shows=["alpha_1234abcd"])
+    saves: list[bool] = []
+    bot = _bare_bot(store, {1: settings})
+    bot._save_server_config = lambda: saves.append(True)
+
+    bot._reload_shows()  # no password table at all: the dangerous shape
+    bot._reload_shows()
+
     assert settings.allowed_shows == ["alpha_1234abcd"]
+    assert settings.unlocked_shows == [] and settings.pinned_shows == []
+    assert saves == []  # already ids, so nothing to write
+
+
+def test_lock_settles_a_legacy_entry(tmp_path):
+    """An admin naming the show is the one moment its meaning is known."""
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(allowed_shows=["alpha"])
+    bot, saves = _guild_bot({1: settings}, locked_ids={"alpha"})
+    interaction = _GuildInteraction()
+
+    asyncio.run(bot._handle_lock(interaction, "Alpha"))
+
+    assert settings.allowed_shows == []
+    assert saves == [True]
+    assert "removed" in interaction.response.messages[0]
 
 
 def test_unlocked_show_survives_a_rename(tmp_path):
@@ -284,7 +335,7 @@ def test_protected_show_stays_locked_for_other_guilds(tmp_path):
         "alpha_1234abcd", hash_show_password("x" * 16), show_label="Alpha"
     )
 
-    other = ServerSettings(allowed_shows=[])
+    other = ServerSettings(unlocked_shows=[])
     bot = _bare_bot(store, {2: other})
     bot._reload_shows()
 
@@ -380,3 +431,258 @@ def test_load_server_config_skips_a_non_guild_key(tmp_path):
 
     assert list(cfg) == [42]
     assert cfg[42].top_k == 7
+
+
+# ── Pins and unlocks are separate acts ──────────────────────────────────
+#
+# ``allowed_shows`` used to mean both "unlocked here" and "pinned as this
+# server's default", so ``/lock`` un-pinned public shows, ``/setup`` refused
+# to pin anything once one show had a password, and a typo pinned a name
+# that resolved to nothing. These pin the split that fixed all three.
+
+
+class _Reply:
+    """Records what a handler answered, for both response and followup."""
+
+    def __init__(self):
+        self.messages: list[str] = []
+        self.deferred = False
+
+    async def send_message(self, content=None, *, ephemeral=False, **_kw):
+        self.messages.append(content or "")
+
+    async def send(self, content=None, *, ephemeral=False, **_kw):
+        self.messages.append(content or "")
+
+    async def defer(self, **_kw):
+        self.deferred = True
+
+
+class _GuildInteraction:
+    def __init__(self, guild_id=1):
+        self.guild_id = guild_id
+        self.response = _Reply()
+        self.followup = self.response
+
+
+def _guild_bot(server_cfg, *, locked_ids=(), known_shows=()):
+    """A bot wired for the /setup, /lock and /episodes handlers."""
+    from podcodex.bot.access import ShowEntry
+    from podcodex.bot.autocomplete import _AutocompleteCache
+    from podcodex.bot.bot import BotConfig, PodCodexBot
+
+    bot = PodCodexBot.__new__(PodCodexBot)
+    bot.config = BotConfig()
+    bot._ac_cache = _AutocompleteCache()
+    # `_locked_show_ids` is derived from `_shows`, so seed that rather than
+    # patching the property onto the shared class.
+    bot._shows = {
+        sid: ShowEntry(show_id=sid, name=sid, password_hash="") for sid in locked_ids
+    }
+    bot._server_cfg = server_cfg
+    saves: list[bool] = []
+    bot._save_server_config = lambda: saves.append(True)
+    # Labels round-trip through a lowercase id; the real pair is index-backed.
+    bot._show_id_for_label = lambda label: label.strip().lower().replace(" ", "_")
+    bot._label_for_show_id = lambda sid: sid.replace("_", " ").title()
+
+    async def _known(settings, model="", chunker=""):
+        return list(known_shows)
+
+    bot._known_show_labels = _known
+
+    async def _noop_refresh():
+        return None
+
+    bot._refresh_if_stale = _noop_refresh
+    bot._cache_clear_if_stale = lambda: None
+    return bot, saves
+
+
+def test_lock_on_a_public_show_changes_nothing(tmp_path):
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(pinned_shows=["alpha"])
+    bot, saves = _guild_bot({1: settings})
+    interaction = _GuildInteraction()
+
+    asyncio.run(bot._handle_lock(interaction, "Alpha"))
+
+    assert settings.pinned_shows == ["alpha"]
+    assert saves == []
+    assert "not password-protected" in interaction.response.messages[0]
+
+
+def test_setup_pins_while_another_show_is_protected(tmp_path):
+    """The guard used to be global: one password blocked every pin."""
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings()
+    bot, saves = _guild_bot({1: settings}, locked_ids={"beta"}, known_shows=["Alpha"])
+    interaction = _GuildInteraction()
+
+    asyncio.run(bot._handle_setup(interaction, None, None, None, show_add="Alpha"))
+
+    assert bot._server_cfg[1].pinned_shows == ["alpha"]
+    assert saves == [True]
+
+
+def test_setup_rejects_a_show_name_that_resolves_to_nothing(tmp_path):
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings()
+    bot, saves = _guild_bot({1: settings}, known_shows=["Alpha", "Beta"])
+    interaction = _GuildInteraction()
+
+    asyncio.run(bot._handle_setup(interaction, None, None, None, show_add="Alfa"))
+
+    assert settings.pinned_shows == []
+    assert saves == []
+    assert "Alpha" in interaction.response.messages[0]
+
+
+def test_setup_show_remove_drops_a_pin_whose_show_left_the_index(tmp_path):
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(pinned_shows=["gone"])
+    bot, saves = _guild_bot({1: settings}, known_shows=[])
+    interaction = _GuildInteraction()
+
+    asyncio.run(bot._handle_setup(interaction, None, None, None, show_remove="Gone"))
+
+    assert bot._server_cfg[1].pinned_shows == []
+    assert saves == [True]
+
+
+def test_episodes_lists_the_pins_instead_of_picking_the_first(tmp_path):
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(pinned_shows=["alpha", "beta"])
+    bot, _saves = _guild_bot({1: settings})
+
+    async def _noop_refresh():
+        return None
+
+    bot._refresh_if_stale = _noop_refresh
+    interaction = _GuildInteraction()
+
+    asyncio.run(bot._handle_episodes(interaction, None, None))
+
+    reply = interaction.response.messages[0]
+    assert "Alpha" in reply and "Beta" in reply
+
+
+def test_an_unprotected_legacy_entry_reads_as_a_pin(tmp_path):
+    """The other half of the same rule: nothing is protected, so the entry
+    can only have come from `/setup show_add`."""
+    from podcodex.bot.config import ServerSettings
+
+    store = rag_index_store.get_index_store()
+    store.set_collection_identity(
+        "alpha__bge-m3__semantic", show_id="alpha_1234abcd", show="Alpha"
+    )
+    settings = ServerSettings(allowed_shows=["Alpha"])
+    bot = _bare_bot(store, {1: settings})
+
+    bot._reload_shows()
+
+    assert bot._pinned_ids(settings) == ["alpha_1234abcd"]
+    assert bot._unlocked_ids(settings) == []
+
+
+def test_setup_show_remove_settles_an_unprotected_legacy_pin(tmp_path):
+    """It used to report success while the entry stayed, because the legacy
+    list was kept and still counted as a pin."""
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(allowed_shows=["alpha"])
+    bot, saves = _guild_bot({1: settings}, known_shows=["Alpha"])
+    interaction = _GuildInteraction()
+
+    asyncio.run(bot._handle_setup(interaction, None, None, None, show_remove="Alpha"))
+
+    updated = bot._server_cfg[1]
+    assert bot._pinned_ids(updated) == []
+    assert updated.allowed_shows == []
+    assert saves == [True]
+
+
+def test_setup_show_remove_leaves_a_protected_legacy_entry_alone(tmp_path):
+    """It is an unlock, not a pin, so there is nothing to unpin — and
+    dropping it would revoke access the guild may well have earned."""
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(allowed_shows=["alpha"])
+    bot, saves = _guild_bot({1: settings}, locked_ids={"alpha"}, known_shows=["Alpha"])
+    interaction = _GuildInteraction()
+
+    asyncio.run(bot._handle_setup(interaction, None, None, None, show_remove="Alpha"))
+
+    assert settings.allowed_shows == ["alpha"]
+    assert saves == []
+    assert "not pinned" in interaction.response.messages[0]
+
+
+def test_an_unrelated_setup_change_never_rewrites_the_legacy_list(tmp_path):
+    """An index rsynced mid-transfer reports no protected shows without
+    erroring. Recomputing the legacy list on every `/setup` filed every
+    unlock as a pin in that window and cleared the list, losing the guild's
+    access for good; the read path re-derives precisely so it survives."""
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(allowed_shows=["alpha"])
+    # The dangerous state: an unlock on the books, nothing readable as locked.
+    bot, saves = _guild_bot({1: settings}, locked_ids=set())
+    interaction = _GuildInteraction()
+
+    asyncio.run(bot._handle_setup(interaction, "bge-m3", None, None))
+
+    updated = bot._server_cfg[1]
+    assert updated.allowed_shows == ["alpha"]
+    assert updated.pinned_shows == []
+    assert updated.model == "bge-m3"  # the change the admin actually asked for
+
+
+def test_lock_on_a_public_show_leaves_a_legacy_pin_alone(tmp_path):
+    """`/lock` revokes access. A public show's legacy entry is a pin, so
+    deleting it here would drop a search default while reporting an access
+    change — the confusion the split exists to end."""
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(allowed_shows=["beta"])
+    bot, saves = _guild_bot({1: settings}, locked_ids={"alpha"})
+    interaction = _GuildInteraction()
+
+    asyncio.run(bot._handle_lock(interaction, "Beta"))
+
+    assert settings.allowed_shows == ["beta"]
+    assert saves == []
+    assert "not password-protected" in interaction.response.messages[0]
+
+
+def test_changepassword_refuses_a_show_that_is_no_longer_protected(tmp_path):
+    """`unlocked_shows` is never pruned when the app makes a show public, so
+    a stale entry would otherwise re-protect it index-wide and lock every
+    other guild out, with the password DM'd only to the caller."""
+    from podcodex.bot.config import ServerSettings
+
+    settings = ServerSettings(unlocked_shows=["alpha"])
+    bot, _saves = _guild_bot({1: settings}, locked_ids=set())
+    rotated: list[str] = []
+    bot._local = _RecordingStore(rotated)
+    interaction = _GuildInteraction()
+
+    asyncio.run(bot._handle_changepassword(interaction, "Alpha"))
+
+    assert rotated == []
+    assert "no password to rotate" in interaction.response.messages[0]
+
+
+class _RecordingStore:
+    """Records any attempt to write a password."""
+
+    def __init__(self, sink):
+        self._sink = sink
+
+    def set_show_password(self, show_id, *_a, **_kw):
+        self._sink.append(show_id)

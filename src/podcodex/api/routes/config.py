@@ -7,11 +7,11 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from podcodex.core.api_keys import mask_secret
+from podcodex.core.api_keys import mask_secret, read_secrets_file as _read_secrets_file
 from podcodex.core.app_config import (
     CONFIG_PATH,
     AppConfig,
@@ -86,14 +86,6 @@ def _detect_env_keys() -> dict[str, str]:
 
 
 # ── User-managed secrets (secrets.env) ────────────────────────────────
-
-
-def _read_secrets_file() -> dict[str, str]:
-    """Parse secrets.env into a dict. Empty dict if absent."""
-    path = secrets_env_path()
-    if not path.exists():
-        return {}
-    return {k: v for k, v in dotenv_values(path).items() if v}
 
 
 def _write_secrets_file(values: dict[str, str]) -> None:

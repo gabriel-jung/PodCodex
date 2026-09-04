@@ -46,8 +46,49 @@ PROMPTS_PATH = Path.home() / ".config" / "podcodex" / "mcp_prompts.json"
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9_-]{1,39}$")
 _TEMPLATE_SLOT_RE = re.compile(r"\{(\w+)\}")
 
+
 # Tool names already registered — user prompt ids must not collide.
-_RESERVED_IDS = frozenset({"search", "exact", "list_shows", "get_context"})
+# Derived from the server module rather than retyped: the hardcoded set
+# listed four of the eight tools, so a prompt could be called `list_episodes`
+# or `speaker_stats` and the client would show two entries with one name.
+def _reserved_ids() -> frozenset[str]:
+    """Registered MCP tool names.
+
+    Read off the server module only when it is *already* imported. Importing
+    it constructs ``FastMCP`` and pulls lancedb and pyarrow, and the only
+    caller (``validate_prompt``) runs inside the desktop app's
+    ``POST/PUT /api/mcp-prompts`` handler — which would then pay a
+    multi-second import inside the request. The list below is the fallback,
+    and ``tests/test_mcp_prompts.py`` fails if the two ever disagree.
+    """
+    import sys
+
+    try:
+        server = sys.modules.get("podcodex.mcp.server")
+        if server is not None:
+            names = {t.name for t in server.mcp._tool_manager.list_tools()}
+            if names:
+                return frozenset(names)
+    except Exception:  # pragma: no cover - SDK reshape
+        pass
+    # The SDK reshaped its registry, or we are being imported from inside
+    # server's own import. `tests/test_mcp_prompts.py` fails if this drifts
+    # from the registered tree.
+    return _RESERVED_IDS_FALLBACK
+
+
+_RESERVED_IDS_FALLBACK = frozenset(
+    {
+        "list_shows",
+        "list_episodes",
+        "get_episode",
+        "search",
+        "exact",
+        "exact_count",
+        "get_context",
+        "speaker_stats",
+    }
+)
 
 
 @dataclass
@@ -57,6 +98,10 @@ class SlotDef:
     required: bool = True
     default: str | None = None
     options: list[str] = field(default_factory=list)
+    #: What to put in the slot, shown in the client's slash menu. Without it
+    #: the menu said only what type the field is, which tells the user
+    #: nothing about what the prompt expects.
+    description: str = ""
 
 
 @dataclass
@@ -92,7 +137,7 @@ def validate_prompt(p: PromptDef) -> None:
             f"Invalid id {p.id!r}. Must be lowercase, start with a letter, "
             "2-40 chars of [a-z0-9_-]."
         )
-    if p.id in _RESERVED_IDS:
+    if p.id in _reserved_ids():
         raise PromptValidationError(f"Id {p.id!r} collides with a built-in tool name.")
     slot_names = [s.name for s in p.slots]
     if len(slot_names) != len(set(slot_names)):
@@ -320,6 +365,24 @@ def _builtin_prompts() -> list[PromptDef]:
 # ── Registration with FastMCP ──────────────────────────────────────────
 
 
+def _slot_description(slot: SlotDef) -> str:
+    """What the client shows beside the slot in its slash menu.
+
+    The author's own words first, then the machine facts the client cannot
+    otherwise see: an enum's allowed values (dropped entirely before, so a
+    configured enum arrived as a free-text field) and the default that is
+    applied when the slot is left empty.
+    """
+    parts = [slot.description.strip()] if slot.description.strip() else []
+    if slot.options:
+        parts.append("One of: " + ", ".join(slot.options) + ".")
+    elif not parts:
+        parts.append(f"A {slot.type} value.")
+    if slot.default is not None:
+        parts.append(f"Defaults to {slot.default!r} when empty.")
+    return " ".join(parts)
+
+
 def _build_prompt(pdef: PromptDef) -> Prompt:
     """Wrap a ``PromptDef`` as a FastMCP ``Prompt`` object."""
     from mcp.server.fastmcp.prompts import Prompt
@@ -330,9 +393,18 @@ def _build_prompt(pdef: PromptDef) -> Prompt:
 
     pid = pdef.id
 
+    defaults = {s.name: s.default for s in pdef.slots if s.default is not None}
+
     def fn(**kwargs) -> str:
+        # Defaults are applied here, not just recorded: an optional slot left
+        # empty by the client used to raise "missing required slot" because
+        # nothing ever consulted `default`.
+        values = {
+            **defaults,
+            **{k: v for k, v in kwargs.items() if v not in (None, "")},
+        }
         try:
-            return template.format(**kwargs)
+            return template.format(**values)
         except KeyError as exc:
             missing = exc.args[0]
             raise ValueError(
@@ -345,8 +417,8 @@ def _build_prompt(pdef: PromptDef) -> Prompt:
     arguments = [
         PromptArgument(
             name=slot.name,
-            description=f"{slot.type} slot",
-            required=slot.required,
+            description=_slot_description(slot),
+            required=slot.required and slot.default is None,
         )
         for slot in pdef.slots
     ]

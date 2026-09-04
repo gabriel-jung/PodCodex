@@ -91,10 +91,10 @@ Use this when you run Claude Code, or Claude Desktop without PodCodex's desktop 
 From the project root:
 
 ```bash
-uv sync --extra mcp
+uv sync --extra mcp --extra cpu
 ```
 
-This installs the `mcp` SDK and the `podcodex-mcp` entry point at `.venv/bin/podcodex-mcp`.
+This installs the `mcp` SDK, the retrieval stack the server reads the index with (the `mcp` extra depends on `rag`), and the `podcodex-mcp` entry point at `.venv/bin/podcodex-mcp`. Swap `--extra cpu` for `--extra gpu` if you want the GPU torch build; one of the two is required, since `rag` pulls torch.
 
 Verify it runs (it blocks on stdin; `Ctrl+C` to quit):
 

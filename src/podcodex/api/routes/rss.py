@@ -14,14 +14,14 @@ from podcodex.api.routes._helpers import (
     list_show_stems,
     require_registered_show,
     rss_episode_to_out,
+    scan_show_stems,
     submit_task,
 )
 from podcodex.api.schemas import RSSEpisodeOut, TaskResponse
 from podcodex.ingest.rss import (
     download_audio,
     episode_stem,
-    feed_artwork,
-    fetch_feed,
+    fetch_feed_with_artwork,
     load_feed_cache,
     merge_with_cache,
     save_feed_cache,
@@ -44,11 +44,27 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
     if not rss_url:
         raise HTTPException(400, "No RSS URL provided and none in show.toml")
 
+    import httpx
+
+    feed_art = ""
     try:
-        # feedparser blocks on network — keep it off the event loop
-        episodes = await asyncio.to_thread(fetch_feed, rss_url)
+        # feedparser blocks on network — keep it off the event loop.
+        # `fetch_feed_with_artwork`, not `fetch_feed`: the artwork upgrade
+        # below used to make its own `feed_artwork` call, downloading and
+        # re-parsing the same multi-megabyte XML a second time on a request
+        # that already had the parsed document in hand.
+        episodes, feed_art = await asyncio.to_thread(fetch_feed_with_artwork, rss_url)
     except ValueError as exc:
+        # Scheme rejection and other bad input: the caller's URL is wrong,
+        # and no cache can stand in for it.
         raise HTTPException(400, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        # DNS, a captive portal, a CDN 503. The cached-feed fallback below
+        # exists for exactly this, but these are not ValueError, so they
+        # used to escape as an opaque 500 with the cache sitting right
+        # there. Fall through with no episodes to reach it.
+        logger.warning("fetch_feed failed for {}: {}", rss_url, exc)
+        episodes = []
     if not episodes:
         # Transient failures (DNS, captive portal, feedparser bozo) shouldn't
         # block the show page when we already have a cache to serve.
@@ -59,8 +75,11 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
                 rss_url,
                 len(cached),
             )
-            stems = list_show_stems(path)
-            return [rss_episode_to_out(ep, path, existing_stems=stems) for ep in cached]
+            stems, audio = scan_show_stems(path)
+            return [
+                rss_episode_to_out(ep, path, existing_stems=stems, audio_stems=audio)
+                for ep in cached
+            ]
         raise HTTPException(502, "Feed returned no episodes (parse error or empty)")
 
     # Keep episodes pulled from the feed flagged ``removed=True`` rather than
@@ -75,13 +94,16 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
         if current != LOCAL_ARTWORK_MARKER and (
             not current or "60x60" in current or "artworkUrl60" in current
         ):
-            fresh = await asyncio.to_thread(feed_artwork, rss_url)
+            fresh = feed_art
             if fresh and fresh != current:
                 meta.artwork_url = fresh
                 save_show_meta(path, meta)
 
-    stems = list_show_stems(path)
-    return [rss_episode_to_out(ep, path, existing_stems=stems) for ep in episodes]
+    stems, audio = scan_show_stems(path)
+    return [
+        rss_episode_to_out(ep, path, existing_stems=stems, audio_stems=audio)
+        for ep in episodes
+    ]
 
 
 @router.post(
@@ -132,12 +154,17 @@ def rss_download(
             return " · ".join(parts) if parts else ""
 
         report = counted_progress(progress_cb, total)
+        # Hoisted: episode_stem scandirs the show folder on every call that
+        # is not handed a stem set, and download_audio resolves the stem the
+        # same way, so the loop paid two listings per episode. `is_downloaded`
+        # below stays a live check, since this loop is what changes the answer.
+        existing_stems = list_show_stems(show_path)
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
                 progress_cb(i / total, f"Cancelled — {_summary()}")
                 break
 
-            stem = episode_stem(ep, show_path)
+            stem = episode_stem(ep, show_path, existing_stems=existing_stems)
             report(i, "Downloading…")
 
             if not force_dl and is_downloaded(show_path, stem):

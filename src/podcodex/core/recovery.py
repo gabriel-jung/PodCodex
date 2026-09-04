@@ -64,7 +64,7 @@ def run_startup_recovery() -> None:
     reaping stale atomic-write temp files from any crash that skipped the
     normal cleanup path.
     """
-    from podcodex.api.routes.config import _load as _load_cfg
+    from podcodex.core.app_config import load_config as _load_cfg
     from podcodex.core.app_paths import config_dir
 
     try:

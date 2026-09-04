@@ -17,6 +17,7 @@ make dev                  # FastAPI + Vite + Tauri, hot-reload
 - **Run a single test:** `.venv/bin/python -m pytest tests/test_foo.py::test_bar -xvs`
 - **Run all Python tests:** `make test`
 - **Regenerate frontend types / icons:** see [deploy/BUILD.md § Regenerated artifacts](deploy/BUILD.md#regenerated-artifacts). `make types` after editing Pydantic models in `src/podcodex/api/`; `make icons` after replacing `assets/icon.png` (1024x1024 canonical).
+- **Run frontend tests:** `cd frontend && npm test` (vitest; `npm run test:watch` while working). Config in `frontend/vitest.config.ts`, kept separate from `vite.config.ts` because Vitest bundles its own Vite and merging the two breaks `tsc -b`.
 - **Lint frontend:** `cd frontend && npm run lint` (runs with `--max-warnings 0`; fails CI on any warning)
 - **Type-check frontend:** `cd frontend && npx tsc -b` (strict mode is on and clean; fails CI on any error)
 

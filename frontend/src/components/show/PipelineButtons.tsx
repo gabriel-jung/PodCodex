@@ -18,11 +18,14 @@ function countCanRun(episodes: Episode[], step: StepKey): number {
 export default function PipelineButtons({
   disabled,
   episodes,
+  folder,
   showLanguage,
   onRun,
 }: {
   disabled: boolean;
   episodes: Episode[];
+  /** Show folder, passed straight to the batch editor. */
+  folder: string;
   showLanguage: string;
   onRun: (step: StepKey, filteredEpisodes?: Episode[], sourceVersionIds?: Record<string, string>, transcribeSource?: TranscribeSource, force?: boolean) => void;
 }) {
@@ -65,6 +68,7 @@ export default function PipelineButtons({
         <StepConfigEditor
           step={confirmStep}
           episodes={episodes}
+          folder={folder}
           showLanguage={showLanguage}
           onRun={handleConfirm}
           onClose={() => setConfirmStep(null)}

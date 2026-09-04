@@ -93,8 +93,13 @@ def test_resolve_collections_case_insensitive():
     assert [c.name for c in cols] == [collection_name("My Show", "bge-m3", "semantic")]
 
 
-def test_resolve_collections_unknown_show_returns_empty():
-    assert mcp_server._resolve_collections("Nope") == []
+def test_resolve_collections_unknown_show_raises_and_names_the_known_ones():
+    """`[]` is indistinguishable from "no matches", so a client that mistyped
+    a show reported to the user that the transcripts held nothing."""
+    with pytest.raises(ValueError) as exc:
+        mcp_server._resolve_collections("Nope")
+    assert "Nope" in str(exc.value)
+    assert "My Show" in str(exc.value)
 
 
 def test_resolve_collections_honors_show_rag_prefs(monkeypatch):
@@ -251,9 +256,9 @@ def test_get_context_returns_window():
         assert "score" not in c
 
 
-def test_get_context_unknown_show_returns_empty():
-    out = mcp_server.get_context(show="Nope", episode="ep1", chunk_index=0, window=2)
-    assert out == []
+def test_get_context_unknown_show_raises():
+    with pytest.raises(ValueError):
+        mcp_server.get_context(show="Nope", episode="ep1", chunk_index=0, window=2)
 
 
 def test_speaker_stats_aggregates_across_chunks():
@@ -349,8 +354,9 @@ def test_list_episodes_restricts_to_show_case_insensitive():
     _seed_multi_episode(store)
     # Matching show yields rows
     assert mcp_server.list_episodes(show="my show")
-    # Unknown show yields empty list (not an error)
-    assert mcp_server.list_episodes(show="nope") == []
+    # Unknown show is an error naming the indexed shows, not an empty list
+    with pytest.raises(ValueError):
+        mcp_server.list_episodes(show="nope")
 
 
 def test_list_episodes_filters_by_pub_date_range():

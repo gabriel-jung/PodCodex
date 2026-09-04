@@ -18,7 +18,6 @@ import os
 import re
 import threading
 import unicodedata
-from collections import Counter
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from functools import cache
@@ -1831,6 +1830,57 @@ class IndexStore:
             out.append(hit)
         return out
 
+    def _search_fts_keys(
+        self,
+        collection: str,
+        query: str,
+        top_k: int,
+        *,
+        episode: str | None = None,
+        episodes: list[str] | None = None,
+        source: str | None = None,
+        speaker: str | None = None,
+        pub_date_min: str | None = None,
+        pub_date_max: str | None = None,
+        fuzziness: int = 0,
+    ) -> set[str]:
+        """Chunk keys matching an FTS probe, without building Hit objects.
+
+        ``search_fts`` inflates every candidate row through ``_row_to_chunk``,
+        which json.loads the meta blob and runs a pydantic validation. The
+        intersection probes in ``search_literal`` only need to know *which*
+        chunks matched, and there can be ten of them at 10,000 rows each, so
+        they read the two key columns instead and let the surviving
+        candidates be hydrated once.
+        """
+        if not self.collection_exists(collection):
+            return set()
+        t = self._table(collection)
+        self._ensure_fts(collection, t)
+        if fuzziness > 0:
+            from lancedb.query import MatchQuery
+
+            search_input = MatchQuery(query, "text", fuzziness=fuzziness)
+        else:
+            search_input = query
+        q = t.search(search_input, query_type="fts")
+        clause = _build_where(
+            episode=episode,
+            episodes=episodes,
+            source=source,
+            speaker=speaker,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
+        )
+        if clause:
+            q = q.where(clause)
+        try:
+            rows = q.select(["episode", "start"]).limit(top_k).to_list()
+        except Exception:
+            logger.opt(exception=True).warning("FTS query failed — treating as empty")
+            return set()
+        return {f"{r.get('episode')}|{r.get('start')}" for r in rows}
+
     def search_literal(
         self,
         collection: str,
@@ -1914,19 +1964,37 @@ class IndexStore:
                         seen.add(k)
             return hits
 
+        def _fts_token_keys(token: str) -> set[str]:
+            """``_fts_token`` without the hydration; see ``_search_fts_keys``."""
+            probe = dict(
+                episode=episode,
+                episodes=episodes,
+                source=source,
+                speaker=speaker,
+                pub_date_min=pub_date_min,
+                pub_date_max=pub_date_max,
+                fuzziness=2,
+            )
+            keys = self._search_fts_keys(collection, token, 10_000, **probe)
+            ft = fold_text(token)
+            if ft and ft != token:
+                keys |= self._search_fts_keys(collection, ft, 10_000, **probe)
+            return keys
+
         if len(fts_tokens) == 1:
             candidates = _fts_token(fts_tokens[0])
         else:
-            hit_count: Counter = Counter()
-            chunk_map: dict[str, Hit] = {}
-            for token in fts_tokens:
-                for h in _fts_token(token):
-                    key = _chunk_key(h)
-                    hit_count[key] += 1
-                    chunk_map.setdefault(key, h)
-            candidates = [
-                chunk_map[k] for k, n in hit_count.items() if n >= len(fts_tokens)
-            ]
+            # A chunk survives the intersection only if it matched *every*
+            # token, so it is necessarily in the first token's hits. Hydrate
+            # that one probe and narrow it with key-only probes for the rest,
+            # instead of building up to 2N x 10,000 validated models and
+            # discarding almost all of them.
+            candidates = _fts_token(fts_tokens[0])
+            for token in fts_tokens[1:]:
+                if not candidates:
+                    break
+                keys = _fts_token_keys(token)
+                candidates = [c for c in candidates if _chunk_key(c) in keys]
 
         exact: list[Hit] = []
         accent_only: list[Hit] = []

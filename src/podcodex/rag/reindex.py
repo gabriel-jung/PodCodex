@@ -22,7 +22,12 @@ from loguru import logger
 
 from podcodex.cli.resolve import resolve_show_folder
 from podcodex.ingest.folder import scan_folder
-from podcodex.rag.defaults import DEFAULT_CHUNKING, DEFAULT_MODEL
+from podcodex.rag.defaults import (
+    CHUNKING_STRATEGIES,
+    DEFAULT_CHUNKING,
+    DEFAULT_MODEL,
+    MODELS,
+)
 from podcodex.rag.index_store import get_index_store
 
 
@@ -34,7 +39,7 @@ def _reindex_show(
     dry_run: bool,
 ) -> None:
     """Drop then rebuild every (model × chunker) collection for a show."""
-    from podcodex.api.routes._helpers import build_index_transcript
+    from podcodex.core.source import build_index_transcript
     from podcodex.rag.indexing import vectorize_batch
 
     store = get_index_store()
@@ -139,14 +144,21 @@ def main() -> None:
         description="Rebuild a show's LanceDB index from its transcripts.",
     )
     ap.add_argument("show", help="Show folder path or registered show name.")
+    # `choices`, like podcodex-bot: a mistyped model reached the indexing
+    # loop and died there as a bare KeyError, and a mistyped chunker was
+    # never rejected at all — the dispatcher fell through to semantic and
+    # the run reported success while building a collection keyed on the typo
+    # that no other surface can resolve.
     ap.add_argument(
         "--model",
         default=DEFAULT_MODEL,
+        choices=list(MODELS),
         help=f"Embedding model (default: {DEFAULT_MODEL}).",
     )
     ap.add_argument(
         "--chunker",
         default=DEFAULT_CHUNKING,
+        choices=list(CHUNKING_STRATEGIES),
         help=f"Chunking strategy (default: {DEFAULT_CHUNKING}).",
     )
     ap.add_argument(
@@ -173,8 +185,6 @@ def main() -> None:
         return
 
     if args.all_models:
-        from podcodex.rag.defaults import MODELS
-
         model_keys = list(MODELS.keys())
         chunkers = ["semantic", "speaker"]
     else:

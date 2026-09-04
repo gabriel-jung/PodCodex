@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useEpisodeStore, useAudioPath, usePipelineConfigStore, useTaskStore } from "@/stores";
+import { useEpisodeStore, useEpisodeRef, usePipelineConfigStore, useTaskStore } from "@/stores";
 import { useShowActions } from "@/hooks/useShowActions";
 import { EmptyState } from "@/components/ui/empty-state";
 import { getGPUStatus } from "@/api/client";
@@ -43,16 +43,18 @@ export default function TranscribePanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
   const folder = useEpisodeStore((s) => s.folder);
-  const audioPath = useAudioPath();
+  const ref = useEpisodeRef();
+  const { audioPath, outputDir, sourceRef } = ref;
+  const od = outputDir ?? undefined;
 
   const { has: hasCap } = useCapabilities();
   const hasWhisperX = hasCap("whisperx");
-  const task = usePipelineTask(audioPath, "transcribe", {
+  const task = usePipelineTask(ref, "transcribe", {
     targetStem: episode?.stem,
     optimisticPatch: () => ({ transcribed: true }),
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const setVerified = useSetVerifiedVersion(audioPath, episode?.output_dir ?? null);
+  const setVerified = useSetVerifiedVersion(audioPath, outputDir);
   const { downloadMutation: episodeDownloadMutation } = useShowActions(folder ?? "", showMeta ?? undefined, { withSubs: false });
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
   const downloadDisabled = episodeDownloadMutation.isPending || !!downloadTaskId;
@@ -136,7 +138,7 @@ export default function TranscribePanel() {
   const [cleanMode, setCleanMode] = useState<"manual" | "auto">("manual");
 
   const uploadMutation = useMutation({
-    mutationFn: (file: File) => uploadTranscript(audioPath!, file),
+    mutationFn: (file: File) => uploadTranscript(audioPath, file, od),
     onSuccess: () => {
       task.refreshQueries();
       task.setExpanded(false);
@@ -144,7 +146,7 @@ export default function TranscribePanel() {
   });
 
   const importFileMutation = useMutation({
-    mutationFn: (filePath: string) => importTranscript(audioPath!, filePath),
+    mutationFn: (filePath: string) => importTranscript(audioPath, filePath, od),
     onSuccess: () => {
       task.refreshQueries();
       task.setExpanded(false);
@@ -161,6 +163,7 @@ export default function TranscribePanel() {
     mutationFn: () =>
       startTranscribe({
         audio_path: audioPath!,
+        output_dir: od,
         model_size: tc.modelSize,
         language: effectiveLang || undefined,
         batch_size: tc.batchSize ?? undefined,
@@ -204,7 +207,11 @@ export default function TranscribePanel() {
       title="Transcribe"
       description="Transcribe audio or import subtitles."
       blocker={
-        !audioPath ? (
+        // Nothing on disk at all: no audio to transcribe and no episode
+        // directory holding an imported transcript. This used to read
+        // `!audioPath`, which a fabricated `<folder>/<stem>.mp3` made
+        // permanently false, so the empty state never rendered.
+        !sourceRef ? (
           <>
             <EmptyState icon={FileAudio} {...emptyStateProps} />
             <input
@@ -369,9 +376,10 @@ export default function TranscribePanel() {
         <TranscriptViewer
           editorKey="transcribe"
           audioPath={audioPath ?? undefined}
-          loadSegments={() => getSegments(audioPath!)}
-          saveSegments={(segs) => saveSegments(audioPath!, segs)}
-          saveSpeakerMap={(m) => saveSpeakerMap(audioPath!, m)}
+          sourceRef={sourceRef ?? undefined}
+          loadSegments={() => getSegments(audioPath, od)}
+          saveSegments={(segs) => saveSegments(audioPath, segs, od)}
+          saveSpeakerMap={(m) => saveSpeakerMap(audioPath, m, od)}
           showDelete
           showFlags
           showSpeaker
@@ -388,9 +396,9 @@ export default function TranscribePanel() {
               versionId: isVerified ? null : id,
             })
           }
-          loadVersions={() => getTranscribeVersions(audioPath!)}
-          loadVersion={(id) => loadTranscribeVersion(audioPath!, id)}
-          deleteVersion={(id) => deleteTranscribeVersion(audioPath!, id)}
+          loadVersions={() => getTranscribeVersions(audioPath, od)}
+          loadVersion={(id) => loadTranscribeVersion(audioPath, id, od)}
+          deleteVersion={(id) => deleteTranscribeVersion(audioPath, id, od)}
         />
       )}
     </PipelinePanel>

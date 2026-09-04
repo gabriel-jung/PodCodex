@@ -889,6 +889,59 @@ def test_fts_legacy_index_rebuilt_and_sentinels_migrated(tmp_path):
     assert not v1.exists()
 
 
+# ── Multi-token: the per-token intersection ─────────────────────────────
+#
+# The intersection probes read key columns only and hydrate just the
+# survivors, because a five-token phrase would otherwise build and discard
+# most of 100,000 validated models. A key-only probe that silently failed
+# would return an empty set and make every multi-word literal search answer
+# nothing, so the phrase path is pinned here.
+
+
+def _phrase_seeded(tmp_path):
+    s = _store(tmp_path)
+    col = "s__bge-m3__semantic"
+    s.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    chunks = _chunks(3)
+    chunks[0]["text"] = "john williams composed the score"
+    chunks[1]["text"] = "john adams composed something else"
+    chunks[2]["text"] = "a williams score with no first name"
+    s.save_chunks(col, "ep1", chunks, _rng_embeddings(3))
+    return s, col
+
+
+def test_search_literal_finds_a_multi_word_phrase(tmp_path):
+    s, col = _phrase_seeded(tmp_path)
+    exact, _accent, _fuzzy = s.search_literal(col, "john williams")
+    assert [h.text for h in exact] == ["john williams composed the score"]
+
+
+def test_search_literal_requires_every_token_in_the_same_chunk(tmp_path):
+    """Each chunk holds one of the two tokens, neither holds both."""
+    s, col = _phrase_seeded(tmp_path)
+    exact, accent, fuzzy = s.search_literal(col, "adams score")
+    assert exact == [] and accent == [] and fuzzy == []
+
+
+def test_search_literal_handles_a_phrase_of_more_than_two_tokens(tmp_path):
+    s, col = _phrase_seeded(tmp_path)
+    exact, _accent, _fuzzy = s.search_literal(col, "williams composed the score")
+    assert len(exact) == 1
+
+
+def test_search_literal_multi_token_survives_an_accent_difference(tmp_path):
+    s = _store(tmp_path)
+    col = "s__bge-m3__semantic"
+    s.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    chunks = _chunks(1)
+    chunks[0]["text"] = "les êtres humains sont étranges"
+    s.save_chunks(col, "ep1", chunks, _rng_embeddings(1))
+
+    _exact, accent, _fuzzy = s.search_literal(col, "etres humains")
+
+    assert len(accent) == 1
+
+
 def test_search_literal_fuzzy_tier_catches_one_edit_typo(tmp_path):
     s, col = _fts_seeded(tmp_path)
     exact, accent, fuzzy = s.search_literal(col, "williames")

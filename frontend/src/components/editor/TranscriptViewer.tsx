@@ -11,6 +11,8 @@ import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
 import type { Segment, VersionEntry } from "@/api/types";
 import { saveExportFile } from "@/api/client";
 import { useDirtyEdit } from "@/lib/dirtyEdits";
+import { useBulkSelection } from "./useBulkSelection";
+import { useFollowPlayback } from "./useFollowPlayback";
 import { usePlatform } from "@/platform";
 import { invalidateSpeakerViews } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
@@ -118,7 +120,16 @@ function ExportDropdown({
 
 export interface TranscriptViewerProps {
   editorKey: string;
+  /**
+   * Real audio file, for playback and export. Absent for an episode with no
+   * audio on disk (a subtitle-only import), which is why it is not the cache
+   * identifier: `sourceRef` is.
+   */
   audioPath?: string;
+  /** The episode's cache identifier (`audio_path`, else `output_dir`). Every
+   *  query key in this component is built from it, so an audio-less episode
+   *  shares one cache entry with the Overview instead of two. */
+  sourceRef?: string;
   loadSegments: () => Promise<Segment[]>;
   saveSegments: (segments: Segment[]) => Promise<unknown>;
   saveSpeakerMap?: (mapping: Record<string, string>) => Promise<unknown>;
@@ -168,6 +179,7 @@ export interface TranscriptViewerProps {
 export default function TranscriptViewer({
   editorKey,
   audioPath,
+  sourceRef,
   loadSegments,
   saveSegments,
   saveSpeakerMap,
@@ -200,12 +212,12 @@ export default function TranscriptViewer({
     error: segmentsError,
     refetch: refetchSegments,
   } = useQuery({
-    queryKey: queryKeys.stepSegments(editorKey, audioPath),
+    queryKey: queryKeys.stepSegments(editorKey, sourceRef),
     queryFn: loadSegments,
   });
 
   const { data: versions } = useQuery({
-    queryKey: queryKeys.stepVersions(editorKey, audioPath),
+    queryKey: queryKeys.stepVersions(editorKey, sourceRef),
     // skipToken, not `queryFn: x!` + `enabled`: passing an undefined queryFn
     // makes React Query log "No queryFn was passed" on every render even
     // while the query is disabled.
@@ -213,7 +225,7 @@ export default function TranscriptViewer({
   });
 
   const { data: compareVersionsExtra } = useQuery({
-    queryKey: queryKeys.stepVersions(`${editorKey}__compare`, audioPath),
+    queryKey: queryKeys.stepVersions(`${editorKey}__compare`, sourceRef),
     queryFn: loadCompareVersions ?? skipToken,
   });
   const compareVersions = compareVersionsExtra ?? versions ?? [];
@@ -239,7 +251,7 @@ export default function TranscriptViewer({
     error: versionError,
     refetch: refetchVersion,
   } = useQuery({
-    queryKey: queryKeys.stepVersionSegments(editorKey, audioPath, selectedVersionId),
+    queryKey: queryKeys.stepVersionSegments(editorKey, sourceRef, selectedVersionId),
     queryFn: () => {
       const v = versions?.find((x) => x.id === selectedVersionId);
       return loadVersion!(selectedVersionId!, v);
@@ -330,13 +342,13 @@ export default function TranscriptViewer({
     // stale-vs-index state already surfaces as the episode's `outdated` mark.
     meta: {
       invalidates: [
-        queryKeys.stepSegments(editorKey, audioPath),
-        queryKeys.stepVersions(editorKey, audioPath),
+        queryKeys.stepSegments(editorKey, sourceRef),
+        queryKeys.stepVersions(editorKey, sourceRef),
         queryKeys.episodesAll(),
         // An edited segment fans out to every cross-step view of this episode.
-        queryKeys.allVersions(audioPath),
-        queryKeys.bestSourceSegments(audioPath),
-        queryKeys.speakerMap(audioPath),
+        queryKeys.allVersions(sourceRef),
+        queryKeys.bestSourceSegments(sourceRef),
+        queryKeys.speakerMap(sourceRef),
         invalidateSpeakerViews,
       ],
     },
@@ -352,11 +364,11 @@ export default function TranscriptViewer({
     mutationFn: (id: string) => deleteVersion!(id),
     meta: {
       invalidates: [
-        queryKeys.stepVersions(editorKey, audioPath),
-        queryKeys.stepSegments(editorKey, audioPath),
+        queryKeys.stepVersions(editorKey, sourceRef),
+        queryKeys.stepSegments(editorKey, sourceRef),
         queryKeys.episodesAll(),
-        queryKeys.allVersions(audioPath),
-        queryKeys.bestSourceSegments(audioPath),
+        queryKeys.allVersions(sourceRef),
+        queryKeys.bestSourceSegments(sourceRef),
         // Deleting the canonical version shifts what the speaker views resolve.
         invalidateSpeakerViews,
       ],
@@ -527,86 +539,20 @@ export default function TranscriptViewer({
 
   // ── Selection ─────────────────────────────────────────────────────────────
 
-  // Keyed by stable row id. Insert/split do not invalidate these entries.
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
-
-  const toggleSelect = useCallback((id: number) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
-
-  // Per-id segment lookup. Built from the current edited list (non-deleted) so
-  // bulkMerge can find positional adjacency and the selection-emit effect can
-  // dereference each selected id.
-  const editedSegments = editor.editedSegments;
-  const editorIds = editor.ids;
-  const segmentById = useMemo(() => {
-    const map = new Map<number, { segment: Segment; position: number }>();
-    for (let i = 0; i < editorIds.length; i++) {
-      map.set(editorIds[i], { segment: editedSegments[i], position: i });
-    }
-    return map;
-  }, [editedSegments, editorIds]);
-
-  // Emit selection changes — downstream consumers (e.g. synthesis scope
-  // filter) work on the edited segment payloads, not raw indices, so their
-  // state survives version switches and pagination. Signature guard keeps
-  // per-keystroke edits from re-emitting when the selection hasn't changed.
-  const lastSelectionSigRef = useRef<string>("");
-  useEffect(() => {
-    if (!onSelectionChange) return;
-    const out: Segment[] = [];
-    const sigParts: string[] = [];
-    for (const id of selectedIds) {
-      const hit = segmentById.get(id);
-      if (!hit || hit.segment.speaker === BREAK_SPEAKER) continue;
-      out.push(hit.segment);
-      sigParts.push(`${hit.segment.speaker}:${hit.segment.start}:${hit.segment.end}`);
-    }
-    const sig = sigParts.join("|");
-    if (sig === lastSelectionSigRef.current) return;
-    lastSelectionSigRef.current = sig;
-    onSelectionChange(out);
-  }, [selectedIds, segmentById, onSelectionChange]);
-
-  const bulkDelete = useCallback(() => {
-    // Order doesn't matter — ids stay valid across deletes.
-    for (const id of selectedIds) editor.deleteSegment(id);
-    clearSelection();
-  }, [selectedIds, editor, clearSelection]);
-
-  const bulkSpeaker = useCallback((speaker: string) => {
-    for (const id of selectedIds) editor.updateSpeaker(id, speaker);
-    setRecentlyEdited((prev) => {
-      const next = new Set(prev);
-      for (const id of selectedIds) next.add(id);
-      return next;
-    });
-    clearSelection();
-  }, [selectedIds, editor, clearSelection]);
-
-  const bulkMerge = useCallback(() => {
-    // Adjacency by current position, not by id (ids are not contiguous after
-    // inserts). Sort selected ids by their position, then merge from the
-    // bottom up so the merge index doesn't shift the rest.
-    const positions = Array.from(selectedIds)
-      .map((id) => ({ id, position: segmentById.get(id)?.position ?? -1 }))
-      .filter((p) => p.position >= 0)
-      .sort((a, b) => a.position - b.position);
-    if (positions.length < 2) return;
-    for (let i = positions.length - 1; i > 0; i--) {
-      if (positions[i].position === positions[i - 1].position + 1) {
-        editor.mergeWithNext(positions[i - 1].id);
-      }
-    }
-    clearSelection();
-  }, [selectedIds, segmentById, editor, clearSelection]);
+  const {
+    selectedIds,
+    setSelectedIds,
+    toggleSelect,
+    clearSelection,
+    segmentById,
+    bulkDelete,
+    bulkSpeaker,
+    bulkMerge,
+  } = useBulkSelection(editor, {
+    onSelectionChange,
+    onBulkEdited: (ids) =>
+      setRecentlyEdited((prev) => new Set([...prev, ...ids])),
+  });
 
   // ── Filtering / pagination ────────────────────────────────────────────────
 
@@ -754,100 +700,15 @@ export default function TranscriptViewer({
 
   // ── Active segment tracking ───────────────────────────────────────────────
 
-  const storeAudioPath = useAudioStore((s) => s.audioPath);
-  const storeIsPlaying = useAudioStore((s) => s.isPlaying);
-  const isPlayingThisFile = audioPath != null && storeAudioPath === audioPath;
-  const [activeId, setActiveId] = useState<number | null>(null);
-
-  const editedSegmentsRef = useRef(editor.editedSegments);
-  editedSegmentsRef.current = editor.editedSegments;
-  const idsRef = useRef(editor.ids);
-  idsRef.current = editor.ids;
-
-  // Drop activeId only when the player jumps to a different file. While the
-  // current track is paused we keep the last activeId so the Now-playing
-  // toolbar button still has somewhere to re-center to.
-  useEffect(() => {
-    if (audioPath == null || storeAudioPath !== audioPath) {
-      setActiveId(null);
-    }
-  }, [audioPath, storeAudioPath]);
-
-  useEffect(() => {
-    if (!isPlayingThisFile) return;
-    const interval = setInterval(() => {
-      const t = useAudioStore.getState().currentTime;
-      if (!useAudioStore.getState().isPlaying) return;
-      const segs = editedSegmentsRef.current;
-      const ids = idsRef.current;
-      for (let e = segs.length - 1; e >= 0; e--) {
-        const seg = segs[e];
-        if (seg.start <= t && t < seg.end) {
-          const id = ids[e];
-          setActiveId((prev) => (prev === id ? prev : id));
-          return;
-        }
-      }
-      setActiveId((prev) => (prev == null ? prev : null));
-    }, 250);
-    return () => clearInterval(interval);
-  }, [isPlayingThisFile]);
-
-  const scrollToId = useCallback(
-    (id: number, behavior: ScrollBehavior = "smooth") => {
-      return listRef.current?.scrollToId(id, behavior) ?? false;
-    },
-    [],
-  );
-
-  // Auto-follow: while ON, the list scrolls to the active segment as
-  // playback advances. Any user-initiated scroll (wheel/touchmove) flips it
-  // OFF so the reader can browse without being yanked back. "Now playing"
-  // toolbar button flips it back ON and re-centers.
-  const [followMode, setFollowMode] = useState(true);
-  const prevAudioPathRef = useRef(audioPath);
-  if (prevAudioPathRef.current !== audioPath) {
-    prevAudioPathRef.current = audioPath;
-    // Re-engage follow on track change so the new transcript opens aligned.
-    setFollowMode(true);
-  }
-  // Set by jumpToActive so the follow effect's first run after the toggle
-  // doesn't re-fire scrollToId on top of the explicit call.
-  const suppressNextFollowScrollRef = useRef(false);
-  useEffect(() => {
-    if (!followMode || activeId == null) return;
-    if (suppressNextFollowScrollRef.current) {
-      suppressNextFollowScrollRef.current = false;
-      return;
-    }
-    // Skip when the user is typing inside the list: an active textarea/input
-    // means they're editing this row (or a nearby one) and the smooth-scroll
-    // would yank the caret offscreen mid-keystroke.
-    const focusTag = (document.activeElement as HTMLElement | null)?.tagName;
-    const focusEditable =
-      focusTag === "TEXTAREA" ||
-      focusTag === "INPUT" ||
-      (document.activeElement as HTMLElement | null)?.isContentEditable;
-    if (focusEditable) return;
-    // 'auto' avoids stacked smooth-scroll animations on the 250ms activeId
-    // polling tick. 'smooth' is reserved for the explicit jumpToActive click.
-    scrollToId(activeId, "auto");
-  }, [followMode, activeId, scrollToId]);
-
-  const handleUserScroll = useCallback(() => {
-    setFollowMode((cur) => (cur ? false : cur));
-  }, []);
-
-  const jumpToActive = () => {
-    if (!followMode) {
-      // Effect would scroll on its own once followMode commits — but we want
-      // 'smooth' here (explicit user gesture), so do it manually and ask the
-      // effect to skip its first post-toggle run.
-      suppressNextFollowScrollRef.current = true;
-      setFollowMode(true);
-    }
-    if (activeId != null) scrollToId(activeId, "smooth");
-  };
+  const {
+    activeId,
+    isPlayingThisFile,
+    storeIsPlaying,
+    followMode,
+    scrollToId,
+    jumpToActive,
+    handleUserScroll,
+  } = useFollowPlayback(audioPath, listRef, editor);
 
   // Cross-page jump: SpeakerStrip excerpts ask to locate a segment in the
   // editor. If a page flip is needed, the effect picks up the scroll once

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -20,8 +19,30 @@ from podcodex.core._utils import (
     AudioPaths,
     _separate_breaks,
 )
-from podcodex.core.constants import AUDIO_EXTENSIONS
 from podcodex.ingest.rss import RSSEpisode, episode_stem
+
+# Domain helpers now live in core/ so that core and rag never import the API
+# package to reach them (see the module docstrings there). Re-exported here
+# because every route module imports them from this one.
+from podcodex.core.provenance import (  # noqa: F401
+    _build_source_chain,
+    build_edit_provenance,
+    build_provenance,
+    enrich_correct_kwargs,
+    llm_prov_params,
+    transcribe_prov_params,
+)
+from podcodex.core.source import (  # noqa: F401
+    AUDIO_EXTS,
+    _extract_broadcast_number,
+    _resolve_source_segments,
+    apply_broadcast_pattern,
+    build_index_transcript,
+    is_downloaded,
+    list_show_stems,
+    load_best_source,
+    scan_show_stems,
+)
 
 __all__ = ["get_index_store"]
 
@@ -43,210 +64,6 @@ def get_index_store():
     from podcodex.rag.index_store import get_index_store as _get_index_store
 
     return _get_index_store()
-
-
-# Single source of truth — keeping this aligned with the scanner's set
-# avoids "is_downloaded says yes, scanner says no" mismatches that hid
-# yt-dlp output behind missing-ffmpeg failures.
-AUDIO_EXTS = AUDIO_EXTENSIONS
-
-
-def list_show_stems(show_folder: Path) -> frozenset[str]:
-    """One-shot listing of stems on disk in a show folder.
-
-    Pass into :func:`episode_stem` / :func:`rss_episode_to_out` from any
-    loop that processes many episodes — without it, each call inside the
-    loop would do its own ``os.scandir``. Frozen so episode_stem's suffix
-    lookup can memoize an index keyed on it.
-    """
-    import os
-
-    stems: set[str] = set()
-    try:
-        with os.scandir(show_folder) as it:
-            for entry in it:
-                name = entry.name
-                if entry.is_dir(follow_symlinks=False):
-                    if not name.startswith("."):
-                        stems.add(name)
-                    continue
-                if not entry.is_file(follow_symlinks=False):
-                    continue
-                dot = name.rfind(".")
-                if dot > 0 and name[dot:].lower() in AUDIO_EXTENSIONS:
-                    stems.add(name[:dot])
-    except OSError:
-        pass
-    return frozenset(stems)
-
-
-def _build_source_chain(
-    audio_path: str | None,
-    output_dir: str | None,
-    step: str,
-    model: str | None,
-    mode: str | None,
-) -> list[str] | None:
-    """Build a source chain by looking up the input version's chain and appending this step.
-
-    Returns e.g. ["youtube-subtitles", "ollama/qwen3:4b", "openai/gpt-4"].
-    """
-    try:
-        from podcodex.core._utils import AudioPaths
-        from podcodex.core.versions import get_latest_provenance
-
-        p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-
-        # Find the input version — walk backwards through the pipeline
-        input_prov = None
-        if step == "corrected":
-            input_prov = get_latest_provenance(p.base, "transcript")
-        else:
-            # Translate and others: try corrected first, then transcript
-            input_prov = get_latest_provenance(
-                p.base, "corrected"
-            ) or get_latest_provenance(p.base, "transcript")
-
-        # Get existing chain or start from the input's source
-        prev_chain: list[str] = []
-        if input_prov:
-            input_params = input_prov.get("params") or {}
-            prev_chain = list(input_params.get("source_chain", []))
-            if not prev_chain:
-                # Legacy: build chain from source field
-                source = input_params.get("source")
-                if source:
-                    prev_chain = [source]
-
-        # Append this step's identifier
-        step_id = model or mode or step
-        return prev_chain + [step_id] if prev_chain else None
-    except Exception:
-        logger.opt(exception=True).debug("source chain build failed for {}", audio_path)
-        return None
-
-
-def transcribe_prov_params(
-    diarize: bool, source: str = "whisper", model: str | None = None, **extra: object
-) -> dict:
-    """Build provenance params for a transcribe step.
-
-    Also builds a source_chain entry like ``"whisper/large-v3-turbo, diarized"``.
-    """
-    d: dict = {"diarize": diarize, "source": source}
-    # Build a descriptive source chain entry for downstream steps
-    label = f"{source}/{model}" if model else source
-    if diarize:
-        label += ", diarized"
-    d["source_chain"] = [label]
-    d.update(extra)
-    return d
-
-
-def llm_prov_params(
-    mode: str,
-    provider_profile: str | None = None,
-    key_name: str | None = None,
-    **extra: object,
-) -> dict:
-    """Build the LLM portion of provenance params."""
-    d: dict = {"llm_mode": mode}
-    if provider_profile:
-        d["llm_provider_profile"] = provider_profile
-    if key_name:
-        d["llm_key_name"] = key_name
-    d.update(extra)
-    return d
-
-
-def build_provenance(
-    step: str,
-    ptype: str = "raw",
-    model: str | None = None,
-    params: dict | None = None,
-    manual_edit: bool = False,
-    audio_path: str | None = None,
-    output_dir: str | None = None,
-) -> dict:
-    """Build a standard provenance dict for version tracking.
-
-    When *audio_path* or *output_dir* is provided and the step is not
-    ``transcript``, a ``source_chain`` is built by looking up the input
-    version's chain and appending this step's model/mode identifier.
-    """
-    params = dict(params) if params else {}
-    # A hand-edited version is "validated" by definition, and the two flags
-    # must agree: `is_edited` reads either, but only the type reaches the
-    # filename, so a manual edit typed "raw" is indistinguishable from model
-    # output once the DB is rebuilt from disk. Enforced here rather than at
-    # each caller, which is how /translate/save-manual drifted.
-    if manual_edit:
-        ptype = "validated"
-    if (
-        step != "transcript"
-        and "source_chain" not in params
-        and (audio_path or output_dir)
-    ):
-        chain = _build_source_chain(
-            audio_path, output_dir, step, model, params.get("llm_mode")
-        )
-        if chain:
-            params["source_chain"] = chain
-    return {
-        "step": step,
-        "type": ptype,
-        "model": model,
-        "params": params,
-        "manual_edit": manual_edit,
-    }
-
-
-def build_edit_provenance(
-    step: str,
-    audio_path: str | None,
-    output_dir: str | None,
-) -> dict:
-    """Build provenance for a manual edit by inheriting from the latest version of the same step.
-
-    Edited versions keep the same model/params/source_chain as their parent
-    so their label reflects the pipeline that produced them, just marked as
-    ``type=validated`` + ``manual_edit=True``.
-    """
-    from podcodex.core._utils import AudioPaths
-    from podcodex.core.versions import get_latest_provenance
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    parent = get_latest_provenance(p.base, step) or {}
-    return {
-        "step": step,
-        "type": "validated",
-        "model": parent.get("model"),
-        "params": dict(parent.get("params") or {}),
-        "manual_edit": True,
-    }
-
-
-def enrich_correct_kwargs(
-    audio_path: str | None,
-    output_dir: str | None,
-    fallback_source_lang: str,
-) -> dict:
-    """Look up transcript provenance and return kwargs for correct_segments.
-
-    Returns dict with ``source_lang``, ``engine``, ``engine_model``.
-    """
-    from podcodex.core._utils import AudioPaths
-    from podcodex.core.correct import transcript_provenance_info
-    from podcodex.core.versions import get_latest_provenance
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    tc_prov = get_latest_provenance(p.base, "transcript")
-    tc_info = transcript_provenance_info(tc_prov)
-    return {
-        "source_lang": tc_info["language"] or fallback_source_lang,
-        "engine": tc_info["source"],
-        "engine_model": tc_info["model"],
-    }
 
 
 def batch_progress(progress_cb, start: float = 0.1, end: float = 0.9):
@@ -342,30 +159,30 @@ def resolve_inside_show_root(path: str) -> Path:
     return p
 
 
-def is_downloaded(show_folder: Path, stem: str) -> bool:
-    """Check if an audio file with the given stem exists in the show folder."""
-    from podcodex.core.delete_episode import episode_audio_file
-
-    return episode_audio_file(show_folder, stem) is not None
-
-
 def rss_episode_to_out(
     ep: RSSEpisode,
     show_folder: Path,
     *,
     existing_stems: frozenset[str] | None = None,
+    audio_stems: frozenset[str] | None = None,
 ) -> dict:
     """Convert an RSSEpisode to an RSSEpisodeOut dict.
 
-    Loop callers should pre-compute ``existing_stems`` once via
-    ``_list_show_stems`` (or equivalent) and pass it in to avoid an
-    ``os.scandir`` per episode inside ``episode_stem``.
+    Loop callers should take both sets from :func:`scan_show_stems` once and
+    pass them in: without ``existing_stems`` every call does its own
+    ``os.scandir`` inside ``episode_stem``, and without ``audio_stems`` the
+    downloaded flag relists and stats the entire show folder per episode.
     """
     stem = episode_stem(ep, show_folder, existing_stems=existing_stems)
+    downloaded = (
+        stem in audio_stems
+        if audio_stems is not None
+        else is_downloaded(show_folder, stem)
+    )
     return {
         **asdict(ep),
         "local_stem": stem,
-        "downloaded": is_downloaded(show_folder, stem),
+        "downloaded": downloaded,
     }
 
 
@@ -459,182 +276,6 @@ def annotate_flags(segments: list[dict]) -> list[dict]:
     for seg in segments:
         seg["flagged"] = is_flagged(seg)
     return segments
-
-
-def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
-    """Resolve source segments from the version DB.
-
-    Returns (segments, source_label). ``auto`` is ``versions.resolve_canonical_ref``,
-    the single definition of the canonical seglist (verified pointer, then
-    edited-first ``corrected``, then newest ``transcript``), so index,
-    translate, synthesize and the batch runner pick the same version the
-    speaker roster does. Raises ValueError if nothing found.
-    """
-    from podcodex.core._utils import normalize_lang
-    from podcodex.core.versions import (
-        load_latest,
-        load_version,
-        resolve_canonical_ref,
-    )
-
-    if source == "auto":
-        ref = resolve_canonical_ref(p.base)
-        if ref is not None:
-            step, vid = ref
-            try:
-                segs = load_version(p.base, step, vid)
-            except FileNotFoundError:
-                segs = None
-            if segs:
-                return segs, step
-        # The canonical ref is DB-only, so its file can be missing or
-        # truncated (a sync conflict). Walk the remaining versions rather
-        # than fail while a readable transcript sits on disk.
-        for step in ("corrected", "transcript"):
-            segs = load_latest(p.base, step)
-            if segs:
-                return segs, step
-        raise ValueError("No transcript found — transcribe first")
-
-    # Explicit steps read from ``p.base`` directly. Going through the audio
-    # path would rebuild AudioPaths from ``p.audio_path``, which for an
-    # output_dir-only episode (no audio; the synthetic path *is* the base)
-    # lands one level too deep and never finds the transcript.
-    if source == "transcript":
-        segs = load_latest(p.base, "transcript")
-        if segs:
-            return segs, "transcript"
-        raise ValueError("No transcript found — transcribe first")
-
-    if source == "corrected":
-        segs = load_latest(p.base, "corrected")
-        if segs:
-            return segs, "corrected"
-        raise ValueError("No corrected segments found")
-
-    # Language code
-    lang_norm = normalize_lang(source)
-    segs = load_latest(p.base, lang_norm)
-    if segs:
-        return segs, lang_norm
-    raise ValueError(f"No translation found for '{source}'")
-
-
-def load_best_source(
-    audio_path: str | None = None, output_dir: str | None = None
-) -> list[dict]:
-    """Load the canonical source segments (see ``_resolve_source_segments``).
-
-    Raises ValueError if no source segments are found.
-    """
-    from podcodex.core._utils import AudioPaths
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    segments, _ = _resolve_source_segments(p, "auto")
-    return segments
-
-
-def build_index_transcript(
-    audio_path: str | None,
-    show_name: str,
-    stem: str,
-    segments: list[dict] | None = None,
-    source: str = "auto",
-    output_dir: str | None = None,
-) -> dict:
-    """Build the transcript dict expected by vectorize_batch.
-
-    If *segments* are provided directly (e.g. from version DB), wraps them.
-    Otherwise resolves from the version DB (corrected > transcript fallback).
-    Injects RSS metadata (title, pub_date, episode_number) when available.
-    """
-    from podcodex.core._utils import AudioPaths
-    from podcodex.ingest.rss import load_episode_meta
-
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-
-    if segments is None:
-        segments, source = _resolve_source_segments(p, source)
-
-    transcript: dict = {
-        "meta": {"show": show_name, "episode": stem, "source": source},
-        "segments": segments,
-    }
-
-    # Inject RSS metadata
-    ep_meta = load_episode_meta(p.base.parent)
-    if ep_meta:
-        if ep_meta.title:
-            transcript["meta"].setdefault("rss_title", ep_meta.title)
-        if ep_meta.pub_date:
-            transcript["meta"].setdefault("rss_pub_date", ep_meta.pub_date)
-        if ep_meta.episode_number is not None:
-            transcript["meta"].setdefault("episode_number", ep_meta.episode_number)
-        if ep_meta.description:
-            transcript["meta"].setdefault("rss_description", ep_meta.description)
-        # Media pointers for the Discord bot (index-only): episode artwork, the
-        # RSS enclosure to link, and the explicit YouTube video id so the bot
-        # can build a timestamped watch link.
-        if ep_meta.artwork_url:
-            transcript["meta"].setdefault("rss_artwork_url", ep_meta.artwork_url)
-        if ep_meta.audio_url:
-            transcript["meta"].setdefault("rss_audio_url", ep_meta.audio_url)
-        if ep_meta.youtube_id:
-            transcript["meta"].setdefault("youtube_id", ep_meta.youtube_id)
-
-    # Broadcast (airing) number: extracted from the episode title using the
-    # show's configured regex, when set. Distinct from the per-season
-    # episode_number. Absent for shows with no pattern.
-    bnum = _extract_broadcast_number(p.show_dir, ep_meta.title if ep_meta else "")
-    if bnum is not None:
-        transcript["meta"].setdefault("broadcast_number", bnum)
-
-    return transcript
-
-
-def apply_broadcast_pattern(pattern: str, title: str) -> int | None:
-    """Apply *pattern* to *title*, returning the first capture group as an int.
-
-    Returns ``None`` when the pattern or title is empty, the pattern has no
-    capture group, the pattern does not match, or the captured group is not an
-    integer. Raises ``re.error`` when the pattern itself is invalid, even for
-    an empty title, so callers can always surface a bad regex (e.g. the live
-    preview must not silently accept one on a show with no titled episode).
-    """
-    if not pattern:
-        return None
-    compiled = re.compile(pattern)  # raises re.error on a bad pattern
-    if not title:
-        return None
-    m = compiled.search(title)
-    if not m or not m.lastindex:
-        return None
-    try:
-        return int(m.group(1))
-    except ValueError:
-        return None
-
-
-def _extract_broadcast_number(show_dir: Path, title: str) -> int | None:
-    """Apply the show's ``broadcast_number_pattern`` to *title*, if configured.
-
-    Returns the first captured group as an int, or ``None`` when the show has
-    no pattern, the title is empty, or the pattern does not match. Invalid
-    patterns are swallowed (indexing must never crash on a bad regex).
-    """
-    if not title:
-        return None
-    try:
-        from podcodex.ingest.show import load_show_meta
-
-        meta = load_show_meta(show_dir)
-    except Exception:
-        return None
-    pattern = meta.broadcast_number_pattern if meta else ""
-    try:
-        return apply_broadcast_pattern(pattern, title)
-    except re.error:
-        return None
 
 
 # ── Shared request models ──────────────────────

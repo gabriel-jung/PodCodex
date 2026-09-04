@@ -27,11 +27,9 @@ def run(
     overwrite: bool,
 ) -> dict[str, Any]:
     """Vectorize one episode. Returns ``{chunks_upserted, source}``."""
-    from podcodex.api.routes._helpers import (
-        build_index_transcript,
-        build_provenance,
-        get_index_store,
-    )
+    from podcodex.core.provenance import build_provenance
+    from podcodex.core.source import build_index_transcript
+    from podcodex.rag.index_store import get_index_store
     from podcodex.core._utils import AudioPaths
     from podcodex.core.pipeline_db import mark_step
     from podcodex.core.versions import load_version_by_id
@@ -140,11 +138,9 @@ def run_for_batch(
     episode had no segments to vectorize or when everything is already
     indexed and ``force`` is False.
     """
-    from podcodex.api.routes._helpers import (
-        build_index_transcript,
-        build_provenance,
-        get_index_store,
-    )
+    from podcodex.core.provenance import build_provenance
+    from podcodex.core.source import build_index_transcript
+    from podcodex.rag.index_store import get_index_store
     from podcodex.core._utils import AudioPaths
     from podcodex.core.pipeline_db import mark_step
     from podcodex.ingest.show_registry import show_id_for_label

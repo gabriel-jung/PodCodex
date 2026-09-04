@@ -322,9 +322,9 @@ class RegistrationMixin:
             model="Default search model for this server",
             chunker="How transcripts are split up for search",
             top_k="How many results to show by default",
-            show_add="Always search this show by default",
-            show_remove="Stop searching this show by default",
-            show_clear="Remove all default shows (search everything)",
+            show_add="Pin this show as a default for commands that need one",
+            show_remove="Unpin this show as a default",
+            show_clear="Unpin every default show",
             default_source="Default source to search: corrected, transcript, etc.",
             compact="Use compact results by default",
         )
@@ -355,7 +355,7 @@ class RegistrationMixin:
                 compact=compact,
             )
 
-        setup.autocomplete("show_add")(self._show_autocomplete)
+        setup.autocomplete("show_add")(self._any_show_autocomplete)
         setup.autocomplete("show_remove")(self._pinned_show_autocomplete)
         setup.autocomplete("default_source")(self._source_autocomplete)
         setup.autocomplete("model")(self._model_autocomplete)
@@ -431,7 +431,7 @@ class RegistrationMixin:
         ) -> None:
             await self._handle_lock(interaction, show)
 
-        lock.autocomplete("show")(self._pinned_show_autocomplete)
+        lock.autocomplete("show")(self._unlocked_show_autocomplete)
 
         # /changepassword ─────────────────────
         @self.tree.command(
@@ -446,7 +446,7 @@ class RegistrationMixin:
         ) -> None:
             await self._handle_changepassword(interaction, show)
 
-        changepassword.autocomplete("show")(self._pinned_show_autocomplete)
+        changepassword.autocomplete("show")(self._unlocked_show_autocomplete)
 
         # /help ───────────────────────────────
         @self.tree.command(
@@ -459,11 +459,15 @@ class RegistrationMixin:
                 description="Search and explore your podcast transcripts.",
                 color=discord.Color.blurple(),
             )
+            # The plain commands take only a query. Everything else — the
+            # filters and the retrieval tuning — lives on the -advanced twins,
+            # so document them there: this text used to promise `alpha` on
+            # /search and filters on /random, neither of which accepts one.
             embed.add_field(
                 name="/search `question`",
                 value=(
-                    "Find relevant passages using a mix of keyword and semantic search.\n"
-                    "`alpha` controls the blend: 0 = keywords only, 1 = meaning only (default 0.5)."
+                    "Find relevant passages using a mix of keyword and semantic "
+                    "search, with this server's defaults."
                 ),
                 inline=False,
             )
@@ -474,7 +478,20 @@ class RegistrationMixin:
             )
             embed.add_field(
                 name="/random",
-                value="Pull a random quote — optionally filter by show, episode, or speaker.",
+                value="Pull a random quote from everything this server can see.",
+                inline=False,
+            )
+            embed.add_field(
+                name="/search-advanced · /exact-advanced · /random-advanced",
+                value=(
+                    "The same three searches with every option: filter by "
+                    "`show`, `episode`, `speaker`, `source` and a publication "
+                    "date range (`after` / `before`), and override `model`, "
+                    "`chunker`, `top_k` and `compact`.\n"
+                    "`/search-advanced` also takes `alpha`, which blends the "
+                    "two halves of the search: 0 = keywords only, 1 = meaning "
+                    "only (default 0.5)."
+                ),
                 inline=False,
             )
             embed.add_field(
@@ -499,8 +516,11 @@ class RegistrationMixin:
             embed.add_field(
                 name="/setup *(admin)*",
                 value=(
-                    "Configure server defaults: model, top-k, "
-                    "default source, compact mode."
+                    "Configure server defaults: model, chunker, top-k, default "
+                    "source, compact mode, and the shows pinned as this "
+                    "server's defaults (`show_add` / `show_remove` / "
+                    "`show_clear`). Pinning is not access: a password-protected "
+                    "show still has to be unlocked."
                 ),
                 inline=False,
             )
@@ -520,7 +540,7 @@ class RegistrationMixin:
                 )
                 embed.add_field(
                     name="/lock *(admin)*",
-                    value="Remove a show from this server.",
+                    value="Revoke a password-protected show unlocked here.",
                     inline=False,
                 )
                 embed.add_field(

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
+import { useEpisodeStore, useEpisodeRef, usePipelineConfigStore } from "@/stores";
 import {
   deleteTranslateVersion,
   getTranslateSegments,
@@ -45,7 +45,9 @@ const langKey = (lang: string | undefined | null) => (lang ?? "").toLowerCase().
 export default function TranslatePanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
-  const audioPath = useAudioPath();
+  const ref = useEpisodeRef();
+  const { audioPath, outputDir, sourceRef } = ref;
+  const od = outputDir ?? undefined;
 
   const queryClient = useQueryClient();
   const targetLang = usePipelineConfigStore((s) => s.targetLang);
@@ -62,7 +64,7 @@ export default function TranslatePanel() {
   // segments for a language that is gone.
   const activeLang = translations.includes(editingLang) ? editingLang : (translations[0] ?? "");
 
-  const task = usePipelineTask(audioPath, "translate", {
+  const task = usePipelineTask(ref, "translate", {
     onComplete: () => setEditingLang(langKey(targetLang)),
     targetStem: episode?.stem,
     optimisticPatch: (ep) => {
@@ -95,14 +97,14 @@ export default function TranslatePanel() {
     audioPath,
     "translate",
     !!episode?.transcribed && expanded,
-    undefined,
+    outputDir,
     episode?.verified ?? null,
   );
 
   const startMutation = useMutation({
     mutationFn: () =>
       startTranslate({
-        ...buildLLMRequest(audioPath!, config),
+        ...buildLLMRequest(ref, config),
         target_lang: targetLang,
         source_version_id: sourceVersionId ?? undefined,
       }),
@@ -110,15 +112,15 @@ export default function TranslatePanel() {
   });
 
   const { data: translateFailures } = useQuery({
-    queryKey: queryKeys.llmFailuresTranslate(audioPath, activeLang),
-    queryFn: () => getTranslateFailures(audioPath!, activeLang),
-    enabled: !!audioPath && !!activeLang,
+    queryKey: queryKeys.llmFailuresTranslate(sourceRef, activeLang),
+    queryFn: () => getTranslateFailures(audioPath, activeLang, od),
+    enabled: !!sourceRef && !!activeLang,
   });
   const dismissFailures = useMutation({
-    mutationFn: () => dismissTranslateFailures(audioPath!, activeLang),
+    mutationFn: () => dismissTranslateFailures(audioPath, activeLang, od),
     meta: {
       invalidates: [
-        queryKeys.llmFailuresTranslate(audioPath, activeLang),
+        queryKeys.llmFailuresTranslate(sourceRef, activeLang),
         // Overview's "Rejected batches" section reads episode.llm_failed_steps.
         queryKeys.episodesAll(),
       ],
@@ -227,7 +229,8 @@ export default function TranslatePanel() {
                     batchMinutes={config.batchMinutes}
                     generatePrompts={(batchMinutes) =>
                       getTranslateManualPrompts({
-                        audio_path: audioPath!,
+                        audio_path: ref.taskKey ?? undefined,
+                        output_dir: od,
                         context: config.context,
                         source_lang: config.sourceLang,
                         target_lang: targetLang,
@@ -238,7 +241,8 @@ export default function TranslatePanel() {
                     }
                     applyCorrections={(corrections) =>
                       applyTranslateManual({
-                        audio_path: audioPath!,
+                        audio_path: ref.taskKey ?? undefined,
+                        output_dir: od,
                         lang: targetLang,
                         corrections,
                         // Same source the prompts were built from: the backend
@@ -269,8 +273,15 @@ export default function TranslatePanel() {
             onDismiss={() => dismissFailures.mutate()}
             dismissing={dismissFailures.isPending}
             onApplyFixes={async (fixes) => {
-              await applyTranslateBatches({ audio_path: audioPath!, lang: activeLang, fixes });
-              queryClient.invalidateQueries({ queryKey: queryKeys.llmFailuresTranslate(audioPath, activeLang) });
+              await applyTranslateBatches({
+                audio_path: ref.taskKey ?? undefined,
+                output_dir: od,
+                lang: activeLang,
+                fixes,
+              });
+              queryClient.invalidateQueries({
+                queryKey: queryKeys.llmFailuresTranslate(sourceRef, activeLang),
+              });
               task.refreshQueries();
             }}
           />
@@ -280,8 +291,9 @@ export default function TranslatePanel() {
         <TranscriptViewer
           editorKey={`translate-${activeLang}`}
           audioPath={audioPath ?? undefined}
-          loadSegments={() => getTranslateSegments(audioPath!, activeLang)}
-          saveSegments={(segs) => saveTranslateSegments(audioPath!, activeLang, segs)}
+          sourceRef={sourceRef ?? undefined}
+          loadSegments={() => getTranslateSegments(audioPath, activeLang, od)}
+          saveSegments={(segs) => saveTranslateSegments(audioPath, activeLang, segs, od)}
           onSaved={handleSaved}
           exportSource={`translated_${activeLang}`}
           exportFilename={episode.stem ? `${episode.stem}_${activeLang}` : undefined}
@@ -292,9 +304,9 @@ export default function TranslatePanel() {
           referenceLabel="Source text"
           defaultShowDiff={false}
           speakers={showMeta?.speakers}
-          loadVersions={() => getTranslateVersions(audioPath!, activeLang)}
-          loadVersion={(id) => loadTranslateVersion(audioPath!, activeLang, id)}
-          deleteVersion={(id) => deleteTranslateVersion(audioPath!, activeLang, id)}
+          loadVersions={() => getTranslateVersions(audioPath, activeLang, od)}
+          loadVersion={(id) => loadTranslateVersion(audioPath, activeLang, id, od)}
+          deleteVersion={(id) => deleteTranslateVersion(audioPath, activeLang, id, od)}
         />
       )}
     </PipelinePanel>

@@ -245,7 +245,7 @@ def _stale_feed_guids(show_dir: Path, stem: str) -> list[str]:
     documented behavior and what the confirm dialog promises; pruning it here
     would only make it blink out and come back.
     """
-    from podcodex.api.routes._helpers import list_show_stems
+    from podcodex.core.source import list_show_stems
     from podcodex.ingest.rss import episode_stem, load_feed_cache
 
     cached = load_feed_cache(show_dir)

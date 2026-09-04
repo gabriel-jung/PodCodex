@@ -59,7 +59,7 @@ def run_generate(
         load_latest as _load_latest,
         load_version_by_id,
     )
-    from podcodex.api.routes._helpers import load_best_source
+    from podcodex.core.source import load_best_source
 
     progress_cb(0.0, "Loading source segments...")
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)

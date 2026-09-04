@@ -5,13 +5,13 @@ Covers ``POST /api/shows/{folder}/episodes/delete``,
 ``DELETE /api/shows/artwork``.
 """
 
-from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
 import pytest
 
 from tests.fixtures.api_client import make_client
+from tests.fixtures.tasks import active_task
 
 
 class FakeIndexStore:
@@ -62,27 +62,6 @@ def store(monkeypatch):
     fake = FakeIndexStore()
     monkeypatch.setattr(index_store_mod, "get_index_store", lambda *a, **k: fake)
     return fake
-
-
-@contextmanager
-def active_task(key: str, task_id: str = "t1"):
-    """Register a running task holding ``key``, and always release it.
-
-    Pokes ``task_manager`` internals because there is no public way to fake a
-    running task; the teardown matters, since a leaked lock would make every
-    later delete in the session 409.
-    """
-    from podcodex.api.tasks import TaskInfo, task_manager
-
-    info = TaskInfo(task_id=task_id, audio_path=key)
-    info.status = "running"
-    task_manager._tasks[task_id] = info
-    task_manager.lock(key, task_id)
-    try:
-        yield
-    finally:
-        task_manager.unlock(key)
-        task_manager._tasks.pop(task_id, None)
 
 
 @pytest.fixture

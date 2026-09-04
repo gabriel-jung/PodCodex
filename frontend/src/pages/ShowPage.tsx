@@ -575,6 +575,7 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
             missingSubs: missingSubsSelected,
           }}
           isYouTube={isYouTube}
+          folder={folder}
           language={meta?.language || ""}
           busy={{
             downloadTask: !!downloadTaskId,
@@ -958,6 +959,8 @@ interface SelectionActionsProps {
     missingSubs: Episode[];
   };
   isYouTube: boolean;
+  /** Show folder, for the batch editor's folder-scoped versions request. */
+  folder: string;
   language: string;
   busy: {
     downloadTask: boolean;
@@ -978,6 +981,7 @@ function SelectionActions({
   filtered,
   buckets,
   isYouTube,
+  folder,
   language,
   busy,
   onClear,
@@ -1032,6 +1036,7 @@ function SelectionActions({
       <PipelineButtons
         disabled={batchable.length === 0 || busy.batchTask || busy.batch}
         episodes={batchable}
+        folder={folder}
         showLanguage={language}
         onRun={onRun}
       />

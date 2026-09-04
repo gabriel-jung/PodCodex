@@ -3,6 +3,7 @@ import { useDirtyEdit } from "@/lib/dirtyEdits";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { ShowMeta } from "@/api/types";
+import type { ShowMetaUpdate } from "@/api/shows";
 import { updateShowMeta, moveShow, deleteShow, previewBroadcastNumber, uploadShowArtwork, deleteShowArtwork } from "@/api/client";
 import { artworkUrl as showArtworkEndpoint } from "@/api/filesystem";
 import { LOCAL_ARTWORK_MARKER } from "@/lib/showArtwork";
@@ -35,40 +36,139 @@ function sameModels(a: Record<string, string>, b: Record<string, string>): boole
   return ka.every((k) => a[k] === b[k]);
 }
 
+/** The editable form state, in one place.
+ *
+ *  Every `show.toml` field the panel edits appears here exactly once, so
+ *  adding one means touching this type and `toDraft`/`draftToUpdate` — not
+ *  five scattered lists that a miss leaves silently out of sync. Empty
+ *  string / null throughout means "inherit the app default" (Settings →
+ *  Pipeline), which is what the server stores too. */
+interface Draft {
+  name: string;
+  language: string;
+  rssUrl: string;
+  youtubeUrl: string;
+  artworkUrl: string;
+  broadcastPattern: string;
+  pipeModelSize: string;
+  pipeDiarize: boolean | null;
+  pipeNumSpeakers: string;
+  pipeLlmMode: string;
+  pipeLlmProviderProfile: string;
+  pipeLlmKeyName: string;
+  pipeLlmModels: Record<string, string>;
+  /** Kept as the raw input string; parsed to a number only on save. */
+  pipeLlmBatchMinutes: string;
+  pipeContext: string;
+  pipeTargetLang: string;
+  pipeRagModel: string;
+  pipeRagChunker: string;
+}
+
+/** Server metadata → form state. Also the baseline the dirty check compares
+ *  against, so the two can never disagree about what a field's default is. */
+function toDraft(meta: ShowMeta): Draft {
+  const p = meta.pipeline;
+  return {
+    name: meta.name,
+    language: meta.language,
+    rssUrl: meta.rss_url,
+    youtubeUrl: meta.youtube_url ?? "",
+    artworkUrl: meta.artwork_url,
+    broadcastPattern: meta.broadcast_number_pattern ?? "",
+    pipeModelSize: p?.model_size ?? "",
+    pipeDiarize: p?.diarize ?? null,
+    pipeNumSpeakers: p?.num_speakers ?? "",
+    pipeLlmMode: p?.llm_mode ?? "",
+    pipeLlmProviderProfile: p?.llm_provider_profile ?? "",
+    pipeLlmKeyName: p?.llm_key_name ?? "",
+    pipeLlmModels: p?.llm_models_by_mode ?? {},
+    pipeLlmBatchMinutes: p?.llm_batch_minutes != null ? String(p.llm_batch_minutes) : "",
+    pipeContext: p?.context ?? "",
+    pipeTargetLang: p?.target_lang ?? "",
+    pipeRagModel: p?.rag_model ?? "",
+    pipeRagChunker: p?.rag_chunker ?? "",
+  };
+}
+
+/** Field-wise equality. Every key but the model stash compares by value; that
+ *  one ignores blank entries, since an empty per-mode model means the same
+ *  thing as an absent one. */
+function sameDraft(a: Draft, b: Draft): boolean {
+  return (Object.keys(a) as (keyof Draft)[]).every((k) =>
+    k === "pipeLlmModels"
+      ? sameModels(a.pipeLlmModels, b.pipeLlmModels)
+      : a[k] === b[k],
+  );
+}
+
+/** Form state → the PUT body. */
+function draftToUpdate(d: Draft, speakers: string[]): ShowMetaUpdate {
+  const trimmed = d.pipeLlmBatchMinutes.trim();
+  const batchMinutes = Number(trimmed);
+  return {
+    name: d.name,
+    language: d.language,
+    rss_url: d.rssUrl,
+    youtube_url: d.youtubeUrl,
+    speakers,
+    artwork_url: d.artworkUrl,
+    broadcast_number_pattern: d.broadcastPattern,
+    pipeline: {
+      model_size: d.pipeModelSize,
+      diarize: d.pipeDiarize,
+      num_speakers: d.pipeNumSpeakers,
+      llm_mode: d.pipeLlmMode,
+      llm_provider_profile: d.pipeLlmProviderProfile,
+      llm_key_name: d.pipeLlmKeyName,
+      llm_models_by_mode: d.pipeLlmModels,
+      llm_batch_minutes:
+        trimmed !== "" && Number.isFinite(batchMinutes) && batchMinutes > 0
+          ? batchMinutes
+          : null,
+      context: d.pipeContext,
+      target_lang: d.pipeTargetLang,
+      rag_model: d.pipeRagModel,
+      rag_chunker: d.pipeRagChunker,
+    },
+  };
+}
+
 export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  // ── Show info ──
-  const [name, setName] = useState(meta.name);
-  const [language, setLanguage] = useState(meta.language);
-  const [rssUrl, setRssUrl] = useState(meta.rss_url);
-  const [youtubeUrl, setYoutubeUrl] = useState(meta.youtube_url ?? "");
-  const [artworkUrl, setArtworkUrl] = useState(meta.artwork_url);
-  // Mirrors of the above for the resync effect, which must not take artworkUrl
-  // as a dependency (it sets it).
+  // One draft, not one useState per field. Eighteen mirrors had to be listed
+  // in the initialiser, the resync, the dirty predicate, the save payload and
+  // the autosave dependency array; missing one place was silent — an unsynced
+  // field saved back stale, an unlisted one never autosaved at all.
+  const [draft, setDraft] = useState<Draft>(() => toDraft(meta));
+  const patch = (p: Partial<Draft>) => setDraft((d) => ({ ...d, ...p }));
+  const {
+    name,
+    language,
+    rssUrl,
+    youtubeUrl,
+    artworkUrl,
+    broadcastPattern,
+    pipeModelSize,
+    pipeDiarize,
+    pipeNumSpeakers,
+    pipeLlmMode,
+    pipeLlmProviderProfile,
+    pipeLlmKeyName,
+    pipeLlmModels,
+    pipeLlmBatchMinutes,
+    pipeContext,
+    pipeTargetLang,
+    pipeRagModel,
+    pipeRagChunker,
+  } = draft;
+  // Mirror for the resync effect, which must not take artworkUrl as a
+  // dependency (it sets it).
   const artworkUrlRef = useRef(artworkUrl);
   // True only while the user has typed a URL that has not reached the server.
   const artworkTouchedRef = useRef(false);
-  const [broadcastPattern, setBroadcastPattern] = useState(meta.broadcast_number_pattern ?? "");
-  // ── Per-show pipeline config (show.toml [pipeline]) ──
-  // Empty string / null means "inherit the app default" (Settings, Pipeline).
-  const [pipeModelSize, setPipeModelSize] = useState(meta.pipeline?.model_size ?? "");
-  const [pipeDiarize, setPipeDiarize] = useState<boolean | null>(meta.pipeline?.diarize ?? null);
-  const [pipeNumSpeakers, setPipeNumSpeakers] = useState(meta.pipeline?.num_speakers ?? "");
-  const [pipeLlmMode, setPipeLlmMode] = useState(meta.pipeline?.llm_mode ?? "");
-  const [pipeLlmProviderProfile, setPipeLlmProviderProfile] = useState(meta.pipeline?.llm_provider_profile ?? "");
-  const [pipeLlmKeyName, setPipeLlmKeyName] = useState(meta.pipeline?.llm_key_name ?? "");
-  const [pipeLlmModels, setPipeLlmModels] = useState<Record<string, string>>(
-    meta.pipeline?.llm_models_by_mode ?? {},
-  );
-  const [pipeLlmBatchMinutes, setPipeLlmBatchMinutes] = useState<string>(
-    meta.pipeline?.llm_batch_minutes != null ? String(meta.pipeline.llm_batch_minutes) : "",
-  );
-  const [pipeContext, setPipeContext] = useState(meta.pipeline?.context ?? "");
-  const [pipeTargetLang, setPipeTargetLang] = useState(meta.pipeline?.target_lang ?? "");
-  const [pipeRagModel, setPipeRagModel] = useState(meta.pipeline?.rag_model ?? "");
-  const [pipeRagChunker, setPipeRagChunker] = useState(meta.pipeline?.rag_chunker ?? "");
 
   const { data: indexConfig } = useIndexConfig();
   const { whisperModels } = useLLMProviders();
@@ -86,7 +186,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       // form stays dirty against the refetched meta and the debounced save
       // PUTs the pre-upload artwork_url back, orphaning the uploaded file.
       artworkTouchedRef.current = false;
-      setArtworkUrl(LOCAL_ARTWORK_MARKER);
+      patch({ artworkUrl: LOCAL_ARTWORK_MARKER });
       queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
     },
@@ -116,7 +216,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       // Same reason the upload adopts the marker: leaving the old value in the
       // form would let the debounced save PUT it straight back.
       artworkTouchedRef.current = false;
-      setArtworkUrl("");
+      patch({ artworkUrl: "" });
       queryClient.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
     },
@@ -160,83 +260,18 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
     if (artworkTouchedRef.current) {
       if (artworkUrlRef.current === meta.artwork_url) artworkTouchedRef.current = false;
     } else if (artworkUrlRef.current !== meta.artwork_url) {
-      setArtworkUrl(meta.artwork_url);
+      patch({ artworkUrl: meta.artwork_url });
     }
 
     if (sameShow && isDirtyRef.current) return;
-    setName(meta.name);
-    setLanguage(meta.language);
-    setRssUrl(meta.rss_url);
-    setYoutubeUrl(meta.youtube_url ?? "");
-    setArtworkUrl(meta.artwork_url);
-    setBroadcastPattern(meta.broadcast_number_pattern ?? "");
-    setPipeModelSize(meta.pipeline?.model_size ?? "");
-    setPipeDiarize(meta.pipeline?.diarize ?? null);
-    setPipeNumSpeakers(meta.pipeline?.num_speakers ?? "");
-    setPipeLlmMode(meta.pipeline?.llm_mode ?? "");
-    setPipeLlmProviderProfile(meta.pipeline?.llm_provider_profile ?? "");
-    setPipeLlmKeyName(meta.pipeline?.llm_key_name ?? "");
-    setPipeLlmModels(meta.pipeline?.llm_models_by_mode ?? {});
-    setPipeLlmBatchMinutes(
-      meta.pipeline?.llm_batch_minutes != null ? String(meta.pipeline.llm_batch_minutes) : "",
-    );
-    setPipeContext(meta.pipeline?.context ?? "");
-    setPipeTargetLang(meta.pipeline?.target_lang ?? "");
-    setPipeRagModel(meta.pipeline?.rag_model ?? "");
-    setPipeRagChunker(meta.pipeline?.rag_chunker ?? "");
+    setDraft(toDraft(meta));
   }, [meta, folder]);
 
-  const isDirty =
-    name !== meta.name ||
-    language !== meta.language ||
-    rssUrl !== meta.rss_url ||
-    youtubeUrl !== (meta.youtube_url ?? "") ||
-    artworkUrl !== meta.artwork_url ||
-    broadcastPattern !== (meta.broadcast_number_pattern ?? "") ||
-    pipeModelSize !== (meta.pipeline?.model_size ?? "") ||
-    pipeDiarize !== (meta.pipeline?.diarize ?? null) ||
-    pipeNumSpeakers !== (meta.pipeline?.num_speakers ?? "") ||
-    pipeLlmMode !== (meta.pipeline?.llm_mode ?? "") ||
-    pipeLlmProviderProfile !== (meta.pipeline?.llm_provider_profile ?? "") ||
-    pipeLlmKeyName !== (meta.pipeline?.llm_key_name ?? "") ||
-    !sameModels(pipeLlmModels, meta.pipeline?.llm_models_by_mode ?? {}) ||
-    pipeLlmBatchMinutes !==
-      (meta.pipeline?.llm_batch_minutes != null ? String(meta.pipeline.llm_batch_minutes) : "") ||
-    pipeContext !== (meta.pipeline?.context ?? "") ||
-    pipeTargetLang !== (meta.pipeline?.target_lang ?? "") ||
-    pipeRagModel !== (meta.pipeline?.rag_model ?? "") ||
-    pipeRagChunker !== (meta.pipeline?.rag_chunker ?? "");
+  const isDirty = !sameDraft(draft, toDraft(meta));
 
   const saveMutation = useMutation({
     mutationFn: () =>
-      updateShowMeta(folder, {
-        name,
-        language,
-        rss_url: rssUrl,
-        youtube_url: youtubeUrl,
-        speakers: meta.speakers,
-        artwork_url: artworkUrl,
-        broadcast_number_pattern: broadcastPattern,
-        pipeline: {
-          model_size: pipeModelSize,
-          diarize: pipeDiarize,
-          num_speakers: pipeNumSpeakers,
-          llm_mode: pipeLlmMode,
-          llm_provider_profile: pipeLlmProviderProfile,
-          llm_key_name: pipeLlmKeyName,
-          llm_models_by_mode: pipeLlmModels,
-          llm_batch_minutes: (() => {
-            const trimmed = pipeLlmBatchMinutes.trim();
-            if (trimmed === "") return null;
-            const n = Number(trimmed);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
-          context: pipeContext,
-          target_lang: pipeTargetLang,
-          rag_model: pipeRagModel,
-          rag_chunker: pipeRagChunker,
-        },
-      }),
+      updateShowMeta(folder, draftToUpdate(draft, meta.speakers)),
     // Cache-level: settings save is debounced and the panel can unmount (tab
     // switch, navigation) before it resolves.
     meta: {
@@ -289,7 +324,8 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   useEffect(() => {
     if (isDirty) autoSave();
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [name, language, rssUrl, youtubeUrl, artworkUrl, broadcastPattern, pipeModelSize, pipeDiarize, pipeNumSpeakers, pipeLlmMode, pipeLlmProviderProfile, pipeLlmKeyName, pipeLlmModels, pipeLlmBatchMinutes, pipeContext, pipeTargetLang, pipeRagModel, pipeRagChunker]); // eslint-disable-line react-hooks/exhaustive-deps
+    // One dependency, so a new show.toml field cannot be forgotten here.
+  }, [draft]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Set when the backend copied the show but could not delete the source: a
   // full duplicate is still on disk and only the user can remove it, so the
@@ -416,16 +452,16 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       {/* ── Show Info ── */}
       <SettingSection title="Show Info" description="Basic metadata for this show.">
         <SettingRow label="Name" help="Display name for this show.">
-          <input value={name} onChange={(e) => setName(e.target.value)} className={`input ${inputWidth.medium}`} />
+          <input value={name} onChange={(e) => patch({ name: e.target.value })} className={`input ${inputWidth.medium}`} />
         </SettingRow>
         <SettingRow label="Language" help="Primary spoken language (e.g. French, English).">
-          <input value={language} onChange={(e) => setLanguage(e.target.value)} className={`input ${inputWidth.short}`} />
+          <input value={language} onChange={(e) => patch({ language: e.target.value })} className={`input ${inputWidth.short}`} />
         </SettingRow>
         <SettingRow label="RSS URL" help="The show's RSS feed URL.">
-          <input value={rssUrl} onChange={(e) => setRssUrl(e.target.value)} placeholder="https://..." className={`input ${inputWidth.long}`} />
+          <input value={rssUrl} onChange={(e) => patch({ rssUrl: e.target.value })} placeholder="https://..." className={`input ${inputWidth.long}`} />
         </SettingRow>
         <SettingRow label="YouTube URL" help="YouTube channel or playlist URL.">
-          <input value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)} placeholder="https://youtube.com/..." className={`input ${inputWidth.long}`} />
+          <input value={youtubeUrl} onChange={(e) => patch({ youtubeUrl: e.target.value })} placeholder="https://youtube.com/..." className={`input ${inputWidth.long}`} />
         </SettingRow>
         <SettingRow label="Artwork" help="Cover image: paste a URL or upload a file.">
           <div className="flex items-center gap-2">
@@ -433,7 +469,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
               value={isLocalArtwork ? "" : artworkUrl}
               onChange={(e) => {
                 artworkTouchedRef.current = true;
-                setArtworkUrl(e.target.value);
+                patch({ artworkUrl: e.target.value });
               }}
               placeholder={isLocalArtwork ? "Uploaded image" : "https://..."}
               className={`input ${inputWidth.medium}`}
@@ -562,7 +598,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         <SettingRow label="Transcription model" help="Bigger models are more accurate but slower.">
           <select
             value={pipeModelSize}
-            onChange={(e) => setPipeModelSize(e.target.value)}
+            onChange={(e) => patch({ pipeModelSize: e.target.value })}
             className={selectClass}
           >
             <option value="">App default</option>
@@ -575,7 +611,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
           <select
             value={pipeDiarize === null ? "" : pipeDiarize ? "yes" : "no"}
             onChange={(e) =>
-              setPipeDiarize(e.target.value === "" ? null : e.target.value === "yes")
+              patch({ pipeDiarize: e.target.value === "" ? null : e.target.value === "yes" })
             }
             className={selectClass}
           >
@@ -590,7 +626,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
               type="number"
               min={1}
               value={pipeNumSpeakers}
-              onChange={(e) => setPipeNumSpeakers(e.target.value)}
+              onChange={(e) => patch({ pipeNumSpeakers: e.target.value })}
               placeholder="Auto"
               className={`input ${inputWidth.numeric}`}
             />
@@ -609,7 +645,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         >
           <select
             value={pipeLlmMode}
-            onChange={(e) => setPipeLlmMode(e.target.value)}
+            onChange={(e) => patch({ pipeLlmMode: e.target.value })}
             className={selectClass}
           >
             <option value="">App default</option>
@@ -623,7 +659,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             <SettingRow label="AI provider" help="Which provider profile to use. Manage profiles in Settings → Credentials.">
               <select
                 value={pipeLlmProviderProfile}
-                onChange={(e) => setPipeLlmProviderProfile(e.target.value)}
+                onChange={(e) => patch({ pipeLlmProviderProfile: e.target.value })}
                 className={selectClass}
               >
                 <option value="">App default</option>
@@ -637,7 +673,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             <SettingRow label="AI API key" help="Which saved API key to use. Add keys in Settings → Credentials.">
               <select
                 value={pipeLlmKeyName}
-                onChange={(e) => setPipeLlmKeyName(e.target.value)}
+                onChange={(e) => patch({ pipeLlmKeyName: e.target.value })}
                 className={selectClass}
               >
                 <option value="">App default</option>
@@ -653,7 +689,10 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             <input
               value={pipeLlmModels[pipeLlmMode] ?? ""}
               onChange={(e) =>
-                setPipeLlmModels((prev) => ({ ...prev, [pipeLlmMode]: e.target.value }))
+                setDraft((d) => ({
+                  ...d,
+                  pipeLlmModels: { ...d.pipeLlmModels, [d.pipeLlmMode]: e.target.value },
+                }))
               }
               placeholder="App default"
               className={`input ${inputWidth.short}`}
@@ -669,7 +708,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             min={1}
             step={1}
             value={pipeLlmBatchMinutes}
-            onChange={(e) => setPipeLlmBatchMinutes(e.target.value)}
+            onChange={(e) => patch({ pipeLlmBatchMinutes: e.target.value })}
             placeholder="App default"
             className={`input ${inputWidth.numeric}`}
           />
@@ -680,7 +719,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
           below={
             <textarea
               value={pipeContext}
-              onChange={(e) => setPipeContext(e.target.value)}
+              onChange={(e) => patch({ pipeContext: e.target.value })}
               placeholder="Describe the show, hosts, recurring topics..."
               className={`input resize-y ${inputWidth.full} min-h-[4rem]`}
             />
@@ -691,7 +730,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         <SettingRow label="Translate into" help="Language episodes are translated into.">
           <input
             value={pipeTargetLang}
-            onChange={(e) => setPipeTargetLang(e.target.value)}
+            onChange={(e) => patch({ pipeTargetLang: e.target.value })}
             placeholder="App default"
             className={`input ${inputWidth.short}`}
           />
@@ -734,7 +773,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         >
           <input
             value={broadcastPattern}
-            onChange={(e) => setBroadcastPattern(e.target.value)}
+            onChange={(e) => patch({ broadcastPattern: e.target.value })}
             placeholder={String.raw`\((\d+)\)`}
             spellCheck={false}
             className={`input ${inputWidth.medium} font-mono`}
@@ -746,7 +785,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         >
           <select
             value={pipeRagModel}
-            onChange={(e) => setPipeRagModel(e.target.value)}
+            onChange={(e) => patch({ pipeRagModel: e.target.value })}
             className={selectClass}
           >
             <option value="">App default (BGE-M3)</option>
@@ -761,7 +800,7 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
         >
           <select
             value={pipeRagChunker}
-            onChange={(e) => setPipeRagChunker(e.target.value)}
+            onChange={(e) => patch({ pipeRagChunker: e.target.value })}
             className={selectClass}
           >
             <option value="">App default (semantic)</option>

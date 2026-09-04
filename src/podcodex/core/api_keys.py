@@ -34,6 +34,23 @@ _KNOWN_PROVIDER_PREFIXES: dict[str, str] = {
 _API_KEY_VAR_RE = re.compile(r"^([A-Z0-9_]+)_API_KEY$")
 
 
+def read_secrets_file() -> dict[str, str]:
+    """Parse ``secrets.env`` into a dict. Empty dict if absent.
+
+    Lives here rather than in the config route because ``core`` reads it
+    too, and reaching it through ``api.routes.config`` made the base layer
+    import the whole API surface (and fastapi) to read a dotenv file.
+    """
+    from dotenv import dotenv_values
+
+    from podcodex.core.app_paths import secrets_env_path
+
+    path = secrets_env_path()
+    if not path.exists():
+        return {}
+    return {k: v for k, v in dotenv_values(path).items() if v}
+
+
 def api_keys_path() -> Path:
     """Filesystem path of the pool JSON."""
     return config_dir() / "api_keys.json"
@@ -168,9 +185,7 @@ def discover_env_keys(env: dict[str, str] | None = None) -> list[APIKey]:
         env = dict(os.environ)
         # File values win on collision so a managed key trumps a stale shell var.
         try:
-            from podcodex.api.routes.config import _read_secrets_file
-
-            for k, v in _read_secrets_file().items():
+            for k, v in read_secrets_file().items():
                 env[k] = v
         except Exception:
             pass

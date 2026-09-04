@@ -21,6 +21,7 @@ dependencies = [
     "certifi>=2024.7.4",  # bootstrap._wire_ssl_certs: frozen bundle has no system CA path
     "feedparser>=6.0",
     "loguru>=0.7.3",
+    "pydantic>=2",        # base layer: core.app_config and friends import it at module scope
     "python-dotenv>=1.2.1",
 ]
 
@@ -30,6 +31,11 @@ bot = [
 ]
 mcp = [
     "mcp>=1.2.0",        # stdio server for Claude Desktop / Claude Code
+    # The server reads the index, so it needs the retrieval stack too:
+    # `podcodex.mcp.server` imports it at module scope, and `--extra mcp`
+    # alone produced a binary that died on `ModuleNotFoundError: numpy`
+    # the moment deploy/MCP.md told the user to run it.
+    "podcodex[rag]",
 ]
 desktop = [
     "fastapi>=0.115.0",

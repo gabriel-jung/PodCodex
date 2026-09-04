@@ -807,7 +807,12 @@ def download_audio(
             if attempt == max_retries:
                 return None, last_error
             _time.sleep(2 * attempt)
-        except httpx.TransportError as exc:
+        except httpx.RequestError as exc:
+            # RequestError, not TransportError: TooManyRedirects and
+            # DecodingError are siblings of it, not subclasses, so a redirect
+            # loop or a bad Content-Encoding on a podcast CDN escaped the
+            # documented (None, reason) contract, aborted the whole batch at
+            # that episode and left the .part file behind.
             last_error = f"network error: {type(exc).__name__}"
             logger.warning(
                 f"Download failed for {dest.name}: {exc} (attempt {attempt}/{max_retries})"

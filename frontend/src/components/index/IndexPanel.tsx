@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { sourceRefFor } from "@/lib/episodeRef";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEpisodeStore, useAudioPath, usePipelineConfigStore } from "@/stores";
+import { useEpisodeStore, useEpisodeRef, usePipelineConfigStore } from "@/stores";
 import {
   getIndexStatus,
   startIndex,
@@ -28,10 +27,10 @@ import { plainStatus } from "@/lib/stepStatus";
 export default function IndexPanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
-  const audioPath = useAudioPath();
-  const outputDir = episode?.output_dir;
-  const showName = getShowName(showMeta, audioPath);
-  const task = usePipelineTask(audioPath, "index", {
+  const ref = useEpisodeRef();
+  const { audioPath, outputDir, sourceRef, taskKey } = ref;
+  const showName = getShowName(showMeta, sourceRef);
+  const task = usePipelineTask(ref, "index", {
     targetStem: episode?.stem,
     optimisticPatch: () => ({ indexed: true }),
   });
@@ -39,10 +38,10 @@ export default function IndexPanel() {
   const { data: config } = useIndexConfig();
 
   const { data: status } = useQuery({
-    queryKey: queryKeys.indexStatus(sourceRefFor(audioPath, outputDir), showName),
-    queryFn: () => getIndexStatus(audioPath, showName, outputDir),
+    queryKey: queryKeys.indexStatus(sourceRef, showName),
+    queryFn: () => getIndexStatus(audioPath, showName, outputDir ?? undefined),
     // `show` is a required query param; an empty one is a 422, not a miss.
-    enabled: (!!audioPath || !!outputDir) && !!showName,
+    enabled: !!sourceRef && !!showName,
   });
 
   const expanded = task.expanded || !episode?.indexed;
@@ -51,7 +50,7 @@ export default function IndexPanel() {
     audioPath,
     "index",
     !!episode?.transcribed && expanded,
-    outputDir,
+    outputDir ?? undefined,
     episode?.verified ?? null,
   );
 
@@ -72,7 +71,8 @@ export default function IndexPanel() {
   const startMutation = useMutation({
     mutationFn: () =>
       startIndex({
-        audio_path: audioPath!,
+        audio_path: taskKey!,
+        output_dir: outputDir ?? undefined,
         show: showName,
         version_id: sourceVersionId ?? undefined,
         model_keys: [indexModel],
@@ -224,7 +224,7 @@ export default function IndexPanel() {
             ))}
         </div>
       )}
-      {(audioPath || outputDir) && inspectTarget && (
+      {sourceRef && inspectTarget && (
         <IndexInspectorModal
           open={!!inspectTarget}
           onClose={() => setInspectTarget(null)}

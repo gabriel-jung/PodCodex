@@ -66,16 +66,30 @@ class AutocompleteMixin:
         model = getattr(interaction.namespace, "model", "") or settings.model
         chunker = settings.chunker
 
-        collections, col_info = await self._visible_collections(
-            settings, model, chunker
-        )
-        shows = sorted(
-            {
-                col_info[col]["show"]
-                for col in collections
-                if col_info.get(col, {}).get("show")
-            }
-        )
+        shows = await self._known_show_labels(settings, model, chunker)
+        return [
+            app_commands.Choice(name=s, value=s)
+            for s in shows
+            if current.lower() in s.lower()
+        ][:25]
+
+    async def _any_show_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Every show this server may see, whatever it is indexed under.
+
+        ``/setup show_add`` pins a show rather than searching it, so filtering
+        by the guild's current model would hide a show indexed under another
+        one and make the pin look like an unknown name to the user, while
+        ``_handle_setup`` (which validates against the same unfiltered set)
+        would have accepted it.
+        """
+        await self._refresh_if_stale()
+        self._cache_clear_if_stale()
+        settings = self._server_settings(interaction.guild_id)
+        shows = await self._known_show_labels(settings)
         return [
             app_commands.Choice(name=s, value=s)
             for s in shows
@@ -108,6 +122,27 @@ class AutocompleteMixin:
             and (not chunker or info["chunker"] == chunker)
         ]
         return self._filter_collections(cols, settings, col_info), col_info
+
+    async def _known_show_labels(
+        self, settings: ServerSettings, model: str = "", chunker: str = ""
+    ) -> list[str]:
+        """Sorted display names of the shows this server may see.
+
+        The one definition of "which shows exist for this guild": the show
+        autocompletes offer these, and ``/setup show_add`` validates against
+        them, so a name the picker shows is never rejected as unknown. Empty
+        ``model``/``chunker`` mean "any combination".
+        """
+        collections, col_info = await self._visible_collections(
+            settings, model, chunker
+        )
+        return sorted(
+            {
+                col_info[col]["show"]
+                for col in collections
+                if col_info.get(col, {}).get("show")
+            }
+        )
 
     async def _cached_episodes(self, collection: str) -> list[str]:
         """Return episode stems, using the TTL cache."""
@@ -298,10 +333,29 @@ class AutocompleteMixin:
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
-        """Autocomplete from allowed shows for the server."""
+        """Autocomplete from the shows this server has pinned as defaults."""
         settings = self._server_settings(interaction.guild_id)
         # Stored as ids; both the label and the value users see are names.
-        labels = [self._label_for_show_id(s) for s in settings.allowed_shows]
+        labels = [self._label_for_show_id(s) for s in self._pinned_ids(settings)]
+        return [
+            app_commands.Choice(name=s, value=s)
+            for s in labels
+            if current.lower() in s.lower()
+        ][:25]
+
+    async def _unlocked_show_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete from the protected shows unlocked on this server.
+
+        What ``/lock`` and ``/changepassword`` act on. Offering the pinned
+        list here was the same conflation one layer out: it suggested public
+        shows to a command that can only revoke an unlock.
+        """
+        settings = self._server_settings(interaction.guild_id)
+        labels = [self._label_for_show_id(s) for s in self._unlocked_ids(settings)]
         return [
             app_commands.Choice(name=s, value=s)
             for s in labels

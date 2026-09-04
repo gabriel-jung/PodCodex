@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEpisodeStore, useAudioPath } from "@/stores";
+import { useEpisodeStore, useEpisodeRef } from "@/stores";
 import {
   deleteCorrectVersion,
   getCorrectSegments,
@@ -44,10 +44,11 @@ import { useSetVerifiedVersion } from "@/hooks/useVerified";
 export default function CorrectPanel() {
   const episode = useEpisodeStore((s) => s.episode);
   const showMeta = useEpisodeStore((s) => s.showMeta);
-  const audioPath = useAudioPath();
+  const ref = useEpisodeRef();
+  const { audioPath, outputDir, sourceRef } = ref;
   const queryClient = useQueryClient();
 
-  const task = usePipelineTask(audioPath, "correct", {
+  const task = usePipelineTask(ref, "correct", {
     targetStem: episode?.stem,
     optimisticPatch: () => ({ corrected: true }),
   });
@@ -56,36 +57,36 @@ export default function CorrectPanel() {
   const [config, setConfig] = useLLMConfig(episode, showMeta);
   const patch = (p: Partial<LLMConfig>) => setConfig({ ...config, ...p });
   const activePreset = modeToPreset(config.mode);
-  const setVerified = useSetVerifiedVersion(audioPath, episode?.output_dir ?? null);
+  const setVerified = useSetVerifiedVersion(audioPath, outputDir);
 
   const { hasLLM, backendMissing, disabledTitle } = useLLMBackendStatus(activePreset);
 
   const expanded = task.expanded || !episode?.corrected;
 
   const { data: transcriptSegments } = useQuery({
-    queryKey: queryKeys.transcribeSegments(audioPath),
-    queryFn: () => getSegments(audioPath!),
-    enabled: !!audioPath && !!episode?.transcribed,
+    queryKey: queryKeys.transcribeSegments(sourceRef),
+    queryFn: () => getSegments(audioPath, outputDir ?? undefined),
+    enabled: !!sourceRef && !!episode?.transcribed,
   });
 
   const inputVersions = useInputVersions(
     audioPath,
     "correct",
     !!episode?.transcribed && expanded,
-    undefined,
+    outputDir,
     episode?.verified ?? null,
   );
 
   const { data: correctFailures } = useQuery({
-    queryKey: queryKeys.llmFailuresCorrect(audioPath),
-    queryFn: () => getCorrectFailures(audioPath!),
-    enabled: !!audioPath && !!episode?.corrected,
+    queryKey: queryKeys.llmFailuresCorrect(sourceRef),
+    queryFn: () => getCorrectFailures(audioPath, outputDir ?? undefined),
+    enabled: !!sourceRef && !!episode?.corrected,
   });
   const dismissFailures = useMutation({
-    mutationFn: () => dismissCorrectFailures(audioPath!),
+    mutationFn: () => dismissCorrectFailures(audioPath, outputDir ?? undefined),
     meta: {
       invalidates: [
-        queryKeys.llmFailuresCorrect(audioPath),
+        queryKeys.llmFailuresCorrect(sourceRef),
         // Overview's "Rejected batches" section reads episode.llm_failed_steps.
         queryKeys.episodesAll(),
       ],
@@ -110,7 +111,7 @@ export default function CorrectPanel() {
   const startMutation = useMutation({
     mutationFn: () =>
       startCorrect({
-        ...buildLLMRequest(audioPath!, config),
+        ...buildLLMRequest(ref, config),
         source_version_id: sourceVersionId ?? undefined,
       }),
     onSuccess: (data) => task.startTask(data.task_id),
@@ -184,7 +185,8 @@ export default function CorrectPanel() {
                 batchMinutes={config.batchMinutes}
                 generatePrompts={(batchMinutes) =>
                   getCorrectManualPrompts({
-                    audio_path: audioPath!,
+                    audio_path: ref.taskKey ?? undefined,
+                    output_dir: outputDir ?? undefined,
                     context: config.context,
                     source_lang: config.sourceLang,
                     batch_minutes: batchMinutes,
@@ -194,7 +196,8 @@ export default function CorrectPanel() {
                 }
                 applyCorrections={(corrections) =>
                   applyCorrectManual({
-                    audio_path: audioPath!,
+                    audio_path: ref.taskKey ?? undefined,
+                    output_dir: outputDir ?? undefined,
                     corrections,
                     // Same source the prompts were built from: the backend now
                     // rejects a count mismatch instead of saving the untouched
@@ -220,8 +223,12 @@ export default function CorrectPanel() {
             onDismiss={() => dismissFailures.mutate()}
             dismissing={dismissFailures.isPending}
             onApplyFixes={async (fixes) => {
-              await applyCorrectBatches({ audio_path: audioPath!, fixes });
-              queryClient.invalidateQueries({ queryKey: queryKeys.llmFailuresCorrect(audioPath) });
+              await applyCorrectBatches({
+                audio_path: ref.taskKey ?? undefined,
+                output_dir: outputDir ?? undefined,
+                fixes,
+              });
+              queryClient.invalidateQueries({ queryKey: queryKeys.llmFailuresCorrect(sourceRef) });
               task.refreshQueries();
             }}
           />
@@ -231,8 +238,9 @@ export default function CorrectPanel() {
         <TranscriptViewer
           editorKey="correct"
           audioPath={audioPath ?? undefined}
-          loadSegments={() => getCorrectSegments(audioPath!)}
-          saveSegments={(segs) => saveCorrectSegments(audioPath!, segs)}
+          sourceRef={sourceRef ?? undefined}
+          loadSegments={() => getCorrectSegments(audioPath, outputDir ?? undefined)}
+          saveSegments={(segs) => saveCorrectSegments(audioPath, segs, outputDir ?? undefined)}
           onSaved={handleSaved}
           exportSource="corrected"
           exportFilename={episode.stem ? `${episode.stem}_corrected` : undefined}
@@ -250,7 +258,7 @@ export default function CorrectPanel() {
               versionId: isVerified ? null : id,
             })
           }
-          loadVersions={() => getCorrectVersions(audioPath!)}
+          loadVersions={() => getCorrectVersions(audioPath, outputDir ?? undefined)}
           loadCompareVersions={async () => {
             // Broader list for the compare ("vs") picker so the user can diff
             // against any earlier transcript, not just the latest. Reuse the
@@ -259,18 +267,18 @@ export default function CorrectPanel() {
             // transcripts. Each entry keeps its `step` so loadVersion routes
             // to the right API.
             const corrected = await queryClient.ensureQueryData({
-              queryKey: queryKeys.stepVersions("correct", audioPath ?? undefined),
-              queryFn: () => getCorrectVersions(audioPath!),
+              queryKey: queryKeys.stepVersions("correct", sourceRef ?? undefined),
+              queryFn: () => getCorrectVersions(audioPath, outputDir ?? undefined),
             });
-            const transcripts = await getTranscribeVersions(audioPath!);
+            const transcripts = await getTranscribeVersions(audioPath, outputDir ?? undefined);
             return [...corrected, ...transcripts];
           }}
           loadVersion={(id, v) =>
             v?.step === "transcript"
-              ? loadTranscribeVersion(audioPath!, id)
-              : loadCorrectVersion(audioPath!, id)
+              ? loadTranscribeVersion(audioPath, id, outputDir ?? undefined)
+              : loadCorrectVersion(audioPath, id, outputDir ?? undefined)
           }
-          deleteVersion={(id) => deleteCorrectVersion(audioPath!, id)}
+          deleteVersion={(id) => deleteCorrectVersion(audioPath, id, outputDir ?? undefined)}
         />
       )}
     </PipelinePanel>

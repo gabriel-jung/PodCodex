@@ -78,6 +78,9 @@ ASSEMBLE_STRATEGIES: dict[str, str] = {
 # catalog (incl. openai-compatible built-ins like deepseek/gemini/groq) live
 # in ``provider_profiles.BUILTIN_PROFILES``.
 
+# ``env_var`` is the only environment variable ``run_api`` will read for a
+# key. There is deliberately no generic fallback: see the raise in
+# ``_utils.run_api``.
 LLM_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "openai": {"model": "gpt-4o-mini", "env_var": "OPENAI_API_KEY"},
     "anthropic": {"model": "claude-sonnet-4-6", "env_var": "ANTHROPIC_API_KEY"},

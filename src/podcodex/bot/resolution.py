@@ -65,9 +65,13 @@ class ResolutionMixin:
             )
 
         if shows and shows.is_locked:
+            # About the requested show only. The old wording stated
+            # server-wide state the data contradicts, so an admin who had
+            # already unlocked two other shows was told none were unlocked.
+            # It also says nothing about which other shows exist.
             return (
-                "No shows are unlocked for this Discord server. "
-                "An admin can unlock one with `/unlock password:****`."
+                "That show is not unlocked on this Discord server. "
+                "An admin can unlock it with `/unlock password:****`."
             )
 
         if shows and shows.is_specific:
