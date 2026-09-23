@@ -20,7 +20,7 @@ from loguru import logger
 
 from podcodex.rag.defaults import DEFAULT_MODEL
 from podcodex.rag.hit import Hit
-from podcodex.rag.index_store import IndexStore, get_index_store
+from podcodex.rag.index_store import IndexStore, chunk_row_key, get_index_store
 
 
 class Retriever:
@@ -465,8 +465,8 @@ class Retriever:
 
 
 def _chunk_key(chunk: Hit) -> str:
-    """Deduplication key for merging dense + FTS hits."""
-    return f"{chunk.show}|{chunk.episode}|{chunk.start}"
+    """Deduplication key for merging dense + FTS hits, across shows."""
+    return f"{chunk.show}|{chunk_row_key(chunk.episode, chunk.chunk_index)}"
 
 
 def _rank_normalize(results: list[Hit]) -> list[Hit]:

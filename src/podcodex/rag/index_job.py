@@ -87,6 +87,8 @@ def run(
         on_progress=on_prog,
     )
 
+    # A failed combination raises IndexingError above, so 0 here really is
+    # a transcript that chunked to nothing.
     if total_upserted == 0:
         raise ValueError(
             f"Indexing produced 0 chunks for '{episode}'. "

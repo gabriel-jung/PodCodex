@@ -100,3 +100,54 @@ def test_vectorize_overwrite_always_deletes(tmp_path):
         )
 
     mock_local.save_chunks.assert_called_once()
+
+
+# ──────────────────────────────────────────────
+# vectorize_batch: a failed combination is not a success
+# ──────────────────────────────────────────────
+
+
+def test_vectorize_batch_raises_after_writing_the_combinations_that_work():
+    import pytest
+
+    from podcodex.rag import indexing
+
+    written: list[str] = []
+
+    def _episode(_t, _show, _ep, model_key, _chunking, _local, **_kw):
+        if model_key == "e5-small":
+            raise RuntimeError("embedder failed to load")
+        written.append(model_key)
+        return [{"text": "c"}], 1
+
+    with (
+        patch.object(indexing, "vectorize_episode", _episode),
+        pytest.raises(indexing.IndexingError, match="embedder failed to load"),
+    ):
+        indexing.vectorize_batch(
+            {"segments": []},
+            "Show",
+            "ep1",
+            ["e5-small", "bge-m3"],
+            ["semantic"],
+            MagicMock(),
+        )
+    assert written == ["bge-m3"]
+
+
+def test_vectorize_batch_counts_an_unexpected_value_error_as_a_failure():
+    """Only NoChunksError means "nothing to index"; any other ValueError failed."""
+    import pytest
+
+    from podcodex.rag import indexing
+
+    def _episode(*_a, **_kw):
+        raise ValueError("embedding dim mismatch")
+
+    with (
+        patch.object(indexing, "vectorize_episode", _episode),
+        pytest.raises(indexing.IndexingError, match="dim mismatch"),
+    ):
+        indexing.vectorize_batch(
+            {"segments": []}, "Show", "ep1", ["bge-m3"], ["semantic"], MagicMock()
+        )

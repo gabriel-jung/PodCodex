@@ -211,3 +211,24 @@ def test_dry_run_reports_without_writing(store, wiring, monkeypatch, tmp_path, c
 
     assert calls  # the transcript was still resolved, so the count is real
     assert wiring == []
+
+
+def test_a_failed_episode_fails_the_run(store, monkeypatch, tmp_path):
+    """The collections are already dropped; reporting "Done" hid an empty index."""
+    import podcodex.ingest.show_registry as registry
+    import podcodex.rag.indexing as indexing
+
+    monkeypatch.setattr(registry, "show_id_for_label", lambda _n: "show_1111aaaa")
+
+    def _fail(*_a, **_kw):
+        raise indexing.IndexingError("embedder failed to load")
+
+    monkeypatch.setattr(indexing, "vectorize_batch", _fail)
+    _seed_scan(monkeypatch, [_Episode("ep1", tmp_path / "ep1")])
+    _seed_transcript(monkeypatch, [])
+
+    ok = reindex_mod._reindex_show(
+        tmp_path, "Show", ["bge-m3"], ["semantic"], dry_run=False
+    )
+
+    assert ok is False

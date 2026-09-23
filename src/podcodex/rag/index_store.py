@@ -96,40 +96,52 @@ def fold_text(s: str) -> str:
     return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().lower()
 
 
-def _find_original_span(text: str, folded_q: str) -> str | None:
-    """Find the substring of text whose fold_text equals folded_q.
+def _original_slice(text: str, fs: int, fe: int) -> str:
+    """The slice of ``text`` that folds to ``fold_text(text)[fs:fe]``.
 
-    Needed when ligature expansion (e.g. ﬁ→fi) shifts character offsets so
-    the folded index no longer maps directly to the original text position.
+    Every step of ``fold_text`` is per character, so folding char by char
+    gives an exact offset map. Comparing lengths does not: a ligature that
+    expands ("œ" to "oe") and a character that is dropped ("ß") cancel out
+    and shift every offset after them.
     """
-    fq_len = len(folded_q)
-    for i in range(len(text)):
-        acc = ""
-        for j in range(i, len(text)):
-            acc = fold_text(text[i : j + 1])
-            if acc == folded_q:
-                return text[i : j + 1]
-            if len(acc) > fq_len:
-                break
-    return None
+    if text.isascii():  # every ASCII char folds to exactly one char
+        return text[fs:fe] if 0 <= fs < fe <= len(text) else ""
+    offsets: list[int] = []
+    for i, ch in enumerate(text):
+        if len(offsets) >= fe:
+            break
+        offsets.extend([i] * (1 if ch.isascii() else len(fold_text(ch))))
+    if not 0 <= fs < fe <= len(offsets):
+        return ""
+    end = offsets[fe - 1] + 1
+    # Keep combining accents that follow the last matched letter.
+    while end < len(text) and unicodedata.combining(text[end]):
+        end += 1
+    return text[offsets[fs] : end]
 
 
 def _accent_span(text: str, folded_t: str, folded_q: str) -> str | None:
-    """Locate the original-text slice that accent-folds to ``folded_q``.
-
-    Fast path when no ligatures expand (folded length == original length);
-    fallback scan handles ligature-induced offset drift.
-    """
-    if len(folded_t) == len(text):
-        idx = folded_t.find(folded_q)
-        return text[idx : idx + len(folded_q)] if idx >= 0 else None
-    return _find_original_span(text, folded_q)
+    """Locate the original-text slice that accent-folds to ``folded_q``."""
+    idx = folded_t.find(folded_q)
+    if idx < 0:
+        return None
+    return _original_slice(text, idx, idx + len(folded_q)) or None
 
 
 def _accent_score(query: str, span: str) -> float:
     """Similarity between query and its matched original-text span."""
     return SequenceMatcher(None, query.lower(), span.lower()).ratio()
 
+
+# Chunk-meta fields read per episode by get_episode_stats and get_episode,
+# which promise the same record shape.
+_EPISODE_META_FIELDS = (
+    "episode_title",
+    "episode_number",
+    "broadcast_number",
+    "description",
+    "artwork_url",
+)
 
 # Exact-tier score for a match inside a longer word ("william" in
 # "Williams"): below the whole-word 1.0 so word hits rank first, above any
@@ -138,6 +150,12 @@ _EXACT_SUBSTRING_SCORE = 0.99
 
 
 _WORD_RE = re.compile(r"[^\w]+", re.UNICODE)
+# Shortest query token worth an FTS probe (and a fuzzy one) on its own.
+_MIN_PROBE_LEN = 3
+# Terms a fuzzy FTS probe may expand to. Tantivy's default of 50 silently
+# drops neighbours once a common word has more than 50 terms within reach,
+# so a typo query missed most chunks holding a word one edit away.
+_FTS_MAX_EXPANSIONS = 1000
 
 
 def _levenshtein(a: str, b: str, max_dist: int = 999) -> int:
@@ -158,31 +176,105 @@ def _levenshtein(a: str, b: str, max_dist: int = 999) -> int:
 _WORD_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
-def _fuzzy_match(query: str, text: str, max_dist: int) -> tuple[float, str] | None:
+def _fuzzy_match(
+    query: str,
+    text: str,
+    max_dist: int,
+    cache: dict[str, float | None] | None = None,
+) -> tuple[float, str] | None:
     """Return (similarity, matched original span) if any word in text is within
-    max_dist edits of the folded single-word query, else None."""
+    max_dist edits of the folded single-word query, else None.
+
+    *cache* maps a raw word to its similarity (``None`` when too far). Pass
+    one dict for every chunk of a query: the vocabulary repeats across chunks,
+    and without it a common typo query folded and compared a million words.
+    """
     q = fold_text(query)
+    if cache is None:
+        cache = {}
     best: tuple[float, str] | None = None
     for m in _WORD_TOKEN_RE.finditer(text):
         raw = m.group(0)
-        w = fold_text(raw)
-        if not w:
-            continue
-        d = _levenshtein(q, w, max_dist)
-        if d <= max_dist:
-            ratio = 1.0 - d / max(len(q), len(w), 1)
-            if best is None or ratio > best[0]:
-                best = (ratio, raw)
+        if raw not in cache:
+            w = fold_text(raw)
+            ratio = None
+            if w and abs(len(w) - len(q)) <= max_dist:
+                d = _levenshtein(q, w, max_dist)
+                if d <= max_dist:
+                    ratio = 1.0 - d / max(len(q), len(w), 1)
+            cache[raw] = ratio
+        ratio = cache[raw]
+        if ratio is not None and (best is None or ratio > best[0]):
+            best = (ratio, raw)
     return best
 
 
+def chunk_row_key(episode: str, chunk_index: int) -> str:
+    """Identity of one chunk within a collection: its episode and position.
+
+    Not the start time: chunks beginning in the same turn share it, and every
+    chunk of an untimed transcript starts at 0.0. ``search_literal`` intersects
+    keys built from raw rows with keys built from hits, so both sides must
+    come through here.
+    """
+    return f"{episode}|{int(chunk_index)}"
+
+
 def _chunk_key(chunk: Hit) -> str:
-    return f"{chunk.episode}|{chunk.start}"
+    return chunk_row_key(chunk.episode, chunk.chunk_index)
+
+
+def _norm_label(label: str) -> str:
+    """How a display name is compared when it keys a legacy password row."""
+    return (label or "").strip().lower()
 
 
 def _approx_substring(
     pattern: str, text: str, max_dist: int
 ) -> tuple[int, int, int] | None:
+    """Best substring of *text* within ``max_dist`` edits of *pattern*.
+
+    Same contract as ``_sellers``, which does the matching, but run only
+    where a match can be. Pigeonhole: ``max_dist`` edits touch at most
+    ``max_dist`` of ``max_dist + 1`` disjoint pieces of the pattern, so any
+    match contains one piece verbatim. The DP then runs on a small window
+    around each occurrence of a piece instead of the whole chunk, which is
+    what made a multi-word literal search over a large show take seconds.
+    """
+    pieces = max_dist + 1
+    size = len(pattern) // pieces
+    if not size:
+        return _sellers(pattern, text, max_dist)
+    windows: list[tuple[int, int]] = []
+    for k in range(pieces):
+        p_lo = k * size
+        piece = pattern[p_lo : (k + 1) * size if k < pieces - 1 else None]
+        pos = text.find(piece)
+        while pos != -1:
+            lo = max(0, pos - p_lo - max_dist)
+            hi = min(len(text), pos - p_lo + len(pattern) + max_dist)
+            windows.append((lo, hi))
+            pos = text.find(piece, pos + 1)
+    best: tuple[int, int, int] | None = None
+    for lo, hi in _merge_spans(windows):
+        hit = _sellers(pattern, text[lo:hi], max_dist)
+        if hit is not None and (best is None or hit[0] < best[0]):
+            best = (hit[0], hit[1] + lo, hit[2] + lo)
+    return best
+
+
+def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Sort and merge overlapping ``[lo, hi)`` spans."""
+    merged: list[tuple[int, int]] = []
+    for lo, hi in sorted(spans):
+        if merged and lo <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def _sellers(pattern: str, text: str, max_dist: int) -> tuple[int, int, int] | None:
     """Approximate substring match via Sellers' algorithm.
 
     Finds the substring of ``text`` with minimum Levenshtein distance to
@@ -453,12 +545,20 @@ class IndexStore:
         from podcodex.rag.index_origin import stamp_origin_if_new
 
         stamp_origin_if_new(self._path, was_empty=was_empty)
-        # Serializes mutating ops (password set/delete, episode/collection
-        # delete): the store is a process-wide singleton shared across
-        # threadpool handlers, LanceDB writes are not internally locked,
-        # and e.g. set_show_password is a non-atomic delete-then-add.
-        self._write_lock = threading.Lock()
+        # Serializes mutating ops (password set/delete, chunk saves,
+        # episode/collection delete, FTS index builds) within this process:
+        # the store is a process-wide singleton shared across threadpool
+        # handlers, LanceDB writes are not internally locked, and e.g.
+        # set_show_password is a non-atomic delete-then-add. It does not reach
+        # index subprocesses, which write chunks from their own store, so
+        # cross-process writes must be safe on their own (see the
+        # compare-and-swap in _ensure_episode_title_backfill). Reentrant
+        # because locked sections call _table() and other locked helpers.
+        self._write_lock = threading.RLock()
         self._fts_ready: set[str] = set()
+        # Collections whose FTS build failed in this process: not retried
+        # until the next start, or every probe would rebuild and log again.
+        self._fts_failed: set[str] = set()
         # Chunk tables this process has written to and not yet compacted.
         self._uncompacted: set[str] = set()
         self._pub_date_ready: set[str] = set()
@@ -540,6 +640,7 @@ class IndexStore:
 
         self._db = lancedb.connect(str(self._path))
         self._fts_ready.clear()
+        self._fts_failed.clear()
         self._pub_date_ready.clear()
         self._episode_title_ready.clear()
         logger.info(f"IndexStore reconnected: {self._path}")
@@ -719,17 +820,18 @@ class IndexStore:
 
         # Group all chunks by stem in one pass so we can detect missing titles
         # and rewrite meta blobs without a second full-table scan per stem.
-        chunks_by_stem: dict[str, list[tuple[int, dict]]] = {}
+        chunks_by_stem: dict[str, list[tuple[int, dict, str]]] = {}
         for r in rows:
             ep = r.get("episode")
             if not ep:
                 continue
+            raw = r.get("meta") or ""
             try:
-                meta = json.loads(r.get("meta") or "{}")
+                meta = json.loads(raw or "{}")
             except Exception:
                 meta = {}
             chunks_by_stem.setdefault(ep, []).append(
-                (int(r.get("chunk_index", -1)), meta)
+                (int(r.get("chunk_index", -1)), meta, raw)
             )
 
         # Feed cache is the only authoritative fallback for a healed title —
@@ -746,27 +848,45 @@ class IndexStore:
                 stem_to_title[stem] = ep.title
 
         healed = 0
+        failed = 0
         for stem, chunks in chunks_by_stem.items():
-            if any(m.get("episode_title") for _, m in chunks):
+            # Per chunk, not per episode: after a partial failure the retry
+            # has to find the chunks that are still missing their title.
+            missing = [c for c in chunks if not c[1].get("episode_title")]
+            if not missing:
                 continue
             title = stem_to_title.get(stem)
             if not title:
                 continue
-            for ci, meta in chunks:
+            for ci, meta, raw in missing:
                 meta["episode_title"] = title
                 try:
+                    # Compare-and-swap on the meta read above: chunks are
+                    # written by index subprocesses, which no lock here
+                    # reaches, and a re-index in between must not get this
+                    # stale blob written over its fresh one.
                     table.update(
-                        where=(f"episode = '{_escape(stem)}' AND chunk_index = {ci}"),
+                        where=(
+                            f"episode = '{_escape(stem)}' AND chunk_index = {ci} "
+                            f"AND meta = '{_escape(raw)}'"
+                        ),
                         values={"meta": json.dumps(meta, ensure_ascii=False)},
                     )
                 except Exception:
-                    logger.opt(exception=True).debug(
+                    logger.opt(exception=True).warning(
                         f"episode_title update failed for {collection}/{stem}"
                     )
+                    failed += 1
             healed += 1
 
         if healed:
             self._uncompacted.add(collection)
+        if failed:
+            # No sentinel, so the next process retries, rewriting only the
+            # chunks still missing a title. Not this process: the full scan
+            # would rerun on every table open.
+            self._episode_title_ready.add(collection)
+            return
         try:
             sentinel.touch()
         except OSError:
@@ -839,7 +959,12 @@ class IndexStore:
         }
 
     def set_show_password(
-        self, show: str, password_hash: str, show_label: str = ""
+        self,
+        show: str,
+        password_hash: str,
+        show_label: str = "",
+        *,
+        legacy_label: str = "",
     ) -> None:
         """Set or replace the password hash for a show.
 
@@ -848,6 +973,9 @@ class IndexStore:
             password_hash: Hash in ``sha256:<hex>`` form.
             show_label: Display name, stored alongside so the bot can name
                 the show without a show folder to read.
+            legacy_label: A former display name whose name-keyed row this
+                replaces, when it differs from ``show_label`` (a show renamed
+                before the show-id migration).
 
         Raises:
             IndexOwnershipError: when this index is a replica of another
@@ -861,8 +989,7 @@ class IndexStore:
             # Also clears a legacy row for the same show that the migration
             # has not rekeyed yet, which would otherwise unlock under its old
             # name forever.
-            if label:
-                t.delete(f"show = '{_escape(label)}'")
+            self._delete_legacy_password_rows(t, label, legacy_label)
             t.add(
                 [
                     {
@@ -876,6 +1003,25 @@ class IndexStore:
                 ]
             )
         logger.debug(f"Password set for show {show!r}")
+
+    @staticmethod
+    def _delete_legacy_password_rows(table, *labels: str) -> None:
+        """Delete name-keyed password rows whose label matches any of *labels*.
+
+        Legacy rows only: an id-keyed row also carries its label in ``show``
+        (a mirror for older bot builds), and another show may share that
+        label. Matched in Python with ``_norm_label`` (case and surrounding
+        whitespace), then deleted by the exact stored value, because SQL
+        ``trim`` and ``lower`` do not normalize the way Python does.
+        """
+        wanted = {_norm_label(x) for x in labels} - {""}
+        if not wanted:
+            return
+        legacy = "(show_id IS NULL OR show_id = '')"
+        rows = table.search().where(legacy).select(["show"]).limit(10_000).to_list()
+        for raw in {r.get("show") or "" for r in rows}:
+            if _norm_label(raw) in wanted:
+                table.delete(f"show = '{_escape(raw)}' AND {legacy}")
 
     def delete_show_password(self, show: str) -> None:
         """Remove password protection for a show (makes it public).
@@ -892,7 +1038,7 @@ class IndexStore:
             # Matches both shapes: an id-keyed row, and a legacy row whose
             # only key is the display name.
             t.delete(f"show_id = '{_escape(show)}'")
-            t.delete(f"show = '{_escape(show)}'")
+            self._delete_legacy_password_rows(t, show)
         logger.debug(f"Password removed for show {show!r}")
 
     # ── Collection management ────────────────────────────────────────────
@@ -1166,6 +1312,7 @@ class IndexStore:
             meta = self._collections_table()
             meta.delete(f"name = '{_escape(name)}'")
             self._fts_ready.discard(name)
+            self._fts_failed.discard(name)
         logger.debug(f"Deleted collection '{name}'")
 
     def get_collection_info(self, name: str) -> dict | None:
@@ -1323,6 +1470,7 @@ class IndexStore:
             t = self._table(collection)
             t.delete(f"episode = '{_escape(episode)}'")
             self._fts_ready.discard(collection)
+            self._fts_failed.discard(collection)
             self._uncompacted.add(collection)
         logger.debug(f"Deleted episode '{episode}' from '{collection}'")
 
@@ -1462,9 +1610,11 @@ class IndexStore:
     ) -> None:
         """Upsert chunks and their embeddings for an episode (idempotent).
 
-        Replaces any existing rows for ``episode`` before insert so
-        re-indexing with a different transcript version cannot leave
-        stale chunks behind.
+        A new episode is appended. An indexed one is replaced in a single
+        ``merge_insert`` keyed on ``(episode, chunk_index)`` that also deletes
+        rows past the new chunk count, so re-indexing with a different
+        transcript version leaves no stale chunks and no window where the
+        episode has none.
 
         Raises:
             ValueError: If ``len(chunks) != len(embeddings)``.
@@ -1476,10 +1626,6 @@ class IndexStore:
             )
         if not chunks:
             return
-        t = self._table(collection)
-        if self.episode_is_indexed(collection, episode):
-            t.delete(f"episode = '{_escape(episode)}'")
-            self._fts_ready.discard(collection)
         rows: list[dict[str, Any]] = []
         for i, chunk in enumerate(chunks):
             speaker = chunk.get("dominant_speaker") or chunk.get("speaker") or ""
@@ -1503,8 +1649,31 @@ class IndexStore:
                     "meta": json.dumps(meta),
                 }
             )
-        t.add(rows)
+        with self._write_lock:
+            # Opened under the lock, so a compaction or replace that finished
+            # while this call waited is part of the view it writes on.
+            t = self._table(collection)
+            where = f"episode = '{_escape(episode)}'"
+            if self.episode_is_indexed(collection, episode):
+                # The by-source delete joins the whole table (tens of ms on a
+                # large one), so only a replace pays for it.
+                (
+                    t.merge_insert(["episode", "chunk_index"])
+                    .when_matched_update_all()
+                    .when_not_matched_insert_all()
+                    .when_not_matched_by_source_delete(where)
+                    .execute(rows)
+                )
+                # merge_insert updates duplicate (episode, chunk_index) rows
+                # rather than removing them, and the unlocked delete-then-add
+                # this replaced could leave some. Rewrite such an episode.
+                if t.count_rows(where) != len(rows):
+                    t.delete(where)
+                    t.add(rows)
+            else:
+                t.add(rows)
         self._fts_ready.discard(collection)
+        self._fts_failed.discard(collection)
         self._uncompacted.add(collection)
         logger.debug(f"Saved {len(rows)} chunks for '{episode}' in '{collection}'")
 
@@ -1796,18 +1965,10 @@ class IndexStore:
         Returns:
             Hits with BM25 ``score`` attached.
         """
-        if not self.collection_exists(collection):
-            return []
-        t = self._table(collection)
-        self._ensure_fts(collection, t)
-        if fuzziness > 0:
-            from lancedb.query import MatchQuery
-
-            search_input = MatchQuery(query, "text", fuzziness=fuzziness)
-        else:
-            search_input = query
-        q = t.search(search_input, query_type="fts")
-        clause = _build_where(
+        q = self._fts_query(
+            collection,
+            query,
+            fuzziness,
             episode=episode,
             episodes=episodes,
             source=source,
@@ -1815,8 +1976,8 @@ class IndexStore:
             pub_date_min=pub_date_min,
             pub_date_max=pub_date_max,
         )
-        if clause:
-            q = q.where(clause)
+        if q is None:
+            return []
         try:
             rows = q.limit(top_k).to_list()
         except Exception:
@@ -1843,28 +2004,22 @@ class IndexStore:
         pub_date_min: str | None = None,
         pub_date_max: str | None = None,
         fuzziness: int = 0,
+        table=None,
     ) -> set[str]:
         """Chunk keys matching an FTS probe, without building Hit objects.
 
         ``search_fts`` inflates every candidate row through ``_row_to_chunk``,
         which json.loads the meta blob and runs a pydantic validation. The
         intersection probes in ``search_literal`` only need to know *which*
-        chunks matched, and there can be ten of them at 10,000 rows each, so
-        they read the two key columns instead and let the surviving
+        chunks matched, one probe per query token over the whole collection,
+        so they read the two key columns instead and let the surviving
         candidates be hydrated once.
         """
-        if not self.collection_exists(collection):
-            return set()
-        t = self._table(collection)
-        self._ensure_fts(collection, t)
-        if fuzziness > 0:
-            from lancedb.query import MatchQuery
-
-            search_input = MatchQuery(query, "text", fuzziness=fuzziness)
-        else:
-            search_input = query
-        q = t.search(search_input, query_type="fts")
-        clause = _build_where(
+        q = self._fts_query(
+            collection,
+            query,
+            fuzziness,
+            table=table,
             episode=episode,
             episodes=episodes,
             source=source,
@@ -1872,14 +2027,46 @@ class IndexStore:
             pub_date_min=pub_date_min,
             pub_date_max=pub_date_max,
         )
-        if clause:
-            q = q.where(clause)
+        if q is None:
+            return set()
         try:
-            rows = q.select(["episode", "start"]).limit(top_k).to_list()
+            rows = q.select(["episode", "chunk_index"]).limit(top_k).to_list()
         except Exception:
             logger.opt(exception=True).warning("FTS query failed — treating as empty")
             return set()
-        return {f"{r.get('episode')}|{r.get('start')}" for r in rows}
+        return {chunk_row_key(r["episode"], r["chunk_index"]) for r in rows}
+
+    def _fts_query(
+        self, collection: str, query: str, fuzziness: int, *, table=None, **filters
+    ):
+        """The filtered FTS query behind ``search_fts`` and ``_search_fts_keys``.
+
+        ``None`` when the collection does not exist. Callers add their own
+        projection and limit. *table* is an already open handle: a caller
+        running many probes (``search_literal``) opens the table once, which
+        saves a table listing and open per probe and keeps every probe on
+        the same version of the index.
+        """
+        if table is None:
+            if not self.collection_exists(collection):
+                return None
+            table = self._table(collection)
+        t = table
+        self._ensure_fts(collection, t)
+        if fuzziness > 0:
+            from lancedb.query import MatchQuery
+
+            search_input = MatchQuery(
+                query,
+                "text",
+                fuzziness=fuzziness,
+                max_expansions=_FTS_MAX_EXPANSIONS,
+            )
+        else:
+            search_input = query
+        q = t.search(search_input, query_type="fts")
+        clause = _build_where(**filters)
+        return q.where(clause) if clause else q
 
     def search_literal(
         self,
@@ -1906,8 +2093,13 @@ class IndexStore:
                            stay in the tier at 0.99 and rank after them,
                            chronologically within each group.
         - ``accent_only``: accent-folded query is a substring of folded text
-        - ``fuzzy_only``:  single-word query with a word within ``max_dist``
-                           edits (after accent folding) in the chunk text
+        - ``fuzzy_only``:  single-word query (3+ chars) with a word within
+                           ``max_dist`` edits (after accent folding) in the
+                           chunk text; a multi-word query matches the whole
+                           phrase approximately instead
+
+        No candidate cap: every FTS probe is limited to the collection's row
+        count, so a query made of common words still finds every match.
         """
         if not self.collection_exists(collection):
             return [], [], []
@@ -1916,92 +2108,119 @@ class IndexStore:
         query_lower = query.lower()
 
         # Tokenize the same way Tantivy does: split on non-word characters.
-        # Only tokens ≥ 3 chars are used for FTS intersection — shorter tokens
-        # (e.g. "c" from "c'est") are far too common to discriminate chunks.
+        # Tokens shorter than _MIN_PROBE_LEN (e.g. "c" from "c'est") are too
+        # common to discriminate chunks, so they only probe when the query
+        # has nothing longer ("AI", "TV"), and then as exact tokens: a 2-edit
+        # fuzzy probe on a two-letter word matches nearly every chunk.
         all_tokens = [t for t in _WORD_RE.split(query) if t]
-        fts_tokens = list(dict.fromkeys(t for t in all_tokens if len(t) >= 3))
-        single_word = len(fts_tokens) == 1
+        if not all_tokens:
+            return [], [], []
+        long_tokens = [t for t in all_tokens if len(t) >= _MIN_PROBE_LEN]
+        probe_tokens = list(dict.fromkeys(long_tokens or all_tokens))
+        # Decided on every word, not only the probed ones: "le chat" is a
+        # phrase, not the single word "chat".
+        fuzzy_word = all_tokens[0] if len(all_tokens) == 1 and long_tokens else None
+        limit = max(self.count_rows(collection), 1)
 
-        # FTS pre-filter: fuzziness=2 via MatchQuery, per token. Tantivy keeps
-        # accents in the index and its fuzzy query has a non-zero effective
-        # prefix_length, so an accent-swap on the leading char (e.g. "etres"
-        # → "êtres") won't match even at distance=1. We search both the
-        # original token and its accent-folded form and union the hits to
-        # cover both "accented query, no-accent typing" directions.
-        # Multi-word: intersect per-token chunk hits so every token must
-        # appear (approximately) in the same chunk.
-        def _fts_token(token: str) -> list[Hit]:
-            hits = self.search_fts(
-                collection,
-                token,
-                10_000,
-                episode=episode,
-                episodes=episodes,
-                source=source,
-                speaker=speaker,
-                pub_date_min=pub_date_min,
-                pub_date_max=pub_date_max,
-                fuzziness=2,
-            )
+        # FTS pre-filter via MatchQuery, per token, allowing exactly the edits
+        # the Python check below accepts: max_dist for a single word, the
+        # phrase tolerance for a phrase (every token of a phrase within k
+        # edits is itself within k). More only floods the candidate pool
+        # with chunks the check then rejects, at a build cost each. Tantivy
+        # keeps accents in the index and its fuzzy query has a non-zero
+        # effective prefix_length, so an accent-swap on the leading char
+        # (e.g. "etres" → "êtres") won't match on edits alone: we probe both
+        # the original token and its accent-folded form and union the hits.
+        # Tolerance ~12% of phrase length: short queries stay strict, long
+        # ones accept one or two real typos.
+        phrase_max = max(1, len(folded_q) // 8)
+        token_edits = min(max_dist if fuzzy_word is not None else phrase_max, 2)
+        filters = dict(
+            episode=episode,
+            episodes=episodes,
+            source=source,
+            speaker=speaker,
+            pub_date_min=pub_date_min,
+            pub_date_max=pub_date_max,
+        )
+
+        def _variants(token: str) -> list[tuple[str, int]]:
+            # Always an exact probe too: a fuzzy MatchQuery expands to at most
+            # _FTS_MAX_EXPANSIONS terms, and nothing guarantees the query term
+            # itself is among them ("the" has thousands of close neighbours).
             ft = fold_text(token)
-            if ft and ft != token:
-                seen = {_chunk_key(h) for h in hits}
-                for h in self.search_fts(
-                    collection,
-                    ft,
-                    10_000,
-                    episode=episode,
-                    episodes=episodes,
-                    source=source,
-                    speaker=speaker,
-                    pub_date_min=pub_date_min,
-                    pub_date_max=pub_date_max,
-                    fuzziness=2,
-                ):
-                    k = _chunk_key(h)
-                    if k not in seen:
-                        hits.append(h)
+            forms = [token, ft] if ft and ft != token else [token]
+            edits = [0, token_edits] if len(token) >= _MIN_PROBE_LEN else [0]
+            return [(form, fuzziness) for form in forms for fuzziness in edits]
+
+        label = self.collection_label(collection)
+        # One handle for every probe below; see _fts_query.
+        table = self._table(collection)
+
+        def _hydrate(token: str, keep: set[str] | None = None) -> list[Hit]:
+            # Rows are deduped before they are built: the exact and fuzzy
+            # probes overlap almost entirely, and building a Hit (json.loads
+            # plus validation) is the cost here.
+            hits: list[Hit] = []
+            seen: set[str] = set()
+            for form, fuzziness in _variants(token):
+                q = self._fts_query(collection, form, fuzziness, table=table, **filters)
+                if q is None:
+                    continue
+                try:
+                    rows = q.limit(limit).to_list()
+                except Exception:
+                    logger.opt(exception=True).warning(
+                        "FTS query failed: treating as empty"
+                    )
+                    continue
+                for r in rows:
+                    k = chunk_row_key(r["episode"], r["chunk_index"])
+                    if k not in seen and (keep is None or k in keep):
                         seen.add(k)
+                        hits.append(_row_to_chunk(r, label))
             return hits
 
-        def _fts_token_keys(token: str) -> set[str]:
-            """``_fts_token`` without the hydration; see ``_search_fts_keys``."""
-            probe = dict(
-                episode=episode,
-                episodes=episodes,
-                source=source,
-                speaker=speaker,
-                pub_date_min=pub_date_min,
-                pub_date_max=pub_date_max,
-                fuzziness=2,
-            )
-            keys = self._search_fts_keys(collection, token, 10_000, **probe)
-            ft = fold_text(token)
-            if ft and ft != token:
-                keys |= self._search_fts_keys(collection, ft, 10_000, **probe)
-            return keys
-
-        if len(fts_tokens) == 1:
-            candidates = _fts_token(fts_tokens[0])
+        if len(probe_tokens) == 1:
+            candidates = _hydrate(probe_tokens[0])
         else:
-            # A chunk survives the intersection only if it matched *every*
-            # token, so it is necessarily in the first token's hits. Hydrate
-            # that one probe and narrow it with key-only probes for the rest,
-            # instead of building up to 2N x 10,000 validated models and
-            # discarding almost all of them.
-            candidates = _fts_token(fts_tokens[0])
-            for token in fts_tokens[1:]:
-                if not candidates:
+            # A chunk survives only if it matched *every* token: intersect
+            # key-only probes, then hydrate the survivors from the rarest
+            # token's probe, the smallest one that holds them all. (Loading
+            # them by key instead builds one filter clause per episode, which
+            # Lance caps at 500 conditions and can crash on well before that.)
+            keys: set[str] | None = None
+            sizes: dict[str, int] = {}
+            for token in probe_tokens:
+                token_keys: set[str] = set()
+                for form, fuzziness in _variants(token):
+                    token_keys |= self._search_fts_keys(
+                        collection,
+                        form,
+                        limit,
+                        fuzziness=fuzziness,
+                        table=table,
+                        **filters,
+                    )
+                sizes[token] = len(token_keys)
+                keys = token_keys if keys is None else keys & token_keys
+                if not keys:
                     break
-                keys = _fts_token_keys(token)
-                candidates = [c for c in candidates if _chunk_key(c) in keys]
+            candidates = _hydrate(min(sizes, key=sizes.get), keys) if keys else []
 
+        word_cache: dict[str, float | None] = {}
         exact: list[Hit] = []
         accent_only: list[Hit] = []
         fuzzy_only: list[Hit] = []
         for c in candidates:
             text = c.text
             lower = text.lower()
+            if len(lower) != len(text):
+                # A few chars ("İ") lowercase to two, which would shift every
+                # offset below. Leave those as they are.
+                lower = "".join(
+                    ch if len(ch.lower()) != 1 else ch.lower() for ch in text
+                )
             if query_lower in lower:
                 # Prefer a whole-word occurrence over the first occurrence:
                 # a chunk with both "Williams" and "William" is a word match.
@@ -2029,25 +2248,16 @@ class IndexStore:
                     c.match_text = span
                     accent_only.append(c)
                 else:
-                    if single_word:
-                        result = _fuzzy_match(fts_tokens[0], text, max_dist)
+                    if fuzzy_word is not None:
+                        result = _fuzzy_match(fuzzy_word, text, max_dist, word_cache)
                         if result is not None:
                             c.score, c.match_text = result
                             fuzzy_only.append(c)
                     else:
-                        # Tolerance ~12% of phrase length: short queries stay
-                        # strict, long ones accept one or two real typos.
-                        phrase_max = max(1, len(folded_q) // 8)
                         hit = _approx_substring(folded_q, folded_t, phrase_max)
                         if hit is not None:
                             d, fs, fe = hit
-                            if len(folded_t) == len(text):
-                                span = text[fs:fe]
-                            else:
-                                span = (
-                                    _find_original_span(text, folded_t[fs:fe])
-                                    or folded_t[fs:fe]
-                                )
+                            span = _original_slice(text, fs, fe) or folded_t[fs:fe]
                             c.score = 1.0 - d / max(len(folded_q), 1)
                             c.match_text = span
                             fuzzy_only.append(c)
@@ -2078,34 +2288,46 @@ class IndexStore:
         The earlier ``.fts_folded_v1`` (accent-folding upgrade) is superseded
         and removed on migration.
         """
-        if collection in self._fts_ready:
+        if collection in self._fts_ready or collection in self._fts_failed:
             return
         sentinel = self._path / f"{collection}.fts_v2"
         legacy_sentinel = self._path / f"{collection}.fts_folded_v1"
         try:
-            existing = {idx.name for idx in table.list_indices()}
-        except Exception:
-            existing = set()
-        has_text_idx = any("text" in n.lower() for n in existing)
-        needs_rebuild = has_text_idx and not sentinel.exists()
-        try:
-            if not has_text_idx or needs_rebuild:
-                table.create_fts_index(
-                    "text",
-                    replace=needs_rebuild,
-                    ascii_folding=True,
-                    lower_case=True,
-                    stem=False,
-                    remove_stop_words=False,
-                )
-                sentinel.touch()
-                legacy_sentinel.unlink(missing_ok=True)
-                if needs_rebuild:
-                    logger.info(
-                        f"FTS index rebuilt (v2, fuzzy-capable) for {collection}"
+            # Decided under the lock: two first queries racing would
+            # otherwise both build, and the second fail on the first's index.
+            with self._write_lock:
+                if collection in self._fts_ready:
+                    return
+                try:
+                    existing = {idx.name for idx in table.list_indices()}
+                except Exception:
+                    existing = set()
+                has_text_idx = any("text" in n.lower() for n in existing)
+                needs_rebuild = has_text_idx and not sentinel.exists()
+                if not has_text_idx or needs_rebuild:
+                    table.create_fts_index(
+                        "text",
+                        replace=needs_rebuild,
+                        ascii_folding=True,
+                        lower_case=True,
+                        stem=False,
+                        remove_stop_words=False,
                     )
+                    sentinel.touch()
+                    legacy_sentinel.unlink(missing_ok=True)
+                    if needs_rebuild:
+                        logger.info(
+                            f"FTS index rebuilt (v2, fuzzy-capable) for {collection}"
+                        )
+                self._fts_ready.add(collection)
+            return
         except Exception:
-            logger.opt(exception=True).debug("FTS index creation skipped")
+            # Not marked ready, so no sentinel: the next process retries.
+            logger.opt(exception=True).warning(
+                f"FTS index creation failed for {collection}"
+            )
+            self._fts_failed.add(collection)
+            return
         self._fts_ready.add(collection)
 
     # ── Stats ────────────────────────────────────────────────────────────
@@ -2241,15 +2463,7 @@ class IndexStore:
         that carries them.
         """
         groups = self._aggregate_episodes(
-            collection,
-            with_speakers=True,
-            meta_fields=(
-                "episode_title",
-                "episode_number",
-                "broadcast_number",
-                "description",
-                "artwork_url",
-            ),
+            collection, with_speakers=True, meta_fields=_EPISODE_META_FIELDS
         )
         return [_episode_group_to_dict(ep, g) for ep, g in sorted(groups.items())]
 
@@ -2265,7 +2479,7 @@ class IndexStore:
         groups = self._aggregate_episodes(
             collection,
             with_speakers=True,
-            meta_fields=("episode_title", "episode_number", "description"),
+            meta_fields=_EPISODE_META_FIELDS,
             where=f"episode = '{_escape(episode)}'",
         )
         if episode not in groups:

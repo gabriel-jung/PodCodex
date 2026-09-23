@@ -910,7 +910,14 @@ def _relabel_password(show_id: str, label: str, previous_label: str = "") -> Non
         entries = store.get_show_password_entries()
         entry = entries.get(show_id) or entries.get(previous_label)
         if entry and entry.get("label") != label:
-            store.set_show_password(show_id, entry["password_hash"], show_label=label)
+            # A legacy row keyed by the previous name must go, or the bot
+            # keeps enforcing the password under that name.
+            store.set_show_password(
+                show_id,
+                entry["password_hash"],
+                show_label=label,
+                legacy_label=previous_label,
+            )
     except Exception:
         # A rename must not fail because the index is busy, absent, or a
         # replica. Identity, the part that used to break, is already safe.

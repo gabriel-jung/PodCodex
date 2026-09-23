@@ -242,6 +242,70 @@ def test_show_renamed_before_upgrading_is_still_adopted(env):
     )
 
 
+def test_password_of_a_show_renamed_before_upgrading_is_rekeyed(env):
+    """The password is under the old name, which only the collection row keeps.
+    Missing it served a protected show as public in the bot."""
+    store, folder = env
+    save_show_meta(folder, ShowMeta(name="Renamed Before Upgrade"))
+    store.set_collection_identity(
+        "my_show__bge-m3__semantic", show_id="", show="My Show"
+    )
+    _write_legacy_password_row(store, "my show", "sha256:abc")
+
+    migrate_index_to_show_ids(store)
+
+    sid = show_id(folder)
+    entries = store.get_show_password_entries()
+    assert list(entries) == [sid]
+    assert entries[sid]["password_hash"] == "sha256:abc"
+    assert entries[sid]["label"] == "Renamed Before Upgrade"
+
+
+def test_setting_a_password_keeps_another_show_with_the_same_label(env):
+    store, _folder = env
+    store.set_show_password("show_a", "sha256:a", show_label="Twin")
+    store.set_show_password("show_b", "sha256:b", show_label="Twin")
+
+    entries = store.get_show_password_entries()
+    assert entries["show_a"]["password_hash"] == "sha256:a"
+    assert entries["show_b"]["password_hash"] == "sha256:b"
+
+
+def test_deleting_a_legacy_password_keeps_another_show_with_that_label(env):
+    store, _folder = env
+    store.set_show_password("show_a", "sha256:a", show_label="Twin")
+    _write_legacy_password_row(store, "Twin", "sha256:legacy")
+
+    store.delete_show_password("Twin")
+
+    assert list(store.get_show_password_entries()) == ["show_a"]
+
+
+def test_legacy_password_with_odd_whitespace_is_deleted(env):
+    store, _folder = env
+    _write_legacy_password_row(store, " Foo\t", "sha256:legacy")
+
+    store.delete_show_password("foo")
+
+    assert store.get_show_password_entries() == {}
+
+
+def test_relabelling_a_legacy_password_drops_the_old_name(env, monkeypatch):
+    """A rename carries a name-keyed password onto the id; the row under the
+    previous name must go, or the bot keeps enforcing it under that name."""
+    import podcodex.api.routes.shows as shows_routes
+
+    store, _folder = env
+    monkeypatch.setattr(shows_routes, "get_index_store", lambda: store)
+    _write_legacy_password_row(store, "Alpha", "sha256:abc")
+
+    shows_routes._relabel_password("show_1111aaaa", "Beta", "Alpha")
+
+    entries = store.get_show_password_entries()
+    assert list(entries) == ["show_1111aaaa"]
+    assert entries["show_1111aaaa"]["label"] == "Beta"
+
+
 def test_adoption_does_not_steal_another_shows_collection(env):
     """Two shows must not both claim one collection."""
     store, folder = env

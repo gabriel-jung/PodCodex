@@ -950,13 +950,62 @@ def test_search_literal_fuzzy_tier_catches_one_edit_typo(tmp_path):
     assert "williams" in fuzzy[0].text
 
 
+def _empty_collection(tmp_path) -> tuple[IndexStore, str]:
+    s = _store(tmp_path)
+    col = "s__bge-m3__semantic"
+    s.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    return s, col
+
+
+def _texts_seeded(tmp_path, texts: list[str], *, untimed: bool = False):
+    s, col = _empty_collection(tmp_path)
+    chunks = _chunks(len(texts))
+    for chunk, text in zip(chunks, texts):
+        chunk["text"] = text
+        if untimed:
+            chunk["start"] = chunk["end"] = 0.0
+    s.save_chunks(col, "ep1", chunks, _rng_embeddings(len(texts)))
+    return s, col
+
+
+def test_search_literal_query_of_short_words_only(tmp_path):
+    """No word of 3+ chars used to leave nothing to probe and raise IndexError."""
+    s, col = _texts_seeded(tmp_path, ["the AI act passed", "nothing here"])
+    exact, accent, fuzzy = s.search_literal(col, "AI")
+    assert [h.text for h in exact] == ["the AI act passed"]
+    assert accent == [] and fuzzy == []
+
+
+def test_search_literal_punctuation_only_query_is_empty(tmp_path):
+    s, col = _texts_seeded(tmp_path, ["anything"])
+    assert s.search_literal(col, "?!") == ([], [], [])
+
+
+def test_search_literal_phrase_with_one_long_word_is_not_a_single_word(tmp_path):
+    """ "le chat" must not fuzzy-match every chunk that mentions "chats"."""
+    s, col = _texts_seeded(tmp_path, ["le chat dort", "deux chats noirs"])
+    exact, _accent, fuzzy = s.search_literal(col, "le chat")
+    assert [h.text for h in exact] == ["le chat dort"]
+    assert fuzzy == []
+
+
+def test_search_literal_keeps_untimed_chunks_apart(tmp_path):
+    """Every chunk of an untimed transcript starts at 0.0; keys must still differ."""
+    s, col = _texts_seeded(
+        tmp_path,
+        ["john williams again", "john williams once more", "other"],
+        untimed=True,
+    )
+    assert len(s._search_fts_keys(col, "williams", 10)) == 2
+    exact, _accent, _fuzzy = s.search_literal(col, "john williams")
+    assert len(exact) == 2
+
+
 # ── Exact tier: whole-word matches rank before superstring matches ───────
 
 
 def _word_rank_store(tmp_path):
-    s = _store(tmp_path)
-    col = "s__bge-m3__semantic"
-    s.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    s, col = _empty_collection(tmp_path)
     chunks = _chunks(3)
     chunks[0]["text"] = "John Williams composed the score"
     chunks[1]["text"] = "I met William yesterday"
@@ -985,9 +1034,7 @@ def test_exact_word_match_scores(tmp_path):
 
 
 def test_exact_word_match_found_past_superstring_occurrence(tmp_path):
-    s = _store(tmp_path)
-    col = "s__bge-m3__semantic"
-    s.ensure_collection(col, show="S", model="bge-m3", chunker="semantic", dim=8)
+    s, col = _empty_collection(tmp_path)
     chunks = _chunks(1)
     # Superstring occurrence first, standalone word later in the same chunk:
     # the chunk must still count as a whole-word match.
@@ -1066,3 +1113,257 @@ def test_delete_episode_everywhere_bumps_the_version_fingerprint(tmp_path):
     s.delete_episode_everywhere("S", "ep1")
 
     assert s.collection_version("s__bge") != before
+
+
+# ── Review 2026-09-22 lows ───────────────────────────────────────────────
+
+
+def test_save_chunks_with_fewer_chunks_drops_the_extras(tmp_path):
+    s, col = _empty_collection(tmp_path)
+    s.save_chunks(col, "ep1", _chunks(5), _rng_embeddings(5))
+    s.save_chunks(col, "ep2", _chunks(2, "ep2"), _rng_embeddings(2))
+
+    s.save_chunks(col, "ep1", _chunks(3), _rng_embeddings(3))
+
+    assert [c.chunk_index for c in s.load_chunks_no_embeddings(col, "ep1")] == [0, 1, 2]
+    assert len(s.load_chunks_no_embeddings(col, "ep2")) == 2
+
+
+def test_accent_span_survives_an_expansion_and_a_drop_of_equal_length():
+    """ "œ" folds to two chars and "ß" to none: lengths match, offsets do not."""
+    from podcodex.rag.index_store import _accent_span, fold_text
+
+    text = "cœur élève straße"
+    span = _accent_span(text, fold_text(text), fold_text("eleve"))
+    assert span == "élève"
+
+
+def test_get_episode_has_the_get_episode_stats_shape(tmp_path):
+    s, col = _empty_collection(tmp_path)
+    chunks = _chunks(1)
+    chunks[0]["broadcast_number"] = "42"
+    chunks[0]["artwork_url"] = "https://example.com/a.jpg"
+    s.save_chunks(col, "ep1", chunks, _rng_embeddings(1))
+
+    one = s.get_episode(col, "ep1")
+    assert one == s.get_episode_stats(col)[0]
+    assert one["artwork_url"] == "https://example.com/a.jpg"
+
+
+class _FailingTable:
+    """Delegates to a real table, but the named method raises."""
+
+    def __init__(self, table, failing: str):
+        self._table, self._failing = table, failing
+
+    def __getattr__(self, name):
+        if name == self._failing:
+
+            def _raise(*_a, **_kw):
+                raise OSError("disk full")
+
+            return _raise
+        return getattr(self._table, name)
+
+
+def test_failed_fts_creation_is_retried(tmp_path):
+    s, col = _empty_collection(tmp_path)
+    s.save_chunks(col, "ep1", _chunks(1), _rng_embeddings(1))
+    s._fts_ready.discard(col)
+
+    s._ensure_fts(col, _FailingTable(s._table(col), "create_fts_index"))
+
+    assert col not in s._fts_ready
+    assert not (tmp_path / "index" / f"{col}.fts_v2").exists()
+
+
+def test_partial_episode_title_backfill_is_retried(tmp_path, monkeypatch):
+    import podcodex.ingest.rss as rss
+
+    s, col = _empty_collection(tmp_path)
+    s.save_chunks(col, "ep1", _chunks(2), _rng_embeddings(2))
+
+    class _Ep:
+        title = "Real Title"
+
+    monkeypatch.setattr(rss, "load_feed_cache", lambda _folder: [_Ep()])
+    monkeypatch.setattr(rss, "episode_stem", lambda _ep, _folder: "ep1")
+    sentinel = tmp_path / "index" / f"{col}.episode_title_v1"
+    # Opened before the resolver is set: _table() runs the backfill itself.
+    table = s._table(col)
+
+    with show_folder_resolver(lambda _name: str(tmp_path)):
+        s._ensure_episode_title_backfill(col, _FailingTable(table, "update"))
+        assert not sentinel.exists()
+
+        s._episode_title_ready.discard(col)  # the next process
+        s._ensure_episode_title_backfill(col, table)
+        assert sentinel.exists()
+
+    assert s.get_episode(col, "ep1")["episode_title"] == "Real Title"
+
+
+def test_search_literal_phrase_matching_hundreds_of_episodes(tmp_path):
+    """Survivors used to load through one filter clause per episode, which
+    Lance refuses past 500 conditions (and can crash on)."""
+    s, col = _empty_collection(tmp_path)
+    rng = np.random.default_rng(0)
+    s._table(col).add(
+        [
+            {
+                "chunk_index": 0,
+                "show": "S",
+                "episode": f"ep{i}",
+                "source": "transcript",
+                "pub_date": "",
+                "dominant_speaker": "",
+                "start": 0.0,
+                "end": 1.0,
+                "text": "alpha beta",
+                "vector": rng.random(8, dtype=np.float32).tolist(),
+                "meta": "{}",
+            }
+            for i in range(700)
+        ]
+    )
+    exact, _accent, _fuzzy = s.search_literal(col, "alpha beta")
+    assert len(exact) == 700
+
+
+def test_save_chunks_repairs_duplicate_rows(tmp_path):
+    s, col = _empty_collection(tmp_path)
+    s.save_chunks(col, "ep1", _chunks(2), _rng_embeddings(2))
+    t = s._table(col)
+    t.add(t.search().where("chunk_index = 0").limit(1).to_list())  # a duplicate
+    assert t.count_rows("episode = 'ep1'") == 3
+
+    s.save_chunks(col, "ep1", _chunks(2), _rng_embeddings(2))
+
+    assert s._table(col).count_rows("episode = 'ep1'") == 2
+
+
+def test_exact_tier_offsets_survive_a_char_that_lowercases_to_two(tmp_path):
+    s, col = _texts_seeded(tmp_path, ["İstanbul est belle"])
+    exact, _accent, _fuzzy = s.search_literal(col, "est")
+    assert [h.match_text for h in exact] == ["est"]
+
+
+def test_windowed_approx_substring_matches_the_full_dp():
+    """The pigeonhole windows must find the same best distance as a full scan."""
+    import random
+
+    from podcodex.rag.index_store import _approx_substring, _sellers
+
+    rng = random.Random(1)
+    for _ in range(3000):
+        pattern = "".join(rng.choice("abc d") for _ in range(rng.randint(1, 14)))
+        text = "".join(rng.choice("abc d") for _ in range(rng.randint(0, 60)))
+        k = rng.randint(1, 3)
+        windowed, full = _approx_substring(pattern, text, k), _sellers(pattern, text, k)
+        assert (windowed is None) == (full is None)
+        if full is not None:
+            assert windowed[0] == full[0]
+            start, end = windowed[1], windowed[2]
+            assert _sellers(pattern, text[start:end], k)[0] <= full[0]
+
+
+def test_search_literal_finds_every_exact_hit_of_a_word_with_many_neighbours(tmp_path):
+    """A fuzzy probe expands to at most 50 terms, not always including the
+    query term itself: with hundreds of two-letter words around it, the
+    fuzzy probe alone found 4 of these 10 chunks."""
+    s, col = _empty_collection(tmp_path)
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    words = [a + b for a in letters for b in letters]
+    rng = np.random.default_rng(0)
+    s._table(col).add(
+        [
+            {
+                "chunk_index": i,
+                "show": "S",
+                "episode": "ep1",
+                "source": "transcript",
+                "pub_date": "",
+                "dominant_speaker": "",
+                "start": 0.0,
+                "end": 0.0,
+                "text": f"{words[i]} {words[i + 1]}" + (" the" if i < 10 else ""),
+                "vector": rng.random(8, dtype=np.float32).tolist(),
+                "meta": "{}",
+            }
+            for i in range(600)
+        ]
+    )
+    exact, _accent, _fuzzy = s.search_literal(col, "the")
+    assert len(exact) == 10
+
+
+def test_fuzzy_probes_allow_exactly_the_edits_the_check_accepts(tmp_path, monkeypatch):
+    """2-edit probes capped at Tantivy's default 50 expansions missed most
+    chunks one edit from a typo query, while flooding others with candidates
+    the check then rejects. Pinned here because a synthetic corpus does not
+    reproduce which terms Tantivy keeps."""
+    import lancedb.query
+
+    s, col = _texts_seeded(tmp_path, ["pour le moment", "un autre chunk"])
+    seen: list[tuple[str, int]] = []
+    real_query = s._fts_query
+
+    def spy_query(collection, query, fuzziness, **kw):
+        seen.append((query, fuzziness))
+        return real_query(collection, query, fuzziness, **kw)
+
+    expansions: list[int] = []
+    real_match = lancedb.query.MatchQuery
+
+    def spy_match(*a, **kw):
+        expansions.append(kw.get("max_expansions"))
+        return real_match(*a, **kw)
+
+    monkeypatch.setattr(s, "_fts_query", spy_query)
+    monkeypatch.setattr(lancedb.query, "MatchQuery", spy_match)
+
+    s.search_literal(col, "pouur")
+    assert sorted(seen) == [("pouur", 0), ("pouur", 1)]
+
+    seen.clear()
+    s.search_literal(col, "pour le moment exact")  # 20 chars: 2 edits allowed
+    assert {f for _, f in seen} == {0, 2}
+    assert expansions and all(e >= 1000 for e in expansions)
+
+
+def test_episode_title_backfill_does_not_overwrite_a_newer_save(tmp_path, monkeypatch):
+    """An index subprocess can re-save the episode between the scan and the
+    update; the stale meta blob must not be written over the fresh one."""
+    import podcodex.ingest.rss as rss
+
+    s, col = _empty_collection(tmp_path)
+    s.save_chunks(col, "ep1", _chunks(1), _rng_embeddings(1))
+
+    class _Ep:
+        title = "Real Title"
+
+    monkeypatch.setattr(rss, "load_feed_cache", lambda _folder: [_Ep()])
+    monkeypatch.setattr(rss, "episode_stem", lambda _ep, _folder: "ep1")
+    table = s._table(col)
+
+    class _ResaveFirst:
+        """Re-saves the episode (new speaker) right before the heal's update."""
+
+        def __init__(self, t):
+            self._t = t
+
+        def update(self, **kw):
+            fresh = _chunks(1)
+            fresh[0]["dominant_speaker"] = "new speaker"
+            fresh[0]["extra"] = "fresh"
+            s.save_chunks(col, "ep1", fresh, _rng_embeddings(1))
+            return s._table(col).update(**kw)
+
+        def __getattr__(self, name):
+            return getattr(self._t, name)
+
+    with show_folder_resolver(lambda _name: str(tmp_path)):
+        s._ensure_episode_title_backfill(col, _ResaveFirst(table))
+
+    [chunk] = s.load_chunks_no_embeddings(col, "ep1")
+    assert chunk.model_extra.get("extra") == "fresh"

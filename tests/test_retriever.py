@@ -10,7 +10,7 @@ import pytest
 
 from podcodex.rag.index_store import IndexStore
 from podcodex.rag.hit import Hit
-from podcodex.rag.retriever import merge_results
+from podcodex.rag.retriever import _chunk_key, merge_results
 
 
 DIM = 4
@@ -459,3 +459,10 @@ def test_random_retries_when_the_index_shrinks_mid_pick():
     r._local = _ShrinkingStore()
     picked = r.random("col")
     assert picked is not None and picked.text == "ok"
+
+
+def test_chunk_key_distinguishes_chunks_with_the_same_start():
+    """Chunks that begin in one turn, or in an untimed transcript, share a start."""
+    a = Hit(show="S", episode="ep1", chunk_index=0, start=0.0)
+    b = Hit(show="S", episode="ep1", chunk_index=1, start=0.0)
+    assert _chunk_key(a) != _chunk_key(b)

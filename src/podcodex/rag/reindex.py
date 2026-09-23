@@ -16,6 +16,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from loguru import logger
@@ -37,10 +38,16 @@ def _reindex_show(
     model_keys: list[str],
     chunkers: list[str],
     dry_run: bool,
-) -> None:
-    """Drop then rebuild every (model × chunker) collection for a show."""
+) -> bool:
+    """Drop then rebuild every (model × chunker) collection for a show.
+
+    Returns:
+        True when every episode with a transcript was re-indexed. The
+        collections are dropped first, so a False here can mean an index
+        left emptier than before the run.
+    """
     from podcodex.core.source import build_index_transcript
-    from podcodex.rag.indexing import vectorize_batch
+    from podcodex.rag.indexing import IndexingError, vectorize_batch
 
     store = get_index_store()
 
@@ -60,7 +67,9 @@ def _reindex_show(
                     store.delete_collection(col)
                     logger.info(f"Dropped {col}")
                 except Exception as exc:
-                    logger.debug(f"Nothing to drop for {col}: {exc}")
+                    # Refused on a replica, or already gone. Either way the
+                    # rebuild below writes over whatever is still there.
+                    logger.warning(f"Could not drop {col}: {exc}")
 
     # 2. Re-vectorize every episode with a transcript. Audio-less episodes
     #    (YouTube subtitle imports, flat extraction) index through output_dir
@@ -69,10 +78,11 @@ def _reindex_show(
     episodes = scan_folder(folder)
     if not episodes:
         logger.warning(f"No episodes found in {folder}")
-        return
+        return True
 
     reindexed = 0
     skipped = 0
+    failed = 0
     for ep in episodes:
         audio = getattr(ep, "audio_path", None)
         try:
@@ -95,16 +105,25 @@ def _reindex_show(
             reindexed += 1
             continue
 
-        n = vectorize_batch(
-            transcript,
-            show_name,
-            ep.stem,
-            model_keys,
-            chunkers,
-            store,
-            show_id=sid,
-            overwrite=True,
-        )
+        try:
+            n = vectorize_batch(
+                transcript,
+                show_name,
+                ep.stem,
+                model_keys,
+                chunkers,
+                store,
+                show_id=sid,
+                overwrite=True,
+            )
+        except IndexingError as exc:
+            logger.error(f"[failed] {ep.stem}: {exc}")
+            failed += 1
+            continue
+        if n == 0:
+            logger.warning(f"[skip] {ep.stem}: transcript produced no chunks")
+            skipped += 1
+            continue
         logger.success(f"{ep.stem}: +{n} chunks")
         reindexed += 1
 
@@ -113,7 +132,12 @@ def _reindex_show(
         # fragments; reclaim them before the index is shipped anywhere.
         store.compact()
 
-    logger.info(f"Done: {reindexed} re-indexed, {skipped} skipped")
+    summary = f"{reindexed} re-indexed, {skipped} skipped, {failed} failed"
+    if failed:
+        logger.error(f"Finished with failures: {summary}")
+        return False
+    logger.info(f"Done: {summary}")
+    return True
 
 
 def _list_collections(show_name: str) -> None:
@@ -196,7 +220,8 @@ def main() -> None:
         f"models={model_keys}, chunkers={chunkers}"
         + (" [dry-run]" if args.dry_run else "")
     )
-    _reindex_show(folder, name, model_keys, chunkers, dry_run=args.dry_run)
+    if not _reindex_show(folder, name, model_keys, chunkers, dry_run=args.dry_run):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

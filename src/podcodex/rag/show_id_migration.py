@@ -45,15 +45,29 @@ def migrate_index_to_show_ids(store) -> int:
     """
     from podcodex.ingest.show import ensure_show_id, show_display
     from podcodex.ingest.show_registry import registered_folders
+    from podcodex.rag.index_store import _norm_label
 
     info = store.get_all_collection_info()
     pending = {
         name: meta for name, meta in info.items() if not (meta.get("show_id") or "")
     }
     passwords = store.get_show_password_entries()
-    legacy_passwords = {
-        label: entry for label, entry in passwords.items() if not entry.get("show_id")
-    }
+    # Keyed case-insensitively: the label that protected a show is only as
+    # exact as the user's typing at the time.
+    legacy_passwords: dict[str, tuple[str, dict]] = {}
+    for label, entry in sorted(passwords.items()):
+        if entry.get("show_id"):
+            continue
+        key = _norm_label(label)
+        kept = legacy_passwords.setdefault(key, (label, entry))
+        if kept[1]["password_hash"] != entry["password_hash"]:
+            # Nothing says which one the bot's users know; keep the first
+            # by label and say so, rather than letting row order decide.
+            logger.warning(
+                f"show-id migration: legacy passwords {kept[0]!r} and {label!r} "
+                f"differ only in case or spacing; keeping {kept[0]!r}. Set the "
+                "password again from the show's settings if that is wrong."
+            )
     # A password can exist without any collection: a show may be protected
     # before it is ever indexed. Returning early on `pending` alone left such
     # a row name-keyed forever, which reads as unprotected in the app while
@@ -80,7 +94,15 @@ def migrate_index_to_show_ids(store) -> int:
             for n, m in pending.items()
             if n not in claimed and _row_belongs(n, m, label, folder)
         }
-        if not mine and label not in legacy_passwords:
+        # The password is keyed by whichever name was current when it was set.
+        # A show renamed before upgrading is adopted through its table name
+        # (see _row_belongs), and its password is under the old label its
+        # collection rows still carry, so look there too.
+        pw_keys = [_norm_label(label)] + [
+            _norm_label(m.get("show") or "") for m in mine.values()
+        ]
+        pw_key = next((k for k in pw_keys if k in legacy_passwords), None)
+        if not mine and pw_key is None:
             continue
 
         sid = ensure_show_id(folder)
@@ -90,10 +112,14 @@ def migrate_index_to_show_ids(store) -> int:
             claimed.add(name)
             migrated += 1
 
-        legacy_pw = legacy_passwords.get(label)
-        if legacy_pw:
-            store.set_show_password(sid, legacy_pw["password_hash"], show_label=label)
-            logger.info(f"show-id migration: rekeyed password for {label!r} to {sid!r}")
+        if pw_key is not None:
+            old_label, entry = legacy_passwords.pop(pw_key)
+            store.set_show_password(
+                sid, entry["password_hash"], show_label=label, legacy_label=old_label
+            )
+            logger.info(
+                f"show-id migration: rekeyed password for {old_label!r} to {sid!r}"
+            )
 
     orphans = sorted(n for n in pending if n not in claimed)
     if orphans:
@@ -102,6 +128,15 @@ def migrate_index_to_show_ids(store) -> int:
             f"{len(orphans)} collection(s) match no registered show and were left "
             f"untouched: {', '.join(orphans)}. They stay searchable under their "
             "stored name; re-register or rename a show to that name to adopt them."
+        )
+
+    if legacy_passwords:
+        stranded = ", ".join(sorted(label for label, _ in legacy_passwords.values()))
+        logger.warning(
+            "show-id migration: password(s) for "
+            f"{stranded} match no registered show and stay keyed by name. The bot "
+            "still enforces them under that name; set the password again from "
+            "the show's settings to attach it to the show."
         )
 
     if migrated:

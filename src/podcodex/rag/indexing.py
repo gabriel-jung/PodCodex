@@ -18,6 +18,18 @@ from podcodex.rag.embedder import get_embedder
 from podcodex.rag.index_store import IndexStore
 
 
+class NoChunksError(ValueError):
+    """The transcript chunked to nothing for this strategy (not a failure)."""
+
+
+class IndexingError(RuntimeError):
+    """One or more (model, chunker) combinations failed to index.
+
+    Raised after every other combination has been written, so a failing
+    embedder does not also cost the ones that work.
+    """
+
+
 # ──────────────────────────────────────────────
 # Chunking + embedding
 # ──────────────────────────────────────────────
@@ -95,7 +107,7 @@ def vectorize_episode(
                 f"[UPGRADE] '{episode}' source changed: "
                 f"{stored_source} → {new_source} ({col})"
             )
-            # save_chunks deletes existing rows for this episode before insert.
+            # save_chunks replaces this episode's rows, stale ones included.
         else:
             local_count = local.episode_chunk_count(col, episode)
             logger.info(f"[SKIP] '{episode}' cached ({col}, {local_count} chunks)")
@@ -115,7 +127,7 @@ def vectorize_episode(
             f"Chunked '{episode}': {len(chunks)} chunks in {time.perf_counter() - t0:.1f}s"
         )
     if not chunks:
-        raise ValueError(f"No chunks produced for strategy '{chunking}'")
+        raise NoChunksError(f"No chunks produced for strategy '{chunking}'")
 
     embedder = get_embedder(model_key, device=device)
     logger.info(
@@ -163,13 +175,18 @@ def vectorize_batch(
         on_progress : callback ``(step, total, label)`` for UI progress updates.
 
     Returns:
-        Total number of chunks present in the index across all combinations
-        — counts both newly upserted and cache-hit chunks. 0 only when
-        nothing landed in any collection (every combination failed).
+        Total number of chunks present in the index across all combinations,
+        counting both newly upserted and cache-hit chunks. 0 when the
+        transcript produced no chunks.
+
+    Raises:
+        IndexingError: when any combination failed. The others are still
+            written first; the episode must not be marked indexed.
     """
     total = len(model_keys) * len(chunkings)
     step = 0
     total_processed = 0
+    failures: list[str] = []
 
     for chunking in chunkings:
         chunks_for_strategy: list[dict] | None = None
@@ -200,13 +217,19 @@ def vectorize_batch(
                     total_processed += n
                 elif chunks_for_strategy:
                     total_processed += len(chunks_for_strategy)
-            except ValueError as e:
+            except NoChunksError as e:
                 logger.warning(str(e))
                 step += len(model_keys) - model_keys.index(model_key)
                 break
-            except Exception:
+            except Exception as exc:
                 logger.exception(f"Failed for {label}")
+                failures.append(f"{label}: {exc}")
 
             step += 1
 
+    if failures:
+        raise IndexingError(
+            f"Indexing failed for {len(failures)} of {total} combination(s): "
+            + "; ".join(failures)
+        )
     return total_processed
