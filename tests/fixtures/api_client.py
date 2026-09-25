@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from podcodex.core.api_token import TOKEN_HEADER
+from podcodex.api.api_token import TOKEN_HEADER
 
 
 def client_for(app) -> TestClient:
@@ -41,7 +41,6 @@ def make_client(tmp_path, monkeypatch, config=None) -> TestClient:
     # api_token file during tests.
     monkeypatch.setenv("PODCODEX_API_TOKEN", "test-token")
     monkeypatch.setattr(app_config_mod, "CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr(app_config_mod, "_LOAD_CACHE", None)
 
     # Isolate the index too, not just the config. Any route that opens the
     # store would otherwise resolve the developer's real index and mutate it

@@ -2,9 +2,10 @@
 
 Shared by dev checkouts and packaged .dmg/.msi installs so the backend
 finds the same files either way. Config (`config_dir`) lives at
-`~/.config/podcodex/` on every platform; *app data* (`data_dir`) follows
-OS conventions — Tauri uses these paths for logs and the bundled-sidecar
-spawn already writes to them, so the GPU backend installs alongside.
+`$XDG_CONFIG_HOME/podcodex/`, else `~/.config/podcodex/`, on every platform;
+*app data* (`data_dir`) follows OS conventions. Tauri uses these paths for
+logs and the bundled-sidecar spawn already writes to them, so the GPU
+backend installs alongside.
 """
 
 from __future__ import annotations

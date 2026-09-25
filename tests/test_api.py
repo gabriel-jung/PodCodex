@@ -416,7 +416,7 @@ def test_status_context_lists_episode_dirs_that_hold_no_files(tmp_path):
 def test_status_reconcile_keeps_flags_bootstrapped_from_disk(tmp_path):
     """A DB built from a filesystem scan must survive the reconcile pass.
 
-    `populate_from_scan` derives transcribed/synthesized from the step
+    `_populate_from_scan` derives transcribed/synthesized from the step
     directories and writes no `versions` rows, so reconciling against rows
     alone would undo the bootstrap in the same call, and a DB rebuilt from
     scan would report a whole library as not started.
@@ -465,6 +465,30 @@ def test_status_reconcile_demotes_when_nothing_is_left(tmp_path):
     show = tmp_path / "show"
     (show / "ep1").mkdir(parents=True)
     get_pipeline_db(show).mark("ep1", transcribed=True)
+
+    ctx = _load_status_context(show)
+    assert ctx.status_map["ep1"]["transcribed"] is False
+    close_pipeline_db(show)
+
+
+def test_status_reconcile_demotes_a_row_whose_file_is_gone(tmp_path):
+    """Backfill keeps such a row through its grace period; every reader
+    skips it, so the flag must not keep claiming the step is done."""
+    from podcodex.api.routes.shows import _load_status_context
+    from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+    from podcodex.core.versions import save_version, version_path
+
+    show = tmp_path / "show"
+    (show / "ep1").mkdir(parents=True)
+    base = show / "ep1" / "ep1"
+    vid = save_version(
+        base,
+        "transcript",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}],
+        {"step": "transcript", "type": "raw", "model": "m", "params": {}},
+    )
+    get_pipeline_db(show).mark("ep1", transcribed=True)
+    version_path(base, "transcript", vid).unlink()
 
     ctx = _load_status_context(show)
     assert ctx.status_map["ep1"]["transcribed"] is False
@@ -645,7 +669,7 @@ def test_verified_rejects_unregistered_episode(client, tmp_path):
         segs,
         {"step": "corrected", "type": "raw", "model": "x"},
     )
-    # No mark() / populate_from_scan: episode row absent in pipeline_db.
+    # No mark() / _populate_from_scan: episode row absent in pipeline_db.
     r = client.put(
         "/api/shows/verified",
         params={"audio_path": audio},

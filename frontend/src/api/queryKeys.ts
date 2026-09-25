@@ -92,10 +92,16 @@ export const queryKeys = {
   synthesizeAll: () => ["synthesize"] as const,
   synthesizeStatus: (audioPath: AudioPath) =>
     ["synthesize", "status", audioPath] as const,
-  synthesizeVoices: (audioPath: AudioPath, sourceVersionId: string | null = null) =>
-    ["synthesize", "voices", audioPath, sourceVersionId] as const,
-  synthesizeGenerated: (audioPath: AudioPath, sourceVersionId: string | null = null) =>
-    ["synthesize", "generated", audioPath, sourceVersionId] as const,
+  synthesizeVoices: (
+    audioPath: AudioPath,
+    sourceVersionId: string | null = null,
+    sourceLang: string | null = null,
+  ) => ["synthesize", "voices", audioPath, sourceVersionId, sourceLang] as const,
+  synthesizeGenerated: (
+    audioPath: AudioPath,
+    sourceVersionId: string | null = null,
+    sourceLang: string | null = null,
+  ) => ["synthesize", "generated", audioPath, sourceVersionId, sourceLang] as const,
   synthesizeVersions: (audioPath: AudioPath) =>
     ["synthesize", "versions", audioPath] as const,
 

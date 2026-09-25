@@ -221,12 +221,19 @@ class BGEEmbedder:
         """
         from FlagEmbedding import BGEM3FlagModel
         from podcodex.core._hf_logging import timed_load
-        from podcodex.core.cache import get_hf_cache_dir
+        from podcodex.core.cache import get_hf_hub_dir
 
-        get_hf_cache_dir()  # ensure HF_HOME is set before BGEM3 downloads
         devices = [device] if device else None
         with timed_load(f"BGEEmbedder {self.MODEL} on {device}"):
-            self._model = BGEM3FlagModel(self.MODEL, use_fp16=use_fp16, devices=devices)
+            # Explicit cache: holds even where no bootstrap wired the env
+            # (a script, a test), and matches the hub dir the Dockerfile's
+            # build-time download fills.
+            self._model = BGEM3FlagModel(
+                self.MODEL,
+                use_fp16=use_fp16,
+                devices=devices,
+                cache_dir=str(get_hf_hub_dir()),
+            )
         self._batch_size = batch_size
 
     def encode_passages(self, chunks: list[dict]) -> np.ndarray:

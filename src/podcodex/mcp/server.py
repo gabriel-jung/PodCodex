@@ -29,12 +29,8 @@ import os
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
-from podcodex.core._utils import (
-    episode_display,
-    format_hms,
-    is_unattributed,
-    merge_display_turns,
-)
+from podcodex.core._utils import episode_display, format_hms, is_unattributed
+from podcodex.rag.hit import merge_display_turns
 from podcodex.rag.defaults import ALPHA, CONTEXT_WINDOW, TOP_K
 from podcodex.rag.hit import Hit
 from podcodex.rag.index_store import chunk_map_from_chunks, get_index_store

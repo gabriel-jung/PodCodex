@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
-    load_best_source,
     require_audio_or_output,
     submit_subprocess_task,
 )
 from podcodex.api.schemas import TaskResponse
-from podcodex.core._ffmpeg import ffmpeg_exe
+from podcodex.core._ffmpeg import run_ffmpeg
 from podcodex.core._utils import (
     AudioPaths,
     SAMPLE_RATE,
@@ -140,26 +138,12 @@ def upload_voice_sample(
         tmp_path = tmp.name
 
     try:
-        subprocess.run(
-            [
-                ffmpeg_exe(),
-                "-y",
-                "-i",
-                tmp_path,
-                "-ar",
-                str(SAMPLE_RATE),
-                "-ac",
-                "1",
-                str(out_path),
-            ],
-            check=True,
-            capture_output=True,
+        run_ffmpeg(
+            ["-y", "-i", tmp_path, "-ar", str(SAMPLE_RATE), "-ac", "1", str(out_path)],
+            what=f"convert {file.filename or 'the upload'}",
         )
-    except subprocess.CalledProcessError as exc:
-        Path(tmp_path).unlink(missing_ok=True)
-        raise HTTPException(
-            400, f"Failed to convert audio: {exc.stderr.decode()[:200]}"
-        )
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -182,31 +166,33 @@ def get_voice_samples(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
     source_version_id: str | None = Query(None),
+    source_lang: str = Query(""),
 ) -> dict[str, list[dict]]:
     """Load extracted voice samples from disk.
 
-    When ``source_version_id`` is set, derives the speaker list from that
-    pinned version (matching the source picker). Otherwise falls back to
-    the latest best source — keeps backward compatibility.
+    Speakers come from the same source synthesis runs on
+    (``load_synth_source``: the pinned version, else the canonical source,
+    with the current speaker map applied), so the samples listed are the
+    ones the job will find. Samples extracted before a rename are found
+    under the old label.
     """
     from podcodex.core._utils import fill_narrator_speaker, real_speakers
+    from podcodex.core.source import load_synth_source
     from podcodex.core.synthesize import load_voice_samples
-    from podcodex.core.transcribe import load_transcript
-    from podcodex.core.versions import load_version_by_id
 
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    segments: list[dict] | None = None
-    if source_version_id:
-        resolved = load_version_by_id(p.base, source_version_id)
-        if resolved:
-            segments, _ = resolved
-    if segments is None:
-        segments = load_transcript(audio_path, output_dir=output_dir) or []
+    try:
+        source, speaker_map = load_synth_source(
+            audio_path, output_dir, source_version_id, source_lang
+        )
+        segments = source.segments
+    except ValueError:
+        segments, speaker_map = [], {}
     speakers = real_speakers(fill_narrator_speaker(segments))
 
-    samples = load_voice_samples(str(p.base.parent), speakers)
+    samples = load_voice_samples(str(p.base.parent), speakers, speaker_map=speaker_map)
 
     # Convert Path objects to strings for JSON serialisation
     return {
@@ -289,24 +275,21 @@ def get_generated_segments(
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
     source_version_id: str | None = Query(None),
+    source_lang: str = Query(""),
 ) -> list[dict]:
     """Load generated TTS segments from disk."""
+    from podcodex.core.source import load_synth_source
     from podcodex.core.synthesize import load_generated_segments
-    from podcodex.core.versions import load_version_by_id
 
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    segments: list[dict] | None = None
-    if source_version_id:
-        resolved = load_version_by_id(p.base, source_version_id)
-        if resolved:
-            segments, _ = resolved
-    if segments is None:
-        try:
-            segments = load_best_source(audio_path, output_dir)
-        except ValueError:
-            raise HTTPException(404, "No source segments found")
+    try:
+        segments = load_synth_source(
+            audio_path, output_dir, source_version_id, source_lang
+        )[0].segments
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
 
     generated = load_generated_segments(str(p.base.parent), segments)
     # Convert Path objects for JSON, include manifest metadata
@@ -317,7 +300,7 @@ def get_generated_segments(
             "start": seg.get("start", 0),
             "end": seg.get("end", 0),
             "audio_file": str(seg["audio_file"]),
-            "duration": seg.get("end", 0) - seg.get("start", 0),
+            "duration": seg["duration"],
             "voice_sample": seg.get("voice_sample", ""),
             "generated_at": seg.get("generated_at", ""),
         }
@@ -336,6 +319,9 @@ class AssembleRequest(BaseModel):
     language: str = ""
     model_size: str | None = None
     source_version_id: str | None = None
+    # The translation the generate job synthesized (GenerateRequest.source_lang):
+    # without it, assemble rebuilt segments from the original-language source.
+    source_lang: str = ""
     # Same scope semantics as GenerateRequest. When set, drops every segment
     # whose seg_key is not in the list — so re-generating a narrower scope
     # actually shortens the assembled output instead of pulling in stale
@@ -409,6 +395,7 @@ def remove_synthesize_version(
 @router.post("/assemble")
 def assemble(req: AssembleRequest) -> dict:
     """Assemble generated TTS segments into a versioned final episode audio file."""
+    from podcodex.core.provenance import build_provenance
     from podcodex.core.synthesize import assemble_episode, load_generated_segments
     from podcodex.core.versions import (
         version_path,
@@ -421,10 +408,17 @@ def assemble(req: AssembleRequest) -> dict:
     require_audio_or_output(req.audio_path, req.output_dir)
     p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
 
+    from podcodex.core.source import load_synth_source
+
+    # The same source, pin and speaker labels the generate job used: the
+    # keep_segment_keys come from the panel's (speaker-mapped) view.
     try:
-        segments = load_best_source(req.audio_path, req.output_dir)
-    except ValueError:
-        raise HTTPException(404, "No source segments found")
+        source = load_synth_source(
+            req.audio_path, req.output_dir, req.source_version_id, req.source_lang
+        )[0]
+        segments = source.segments
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
 
     if req.keep_segment_keys is not None:
         wanted = set(req.keep_segment_keys)
@@ -459,7 +453,14 @@ def assemble(req: AssembleRequest) -> dict:
         now=now,
         strategy=req.strategy,
         silence_duration=req.silence_duration,
-        source_version_id=req.source_version_id,
+        source=source,
+        source_chain=build_provenance(
+            "synthesize",
+            model=f"qwen3-tts/{req.model_size}" if req.model_size else None,
+            audio_path=req.audio_path,
+            output_dir=req.output_dir,
+            source=source,
+        )["params"].get("source_chain"),
         language=req.language,
         model_size=req.model_size,
         segment_count=len(generated),
@@ -468,7 +469,7 @@ def assemble(req: AssembleRequest) -> dict:
     # Flip the per-show pipeline DB flag. The /unified episodes route reads
     # synthesized from this table (not from disk on every request), so without
     # an explicit mark here the overview StageCard stays stuck on "not started"
-    # forever after the first populate_from_scan.
+    # forever after the first seed_show_db.
     from podcodex.core.pipeline_db import get_pipeline_db
 
     show_folder = p.show_dir

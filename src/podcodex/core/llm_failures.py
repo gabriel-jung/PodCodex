@@ -19,7 +19,7 @@ from typing import Any
 
 from loguru import logger
 
-from podcodex.core._utils import write_json
+from podcodex.core._utils import write_json_atomic
 
 FAILURES_FILENAME = "llm_failures.json"
 
@@ -48,7 +48,7 @@ def _has_rejects(section: Any) -> bool:
 def _persist(path: Path, data: dict[str, Any]) -> None:
     """Write the failures file, or remove it when no sections remain."""
     if data:
-        write_json(path, data)
+        write_json_atomic(path, data)
     else:
         path.unlink(missing_ok=True)
 
@@ -82,7 +82,7 @@ def save_batch_records(
         "rejected": sum(1 for r in records if r.get("status") == "rejected"),
         "batches": records,
     }
-    write_json(failures_path(base), data)
+    write_json_atomic(failures_path(base), data)
 
 
 def clear_step(base: Path, step: str) -> bool:

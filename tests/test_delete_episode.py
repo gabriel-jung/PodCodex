@@ -420,10 +420,9 @@ def test_virtual_lock_blocks_a_subtitle_only_delete(client, show):
 def test_service_refuses_a_stem_that_escapes_the_show(tmp_path):
     """Direct-caller guard: the route is not the only entry point.
 
-    ``bad_path_component`` misses Windows drive-relative names, which pathlib
-    joins by replacing the base. Unreachable through the route (which also
-    runs ``resolve_inside_show_root``) and inert on POSIX, so this asserts the
-    service's own check rather than a platform-specific string.
+    The service re-checks containment itself on top of
+    ``bad_path_component``, so a join quirk the name check misses still
+    cannot turn into an rmtree outside the show.
     """
     from podcodex.core.delete_episode import delete_episode
 
@@ -540,3 +539,74 @@ def test_remove_cover_needs_a_registered_show(client, tmp_path):
     stray.mkdir()
     r = client.delete(f"/api/shows/artwork?show_folder={quote(str(stray), safe='')}")
     assert r.status_code == 403
+
+
+def test_the_show_id_comes_from_the_folder_not_the_label(tmp_path, store, monkeypatch):
+    """Two shows can share a display name. Resolving the id from the label
+    picked whichever registered show carried it, and cleared that show's
+    chunks while reporting a clean delete."""
+    from podcodex.core.delete_episode import delete_episode
+    from podcodex.ingest.show import ensure_show_id
+
+    show = tmp_path / "MyShow"
+    show.mkdir()
+    _add_episode(show, "ep1")
+    own_id = ensure_show_id(show)
+    store.chunks = {"col": {"ep1": 3}}
+    seen: list[str] = []
+    real = store.delete_episode_everywhere
+    monkeypatch.setattr(
+        store,
+        "delete_episode_everywhere",
+        lambda show_name, stem, show_id="": (
+            seen.append(show_id) or real(show_name, stem, show_id)
+        ),
+    )
+
+    delete_episode(show, "ep1")
+
+    assert seen == [own_id]
+
+
+def test_without_the_rag_extra_a_delete_still_runs(tmp_path, monkeypatch):
+    import builtins
+
+    from podcodex.core.delete_episode import delete_episode
+
+    show = tmp_path / "MyShow"
+    show.mkdir()
+    ep_dir = _add_episode(show, "ep1")
+    real_import = builtins.__import__
+
+    def no_rag(name, *a, **k):
+        if name == "podcodex.rag.index_store":
+            raise ImportError("No module named 'lancedb'")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_rag)
+    report = delete_episode(show, "ep1")
+
+    assert report.files_clean
+    assert not ep_dir.exists()
+
+
+def test_a_symlinked_audio_file_is_one_episode_everywhere(tmp_path):
+    """The scanner, the status route, `is_downloaded` and the delete each
+    listed audio with their own copy of the rule, and disagreed on symlinks:
+    an episode symlinked in from another disk was downloaded to one and
+    missing to another."""
+    from podcodex.core.source import is_downloaded, scan_show_stems, show_audio_files
+    from podcodex.ingest.folder import scan_folder
+
+    elsewhere = tmp_path / "other-disk" / "ep1.mp3"
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes(b"audio")
+    show = tmp_path / "MyShow"
+    show.mkdir()
+    (show / "ep1.mp3").symlink_to(elsewhere)
+    (show / "ep2.WAV").write_bytes(b"audio")
+
+    assert set(show_audio_files(show)) == {"ep1", "ep2"}
+    assert scan_show_stems(show)[1] == {"ep1", "ep2"}
+    assert is_downloaded(show, "ep1")
+    assert {ep.stem for ep in scan_folder(show)} == {"ep1", "ep2"}

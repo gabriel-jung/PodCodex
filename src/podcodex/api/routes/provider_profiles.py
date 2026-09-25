@@ -17,8 +17,7 @@ from podcodex.core.provider_profiles import (
     find_custom,
     is_builtin,
     list_all,
-    load_custom,
-    save_custom,
+    mutate_custom,
 )
 
 router = APIRouter()
@@ -48,14 +47,16 @@ def create_profile(req: CreateRequest) -> ProviderProfile:
         raise HTTPException(
             status_code=409, detail=f"'{req.name}' collides with a built-in profile"
         )
-    file = load_custom()
-    if find_custom(file, req.name) is not None:
-        raise HTTPException(
-            status_code=409, detail=f"Profile '{req.name}' already exists"
-        )
     new = CustomProfile(name=req.name, base_url=req.base_url)
-    file.profiles.append(new)
-    save_custom(file)
+
+    def add(file) -> None:
+        if find_custom(file, req.name) is not None:
+            raise HTTPException(
+                status_code=409, detail=f"Profile '{req.name}' already exists"
+            )
+        file.profiles.append(new)
+
+    mutate_custom(add)
     return ProviderProfile(
         name=new.name,
         type="openai-compatible",
@@ -68,16 +69,18 @@ def create_profile(req: CreateRequest) -> ProviderProfile:
 def update_profile(name: str, req: UpdateRequest) -> ProviderProfile:
     if is_builtin(name):
         raise HTTPException(status_code=403, detail="Built-in profiles are read-only")
-    file = load_custom()
-    profile = find_custom(file, name)
-    if profile is None:
-        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
-    if req.base_url is not None:
-        new_url = req.base_url.strip()
-        if not new_url:
-            raise HTTPException(status_code=400, detail="base_url cannot be empty")
-        profile.base_url = new_url
-    save_custom(file)
+
+    def edit(file) -> None:
+        profile = find_custom(file, name)
+        if profile is None:
+            raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+        if req.base_url is not None:
+            new_url = req.base_url.strip()
+            if not new_url:
+                raise HTTPException(status_code=400, detail="base_url cannot be empty")
+            profile.base_url = new_url
+
+    profile = find_custom(mutate_custom(edit), name)
     return ProviderProfile(
         name=profile.name,
         type="openai-compatible",
@@ -92,11 +95,13 @@ def delete_profile(name: str) -> None:
         raise HTTPException(
             status_code=403, detail="Built-in profiles cannot be deleted"
         )
-    file = load_custom()
-    if find_custom(file, name) is None:
-        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
-    file.profiles = [p for p in file.profiles if p.name != name]
-    save_custom(file)
+
+    def drop(file) -> None:
+        if find_custom(file, name) is None:
+            raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+        file.profiles = [p for p in file.profiles if p.name != name]
+
+    mutate_custom(drop)
 
 
 # Re-exported for tests that want to assert against the static list.

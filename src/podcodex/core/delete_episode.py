@@ -4,8 +4,8 @@ Counterpart to the per-step ``delete_version`` facility in ``versions.py``.
 That one removes a single version and demotes a flag; this one removes the
 episode itself from all four stores that know about it.
 
-Kept in ``core`` rather than in the route so the bot, MCP and any CLI path
-can reuse it.
+Called by the episode delete route and ``core/source``. It orchestrates
+``rag`` and ``ingest`` from inside ``core``, through function-level imports.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 from loguru import logger
 
 from podcodex.core._utils import bad_path_component
-from podcodex.core.constants import AUDIO_EXTENSIONS
+from podcodex.core.source import episode_audio_files
 
 
 @dataclass
@@ -40,38 +40,6 @@ class DeleteReport:
         return not self.warnings
 
 
-def episode_audio_files(show_dir: Path, stem: str) -> list[Path]:
-    """Every audio file at the show root belonging to ``stem``.
-
-    Audio only ever lives at the show root: ``_scan_audio_files`` (the sole
-    discovery path) does one ``scandir`` of the show folder and looks no
-    deeper, and ``import_local_file`` writes ``{show}/{stem}{ext}``.
-
-    A list, not a single path, because nothing enforces one file per stem: an
-    ``ep.mp3`` beside an ``ep.wav`` is one episode to the scanner, so deleting
-    only one of them would leave an orphan the next scan turns back into a row.
-
-    Matched the way the scanner matches, by lowercased suffix over a real
-    directory listing rather than by probing ``{stem}{ext}``, so an uppercase
-    ``Foo.MP3`` is found on a case-sensitive filesystem too.
-    """
-    try:
-        entries = list(show_dir.iterdir())
-    except OSError:
-        return []
-    return sorted(
-        e
-        for e in entries
-        if e.is_file() and e.stem == stem and e.suffix.lower() in AUDIO_EXTENSIONS
-    )
-
-
-def episode_audio_file(show_dir: Path, stem: str) -> Path | None:
-    """One audio file for ``stem``, or None. See ``episode_audio_files``."""
-    files = episode_audio_files(show_dir, stem)
-    return files[0] if files else None
-
-
 def _delete_chunks(show_dir: Path, stem: str, report: DeleteReport) -> None:
     """Remove the episode from every collection belonging to this show.
 
@@ -83,22 +51,25 @@ def _delete_chunks(show_dir: Path, stem: str, report: DeleteReport) -> None:
     version, which is exactly the key ``_versions_fingerprint`` builds, so
     ``lance_indexed_stems`` rebuilds itself on the next request.
     """
-    from podcodex.ingest.show import show_display
+    from podcodex.ingest.show import show_display, show_id
 
     # show_display is the same derivation ``lance_indexed_stems`` uses to find
-    # this show's collections. Deriving it differently here would visit zero
-    # collections and report a clean delete over surviving chunks.
+    # this show's collections by name; the id comes from this folder's own
+    # show.toml. Resolving the id from the name instead picked whichever
+    # registered show carries that label, so with two shows of one name the
+    # other show's chunks went.
     show_name = show_display(show_dir)
     try:
-        # Inside the try, and local: lancedb / pyarrow must stay off the API
-        # boot path, and on an install without the `rag` extra this import
-        # itself raises. ingest/folder.py guards the same import the same way.
+        # Local: lancedb / pyarrow must stay off the API boot path.
         from podcodex.rag.index_store import get_index_store
-
-        from podcodex.ingest.show_registry import show_id_for_label
-
+    except ImportError:
+        # No `rag` extra: this install never indexed anything, so there are
+        # no chunks to remove, and refusing would make every delete fail.
+        logger.info("delete_episode: rag extra not installed, no chunks to remove")
+        return
+    try:
         touched = get_index_store().delete_episode_everywhere(
-            show_name, stem, show_id=show_id_for_label(show_name)
+            show_name, stem, show_id=show_id(show_dir)
         )
     except Exception as exc:
         report.warnings.append(f"Could not remove chunks from the index: {exc}")
@@ -146,11 +117,10 @@ def delete_episode(show_dir: Path, stem: str) -> DeleteReport:
     report = DeleteReport()
     ep_dir = show_dir / stem
     # Defence in depth: the consequence of being wrong here is an rmtree on
-    # the wrong directory. bad_path_component blocks separators and traversal,
-    # but not a Windows drive-relative name like "C:evil", which pathlib joins
-    # by *replacing* the base ("/show" / "C:evil" -> "C:evil") and so escapes
-    # the show entirely. Requiring the parent to be the show folder covers
-    # that and the degenerate ep_dir == show_dir case in one check.
+    # the wrong directory. bad_path_component already refuses separators,
+    # traversal and Windows drive prefixes; requiring the parent to be the
+    # show folder also covers whatever a future join quirk lets through, and
+    # the degenerate ep_dir == show_dir case.
     if ep_dir.parent.resolve() != show_dir.resolve():
         raise ValueError(f"Episode {stem!r} does not resolve inside {show_dir}")
 

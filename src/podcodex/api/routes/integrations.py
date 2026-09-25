@@ -313,7 +313,7 @@ def enable_claude_desktop(request: Request) -> ClaudeDesktopStatus:
     servers = dict(cfg.get("mcpServers") or {})
     servers[_SERVER_KEY] = _entry()
     cfg["mcpServers"] = servers
-    write_json_atomic(path, cfg, prefix=".claude_cfg_")
+    write_json_atomic(path, cfg, tag="claude_cfg_")
     logger.info(f"integrations: enabled podcodex entry in {path}")
     return _status(request)
 
@@ -330,6 +330,6 @@ def disable_claude_desktop(request: Request) -> ClaudeDesktopStatus:
             cfg["mcpServers"] = servers
         else:
             cfg.pop("mcpServers", None)
-        write_json_atomic(path, cfg, prefix=".claude_cfg_")
+        write_json_atomic(path, cfg, tag="claude_cfg_")
         logger.info(f"integrations: removed podcodex entry from {path}")
     return _status(request)

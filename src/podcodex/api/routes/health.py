@@ -159,7 +159,7 @@ def ollama_check() -> dict:
     """Probe the Ollama daemon. Sync def so FastAPI offloads the blocking
     HTTP call to a threadpool instead of stalling the event loop while the
     TCP connection times out."""
-    from podcodex.core._utils import list_pulled_ollama_models, ollama_host
+    from podcodex.core.llm import ollama_host, probe_ollama
 
     host = ollama_host()
     if not _python_package_caps().get("ollama", False):
@@ -168,24 +168,10 @@ def ollama_check() -> dict:
             "reachable": False,
             "host": host,
             "models": [],
+            "problem": "not_installed",
             "error": "ollama python package not installed",
         }
-    try:
-        return {
-            "installed": True,
-            "reachable": True,
-            "host": host,
-            "models": list_pulled_ollama_models(host),
-            "error": None,
-        }
-    except Exception as e:
-        return {
-            "installed": True,
-            "reachable": False,
-            "host": host,
-            "models": [],
-            "error": str(e)[:300],
-        }
+    return {"installed": True, "host": host, **probe_ollama(host)}
 
 
 @router.get("/system/device")

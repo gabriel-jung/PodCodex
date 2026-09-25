@@ -91,7 +91,7 @@ def test_density_threshold_matches(name: str, expected: float) -> None:
 
 
 # ── Loopback auth constants ─────────────────────────────────────────────
-# Python: podcodex.core.api_token / podcodex.api.app. Mirrors: the frontend
+# Python: podcodex.api.api_token / podcodex.api.app. Mirrors: the frontend
 # client (header + query param + CSRF pair), the Vite dev proxy (header +
 # token filename), and the Tauri shell (token filename).
 
@@ -107,7 +107,7 @@ def _client_const(name: str) -> str:
 
 
 def test_token_constants_match() -> None:
-    from podcodex.core.api_token import TOKEN_HEADER, TOKEN_QUERY_PARAM
+    from podcodex.api.api_token import TOKEN_HEADER, TOKEN_QUERY_PARAM
 
     assert _client_const("TOKEN_HEADER") == TOKEN_HEADER
     assert _client_const("TOKEN_QUERY_PARAM") == TOKEN_QUERY_PARAM
@@ -121,7 +121,7 @@ def test_csrf_constants_match() -> None:
 
 
 def test_vite_proxy_mirrors_token_header_and_filename() -> None:
-    from podcodex.core.api_token import TOKEN_FILENAME, TOKEN_HEADER
+    from podcodex.api.api_token import TOKEN_FILENAME, TOKEN_HEADER
 
     src = _ts_src(VITE_CONFIG_FILE)
     assert f'"{TOKEN_HEADER}"' in src, "vite proxy must inject the token header"
@@ -129,7 +129,7 @@ def test_vite_proxy_mirrors_token_header_and_filename() -> None:
 
 
 def test_tauri_shell_mirrors_token_filename() -> None:
-    from podcodex.core.api_token import TOKEN_FILENAME
+    from podcodex.api.api_token import TOKEN_FILENAME
 
     src = _ts_src(TAURI_LIB_FILE)
     assert f'"{TOKEN_FILENAME}"' in src, "get_api_token must read the token file"

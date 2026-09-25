@@ -17,15 +17,14 @@ from pathlib import Path
 
 from loguru import logger
 
-from podcodex.core._utils import (
-    DEFAULT_BATCH_MINUTES,
-    AudioPaths,
+from podcodex.core._utils import DEFAULT_BATCH_MINUTES, AudioPaths
+from podcodex.core.llm import (
     build_batched_manual_prompts,
     build_llm_prompt,
     format_segments,
-    run_llm_pipeline,
+    output_format_rules,
+    run_llm_step,
 )
-from podcodex.core.llm_failures import record_run
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import save_version
 
@@ -86,14 +85,8 @@ Your task: transcript correction only — do NOT translate.
 - If a sentence is incomprehensible and unrecoverable, write [inaudible]
 - Do NOT correct style, hesitations, or natural repetitions
 - NEVER shorten, summarize or omit any part of the original text — every word matters""",
-        output="""\
-Output format — CRITICAL RULES:
-1. Return a JSON array with EXACTLY the same number of elements as the input, in the SAME ORDER. Never merge, split, drop, add, or reorder segments.
-2. Each element is a plain object with a single `text` field — no index, no other fields.
-3. The Nth output element corresponds to the Nth input segment. Position is the only mapping.
-4. If a segment is empty, trivial, or you cannot improve it, copy the original text verbatim — never omit the entry.
-5. Reply ONLY with valid JSON. No surrounding text, no markdown fences, no commentary.
-6. Format: `[{"text": "..."}, {"text": "..."}, ...]`
+        output=output_format_rules("you cannot improve it")
+        + """
 
 Example — input:
   [5] euh ouais c est ca
@@ -193,10 +186,12 @@ def correct_segments(
     system_prompt = _build_prompt(
         context, source_lang=source_lang, engine=engine, engine_model=engine_model
     )
-    batch_sink: list[dict] = []
-    result = run_llm_pipeline(
+    result = run_llm_step(
+        "corrected",
         segments,
         system_prompt,
+        audio_path=audio_path,
+        output_dir=output_dir,
         mode=mode,
         model=model,
         api_base_url=api_base_url,
@@ -209,12 +204,8 @@ def correct_segments(
         merge=merge,
         max_gap=max_gap,
         on_batch=on_batch,
-        batch_sink=batch_sink,
     )
-    logger.success(f"Correct done — {len(result)} segments")
-    record_run(
-        audio_path, output_dir, "corrected", model=model, mode=mode, records=batch_sink
-    )
+    logger.success(f"Correct done, {len(result)} segments")
     return result
 
 

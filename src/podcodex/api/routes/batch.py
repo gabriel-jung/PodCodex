@@ -17,6 +17,9 @@ from podcodex.api.routes._helpers import (
     transcribe_prov_params,
 )
 from podcodex.core._utils import normalize_lang
+from podcodex.core.constants import DEFAULT_WHISPER_MODEL
+from podcodex.core.llm_failures import rejected_steps
+from podcodex.core.source import load_source, resolve_source_ref
 from podcodex.api.schemas import TaskResponse
 
 router = APIRouter()
@@ -31,7 +34,7 @@ class BatchRequest(BaseModel):
     translate: bool = True
     index: bool = True
     # Transcribe config
-    model_size: str = "large-v3-turbo"
+    model_size: str = DEFAULT_WHISPER_MODEL
     language: str = ""
     batch_size: int | None = None
     diarize: bool = True
@@ -148,7 +151,7 @@ def _batch_transcribe_from_subs(
     audio_path, stem, p, req, cancelled, ep_progress, i, step_offset, pacer=None
 ):
     """Import cached VTT subtitles as a transcript version. Returns True if work was done."""
-    from podcodex.core._utils import vtt_to_segments
+    from podcodex.core.subtitles import vtt_to_segments
     from podcodex.core.pipeline_db import mark_step
     from podcodex.core.versions import save_version
 
@@ -235,6 +238,17 @@ def _batch_llm_step(
     step_name = normalize_lang(req.target_lang) if is_translate else "corrected"
     sw = _STEP_WEIGHTS[step]
 
+    # Which version the step reads: provenance and the correct prompt
+    # describe it. Resolved without loading it, so an episode the skip check
+    # below turns away costs a DB query, not a transcript parse. An explicit
+    # version_id overrides the default (canonical for translate, newest
+    # transcript for correct).
+    source_step = "auto" if is_translate else "transcript"
+    ref = resolve_source_ref(audio_path, None, version_id, step=source_step)
+    if ref is None:
+        logger.warning("Batch {} skipped for {}: no usable source", step, p.base.name)
+        return False
+
     # Correct records the transcript-derived source language in its provenance
     # (see enrich_correct_kwargs), not the request value, so the already-done
     # check has to compare against the same thing the save writes or every
@@ -242,11 +256,26 @@ def _batch_llm_step(
     tc_kwargs = (
         None
         if is_translate
-        else enrich_correct_kwargs(audio_path, None, req.source_lang)
+        else enrich_correct_kwargs(audio_path, None, req.source_lang, ref)
     )
 
+    from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm_run
+
+    try:
+        llm = resolve_llm_run(
+            req.llm_mode, req.llm_provider_profile, req.llm_key_name, req.llm_model
+        )
+    except LLMResolutionError as exc:
+        logger.warning("Batch {} skipped for {}: {}", step, Path(audio_path).stem, exc)
+        return False
+
+    # Versions record the model that actually ran, so the already-done check
+    # compares against it too; the request's empty "provider default" pick
+    # never matched and every episode was re-run (and re-billed) each time.
     match_params = {
-        "model": req.llm_model,
+        # Versions saved before the effective model was recorded carry the
+        # empty pick itself; both mean "this provider's default".
+        "model": frozenset({llm.model, ""}) if not req.llm_model else llm.model,
         "llm_mode": req.llm_mode,
         "llm_provider_profile": req.llm_provider_profile,
         "source_lang": req.source_lang
@@ -255,62 +284,30 @@ def _batch_llm_step(
     }
     if is_translate:
         match_params["target_lang"] = req.target_lang
-    if not req.force and has_matching_version(p.base, step_name, match_params):
+    # A version whose run left batches rejected (llm_failures.json) is not
+    # done: those batches still hold the source text. Re-run it.
+    if (
+        not req.force
+        and has_matching_version(p.base, step_name, match_params)
+        and step_name not in rejected_steps(p.base.parent)
+    ):
         return False
 
-    # Load source segments — explicit version_id overrides the default.
-    if version_id:
-        from podcodex.core.versions import load_version_by_id
-
-        resolved = load_version_by_id(p.base, version_id)
-        if not resolved:
-            logger.warning(
-                "Batch {}: version_id {!r} not found for {}",
-                step,
-                version_id,
-                p.base.name,
-            )
-            return False
-        segments = resolved[0]
-    elif is_translate:
-        from podcodex.api.routes._helpers import load_best_source
-
-        try:
-            segments = load_best_source(audio_path)
-        except ValueError:
-            return False
-    else:
-        from podcodex.core.transcribe import load_transcript
-
-        segments = load_transcript(audio_path)
-        if not segments:
-            return False
+    try:
+        source = load_source(audio_path, None, ref.version_id, step=source_step)
+    except ValueError as exc:
+        logger.warning("Batch {} skipped for {}: {}", step, p.base.name, exc)
+        return False
+    segments = source.segments
 
     label = "Translating" if is_translate else "Correcting"
     ep_progress(i, step_offset, sw, 0.0, f"{label}...")
 
-    if req.llm_mode == "api":
-        from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm
-
-        try:
-            resolved = resolve_llm(req.llm_provider_profile, req.llm_key_name)
-        except LLMResolutionError as exc:
-            logger.warning(
-                "Batch {} skipped for {}: {}", step, Path(audio_path).stem, exc
-            )
-            return False
-    else:
-        resolved = None
-
     llm_kwargs = dict(
-        mode=req.llm_mode,
+        **llm.pipeline_kwargs(),
         context=req.context,
         source_lang=req.source_lang,
-        model=req.llm_model,
         batch_minutes=req.llm_batch_minutes,
-        provider=resolved.provider if resolved else None,
-        api_base_url=resolved.api_base_url if resolved else "",
-        api_key=resolved.api_key if resolved else None,
         original_segments=segments,
         merge=False,
         audio_path=audio_path,
@@ -325,15 +322,19 @@ def _batch_llm_step(
     )
 
     if is_translate:
-        from podcodex.core.translate import save_translation_raw, translate_segments
+        from podcodex.core.translate import save_translation, translate_segments
 
         llm_kwargs["target_lang"] = req.target_lang
         prov_params["target_lang"] = req.target_lang
         result = translate_segments(segments, **llm_kwargs)
         provenance = build_provenance(
-            step_name, model=req.llm_model, audio_path=audio_path, params=prov_params
+            step_name,
+            model=llm.model,
+            audio_path=audio_path,
+            params=prov_params,
+            source=source,
         )
-        save_translation_raw(audio_path, result, req.target_lang, provenance=provenance)
+        save_translation(audio_path, result, req.target_lang, provenance=provenance)
     else:
         from podcodex.core.correct import correct_segments, save_corrected
 
@@ -343,7 +344,11 @@ def _batch_llm_step(
         prov_params["source_lang"] = tc_kwargs["source_lang"]
         result = correct_segments(segments, **llm_kwargs)
         provenance = build_provenance(
-            step_name, model=req.llm_model, audio_path=audio_path, params=prov_params
+            step_name,
+            model=llm.model,
+            audio_path=audio_path,
+            params=prov_params,
+            source=source,
         )
         save_corrected(audio_path, result, provenance=provenance)
 

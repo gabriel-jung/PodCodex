@@ -23,6 +23,7 @@ from podcodex.core.llm_failures import clear_step_for, get_step
 from podcodex.api.routes._versions import register_version_routes
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths, normalize_lang
+from podcodex.core.source import load_source
 
 router = APIRouter()
 register_version_routes(router, lang_param=True)
@@ -44,7 +45,11 @@ def get_translated_segments(
     show through. The saved translation file is untouched.
     """
     from podcodex.api.routes._helpers import annotate_flags
-    from podcodex.core.versions import load_latest, load_latest_speaker_map
+    from podcodex.core.versions import (
+        apply_speaker_map,
+        load_latest,
+        load_latest_speaker_map,
+    )
 
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
@@ -52,13 +57,7 @@ def get_translated_segments(
     segments = load_latest(p.base, lang_norm)
     if segments is None:
         raise HTTPException(404, f"No translation found for '{lang}'")
-    mapping = load_latest_speaker_map(p.base)
-    if mapping:
-        segments = [
-            {**s, "speaker": mapping.get(s.get("speaker", ""), s.get("speaker", ""))}
-            for s in segments
-        ]
-    return annotate_flags(segments)
+    return annotate_flags(apply_speaker_map(segments, load_latest_speaker_map(p.base)))
 
 
 @router.put("/segments")
@@ -91,48 +90,32 @@ class TranslateRequest(LLMRequest):
 @router.post("/start", response_model=TaskResponse)
 def start_translate(req: TranslateRequest) -> TaskResponse:
     """Start the translate pipeline as a background task."""
-    if req.mode == "api":
-        from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm
+    from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm_run
 
-        try:
-            resolved = resolve_llm(req.provider_profile, req.key_name)
-        except LLMResolutionError as exc:
-            raise HTTPException(400, str(exc))
-    else:
-        resolved = None
+    try:
+        llm = resolve_llm_run(req.mode, req.provider_profile, req.key_name, req.model)
+    except LLMResolutionError as exc:
+        raise HTTPException(400, str(exc))
 
     def run_translate(progress_cb, req_data):
         """Load source segments, run translation in batches, and save the raw output."""
-        from podcodex.core.translate import save_translation_raw, translate_segments
-        from podcodex.core.versions import load_version_by_id
+        from podcodex.core.translate import save_translation, translate_segments
 
         progress_cb(0.0, "Loading source segments...")
-        if req_data.source_version_id:
-            p = AudioPaths.from_audio(
-                req_data.audio_path, output_dir=req_data.output_dir
-            )
-            resolved_source = load_version_by_id(p.base, req_data.source_version_id)
-            if resolved_source is None:
-                raise FileNotFoundError(
-                    f"Source version not found: {req_data.source_version_id}"
-                )
-            segments, _ = resolved_source
-        else:
-            segments = load_best_source(req_data.audio_path, req_data.output_dir)
+        source = load_source(
+            req_data.audio_path, req_data.output_dir, req_data.source_version_id
+        )
+        segments = source.segments
 
         progress_cb(0.1, "Starting translation...")
 
         translated = translate_segments(
             segments,
-            mode=req_data.mode,
+            **llm.pipeline_kwargs(),
             context=req_data.context,
             source_lang=req_data.source_lang,
             target_lang=req_data.target_lang,
-            model=req_data.model,
             batch_minutes=req_data.batch_minutes,
-            provider=resolved.provider if resolved else None,
-            api_base_url=resolved.api_base_url if resolved else "",
-            api_key=resolved.api_key if resolved else None,
             original_segments=segments,
             merge=False,  # source segments are already merged on load/upload
             on_batch=batch_progress(progress_cb),
@@ -144,7 +127,8 @@ def start_translate(req: TranslateRequest) -> TaskResponse:
         lang_norm = normalize_lang(req_data.target_lang)
         provenance = build_provenance(
             lang_norm,
-            model=req_data.model,
+            source=source,
+            model=llm.model,
             audio_path=req_data.audio_path,
             output_dir=req_data.output_dir,
             params=llm_prov_params(
@@ -156,7 +140,7 @@ def start_translate(req: TranslateRequest) -> TaskResponse:
                 batch_minutes=req_data.batch_minutes,
             ),
         )
-        save_translation_raw(
+        save_translation(
             req_data.audio_path,
             translated,
             req_data.target_lang,
@@ -175,21 +159,13 @@ def start_translate(req: TranslateRequest) -> TaskResponse:
 def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     """Generate batched prompts for manual translation."""
     from podcodex.core.translate import build_manual_prompts_batched
-    from podcodex.core.versions import load_version_by_id
 
-    if req.source_version_id:
-        p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
-        resolved_source = load_version_by_id(p.base, req.source_version_id)
-        if resolved_source is None:
-            raise HTTPException(
-                404, f"Source version not found: {req.source_version_id}"
-            )
-        segments, _ = resolved_source
-    else:
-        try:
-            segments = load_best_source(req.audio_path, req.output_dir)
-        except ValueError:
-            raise HTTPException(404, "No source segments found")
+    try:
+        segments = load_best_source(
+            req.audio_path, req.output_dir, req.source_version_id
+        )
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
 
     batches = build_manual_prompts_batched(
         segments,
@@ -227,26 +203,16 @@ def dismiss_translate_failures(
 @router.post("/apply-manual")
 def apply_manual_corrections(req: ApplyManualRequest) -> dict:
     """Apply manually-obtained translation corrections and save as raw."""
-    from podcodex.core._utils import validate_manual
-    from podcodex.core.translate import save_translation_raw
-    from podcodex.core.versions import load_version_by_id
-
-    if req.source_version_id:
-        p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
-        resolved_source = load_version_by_id(p.base, req.source_version_id)
-        if resolved_source is None:
-            raise HTTPException(
-                404, f"Source version not found: {req.source_version_id}"
-            )
-        original = resolved_source[0]
-    else:
-        try:
-            original = load_best_source(req.audio_path, req.output_dir)
-        except ValueError:
-            raise HTTPException(404, "No source segments found")
+    from podcodex.core.llm import validate_manual
+    from podcodex.core.translate import save_translation
 
     try:
-        translated = validate_manual(req.corrections, original)
+        source = load_source(req.audio_path, req.output_dir, req.source_version_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+    try:
+        translated = validate_manual(req.corrections, source.segments)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     lang_norm = normalize_lang(req.lang)
@@ -259,8 +225,9 @@ def apply_manual_corrections(req: ApplyManualRequest) -> dict:
         params=llm_prov_params("manual"),
         audio_path=req.audio_path,
         output_dir=req.output_dir,
+        source=source,
     )
-    save_translation_raw(
+    save_translation(
         req.audio_path,
         translated,
         req.lang,
@@ -278,20 +245,22 @@ def apply_batches_translation(req: ApplyBatchesRequest) -> dict:
     original run's model so the version does not read as a manual edit.
     """
     from podcodex.core.llm_failures import resolve_batches
-    from podcodex.core.translate import save_translation_raw
+    from podcodex.core.translate import save_translation
 
     lang_norm = normalize_lang(req.lang)
-    p, patched, section = reconcile_batches(req, lang_norm)
+    p, patched, section, chain = reconcile_batches(req, lang_norm)
     provenance = build_provenance(
         lang_norm,
         model=section.get("model"),
         params=llm_prov_params(
-            section.get("mode", "manual"), batch_fixes=len(req.fixes)
+            section.get("mode", "manual"),
+            batch_fixes=len(req.fixes),
+            **({"source_chain": chain} if chain else {}),
         ),
         audio_path=req.audio_path,
         output_dir=req.output_dir,
     )
-    save_translation_raw(
+    save_translation(
         req.audio_path,
         patched,
         req.lang,

@@ -200,7 +200,7 @@ def save_prompts(prompts: list[PromptDef]) -> None:
     write_json_atomic(
         _prompts_path(),
         [_to_dict(p) for p in prompts],
-        prefix=".prompts_",
+        tag="prompts_",
     )
 
 

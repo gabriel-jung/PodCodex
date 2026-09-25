@@ -144,6 +144,12 @@ Subsequent launches don't need it.
 
 "Local" correct/translate requires the [Ollama](https://ollama.com) app installed and running; models you pull there show up automatically in PodCodex. `qwen3.5:9b` ran fine on a laptop with acceptable quality; larger models produce better results.
 
+PodCodex looks for Ollama at `http://localhost:11434`, Ollama's default port. If another program already uses that port, Ollama cannot start its server (its app then shows models as "loading" forever) and PodCodex reports the port as taken. Either move the other program, or run Ollama on another port and tell both apps through the `OLLAMA_HOST` environment variable, then restart them:
+
+- macOS: `launchctl setenv OLLAMA_HOST 127.0.0.1:11435` (lasts until reboot)
+- Windows: add a user environment variable `OLLAMA_HOST` = `127.0.0.1:11435`
+- Linux / dev (`make dev`): `export OLLAMA_HOST=127.0.0.1:11435` in the shell that starts them
+
 ### Hardware support
 
 | Hardware                       | GPU support                                                                          |

@@ -3,23 +3,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-from podcodex.core import app_paths, user_settings
-
-
-@pytest.fixture
-def isolated_data_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[Path]:
-    """Point ``data_dir()`` at a fresh tmp dir and clear its lru_cache."""
-    monkeypatch.setenv("PODCODEX_DATA_DIR", str(tmp_path))
-    app_paths.data_dir.cache_clear()
-    yield tmp_path
-    app_paths.data_dir.cache_clear()
+from podcodex.core import user_settings
 
 
 def test_load_returns_empty_when_no_file(isolated_data_dir: Path) -> None:

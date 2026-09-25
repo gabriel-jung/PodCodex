@@ -172,12 +172,40 @@ def _child_entry(
         result_q.put(("err", f"{type(exc).__name__}: {exc}", tb))
 
 
+def _check_entry_signature(entry_path: str, kwargs: dict[str, Any]) -> None:
+    """Bind *kwargs* to the entry function here, before anything is spawned.
+
+    Entry functions are keyword-only and the routes build their kwargs by
+    hand, so a renamed field used to fail only inside the child, after the
+    task was accepted. Entry modules import their heavy dependencies inside
+    the function, so resolving one in the parent is cheap.
+
+    Raises:
+        TypeError: *kwargs* does not fit the entry's signature.
+        RuntimeError: the entry cannot be resolved (same shape as an import
+            failure reported by the child).
+    """
+    import importlib
+    import inspect
+
+    mod_name, fn_name = entry_path.split(":")
+    try:
+        fn = getattr(importlib.import_module(mod_name), fn_name)
+    except (ImportError, AttributeError) as exc:
+        raise RuntimeError(f"{type(exc).__name__}: {exc}") from exc
+    try:
+        inspect.signature(fn).bind(progress_cb=None, cancelled=None, **kwargs)
+    except TypeError as exc:
+        raise TypeError(f"{entry_path}: {exc}") from exc
+
+
 def run_in_subprocess(
     entry_path: str,
     kwargs: dict[str, Any],
     on_progress: Callable[[float, str], None] | None = None,
     on_log: Callable[[str], None] | None = None,
     cancel_event: threading.Event | None = None,
+    signature_checked: bool = False,
 ) -> Any:
     """Run ``entry_path(progress_cb, cancelled, **kwargs)`` in a spawned child.
 
@@ -186,8 +214,12 @@ def run_in_subprocess(
     ``on_progress``; loguru log lines emitted by the child are forwarded
     to ``on_log`` (see ``_install_log_forwarder``). A set ``cancel_event``
     is relayed to the child; if the child does not exit within 10 s of
-    the signal it is terminated.
+    the signal it is terminated. *signature_checked* skips the kwargs check
+    for a caller that already ran ``_check_entry_signature``.
     """
+    if not signature_checked:
+        _check_entry_signature(entry_path, kwargs)
+
     # Cap progress queue so a chatty child cannot grow RSS unboundedly if
     # the parent stalls; the child's progress_cb already swallows Full.
     prog_q = _CTX.Queue(maxsize=512)

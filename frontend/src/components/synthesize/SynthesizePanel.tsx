@@ -151,16 +151,21 @@ export default function SynthesizePanel() {
   }, [sourceSegments, speakerOverrides]);
 
   const resolvedVersionId = resolvedSource.sourceVersionId ?? null;
+  // Sent with every synth call so the listings and assemble read the same
+  // translation the generate job synthesized.
+  const resolvedSourceLang = resolvedSource.sourceLang ?? null;
 
   const { data: voiceSamples } = useQuery({
-    queryKey: queryKeys.synthesizeVoices(sourceRef, resolvedVersionId),
-    queryFn: () => getVoiceSamples(audioPath, outputDir, resolvedVersionId),
+    queryKey: queryKeys.synthesizeVoices(sourceRef, resolvedVersionId, resolvedSourceLang),
+    queryFn: () =>
+      getVoiceSamples(audioPath, outputDir, resolvedVersionId, resolvedSourceLang),
     enabled: hasSourceRef && !!status?.voice_samples_extracted,
   });
 
   const { data: generatedSegments } = useQuery({
-    queryKey: queryKeys.synthesizeGenerated(sourceRef, resolvedVersionId),
-    queryFn: () => getGeneratedSegments(audioPath, outputDir, resolvedVersionId),
+    queryKey: queryKeys.synthesizeGenerated(sourceRef, resolvedVersionId, resolvedSourceLang),
+    queryFn: () =>
+      getGeneratedSegments(audioPath, outputDir, resolvedVersionId, resolvedSourceLang),
     enabled: hasSourceRef && !!status?.tts_segments_generated,
   });
 
@@ -274,6 +279,7 @@ export default function SynthesizePanel() {
         silence_duration: silenceDuration,
         language,
         model_size: modelSize,
+        source_lang: resolvedSource.sourceLang,
         source_version_id: resolvedSource.sourceVersionId ?? undefined,
         keep_segment_keys: Array.from(sourceSelection),
       }),

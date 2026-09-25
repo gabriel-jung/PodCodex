@@ -643,6 +643,7 @@ export interface AssembleRequest {
   language?: string;
   model_size?: string | null;
   source_version_id?: string | null;
+  source_lang?: string;
   keep_segment_keys?: string[] | null;
 }
 

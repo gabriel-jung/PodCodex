@@ -19,17 +19,22 @@ from pathlib import Path
 
 from loguru import logger
 
+from podcodex.core._utils import TEMP_PREFIX
+
 # Files older than this are assumed abandoned. The longest atomic_write
 # call in the pipeline is the version save during a batch — well under
 # this threshold in practice.
 _STALE_AGE_SECONDS = 30 * 60  # 30 minutes
-_TEMP_PATTERNS = (".tmp_*", "*.tmp")
+# Only PodCodex's own temp names (TEMP_PREFIX, which atomic_write and
+# temp_sibling always use). A bare "*.tmp" also matched files other apps
+# keep in a show folder, and deleted them.
+_TEMP_PATTERNS = (f"{TEMP_PREFIX}*",)
 
 
 def reap_stale_temp_files(
     roots: Iterable[Path], older_than_sec: int = _STALE_AGE_SECONDS
 ) -> int:
-    """Delete `.tmp_*` / `*.tmp` orphans older than ``older_than_sec`` under ``roots``.
+    """Delete `.tmp_*` orphans older than ``older_than_sec`` under ``roots``.
 
     Returns the count of files removed. Missing or unreadable roots are
     silently skipped so this is always safe to call on startup.
@@ -51,7 +56,7 @@ def reap_stale_temp_files(
                 try:
                     candidate.unlink()
                     removed += 1
-                    logger.debug(f"[recovery] removed stale temp: {candidate}")
+                    logger.info(f"[recovery] removed stale temp: {candidate}")
                 except OSError as exc:
                     logger.debug(f"[recovery] could not remove {candidate}: {exc}")
     return removed

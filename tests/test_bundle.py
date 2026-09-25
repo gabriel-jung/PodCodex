@@ -655,6 +655,22 @@ def test_import_rejects_traversal_folder_name(tmp_path, isolated_index):
     assert not (tmp_path / "evil").exists()
 
 
+@pytest.mark.parametrize("folder", ["C:..", "D:evil"])
+def test_import_rejects_a_windows_drive_relative_folder(
+    folder, tmp_path, isolated_index
+):
+    """On Windows, pathlib joins ``shows / "C:.."`` to the shows folder's
+    parent: no separator, so only the drive check stops it. Refused on every
+    platform because the archive may be written on one and opened on another."""
+    archive = _write_raw_archive(
+        tmp_path / "evil.podcodex",
+        _manifest(Mode.FULL, folder=folder),
+        {f"shows/{folder}/ep1/t.txt": b"pwned"},
+    )
+    with pytest.raises(ArchiveCorruptError):
+        import_archive(archive, shows_dir=tmp_path / "target")
+
+
 def test_import_rejects_traversal_collection_name(tmp_path, isolated_index):
     manifest = _manifest(Mode.INDEX_ONLY)
     manifest.shows[0].collections = [

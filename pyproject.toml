@@ -59,13 +59,19 @@ youtube = [
 ]
 pipeline = [
     "accelerate>=1.12.0",
+    "httpx>=0.27",       # core.llm imports it directly (timeouts, Ollama probe)
+    "numpy>=1.26",       # core.synthesize; was only arriving through whisperx
     "ollama>=0.6.1",
     "openai>=2.23.0",
     "pandas>=2.0.0",
     "pyannote-audio>=4.0.4",
     "pyarrow>=23.0.0",
-    "qwen-tts>=0.1.1",
+    # Exact: the MiMi mask patch in core/synthesize.py replaces a private
+    # transformers function, and qwen-tts 0.1.1 is what pins transformers to
+    # the 4.57.3 that patch was written against (ML_RUNTIME.md).
+    "qwen-tts==0.1.1",
     "soundfile>=0.13.1",
+    "torch>=2.6",        # same floor as the rag extra; was only arriving through whisperx
     "whisperx>=3.8.1",
 ]
 # CPU-only wheel. For GPU-less hosts (bot / RAG VPS, CI). On Linux the
@@ -137,10 +143,12 @@ build-backend = "hatchling.build"
 # test modules, which error out at collection.
 testpaths = ["tests"]
 # Always-on guard: fails any test that resolves the developer's real index
-# instead of an isolated one. Opening the real index is not passive (it stamps
+# instead of an isolated one, and points the config and data dirs at a
+# session scratch dir. Opening the real index is not passive (it stamps
 # ownership, heals collection metadata and runs the show-id migration), and a
 # missing isolation once rewrote real show.toml files during a test run.
-addopts = "-p tests.fixtures.realindex_guard"
+# data_dir provides the shared `isolated_data_dir` fixture to every module.
+addopts = "-p tests.fixtures.realindex_guard -p tests.fixtures.data_dir"
 # The plugin above is imported before pytest puts rootdir on sys.path, so a
 # bare `pytest` (what CI runs) cannot find the `tests` package without this.
 # `python -m pytest` happens to work either way, which is how it got missed.

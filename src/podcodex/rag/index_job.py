@@ -28,11 +28,10 @@ def run(
 ) -> dict[str, Any]:
     """Vectorize one episode. Returns ``{chunks_upserted, source}``."""
     from podcodex.core.provenance import build_provenance
-    from podcodex.core.source import build_index_transcript
+    from podcodex.core.source import build_index_transcript, load_source
     from podcodex.rag.index_store import get_index_store
     from podcodex.core._utils import AudioPaths
     from podcodex.core.pipeline_db import mark_step
-    from podcodex.core.versions import load_version_by_id
     from podcodex.rag.indexing import vectorize_batch
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
@@ -40,23 +39,15 @@ def run(
 
     progress_cb(0.0, "Resolving source...")
 
-    if version_id:
-        resolved = load_version_by_id(p.base, version_id)
-        if not resolved:
-            raise ValueError(f"version_id {version_id!r} not found for {episode!r}")
-        segments, resolved_step = resolved
-        transcript = build_index_transcript(
-            audio_path,
-            show,
-            episode,
-            segments=segments,
-            source=resolved_step,
-            output_dir=output_dir,
-        )
-    else:
-        transcript = build_index_transcript(
-            audio_path, show, episode, source=source, output_dir=output_dir
-        )
+    consumed = load_source(audio_path, output_dir, version_id, step=source)
+    transcript = build_index_transcript(
+        audio_path,
+        show,
+        episode,
+        segments=consumed.segments,
+        source=consumed.step,
+        output_dir=output_dir,
+    )
 
     source_label = transcript["meta"].get("source", "auto")
     local = get_index_store()
@@ -106,6 +97,7 @@ def run(
         model=(model_keys or ["bge-m3"])[0],
         audio_path=audio_path,
         output_dir=output_dir,
+        source=consumed,
         params={
             "source": source_label,
             "model_keys": model_keys,
@@ -162,18 +154,15 @@ def run_for_batch(
             return {"upserted": 0, "indexed": False, "skipped": True}
 
     progress_cb(0.0, "Indexing...")
-    if version_id:
-        from podcodex.core.versions import load_version_by_id
+    from podcodex.core.source import load_source
 
-        resolved = load_version_by_id(p.base, version_id)
-        if not resolved:
-            return {"upserted": 0, "indexed": False, "skipped": False}
-        segments, resolved_step = resolved
-        transcript = build_index_transcript(
-            audio_path, show_name, stem, segments=segments, source=resolved_step
-        )
-    else:
-        transcript = build_index_transcript(audio_path, show_name, stem)
+    try:
+        consumed = load_source(audio_path, None, version_id)
+    except ValueError:
+        return {"upserted": 0, "indexed": False, "skipped": False}
+    transcript = build_index_transcript(
+        audio_path, show_name, stem, segments=consumed.segments, source=consumed.step
+    )
     if not transcript.get("segments"):
         return {"upserted": 0, "indexed": False, "skipped": False}
 
@@ -205,6 +194,7 @@ def run_for_batch(
         model=(model_keys or ["bge-m3"])[0],
         audio_path=audio_path,
         params={"model_keys": model_keys, "chunkings": chunkings},
+        source=consumed,
     )
     mark_step(p.show_dir, p.base.name, indexed=True, provenance={"indexed": provenance})
 

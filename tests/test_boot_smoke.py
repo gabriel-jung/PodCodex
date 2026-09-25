@@ -23,7 +23,6 @@ def app(tmp_path, monkeypatch):
     from podcodex.core import app_config as app_config_mod
 
     monkeypatch.setattr(app_config_mod, "CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr(app_config_mod, "_LOAD_CACHE", None)
     return create_app()
 
 

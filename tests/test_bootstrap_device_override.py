@@ -7,22 +7,18 @@ is unset (or empty).
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from podcodex import bootstrap
-from podcodex.core import app_paths, user_settings
+from podcodex.core import user_settings
 
 
 @pytest.fixture
-def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    monkeypatch.setenv("PODCODEX_DATA_DIR", str(tmp_path))
+def isolated(isolated_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("PODCODEX_DEVICE", raising=False)
-    app_paths.data_dir.cache_clear()
-    yield tmp_path
-    app_paths.data_dir.cache_clear()
+    return isolated_data_dir
 
 
 def test_no_persisted_no_env_leaves_env_unset(

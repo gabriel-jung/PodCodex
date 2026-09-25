@@ -211,7 +211,7 @@ fn restart_app(app: tauri::AppHandle) {
 /// first-boot read of a not-yet-written file self-heals.
 #[tauri::command]
 fn get_api_token() -> Result<String, String> {
-    // Same precedence as the Python side (core/api_token.py): the env var
+    // Same precedence as the Python side (api/api_token.py): the env var
     // wins, else the persisted file. Without this, launching the app with
     // PODCODEX_API_TOKEN exported would brick every request: the server
     // authenticates against the env token while the file holds a stale one.

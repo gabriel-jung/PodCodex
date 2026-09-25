@@ -10,14 +10,14 @@ Custom profiles persist at ``<config_dir>/provider_profiles.json``.
 
 from __future__ import annotations
 
-import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from podcodex.core._utils import write_json_atomic
 from podcodex.core.app_paths import config_dir
+from podcodex.core.json_store import JsonModelStore
 
 ProviderType = Literal["openai", "anthropic", "mistral", "ollama", "openai-compatible"]
 
@@ -122,36 +122,23 @@ def provider_profiles_path() -> Path:
     return config_dir() / "provider_profiles.json"
 
 
-_CUSTOM_CACHE: tuple[float, ProviderProfilesFile] | None = None
+_STORE = JsonModelStore(lambda: provider_profiles_path(), ProviderProfilesFile)
 
 
 def load_custom() -> ProviderProfilesFile:
-    """Load the persisted custom profiles. Empty if missing or unreadable."""
-    global _CUSTOM_CACHE
-    path = provider_profiles_path()
-    try:
-        mtime = path.stat().st_mtime
-    except FileNotFoundError:
-        return ProviderProfilesFile()
-    except OSError:
-        mtime = -1.0
-
-    if _CUSTOM_CACHE is not None and _CUSTOM_CACHE[0] == mtime:
-        return _CUSTOM_CACHE[1].model_copy(deep=True)
-
-    try:
-        file = ProviderProfilesFile(**json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return ProviderProfilesFile()
-
-    _CUSTOM_CACHE = (mtime, file)
-    return file.model_copy(deep=True)
+    """Load the persisted custom profiles (a copy). Empty if missing or unreadable."""
+    return _STORE.load()
 
 
 def save_custom(file: ProviderProfilesFile) -> None:
-    global _CUSTOM_CACHE
-    write_json_atomic(provider_profiles_path(), file.model_dump())
-    _CUSTOM_CACHE = None
+    _STORE.save(file)
+
+
+def mutate_custom(
+    fn: Callable[[ProviderProfilesFile], bool | None],
+) -> ProviderProfilesFile:
+    """Load-modify-save the custom profiles under one lock."""
+    return _STORE.mutate(fn)
 
 
 def list_all() -> list[ProviderProfile]:

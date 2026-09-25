@@ -1,4 +1,4 @@
-"""Pytest plugin: fail any test whose index resolution lands on the real index.
+"""Pytest plugin: keep tests off the developer's real index, config and data.
 
 Loaded for every run via ``addopts`` in ``pyproject.toml``.
 
@@ -19,10 +19,23 @@ genuine escapes are caught.
 
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
-import podcodex.rag.index_store as _index_store
+# Before anything imports podcodex: point the config and data dirs at a
+# session scratch dir, so a test that forgets to isolate them writes there
+# instead of the developer's real config.json, api_keys.json or data dir
+# (app_config computes CONFIG_PATH at import). Tests that need a specific
+# dir still set their own; tests that need these unset delenv them.
+_SCRATCH = Path(tempfile.mkdtemp(prefix="podcodex-tests-"))
+atexit.register(shutil.rmtree, _SCRATCH, ignore_errors=True)
+os.environ["XDG_CONFIG_HOME"] = str(_SCRATCH / "config")
+os.environ["PODCODEX_DATA_DIR"] = str(_SCRATCH / "data")
+
+import podcodex.rag.index_store as _index_store  # noqa: E402
 
 _orig_resolve = _index_store._resolve_default_index_path
 

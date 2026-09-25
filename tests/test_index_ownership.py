@@ -49,6 +49,35 @@ def test_machine_id_blank_env_falls_through(monkeypatch, tmp_path):
     assert (tmp_path / "machine_id").exists()
 
 
+def test_a_concurrent_first_run_adopts_the_id_already_written(monkeypatch, tmp_path):
+    """Two processes minting on a fresh install used to each keep their own
+    id; the one that lost the race now reads the winner's."""
+    from podcodex.core import machine_id as mod
+
+    monkeypatch.delenv("PODCODEX_MACHINE_ID", raising=False)
+    monkeypatch.setenv("PODCODEX_DATA_DIR", str(tmp_path))
+    real_read = mod._read
+    reads = iter(["", "winner"])
+    monkeypatch.setattr(mod, "_read", lambda path: next(reads, real_read(path)))
+    (tmp_path / "machine_id").write_text("winner", encoding="utf-8")
+
+    assert mod.machine_id() == "winner"
+
+
+def test_an_unwritable_data_dir_keeps_one_id_per_process(monkeypatch, tmp_path):
+    from podcodex.core import machine_id as mod
+
+    monkeypatch.delenv("PODCODEX_MACHINE_ID", raising=False)
+    monkeypatch.setenv("PODCODEX_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(mod, "_PROCESS_ID", None)
+
+    def refuse(*_a):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(mod, "_publish", refuse)
+    assert mod.machine_id() == mod.machine_id()
+
+
 # ── Origin marker ────────────────────────────────────────────────────────
 
 
@@ -315,3 +344,17 @@ def test_replica_still_serves_reads(monkeypatch, tmp_path):
     assert replica.collections_for_show("s_abcd1234")
     assert replica.collection_label("s__bge-m3__semantic") == "S"
     assert replica.show_id_for_label("S") == "s_abcd1234"
+
+
+def test_an_empty_id_file_is_replaced_once(monkeypatch, tmp_path):
+    """A truncated file used to make every call mint a new id."""
+    from podcodex.core import machine_id as mod
+
+    monkeypatch.delenv("PODCODEX_MACHINE_ID", raising=False)
+    monkeypatch.setenv("PODCODEX_DATA_DIR", str(tmp_path))
+    (tmp_path / "machine_id").write_text("", encoding="utf-8")
+
+    first = mod.machine_id()
+    assert first
+    assert mod.machine_id() == first
+    assert (tmp_path / "machine_id").read_text(encoding="utf-8") == first

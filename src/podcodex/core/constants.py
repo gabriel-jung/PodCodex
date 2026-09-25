@@ -41,6 +41,9 @@ DIARIZATION_VRAM_MB = 1500
 
 DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 
+# The pyannote pipeline diarization loads, and the name its versions record.
+DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
+
 # ── Text-to-Speech (TTS) model sizes ────────────────────────────────────────
 #
 # Qwen-TTS comes in two sizes. The bigger model sounds more natural but
@@ -72,19 +75,15 @@ ASSEMBLE_STRATEGIES: dict[str, str] = {
 
 # ── LLM providers (for Correct & Translate) ───────────────────────────────────
 #
-# Per-legacy-provider runtime fallbacks for the api mode in run_api(). Used
-# only when the caller leaves ``model``/``api_key`` blank — the API path
-# normally fills both via ``llm_resolver``. Base URLs and the full provider
-# catalog (incl. openai-compatible built-ins like deepseek/gemini/groq) live
-# in ``provider_profiles.BUILTIN_PROFILES``.
+# Default model per legacy provider, used by ``effective_llm_model`` when the
+# user leaves the model blank. Keys come from the pool only (``llm_resolver``).
+# Base URLs and the full provider catalog (incl. openai-compatible built-ins
+# like deepseek/gemini/groq) live in ``provider_profiles.BUILTIN_PROFILES``.
 
-# ``env_var`` is the only environment variable ``run_api`` will read for a
-# key. There is deliberately no generic fallback: see the raise in
-# ``_utils.run_api``.
-LLM_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
-    "openai": {"model": "gpt-4o-mini", "env_var": "OPENAI_API_KEY"},
-    "anthropic": {"model": "claude-sonnet-4-6", "env_var": "ANTHROPIC_API_KEY"},
-    "mistral": {"model": "mistral-small-latest", "env_var": "MISTRAL_API_KEY"},
+LLM_PROVIDER_DEFAULT_MODEL: dict[str, str] = {
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-sonnet-4-6",
+    "mistral": "mistral-small-latest",
 }
 
 DEFAULT_OLLAMA_MODEL = "qwen3.5:27B"  # default model when running locally via Ollama

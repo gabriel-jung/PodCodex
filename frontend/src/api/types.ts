@@ -93,6 +93,10 @@ export interface OllamaCheckResponse {
   host: string;
   /** Pulled model names, sorted. Empty when unreachable or none pulled. */
   models: string[];
+  /** Why it is unreachable, decided by the backend: another program holds
+   *  the port (`port_taken`), nothing answers (`not_running`), or the Python
+   *  package is missing (`not_installed`). `null` when reachable. */
+  problem: "port_taken" | "not_running" | "not_installed" | null;
   /** Reason the daemon was unreachable. `null` when reachable. */
   error: string | null;
 }

@@ -19,7 +19,7 @@ from podcodex.core.api_keys import (
     find_key,
     load_keys,
     merge_discovered,
-    save_keys,
+    mutate_keys,
     to_public,
 )
 
@@ -60,42 +60,47 @@ def list_keys() -> ListResponse:
 
 @router.post("", response_model=APIKeyPublic, status_code=201)
 def create_key(req: CreateRequest) -> APIKeyPublic:
-    file = load_keys()
-    if find_key(file, req.name) is not None:
-        raise HTTPException(status_code=409, detail=f"Key '{req.name}' already exists")
     new_key = APIKey(
         name=req.name,
         value=req.value,
         suggested_provider=req.suggested_provider,
         source="ui",
     )
-    file.keys.append(new_key)
-    save_keys(file)
+
+    def add(file) -> None:
+        if find_key(file, req.name) is not None:
+            raise HTTPException(
+                status_code=409, detail=f"Key '{req.name}' already exists"
+            )
+        file.keys.append(new_key)
+
+    mutate_keys(add)
     return to_public(new_key)
 
 
 @router.patch("/{name}", response_model=APIKeyPublic)
 def update_key(name: str, req: UpdateRequest) -> APIKeyPublic:
-    file = load_keys()
-    key = find_key(file, name)
-    if key is None:
-        raise HTTPException(status_code=404, detail=f"Key '{name}' not found")
-    if req.value is not None:
-        key.value = req.value
-    if req.suggested_provider is not None:
-        # Allow clearing via empty string.
-        key.suggested_provider = req.suggested_provider or None
-    save_keys(file)
-    return to_public(key)
+    def edit(file) -> None:
+        key = find_key(file, name)
+        if key is None:
+            raise HTTPException(status_code=404, detail=f"Key '{name}' not found")
+        if req.value is not None:
+            key.value = req.value
+        if req.suggested_provider is not None:
+            # Allow clearing via empty string.
+            key.suggested_provider = req.suggested_provider or None
+
+    return to_public(find_key(mutate_keys(edit), name))
 
 
 @router.delete("/{name}", status_code=204)
 def delete_key(name: str) -> None:
-    file = load_keys()
-    if find_key(file, name) is None:
-        raise HTTPException(status_code=404, detail=f"Key '{name}' not found")
-    file.keys = [k for k in file.keys if k.name != name]
-    save_keys(file)
+    def drop(file) -> None:
+        if find_key(file, name) is None:
+            raise HTTPException(status_code=404, detail=f"Key '{name}' not found")
+        file.keys = [k for k in file.keys if k.name != name]
+
+    mutate_keys(drop)
 
 
 @router.post("/scan-env", response_model=ScanResponse)
@@ -105,11 +110,16 @@ def scan_env() -> ScanResponse:
     Existing names are never overwritten — manual edits stick. Returns
     the names that were newly added and the full updated pool.
     """
-    file = load_keys()
     discovered = discover_env_keys()
-    file, added = merge_discovered(file, discovered)
-    if added:
-        save_keys(file)
+    added: list[str] = []
+
+    def merge(file) -> bool:
+        # Inside the store lock: names another request adds meanwhile are
+        # not reported as found in the environment.
+        added.extend(merge_discovered(file, discovered)[1])
+        return bool(added)
+
+    file = mutate_keys(merge)
     return ScanResponse(
         added=added,
         keys=[to_public(k) for k in file.keys],

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -12,17 +11,14 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from podcodex.api.app import app  # noqa: E402
-from podcodex.core import app_paths, user_settings  # noqa: E402
+from podcodex.core import user_settings  # noqa: E402
 from tests.fixtures.api_client import client_for
 
 
 @pytest.fixture
-def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    monkeypatch.setenv("PODCODEX_DATA_DIR", str(tmp_path))
+def isolated(isolated_data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("PODCODEX_DEVICE", raising=False)
-    app_paths.data_dir.cache_clear()
-    yield tmp_path
-    app_paths.data_dir.cache_clear()
+    return isolated_data_dir
 
 
 @pytest.fixture

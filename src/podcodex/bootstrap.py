@@ -13,17 +13,13 @@ The patches mutate global Python state
 means tests, notebooks, and one-off scripts that touch ``podcodex.*``
 don't silently inherit those mutations.
 
-Order contract for the bundled sidecar / MCP entry:
-    1. Set ``PODCODEX_DATA_DIR`` env var (caller's responsibility).
-    2. Wire ML cache env vars (HF_HOME, TORCH_HOME, ...) BEFORE any
-       torch / transformers import.
-    3. Call the appropriate ``bootstrap_for_*()`` — installs patches,
-       configures loguru.
-    4. Import the rest of ``podcodex.*`` and run.
-
-Steps 1-2 must precede (3): bootstrap consumes those env vars but does
-not set them. Doing the cache-dir wiring inside bootstrap would couple
-unrelated concerns (filesystem layout vs. monkey-patching).
+Every ``bootstrap_for_*()`` first calls ``core.cache.wire_model_caches``,
+which points HF_HOME, HF_HUB_CACHE, TRANSFORMERS_CACHE, TORCH_HOME and
+friends at the PodCodex model cache. It has to come first: the eager patches
+import transformers, and huggingface_hub copies the cache vars into module
+constants the moment it is imported, so a later setter changes nothing.
+``PODCODEX_DATA_DIR`` (set by the Tauri shell, optional elsewhere) must be in
+the environment before bootstrap, since the cache hangs off the data dir.
 """
 
 from __future__ import annotations
@@ -55,6 +51,7 @@ def bootstrap_for_bundled_sidecar() -> None:
     so we deliberately do NOT add an extra stderr sink (would write every
     line twice).
     """
+    _wire_model_caches()
     _install_eager_patches()
     _arm_ml_patch_hook()
     _check_system_ffmpeg()
@@ -69,6 +66,7 @@ def bootstrap_for_mcp_stdio() -> None:
     Logs to stderr (Claude captures it). Stdout is the JSON-RPC channel
     and must stay clean — never touch it from here.
     """
+    _wire_model_caches()
     _install_eager_patches()
     _arm_ml_patch_hook()
     _check_system_ffmpeg()
@@ -79,6 +77,7 @@ def bootstrap_for_mcp_stdio() -> None:
 def bootstrap_for_dev() -> None:
     """For dev uvicorn (``make dev-api``), the Discord bot, and one-off
     scripts. Logs to stderr."""
+    _wire_model_caches()
     _install_all_patches()
     _check_system_ffmpeg()
     _setup_loguru_stderr_sink()
@@ -101,9 +100,16 @@ def bootstrap_for_subprocess_child() -> None:
     file sink here would race the parent's ``enqueue=True`` sink for
     the same ``server.log``.
     """
+    _wire_model_caches()
     _patch_missing_stdio()
     _install_all_patches()
     _wire_ffmpeg_path()
+
+
+def _wire_model_caches() -> None:
+    from podcodex.core.cache import wire_model_caches
+
+    wire_model_caches()
 
 
 def _wire_ffmpeg_path() -> None:
@@ -738,13 +744,22 @@ def _setup_loguru_stderr_sink() -> None:
 
 
 def _log_hf_cache_state() -> None:
-    """Log the HuggingFace cache contents at startup for diagnostics."""
-    try:
-        from podcodex.core._hf_logging import log_cached_models
+    """Log the HuggingFace cache contents at startup for diagnostics.
 
-        log_cached_models()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("hf-cache state log failed: {!r}", exc)
+    On a background thread: it stats every file of a multi-GB cache just to
+    write a log line, and used to run before the server started listening.
+    """
+    import threading
+
+    def _log() -> None:
+        try:
+            from podcodex.core._hf_logging import log_cached_models
+
+            log_cached_models()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("hf-cache state log failed: {!r}", exc)
+
+    threading.Thread(target=_log, name="hf-cache-log", daemon=True).start()
 
 
 def _install_stdlib_intercept() -> None:

@@ -10,16 +10,16 @@ Persisted at `<config_dir>/api_keys.json` with mode 0600.
 
 from __future__ import annotations
 
-import json
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from podcodex.core._utils import atomic_write
 from podcodex.core.app_paths import config_dir
+from podcodex.core.json_store import JsonModelStore
 
 _KNOWN_PROVIDER_PREFIXES: dict[str, str] = {
     "OPENAI": "openai",
@@ -94,48 +94,28 @@ def to_public(key: APIKey) -> APIKeyPublic:
     )
 
 
-# mtime-keyed cache so high-volume callers (batch resolver, per-route
-# CRUD) avoid re-parsing the file on every hit.
-_KEYS_CACHE: tuple[float, APIKeysFile] | None = None
+# mtime-keyed so high-volume callers (batch resolver, per-route CRUD) avoid
+# re-parsing the file on every hit. Mode 0600: the values are secrets.
+_STORE = JsonModelStore(lambda: api_keys_path(), APIKeysFile, file_mode=0o600)
 
 
 def load_keys() -> APIKeysFile:
-    """Load the pool from disk; empty if missing or unreadable."""
-    global _KEYS_CACHE
-    path = api_keys_path()
-    try:
-        mtime = path.stat().st_mtime
-    except FileNotFoundError:
-        return APIKeysFile()
-    except OSError:
-        mtime = -1.0
+    """Load the pool from disk (a copy); empty if missing or unreadable.
 
-    if _KEYS_CACHE is not None and _KEYS_CACHE[0] == mtime:
-        return _KEYS_CACHE[1].model_copy(deep=True)
-
-    try:
-        file = APIKeysFile(**json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return APIKeysFile()
-
-    _KEYS_CACHE = (mtime, file)
-    return file.model_copy(deep=True)
+    An unreadable file is moved aside on the next save instead of being
+    overwritten by the empty pool (see ``JsonModelStore``).
+    """
+    return _STORE.load()
 
 
 def save_keys(file: APIKeysFile) -> None:
     """Persist atomically with mode 0600."""
-    global _KEYS_CACHE
-    path = api_keys_path()
+    _STORE.save(file)
 
-    def _writer(p: Path) -> None:
-        p.write_text(file.model_dump_json(indent=2), encoding="utf-8")
-        try:
-            os.chmod(p, 0o600)
-        except OSError:
-            pass
 
-    atomic_write(path, _writer, suffix=".json")
-    _KEYS_CACHE = None
+def mutate_keys(fn: Callable[[APIKeysFile], bool | None]) -> APIKeysFile:
+    """Load-modify-save the pool under one lock (see ``JsonModelStore.mutate``)."""
+    return _STORE.mutate(fn)
 
 
 def find_key(file: APIKeysFile, name: str) -> APIKey | None:
@@ -174,30 +154,47 @@ def parse_env_var_name(var: str) -> tuple[str, str | None] | None:
     return stem.lower(), None
 
 
-def discover_env_keys(env: dict[str, str] | None = None) -> list[APIKey]:
-    """Scan environment-style variables for `*_API_KEY` candidates.
+def discover_env_keys(
+    env: dict[str, str] | None = None,
+    secrets: dict[str, str] | None = None,
+) -> list[APIKey]:
+    """Scan for `*_API_KEY` candidates to seed the pool.
 
-    Reads from the live process environment plus the user's
-    `secrets.env` file (legacy single-slot keys live there too).
+    Two sources: the process environment (*env*, default ``os.environ``) and
+    the user's ``secrets.env`` (*secrets*, read from disk when *env* is not
+    given), whose
+    values win on collision so a managed key trumps a stale shell var.
+    From the environment, only names with a known provider prefix are taken
+    (`OPENAI_API_KEY`, `OPENAI_WORK_API_KEY`, not `WORK_API_KEY`): a shell
+    carries plenty of other services' secrets (cloud, CI, payment) that have
+    no business in a pool any provider profile can be paired with.
+    ``secrets.env`` is PodCodex's own file, so every entry in it counts.
     Returns unsaved `APIKey` objects with ``source="env"``.
     """
     if env is None:
         env = dict(os.environ)
-        # File values win on collision so a managed key trumps a stale shell var.
-        try:
-            for k, v in read_secrets_file().items():
-                env[k] = v
-        except Exception:
-            pass
+        if secrets is None:
+            try:
+                secrets = read_secrets_file()
+            except Exception:
+                secrets = {}
+    secrets = secrets or {}
+
+    candidates: dict[str, tuple[str, bool]] = {
+        var: (value, False) for var, value in env.items()
+    }
+    candidates.update({var: (value, True) for var, value in secrets.items()})
 
     found: list[APIKey] = []
-    for var, value in env.items():
+    for var, (value, from_secrets) in candidates.items():
         if not value:
             continue
         parsed = parse_env_var_name(var)
         if parsed is None:
             continue
         name, suggested = parsed
+        if suggested is None and not from_secrets:
+            continue
         found.append(
             APIKey(
                 name=name,

@@ -57,20 +57,20 @@ def test_discover_env_keys_explicit_env():
     }
     result = discover_env_keys(env)
     names = [k.name for k in result]
-    # Sorted alphabetically
-    assert names == ["myapp", "openai", "work"]
+    # Sorted alphabetically. MYAPP_API_KEY is some other service's secret:
+    # the pool only takes keys for LLM providers PodCodex knows.
+    assert names == ["openai", "work"]
     by_name = {k.name: k for k in result}
     assert by_name["openai"].suggested_provider == "openai"
     assert by_name["openai"].value == "sk-openai-1"
     assert by_name["work"].suggested_provider == "openai"
-    assert by_name["myapp"].suggested_provider is None
     assert all(k.source == "env" for k in result)
 
 
 def test_discover_env_keys_skips_empty_values():
-    env = {"OPENAI_API_KEY": "", "MYAPP_API_KEY": "real"}
+    env = {"OPENAI_API_KEY": "", "MISTRAL_API_KEY": "real"}
     result = discover_env_keys(env)
-    assert [k.name for k in result] == ["myapp"]
+    assert [k.name for k in result] == ["mistral"]
 
 
 # ── merge_discovered ─────────────────────────────────────────────────
@@ -229,11 +229,11 @@ def test_scan_env_seeds_pool(client, monkeypatch):
     r = client.post("/api/keys/scan-env")
     assert r.status_code == 200
     body = r.json()
-    assert sorted(body["added"]) == ["myapp", "openai"]
+    assert body["added"] == ["openai"]
     by_name = {k["name"]: k for k in body["keys"]}
     assert by_name["openai"]["suggested_provider"] == "openai"
     assert by_name["openai"]["source"] == "env"
-    assert by_name["myapp"]["suggested_provider"] is None
+    assert "myapp" not in by_name
 
 
 def test_scan_env_does_not_overwrite_ui_keys(client, monkeypatch):
@@ -254,3 +254,19 @@ def test_scan_env_reads_secrets_file(client, tmp_path):
     r = client.post("/api/keys/scan-env")
     body = r.json()
     assert "fromfile" in body["added"]
+
+
+def test_an_unreadable_pool_is_moved_aside_not_overwritten(client, tmp_path):
+    """An unreadable file used to load as an empty pool and the next save
+    wrote that empty pool over every stored key."""
+    from podcodex.core.api_keys import api_keys_path
+
+    path = api_keys_path()
+    path.write_text('{"keys": [{"name": "kept", "value": "sk-', encoding="utf-8")
+
+    assert client.get("/api/keys").json()["keys"] == []
+    assert client.post("/api/keys", json={"name": "a", "value": "v"}).status_code == 201
+
+    (aside,) = path.parent.glob(f"{path.name}.corrupt-*")
+    assert "sk-" in aside.read_text(encoding="utf-8")
+    assert [k["name"] for k in client.get("/api/keys").json()["keys"]] == ["a"]

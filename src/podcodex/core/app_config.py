@@ -7,14 +7,13 @@ can read it without importing from ``api/routes`` — the FastAPI route at
 
 from __future__ import annotations
 
-import json
-import threading
 from collections.abc import Callable
 
-from loguru import logger
 from pydantic import BaseModel, Field
 
 from podcodex.core.app_paths import config_dir
+from podcodex.core.constants import DEFAULT_WHISPER_MODEL
+from podcodex.core.json_store import JsonModelStore
 
 CONFIG_PATH = config_dir() / "config.json"
 
@@ -22,7 +21,7 @@ CONFIG_PATH = config_dir() / "config.json"
 class PipelineTranscribeDefaults(BaseModel):
     """App-wide transcribe defaults (Settings → Pipeline)."""
 
-    model_size: str = "large-v3-turbo"
+    model_size: str = DEFAULT_WHISPER_MODEL
     batch_size: int | None = None
     diarize: bool = False
     clean: bool = False
@@ -100,56 +99,33 @@ class AppConfig(BaseModel):
     pipeline_defaults: PipelineAppDefaults | None = None
 
 
-# Hit on every search/list_shows; mtime-keyed so writes auto-invalidate.
-_LOAD_CACHE: tuple[float, AppConfig] | None = None
+def _migrate_legacy(data: dict) -> dict:
+    """Pre-multi-show configs had a single ``podcast_dir``."""
+    if "podcast_dir" in data and "show_folders" not in data:
+        data["show_folders"] = []
+        data["default_save_path"] = data.pop("podcast_dir", "")
+    return data
 
-# Serializes every load-modify-save of config.json. Route handlers run on
-# FastAPI's threadpool, so two mutations (register a show, save settings)
-# can otherwise interleave their load/save windows and lose updates.
-_config_lock = threading.RLock()
+
+# Hit on every search/list_shows; mtime-keyed so writes auto-invalidate.
+# The path is read at call time so tests can point CONFIG_PATH elsewhere.
+_STORE = JsonModelStore(lambda: CONFIG_PATH, AppConfig, migrate=_migrate_legacy)
 
 
 def load_config() -> AppConfig:
-    """Load app config from disk, migrating legacy formats if needed."""
-    global _LOAD_CACHE
-    try:
-        mtime = CONFIG_PATH.stat().st_mtime
-    except FileNotFoundError:
-        return AppConfig()
-    except OSError:
-        mtime = -1.0
+    """Load app config from disk, migrating legacy formats if needed.
 
-    if _LOAD_CACHE is not None and _LOAD_CACHE[0] == mtime:
-        return _LOAD_CACHE[1]
-
-    try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        if "podcast_dir" in data and "show_folders" not in data:
-            data["show_folders"] = []
-            data["default_save_path"] = data.pop("podcast_dir", "")
-        cfg = AppConfig(**data)
-    except (json.JSONDecodeError, OSError):
-        logger.opt(exception=True).warning(
-            "Failed to load config from {}, using defaults", CONFIG_PATH
-        )
-        return AppConfig()
-
-    _LOAD_CACHE = (mtime, cfg)
-    return cfg
+    Returns a copy: mutating it changes nothing until :func:`save_config`.
+    A file that cannot be read or validated loads as defaults (see
+    ``JsonModelStore``), and is moved aside rather than overwritten on the
+    next save.
+    """
+    return _STORE.load()
 
 
 def save_config(cfg: AppConfig) -> None:
     """Persist app config to disk as JSON (atomic write)."""
-    from podcodex.core._utils import atomic_write
-
-    with _config_lock:
-        atomic_write(
-            CONFIG_PATH,
-            lambda p: p.write_text(cfg.model_dump_json(indent=2), encoding="utf-8"),
-            suffix=".json",
-        )
-        global _LOAD_CACHE
-        _LOAD_CACHE = None  # invalidate; next load_config() picks up new mtime
+    _STORE.save(cfg)
 
 
 def mutate_config(fn: Callable[[AppConfig], bool | None]) -> AppConfig:
@@ -159,11 +135,7 @@ def mutate_config(fn: Callable[[AppConfig], bool | None]) -> AppConfig:
     concurrent handlers can't lose each other's updates. ``fn`` mutates the
     loaded config in place; return ``False`` to skip the save (no change).
     """
-    with _config_lock:
-        cfg = load_config()
-        if fn(cfg) is not False:
-            save_config(cfg)
-        return cfg
+    return _STORE.mutate(fn)
 
 
 def strip_user_path(raw: str) -> str:

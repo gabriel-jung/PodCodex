@@ -19,7 +19,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from podcodex.core.constants import AUDIO_EXTENSIONS
+from podcodex.core.source import audio_stem
 from podcodex.ingest.rss import EPISODE_META_FILE
 
 # ── Scan cache ──────────────────────────────────
@@ -273,13 +273,17 @@ def _scan_folder_uncached(
     subdirs: list[str] = []
     with os.scandir(show_folder) as it:
         for entry in it:
-            if entry.is_file(follow_symlinks=False):
-                name = entry.name
-                dot = name.rfind(".")
-                if dot > 0 and name[dot:].lower() in AUDIO_EXTENSIONS:
-                    audio_files[name[:dot]] = show_folder / name
-            elif entry.is_dir(follow_symlinks=False):
+            if entry.is_dir(follow_symlinks=False):
                 subdirs.append(entry.name)
+                continue
+            # core.source.audio_stem: the shared rule, symlinked files included.
+            # With several files for one stem, the first by name wins, as in
+            # show_audio_files.
+            stem = audio_stem(entry.name)
+            if stem is not None and entry.is_file():
+                path = show_folder / entry.name
+                if stem not in audio_files or path < audio_files[stem]:
+                    audio_files[stem] = path
 
     # Batch-collect filenames for all subdirectories in one pass each
     subdir_files: dict[str, set[str]] = {}

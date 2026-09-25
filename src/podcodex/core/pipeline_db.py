@@ -51,12 +51,33 @@ CREATE TABLE IF NOT EXISTS versions (
     content_hash    TEXT NOT NULL,
     segment_count   INTEGER NOT NULL,
     input_hash      TEXT,
+    missing_since   REAL,
     PRIMARY KEY (id, stem, step)
 );
 
 CREATE INDEX IF NOT EXISTS idx_versions_stem_step
     ON versions(stem, step);
 """
+
+
+def is_edited(meta: dict | None) -> bool:
+    """Return True when a version should be labelled "edited" in the UI.
+
+    Covers both user hand-edits (``manual_edit``) and processed-but-not-raw
+    outputs such as clean exports or applied manual-LLM passes
+    (``type == "validated"``). Mirrors the frontend ``isEdited`` helper so
+    the check cannot drift between surfaces.
+    """
+    if not meta:
+        return False
+    return meta.get("type") == "validated" or bool(meta.get("manual_edit"))
+
+
+def _check_columns(fields: dict, allowed: frozenset[str]) -> None:
+    bad = set(fields) - allowed
+    if bad:
+        raise ValueError(f"Unknown columns: {bad}")
+
 
 _MIGRATIONS: list[tuple[str, list[str]]] = [
     # (check_sql, [apply_stmts]) — each migration runs once if check returns no rows.
@@ -69,28 +90,6 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
         "SELECT 1 FROM pragma_table_info('episodes') WHERE name='corrected'",
         ["ALTER TABLE episodes RENAME COLUMN polished TO corrected"],
     ),
-    (
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='versions'",
-        [
-            """
-            CREATE TABLE IF NOT EXISTS versions (
-                id              TEXT NOT NULL,
-                stem            TEXT NOT NULL,
-                step            TEXT NOT NULL,
-                timestamp       TEXT NOT NULL,
-                type            TEXT NOT NULL,
-                model           TEXT,
-                params          TEXT DEFAULT '{}',
-                manual_edit     INTEGER DEFAULT 0,
-                content_hash    TEXT NOT NULL,
-                segment_count   INTEGER NOT NULL,
-                input_hash      TEXT,
-                PRIMARY KEY (id, stem, step)
-            )
-            """,
-            "CREATE INDEX IF NOT EXISTS idx_versions_stem_step ON versions(stem, step)",
-        ],
-    ),
     # Verified pointer: ``(verified_step, verified_version_id)`` marks the
     # user-reviewed canonical version for the episode. Singleton per episode.
     (
@@ -101,7 +100,18 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
         "SELECT 1 FROM pragma_table_info('episodes') WHERE name='verified_version_id'",
         ["ALTER TABLE episodes ADD COLUMN verified_version_id TEXT"],
     ),
+    # When backfill first found a row's file missing. A row is only pruned
+    # once the file has stayed gone for a while (see versions.backfill), so
+    # a file that is merely late (a sync still copying) keeps its row.
+    (
+        "SELECT 1 FROM pragma_table_info('versions') WHERE name='missing_since'",
+        ["ALTER TABLE versions ADD COLUMN missing_since REAL"],
+    ),
 ]
+
+# How long a SQLite write waits for another process's lock. Step workers run
+# in their own processes and write this same file; the stdlib default is 5s.
+_BUSY_TIMEOUT_S = 30.0
 
 # Columns that can be set via mark().
 _VALID_COLUMNS = frozenset(
@@ -161,10 +171,12 @@ class PipelineDB:
         self._lock = threading.RLock()
         if self._path != ":memory:":
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._path, check_same_thread=False)
+        self._conn = sqlite3.connect(
+            self._path, check_same_thread=False, timeout=_BUSY_TIMEOUT_S
+        )
         self._conn.row_factory = sqlite3.Row
         # DELETE, not WAL: WAL needs shared memory in the same directory and
-        # is unsafe on synced/network folders. See "sync-safe pipeline DB".
+        # is unsafe on synced/network folders (ARCHITECTURE.md, pipeline.db).
         self._conn.execute("PRAGMA journal_mode=DELETE")
         self._conn.executescript(_SCHEMA)
         self._run_migrations()
@@ -228,60 +240,24 @@ class PipelineDB:
         latest provenance entry for that step). Translation counts as edited
         when at least one translation language has edited provenance.
         """
-        # Lazy import: versions.py also lazy-imports pipeline_db inside its
-        # functions, so a top-level import here would still be fine — but
-        # keeping it lazy keeps the dependency direction obvious.
-        from podcodex.core.versions import is_edited
-
-        rows = self._read(
-            "SELECT transcribed, corrected, indexed, synthesized, "
-            "translations, provenance FROM episodes"
-        ).fetchall()
-
         total = transcribed = corrected = translated = synthesized = indexed = 0
         transcribed_edited = corrected_edited = translated_edited = 0
 
-        for r in rows:
+        for ep in self.all_episodes():
             total += 1
-            if r["transcribed"]:
-                transcribed += 1
-            if r["corrected"]:
-                corrected += 1
-            if r["indexed"]:
-                indexed += 1
-            if r["synthesized"]:
-                synthesized += 1
-
-            translations: list[str] = []
-            raw_t = r["translations"]
-            if raw_t:
-                try:
-                    parsed = json.loads(raw_t)
-                    if isinstance(parsed, list):
-                        translations = [t for t in parsed if isinstance(t, str)]
-                except (ValueError, TypeError):
-                    pass
-            has_translation = len(translations) > 0
-            if has_translation:
+            transcribed += ep["transcribed"]
+            corrected += ep["corrected"]
+            indexed += ep["indexed"]
+            synthesized += ep["synthesized"]
+            translations = [t for t in ep["translations"] if isinstance(t, str)]
+            prov = ep["provenance"] if isinstance(ep["provenance"], dict) else {}
+            if translations:
                 translated += 1
-
-            prov: dict = {}
-            raw_p = r["provenance"]
-            if raw_p:
-                try:
-                    parsed = json.loads(raw_p)
-                    if isinstance(parsed, dict):
-                        prov = parsed
-                except (ValueError, TypeError):
-                    pass
-
-            if r["transcribed"] and is_edited(prov.get("transcript")):
+            if ep["transcribed"] and is_edited(prov.get("transcript")):
                 transcribed_edited += 1
-            if r["corrected"] and is_edited(prov.get("corrected")):
+            if ep["corrected"] and is_edited(prov.get("corrected")):
                 corrected_edited += 1
-            if has_translation and any(
-                is_edited(prov.get(lang)) for lang in translations
-            ):
+            if translations and any(is_edited(prov.get(t)) for t in translations):
                 translated_edited += 1
 
         return {
@@ -309,15 +285,9 @@ class PipelineDB:
             db.mark("ep_stem", transcribed=True)
             db.mark("ep_stem", translations=["english", "french"])
         """
-        bad = set(fields) - _VALID_COLUMNS
-        if bad:
-            raise ValueError(f"Unknown columns: {bad}")
+        _check_columns(fields, _VALID_COLUMNS)
         if not fields:
             return
-
-        # JSON-encode translations if provided as a list.
-        if "translations" in fields and isinstance(fields["translations"], list):
-            fields["translations"] = json.dumps(fields["translations"])
 
         # Provenance is a dict keyed by step, so writing it is a
         # read-modify-write of one JSON blob. The in-process lock cannot
@@ -337,22 +307,9 @@ class PipelineDB:
                     self._conn.execute("BEGIN IMMEDIATE")
                     existing = self._get_provenance(stem)
                     existing.update(fields["provenance"])
-                    fields["provenance"] = json.dumps(existing)
+                    fields["provenance"] = existing
 
-                cols = list(fields.keys())
-                vals = [fields[c] for c in cols]
-
-                set_clause = ", ".join(f"{c} = excluded.{c}" for c in cols)
-                placeholders = ", ".join("?" for _ in cols)
-                col_names = ", ".join(cols)
-
-                sql = f"""
-                    INSERT INTO episodes (stem, {col_names}, updated_at)
-                    VALUES (?, {placeholders}, ?)
-                    ON CONFLICT(stem) DO UPDATE SET {set_clause}, updated_at = excluded.updated_at
-                """
-                vals_full = [stem, *vals, time.time()]
-                self._conn.execute(sql, vals_full)
+                self._upsert(stem, fields, time.time())
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -510,36 +467,111 @@ class PipelineDB:
                 rows,
             )
 
+    def mark_bulk(self, updates: dict[str, dict[str, object]]) -> None:
+        """Apply plain column updates to many stems in one transaction.
+
+        ``{stem: {column: value}}``; no provenance merge (use :meth:`mark`).
+        The status reconcile corrects dozens of rows at once, and a commit
+        per row per flag held the write lock for each.
+        """
+        if not updates:
+            return
+        for fields in updates.values():
+            _check_columns(fields, _VALID_COLUMNS - {"provenance"})
+        now = time.time()
+        with self._lock, self._conn:
+            for stem, fields in updates.items():
+                self._upsert(stem, fields, now)
+
+    def _upsert(self, stem: str, fields: dict[str, object], now: float) -> None:
+        """INSERT-or-UPDATE status columns of one row.
+
+        The caller holds ``self._lock`` and commits.
+
+        Lists (``translations``) and dicts (merged ``provenance``) are stored
+        as JSON.
+        """
+        cols = list(fields)
+        vals = [
+            json.dumps(v) if isinstance(v, (list, dict)) else v for v in fields.values()
+        ]
+        self._conn.execute(
+            f"""
+            INSERT INTO episodes (stem, {", ".join(cols)}, updated_at)
+            VALUES (?, {", ".join("?" for _ in cols)}, ?)
+            ON CONFLICT(stem) DO UPDATE SET
+                {", ".join(f"{c} = excluded.{c}" for c in cols)},
+                updated_at = excluded.updated_at
+            """,
+            [stem, *vals, now],
+        )
+
     # ── Versions ─────────────────────────────────────────
 
-    def insert_version(self, stem: str, step: str, meta: dict) -> None:
-        """Insert a version metadata row."""
+    @staticmethod
+    def _version_row(stem: str, step: str, meta: dict) -> tuple:
         params = meta.get("params", {})
         if isinstance(params, dict):
             params = json.dumps(params)
+        return (
+            meta["id"],
+            stem,
+            step,
+            meta["timestamp"],
+            meta["type"],
+            meta.get("model"),
+            params,
+            int(meta.get("manual_edit", False)),
+            meta["content_hash"],
+            meta["segment_count"],
+            meta.get("input_hash"),
+        )
+
+    _INSERT_VERSION = """
+        INSERT OR {conflict} INTO versions
+            (id, stem, step, timestamp, type, model, params,
+             manual_edit, content_hash, segment_count, input_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    def insert_version(self, stem: str, step: str, meta: dict) -> None:
+        """Insert (or replace) a version metadata row."""
         with self._lock:
             self._conn.execute(
-                """
-                INSERT OR REPLACE INTO versions
-                    (id, stem, step, timestamp, type, model, params,
-                     manual_edit, content_hash, segment_count, input_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    meta["id"],
-                    stem,
-                    step,
-                    meta["timestamp"],
-                    meta["type"],
-                    meta.get("model"),
-                    params,
-                    int(meta.get("manual_edit", False)),
-                    meta["content_hash"],
-                    meta["segment_count"],
-                    meta.get("input_hash"),
-                ),
+                self._INSERT_VERSION.format(conflict="REPLACE"),
+                self._version_row(stem, step, meta),
             )
             self._conn.commit()
+
+    def insert_versions_if_absent(self, rows: list[tuple[str, str, dict]]) -> int:
+        """Insert ``(stem, step, meta)`` rows in one transaction, keeping any
+        row that already exists. Returns how many were inserted.
+
+        For the disk backfill: a save that lands between its scan and its
+        write must keep its provenance, not be replaced by a blank row.
+        """
+        if not rows:
+            return 0
+        with self._lock, self._conn:
+            before = self._conn.total_changes
+            self._conn.executemany(
+                self._INSERT_VERSION.format(conflict="IGNORE"),
+                [self._version_row(stem, step, meta) for stem, step, meta in rows],
+            )
+            return self._conn.total_changes - before
+
+    def set_missing_since(
+        self, keys: list[tuple[str, str, str]], when: float | None
+    ) -> None:
+        """Stamp (or with ``None`` clear) ``missing_since`` on ``(stem, step, id)`` rows."""
+        if not keys:
+            return
+        with self._lock, self._conn:
+            self._conn.executemany(
+                "UPDATE versions SET missing_since = ? "
+                "WHERE stem = ? AND step = ? AND id = ?",
+                [(when, stem, step, vid) for stem, step, vid in keys],
+            )
 
     def list_versions(self, stem: str, step: str) -> list[dict]:
         """List all versions for an episode step (newest first)."""
@@ -561,12 +593,25 @@ class PipelineDB:
         ).fetchone()
         return self._version_to_dict(row) if row else None
 
-    def get_version(self, version_id: str) -> dict | None:
-        """Return the version row for ``version_id``, or None."""
-        row = self._read(
-            "SELECT * FROM versions WHERE id = ? LIMIT 1",
-            (version_id,),
-        ).fetchone()
+    def get_version(
+        self, version_id: str, stem: str | None = None, step: str | None = None
+    ) -> dict | None:
+        """Return the version row for ``version_id``, or None.
+
+        Ids are timestamps and are only unique per ``(id, stem, step)``:
+        legacy second-precision ids, or rows rebuilt from filenames, can
+        repeat across the steps of one transcription run or across episodes.
+        Pass *stem* (and *step* when known) to pick the right row.
+        """
+        sql = "SELECT * FROM versions WHERE id = ?"
+        params: list[str] = [version_id]
+        if stem is not None:
+            sql += " AND stem = ?"
+            params.append(stem)
+        if step is not None:
+            sql += " AND step = ?"
+            params.append(step)
+        row = self._read(sql + " LIMIT 1", tuple(params)).fetchone()
         return self._version_to_dict(row) if row else None
 
     def versions_for_steps(self, steps: list[str]) -> dict[tuple[str, str], list[dict]]:
@@ -665,7 +710,7 @@ class PipelineDB:
     def delete_episode(self, stem: str) -> bool:
         """Delete an episode outright: its versions and its status row.
 
-        Counterpart to ``populate_from_scan``/``mark``, which are the only
+        Counterpart to ``_populate_from_scan``/``mark``, which are the only
         writers that create the row. ``delete_versions`` was previously the
         only delete, which is why a removed episode kept a status row forever
         and stayed listed by ``/unified``.
@@ -711,11 +756,18 @@ class PipelineDB:
 
     # ── Bulk ──────────────────────────────────────────────
 
-    def populate_from_scan(self, episodes: list) -> None:
+    def _populate_from_scan(self, episodes: list) -> None:
         """Bulk-insert episode status from a list of EpisodeInfo objects.
 
-        Existing rows are updated (UPSERT).  Used for initial migration
-        when a show has no pipeline.db yet.
+        Private: the only caller is ``versions.seed_show_db``, which rebuilds
+        the version index first. Rows seeded without it read "done" while
+        their versions cannot be opened.
+
+        Seeds rows for episodes the DB does not know yet (a first open, or
+        episodes that appeared on disk later). A row that already exists is
+        left alone: its provenance and flags are newer than a folder scan,
+        and callers check "empty" or "new" outside any transaction, so a
+        concurrent writer may have created it in between.
         """
         now = time.time()
         rows = []
@@ -741,15 +793,7 @@ class PipelineDB:
                     stem, audio_path, transcribed, corrected, indexed, synthesized,
                     translations, provenance, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(stem) DO UPDATE SET
-                    audio_path = excluded.audio_path,
-                    transcribed = excluded.transcribed,
-                    corrected = excluded.corrected,
-                    indexed = excluded.indexed,
-                    synthesized = excluded.synthesized,
-                    translations = excluded.translations,
-                    provenance = excluded.provenance,
-                    updated_at = excluded.updated_at
+                ON CONFLICT(stem) DO NOTHING
                 """,
                 rows,
             )

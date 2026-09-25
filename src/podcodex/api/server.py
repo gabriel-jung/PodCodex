@@ -1,22 +1,14 @@
 """PyInstaller entrypoint for the bundled desktop server.
 
 Runs uvicorn with the FastAPI app object directly (no string import path,
-so the frozen binary doesn't need importlib magic). Sets ML cache env
-vars from ``PODCODEX_DATA_DIR`` *before* any torch/transformers import,
-which the route modules pull in transitively. Then calls
-``bootstrap_for_bundled_sidecar`` to install platform monkey-patches and
-configure loguru.
+so the frozen binary doesn't need importlib magic). Calls
+``bootstrap_for_bundled_sidecar``, which wires the ML cache env vars under
+the data dir before anything imports torch or transformers, installs the
+platform monkey-patches and configures loguru.
 
-This module is intentionally a no-op for the standard dev workflow:
-
-* ``make dev-api`` / ``podcodex-api`` use ``app.py:main()`` and never touch
-  this file.
-* If invoked directly without ``PODCODEX_DATA_DIR`` set (e.g. someone runs
-  ``python -m podcodex.api.server`` from a checkout), the cache wiring
-  short-circuits so the dev's ``~/.cache/huggingface`` etc. are untouched.
-
-The frozen binary always receives ``PODCODEX_DATA_DIR`` from the Tauri
-shell, so production behaviour is unchanged.
+``make dev-api`` / ``podcodex-api`` use ``app.py:main()`` and never touch
+this file. The frozen binary receives ``PODCODEX_DATA_DIR`` from the Tauri
+shell.
 """
 
 from __future__ import annotations
@@ -24,50 +16,6 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-
-
-def _wire_ml_caches() -> None:
-    """Point HF / torch / transformers caches at PODCODEX_DATA_DIR/models.
-
-    The Tauri shell sets ``PODCODEX_DATA_DIR`` to the platform-native app
-    data directory before spawning this binary. When unset (someone ran
-    server.py directly outside the sidecar context) we leave the standard
-    HF/torch caches alone so a dev checkout keeps using ``~/.cache/...``
-    and shared model downloads aren't relocated.
-    """
-    data_dir = os.environ.get("PODCODEX_DATA_DIR")
-    if not data_dir:
-        return  # dev / direct-invocation path: keep system-default caches.
-
-    models_dir = Path(data_dir) / "models"
-    models_dir.mkdir(parents=True, exist_ok=True)
-
-    hub_cache = str(models_dir / "huggingface" / "hub")
-    os.environ.setdefault("HF_HOME", str(models_dir / "huggingface"))
-    os.environ.setdefault("HF_HUB_CACHE", hub_cache)
-    # transformers.utils.hub.cached_file() in some library code paths (e.g.
-    # qwen_tts.from_pretrained) looks up via TRANSFORMERS_CACHE and falls back
-    # to HF_HOME/transformers when unset — a stub dir that misses the files
-    # snapshot_download placed under HF_HUB_CACHE. Point both at the same dir
-    # so library halves can't disagree on where the cache lives.
-    os.environ.setdefault("TRANSFORMERS_CACHE", hub_cache)
-    os.environ.setdefault("TORCH_HOME", str(models_dir / "torch"))
-    os.environ.setdefault(
-        "SENTENCE_TRANSFORMERS_HOME", str(models_dir / "sentence-transformers")
-    )
-
-    # Cap HF Hub network calls so a flaky uplink (VPN, captive portal,
-    # huggingface.co outage) can't stall a cached-model load past 10s. The
-    # default urllib3 read-timeout is unset, so a half-broken TCP can hang
-    # the whole pipeline at startup.
-    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "10")
-
-    # Hard offline opt-in: when the user knows every model is cached, this
-    # bypasses the etag round-trip entirely. Maps to both HF Hub and the
-    # transformers-side flag because the two libraries gate on different vars.
-    if os.environ.get("PODCODEX_HF_OFFLINE", "").strip() in {"1", "true", "yes"}:
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 
 def _redirect_stdio_to_logfile() -> None:
@@ -151,7 +99,6 @@ def _wire_native_binaries() -> None:
 
 
 def main() -> None:
-    _wire_ml_caches()
     _redirect_stdio_to_logfile()
     _wire_native_binaries()
 
@@ -241,7 +188,6 @@ def _handle_mcp_flag() -> None:
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     os.environ.setdefault("TQDM_DISABLE", "1")
 
-    _wire_ml_caches()
     _wire_native_binaries()
 
     from podcodex.bootstrap import bootstrap_for_mcp_stdio

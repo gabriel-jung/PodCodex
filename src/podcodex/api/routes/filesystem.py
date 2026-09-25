@@ -10,7 +10,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
-from podcodex.api.routes._helpers import AUDIO_EXTS, bad_path_component
+from podcodex.api.routes._helpers import bad_path_component
+from podcodex.core.constants import AUDIO_EXTENSIONS
+from podcodex.core.source import audio_stem
 
 router = APIRouter()
 
@@ -76,7 +78,7 @@ def list_directory(
             if e.strip()
         }
     else:
-        ext_filter = AUDIO_EXTS
+        ext_filter = AUDIO_EXTENSIONS
     target = Path(path).expanduser().resolve()
     if not target.is_dir():
         return {
@@ -119,13 +121,7 @@ def list_directory(
                     with os.scandir(item) as it:
                         for child in it:
                             try:
-                                name = child.name
-                                dot = name.rfind(".")
-                                if dot < 0:
-                                    continue
-                                if name[dot:].lower() in AUDIO_EXTS and child.is_file(
-                                    follow_symlinks=False
-                                ):
+                                if audio_stem(child.name) and child.is_file():
                                     has_audio = True
                                     break
                             except OSError:

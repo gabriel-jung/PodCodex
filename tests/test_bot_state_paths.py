@@ -9,24 +9,11 @@ container layer: every ``docker compose up -d --build`` wiped them.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from podcodex.bot.bot import _STATE_FILES, _resolve_state_path
-from podcodex.core import app_paths
-
-
-@pytest.fixture
-def isolated_data_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[Path]:
-    data = tmp_path / "data"
-    monkeypatch.setenv("PODCODEX_DATA_DIR", str(data))
-    app_paths.data_dir.cache_clear()
-    yield data
-    app_paths.data_dir.cache_clear()
 
 
 def test_default_lands_in_the_data_dir(

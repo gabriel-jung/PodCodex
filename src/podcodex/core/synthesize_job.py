@@ -7,12 +7,10 @@ Keeps TTS models (torch) out of the FastAPI process. One entry:
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-from loguru import logger
 
 
 def run_generate(
@@ -38,7 +36,6 @@ def run_generate(
         check_vram,
         fill_narrator_speaker,
         free_vram,
-        normalize_lang,
         real_speakers,
         seg_key,
         tts_segment_filename,
@@ -46,45 +43,25 @@ def run_generate(
     from podcodex.core.constants import TTS_VRAM_MB
     from podcodex.core.synthesize import (
         _sample_key,
-        _text_hash,
         build_clone_prompts,
+        empty_manifest,
         generate_segment,
         load_manifest,
         load_tts_model,
         load_voice_samples,
+        record_segment,
         save_manifest,
         segment_is_current,
     )
-    from podcodex.core.versions import (
-        load_latest as _load_latest,
-        load_version_by_id,
-    )
-    from podcodex.core.source import load_best_source
+    from podcodex.core.source import load_synth_source
 
     progress_cb(0.0, "Loading source segments...")
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    segments: list[dict] | None = None
-    if source_version_id:
-        # User pinned a specific version via the source picker. Resolve and
-        # load it so re-running against a non-latest version stays reproducible.
-        resolved = load_version_by_id(p.base, source_version_id)
-        if resolved:
-            segments, _ = resolved
-        else:
-            logger.warning(
-                "Pinned source version {} unresolved, falling back",
-                source_version_id,
-            )
-    if segments is None and source_lang:
-        segments = _load_latest(p.base, normalize_lang(source_lang))
-    if not segments:
-        try:
-            segments = load_best_source(audio_path, output_dir)
-        except ValueError:
-            pass
-    if not segments:
-        raise ValueError("No source segments found")
+    source, speaker_map = load_synth_source(
+        audio_path, output_dir, source_version_id, source_lang
+    )
+    segments = source.segments
 
     # UI scope filter: drop every segment the user unchecked in the source
     # picker. Uses the shared seg_key helper so keys agree with the frontend.
@@ -103,16 +80,20 @@ def run_generate(
     progress_cb(0.05, "Loading voice samples...")
 
     speakers = real_speakers(segments)
-    voice_samples = load_voice_samples(str(p.base.parent), speakers)
+    voice_samples = load_voice_samples(
+        str(p.base.parent), speakers, speaker_map=speaker_map
+    )
     if not voice_samples:
         raise ValueError("No voice samples found. Extract voices first.")
 
     segments_dir = p.ensure_tts_segments_dir()
-    manifest = (
-        load_manifest(segments_dir)
-        if not force
-        else {"model": None, "language": None, "segments": {}}
-    )
+    if force:
+        # Persist the reset now: the old entries on disk would otherwise keep
+        # vouching for files this run is about to overwrite.
+        manifest = empty_manifest()
+        save_manifest(segments_dir, manifest)
+    else:
+        manifest = load_manifest(segments_dir)
 
     to_generate: list[tuple[int, dict, Path, str]] = []
     generated: list[tuple[int, dict]] = []
@@ -147,7 +128,7 @@ def run_generate(
             not force
             and out_path.exists()
             and segment_is_current(
-                manifest, filename, text, speaker, sample_name, model_size, language
+                manifest, filename, text, sample_name, model_size, language
             )
         ):
             generated.append(
@@ -159,9 +140,6 @@ def run_generate(
         to_generate.append((i, seg, out_path, sample_name))
 
     if not to_generate:
-        manifest["model"] = model_size
-        manifest["language"] = language
-        save_manifest(segments_dir, manifest)
         progress_cb(1.0, "All segments up to date")
         return {"count": 0, "reused": reused, "skipped": total - len(generated)}
 
@@ -170,37 +148,46 @@ def run_generate(
     model = load_tts_model(model_size=model_size)
     clone_prompts = build_clone_prompts(model, voice_samples)
 
-    for i, seg, out_path, sample_name in to_generate:
-        if cancelled():
-            break
-        speaker = seg.get("speaker", "UNK")
-        text = seg.get("text", "").strip()
-        filename = out_path.name
-
-        frac = 0.1 + 0.85 * (i / total)
-        progress_cb(frac, f"Segment {i + 1}/{total} ({speaker})")
-
-        result = generate_segment(
-            model,
-            seg,
-            clone_prompts,
-            out_path,
-            language=language,
-            max_chunk_duration=max_chunk_duration,
-            cancelled=cancelled,
-        )
-        if result:
+    # The manifest is what lets finished segments be reused. Saved at most
+    # every few seconds (a full rewrite per segment is quadratic in writes on
+    # a long episode, and each one re-syncs a synced show folder) and once
+    # more on the way out, crash included. The runner SIGTERMs a cancelled
+    # child after a few seconds, so a kill loses at most the last interval.
+    last_save = time.monotonic()
+    try:
+        for i, seg, out_path, sample_name in to_generate:
+            if cancelled():
+                break
+            speaker = seg.get("speaker", "UNK")
+            progress_cb(
+                0.1 + 0.85 * (i / total), f"Segment {i + 1}/{total} ({speaker})"
+            )
+            result = generate_segment(
+                model,
+                seg,
+                clone_prompts,
+                out_path,
+                language=language,
+                max_chunk_duration=max_chunk_duration,
+                cancelled=cancelled,
+            )
+            if not result:
+                continue
             generated.append((i, result))
-            manifest["segments"][filename] = {
-                "speaker": speaker,
-                "voice_sample": sample_name,
-                "text_hash": _text_hash(text),
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-            }
-
-    manifest["model"] = model_size
-    manifest["language"] = language
-    save_manifest(segments_dir, manifest)
+            record_segment(
+                manifest,
+                out_path.name,
+                speaker=speaker,
+                text=seg.get("text", "").strip(),
+                voice_sample_name=sample_name,
+                model_size=model_size,
+                language=language,
+            )
+            if time.monotonic() - last_save >= _MANIFEST_SAVE_INTERVAL_S:
+                save_manifest(segments_dir, manifest)
+                last_save = time.monotonic()
+    finally:
+        save_manifest(segments_dir, manifest)
 
     # Skip cleanup on cancel: del model + gc can stall 30-60s; OS reaps faster.
     if not cancelled():
@@ -210,3 +197,6 @@ def run_generate(
 
     new_count = len(to_generate)
     return {"count": new_count, "reused": reused, "skipped": total - len(generated)}
+
+
+_MANIFEST_SAVE_INTERVAL_S = 5.0

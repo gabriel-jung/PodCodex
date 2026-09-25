@@ -10,10 +10,7 @@ first transcription run will crash inside torch with:
 CUDA error: no kernel image is available for execution on the device
 ```
 
-PodCodex's bootstrap kernel guard catches this on startup, sets
-`PODCODEX_DEVICE=cpu`, and logs a warning, so the app stays usable in
-CPU mode without manual intervention. To actually use the GPU, follow
-one of the install paths below.
+PodCodex's kernel guard (`core/device.py`) catches this before the first GPU use (at startup in dev), sets `PODCODEX_DEVICE=cpu`, and logs a warning, so the app stays usable in CPU mode without manual intervention. To actually use the GPU, follow one of the install paths below.
 
 ---
 
@@ -54,7 +51,7 @@ There is no Pascal path here. The in-app GPU activation downloads a frozen PyIns
 Two supported options for bundle users:
 
 - **Use the GPU:** install from source instead, following path A above. It is the only way to get cu126 wheels onto a Pascal card.
-- **Stay on the bundle:** run in CPU mode. The bootstrap kernel guard already detects the missing kernels and sets `PODCODEX_DEVICE=cpu` for you, so the installed app keeps working without any change. See the CPU fallback section below for what to expect.
+- **Stay on the bundle:** run in CPU mode. The kernel guard already detects the missing kernels and sets `PODCODEX_DEVICE=cpu` for you, so the installed app keeps working without any change. See the CPU fallback section below for what to expect.
 
 ---
 

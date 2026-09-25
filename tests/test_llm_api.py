@@ -1,4 +1,4 @@
-"""Resilience of the hosted-API LLM path (`core/_utils.run_api`).
+"""Resilience of the hosted-API LLM path (`core/llm.run_api`).
 
 A long episode is split into many batches and every one already completed is
 lost when a call raises out of the loop, so the two things pinned here are
@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from podcodex.core import _utils
+from podcodex.core import llm
 
 
 def _segments(n: int = 2) -> list[dict]:
@@ -78,12 +78,18 @@ def api(monkeypatch):
     # run_api imports `time` inside the retry helper, so patch the module.
     monkeypatch.setattr(time, "sleep", slept.append)
 
-    def run(outcomes, **kwargs):
+    def run(outcomes, *, sink: list[dict] | None = None, client_kwargs=None, **kwargs):
         client = _FakeClient(outcomes)
-        monkeypatch.setattr(openai, "OpenAI", lambda **_kw: client)
+
+        def make_client(**kw):
+            if client_kwargs is not None:
+                client_kwargs.update(kw)
+            return client
+
+        monkeypatch.setattr(openai, "OpenAI", make_client)
         segs = kwargs.pop("segments", _segments())
-        sink: list[dict] = []
-        out = _utils.run_api(
+        sink = [] if sink is None else sink
+        out = llm.run_api(
             segs,
             "system",
             "some-model",
@@ -107,7 +113,7 @@ def test_a_rate_limit_is_retried_and_the_run_survives(api):
     )
 
     assert calls.calls == 2
-    assert slept == [_utils.API_BACKOFF_BASE_S**0]
+    assert slept == [llm.API_BACKOFF_BASE_S**0]
     assert [s["text"] for s in out] == [s["text"] for s in segs]
     assert [b["status"] for b in sink] == ["ok"]
 
@@ -139,22 +145,95 @@ def test_a_retry_after_beyond_the_cap_is_clamped(api):
         segments=segs,
     )
 
-    assert slept == [_utils.API_RETRY_AFTER_MAX_S]
+    assert slept == [llm.API_RETRY_AFTER_MAX_S]
 
 
 def test_retries_stop_at_the_attempt_ceiling(api):
+    """A one-batch run whose only batch fails is an error, not a saved copy
+    of the source, and the failed batch is still on record."""
     import openai
 
-    with pytest.raises(openai.RateLimitError):
-        api([_status_error(openai.RateLimitError, 429)] * _utils.API_MAX_ATTEMPTS)
+    sink: list[dict] = []
+    with pytest.raises(llm.LLMBatchError) as exc:
+        api(
+            [_status_error(openai.RateLimitError, 429)] * llm.API_MAX_ATTEMPTS,
+            sink=sink,
+        )
+    assert not exc.value.permanent
+    assert [b["status"] for b in sink] == ["rejected"]
+    assert sink[0]["reason"].startswith("provider error")
 
 
-def test_a_client_error_raises_on_the_first_attempt(api):
-    """A bad key or an unknown model fails the same way three times."""
+def test_a_bad_key_stops_the_run_on_the_first_attempt(api):
+    """A 401 fails every batch the same way: no retries, no second batch."""
     import openai
 
-    with pytest.raises(openai.BadRequestError):
-        api([_status_error(openai.BadRequestError, 400)] * 3)
+    sink: list[dict] = []
+    with pytest.raises(llm.LLMBatchError) as exc:
+        api([_status_error(openai.AuthenticationError, 401)] * 3, sink=sink)
+    assert exc.value.permanent
+    assert isinstance(exc.value.__cause__, openai.AuthenticationError)
+    assert len(sink) == 1
+
+
+def test_a_content_400_rejects_only_its_batch(api):
+    """Context length or a content filter is about one batch; stopping the
+    run there threw away every batch already paid for."""
+    import json
+
+    import openai
+
+    segs = [
+        {"text": f"line {i}", "speaker": "A", "start": i * 100.0, "end": i * 100.0 + 1}
+        for i in range(2)
+    ]
+    out, sink, calls, _slept = api(
+        [
+            _status_error(openai.BadRequestError, 400),
+            _completion(json.dumps([{"text": "fixed 1"}])),
+        ],
+        segments=segs,
+        batch_minutes=1,
+    )
+
+    assert [s["text"] for s in out] == ["line 0", "fixed 1"]
+    assert [b["status"] for b in sink] == ["rejected", "ok"]
+    assert calls.calls == 2
+
+
+def test_a_failed_batch_keeps_the_batches_around_it(api):
+    """Three batches, the middle one exhausts its retries: the run finishes
+    with batches 1 and 3 processed and batch 2 kept as source, recorded as
+    rejected so the manual-fix flow can pick it up."""
+    import json
+
+    import openai
+
+    segs = [
+        {"text": f"line {i}", "speaker": "A", "start": i * 100.0, "end": i * 100.0 + 1}
+        for i in range(3)
+    ]
+
+    def reply(text: str):
+        return _completion(json.dumps([{"text": text}]))
+
+    outcomes = [
+        reply("fixed 0"),
+        *[_status_error(openai.InternalServerError, 503)] * llm.API_MAX_ATTEMPTS,
+        reply("fixed 2"),
+    ]
+    out, sink, _calls, _slept = api(outcomes, segments=segs, batch_minutes=1)
+
+    assert [s["text"] for s in out] == ["fixed 0", "line 1", "fixed 2"]
+    assert [b["status"] for b in sink] == ["ok", "rejected", "ok"]
+
+
+def test_the_sdk_does_not_retry_underneath_our_ladder(api):
+    """SDK retries inside our attempts multiplied requests (3 x 3)."""
+    kwargs: dict = {}
+    api([_good_response(_segments())], client_kwargs=kwargs)
+    assert kwargs["max_retries"] == 0
+    assert kwargs["timeout"].read == llm.API_READ_TIMEOUT_S
 
 
 def test_a_server_error_is_retried(api):
@@ -188,14 +267,19 @@ def test_a_null_content_rejects_the_batch_instead_of_raising(api):
     assert [b["status"] for b in sink] == ["rejected"]
 
 
-def test_a_missing_key_names_the_provider_variables(monkeypatch):
-    """No generic `API_KEY` fallback: a name that common is very likely
-    already set in the shell for something else, and it was sent to whatever
-    base_url the profile carried."""
+def test_a_missing_key_never_falls_back_to_the_environment(monkeypatch):
+    """Keys come from the pool only: a generic `API_KEY` or a provider
+    variable in the shell is never sent to whatever base_url the profile
+    carries."""
     monkeypatch.setenv("API_KEY", "unrelated-shell-value")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "also-unrelated")
 
-    with pytest.raises(ValueError) as exc:
-        _utils.run_api(_segments(), "system", "m", "https://api.example/v1", None)
-
-    assert "OPENAI_API_KEY" in str(exc.value)
+    with pytest.raises(ValueError, match="No API key"):
+        llm.run_api(
+            _segments(),
+            "system",
+            "m",
+            "https://api.example/v1",
+            None,
+            provider="openai",
+        )

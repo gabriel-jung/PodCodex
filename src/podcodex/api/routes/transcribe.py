@@ -17,6 +17,7 @@ from podcodex.api.routes._helpers import (
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.api.routes._versions import register_version_routes
 from podcodex.core._utils import AudioPaths
+from podcodex.core.constants import DEFAULT_WHISPER_MODEL
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import save_version
 
@@ -121,7 +122,7 @@ def upload_transcript(
     output_dir: str | None = Query(None),
 ) -> dict:
     """Upload a transcript file (JSON, SRT, or VTT) and save as raw transcript."""
-    from podcodex.core._utils import srt_to_segments, vtt_to_segments
+    from podcodex.core.subtitles import srt_to_segments, vtt_to_segments
 
     require_audio_or_output(audio_path, output_dir)
     content = file.file.read()
@@ -213,7 +214,7 @@ def import_transcript(
     """Import a transcript from an existing file on disk (VTT, SRT, or JSON)."""
     from pathlib import Path
 
-    from podcodex.core._utils import srt_to_segments, vtt_to_segments
+    from podcodex.core.subtitles import srt_to_segments, vtt_to_segments
 
     require_audio_or_output(audio_path, output_dir)
     src = Path(file_path)
@@ -274,7 +275,7 @@ def import_transcript(
 class TranscribeRequest(BaseModel):
     audio_path: str
     output_dir: str | None = None
-    model_size: str = "large-v3-turbo"
+    model_size: str = DEFAULT_WHISPER_MODEL
     language: str = ""
     batch_size: int | None = None
     force: bool = False

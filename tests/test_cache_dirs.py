@@ -8,23 +8,11 @@ compose volume, so BGE-M3 was re-downloaded on every recreate.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from podcodex.core import app_paths, cache
-
-
-@pytest.fixture
-def isolated_data_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[Path]:
-    monkeypatch.delenv("PODCODEX_CACHE_DIR", raising=False)
-    monkeypatch.setenv("PODCODEX_DATA_DIR", str(tmp_path))
-    app_paths.data_dir.cache_clear()
-    yield tmp_path
-    app_paths.data_dir.cache_clear()
 
 
 def test_cache_dir_lives_under_the_data_dir(isolated_data_dir: Path) -> None:
@@ -54,19 +42,20 @@ def test_explicit_override_still_wins(
     assert cache.get_cache_dir() == override
 
 
-def test_hf_cache_vars_all_point_at_one_hub(
+def test_hf_cache_getters_are_pure_and_agree(
     isolated_data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """HF_HOME, HF_HUB_CACHE and TRANSFORMERS_CACHE must not split-brain."""
+    """wire_model_caches is the single env setter; the getters only name
+    the dirs, and the hub dir is what loaders pass explicitly."""
+    import os
+
     for var in ("HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE"):
         monkeypatch.delenv(var, raising=False)
-    import os
 
     hf_dir = cache.get_hf_cache_dir()
     assert hf_dir == isolated_data_dir / "models" / "huggingface"
-    assert os.environ["HF_HOME"] == str(hf_dir)
-    assert os.environ["HF_HUB_CACHE"] == str(hf_dir / "hub")
-    assert os.environ["TRANSFORMERS_CACHE"] == str(hf_dir / "hub")
+    assert cache.get_hf_hub_dir() == hf_dir / "hub"
+    assert "HF_HOME" not in os.environ
 
 
 HF_VARS = ("HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE")
@@ -82,39 +71,85 @@ def _hf_env(monkeypatch: pytest.MonkeyPatch, setter) -> dict[str, str]:
     return {var: os.environ.get(var, "") for var in HF_VARS}
 
 
-def test_both_hf_cache_setters_agree(
+ML_VARS = (*HF_VARS, "TORCH_HOME", "SENTENCE_TRANSFORMERS_HOME")
+
+
+def test_wire_model_caches_sets_the_whole_layout(
     isolated_data_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``get_hf_cache_dir`` and the sidecar's ``_wire_ml_caches`` compute the
-    ``<data_dir>/models/huggingface`` layout independently. If they ever
-    diverge, ``snapshot_download`` and the transformers loader look in
-    different directories and every model appears to be missing."""
-    from podcodex.api.server import _wire_ml_caches
+    """One setter for the layout: HF vars agree with ``get_hf_cache_dir`` and
+    torch / sentence-transformers sit next to them under the model cache."""
+    import os
 
-    from_core = _hf_env(monkeypatch, cache.get_hf_cache_dir)
-    from_sidecar = _hf_env(monkeypatch, _wire_ml_caches)
+    for var in ML_VARS:
+        monkeypatch.delenv(var, raising=False)
+    cache.wire_model_caches()
 
-    assert from_core == from_sidecar
-    assert from_core["HF_HOME"] == str(isolated_data_dir / "models" / "huggingface")
-    assert from_core["HF_HUB_CACHE"] == from_core["TRANSFORMERS_CACHE"]
-    assert from_core["HF_HUB_CACHE"] == str(
-        isolated_data_dir / "models" / "huggingface" / "hub"
+    models = isolated_data_dir / "models"
+    assert os.environ["HF_HOME"] == str(models / "huggingface")
+    assert os.environ["HF_HUB_CACHE"] == str(models / "huggingface" / "hub")
+    assert os.environ["TRANSFORMERS_CACHE"] == os.environ["HF_HUB_CACHE"]
+    assert os.environ["TORCH_HOME"] == str(models / "torch")
+    assert os.environ["SENTENCE_TRANSFORMERS_HOME"] == str(
+        models / "sentence-transformers"
     )
 
 
-def test_sidecar_cache_wiring_is_a_noop_without_a_data_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_wire_model_caches_follows_the_cache_override(
+    isolated_data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A dev checkout running server.py directly keeps its system HF cache."""
+    """PODCODEX_CACHE_DIR moves every cache, not only the HF half."""
     import os
 
-    from podcodex.api.server import _wire_ml_caches
-
-    monkeypatch.delenv("PODCODEX_DATA_DIR", raising=False)
-    for var in HF_VARS:
+    for var in ML_VARS:
         monkeypatch.delenv(var, raising=False)
-    _wire_ml_caches()
-    assert not any(os.environ.get(var) for var in HF_VARS)
+    override = tmp_path / "elsewhere"
+    monkeypatch.setenv("PODCODEX_CACHE_DIR", str(override))
+    cache.wire_model_caches()
+    for var in ML_VARS:
+        assert os.environ[var].startswith(str(override)), var
+
+
+def test_wire_model_caches_keeps_preset_values(
+    isolated_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Tauri shell presets the hub and torch vars; they win."""
+    import os
+
+    for var in ML_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HF_HUB_CACHE", "/preset/hub")
+    cache.wire_model_caches()
+    assert os.environ["HF_HUB_CACHE"] == "/preset/hub"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "bootstrap_for_bundled_sidecar",
+        "bootstrap_for_mcp_stdio",
+        "bootstrap_for_dev",
+        "bootstrap_for_subprocess_child",
+    ],
+)
+def test_every_bootstrap_wires_caches_before_anything_else(
+    entry: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """huggingface_hub reads the cache vars once, at import, and the eager
+    patches import transformers. Wiring after any other bootstrap step sends
+    pyannote and Qwen3-TTS weights to ~/.cache/huggingface."""
+    from podcodex import bootstrap
+
+    calls: list[str] = []
+    for name in dir(bootstrap):
+        if name.startswith("_") and callable(getattr(bootstrap, name)):
+            if name in {"_get_deferred_finder"}:
+                continue
+            monkeypatch.setattr(
+                bootstrap, name, lambda *a, _n=name, **k: calls.append(_n)
+            )
+    getattr(bootstrap, entry)()
+    assert calls and calls[0] == "_wire_model_caches", calls
 
 
 def test_delete_cached_model_removes_a_hub_layout_model(
@@ -157,3 +192,16 @@ def test_delete_cached_model_refuses_a_traversing_id(isolated_data_dir: Path) ->
     assert cache.delete_cached_model("../sentence-transformers") is False
     assert cache.delete_cached_model("hub/../../sentence-transformers") is False
     assert (outside / "keep.txt").exists()
+
+
+@pytest.mark.parametrize("model_id", ["..", ".", "hub", "../x", "", "models--a/../.."])
+def test_delete_cached_model_refuses_anything_but_one_model_dir(
+    isolated_data_dir: Path, model_id: str
+) -> None:
+    """``hub / ".."`` passed the old parent check and would have removed the
+    whole HuggingFace cache."""
+    hf_root = cache.get_hf_cache_dir()
+    (hf_root / "hub" / "models--x--y").mkdir(parents=True)
+
+    assert cache.delete_cached_model(model_id) is False
+    assert (hf_root / "hub" / "models--x--y").is_dir()

@@ -33,6 +33,16 @@ export default function OllamaStatus({ data, isFetching, onRefresh }: OllamaStat
               ? `Connected, ${countLabel(modelCount, "model")}`
               : "Connected, no models pulled yet"}
           </p>
+        ) : data?.problem === "port_taken" ? (
+          <p>
+            <span className="font-medium">
+              Another program is using {data.host}, so Ollama cannot start there.
+            </span>{" "}
+            <span className="text-muted-foreground">
+              Move that program, or run Ollama on another port and set OLLAMA_HOST (see the
+              README, Local LLM), then refresh.
+            </span>
+          </p>
         ) : (
           <p>
             <span className="font-medium">Ollama not running.</span>{" "}

@@ -22,10 +22,9 @@ RUN uv pip install --system --no-cache \
 ENV PODCODEX_DATA_DIR=/root/.local/share/podcodex
 
 # Pre-download BGE-M3 into that cache so the first search after a fresh
-# `docker compose up` does not wait on a ~2.5 GB fetch. get_hf_cache_dir() is
-# the same facility the embedder calls at runtime, so build and run cannot
-# disagree on the path; it has to run before sentence_transformers imports
-# huggingface_hub, which reads the cache env vars into module constants.
-RUN python -c "from podcodex.core.cache import get_hf_cache_dir; get_hf_cache_dir(); from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"
+# `docker compose up` does not wait on a ~2.5 GB fetch. get_hf_hub_dir() is
+# the cache dir the BGE-M3 embedder passes at runtime, so build and run
+# cannot disagree on the path.
+RUN python -c "from huggingface_hub import snapshot_download; from podcodex.core.cache import get_hf_hub_dir; snapshot_download('BAAI/bge-m3', cache_dir=str(get_hf_hub_dir()))"
 
 ENTRYPOINT ["podcodex-bot"]

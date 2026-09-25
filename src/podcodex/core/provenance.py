@@ -14,53 +14,44 @@ raised ``ModuleNotFoundError: fastapi``.
 
 from __future__ import annotations
 
-from loguru import logger
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from podcodex.core.source import SourceRef, SourceVersion
+
+
+def _source_provenance(
+    audio_path: str | None,
+    output_dir: str | None,
+    source: SourceRef | SourceVersion | None,
+) -> dict | None:
+    """Provenance of the version a step consumed, or None when unknown."""
+    if source is None or not (audio_path or output_dir):
+        return None
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.versions import get_version_provenance
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    return get_version_provenance(p.base, source.version_id, source.step)
 
 
 def _build_source_chain(
-    audio_path: str | None,
-    output_dir: str | None,
-    step: str,
-    model: str | None,
-    mode: str | None,
+    input_prov: dict | None, step: str, model: str | None, mode: str | None
 ) -> list[str] | None:
-    """Build a source chain by looking up the input version's chain and appending this step.
+    """The input version's chain with this step appended.
 
-    Returns e.g. ["youtube-subtitles", "ollama/qwen3:4b", "openai/gpt-4"].
+    Returns e.g. ["youtube-subtitles", "ollama/qwen3:4b", "openai/gpt-4"], or
+    None when the input carries no chain.
     """
-    try:
-        from podcodex.core._utils import AudioPaths
-        from podcodex.core.versions import get_latest_provenance
-
-        p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-
-        # Find the input version — walk backwards through the pipeline
-        input_prov = None
-        if step == "corrected":
-            input_prov = get_latest_provenance(p.base, "transcript")
-        else:
-            # Translate and others: try corrected first, then transcript
-            input_prov = get_latest_provenance(
-                p.base, "corrected"
-            ) or get_latest_provenance(p.base, "transcript")
-
-        # Get existing chain or start from the input's source
-        prev_chain: list[str] = []
-        if input_prov:
-            input_params = input_prov.get("params") or {}
-            prev_chain = list(input_params.get("source_chain", []))
-            if not prev_chain:
-                # Legacy: build chain from source field
-                source = input_params.get("source")
-                if source:
-                    prev_chain = [source]
-
-        # Append this step's identifier
-        step_id = model or mode or step
-        return prev_chain + [step_id] if prev_chain else None
-    except Exception:
-        logger.opt(exception=True).debug("source chain build failed for {}", audio_path)
+    if not input_prov:
         return None
+    input_params = input_prov.get("params") or {}
+    prev_chain = list(input_params.get("source_chain", []))
+    if not prev_chain and input_params.get("source"):
+        # Legacy: build chain from source field
+        prev_chain = [input_params["source"]]
+    step_id = model or mode or step
+    return prev_chain + [step_id] if prev_chain else None
 
 
 def transcribe_prov_params(
@@ -104,12 +95,14 @@ def build_provenance(
     manual_edit: bool = False,
     audio_path: str | None = None,
     output_dir: str | None = None,
+    source: SourceRef | SourceVersion | None = None,
 ) -> dict:
     """Build a standard provenance dict for version tracking.
 
-    When *audio_path* or *output_dir* is provided and the step is not
-    ``transcript``, a ``source_chain`` is built by looking up the input
-    version's chain and appending this step's model/mode identifier.
+    *source* is the version the step consumed (``core.source.load_source``
+    returns it). When given, the input's ``source_chain`` is extended with
+    this step's model/mode identifier; the chain then describes what was
+    actually read, not whichever version is newest by now.
     """
     params = dict(params) if params else {}
     # A hand-edited version is "validated" by definition, and the two flags
@@ -119,13 +112,12 @@ def build_provenance(
     # each caller, which is how /translate/save-manual drifted.
     if manual_edit:
         ptype = "validated"
-    if (
-        step != "transcript"
-        and "source_chain" not in params
-        and (audio_path or output_dir)
-    ):
+    if step != "transcript" and "source_chain" not in params:
         chain = _build_source_chain(
-            audio_path, output_dir, step, model, params.get("llm_mode")
+            _source_provenance(audio_path, output_dir, source),
+            step,
+            model,
+            params.get("llm_mode"),
         )
         if chain:
             params["source_chain"] = chain
@@ -167,18 +159,17 @@ def enrich_correct_kwargs(
     audio_path: str | None,
     output_dir: str | None,
     fallback_source_lang: str,
+    source: SourceRef | SourceVersion,
 ) -> dict:
-    """Look up transcript provenance and return kwargs for correct_segments.
+    """Correct-prompt kwargs from the provenance of the transcript being corrected.
 
     Returns dict with ``source_lang``, ``engine``, ``engine_model``.
     """
-    from podcodex.core._utils import AudioPaths
     from podcodex.core.correct import transcript_provenance_info
-    from podcodex.core.versions import get_latest_provenance
 
-    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    tc_prov = get_latest_provenance(p.base, "transcript")
-    tc_info = transcript_provenance_info(tc_prov)
+    tc_info = transcript_provenance_info(
+        _source_provenance(audio_path, output_dir, source)
+    )
     return {
         "source_lang": tc_info["language"] or fallback_source_lang,
         "engine": tc_info["source"],

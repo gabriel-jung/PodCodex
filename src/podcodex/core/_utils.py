@@ -5,132 +5,20 @@ Heavy libraries (torch, pandas) are imported lazily inside functions
 so this module stays cheap to import at the top level.
 """
 
+import functools
 import gc
 import json
 import os
 import re
+import stat
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable, Container
-from typing import TYPE_CHECKING, Self
+from collections.abc import Container
+from typing import Self
 
 from loguru import logger
-
-if TYPE_CHECKING:
-    from podcodex.rag.hit import SpeakerTurn
-
-
-DEFAULT_OLLAMA_HOST = "http://localhost:11434"
-# Knobs for the schema-constrained correction call. See `run_ollama`.
-OLLAMA_READ_TIMEOUT_S = 600.0
-OLLAMA_CONNECT_TIMEOUT_S = 10.0
-OLLAMA_KEEP_ALIVE = "10m"
-OLLAMA_TEMPERATURE = 0.1
-OLLAMA_NUM_PREDICT_MAX = 8192
-OLLAMA_NUM_CTX_MAX = 16384
-
-# Bounded retry for the hosted-API path, matching `run_ollama`'s shape. A
-# long episode is many batches and every one already completed is lost when
-# a call raises out of the loop, so a single provider hiccup used to throw
-# away a whole paid run.
-API_MAX_ATTEMPTS = 3
-API_BACKOFF_BASE_S = 2.0
-# Ceiling on a provider-supplied Retry-After. Some return minutes, which is
-# longer than a user will sit in front of a progress bar.
-API_RETRY_AFTER_MAX_S = 60.0
-
-
-def ollama_host() -> str:
-    """Return the Ollama daemon URL, honoring the ``OLLAMA_HOST`` env var.
-
-    Centralizes host resolution so both the pipeline (``run_ollama``) and
-    the API health check route resolve the same target.
-    """
-    return os.getenv("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST
-
-
-def list_pulled_ollama_models(host: str | None = None) -> list[str]:
-    """Return sorted list of model tags pulled into the local Ollama daemon.
-
-    Shared by the API health route and the pipeline's pre-flight check so
-    both stay in lock-step on how the daemon's model list is fetched.
-    """
-    from ollama import Client
-
-    resp = Client(host=host or ollama_host()).list()
-    return sorted(m.model for m in resp.models if m.model)
-
-
-def correction_schema(n_items: int) -> dict:
-    """JSON Schema for one batch of N correction items.
-
-    Used by ``run_ollama`` and the ``scripts/debug_ollama_output.py`` probe.
-    Constrains output to a JSON array of exactly N objects, each with a
-    single ``text`` field, which is what stops small models from emitting
-    a wrapping object or looping garbage when given ``format=<schema>``.
-    """
-    return {
-        "type": "array",
-        "minItems": n_items,
-        "maxItems": n_items,
-        "items": {
-            "type": "object",
-            "properties": {"text": {"type": "string"}},
-            "required": ["text"],
-            "additionalProperties": False,
-        },
-    }
-
-
-def _ollama_token_budget(n_items: int) -> tuple[int, int]:
-    """Pick ``num_predict`` and ``num_ctx`` for a batch of N correction items.
-
-    Schema-constrained sampling can spin forever without a num_predict cap.
-    Ollama's default ``num_ctx`` is 4096 regardless of the model card, so
-    we round the (prompt + output) budget up to the next power of two and
-    cap to keep KV cache within typical consumer VRAM.
-    """
-    num_predict = min(OLLAMA_NUM_PREDICT_MAX, n_items * 120 + 64)
-    rough_budget = 800 + n_items * 140 + num_predict
-    num_ctx = max(4096, 1 << max(0, rough_budget - 1).bit_length())
-    return num_predict, min(num_ctx, OLLAMA_NUM_CTX_MAX)
-
-
-def _warn_if_ollama_too_old(host: str) -> None:
-    """Structured-output ``format=<schema>`` requires Ollama >= 0.5; older
-    daemons silently ignore it and the model emits whatever shape it likes."""
-    import httpx
-
-    try:
-        version = (
-            httpx.get(f"{host}/api/version", timeout=5.0).json().get("version", "")
-        )
-        # Strip prerelease suffix (e.g. "0.5.0-rc1") before int-parsing.
-        major, minor = (int(p.split("-")[0]) for p in version.split(".")[:2])
-        if (major, minor) < (0, 5):
-            logger.warning(
-                f"Ollama daemon version {version} predates structured-output "
-                "support (>=0.5). Schema-constrained decoding will be ignored."
-            )
-    except Exception as e:
-        logger.debug(f"Could not read Ollama version: {e}")
-
-
-def _warn_if_model_unpulled(client, model: str) -> None:
-    """Pre-flight check so a typo'd model name fails before the first batch
-    instead of mid-pipeline with a confusing 404."""
-    try:
-        pulled = {m.model for m in client.list().models if m.model}
-        if model not in pulled:
-            logger.warning(
-                f"Model {model!r} not in pulled list {sorted(pulled)}; "
-                "first chat call will likely 404."
-            )
-    except Exception as e:
-        logger.debug(f"Could not list pulled models: {e}")
-
 
 # ──────────────────────────────────────────────
 # Path resolution
@@ -156,6 +44,20 @@ VIRTUAL_AUDIO_SUFFIX = ".virtual"
 def virtual_audio_path(output_dir: Path | str) -> str:
     """The batch/lock key for an episode with an output dir but no audio."""
     return f"{str(output_dir).rstrip('/\\')}{VIRTUAL_AUDIO_SUFFIX}"
+
+
+def episode_base(show_dir: Path, stem: str) -> Path:
+    """The version root of an episode: ``{show}/{stem}/{stem}``.
+
+    With :func:`show_dir_of`, the one definition of the episode layout for
+    code that holds a show folder and a stem rather than an audio path.
+    """
+    return Path(show_dir) / stem / stem
+
+
+def show_dir_of(base: Path) -> Path:
+    """The show folder of an episode version root (see :func:`episode_base`)."""
+    return base.parent.parent
 
 
 @dataclass
@@ -211,7 +113,7 @@ class AudioPaths:
             base = root / audio_path.stem
         elif output_dir:
             root = Path(output_dir)
-            base = root / root.name
+            base = episode_base(root.parent, root.name)
         else:
             raise ValueError("Either audio_path or output_dir must be provided")
         base.parent.mkdir(parents=True, exist_ok=True)
@@ -222,7 +124,7 @@ class AudioPaths:
     @property
     def show_dir(self) -> Path:
         """Show-level directory (parent of the episode output dir)."""
-        return self.base.parent.parent
+        return show_dir_of(self.base)
 
     # — Synthesis —
 
@@ -274,7 +176,7 @@ def is_unattributed(speaker: str | None, declared: Container[str] = ()) -> bool:
 
     NARRATOR_SPEAKER is a storage placeholder, not an identification: it is
     what a transcript gets with diarization off, and it doubles as the voice
-    sample key on disk (see synthesize.fill_narrator_speaker), which is why
+    sample key on disk (see fill_narrator_speaker), which is why
     it stays in the data. Output boundaries should treat it exactly like the
     empty label and attribute nothing.
 
@@ -371,9 +273,6 @@ def iso_to_language(code: str) -> str:
 DEFAULT_MAX_GAP = 10.0
 DEFAULT_BATCH_MINUTES = 15.0
 
-# LLM temperature for deterministic output in correct / translate.
-DEFAULT_TEMPERATURE = 0
-
 
 # ──────────────────────────────────────────────
 # I/O helpers
@@ -392,11 +291,6 @@ def write_parquet(path: Path, records: list[dict]) -> None:
     import pandas as pd
 
     atomic_write(path, lambda p: pd.DataFrame(records).to_parquet(p, index=False))
-
-
-def write_json(path: Path, data) -> None:
-    """Write data as formatted JSON atomically."""
-    write_json_atomic(path, data)
 
 
 # ──────────────────────────────────────────────
@@ -524,9 +418,26 @@ def parse_time(value: str | int | float) -> float:
 
 def bad_path_component(name: str) -> bool:
     """True when *name* is unusable as a single path component: empty,
-    traversal (".", ".."), or carrying a separator. Single facility for
-    every folder/file-name safety check (API routes, bundle import)."""
-    return not name or "/" in name or "\\" in name or name in {".", ".."}
+    traversal (".", ".."), carrying a separator, or a Windows drive prefix.
+    Single facility for every folder/file-name safety check (API routes,
+    bundle import).
+
+    The drive check matters on Windows only, but is applied everywhere since
+    a bundle is written on one machine and imported on another: pathlib
+    joins a drive-relative name like ``C:..`` or ``D:foo`` by replacing or
+    climbing out of the base (``shows / "C:.."`` is the shows folder's
+    parent), which no separator check sees. A colon anywhere else (a title
+    like "Episode 3: the return") stays legal.
+    """
+    from pathlib import PureWindowsPath
+
+    return (
+        not name
+        or "/" in name
+        or "\\" in name
+        or name in {".", ".."}
+        or bool(PureWindowsPath(name).drive)
+    )
 
 
 _UNSAFE_FILENAME_CHARS = re.compile(r'[/\\:*?"<>|\[\]\x00-\x1f]')
@@ -552,12 +463,37 @@ def speaker_file_slug(speaker: str) -> str:
     return _UNSAFE_FILENAME_CHARS.sub("_", speaker or "")
 
 
+# Every PodCodex temp file starts with this, and startup recovery reaps
+# exactly this pattern (core/recovery.py). Write temp files through
+# atomic_write or name them with temp_sibling so none escapes the reaper.
+TEMP_PREFIX = ".tmp_"
+
+
+def temp_sibling(path: Path) -> Path:
+    """A fixed temp name next to *path* that startup recovery will reap."""
+    return path.with_name(f"{TEMP_PREFIX}{path.name}")
+
+
+@functools.cache
+def _default_file_mode() -> int:
+    """The mode a plain ``open(path, "w")`` would give a new file.
+
+    ``os.umask`` can only be read by setting it, so it is read once. The
+    first call happens on the first write, long after startup has settled.
+    """
+    mask = os.umask(0o022)
+    os.umask(mask)
+    return 0o666 & ~mask
+
+
 def atomic_write(
     path: Path,
     writer_fn,
     *,
-    prefix: str = ".tmp_",
     suffix: str = "",
+    tag: str = "",
+    durable: bool = True,
+    exclusive: bool = False,
 ) -> None:
     """Write to ``path`` atomically via same-dir temp file + ``os.replace``.
 
@@ -565,32 +501,67 @@ def atomic_write(
     exception the temp file is removed so the destination is never a
     half-written or zero-filled stub visible to readers (cloud-sync
     clients, other processes).
+
+    Args:
+        suffix:    temp file suffix (some writers pick the format from it).
+        tag:       recognisable part of the temp name, after ``TEMP_PREFIX``.
+        durable:   fsync the temp file before the rename. Without it a power
+                   loss can persist the rename ahead of the data and leave
+                   exactly the zero-filled file this exists to prevent. Off
+                   only for output that is cheap to regenerate.
+        exclusive: publish only if *path* does not exist yet (hard link
+                   instead of replace); raises FileExistsError otherwise.
     """
-    import os
     import tempfile
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=suffix)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f"{TEMP_PREFIX}{tag}", suffix=suffix
+    )
     os.close(fd)
     tmp_path = Path(tmp_name)
     try:
+        # mkstemp creates the file 0600, and os.replace publishes that mode:
+        # every episode file would become owner-only, unreadable from a
+        # Samba share or a container running as another user. Keep the mode
+        # the file already has (0600 secrets stay 0600), else the umask
+        # default. A writer may still chmod the temp file itself.
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            mode = _default_file_mode()
+        os.chmod(tmp_path, mode)
         writer_fn(tmp_path)
-        os.replace(tmp_path, path)
-    except Exception:
-        if tmp_path.exists():
-            tmp_path.unlink()
-        raise
+        if durable:
+            with tmp_path.open("rb+") as f:
+                os.fsync(f.fileno())
+        if not exclusive:
+            os.replace(tmp_path, path)
+            return
+        try:
+            os.link(tmp_path, path)
+        except FileExistsError:
+            raise
+        except OSError:
+            # No hard links on this filesystem (FAT, some network shares).
+            if path.exists():
+                raise FileExistsError(path) from None
+            os.replace(tmp_path, path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
-def write_json_atomic(path: Path, data, *, prefix: str = ".tmp_") -> None:
+def write_json_atomic(
+    path: Path, data, *, tag: str = "", sort_keys: bool = False
+) -> None:
     """Write ``data`` as formatted JSON atomically."""
 
     def _write(p: Path) -> None:
         with p.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            json.dump(data, f, indent=2, ensure_ascii=False, sort_keys=sort_keys)
             f.write("\n")
 
-    atomic_write(path, _write, prefix=prefix, suffix=".tmp")
+    atomic_write(path, _write, suffix=".tmp", tag=tag)
 
 
 def wav_duration(path: Path) -> float:
@@ -605,18 +576,10 @@ def wav_duration(path: Path) -> float:
 
 def default_batch_size() -> int:
     """Return 16 if total VRAM > 10 GB, else 8."""
-    from podcodex.core.device import cuda_available
+    from podcodex.core.device import vram_bytes
 
-    try:
-        if cuda_available():
-            import torch
-
-            _, total = torch.cuda.mem_get_info()
-            if total > 10 * 1024 * 1024 * 1024:
-                return 16
-    except Exception:
-        pass
-    return 8
+    vram = vram_bytes()
+    return 16 if vram and vram[1] > 10 * 1024 * 1024 * 1024 else 8
 
 
 def free_vram() -> None:
@@ -636,16 +599,16 @@ def check_vram(label: str = "model", min_mb: int = 512) -> None:
     Call this on CUDA devices before loading a heavy model.  On CPU or
     when CUDA is unavailable, this is a no-op.
     """
-    from podcodex.core.device import cuda_available
+    from podcodex.core.device import cuda_available, vram_bytes
 
     if not cuda_available():
         return
-    import torch
-
     # flush first so the reading is accurate
-    gc.collect()
-    torch.cuda.empty_cache()
-    free_bytes, total_bytes = torch.cuda.mem_get_info()
+    free_vram()
+    vram = vram_bytes()
+    if vram is None:
+        return
+    free_bytes, total_bytes = vram
     free_mb = free_bytes // (1024 * 1024)
     total_mb = total_bytes // (1024 * 1024)
     logger.info(f"VRAM before {label}: {free_mb} MB free / {total_mb} MB total")
@@ -768,446 +731,6 @@ def speaker_airtime(
     return out
 
 
-def build_batched_manual_prompts(
-    segments: list[dict],
-    build_prompt_fn,
-    batch_minutes: float = DEFAULT_BATCH_MINUTES,
-    batch_count: int | None = None,
-) -> list[tuple[list[dict], str]]:
-    """Split *segments* into batches and build one prompt per batch.
-
-    *build_prompt_fn* receives ``(batch, start_index)`` and returns the
-    prompt string. ``start_index`` is the absolute count of real segments
-    consumed by prior batches, so each batch's [N] markers are unique
-    across the whole transcript — concatenated LLM responses then keep
-    distinct positions.
-
-    When *batch_count* is given it overrides *batch_minutes* and produces
-    exactly that many batches (see batch_segments_by_duration).
-    """
-    batches = batch_segments_by_duration(segments, batch_minutes, batch_count)
-    out: list[tuple[list[dict], str]] = []
-    offset = 0
-    for batch in batches:
-        out.append((batch, build_prompt_fn(batch, offset)))
-        _, real = _separate_breaks(batch)
-        offset += len(real)
-    return out
-
-
-def _segment_end(seg: dict) -> float:
-    """Best-effort end timestamp for a segment (falls back to start, then 0)."""
-    return float(seg.get("end", seg.get("start", 0)) or 0)
-
-
-def batch_segments_by_duration(
-    segments: list[dict],
-    batch_minutes: float = DEFAULT_BATCH_MINUTES,
-    batch_count: int | None = None,
-) -> list[list[dict]]:
-    """Split segments into time-based batches.
-
-    Splits by absolute segment start timestamp against fixed cutoffs, so
-    the batch count tracks the audio's elapsed duration (not the sum of
-    per-segment durations, which can under-count silence and produce fewer
-    batches than the user requested).
-
-    Args:
-        segments      : transcript segments to batch
-        batch_minutes : maximum duration per batch in minutes (default 15)
-        batch_count   : when set, overrides batch_minutes and sizes batches
-                        off the transcript's real span so the count tracks
-                        the request without overshooting (a large silence
-                        gap straddling a cutoff can still yield one fewer).
-
-    Returns:
-        List of non-empty segment batches (each batch is a list of segment dicts).
-    """
-    if not segments:
-        return []
-    if batch_count is not None and batch_count >= 1:
-        if batch_count == 1:
-            return [list(segments)]
-        max_seconds = max(_segment_end(s) for s in segments) / batch_count
-    else:
-        max_seconds = batch_minutes * 60
-    if max_seconds <= 0:
-        return [list(segments)]
-
-    batches: list[list[dict]] = []
-    current: list[dict] = []
-    cutoff = max_seconds
-
-    for seg in segments:
-        start = float(seg.get("start", 0))
-        while start >= cutoff:
-            if current:
-                batches.append(current)
-                current = []
-            cutoff += max_seconds
-        current.append(seg)
-
-    if current:
-        batches.append(current)
-
-    # Merge a tiny overshoot tail into the previous batch. When segments
-    # extend just past the final cutoff (e.g. episode.duration under-reports
-    # the real transcript span), the user's chosen batch count would otherwise
-    # gain a spurious extra batch containing only the last few seconds.
-    if len(batches) >= 2:
-        last_batch_start = cutoff - max_seconds
-        span = _segment_end(batches[-1][-1]) - last_batch_start
-        if 0 <= span < max_seconds * 0.15:
-            batches[-2].extend(batches.pop())
-
-    return batches
-
-
-def segments_to_text(
-    segments: list[dict], text_field: str = "text", declared: Container[str] = ()
-) -> str:
-    """Format segments as plain readable text.
-
-    Args:
-        segments   : list of segment dicts with speaker, start, end, and text fields
-        text_field : which field to use for the text content (default "text")
-    """
-    lines = []
-    for seg in segments:
-        speaker = seg.get("speaker", "")
-        if is_unattributed(speaker, declared):
-            speaker = ""
-        start = seg.get("start")
-        end = seg.get("end")
-        if start is not None and end is not None:
-            header = f"[{start:.3f}s - {end:.3f}s] {speaker}".rstrip()
-        else:
-            header = speaker
-        text = seg.get(text_field) or "[empty]"
-        # An untimed, unattributed segment has no header at all; emitting an
-        # empty one would open the block with a blank line.
-        lines.append(f"{header}\n{text}" if header else text)
-    return "\n\n".join(lines)
-
-
-def segments_to_srt(
-    segments: list[dict], text_field: str = "text", declared: Container[str] = ()
-) -> str:
-    """Format segments as SRT subtitles.
-
-    Args:
-        segments   : list of segment dicts with speaker, start, end, and text fields
-        text_field : which field to use for the text content (default "text")
-    """
-    lines = []
-    for i, seg in enumerate(segments, 1):
-        start = seg.get("start", 0.0)
-        end = seg.get("end", 0.0)
-        speaker = seg.get("speaker", "")
-        text = seg.get(text_field) or "[empty]"
-        prefix = f"{speaker}: " if not is_unattributed(speaker, declared) else ""
-        lines.append(str(i))
-        lines.append(f"{_srt_ts(start)} --> {_srt_ts(end)}")
-        lines.append(f"{prefix}{text}")
-        lines.append("")
-    return "\n".join(lines)
-
-
-def _srt_ts(seconds: float) -> str:
-    """Format seconds as SRT timestamp (HH:MM:SS,mmm)."""
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds % 1) * 1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-
-
-def segments_to_vtt(
-    segments: list[dict], text_field: str = "text", declared: Container[str] = ()
-) -> str:
-    """Format segments as WebVTT subtitles.
-
-    Args:
-        segments   : list of segment dicts with speaker, start, end, and text fields
-        text_field : which field to use for the text content (default "text")
-    """
-    lines = ["WEBVTT", ""]
-    for seg in segments:
-        start = seg.get("start", 0.0)
-        end = seg.get("end", 0.0)
-        speaker = seg.get("speaker", "")
-        text = seg.get(text_field) or "[empty]"
-        prefix = f"<v {speaker}>" if not is_unattributed(speaker, declared) else ""
-        lines.append(f"{_vtt_ts(start)} --> {_vtt_ts(end)}")
-        lines.append(f"{prefix}{text}")
-        lines.append("")
-    return "\n".join(lines)
-
-
-def _vtt_ts(seconds: float) -> str:
-    """Format seconds as VTT timestamp (HH:MM:SS.mmm)."""
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds % 1) * 1000)
-    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
-
-
-# ── Subtitle parsing (inverse of segments_to_srt / segments_to_vtt) ────
-
-
-def _parse_srt_ts(ts: str) -> float:
-    """Parse an SRT timestamp (``HH:MM:SS,mmm``) to seconds."""
-    ts = ts.strip().replace(",", ".")
-    parts = ts.split(":")
-    if len(parts) == 3:
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-    if len(parts) == 2:
-        return int(parts[0]) * 60 + float(parts[1])
-    return float(parts[0])
-
-
-def _parse_vtt_ts(ts: str) -> float:
-    """Parse a VTT timestamp (``HH:MM:SS.mmm`` or ``MM:SS.mmm``) to seconds."""
-    ts = ts.strip()
-    parts = ts.split(":")
-    if len(parts) == 3:
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-    if len(parts) == 2:
-        return int(parts[0]) * 60 + float(parts[1])
-    return float(parts[0])
-
-
-_VTT_SPEAKER_RE = re.compile(r"<v\s+([^>]+)>")
-
-
-def _merge_parsed_cues(cues: list[dict]) -> list[dict]:
-    """Deduplicate subtitle cues, preserving original timing.
-
-    YouTube auto-generated subtitles often produce overlapping cues with
-    repeated text.  This pass deduplicates consecutive identical lines and
-    cleans HTML entities, but does NOT merge distinct cues — the original
-    subtitle timing is kept as-is.
-    """
-    if not cues:
-        return []
-
-    # Clean HTML entities from all cues
-    for cue in cues:
-        cue["text"] = (
-            cue["text"]
-            .replace("&nbsp;", " ")
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", '"')
-        )
-        # Collapse multiple spaces
-        cue["text"] = re.sub(r"  +", " ", cue["text"]).strip()
-
-    # Deduplicate consecutive identical text
-    deduped: list[dict] = [cues[0]]
-    for cue in cues[1:]:
-        prev = deduped[-1]
-        if cue["text"] == prev["text"] and cue["speaker"] == prev["speaker"]:
-            # Extend end time of previous cue
-            prev["end"] = max(prev["end"], cue["end"])
-        else:
-            deduped.append(cue)
-
-    # Detect and collapse rolling/progressive subtitles.
-    # YouTube auto-generated VTTs display text progressively: each cue shows
-    # the previously completed line plus new words.  Between the rolling cues
-    # there are brief "flash" cues (< 0.05s) that just repeat completed text.
-    # We strip the flash cues, detect rolling overlap, and extract only the
-    # new text from each cue.
-    if len(deduped) >= 4:
-        # Remove near-zero-duration "flash" cues
-        no_flash: list[dict] = []
-        for cue in deduped:
-            if cue["end"] - cue["start"] >= 0.05:
-                no_flash.append(cue)
-
-        # Detect rolling pattern: suffix of cue[i] == prefix of cue[i+1]
-        if len(no_flash) >= 4:
-            overlap_count = 0
-            for i in range(len(no_flash) - 1):
-                t1, t2 = no_flash[i]["text"], no_flash[i + 1]["text"]
-                # Check if any suffix of t1 (>10 chars) is a prefix of t2
-                min_overlap = min(10, len(t1) // 2)
-                for length in range(len(t1), min_overlap - 1, -1):
-                    if t2.startswith(t1[-length:]):
-                        overlap_count += 1
-                        break
-
-            if overlap_count > len(no_flash) * 0.3:
-                collapsed: list[dict] = []
-                for i, cue in enumerate(no_flash):
-                    if i == 0:
-                        collapsed.append(cue)
-                        continue
-                    prev_text = no_flash[i - 1]["text"]
-                    cur_text = cue["text"]
-                    # Find longest suffix of prev that is a prefix of cur
-                    best_overlap = 0
-                    for length in range(len(prev_text), 0, -1):
-                        if cur_text.startswith(prev_text[-length:]):
-                            best_overlap = length
-                            break
-                    if best_overlap > 0:
-                        new_text = cur_text[best_overlap:].strip()
-                        if new_text:
-                            collapsed.append(
-                                {
-                                    **cue,
-                                    "text": new_text,
-                                }
-                            )
-                    else:
-                        collapsed.append(cue)
-                deduped = collapsed
-
-    return deduped
-
-
-def srt_to_segments(srt_text: str) -> list[dict]:
-    """Parse SRT subtitle text into segment dicts.
-
-    Returns a list of ``{"speaker": str, "text": str, "start": float,
-    "end": float}`` dicts.  Speaker is extracted from a ``Speaker: ``
-    prefix if present.
-
-    Args:
-        srt_text: Full SRT file content.
-    """
-    cues: list[dict] = []
-    blocks = re.split(r"\n\s*\n", srt_text.strip())
-    for block in blocks:
-        lines = block.strip().splitlines()
-        if len(lines) < 2:
-            continue
-        # Find the timestamp line (skip the index line)
-        ts_line = None
-        text_start = 0
-        for idx, line in enumerate(lines):
-            if "-->" in line:
-                ts_line = line
-                text_start = idx + 1
-                break
-        if ts_line is None:
-            continue
-        parts = ts_line.split("-->")
-        if len(parts) != 2:
-            continue
-        start = _parse_srt_ts(parts[0])
-        end = _parse_srt_ts(parts[1])
-        text = " ".join(lines[text_start:]).strip()
-        # Extract speaker from "Speaker: text" prefix
-        speaker = ""
-        if ": " in text:
-            maybe_speaker, rest = text.split(": ", 1)
-            if maybe_speaker and not any(c in maybe_speaker for c in ".,!?"):
-                speaker = maybe_speaker
-                text = rest
-        if text:
-            cues.append(
-                {
-                    "speaker": speaker or NARRATOR_SPEAKER,
-                    "text": text,
-                    "start": start,
-                    "end": end,
-                }
-            )
-
-    return _merge_parsed_cues(cues)
-
-
-def vtt_to_segments(vtt_text: str) -> list[dict]:
-    """Parse WebVTT subtitle text into segment dicts.
-
-    Handles YouTube's auto-generated format with overlapping/duplicate cues
-    and ``<v SpeakerName>`` voice tags.
-
-    Returns a list of ``{"speaker": str, "text": str, "start": float,
-    "end": float}`` dicts.
-
-    Args:
-        vtt_text: Full WebVTT file content.
-    """
-    cues: list[dict] = []
-    blocks = re.split(r"\n\s*\n", vtt_text.strip())
-    for block in blocks:
-        lines = block.strip().splitlines()
-        # Find timestamp line
-        ts_line = None
-        text_start = 0
-        for idx, line in enumerate(lines):
-            if "-->" in line:
-                ts_line = line
-                text_start = idx + 1
-                break
-        if ts_line is None:
-            continue
-        # Strip position/alignment metadata after timestamp
-        ts_part = ts_line.split("-->")
-        if len(ts_part) != 2:
-            continue
-        start = _parse_vtt_ts(ts_part[0].split()[0] if ts_part[0].strip() else "0")
-        end_raw = ts_part[1].strip().split()
-        end = _parse_vtt_ts(end_raw[0]) if end_raw else start
-
-        text = " ".join(lines[text_start:]).strip()
-        if not text:
-            continue
-        # Extract speaker from <v SpeakerName> tags
-        speaker = ""
-        m = _VTT_SPEAKER_RE.search(text)
-        if m:
-            speaker = m.group(1).strip()
-            text = _VTT_SPEAKER_RE.sub("", text).strip()
-        # Strip remaining HTML-like tags
-        text = re.sub(r"<[^>]+>", "", text).strip()
-        if text:
-            cues.append(
-                {
-                    "speaker": speaker or NARRATOR_SPEAKER,
-                    "text": text,
-                    "start": start,
-                    "end": end,
-                }
-            )
-
-    return _merge_parsed_cues(cues)
-
-
-def merge_display_turns(turns: "list[SpeakerTurn]") -> list[dict]:
-    """Collapse consecutive same-speaker turns for search-result display.
-
-    One speaker label / one text block per contiguous speaker run —
-    unlike :func:`merge_consecutive_segments`, there are no gap caps,
-    duration caps, or break sentinels. Intended for rendering a single
-    search-result chunk (``Hit.speakers``) where readers just want a clean
-    paragraph per speaker. Output entries are plain display dicts.
-    """
-    out: list[dict] = []
-    for t in turns:
-        speaker = t.speaker or "Unknown"
-        text = t.text.strip()
-        if not text:
-            continue
-        if out and out[-1]["speaker"] == speaker:
-            out[-1]["text"] += " " + text
-            # A turn with no timing (legacy rows default end to 0.0) must not
-            # drag the merged run's end backwards.
-            if t.end:
-                out[-1]["end"] = t.end
-        else:
-            out.append(
-                {"speaker": speaker, "text": text, "start": t.start, "end": t.end}
-            )
-    return out
-
-
 def merge_consecutive_segments(
     segments: list[dict],
     max_gap: float = DEFAULT_MAX_GAP,
@@ -1289,748 +812,3 @@ def merge_consecutive_segments(
         f"({n_breaks} breaks, max_gap={max_gap}s, max_duration={max_duration}s)"
     )
     return result
-
-
-# ──────────────────────────────────────────────
-# Prompt helpers
-# ──────────────────────────────────────────────
-
-
-def build_llm_prompt(
-    role: str,
-    task: str,
-    output: str,
-    context: str = "",
-    context_extra: str = "",
-) -> str:
-    """Assemble a system prompt from standard sections.
-
-    Args:
-        role          : opening role sentence
-        task          : bullet-list of task instructions
-        output        : output format instructions
-        context       : optional podcast context; omitted when empty
-        context_extra : additional sentence appended to the context block
-    """
-    context_section = (
-        f"Context about this podcast: {context}\n"
-        "Any names, titles, brands, or terms mentioned in the context above are the CORRECT spellings."
-        + (f" {context_extra}" if context_extra else "")
-        if context
-        else ""
-    )
-    sections = [role, context_section, task, output]
-    return "\n\n".join(s for s in sections if s)
-
-
-# ──────────────────────────────────────────────
-# LLM helpers
-# ──────────────────────────────────────────────
-
-
-def _is_break(seg: dict) -> bool:
-    """Return True for [BREAK] segments (music/jingle markers)."""
-    return seg.get("speaker") == BREAK_SPEAKER
-
-
-def _separate_breaks(
-    segments: list[dict],
-) -> tuple[list[int], list[dict]]:
-    """Split segments into real content and [BREAK] markers.
-
-    Returns:
-        (real_indices, real_segments) — positions and segments that are
-        not ``[BREAK]`` markers.
-    """
-    real_indices: list[int] = []
-    real_segs: list[dict] = []
-    for i, seg in enumerate(segments):
-        if not _is_break(seg):
-            real_indices.append(i)
-            real_segs.append(seg)
-    return real_indices, real_segs
-
-
-def _reassemble_breaks(
-    segments: list[dict],
-    real_indices: list[int],
-    processed: list[dict],
-) -> list[dict]:
-    """Merge processed results back with [BREAK] segments in original order."""
-    real_set = set(real_indices)
-    results: list[dict] = []
-    proc_iter = iter(processed)
-    for i, seg in enumerate(segments):
-        if i in real_set:
-            results.append(next(proc_iter))
-        else:
-            results.append(seg)
-    return results
-
-
-def format_segments(
-    segments: list[dict],
-    instruction: str = "Process",
-    start_index: int = 0,
-) -> str:
-    """Format segments as a numbered user message for the LLM.
-
-    Produces the same ``[i] text`` format used by all three modes
-    (ollama, api, manual).  ``[BREAK]`` segments are excluded.
-
-    Args:
-        segments    : transcript segments (breaks are filtered out)
-        instruction : verb for the closing instruction line
-        start_index : first absolute index for numbering (used by manual mode
-                      so concatenated batch responses keep unique indices)
-    """
-    _, real = _separate_breaks(segments)
-    n = len(real)
-    lines = [f"[{start_index + i}] {seg['text']}" for i, seg in enumerate(real)]
-    first = start_index
-    last = start_index + n - 1 if n > 0 else start_index
-    lines.append(
-        f"\n{instruction} all {n} segments above. "
-        f"Output MUST contain exactly {n} entries with indices {first}..{last}, "
-        "no gaps, no extras, no renumbering. Verify the count before responding."
-    )
-    return "\n\n".join(lines)
-
-
-def parse_llm_response(raw: str) -> dict[int, dict]:
-    """Parse a raw LLM response string into a dict keyed by segment position.
-
-    Keys are positional (0..N-1) — the LLM's own ``index`` field is treated
-    as advisory only. Position-based mapping is safer because callers verify
-    ``len(parsed) == len(input)`` before applying, so position equals the
-    intended target index regardless of any renumbering by the LLM.
-
-    Strips ``<think>`` tags and markdown fences before parsing JSON. Falls
-    back through tiered repair (trim trailing junk, fix invalid ``\\'``
-    escape, regex-extract orphan ``"text": "..."`` pairs) so a single
-    schema slip from a small model doesn't drop the whole batch.
-
-    Returns:
-        ``{position: {"text": "...", ...}}`` dict.  Empty dict on parse failure.
-    """
-    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-    raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
-
-    def _to_index(parsed: list) -> dict[int, dict]:
-        out: dict[int, dict] = {}
-        for i, item in enumerate(parsed):
-            if isinstance(item, dict):
-                out[i] = item
-            elif isinstance(item, str):
-                out[i] = {"text": item}
-        return out
-
-    try:
-        return _to_index(json.loads(raw))
-    except Exception as first_err:
-        # Cross-model repair: trailing junk after the array close, and the
-        # `\'` escape (invalid in JSON, valid in Python/JS). Both seen on
-        # multiple model sizes, not just one run.
-        repaired = raw
-        last_bracket = repaired.rfind("]")
-        if last_bracket != -1:
-            repaired = repaired[: last_bracket + 1]
-        repaired = repaired.replace("\\'", "'")
-        try:
-            return _to_index(json.loads(repaired))
-        except Exception:
-            pass
-
-        logger.warning(f"Parse error: {first_err}, batch will keep original text")
-        logger.warning(f"Raw response (first 600 chars): {raw[:600]}")
-        return {}
-
-
-def apply_corrections(
-    batch: list[dict],
-    by_index: dict[int, dict],
-    min_length_ratio: float = 0.7,
-) -> list[dict]:
-    """Apply LLM corrections to a batch of segments.
-
-    Merges corrected text from *by_index* into the original segments.
-    ``[BREAK]`` segments are passed through unchanged.  Segments whose
-    corrected text is suspiciously short (below *min_length_ratio* of the
-    original) keep their original text.
-
-    Args:
-        batch            : original segments (may include ``[BREAK]``s)
-        by_index         : ``{index: {"text": "..."}}`` from the LLM
-        min_length_ratio : minimum corrected/original length ratio (0 to disable)
-
-    Returns:
-        List of segments with text field updated.
-    """
-    real_indices, real_segs = _separate_breaks(batch)
-
-    corrected_segs: list[dict] = []
-    changed = 0
-    for i, seg in enumerate(real_segs):
-        item = by_index.get(i, {})
-        original_text = seg["text"]
-        corrected_text = item.get("text", original_text)
-
-        if not corrected_text:
-            logger.warning(f"Segment [{i}] has no corrected text — keeping original")
-            corrected_text = original_text
-
-        if (
-            min_length_ratio
-            and original_text
-            and len(corrected_text) < len(original_text) * min_length_ratio
-        ):
-            logger.warning(
-                f"Segment [{i}] truncated by LLM "
-                f"({len(corrected_text)} vs {len(original_text)} chars), keeping original. "
-                f"original={original_text!r:.120} corrected={corrected_text!r:.120}"
-            )
-            corrected_text = original_text
-
-        if corrected_text != original_text:
-            changed += 1
-        entry = {**seg, "text": corrected_text}
-        entry.pop("index", None)
-        corrected_segs.append(entry)
-
-    logger.debug(f"Batch: {changed}/{len(real_segs)} segments modified")
-    return _reassemble_breaks(batch, real_indices, corrected_segs)
-
-
-def call_and_parse(
-    batch: list[dict],
-    system_prompt: str,
-    call_fn,
-    instruction: str = "Process",
-    min_length_ratio: float = 0.7,
-    start_index: int = 0,
-    on_outcome: Callable[[str, int, int, str, str], None] | None = None,
-) -> list[dict]:
-    """Call the LLM for one batch and parse the response.
-
-    Uses :func:`format_segments`, :func:`parse_llm_response`, and
-    :func:`apply_corrections` — the same pipeline that manual mode uses.
-    ``[BREAK]`` segments are passed through unchanged.
-
-    ``start_index`` shifts the displayed ``[N]`` markers in the prompt so
-    log lines and the LLM see absolute positions across batches.
-
-    ``on_outcome``, when given, is called once with
-    ``(raw, expected, got, status, reason)`` — ``status`` is ``"ok"`` or
-    ``"rejected"`` — so a caller can record per-batch results.
-    """
-    _, real_segs = _separate_breaks(batch)
-    if not real_segs:
-        return list(batch)
-
-    user_content = format_segments(
-        batch, instruction=instruction, start_index=start_index
-    )
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_content},
-    ]
-
-    raw = call_fn(messages)
-    logger.debug(f"LLM response: {len(raw)} chars")
-    by_index = parse_llm_response(raw)
-
-    expected = len(real_segs)
-    got = len(by_index)
-    status, reason = "ok", ""
-
-    if not by_index:
-        # parse_llm_response already logged the parse error; flag the batch
-        # so the run's failure record shows it produced no corrections.
-        status, reason = "rejected", "parse failure"
-    elif got != expected:
-        # LLM count drift: a response with fewer/more items than the input
-        # batch means indices got renumbered, which would silently misalign
-        # corrections. Reject the whole batch and keep originals.
-        logger.warning(
-            f"LLM returned {got} items for {expected} segments, "
-            "rejecting batch to avoid index drift; keeping original text."
-        )
-        # Surface enough of the raw response to diagnose the shape mismatch
-        # (top-level object vs array, wrapping key, single concatenated
-        # string). Without this the rejection is opaque.
-        logger.warning(f"Rejected raw response (first 600 chars): {raw[:600]}")
-        sample = next(iter(by_index.values()), None)
-        logger.warning(
-            f"Rejected first item shape: {type(sample).__name__}={sample!r:.300}"
-        )
-        status, reason = "rejected", "count drift"
-        by_index = {}
-
-    if on_outcome is not None:
-        on_outcome(raw, expected, got, status, reason)
-
-    return apply_corrections(batch, by_index, min_length_ratio=min_length_ratio)
-
-
-def _append_batch_record(
-    batch_sink: list[dict] | None,
-    *,
-    batch_num: int,
-    real_segs: list[dict],
-    offset: int,
-    raw: str,
-    expected: int,
-    got: int,
-    status: str,
-    reason: str,
-) -> None:
-    """Append one batch's LLM outcome to *batch_sink* (no-op when None)."""
-    if batch_sink is None:
-        return
-    batch_sink.append(
-        {
-            "batch": batch_num,
-            "status": status,
-            "reason": reason,
-            "expected": expected,
-            "got": got,
-            "raw": raw,
-            "input": [
-                {"index": offset + i, "text": s.get("text", "")}
-                for i, s in enumerate(real_segs)
-            ],
-        }
-    )
-
-
-def _outcome_recorder(
-    batch_sink: list[dict] | None,
-    batch_num: int,
-    real_segs: list[dict],
-    offset: int,
-) -> Callable[[str, int, int, str, str], None]:
-    """Build a ``call_and_parse`` on_outcome callback bound to one batch."""
-
-    def record(raw: str, expected: int, got: int, status: str, reason: str) -> None:
-        _append_batch_record(
-            batch_sink,
-            batch_num=batch_num,
-            real_segs=real_segs,
-            offset=offset,
-            raw=raw,
-            expected=expected,
-            got=got,
-            status=status,
-            reason=reason,
-        )
-
-    return record
-
-
-def run_ollama(
-    segments: list[dict],
-    system_prompt: str,
-    model: str,
-    batch_minutes: float = DEFAULT_BATCH_MINUTES,
-    instruction: str = "Process",
-    min_length_ratio: float = 0.7,
-    label: str = "",
-    on_batch: Callable[[int, int], None] | None = None,
-    batch_sink: list[dict] | None = None,
-) -> list[dict]:
-    """Run segments through a local Ollama model.
-
-    Args:
-        segments: source segments to process.
-        system_prompt: system prompt for the LLM.
-        model: Ollama model name.
-        batch_minutes: max audio duration per batch in minutes.
-        instruction: verb for user-message formatting (e.g. "Correct", "Translate").
-        min_length_ratio: minimum output/input length ratio before flagging.
-        label: human-readable label for log messages.
-        on_batch: optional callback(batch_num, total_batches) for progress.
-
-    Returns:
-        Processed segments with updated text fields.
-    """
-    import time
-
-    import httpx
-    from ollama import Client, ResponseError
-
-    host = ollama_host()
-    client = Client(
-        host=host,
-        timeout=httpx.Timeout(OLLAMA_READ_TIMEOUT_S, connect=OLLAMA_CONNECT_TIMEOUT_S),
-    )
-    _warn_if_ollama_too_old(host)
-    _warn_if_model_unpulled(client, model)
-
-    results = []
-    batches = batch_segments_by_duration(segments, batch_minutes)
-    n_batches = len(batches)
-    offset = 0
-
-    for batch_num, batch in enumerate(batches, 1):
-        logger.info(f"{label} batch {batch_num}/{n_batches} via Ollama ({model})")
-        _, real_segs = _separate_breaks(batch)
-        n_items = len(real_segs)
-        schema = correction_schema(n_items)
-        num_predict, num_ctx = _ollama_token_budget(n_items)
-
-        def call_fn(messages):
-            for attempt in range(3):
-                try:
-                    response = client.chat(
-                        model=model,
-                        messages=messages,
-                        options={
-                            "temperature": OLLAMA_TEMPERATURE,
-                            "num_predict": num_predict,
-                            "num_ctx": num_ctx,
-                        },
-                        format=schema,
-                        # Reasoning models (Qwen3, DeepSeek-R1) emit
-                        # `<think>...</think>` before the answer, which
-                        # conflicts with schema-constrained decoding and
-                        # burns the whole num_predict budget producing zero
-                        # JSON output.
-                        think=False,
-                        keep_alive=OLLAMA_KEEP_ALIVE,
-                    )
-                    break
-                except (httpx.HTTPError, ResponseError, ConnectionError) as e:
-                    if attempt == 2:
-                        raise
-                    backoff = 2**attempt
-                    logger.warning(
-                        f"Ollama call failed (attempt {attempt + 1}/3): {e}. "
-                        f"Retrying in {backoff}s."
-                    )
-                    time.sleep(backoff)
-
-            content = response.message.content.strip()
-            pec = response.prompt_eval_count or 0
-            # Ollama silently chops the prompt when it exceeds num_ctx; the
-            # system prompt is what gets cut first, so the model ends up
-            # following a partial instruction.
-            if pec > num_ctx * 0.9:
-                logger.warning(
-                    f"Prompt used {pec}/{num_ctx} tokens (>=90%); Ollama may "
-                    "have truncated the system prompt. Reduce batch size."
-                )
-            if not content:
-                logger.warning(
-                    f"Empty response from {model}. done_reason="
-                    f"{response.done_reason!r} eval_count={response.eval_count} "
-                    f"prompt_eval_count={pec} done={response.done}"
-                )
-            return content
-
-        results.extend(
-            call_and_parse(
-                batch,
-                system_prompt,
-                call_fn,
-                instruction=instruction,
-                min_length_ratio=min_length_ratio,
-                start_index=offset,
-                on_outcome=_outcome_recorder(batch_sink, batch_num, real_segs, offset),
-            )
-        )
-        offset += n_items
-        if on_batch:
-            on_batch(batch_num, n_batches)
-
-    return results
-
-
-def _api_retry_delay(exc, attempt: int) -> float:
-    """Seconds to wait before the next attempt.
-
-    Honours a provider ``Retry-After`` when the exception carries one (429s
-    usually do), capped, and otherwise falls back to the same 2s/4s ladder
-    ``run_ollama`` uses.
-    """
-    fallback = API_BACKOFF_BASE_S**attempt
-    try:
-        raw = exc.response.headers.get("retry-after")
-    except Exception:
-        return fallback
-    if not raw:
-        return fallback
-    try:
-        # Seconds is the common form; an HTTP-date is legal but rare, and
-        # the fallback is a fine answer for it.
-        return min(max(float(raw), 0.0), API_RETRY_AFTER_MAX_S)
-    except (TypeError, ValueError):
-        return fallback
-
-
-def _api_is_retryable(exc) -> bool:
-    """Whether this OpenAI-client error is worth another attempt.
-
-    Rate limits, connection drops, timeouts and 5xx are transient. Every
-    other 4xx (bad key, unknown model, context length) will fail the same
-    way three times, so retrying only delays the error the user needs.
-    """
-    import openai
-
-    if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
-        return True
-    if isinstance(exc, openai.RateLimitError):
-        return True
-    if isinstance(exc, openai.APIStatusError):
-        return (getattr(exc, "status_code", 0) or 0) >= 500
-    return False
-
-
-def _api_call_with_retry(client, model: str, messages: list[dict], label: str):
-    """One chat completion, retried on transient provider failures."""
-    import time
-
-    last: Exception | None = None
-    for attempt in range(API_MAX_ATTEMPTS):
-        try:
-            return client.chat.completions.create(
-                model=model, messages=messages, temperature=DEFAULT_TEMPERATURE
-            )
-        except Exception as exc:
-            if not _api_is_retryable(exc) or attempt == API_MAX_ATTEMPTS - 1:
-                raise
-            last = exc
-            delay = _api_retry_delay(exc, attempt)
-            logger.warning(
-                f"{label} API call failed (attempt {attempt + 1}/"
-                f"{API_MAX_ATTEMPTS}): {exc}. Retrying in {delay:g}s."
-            )
-            time.sleep(delay)
-    raise last  # unreachable: the last attempt re-raises above
-
-
-def _api_response_text(response, model: str) -> str:
-    """Assistant text from a completion, or ``""`` for an unusable one.
-
-    OpenAI-compatible endpoints (gemini, groq, openrouter, anthropic's compat
-    route) answer a refusal or a reasoning length-stop with ``content: null``,
-    and can return an empty ``choices`` array. Indexing and stripping those
-    blindly raised out of the batch loop and lost every completed batch;
-    returning "" lets ``call_and_parse`` record one rejected batch instead.
-    """
-    choices = getattr(response, "choices", None) or []
-    if not choices:
-        logger.warning(f"Empty choices from {model}; recording batch as rejected.")
-        return ""
-    choice = choices[0]
-    content = getattr(choice.message, "content", None)
-    if not content:
-        logger.warning(
-            f"Empty content from {model}. finish_reason="
-            f"{getattr(choice, 'finish_reason', None)!r}"
-        )
-        return ""
-    return content.strip()
-
-
-def run_api(
-    segments: list[dict],
-    system_prompt: str,
-    model: str,
-    api_base_url: str,
-    api_key: str | None,
-    batch_minutes: float = DEFAULT_BATCH_MINUTES,
-    provider: str | None = None,
-    instruction: str = "Process",
-    min_length_ratio: float = 0.7,
-    label: str = "",
-    on_batch: Callable[[int, int], None] | None = None,
-    batch_sink: list[dict] | None = None,
-) -> list[dict]:
-    """Run segments through an OpenAI-compatible API.
-
-    Args:
-        segments: source segments to process.
-        system_prompt: system prompt for the LLM.
-        model: model name (auto-detected from provider if empty).
-        api_base_url: base URL (auto-detected from provider if empty).
-        api_key: API key (None reads from provider's env variable).
-        batch_minutes: max audio duration per batch in minutes.
-        provider: provider shorthand ("openai", "anthropic", "mistral").
-        instruction: verb for user-message formatting.
-        min_length_ratio: minimum output/input length ratio before flagging.
-        label: human-readable label for log messages.
-        on_batch: optional callback(batch_num, total_batches) for progress.
-
-    Returns:
-        Processed segments with updated text fields.
-    """
-    import os
-
-    from openai import OpenAI
-
-    from podcodex.core.constants import LLM_PROVIDER_DEFAULTS
-
-    if provider and provider in LLM_PROVIDER_DEFAULTS:
-        spec = LLM_PROVIDER_DEFAULTS[provider]
-        model = model or spec["model"]
-        api_key = api_key or os.environ.get(spec["env_var"])
-
-    # No bare `API_KEY` fallback. A name that generic is very likely already
-    # set in a developer's shell for something else, and it was used for
-    # whatever base_url the profile happened to carry — sending an unrelated
-    # key to a third-party endpoint, with nothing in the docs to say the
-    # variable was even read.
-    if not api_key:
-        names = ", ".join(sorted(s["env_var"] for s in LLM_PROVIDER_DEFAULTS.values()))
-        raise ValueError(
-            "No API key found. Add one in Settings, or set the provider's "
-            f"env variable ({names})."
-        )
-    key = api_key
-
-    logger.debug(
-        f"API config: base_url={api_base_url}, model={model}, provider={provider}"
-    )
-    client = OpenAI(api_key=key, base_url=api_base_url)
-    results = []
-    batches = batch_segments_by_duration(segments, batch_minutes)
-    n_batches = len(batches)
-    offset = 0
-
-    for batch_num, batch in enumerate(batches, 1):
-        logger.info(f"{label} batch {batch_num}/{n_batches} via API ({model})")
-        _, real_segs = _separate_breaks(batch)
-
-        def call_fn(messages):
-            response = _api_call_with_retry(client, model, messages, label)
-            return _api_response_text(response, model)
-
-        results.extend(
-            call_and_parse(
-                batch,
-                system_prompt,
-                call_fn,
-                instruction=instruction,
-                min_length_ratio=min_length_ratio,
-                start_index=offset,
-                on_outcome=_outcome_recorder(batch_sink, batch_num, real_segs, offset),
-            )
-        )
-        offset += len(real_segs)
-        if on_batch:
-            on_batch(batch_num, n_batches)
-
-    return results
-
-
-def validate_manual(
-    corrections: list[dict], original_segments: list[dict]
-) -> list[dict]:
-    """Merge LLM-returned corrections with original source segments.
-
-    Uses position-based mapping — corrections must be in the same order as
-    the (non-[BREAK]) source segments. The LLM-supplied ``index`` field, if
-    present, is ignored.
-
-    Args:
-        corrections       : list of {"text": "..."} entries from the LLM, in order
-        original_segments : source segments (speaker, start, end, text, ...)
-
-    Returns:
-        List of segments with text field updated from corrections.
-
-    Raises:
-        ValueError: the response is empty, has no ``text`` field, or its entry
-            count does not match the source segments. Saving a count-mismatched
-            response would persist untouched source text as a finished step.
-    """
-    if not isinstance(corrections, list) or not corrections:
-        raise ValueError("Expected a non-empty JSON array from the LLM.")
-    if "text" not in corrections[0]:
-        raise ValueError(
-            f"Expected 'text' field in each entry. "
-            f"Fields found: {sorted(corrections[0].keys())}"
-        )
-
-    _, real_segs = _separate_breaks(original_segments)
-    if len(corrections) != len(real_segs):
-        # Rejecting silently used to keep the originals and let the caller save
-        # them as a "translation" or "correction" that had never been touched.
-        raise ValueError(
-            f"Count mismatch: {len(corrections)} entries from the LLM "
-            f"vs {len(real_segs)} source segments (excluding "
-            f"{len(original_segments) - len(real_segs)} breaks). "
-            "Paste the response for this exact source version, or re-generate "
-            "the prompts."
-        )
-    # Position-based mapping (LLM's index field is advisory only).
-    by_index = {i: item for i, item in enumerate(corrections)}
-    results = apply_corrections(original_segments, by_index, min_length_ratio=0)
-
-    logger.info(f"Manual corrections validated — {len(results)} segments")
-    return results
-
-
-def run_llm_pipeline(
-    segments: list[dict],
-    system_prompt: str,
-    *,
-    mode: str = "ollama",
-    model: str = "",
-    api_base_url: str = "",
-    api_key: str | None = None,
-    batch_minutes: float = DEFAULT_BATCH_MINUTES,
-    provider: str | None = None,
-    instruction: str = "Process",
-    label: str = "",
-    original_segments: list[dict] | None = None,
-    merge: bool = True,
-    max_gap: float = DEFAULT_MAX_GAP,
-    on_batch: Callable[[int, int], None] | None = None,
-    batch_sink: list[dict] | None = None,
-) -> list[dict]:
-    """Run an LLM pipeline (correct or translate) on segments.
-
-    Handles manual/ollama/api modes, optional merge, and progress callbacks.
-    When *batch_sink* is given, each batch's LLM outcome is appended to it
-    (ollama/api modes only).
-    """
-    if mode == "manual":
-        orig = original_segments if original_segments is not None else segments
-        return validate_manual(segments, orig)
-
-    if merge:
-        segments = merge_consecutive_segments(segments, max_gap=max_gap)
-        logger.info(f"After merge: {len(segments)} segments")
-
-    if mode == "ollama":
-        from podcodex.core.constants import DEFAULT_OLLAMA_MODEL
-
-        return run_ollama(
-            segments,
-            system_prompt,
-            model=model or DEFAULT_OLLAMA_MODEL,
-            batch_minutes=batch_minutes,
-            instruction=instruction,
-            label=label,
-            on_batch=on_batch,
-            batch_sink=batch_sink,
-        )
-    elif mode == "api":
-        return run_api(
-            segments,
-            system_prompt,
-            model=model,
-            api_base_url=api_base_url,
-            api_key=api_key,
-            batch_minutes=batch_minutes,
-            provider=provider,
-            instruction=instruction,
-            label=label,
-            on_batch=on_batch,
-            batch_sink=batch_sink,
-        )
-    else:
-        raise ValueError(
-            f"Unknown mode: {mode!r}. Choose from 'manual', 'ollama', 'api'."
-        )

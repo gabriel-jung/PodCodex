@@ -10,7 +10,8 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel, field_validator
 
-from podcodex.api.routes._helpers import AUDIO_EXTS, get_index_store
+from podcodex.api.routes._helpers import get_index_store
+from podcodex.core.source import show_audio_files
 from podcodex.rag.hit import Hit, SpeakerTurn
 
 # podcodex.rag.search_service is imported inside the handlers below, not
@@ -99,10 +100,7 @@ def _build_audio_lookup() -> dict[str, dict]:
 
         meta = load_show_meta(p)
         name = (meta.name if meta else None) or p.name
-        stems: dict[str, str] = {}
-        for f in p.iterdir():
-            if f.is_file() and f.suffix.lower() in AUDIO_EXTS:
-                stems[f.stem] = str(f)
+        stems = {stem: str(files[0]) for stem, files in show_audio_files(p).items()}
         _AUDIO_LOOKUP_CACHE[folder_path] = (key, name, folder_path, stems)
         out[name] = {"folder": folder_path, "audio": stems}
     return out

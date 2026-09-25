@@ -11,13 +11,13 @@ Storage layout per episode::
 
     episode/
       transcript/
-        20260401T103000Z_raw.json         # final transcript
+        20260401T103000123456Z_raw.json   # final transcript
         segments/
-          20260401T102000Z_raw.parquet    # WhisperX raw output
+          20260401T102000123456Z_raw.parquet  # WhisperX raw output
         diarization/
-          20260401T102500Z_raw.parquet    # pyannote speaker timeline
+          20260401T102500123456Z_raw.parquet  # pyannote speaker timeline
         diarized_segments/
-          20260401T102800Z_raw.parquet    # segments with speakers assigned
+          20260401T102800123456Z_raw.parquet  # segments with speakers assigned
       corrected/
         ...
       english/
@@ -30,12 +30,21 @@ the default.  Users can pick any version from the History dropdown.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from podcodex.core.source import SourceRef, SourceVersion
+
+# is_edited lives with the DB it describes; re-exported here, where every
+# version reader has always found it.
+from podcodex.core.pipeline_db import get_pipeline_db, is_edited  # noqa: F401
 
 # Steps that store data as parquet files (transcription intermediates).
 # These are nested under transcript/ on disk.
@@ -43,7 +52,7 @@ PARQUET_STEPS = frozenset({"segments", "diarization", "diarized_segments"})
 
 # Steps that store data as audio. Only synth currently; kept as a frozenset
 # so future audio steps (e.g. per-segment TTS archive) plug in without
-# touching the dispatch in _step_ext.
+# touching the dispatch in step_ext.
 WAV_STEPS = frozenset({"synthesize"})
 
 # Map of stem-level pipeline_db boolean flag per versioned step. Used by
@@ -112,19 +121,6 @@ def compute_hash(segments: list[dict]) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
-def is_edited(meta: dict | None) -> bool:
-    """Return True when a version should be labelled "edited" in the UI.
-
-    Covers both user hand-edits (``manual_edit``) and processed-but-not-raw
-    outputs such as clean exports or applied manual-LLM passes
-    (``type == "validated"``). Mirrors the frontend ``isEdited`` helper so
-    the check cannot drift between surfaces.
-    """
-    if not meta:
-        return False
-    return meta.get("type") == "validated" or bool(meta.get("manual_edit"))
-
-
 def versions_dir(base: Path) -> Path:
     """Return the versions directory for an episode (the episode output dir)."""
     return base.parent
@@ -142,23 +138,18 @@ def _step_dir(base: Path, step: str) -> Path:
     return root / step
 
 
-def _step_ext(step: str) -> str:
-    """Return the on-disk file extension for a step's version files."""
+def step_ext(step: str) -> str:
+    """Return the on-disk file extension for a step's version files.
+
+    Public: callers outside this module need it to recognise version files
+    on disk (e.g. the status reconcile in the shows route); the layout
+    itself stays owned here alongside ``version_path``.
+    """
     if step in WAV_STEPS:
         return ".wav"
     if step in PARQUET_STEPS:
         return ".parquet"
     return ".json"
-
-
-def step_ext(step: str) -> str:
-    """Public accessor for a step's version-file extension.
-
-    Callers outside this module need it to recognise version files on disk
-    (e.g. the status reconcile in the shows route); the layout itself stays
-    owned here alongside ``version_path``.
-    """
-    return _step_ext(step)
 
 
 def version_path(base: Path, step: str, version_id: str) -> Path:
@@ -177,15 +168,22 @@ def version_path(base: Path, step: str, version_id: str) -> Path:
 
     if bad_path_component(step) or bad_path_component(version_id):
         raise ValueError(f"Invalid version path: step={step!r}, id={version_id!r}")
-    return _step_dir(base, step) / f"{version_id}{_step_ext(step)}"
+    return _step_dir(base, step) / f"{version_id}{step_ext(step)}"
+
+
+def _file_exists(base: Path, step: str, version_id: str) -> bool:
+    """Whether a version's file is on disk (False for an invalid step or id)."""
+    try:
+        return version_path(base, step, version_id).exists()
+    except (ValueError, OSError):
+        return False
 
 
 def _get_db(base: Path):
     """Get the PipelineDB for the show containing this episode."""
-    from podcodex.core.pipeline_db import get_pipeline_db
+    from podcodex.core._utils import show_dir_of
 
-    show_dir = base.parent.parent
-    return get_pipeline_db(show_dir)
+    return get_pipeline_db(show_dir_of(base))
 
 
 # ------------------------------------------------------------------
@@ -203,7 +201,7 @@ def save_version(
 
     1. Generate version ID from timestamp + type
     2. Compute content_hash
-    3. Write segments JSON to {step}/{id}.json
+    3. Write the segments to {step}/{id}.json (.parquet for PARQUET_STEPS)
     4. INSERT into versions table in pipeline.db
     5. Return version_id
 
@@ -237,20 +235,30 @@ def save_version(
         segment_count=len(segments),
     )
 
-    sdir = _step_dir(base, step)
-    sdir.mkdir(parents=True, exist_ok=True)
+    if step in WAV_STEPS:
+        raise ValueError(f"{step!r} stores audio; use save_synthesize_version")
+    # version_path validates *step* as a single path component: a translation
+    # language reaches here from request bodies, and "../../x" used to write
+    # outside the episode while reads and deletes refused the same value.
+    path = version_path(base, step, version_id)
     if step in PARQUET_STEPS:
         from podcodex.core._utils import write_parquet
 
-        write_parquet(sdir / f"{version_id}.parquet", segments)
+        write_parquet(path, segments)
     else:
-        from podcodex.core._utils import write_json
+        from podcodex.core._utils import write_json_atomic
 
-        write_json(sdir / f"{version_id}.json", segments)
+        write_json_atomic(path, segments)
 
-    # Insert metadata into DB
-    db = _get_db(base)
-    db.insert_version(base.name, step, asdict(meta))
+    # File first, then row: a row must never point at nothing. If the row
+    # cannot be written (another process holding the DB past the busy
+    # timeout, a full disk), take the file back out, or the status reconcile
+    # reads the step as done while no reader can open the version.
+    try:
+        _get_db(base).insert_version(base.name, step, asdict(meta))
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
 
     logger.debug(
         "Saved version {} for step '{}' ({} segments)",
@@ -283,6 +291,13 @@ def _parse_version_id(version_id: str, fallback: Path) -> tuple[str, str]:
     return (vtype or "raw"), stamp.isoformat()
 
 
+# How long a version row may point at a missing file before backfill drops
+# it. A file can be late rather than gone: a synced pipeline.db arriving
+# before the version files it indexes. Pruning on the first miss deleted the
+# row's provenance and verified pointer for good.
+MISSING_ROW_GRACE_S = 24 * 3600
+
+
 def backfill_versions_from_disk(show_folder: Path) -> int:
     """Register version files on disk that pipeline.db has no row for.
 
@@ -290,24 +305,27 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
     so files whose rows are gone cannot be opened even though the content is
     right there. That happens whenever the DB is rebuilt from a filesystem
     scan (a first open of a pre-DB library, a DB lost to a sync conflict),
-    because `populate_from_scan` restores the per-episode
+    because `_populate_from_scan` restores the per-episode
     flags but not the version index.
 
     Provenance cannot be recovered, so rows come back with no model and no
     params. The ``type`` suffix in the filename is preserved, which is what
-    decides whether a version reads as edited.
+    decides whether a version reads as edited. Existing rows always win: a
+    save landing between the scan and the insert keeps its provenance.
 
-    The pass also runs the other way: rows whose file is gone are dropped.
-    Nothing else prunes them (``delete_version`` removes file and row
-    together, so only an out-of-band loss strands one), and a stale row at
-    the head of a step's order used to hide every older readable version
-    from ``resolve_canonical_ref``. Removing the last row of a step goes
-    through ``_refresh_status_after_delete``, the same hook a normal delete
-    uses, so the step's flag demotes instead of pointing at nothing.
+    The pass also runs the other way: rows whose file is gone are dropped,
+    once the file has been missing for ``MISSING_ROW_GRACE_S``. The first
+    miss only stamps ``missing_since``; a file that comes back clears it.
+    Read paths already skip rows without a file, so a row waiting out its
+    grace hides nothing. Removing the last row of a step goes through
+    ``_refresh_status_after_delete``, the same hook a normal delete uses, so
+    the step's flag demotes instead of pointing at nothing.
 
     Returns the number of rows inserted.
     """
-    from podcodex.core.pipeline_db import get_pipeline_db
+    import time
+
+    from podcodex.core._utils import episode_base
 
     show_folder = Path(show_folder)
     db = get_pipeline_db(show_folder)
@@ -319,13 +337,12 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
             known[step] = db.version_ids_by_stem(step)
         return known[step]
 
-    def _register(
+    def _row(
         stem: str, step: str, path: Path, input_hash: str | None = None
-    ) -> None:
-        nonlocal inserted
+    ) -> tuple[str, str, dict] | None:
         version_id = path.stem
         if version_id in _ids(step).get(stem, set()):
-            return
+            return None
         if step in WAV_STEPS or step in PARQUET_STEPS:
             # Audio has no segments to hash, and parquet round-trips numpy
             # arrays that compute_hash cannot serialise. Both fall back to the
@@ -335,35 +352,33 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
             try:
                 content_hash = f"size:{path.stat().st_size}"
             except OSError:
-                return
+                return None
             segment_count = 0
         else:
             try:
                 segments = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 logger.warning("Skipping unreadable version file {}", path)
-                return
+                return None
             if not isinstance(segments, list):
-                return
+                return None
             content_hash = compute_hash(segments)
             segment_count = len(segments)
         vtype, timestamp = _parse_version_id(version_id, path)
-        db.insert_version(
-            stem,
-            step,
-            asdict(
-                VersionMeta(
-                    step=step,
-                    type=vtype,
-                    id=version_id,
-                    timestamp=timestamp,
-                    content_hash=content_hash,
-                    segment_count=segment_count,
-                    input_hash=input_hash,
-                )
-            ),
+        meta = VersionMeta(
+            step=step,
+            type=vtype,
+            id=version_id,
+            timestamp=timestamp,
+            content_hash=content_hash,
+            segment_count=segment_count,
+            input_hash=input_hash,
         )
-        inserted += 1
+        return stem, step, asdict(meta)
+
+    def _flush(rows: list[tuple[str, str, dict] | None]) -> None:
+        nonlocal inserted
+        inserted += db.insert_versions_if_absent([r for r in rows if r])
 
     walked: list[str] = []
     for ep_dir in sorted(p for p in show_folder.iterdir() if p.is_dir()):
@@ -371,23 +386,25 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
             continue
         stem = ep_dir.name
         walked.append(stem)
-        # Label sources first: a speaker_map's input_hash points at whichever
-        # of them is current, so they must carry their (rebuilt) hashes before
-        # any map is registered.
-        for step_dir in sorted(p for p in ep_dir.iterdir() if p.is_dir()):
-            step = step_dir.name
-            if step == "transcript":
-                for sub in sorted(p for p in step_dir.iterdir() if p.is_dir()):
-                    if sub.name not in PARQUET_STEPS:
-                        continue
-                    for path in sorted(sub.glob(f"*{_step_ext(sub.name)}")):
-                        _register(stem, sub.name, path)
-        for step_dir in sorted(p for p in ep_dir.iterdir() if p.is_dir()):
-            step = step_dir.name
-            if step == "speaker_map":
-                continue
-            for path in sorted(step_dir.glob(f"*{_step_ext(step)}")):
-                _register(stem, step, path)
+        step_dirs = sorted(p for p in ep_dir.iterdir() if p.is_dir())
+        # Label sources first, committed before any map is registered: a
+        # speaker_map's input_hash points at whichever of them is current.
+        label_rows = []
+        transcript_dir = ep_dir / "transcript"
+        if transcript_dir.is_dir():
+            for sub in sorted(p for p in transcript_dir.iterdir() if p.is_dir()):
+                if sub.name in PARQUET_STEPS:
+                    for path in sorted(sub.glob(f"*{step_ext(sub.name)}")):
+                        label_rows.append(_row(stem, sub.name, path))
+        _flush(label_rows)
+        _flush(
+            [
+                _row(stem, step_dir.name, path)
+                for step_dir in step_dirs
+                if step_dir.name != "speaker_map"
+                for path in sorted(step_dir.glob(f"*{step_ext(step_dir.name)}"))
+            ]
+        )
         # Speaker maps last, re-bound to the rebuilt label source. Their
         # original input_hash was the source's sha256, which a rebuild cannot
         # reproduce (parquet gets a stat hash), so binding them to the current
@@ -395,29 +412,50 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
         # dropping every hand-assigned name.
         map_dir = ep_dir / "speaker_map"
         if map_dir.is_dir():
-            bucket = _speaker_map_bucket_hash(ep_dir / stem)
-            for path in sorted(map_dir.glob(f"*{_step_ext('speaker_map')}")):
-                _register(stem, "speaker_map", path, input_hash=bucket)
+            bucket = _speaker_map_bucket_hash(episode_base(show_folder, stem))
+            _flush(
+                [
+                    _row(stem, "speaker_map", path, input_hash=bucket)
+                    for path in sorted(map_dir.glob(f"*{step_ext('speaker_map')}"))
+                ]
+            )
 
+    now = time.time()
     pruned = 0
+    back: list[tuple[str, str, str]] = []
+    first_miss: list[tuple[str, str, str]] = []
+    all_rows = db.list_all_versions_by_stem()
     for stem in walked:
-        base = show_folder / stem / stem
-        missing: dict[str, list[str]] = {}
-        for meta in db.list_all_versions(stem):
+        base = episode_base(show_folder, stem)
+        expired: dict[str, list[str]] = {}
+        for meta in all_rows.get(stem, []):
             step, version_id = meta["step"], meta["id"]
-            try:
-                exists = version_path(base, step, version_id).exists()
-            except ValueError:
-                exists = False
-            if not exists:
-                missing.setdefault(step, []).append(version_id)
-        for step, ids in missing.items():
+            exists = _file_exists(base, step, version_id)
+            since = meta.get("missing_since")
+            if exists:
+                if since is not None:
+                    back.append((stem, step, version_id))
+            elif since is None:
+                first_miss.append((stem, step, version_id))
+            elif now - since >= MISSING_ROW_GRACE_S:
+                expired.setdefault(step, []).append(version_id)
+        for step, ids in expired.items():
             pruned += db.delete_versions(stem, step, ids)
             _refresh_status_after_delete(base, step)
+    db.set_missing_since(back, None)
+    db.set_missing_since(first_miss, now)
 
     if inserted:
         logger.info(
             "Rebuilt {} version rows from disk for {}", inserted, show_folder.name
+        )
+    if first_miss:
+        logger.info(
+            "{} version rows point at missing files in {}; dropped if still "
+            "missing after {}h",
+            len(first_miss),
+            show_folder.name,
+            MISSING_ROW_GRACE_S // 3600,
         )
     if pruned:
         logger.info(
@@ -426,6 +464,22 @@ def backfill_versions_from_disk(show_folder: Path) -> int:
             show_folder.name,
         )
     return inserted
+
+
+def seed_show_db(show_folder: Path, episodes: list) -> None:
+    """Bootstrap a show's pipeline.db from a folder scan.
+
+    The version index is rebuilt *before* the episode rows: every read path
+    resolves an id through that index, so without it episodes read "done"
+    while their transcripts cannot be opened. Doing it first also makes the
+    repair resumable, since callers gate on ``episode_count() == 0`` (or on
+    stems with no row) and a process killed midway retries the whole thing.
+    The single entry for that order (``PipelineDB._populate_from_scan`` is
+    private for this reason).
+    """
+    backfill_versions_from_disk(show_folder)
+    if episodes:
+        get_pipeline_db(show_folder)._populate_from_scan(episodes)
 
 
 def new_version_id(vtype: str = "raw") -> tuple[datetime, str]:
@@ -443,7 +497,8 @@ def save_synthesize_version(
     now: datetime,
     strategy: str,
     silence_duration: float,
-    source_version_id: str | None,
+    source: SourceRef | SourceVersion,
+    source_chain: list[str] | None = None,
     language: str,
     model_size: str | None,
     segment_count: int,
@@ -460,6 +515,10 @@ def save_synthesize_version(
     Content hash is `size:<bytes>` rather than a sha256 of the audio — synth
     rows are addressed by version_id and never deduped against other rows,
     so a full-file hash would just burn I/O on every Assemble for no signal.
+
+    *source* is the version the segments were read from (the pin, the
+    translation, or the canonical source), recorded so the audio says which
+    text it speaks.
     """
     stat = audio_file.stat()
     file_size_bytes = stat.st_size
@@ -471,7 +530,9 @@ def save_synthesize_version(
         params={
             "strategy": strategy,
             "silence_duration": silence_duration,
-            "source_version_id": source_version_id,
+            "source_step": source.step,
+            "source_version_id": source.version_id,
+            **({"source_chain": source_chain} if source_chain else {}),
             "language": language,
             "duration_s": round(duration_s, 2),
             "file_size_bytes": file_size_bytes,
@@ -573,6 +634,38 @@ def load_version(base: Path, step: str, version_id: str) -> list[dict]:
         ) from e
 
 
+def _live_pointer(base: Path, pointer: dict | None) -> tuple[str, str] | None:
+    """The verified pointer's ``(step, version_id)`` if it is still usable."""
+    if (
+        pointer
+        and pointer["step"] in VERIFIABLE_STEPS
+        and _file_exists(base, pointer["step"], pointer["version_id"])
+    ):
+        return pointer["step"], pointer["version_id"]
+    return None
+
+
+def _canonical_ref_from(
+    base: Path,
+    pointer: dict | None,
+    versions_for: Callable[[str], list[dict]],
+) -> tuple[str, str] | None:
+    """The canonical ladder for one episode.
+
+    *pointer* is the episode's verified pointer (``{step, version_id}``) and
+    *versions_for(step)* its newest-first ``corrected`` / ``transcript``
+    rows, asked for only when the rung above did not settle it. Shared by
+    the single and bulk resolvers so the rules cannot drift.
+    """
+    ref = _live_pointer(base, pointer)
+    if ref:
+        return ref
+    for step in ("corrected", "transcript"):
+        for meta in _live_in_default_order(base, step, versions_for(step)):
+            return step, meta["id"]
+    return None
+
+
 def resolve_canonical_ref(base: Path) -> tuple[str, str] | None:
     """The canonical seglist's ``(step, version_id)``: the single definition.
 
@@ -580,24 +673,23 @@ def resolve_canonical_ref(base: Path) -> tuple[str, str] | None:
     that, the newest ``corrected`` (honoring the "edited beats freshness"
     ordering), then the newest ``transcript``. Candidates whose file is gone
     are skipped, the way ``load_latest`` walks past them: rows outlive their
-    files (a sync conflict, a manual cleanup, a crash between the unlink and
-    the row delete) and nothing prunes them, so one stale row at the head of
-    the order would otherwise hide every older readable version and the
-    episode would read as having no transcript at all. Only stats the
-    candidates it considers, so batched callers (e.g. the speaker roster) can
-    still resolve every episode's ref single-threaded and then parallelize
-    the file loads. Returns None when the episode has no readable version of
-    either step.
+    files (a sync still copying, a manual cleanup, a crash between the unlink
+    and the row delete) and backfill only drops them after a grace period, so
+    one stale row at the head of the order would otherwise hide every older
+    readable version and the episode would read as having no transcript at
+    all. Only stats the candidates it considers, so batched callers (e.g. the
+    speaker roster) can still resolve every episode's ref single-threaded and
+    then parallelize the file loads. Returns None when the episode has no
+    readable version of either step.
     """
-    verified = resolve_verified_source(base)
-    if verified:
-        step, vid, _ = verified
-        return step, vid
-    for step in ("corrected", "transcript"):
-        for meta in _default_ordered_versions(base, step):
-            if version_path(base, step, meta["id"]).exists():
-                return step, meta["id"]
-    return None
+    try:
+        db = _get_db(base)
+        pointer = db.get_verified(base.name)
+    except Exception:
+        return None
+    return _canonical_ref_from(
+        base, pointer, lambda step: db.list_versions(base.name, step)
+    )
 
 
 def resolve_canonical_refs(
@@ -605,42 +697,22 @@ def resolve_canonical_refs(
 ) -> dict[str, tuple[str, str] | None]:
     """Bulk :func:`resolve_canonical_ref` for many stems, O(1) DB queries.
 
-    Same ladder per stem (verified pointer, then edited-first ``corrected``,
-    then newest ``transcript``) but resolved from two bulk queries instead of
-    2-3 per stem, so per-show consumers (speaker roster) scale. Candidates
-    are stat-checked and rows without a file are skipped, matching
-    :func:`resolve_canonical_ref`; the verified pointer's check mirrors
-    ``resolve_verified_source``.
+    Same ladder per stem, resolved from two bulk queries instead of 2-3 per
+    stem, so per-show consumers (speaker roster) scale.
     """
-    from podcodex.core.pipeline_db import get_pipeline_db
+    from podcodex.core._utils import episode_base
 
     db = get_pipeline_db(show_dir)
     verified = db.verified_pointers()
     by_step = db.versions_for_steps(["corrected", "transcript"])
-    out: dict[str, tuple[str, str] | None] = {}
-    for stem in stems:
-        base = show_dir / stem / stem
-        ref: tuple[str, str] | None = None
-        ptr = verified.get(stem)
-        if (
-            ptr
-            and ptr["step"] in VERIFIABLE_STEPS
-            and version_path(base, ptr["step"], ptr["version_id"]).exists()
-        ):
-            ref = (ptr["step"], ptr["version_id"])
-        if ref is None:
-            for step in ("corrected", "transcript"):
-                versions = by_step.get((stem, step)) or []
-                if step not in _STRICT_NEWEST_STEPS:
-                    versions = sort_versions_for_default(versions)
-                for meta in versions:
-                    if version_path(base, step, meta["id"]).exists():
-                        ref = (step, meta["id"])
-                        break
-                if ref is not None:
-                    break
-        out[stem] = ref
-    return out
+    return {
+        stem: _canonical_ref_from(
+            episode_base(show_dir, stem),
+            verified.get(stem),
+            lambda step, stem=stem: by_step.get((stem, step)) or [],
+        )
+        for stem in stems
+    }
 
 
 def load_canonical_segments(base: Path) -> list[dict] | None:
@@ -665,7 +737,7 @@ def load_version_by_id(base: Path, version_id: str) -> tuple[list[dict], str] | 
     Centralises the lookup pattern used by index + LLM step entry points
     (single-episode and batch).
     """
-    meta = _get_db(base).get_version(version_id)
+    meta = _get_db(base).get_version(version_id, stem=base.name)
     if not meta:
         return None
     try:
@@ -691,8 +763,10 @@ def sort_versions_for_default(versions: list[dict]) -> list[dict]:
 _STRICT_NEWEST_STEPS = {"transcript"}
 
 
-def _default_ordered_versions(base: Path, step: str) -> list[dict]:
-    """Versions ordered so index 0 is the default pick for *step*.
+def _live_in_default_order(base: Path, step: str, versions: list[dict]):
+    """Yield *versions* (newest-first rows) in default-pick order, skipping
+    rows whose file is gone. Files are stat'ed lazily, so a caller that only
+    wants the head pays for one stat, not one per version.
 
     Rows whose file is gone are dropped here rather than in each reader.
     A version can lose its file out of band (a sync, a manual delete, a
@@ -702,58 +776,99 @@ def _default_ordered_versions(base: Path, step: str) -> list[dict]:
     how the status surfaces came to describe a different version than the
     one whose segments were actually loaded.
     """
-    versions = _get_db(base).list_versions(base.name, step)
-    live: list[dict] = []
+    if step not in _STRICT_NEWEST_STEPS:
+        versions = sort_versions_for_default(versions)
     for meta in versions:
-        try:
-            if version_path(base, step, meta["id"]).exists():
-                live.append(meta)
-        except (ValueError, OSError):
-            continue
-    if step in _STRICT_NEWEST_STEPS:
-        return live  # list_versions is already newest-first
-    return sort_versions_for_default(live)
+        if _file_exists(base, step, meta["id"]):
+            yield meta
 
 
-def load_latest(base: Path, step: str) -> list[dict] | None:
-    """Load segments from the best available version of a step.
+def load_latest_with_meta(base: Path, step: str) -> tuple[dict, list[dict]] | None:
+    """``(version meta, segments)`` of the best available version of a step.
 
     Most steps prefer hand-edited / validated versions over more recent
     model output (the "edited beats freshness" rule); the ``transcript``
-    step takes the strictly-newest version instead. Walks the resulting
-    order and returns the first version that loads cleanly — a missing or
-    corrupt file falls through to the next candidate.
-
-    Returns None if no version exists or all versions are unreadable.
+    step takes the strictly-newest version instead. A missing or corrupt
+    file falls through to the next candidate, and the meta returned is the
+    one whose segments were loaded, so a caller recording what it consumed
+    never pairs one version's id with another's content.
     """
-    versions = _default_ordered_versions(base, step)
-    if not versions:
-        return None
-    for meta in versions:
+    rows = _get_db(base).list_versions(base.name, step)
+    for meta in _live_in_default_order(base, step, rows):
         try:
-            return load_version(base, step, meta["id"])
+            return meta, load_version(base, step, meta["id"])
         except FileNotFoundError as e:
             logger.warning("Skipping version {}/{}: {}", step, meta["id"], e)
     return None
 
 
-def get_latest_provenance(base: Path, step: str) -> dict | None:
-    """Return the provenance dict of the default-pick version, or None.
+def load_latest(base: Path, step: str) -> list[dict] | None:
+    """Segments of the best available version of a step, or None.
 
-    Uses the same ordering as ``load_latest`` so status surfaces and
-    pipeline defaults agree on which version is "current", including the
-    skip of rows whose file is missing.
+    See :func:`load_latest_with_meta`.
     """
-    versions = _default_ordered_versions(base, step)
-    if not versions:
-        return None
-    meta = versions[0]
+    found = load_latest_with_meta(base, step)
+    return found[1] if found else None
+
+
+def provenance_of(meta: dict) -> dict:
+    """The provenance fields of a version row."""
     return {
         "model": meta.get("model"),
         "type": meta.get("type"),
         "params": meta.get("params", {}),
         "manual_edit": meta.get("manual_edit", False),
     }
+
+
+def get_version_provenance(
+    base: Path, version_id: str, step: str | None = None
+) -> dict | None:
+    """Provenance of one of this episode's versions, or None when unknown."""
+    try:
+        meta = _get_db(base).get_version(version_id, stem=base.name, step=step)
+    except Exception:
+        return None
+    return provenance_of(meta) if meta else None
+
+
+def current_version(base: Path, step: str) -> dict | None:
+    """The default-pick version row of *step* (what ``load_latest`` loads).
+
+    Same ordering, including the skip of rows whose file is missing, so
+    status surfaces and pipeline defaults agree on which version is
+    "current". Reads no segments.
+    """
+    rows = _get_db(base).list_versions(base.name, step)
+    return next(_live_in_default_order(base, step, rows), None)
+
+
+def get_latest_provenance(base: Path, step: str) -> dict | None:
+    """Return the provenance dict of the default-pick version, or None."""
+    head = current_version(base, step)
+    return provenance_of(head) if head else None
+
+
+def clean_translations(translations: list[str]) -> list[str]:
+    """Strip pipeline-step names from a `translations` list.
+
+    Legacy DBs (pre-PIPELINE_STEPS fix) leaked step names like ``segments`` or
+    ``diarization`` into the pipeline_db `translations` array. Filter on read so
+    stale rows don't surface as fake languages in the UI; new writes are
+    already clean. Lives beside PIPELINE_STEPS: the status routes need it at
+    boot, and it used to drag the LLM translate module in with it.
+    """
+    return [t for t in translations if t not in PIPELINE_STEPS]
+
+
+def translation_steps(base: Path) -> list[str]:
+    """Sorted translation languages with at least one version row."""
+    try:
+        steps = _get_db(base).list_steps(base.name)
+    except Exception:
+        logger.opt(exception=True).debug("translation_steps: DB error for {}", base)
+        return []
+    return clean_translations(steps)
 
 
 def list_versions(base: Path, step: str) -> list[dict]:
@@ -772,8 +887,6 @@ def list_all_versions(base: Path) -> list[dict]:
 
 def list_all_versions_by_stem(show_dir: Path) -> dict[str, list[dict]]:
     """Every version in a show, grouped by episode stem (newest first)."""
-    from podcodex.core.pipeline_db import get_pipeline_db
-
     return get_pipeline_db(show_dir).list_all_versions_by_stem()
 
 
@@ -784,47 +897,68 @@ def version_count(base: Path, step: str) -> int:
 
 
 def has_version(base: Path, step: str) -> bool:
-    """Return True if at least one version exists for the given step."""
-    return version_count(base, step) > 0
+    """Return True if at least one readable version exists for the step.
+
+    Rows whose file is gone do not count: batch runs skip a step on this, and
+    skipping to output nobody can open left the step undone for good.
+    """
+    return find_matching_version(base, step, {}) is not None
 
 
-def has_matching_version(base: Path, step: str, params: dict) -> bool:
-    """Check if any version exists that was produced with matching params.
+def find_matching_version(
+    base: Path, step: str, params: dict, *, current_only: bool = False
+) -> str | None:
+    """Newest version id produced with matching params, or None.
 
     Used by batch pipeline to skip steps already run with the same config.
     Compares the subset of keys present in *params* against each version's
-    stored params + model.
+    stored params + model; only versions whose file exists count.
+
+    With *current_only*, only the step's default pick (what ``load_latest``
+    returns) is considered. The transcription chain needs that: every later
+    step loads the newest segments / diarization, so skipping because an
+    *older* version matches fed the next step another model's output.
 
     Args:
         base:   AudioPaths.base path.
         step:   Pipeline step name.
         params: Dict of params to match.  Special key ``"model"`` is compared
                 against the version's ``model`` field; all other keys are
-                compared against the version's ``params`` dict.
+                compared against the version's ``params`` dict. A frozenset
+                value accepts any of its members. Empty matches any version.
     """
-    if not params:
-        return has_version(base, step)
-
     try:
-        db = _get_db(base)
-        versions = db.list_versions(base.name, step)
+        versions = _get_db(base).list_versions(base.name, step)
     except Exception:
-        return False
+        return None
+    if current_only:
+        head = next(_live_in_default_order(base, step, versions), None)
+        versions = [head] if head else []
+
+    def accepts(val, actual) -> bool:
+        return actual in val if isinstance(val, frozenset) else actual == val
 
     for v in versions:
-        match = True
-        for key, val in params.items():
-            if key == "model":
-                if v.get("model") != val:
-                    match = False
-                    break
-            else:
-                if v.get("params", {}).get(key) != val:
-                    match = False
-                    break
-        if match:
-            return True
-    return False
+        match = all(
+            accepts(
+                val, v.get("model") if key == "model" else v.get("params", {}).get(key)
+            )
+            for key, val in params.items()
+        )
+        if not match:
+            continue
+        if _file_exists(base, step, v["id"]):
+            return v["id"]
+    return None
+
+
+def has_matching_version(
+    base: Path, step: str, params: dict, *, current_only: bool = False
+) -> bool:
+    """Whether :func:`find_matching_version` finds one."""
+    return (
+        find_matching_version(base, step, params, current_only=current_only) is not None
+    )
 
 
 def delete_version_by_id(base: Path, version_id: str) -> bool:
@@ -833,7 +967,7 @@ def delete_version_by_id(base: Path, version_id: str) -> bool:
     Mirrors ``load_version_by_id`` for callers (e.g. step-agnostic delete
     routes) that don't need to plumb the step through.
     """
-    meta = _get_db(base).get_version(version_id)
+    meta = _get_db(base).get_version(version_id, stem=base.name)
     if not meta:
         return False
     return delete_version(base, meta["step"], version_id)
@@ -859,7 +993,9 @@ def delete_version(base: Path, step: str, version_id: str) -> bool:
     try:
         db = _get_db(base)
         deleted_meta = (
-            db.get_version(version_id) if step in SPEAKER_LABEL_SOURCE_STEPS else None
+            db.get_version(version_id, stem=base.name, step=step)
+            if step in SPEAKER_LABEL_SOURCE_STEPS
+            else None
         )
         count = db.delete_versions(base.name, step, [version_id])
         found = found or count > 0
@@ -914,10 +1050,10 @@ def _refresh_status_after_delete(base: Path, step: str) -> None:
 
     The "no versions left" test reads the DB, not the step directory: a
     normal delete unlinks the file before dropping the row, so both agree.
-    Note the status reconcile in the shows route is deliberately broader (a
-    step counts as done when it has a row *or* a file on disk), because it
-    also has to preserve flags a filesystem-derived bootstrap wrote before
-    any version rows existed.
+    Note the status reconcile in the shows route goes by files instead (a
+    step counts as done when a version file is on disk), because it also has
+    to preserve flags a filesystem-derived bootstrap wrote before any version
+    rows existed.
 
     Deliberately does not pre-check with ``list_versions``: pipeline steps run
     in spawned subprocesses that write to this same DB, so the check and the
@@ -970,16 +1106,11 @@ def resolve_verified_source(base: Path) -> tuple[str, str, Path] | None:
         ptr = db.get_verified(base.name)
     except Exception:
         return None
-    if not ptr:
+    ref = _live_pointer(base, ptr)
+    if ref is None:
         return None
-    step = ptr["step"]
-    vid = ptr["version_id"]
-    if step not in VERIFIABLE_STEPS:
-        return None
-    path = version_path(base, step, vid)
-    if not path.exists():
-        return None
-    return step, vid, path
+    step, vid = ref
+    return step, vid, version_path(base, step, vid)
 
 
 def _latest_content_hash(base: Path, step: str) -> str | None:
@@ -1030,6 +1161,41 @@ def _speaker_map_bucket_hash(base: Path) -> str | None:
     return None
 
 
+def apply_speaker_map(segments: list[dict], mapping: dict[str, str]) -> list[dict]:
+    """*segments* with each original label replaced by its current name.
+
+    The one way a stored seglist is shown with renames made after it was
+    generated (translations, synthesis sources); unmapped labels pass through.
+    """
+    if not mapping:
+        return segments
+    return [
+        {**s, "speaker": mapping.get(s.get("speaker", ""), s.get("speaker", ""))}
+        for s in segments
+    ]
+
+
+def compose_speaker_map(
+    current: dict[str, str], renames: dict[str, str]
+) -> dict[str, str]:
+    """Apply *renames* (keyed by displayed label) on top of *current*.
+
+    An entry of *current* whose name is renamed follows the rename, and the
+    renamed label itself maps too, since seglists saved after an earlier
+    rename carry that label.
+    """
+    composed = dict(current)
+    for source, target in renames.items():
+        for orig, name in current.items():
+            if name == source:
+                composed[orig] = target
+        # The displayed label itself also maps: text saved after the earlier
+        # rename (an edited transcript, a correction or translation of it)
+        # carries the intermediate name, not the original ID.
+        composed[source] = target
+    return composed
+
+
 def save_speaker_map_version(base: Path, mapping: dict[str, str]) -> str:
     """Save a speaker map as a versioned ``speaker_map`` entry.
 
@@ -1040,12 +1206,21 @@ def save_speaker_map_version(base: Path, mapping: dict[str, str]) -> str:
     transcripts) so each map stays bound to the diarization/import that
     produced its IDs.
 
+    *mapping* holds renames keyed by the label the user currently sees,
+    which after an earlier rename is a name, not an original ID. They are
+    composed onto the bucket's current map, so every original label keeps
+    pointing at its latest name: renaming SPEAKER_00 to Alice, then Alice to
+    Alicia, stores ``SPEAKER_00 -> Alicia``, and renaming Bob later leaves
+    that entry alone. Consumers only ever map original labels (translations
+    and re-exports still carry them) through the single latest map.
+
     Bucket semantics: one map per ``input_hash``. Saving replaces any
     existing map in the same bucket but leaves maps for other source
     hashes intact, so re-diarize / re-import does not destroy old maps.
     """
     bucket_hash = _speaker_map_bucket_hash(base)
-    entries = [{"id": k, "name": v} for k, v in sorted(mapping.items())]
+    composed = compose_speaker_map(load_latest_speaker_map(base), mapping)
+    entries = [{"id": k, "name": v} for k, v in sorted(composed.items())]
     vid = save_version(
         base=base,
         step="speaker_map",

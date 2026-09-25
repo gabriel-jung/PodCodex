@@ -50,11 +50,9 @@ def load() -> dict[str, Any]:
 
 def save(data: dict[str, Any]) -> None:
     """Atomically write ``data`` to the settings file."""
-    p = _path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(p)
+    from podcodex.core._utils import write_json_atomic
+
+    write_json_atomic(_path(), data, sort_keys=True)
 
 
 def get_device_override() -> DeviceOverride:

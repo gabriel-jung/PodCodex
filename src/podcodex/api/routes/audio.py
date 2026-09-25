@@ -9,7 +9,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from loguru import logger
 
-from podcodex.api.routes._helpers import AUDIO_EXTS, resolve_inside_show_root
+from podcodex.api.routes._helpers import resolve_inside_show_root
+from podcodex.core.constants import AUDIO_EXTENSIONS
 
 router = APIRouter()
 
@@ -43,7 +44,7 @@ def delete_audio_file(
     if not p.is_file():
         raise HTTPException(404, f"Audio file not found: {path}")
 
-    if p.suffix.lower() not in AUDIO_EXTS:
+    if p.suffix.lower() not in AUDIO_EXTENSIONS:
         raise HTTPException(400, f"Not an audio file: {p.name}")
 
     show_folder = p.parent

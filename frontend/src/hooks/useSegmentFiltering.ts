@@ -101,10 +101,13 @@ export function useFilteredSegments(
     recentlyEdited?: Set<number>;
     customPatterns?: string[];
     isPendingRemoval?: (seg: Segment, id: number) => boolean;
+    /** The label a row shows (pending renames applied); the speaker filter
+     *  matches on it, since the menu lists what the rows display. */
+    displaySpeaker?: (speaker: string) => string;
   },
 ): FilteredResult {
   const { speakerFilter, showFlaggedOnly, showChangedOnly, showRemovedOnly, searchQuery, page, pageSize, densityThreshold, maxDensityThreshold } = filters;
-  const { dismissedFlags, isChanged, recentlyEdited, customPatterns = [], isPendingRemoval } = opts;
+  const { dismissedFlags, isChanged, recentlyEdited, customPatterns = [], isPendingRemoval, displaySpeaker } = opts;
   const searchLower = searchQuery.toLowerCase().trim();
 
   const isFlaggedSeg = (seg: Segment, id: number): boolean => {
@@ -125,7 +128,12 @@ export function useFilteredSegments(
       const sticky = recentlyEdited?.has(id) ?? false;
 
       if (!sticky) {
-        if (speakerFilter && seg.speaker !== speakerFilter && seg.speaker !== BREAK_SPEAKER) continue;
+        if (
+          speakerFilter &&
+          (displaySpeaker ? displaySpeaker(seg.speaker) : seg.speaker) !== speakerFilter &&
+          seg.speaker !== BREAK_SPEAKER
+        )
+          continue;
         if (showFlaggedOnly && !isFlaggedSeg(seg, id) && seg.speaker !== BREAK_SPEAKER) continue;
         if (showChangedOnly && !isChanged(seg, id) && seg.speaker !== BREAK_SPEAKER) continue;
         if (showRemovedOnly && !(isPendingRemoval?.(seg, id) ?? false) && seg.speaker !== BREAK_SPEAKER) continue;
@@ -142,7 +150,7 @@ export function useFilteredSegments(
 
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editedSegments, ids, speakerFilter, showFlaggedOnly, showChangedOnly, showRemovedOnly, searchLower, densityThreshold, maxDensityThreshold, dismissedFlags, recentlyEdited, customPatterns, isPendingRemoval]);
+  }, [editedSegments, ids, speakerFilter, showFlaggedOnly, showChangedOnly, showRemovedOnly, searchLower, densityThreshold, maxDensityThreshold, dismissedFlags, recentlyEdited, customPatterns, isPendingRemoval, displaySpeaker]);
 
   // Auto-disable filters when they produce no results
   useEffect(() => {

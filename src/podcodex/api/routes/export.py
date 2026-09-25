@@ -13,13 +13,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
-from podcodex.core._utils import (
-    AudioPaths,
-    normalize_lang,
-    segments_to_srt,
-    segments_to_text,
-    segments_to_vtt,
-)
+from podcodex.core._utils import AudioPaths, normalize_lang
+from podcodex.core.subtitles import segments_to_srt, segments_to_text, segments_to_vtt
 from podcodex.core.pipeline_db import DB_FILENAME
 from podcodex.core.versions import load_latest
 
@@ -46,7 +41,7 @@ def _declared_speakers(audio_path: str, output_dir: str | None) -> set[str]:
 
     try:
         p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-        meta = load_show_meta(p.base.parent.parent)
+        meta = load_show_meta(p.show_dir)
     except Exception:
         return set()
     return set(meta.speakers) if meta else set()

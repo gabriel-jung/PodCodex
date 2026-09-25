@@ -12,14 +12,59 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 from podcodex.core.constants import AUDIO_EXTENSIONS
 
 
-# Single source of truth — keeping this aligned with the scanner's set
-# avoids "is_downloaded says yes, scanner says no" mismatches that hid
-# yt-dlp output behind missing-ffmpeg failures.
-AUDIO_EXTS = AUDIO_EXTENSIONS
+def audio_stem(name: str) -> str | None:
+    """The episode stem an audio file name stands for, or None.
+
+    The one rule for "which audio file belongs to a stem": a known audio
+    extension, compared lowercased so ``Foo.MP3`` counts on a case-sensitive
+    filesystem. Every listing of show-root audio goes through here.
+    """
+    dot = name.rfind(".")
+    if dot > 0 and name[dot:].lower() in AUDIO_EXTENSIONS:
+        return name[:dot]
+    return None
+
+
+def show_audio_files(show_folder: Path) -> dict[str, list[Path]]:
+    """Every audio file at the show root, grouped by stem, from one listing.
+
+    Audio only ever lives at the show root (``import_local_file`` writes
+    ``{show}/{stem}{ext}``). Symlinks to files count: an episode symlinked in
+    from another disk is still an episode. The four places that used to
+    list audio each had their own copy of this, and they disagreed on
+    exactly that. A list per stem, because nothing enforces one file per
+    stem: ``ep.mp3`` beside ``ep.wav`` is one episode with two files.
+    """
+    import os
+
+    found: dict[str, list[Path]] = {}
+    try:
+        with os.scandir(show_folder) as it:
+            for entry in it:
+                stem = audio_stem(entry.name)
+                if stem is not None and entry.is_file():
+                    found.setdefault(stem, []).append(Path(show_folder) / entry.name)
+    except OSError:
+        return {}
+    for files in found.values():
+        files.sort()
+    return found
+
+
+def episode_audio_files(show_dir: Path, stem: str) -> list[Path]:
+    """Every audio file at the show root belonging to ``stem`` (sorted)."""
+    return show_audio_files(show_dir).get(stem, [])
+
+
+def episode_audio_file(show_dir: Path, stem: str) -> Path | None:
+    """One audio file for ``stem``, or None. See :func:`episode_audio_files`."""
+    files = episode_audio_files(show_dir, stem)
+    return files[0] if files else None
 
 
 def scan_show_stems(show_folder: Path) -> tuple[frozenset[str], frozenset[str]]:
@@ -46,17 +91,11 @@ def scan_show_stems(show_folder: Path) -> tuple[frozenset[str], frozenset[str]]:
                     if not name.startswith("."):
                         stems.add(name)
                     continue
-                # Symlinks followed, matching `episode_audio_files` (the
-                # scanner, and the live `is_downloaded` check the download
-                # loop still runs). Not following them reported an episode
-                # symlinked in from another disk as not downloaded, so the
-                # show page offered a Download button that then skipped it.
-                if not entry.is_file():
-                    continue
-                dot = name.rfind(".")
-                if dot > 0 and name[dot:].lower() in AUDIO_EXTENSIONS:
-                    stems.add(name[:dot])
-                    audio.add(name[:dot])
+                # Same rule as show_audio_files, symlinks to files included.
+                stem = audio_stem(name)
+                if stem is not None and entry.is_file():
+                    stems.add(stem)
+                    audio.add(stem)
     except OSError:
         pass
     return frozenset(stems), frozenset(audio)
@@ -76,8 +115,6 @@ def list_show_stems(show_folder: Path) -> frozenset[str]:
 
 def is_downloaded(show_folder: Path, stem: str) -> bool:
     """Check if an audio file with the given stem exists in the show folder."""
-    from podcodex.core.delete_episode import episode_audio_file
-
     return episode_audio_file(show_folder, stem) is not None
 
 
@@ -126,21 +163,47 @@ def _extract_broadcast_number(show_dir: Path, title: str) -> int | None:
         return None
 
 
-def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
+class SourceRef(NamedTuple):
+    """Which version a step reads, without its segments."""
+
+    step: str
+    version_id: str
+
+
+class SourceVersion(NamedTuple):
+    """Segments a step consumes, and the version they came from.
+
+    The version is what provenance records as the step's input: carrying it
+    from the load means the source chain and the correct prompt describe the
+    version actually used, not whichever one is newest by the time they are
+    built.
+    """
+
+    segments: list[dict]
+    step: str
+    version_id: str
+
+
+def _resolve_source_segments(p, source: str) -> SourceVersion:
     """Resolve source segments from the version DB.
 
-    Returns (segments, source_label). ``auto`` is ``versions.resolve_canonical_ref``,
-    the single definition of the canonical seglist (verified pointer, then
-    edited-first ``corrected``, then newest ``transcript``), so index,
-    translate, synthesize and the batch runner pick the same version the
-    speaker roster does. Raises ValueError if nothing found.
+    ``auto`` is ``versions.resolve_canonical_ref``, the single definition of
+    the canonical seglist (verified pointer, then edited-first ``corrected``,
+    then newest ``transcript``), so index, translate, synthesize and the
+    batch runner pick the same version the speaker roster does. ``transcript``,
+    ``corrected`` or a language code take that step's best version. Raises
+    ValueError if nothing found.
     """
     from podcodex.core._utils import normalize_lang
     from podcodex.core.versions import (
-        load_latest,
+        load_latest_with_meta,
         load_version,
         resolve_canonical_ref,
     )
+
+    def latest(step: str) -> SourceVersion | None:
+        found = load_latest_with_meta(p.base, step)
+        return SourceVersion(found[1], step, found[0]["id"]) if found else None
 
     if source == "auto":
         ref = resolve_canonical_ref(p.base)
@@ -151,52 +214,159 @@ def _resolve_source_segments(p, source: str) -> tuple[list[dict], str]:
             except FileNotFoundError:
                 segs = None
             if segs:
-                return segs, step
+                return SourceVersion(segs, step, vid)
         # The canonical ref is DB-only, so its file can be missing or
         # truncated (a sync conflict). Walk the remaining versions rather
         # than fail while a readable transcript sits on disk.
         for step in ("corrected", "transcript"):
-            segs = load_latest(p.base, step)
-            if segs:
-                return segs, step
-        raise ValueError("No transcript found — transcribe first")
+            found = latest(step)
+            if found and found.segments:
+                return found
+        raise ValueError("No transcript found, transcribe first")
 
     # Explicit steps read from ``p.base`` directly. Going through the audio
     # path would rebuild AudioPaths from ``p.audio_path``, which for an
     # output_dir-only episode (no audio; the synthetic path *is* the base)
     # lands one level too deep and never finds the transcript.
-    if source == "transcript":
-        segs = load_latest(p.base, "transcript")
-        if segs:
-            return segs, "transcript"
-        raise ValueError("No transcript found — transcribe first")
-
-    if source == "corrected":
-        segs = load_latest(p.base, "corrected")
-        if segs:
-            return segs, "corrected"
+    step = source if source in ("transcript", "corrected") else normalize_lang(source)
+    found = latest(step)
+    if found and found.segments:
+        return found
+    if step == "transcript":
+        raise ValueError("No transcript found, transcribe first")
+    if step == "corrected":
         raise ValueError("No corrected segments found")
-
-    # Language code
-    lang_norm = normalize_lang(source)
-    segs = load_latest(p.base, lang_norm)
-    if segs:
-        return segs, lang_norm
     raise ValueError(f"No translation found for '{source}'")
 
 
-def load_best_source(
-    audio_path: str | None = None, output_dir: str | None = None
-) -> list[dict]:
-    """Load the canonical source segments (see ``_resolve_source_segments``).
+def load_source(
+    audio_path: str | None = None,
+    output_dir: str | None = None,
+    version_id: str | None = None,
+    *,
+    step: str = "auto",
+) -> SourceVersion:
+    """The source a step runs on, with the version it came from.
 
-    Raises ValueError if no source segments are found.
+    The pinned *version_id* when given (the source picker; it must belong to
+    *step* unless *step* is ``auto``), else *step*'s choice: ``auto`` is the
+    canonical source, ``transcript`` the newest transcript (what correction
+    reads). Every "pinned, else default" site
+    goes through here; they used to hand-roll it and fall back three
+    different ways.
+
+    Raises:
+        ValueError: an unresolved pin, or no source segments.
     """
     from podcodex.core._utils import AudioPaths
+    from podcodex.core.versions import load_version_by_id
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    segments, _ = _resolve_source_segments(p, "auto")
-    return segments
+    if version_id:
+        resolved = load_version_by_id(p.base, version_id)
+        if resolved is None:
+            raise ValueError(f"Source version not found: {version_id}")
+        segments, found_step = resolved
+        if step != "auto" and found_step != step:
+            # Correction reads transcripts only: a stale picker value or a
+            # batch map shared with translate can name a corrected version
+            # or a translation, and correcting that saves the wrong input.
+            raise ValueError(
+                f"Source version {version_id} is a {found_step} version, not {step}"
+            )
+        return SourceVersion(segments, found_step, version_id)
+    return _resolve_source_segments(p, step)
+
+
+def resolve_source_ref(
+    audio_path: str | None = None,
+    output_dir: str | None = None,
+    version_id: str | None = None,
+    *,
+    step: str = "auto",
+) -> SourceRef | None:
+    """The version :func:`load_source` would read, found without reading it.
+
+    For decisions made before the load (the batch runner's "already done"
+    check needs the source's provenance, not its segments). None when
+    nothing usable exists or the pin does not belong to *step*.
+    """
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.pipeline_db import get_pipeline_db
+    from podcodex.core._utils import show_dir_of
+    from podcodex.core.versions import current_version, resolve_canonical_ref
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    if version_id:
+        meta = get_pipeline_db(show_dir_of(p.base)).get_version(
+            version_id, stem=p.base.name
+        )
+        if meta is None or (step != "auto" and meta["step"] != step):
+            return None
+        return SourceRef(meta["step"], version_id)
+    if step == "auto":
+        ref = resolve_canonical_ref(p.base)
+        return SourceRef(*ref) if ref else None
+    head = current_version(p.base, step)
+    return SourceRef(step, head["id"]) if head else None
+
+
+def load_best_source(
+    audio_path: str | None = None,
+    output_dir: str | None = None,
+    version_id: str | None = None,
+) -> list[dict]:
+    """Segments of :func:`load_source` (canonical unless pinned)."""
+    return load_source(audio_path, output_dir, version_id).segments
+
+
+def load_synth_source(
+    audio_path: str | None,
+    output_dir: str | None,
+    source_version_id: str | None = None,
+    source_lang: str = "",
+) -> tuple[SourceVersion, dict[str, str]]:
+    """The version synthesis runs on, with speakers as the panel shows them.
+
+    Pinned version (falling back, with a warning, when it no longer
+    resolves), else the newest version of *source_lang* (a translation),
+    else the canonical source. The current speaker map is applied to the
+    segments, as the translate read route does: the panel builds its segment
+    keys and voice sample names from the mapped speakers, so the job, the
+    assemble step and the listings must see the same labels or every key
+    misses. Returns the map too, for voice samples still filed under the old
+    labels. The version is what the assembled audio records as its source.
+
+    Raises:
+        ValueError: nothing to synthesize from.
+    """
+    from loguru import logger
+
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.versions import apply_speaker_map, load_latest_speaker_map
+
+    p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
+    source = None
+    if source_version_id:
+        try:
+            source = load_source(audio_path, output_dir, source_version_id)
+        except ValueError:
+            pass
+        if source is None or not source.segments:
+            source = None
+            logger.warning(
+                "Pinned source version {} unresolved, falling back", source_version_id
+            )
+    if source is None and source_lang:
+        try:
+            source = _resolve_source_segments(p, source_lang)
+        except ValueError:
+            pass
+    if source is None:
+        source = load_source(audio_path, output_dir)
+    speaker_map = load_latest_speaker_map(p.base)
+    mapped = apply_speaker_map(source.segments, speaker_map)
+    return source._replace(segments=mapped), speaker_map
 
 
 def build_index_transcript(
@@ -219,7 +389,8 @@ def build_index_transcript(
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
     if segments is None:
-        segments, source = _resolve_source_segments(p, source)
+        resolved = _resolve_source_segments(p, source)
+        segments, source = resolved.segments, resolved.step
 
     transcript: dict = {
         "meta": {"show": show_name, "episode": stem, "source": source},

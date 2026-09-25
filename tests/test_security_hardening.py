@@ -323,7 +323,7 @@ def test_token_file_created_0600(tmp_path, monkeypatch):
     import stat
 
     from podcodex.core import app_paths
-    from podcodex.core.api_token import get_or_create_api_token
+    from podcodex.api.api_token import get_or_create_api_token
 
     monkeypatch.delenv("PODCODEX_API_TOKEN", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))

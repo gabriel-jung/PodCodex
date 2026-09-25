@@ -214,7 +214,7 @@ def speaker_lines(chunk: Hit, query: str = "") -> str:
     highlight that exact substring so the user sees which span matched.
     Otherwise fall back to highlighting the raw query.
     """
-    from podcodex.core._utils import merge_display_turns
+    from podcodex.rag.hit import merge_display_turns
 
     turns = chunk.speakers or []
     mark = chunk.match_text or query

@@ -379,8 +379,10 @@ export default function TranscriptViewer({
 
   const speakers = useMemo(() => {
     const set = new Set<string>(externalSpeakers ?? []);
+    // Labels as the rows show them: a pending rename replaces the original,
+    // or the filter menu offers a name no row carries until the save.
     for (const seg of sourceSegments ?? []) {
-      if (seg.speaker && seg.speaker !== BREAK_SPEAKER) set.add(seg.speaker);
+      if (seg.speaker && seg.speaker !== BREAK_SPEAKER) set.add(pendingRenames[seg.speaker] ?? seg.speaker);
     }
     for (const name of addedSpeakers) set.add(name);
     for (const target of Object.values(pendingRenames)) set.add(target);
@@ -680,11 +682,12 @@ export default function TranscriptViewer({
     [editorSplitAt],
   );
 
+  const displaySpeaker = useCallback((speaker: string) => pendingRenames[speaker] ?? speaker, [pendingRenames]);
   const { displaySegments, pageSegments, totalPages, flaggedCount } = useFilteredSegments(
     editor.allEditedSegments,
     editor.allIds,
     filters,
-    { dismissedFlags, isChanged, recentlyEdited, customPatterns, isPendingRemoval: isPendingRemovalSeg },
+    { dismissedFlags, isChanged, recentlyEdited, customPatterns, isPendingRemoval: isPendingRemovalSeg, displaySpeaker },
   );
 
   useEffect(() => {

@@ -19,15 +19,29 @@ function synthVersionsQuery(audioPath: string | null | undefined, outputDir?: st
 export const getSynthesisStatus = (audioPath: string | null | undefined, outputDir?: string | null) =>
   json<SynthesisStatus>(`/api/synthesize/status?${synthVersionsQuery(audioPath, outputDir)}`);
 
+/** Query params naming the source synthesis runs on: the pinned version, or
+ *  the translation language (as sent to generate), else the canonical source. */
+function synthSourceQuery(
+  audioPath: string | null | undefined,
+  outputDir?: string | null,
+  sourceVersionId?: string | null,
+  sourceLang?: string | null,
+): URLSearchParams {
+  const params = new URLSearchParams(synthVersionsQuery(audioPath, outputDir));
+  if (sourceVersionId) params.set("source_version_id", sourceVersionId);
+  if (sourceLang) params.set("source_lang", sourceLang);
+  return params;
+}
+
 export const getVoiceSamples = (
   audioPath: string | null | undefined,
   outputDir?: string | null,
   sourceVersionId?: string | null,
-) => {
-  const params = new URLSearchParams(synthVersionsQuery(audioPath, outputDir));
-  if (sourceVersionId) params.set("source_version_id", sourceVersionId);
-  return json<Record<string, VoiceSample[]>>(`/api/synthesize/voice-samples?${params}`);
-};
+  sourceLang?: string | null,
+) =>
+  json<Record<string, VoiceSample[]>>(
+    `/api/synthesize/voice-samples?${synthSourceQuery(audioPath, outputDir, sourceVersionId, sourceLang)}`,
+  );
 
 export async function uploadVoiceSample(
   audioPath: string | null | undefined,
@@ -72,11 +86,11 @@ export const getGeneratedSegments = (
   audioPath: string | null | undefined,
   outputDir?: string | null,
   sourceVersionId?: string | null,
-) => {
-  const params = new URLSearchParams(synthVersionsQuery(audioPath, outputDir));
-  if (sourceVersionId) params.set("source_version_id", sourceVersionId);
-  return json<GeneratedSegment[]>(`/api/synthesize/generated-segments?${params}`);
-};
+  sourceLang?: string | null,
+) =>
+  json<GeneratedSegment[]>(
+    `/api/synthesize/generated-segments?${synthSourceQuery(audioPath, outputDir, sourceVersionId, sourceLang)}`,
+  );
 
 export const assembleEpisode = (req: AssembleRequest) =>
   json<{ path: string; duration: number; version_id: string }>("/api/synthesize/assemble", {

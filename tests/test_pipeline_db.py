@@ -89,7 +89,7 @@ def test_populate_from_scan(db):
         FakeEpisode(stem="ep2", audio_path=Path("/a/ep2.mp3"), indexed=True),
         FakeEpisode(stem="ep3"),
     ]
-    db.populate_from_scan(episodes)
+    db._populate_from_scan(episodes)
     assert db.episode_count() == 3
 
     ep1 = db.get_episode("ep1")
@@ -105,13 +105,21 @@ def test_populate_from_scan(db):
     assert ep3["transcribed"] is False
 
 
-def test_populate_upserts(db):
-    """populate_from_scan updates existing rows."""
-    db.mark("ep1", transcribed=True)
-    episodes = [FakeEpisode(stem="ep1", transcribed=True, corrected=True)]
-    db.populate_from_scan(episodes)
+def test_populate_keeps_existing_rows(db):
+    """A folder scan is older news than a row a writer already created: it
+    used to overwrite that row's flags and wipe its provenance to {}."""
+    db.mark("ep1", transcribed=True, provenance={"transcript": {"model": "m"}})
+    episodes = [
+        FakeEpisode(stem="ep1", transcribed=False, corrected=True),
+        FakeEpisode(stem="ep2", transcribed=True),
+    ]
+    db._populate_from_scan(episodes)
+
     row = db.get_episode("ep1")
-    assert row["corrected"] is True
+    assert row["transcribed"] is True
+    assert row["corrected"] is False
+    assert row["provenance"] == {"transcript": {"model": "m"}}
+    assert db.get_episode("ep2")["transcribed"] is True
 
 
 # ── all_episodes ordering ────────────────────────────────
@@ -204,7 +212,9 @@ def test_provenance_merge_runs_in_an_immediate_transaction(db):
 
 
 def test_plain_mark_opens_no_explicit_transaction(db):
-    """Only the merge needs the extra round trip; flag writes stay one INSERT."""
+    """Performance note, not a correctness rule: only the provenance merge
+    needs the extra round trip, so plain flag writes stay one INSERT. Safe to
+    change if a future write needs the transaction."""
     seen: list[str] = []
     db._conn.set_trace_callback(seen.append)
     try:
@@ -222,9 +232,9 @@ def test_provenance_empty_by_default(db):
 
 
 def test_provenance_in_populate(db):
-    """populate_from_scan creates rows with empty provenance."""
+    """_populate_from_scan creates rows with empty provenance."""
     episodes = [FakeEpisode(stem="ep1", transcribed=True)]
-    db.populate_from_scan(episodes)
+    db._populate_from_scan(episodes)
     row = db.get_episode("ep1")
     assert row["provenance"] == {}
 
@@ -257,7 +267,7 @@ class TestStepStatuses:
     @staticmethod
     def _step_statuses(st, provenance, effective):
         from podcodex.api.routes.shows import _step_statuses
-        from podcodex.core.translate import clean_translations
+        from podcodex.core.versions import clean_translations
 
         return _step_statuses(
             st, provenance, effective, clean_translations(st.get("translations", []))
@@ -664,3 +674,115 @@ def test_version_ids_by_stem(db):
     )
     ids = db.version_ids_by_stem("transcript")
     assert ids == {"ep1": {"v-1", "v-2"}, "ep2": {"v-3"}}
+
+
+# ── aggregate_status ──────────────────────────────────────
+
+
+def test_aggregate_status_counts_stages_and_edits(db):
+    """Every show card's counts come from here; a raise is swallowed by the
+    route into a warning, so a broken count would go unnoticed."""
+    edited = {"type": "validated", "manual_edit": True}
+    raw = {"type": "raw"}
+    db.mark("a", transcribed=True, corrected=True, provenance={"transcript": edited})
+    db.mark(
+        "b",
+        transcribed=True,
+        translations=["french", "german"],
+        provenance={"transcript": raw, "german": edited},
+    )
+    db.mark("c", indexed=True, synthesized=True, translations=["french"])
+    db.mark("d", corrected=True, provenance={"corrected": raw})
+
+    assert db.aggregate_status() == {
+        "total": 4,
+        "transcribed": 2,
+        "transcribed_edited": 1,
+        "corrected": 2,
+        "corrected_edited": 0,
+        "translated": 2,
+        "translated_edited": 1,
+        "synthesized": 1,
+        "indexed": 1,
+    }
+
+
+def test_mark_bulk_writes_many_rows_at_once(db):
+    db.mark("a", transcribed=True)
+    db.mark_bulk({"a": {"transcribed": False}, "b": {"translations": ["french"]}})
+    assert db.get_episode("a")["transcribed"] is False
+    assert db.get_episode("b")["translations"] == ["french"]
+    with pytest.raises(ValueError):
+        db.mark_bulk({"a": {"provenance": "{}"}})
+
+
+# ── Migrations ────────────────────────────────────────────
+
+
+def test_an_old_schema_db_is_migrated_with_its_flags(tmp_path):
+    """No migration had ever run under test: every test opens a fresh schema.
+    This is a pre-provenance DB whose correction column is still `polished`
+    and whose versions table predates verified pointers and tombstones."""
+    import sqlite3
+
+    path = tmp_path / "pipeline.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE episodes (
+            stem TEXT PRIMARY KEY, audio_path TEXT,
+            transcribed INTEGER DEFAULT 0, polished INTEGER DEFAULT 0,
+            indexed INTEGER DEFAULT 0, synthesized INTEGER DEFAULT 0,
+            translations TEXT DEFAULT '[]', updated_at REAL
+        );
+        CREATE TABLE versions (
+            id TEXT NOT NULL, stem TEXT NOT NULL, step TEXT NOT NULL,
+            timestamp TEXT NOT NULL, type TEXT NOT NULL, model TEXT,
+            params TEXT DEFAULT '{}', manual_edit INTEGER DEFAULT 0,
+            content_hash TEXT NOT NULL, segment_count INTEGER NOT NULL,
+            input_hash TEXT, PRIMARY KEY (id, stem, step)
+        );
+        INSERT INTO episodes (stem, transcribed, polished, translations)
+            VALUES ('ep1', 1, 1, '["french"]');
+        INSERT INTO versions VALUES
+            ('v1', 'ep1', 'transcript', '2026-01-01', 'raw', 'm', '{}', 0, 'h', 3, NULL);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    db = PipelineDB(path)
+    try:
+        row = db.get_episode("ep1")
+        assert row["transcribed"] is True
+        assert row["corrected"] is True
+        assert row["translations"] == ["french"]
+        assert row["provenance"] == {}
+        assert row["verified"] is None
+        (version,) = db.list_versions("ep1", "transcript")
+        assert version["missing_since"] is None
+    finally:
+        db.close()
+
+
+def test_a_version_id_is_looked_up_within_its_episode_and_step(db):
+    """Ids are timestamps: legacy second-precision ids repeat across the
+    steps of one run and across episodes."""
+
+    def meta(step):
+        return {
+            "id": "20260101T000000Z_raw",
+            "timestamp": "2026-01-01",
+            "type": "raw",
+            "model": step,
+            "content_hash": "h",
+            "segment_count": 1,
+        }
+
+    db.insert_version("ep1", "segments", meta("segments"))
+    db.insert_version("ep1", "transcript", meta("transcript"))
+    db.insert_version("ep2", "transcript", meta("other-episode"))
+
+    vid = "20260101T000000Z_raw"
+    assert db.get_version(vid, stem="ep1", step="transcript")["model"] == "transcript"
+    assert db.get_version(vid, stem="ep2")["model"] == "other-episode"

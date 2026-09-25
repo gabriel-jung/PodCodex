@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 import re
-import threading
 import unicodedata
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -561,20 +560,17 @@ def feed_cache_episode_count(show_folder: Path) -> int | None:
 def save_feed_cache(show_folder: Path, episodes: list[RSSEpisode]) -> Path:
     """Cache feed data to *show_folder*.
 
-    Written via temp file + atomic rename: concurrent refreshes (two clients,
+    Written via ``write_json_atomic``: concurrent refreshes (two clients,
     threadpool handlers) must never leave a torn JSON that breaks every
-    subsequent ``load_feed_cache``. The temp name is unique per writer so
+    subsequent ``load_feed_cache``. Its temp name is unique per writer, so
     two concurrent saves can't interleave inside the same temp file either;
-    the losing writer's rename is simply overwritten (last writer wins).
+    the losing writer's rename is simply overwritten (last writer wins). The
+    ``.tmp_`` prefix is also what startup recovery reaps after a crash.
     """
-    Path(show_folder).mkdir(parents=True, exist_ok=True)
+    from podcodex.core._utils import write_json_atomic
+
     path = Path(show_folder) / _FEED_CACHE
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(
-        json.dumps([asdict(ep) for ep in episodes], indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    os.replace(tmp, path)
+    write_json_atomic(path, [asdict(ep) for ep in episodes])
     return path
 
 

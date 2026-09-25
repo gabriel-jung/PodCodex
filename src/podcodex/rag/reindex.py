@@ -208,6 +208,12 @@ def main() -> None:
         _list_collections(name)
         return
 
+    # Like every entry point that loads models: cache env vars and the ML
+    # patches first. After --list, which needs neither (torch is seconds).
+    from podcodex.bootstrap import bootstrap_for_dev
+
+    bootstrap_for_dev()
+
     if args.all_models:
         model_keys = list(MODELS.keys())
         chunkers = ["semantic", "speaker"]

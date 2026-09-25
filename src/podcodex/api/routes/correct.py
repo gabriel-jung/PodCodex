@@ -23,6 +23,7 @@ from podcodex.core.llm_failures import clear_step_for, get_step
 from podcodex.api.routes._versions import register_version_routes
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths
+from podcodex.core.source import load_source
 
 router = APIRouter()
 register_version_routes(router, "corrected")
@@ -75,53 +76,40 @@ def start_correct(req: LLMRequest) -> TaskResponse:
     """Start the correct pipeline as a background task."""
     # Resolve profile + key up front so a bad pick fails the request, not
     # the background task. Ollama mode tolerates an empty key_name.
-    if req.mode == "api":
-        from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm
+    from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm_run
 
-        try:
-            resolved = resolve_llm(req.provider_profile, req.key_name)
-        except LLMResolutionError as exc:
-            raise HTTPException(400, str(exc))
-    else:
-        resolved = None
+    try:
+        llm = resolve_llm_run(req.mode, req.provider_profile, req.key_name, req.model)
+    except LLMResolutionError as exc:
+        raise HTTPException(400, str(exc))
 
     def run_correct(progress_cb, req_data):
         from podcodex.core.correct import correct_segments, save_corrected
-        from podcodex.core.transcribe import load_transcript
-        from podcodex.core.versions import load_version
 
         progress_cb(0.0, "Loading transcript...")
-        if req_data.source_version_id:
-            p = AudioPaths.from_audio(
-                req_data.audio_path, output_dir=req_data.output_dir
-            )
-            segments = load_version(p.base, "transcript", req_data.source_version_id)
-        else:
-            segments = load_transcript(
-                req_data.audio_path, output_dir=req_data.output_dir
-            )
-        if not segments:
-            raise ValueError("No transcript found to correct")
+        source = load_source(
+            req_data.audio_path,
+            req_data.output_dir,
+            req_data.source_version_id,
+            step="transcript",
+        )
+        segments = source.segments
 
-        # Auto-detect transcript source and language from provenance
+        # Auto-detect transcript source and language from its provenance
         tc_kwargs = enrich_correct_kwargs(
-            req_data.audio_path, req_data.output_dir, req_data.source_lang
+            req_data.audio_path, req_data.output_dir, req_data.source_lang, source
         )
 
         progress_cb(0.1, "Starting correction...")
 
         corrected = correct_segments(
             segments,
-            mode=req_data.mode,
+            **llm.pipeline_kwargs(),
             context=req_data.context,
             source_lang=tc_kwargs["source_lang"],
-            model=req_data.model,
             batch_minutes=req_data.batch_minutes,
-            provider=resolved.provider if resolved else None,
             engine=tc_kwargs["engine"],
             engine_model=tc_kwargs["engine_model"],
-            api_base_url=resolved.api_base_url if resolved else "",
-            api_key=resolved.api_key if resolved else None,
             original_segments=segments,
             merge=False,  # transcript is already merged on load/upload
             on_batch=batch_progress(progress_cb),
@@ -132,7 +120,8 @@ def start_correct(req: LLMRequest) -> TaskResponse:
         progress_cb(0.95, "Saving...")
         provenance = build_provenance(
             "corrected",
-            model=req_data.model,
+            source=source,
+            model=llm.model,
             audio_path=req_data.audio_path,
             output_dir=req_data.output_dir,
             params=llm_prov_params(
@@ -160,33 +149,24 @@ def start_correct(req: LLMRequest) -> TaskResponse:
 @router.post("/manual-prompts")
 def generate_manual_prompts(req: ManualPromptsRequest) -> list[dict]:
     """Generate batched prompts for manual LLM correction."""
-    from podcodex.core.correct import (
-        build_manual_prompts_batched,
-        transcript_provenance_info,
+    from podcodex.core.correct import build_manual_prompts_batched
+
+    try:
+        source = load_source(
+            req.audio_path, req.output_dir, req.source_version_id, step="transcript"
+        )
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    tc_kwargs = enrich_correct_kwargs(
+        req.audio_path, req.output_dir, req.source_lang, source
     )
-    from podcodex.core.transcribe import load_transcript
-    from podcodex.core.versions import get_latest_provenance, load_version
-
-    p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
-
-    if req.source_version_id:
-        segments = load_version(p.base, "transcript", req.source_version_id)
-    else:
-        segments = load_transcript(req.audio_path, output_dir=req.output_dir)
-    if not segments:
-        raise HTTPException(404, "No transcript found")
-
-    tc_info = transcript_provenance_info(get_latest_provenance(p.base, "transcript"))
-    source_lang = tc_info["language"] or req.source_lang
 
     batches = build_manual_prompts_batched(
-        segments,
+        source.segments,
         batch_minutes=req.batch_minutes,
         batch_count=req.batch_count,
         context=req.context,
-        source_lang=source_lang,
-        engine=tc_info["source"],
-        engine_model=tc_info["model"],
+        **tc_kwargs,
     )
     return format_prompt_batches(batches)
 
@@ -214,21 +194,18 @@ def dismiss_correct_failures(
 @router.post("/apply-manual")
 def apply_manual_corrections(req: ApplyManualRequest) -> dict:
     """Apply manually-obtained LLM corrections and save as raw."""
-    from podcodex.core._utils import validate_manual
+    from podcodex.core.llm import validate_manual
     from podcodex.core.correct import save_corrected
-    from podcodex.core.transcribe import load_transcript
-    from podcodex.core.versions import load_version
-
-    if req.source_version_id:
-        p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
-        original = load_version(p.base, "transcript", req.source_version_id)
-    else:
-        original = load_transcript(req.audio_path, output_dir=req.output_dir)
-    if not original:
-        raise HTTPException(404, "No transcript found")
 
     try:
-        corrected = validate_manual(req.corrections, original)
+        source = load_source(
+            req.audio_path, req.output_dir, req.source_version_id, step="transcript"
+        )
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+    try:
+        corrected = validate_manual(req.corrections, source.segments)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     # Applying manual LLM prompts is still an LLM correction, not a hand-edit —
@@ -239,6 +216,7 @@ def apply_manual_corrections(req: ApplyManualRequest) -> dict:
         params=llm_prov_params("manual"),
         audio_path=req.audio_path,
         output_dir=req.output_dir,
+        source=source,
     )
     save_corrected(
         req.audio_path,
@@ -259,12 +237,14 @@ def apply_batches_correction(req: ApplyBatchesRequest) -> dict:
     from podcodex.core.correct import save_corrected
     from podcodex.core.llm_failures import resolve_batches
 
-    p, patched, section = reconcile_batches(req, "corrected")
+    p, patched, section, chain = reconcile_batches(req, "corrected")
     provenance = build_provenance(
         "corrected",
         model=section.get("model"),
         params=llm_prov_params(
-            section.get("mode", "manual"), batch_fixes=len(req.fixes)
+            section.get("mode", "manual"),
+            batch_fixes=len(req.fixes),
+            **({"source_chain": chain} if chain else {}),
         ),
         audio_path=req.audio_path,
         output_dir=req.output_dir,

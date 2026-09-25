@@ -17,8 +17,8 @@ from podcodex.core._utils import (
     REMOVE_SPEAKER,
     UNKNOWN_SPEAKERS,
     AudioPaths,
-    _separate_breaks,
 )
+from podcodex.core.llm import _separate_breaks
 from podcodex.ingest.rss import RSSEpisode, episode_stem
 
 # Domain helpers now live in core/ so that core and rag never import the API
@@ -33,7 +33,6 @@ from podcodex.core.provenance import (  # noqa: F401
     transcribe_prov_params,
 )
 from podcodex.core.source import (  # noqa: F401
-    AUDIO_EXTS,
     _extract_broadcast_number,
     _resolve_source_segments,
     apply_broadcast_pattern,
@@ -233,7 +232,11 @@ def submit_subprocess_task(
     cache upkeep that needs to happen where the caches live; its failure
     must not fail the task.
     """
-    from podcodex.api.subprocess_runner import run_in_subprocess
+    from podcodex.api.subprocess_runner import _check_entry_signature, run_in_subprocess
+
+    # Before the task is accepted: a kwargs mismatch is a programming error
+    # the request should report, not a task that fails in the background.
+    _check_entry_signature(entry_path, kwargs)
 
     def _run(progress_cb, _req):
         result = run_in_subprocess(
@@ -242,6 +245,7 @@ def submit_subprocess_task(
             on_progress=progress_cb,
             on_log=getattr(progress_cb, "log_cb", None),
             cancel_event=getattr(progress_cb, "cancel_event", None),
+            signature_checked=True,
         )
         if on_result is not None:
             try:
@@ -359,17 +363,18 @@ class ApplyBatchesRequest(BaseModel):
 
 def reconcile_batches(
     req: ApplyBatchesRequest, step: str
-) -> tuple[AudioPaths, list[dict], dict]:
+) -> tuple[AudioPaths, list[dict], dict, list[str] | None]:
     """Patch every fix's batch into the latest version of *step*.
 
     Looks each batch up in ``llm_failures.json``, checks its correction count,
     loads the latest version, and applies all fixes in one pass. Returns
-    ``(paths, patched_segments, failures_section)``; raises HTTPException on a
+    ``(paths, patched_segments, failures_section, source_chain)``, the chain
+    being the patched version's; raises HTTPException on a
     missing episode, missing batch, count mismatch, or missing version.
     """
-    from podcodex.core._utils import apply_corrections
+    from podcodex.core.llm import apply_corrections
     from podcodex.core.llm_failures import get_step
-    from podcodex.core.versions import load_latest
+    from podcodex.core.versions import load_latest_with_meta
 
     require_audio_or_output(req.audio_path, req.output_dir)
     p = AudioPaths.from_audio(req.audio_path, output_dir=req.output_dir)
@@ -397,12 +402,16 @@ def reconcile_batches(
         for i, idx in enumerate(indices):
             by_index[idx] = fix.corrections[i]
 
-    segments = load_latest(p.base, step)
-    if segments is None:
+    found = load_latest_with_meta(p.base, step)
+    if found is None:
         raise HTTPException(404, "No segments found for this step")
+    patched_meta, segments = found
 
     patched = apply_corrections(segments, by_index, min_length_ratio=0)
-    return p, patched, section
+    # The fix is the same pipeline as the version it patches: same inputs,
+    # so the same source chain.
+    chain = (patched_meta.get("params") or {}).get("source_chain")
+    return p, patched, section, chain
 
 
 def format_prompt_batches(batches: list) -> list[dict]:

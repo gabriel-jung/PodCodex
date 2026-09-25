@@ -29,7 +29,7 @@ from loguru import logger
 
 from podcodex import __version__
 from podcodex.bootstrap import defer_until_imported
-from podcodex.core.api_token import (
+from podcodex.api.api_token import (
     TOKEN_HEADER,
     TOKEN_QUERY_PARAM,
     get_or_create_api_token,

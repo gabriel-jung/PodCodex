@@ -604,7 +604,12 @@ class TestStaleVersionRows:
         assert refs[episode_dir.name] == ("corrected", old)
         close_pipeline_db(show_dir)
 
-    def test_reconcile_prunes_rows_without_files_and_demotes(self, episode_dir):
+    def test_reconcile_prunes_rows_missing_past_the_grace_and_demotes(
+        self, episode_dir, monkeypatch
+    ):
+        import time
+
+        from podcodex.core import versions as versions_mod
         from podcodex.core.pipeline_db import close_pipeline_db
         from podcodex.core.versions import (
             backfill_versions_from_disk,
@@ -617,10 +622,57 @@ class TestStaleVersionRows:
         db.mark(episode_dir.name, corrected=True)
         version_path(episode_dir, "corrected", vid).unlink()
 
+        # First miss: stamped, kept, flag untouched.
+        backfill_versions_from_disk(show_dir)
+        assert [v["id"] for v in list_versions(episode_dir, "corrected")] == [vid]
+        assert db.get_episode(episode_dir.name)["corrected"] is True
+
+        # Still missing once the grace has passed: pruned and demoted.
+        later = time.time() + versions_mod.MISSING_ROW_GRACE_S + 1
+        monkeypatch.setattr(time, "time", lambda: later)
         backfill_versions_from_disk(show_dir)
 
         assert list_versions(episode_dir, "corrected") == []
         assert db.get_episode(episode_dir.name)["corrected"] is False
+        close_pipeline_db(show_dir)
+
+    def test_a_late_file_keeps_its_row_and_provenance(self, episode_dir, monkeypatch):
+        """A synced pipeline.db can arrive before the files it indexes; the
+        first backfill used to delete those rows with their provenance."""
+        import time
+
+        from podcodex.core import versions as versions_mod
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import backfill_versions_from_disk, version_path
+
+        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        show_dir = episode_dir.parent.parent
+        path = version_path(episode_dir, "corrected", vid)
+        content = path.read_bytes()
+        path.unlink()
+        backfill_versions_from_disk(show_dir)
+
+        path.write_bytes(content)  # the sync catches up
+        backfill_versions_from_disk(show_dir)
+        later = time.time() + versions_mod.MISSING_ROW_GRACE_S + 1
+        monkeypatch.setattr(time, "time", lambda: later)
+        backfill_versions_from_disk(show_dir)
+
+        (row,) = list_versions(episode_dir, "corrected")
+        assert row["model"] == SAMPLE_PROVENANCE["model"]
+        assert row["missing_since"] is None
+        close_pipeline_db(show_dir)
+
+    def test_backfill_never_replaces_an_existing_row(self, episode_dir):
+        from podcodex.core.pipeline_db import close_pipeline_db
+        from podcodex.core.versions import backfill_versions_from_disk
+
+        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        show_dir = episode_dir.parent.parent
+
+        assert backfill_versions_from_disk(show_dir) == 0
+        (row,) = list_versions(episode_dir, "corrected")
+        assert row["model"] == SAMPLE_PROVENANCE["model"]
         close_pipeline_db(show_dir)
 
     def test_reconcile_keeps_rows_whose_files_are_present(self, episode_dir):
@@ -717,6 +769,7 @@ class TestSynthesizeVersions:
 
     def _assemble(self, episode_dir, *, payload=b"RIFFfake-audio-bytes"):
         """Write a .wav where the route would, and register it."""
+        from podcodex.core.source import SourceRef
         from podcodex.core.versions import (
             new_version_id,
             save_synthesize_version,
@@ -734,7 +787,7 @@ class TestSynthesizeVersions:
             now=now,
             strategy="pad",
             silence_duration=0.5,
-            source_version_id="20260101T000000000000Z_raw",
+            source=SourceRef("french", "20260101T000000000000Z_raw"),
             language="french",
             model_size="qwen-tts",
             segment_count=len(SAMPLE_SEGMENTS),
@@ -827,3 +880,178 @@ class TestSynthesizeVersions:
         assert delete_version_by_id(episode_dir, version_id) is True
         assert not path.exists()
         close_pipeline_db(episode_dir.parent.parent)
+
+
+# ── Index integrity (save guard, file-backed matches, cascade) ─────────────
+
+
+class TestIndexIntegrity:
+    def test_a_traversal_step_is_refused_on_save(self, episode_dir):
+        """Reads and deletes refused `../../x`; saves wrote outside the episode."""
+        with pytest.raises(ValueError, match="Invalid version path"):
+            save_version(
+                episode_dir, "../../escape", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE
+            )
+        assert not (episode_dir.parent.parent.parent / "escape").exists()
+
+    def test_a_failed_row_insert_takes_the_file_back(self, episode_dir, monkeypatch):
+        from podcodex.core.pipeline_db import PipelineDB
+
+        def boom(*_a, **_k):
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(PipelineDB, "insert_version", boom)
+        with pytest.raises(RuntimeError):
+            save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        assert not list((episode_dir.parent / "corrected").glob("*.json"))
+
+    def test_a_row_without_its_file_is_not_a_version(self, episode_dir):
+        """Batch runs skip on these; a file-less row used to count as done."""
+        from podcodex.core.versions import version_path
+
+        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
+        version_path(episode_dir, "corrected", vid).unlink()
+
+        assert not has_version(episode_dir, "corrected")
+        assert not has_matching_version(episode_dir, "corrected", {"model": "gpt-4o"})
+
+    def test_current_only_ignores_an_older_match(self, episode_dir):
+        from podcodex.core.versions import find_matching_version
+
+        old = save_version(
+            episode_dir, "segments", SAMPLE_SEGMENTS, _prov("segments", model="turbo")
+        )
+        save_version(
+            episode_dir, "segments", SAMPLE_SEGMENTS, _prov("segments", model="medium")
+        )
+
+        assert find_matching_version(episode_dir, "segments", {"model": "turbo"}) == old
+        assert (
+            find_matching_version(
+                episode_dir, "segments", {"model": "turbo"}, current_only=True
+            )
+            is None
+        )
+
+    def test_deleting_a_label_source_drops_its_speaker_maps(self, episode_dir):
+        """A map references the IDs of the diarization it was made for; when
+        that diarization goes, so must the map. A map bound to another
+        diarization survives."""
+        from podcodex.core.versions import (
+            load_latest_speaker_map,
+            save_speaker_map_version,
+        )
+
+        first = save_version(
+            episode_dir,
+            "diarized_segments",
+            [{"speaker": "SPEAKER_00", "text": "a", "start": 0.0, "end": 1.0}],
+            _prov("diarized_segments"),
+        )
+        save_speaker_map_version(episode_dir, {"SPEAKER_00": "Alice"})
+        second = save_version(
+            episode_dir,
+            "diarized_segments",
+            [{"speaker": "SPEAKER_00", "text": "b", "start": 0.0, "end": 1.0}],
+            _prov("diarized_segments"),
+        )
+        save_speaker_map_version(episode_dir, {"SPEAKER_00": "Bob"})
+
+        delete_version(episode_dir, "diarized_segments", first)
+
+        maps = list_versions(episode_dir, "speaker_map")
+        assert len(maps) == 1
+        assert load_latest_speaker_map(episode_dir) == {"SPEAKER_00": "Bob"}
+        assert second
+
+    def test_bulk_and_single_canonical_refs_agree(self, episode_dir):
+        """The speaker roster resolves every episode in bulk; the rules are
+        one function now, and this pins that both entry points use it."""
+        from podcodex.core.versions import resolve_canonical_ref, resolve_canonical_refs
+
+        save_version(episode_dir, "transcript", SAMPLE_SEGMENTS, _prov("transcript"))
+        edited = save_version(
+            episode_dir,
+            "corrected",
+            SAMPLE_SEGMENTS,
+            _prov("corrected", type_="validated", manual_edit=True),
+        )
+        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov("corrected"))
+
+        single = resolve_canonical_ref(episode_dir)
+        bulk = resolve_canonical_refs(episode_dir.parent.parent, [episode_dir.name])
+        assert single == bulk[episode_dir.name] == ("corrected", edited)
+
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+
+
+class TestProvenance:
+    def _audio(self, episode_dir):
+        audio = episode_dir.parent.parent / f"{episode_dir.name}.mp3"
+        audio.touch()
+        return str(audio)
+
+    def test_edit_provenance_inherits_the_parent_and_is_edited(self, episode_dir):
+        from podcodex.core.provenance import build_edit_provenance
+
+        audio = self._audio(episode_dir)
+        params = {"llm_mode": "api", "source_chain": ["whisper", "gpt-4o"]}
+        save_version(
+            episode_dir,
+            "corrected",
+            SAMPLE_SEGMENTS,
+            _prov(model="gpt-4o", params=params),
+        )
+
+        prov = build_edit_provenance("corrected", audio, None)
+
+        assert prov["type"] == "validated" and prov["manual_edit"] is True
+        assert prov["model"] == "gpt-4o"
+        assert prov["params"] == params
+        prov["params"]["llm_mode"] = "changed"
+        assert load_latest_provenance_params(episode_dir)["llm_mode"] == "api"
+
+    def test_source_chain_follows_the_pinned_version(self, episode_dir):
+        """The chain used to read the latest transcript even when the step
+        ran on an older one the user picked."""
+        from podcodex.core.provenance import build_provenance
+
+        audio = self._audio(episode_dir)
+        pinned = save_version(
+            episode_dir,
+            "transcript",
+            SAMPLE_SEGMENTS,
+            _prov("transcript", params={"source_chain": ["youtube-subtitles"]}),
+        )
+        save_version(
+            episode_dir,
+            "transcript",
+            SAMPLE_SEGMENTS,
+            _prov("transcript", params={"source_chain": ["whisper/large-v3"]}),
+        )
+
+        from podcodex.core.source import load_source
+
+        latest_src = load_source(audio, None, step="transcript")
+        pinned_src = load_source(audio, None, pinned)
+        latest = build_provenance(
+            "corrected", model="m", audio_path=audio, source=latest_src
+        )
+        pinned_prov = build_provenance(
+            "corrected", model="m", audio_path=audio, source=pinned_src
+        )
+
+        assert latest["params"]["source_chain"] == ["whisper/large-v3", "m"]
+        assert pinned_prov["params"]["source_chain"] == ["youtube-subtitles", "m"]
+        # No consumed version known, no guessed chain.
+        assert (
+            "source_chain"
+            not in build_provenance("corrected", model="m", audio_path=audio)["params"]
+        )
+
+
+def load_latest_provenance_params(base):
+    from podcodex.core.versions import get_latest_provenance
+
+    return get_latest_provenance(base, "corrected")["params"]

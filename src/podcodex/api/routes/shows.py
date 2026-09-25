@@ -34,6 +34,7 @@ from podcodex.bundle.conflicts import rename_suffix
 from podcodex.core._utils import (
     MTIME_SETTLE_SECONDS,
     atomic_write,
+    episode_base,
     normalize_lang,
     virtual_audio_path,
 )
@@ -60,11 +61,12 @@ from podcodex.api.schemas import (
 from podcodex.core.constants import AUDIO_EXTENSIONS, LOCAL_ARTWORK_MARKER
 from podcodex.core.llm_failures import FAILURES_FILENAME, rejected_steps
 from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+from podcodex.core.source import show_audio_files
 from podcodex.core.versions import (
     PIPELINE_STEPS,
     STEP_FLAG,
-    backfill_versions_from_disk,
     is_edited,
+    seed_show_db,
     step_ext,
 )
 from podcodex.ingest.folder import (
@@ -83,7 +85,7 @@ from podcodex.ingest.rss import (
     load_feed_cache,
     save_feed_cache,
 )
-from podcodex.core.translate import clean_translations
+from podcodex.core.versions import clean_translations
 from podcodex.ingest.show import PipelineDefaults as _PipelineDefaults
 from podcodex.ingest.show import ShowMeta as _ShowMeta
 from podcodex.ingest.show import is_feed_backed, load_show_meta, save_show_meta
@@ -139,15 +141,9 @@ def list_shows() -> list[ShowSummary]:
         name = (meta.name if meta else None) or child.name
         artwork = (meta.artwork_url if meta else "") or ""
 
-        # AUDIO_EXTENSIONS, lowercased, is what the scanner and the show page
-        # count; five hardcoded suffixes left the home card reporting 0 for a
-        # show whose episodes are .opus/.webm (what yt-dlp leaves behind with
-        # no ffmpeg) or simply named .MP3.
-        audio_count = sum(
-            1
-            for f in child.iterdir()
-            if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
-        )
+        # Episodes with audio, by the scanner's own rule (core.source): the
+        # card and the show page count the same thing.
+        audio_count = len(show_audio_files(child))
 
         feed_cache = child / ".feed_cache.json"
         has_rss = feed_cache.exists() or bool(meta and meta.rss_url)
@@ -288,8 +284,8 @@ def create_local_show(req: CreateLocalShowRequest) -> CreateLocalShowResponse:
     cfg = _load()
     base = Path(cfg.default_save_path or "~").expanduser()
     folder = base / name
-    # bad_path_component blocks separators, but Windows drive-relative names
-    # ("C:evil") survive the join and would escape the save path entirely.
+    # Defence in depth behind bad_path_component: the folder must land
+    # directly inside the save path.
     if folder.parent.resolve() != base.resolve():
         raise HTTPException(400, f"Invalid name: {name!r}")
     try:
@@ -1209,18 +1205,11 @@ def _load_status_context(path: Path) -> _StatusContext:
     if db.episode_count() == 0:
         episodes = scan_folder(path, indexed_stems=lance_indexed)
         if episodes:
-            # Rebuild the version index *before* the episode rows: every read
-            # path resolves an id through that index, so without it episodes
-            # read "done" while their transcripts cannot be opened. Doing it
-            # first also makes the repair resumable, since `episode_count`
-            # stays 0 until it finishes and a process killed midway retries
-            # the whole thing instead of staying half-rebuilt forever.
-            backfill_versions_from_disk(path)
-            db.populate_from_scan(episodes)
+            seed_show_db(path, episodes)
 
     status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
 
-    local_audio = _scan_audio_files(path)
+    local_audio = {stem: files[0] for stem, files in show_audio_files(path).items()}
     episode_files, episode_dirs, incomplete = _scan_episode_files(path, local_audio)
 
     # Heal rows for episodes that appeared on disk after the initial populate
@@ -1242,18 +1231,15 @@ def _load_status_context(path: Path) -> _StatusContext:
         # The stale-scan guard: these stems were found by uncached scandirs,
         # so a cached scan_folder result that misses them must be dropped.
         invalidate_scan_cache(path)
-        # Same invariant as the bootstrap branch above: the version index must
-        # be rebuilt before the episode rows, or a healed dir with transcript
-        # files reads "done" while its versions cannot be opened. Idempotent,
-        # registers only files without rows.
-        backfill_versions_from_disk(path)
         new_eps = [
             ep
             for ep in scan_folder(path, indexed_stems=lance_indexed)
             if ep.stem not in status_map
         ]
+        # Same order as the bootstrap: version index first (idempotent,
+        # registers only files without rows), then the rows.
+        seed_show_db(path, new_eps)
         if new_eps:
-            db.populate_from_scan(new_eps)
             status_map = {row["stem"]: row for row in db.all_episodes()}
 
     indexed_updates: dict[str, bool] = {}
@@ -1273,33 +1259,29 @@ def _load_status_context(path: Path) -> _StatusContext:
     }
 
     # Reconcile the per-step flags: an episode is transcribed / corrected /
-    # synthesized when it has a registered version for that step *or* a file
-    # in the step directory. Both directions matter. Without the promote, the
-    # overview StageCard stays "not started" for any episode whose first sync
-    # predates our first assemble; without the demote, a flag survives content
-    # deleted out of band.
+    # synthesized when a version file for that step is on disk. Both
+    # directions matter. Without the promote, the overview StageCard stays
+    # "not started" for any episode whose first sync predates our first
+    # assemble; without the demote, a flag survives content deleted out of
+    # band.
     #
-    # The on-disk half is not optional: `populate_from_scan` above derives
-    # these very flags from the step directories, and a DB bootstrapped that
-    # way has no `versions` rows at all. Reconciling against rows alone would
-    # undo the bootstrap in the same call, and a DB lost to a sync conflict
-    # (rebuilt from scan, versions table included) would report a whole
-    # library as not started. Read from the already-cached file list, so this
-    # costs no extra syscalls.
+    # Files, not rows: a DB bootstrapped from a scan has files and no rows
+    # yet, and a row whose file is gone (kept by backfill for its grace
+    # period, see versions.MISSING_ROW_GRACE_S) is a version no reader can
+    # open. Every read path already goes by the file, so the flag does too.
+    # Read from the already-cached file list, so this costs no extra syscalls.
     # A stem whose walk failed has an untrustworthy file list: "no files" there
     # means "could not look", so leave its status alone until a clean scan.
+    flag_updates: dict[str, dict[str, object]] = {}
     for step, flag in STEP_FLAG.items():
-        stems_with_versions = set(db.stems_with_step(step))
         ext = step_ext(step)
         for stem, row in status_map.items():
             if stem in incomplete:
                 continue
-            desired = stem in stems_with_versions or _has_step_files(
-                episode_files.get(stem, []), stem, step, ext
-            )
+            desired = _has_step_files(episode_files.get(stem, []), stem, step, ext)
             if row.get(flag, False) != desired:
                 row[flag] = desired
-                db.mark(stem, **{flag: desired})
+                flag_updates.setdefault(stem, {})[flag] = desired
 
     # Same treatment for the translations list, which is the per-language
     # equivalent of those flags. A rebuilt DB restores the language versions
@@ -1312,7 +1294,8 @@ def _load_status_context(path: Path) -> _StatusContext:
         desired_langs = _episode_languages(episode_files.get(stem, []), stem)
         if sorted(clean_translations(row.get("translations") or [])) != desired_langs:
             row["translations"] = desired_langs
-            db.mark(stem, translations=desired_langs)
+            flag_updates.setdefault(stem, {})["translations"] = desired_langs
+    db.mark_bulk(flag_updates)
 
     # Reconcile verified pointers: a pointer whose target version no longer
     # exists (out-of-band file deletion, manual DB edit) is stale and must
@@ -1622,7 +1605,7 @@ def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
     if db.episode_count() == 0:
         eps = scan_folder(path)
         if eps:
-            db.populate_from_scan(eps)
+            seed_show_db(path, eps)
 
     meta = load_show_meta(path)
     known = set(meta.speakers) if meta else set()
@@ -1660,7 +1643,7 @@ def _compute_speaker_roster(path: Path) -> SpeakerRosterResponse:
             return stem, None
         step, vid = ref
         try:
-            return stem, load_version(path / stem / stem, step, vid)
+            return stem, load_version(episode_base(path, stem), step, vid)
         except FileNotFoundError:
             return stem, None
 
@@ -1764,7 +1747,7 @@ def _compute_episode_speakers(path: Path, stem: str) -> EpisodeSpeakersResponse:
     from podcodex.core._utils import speaker_airtime
     from podcodex.core.versions import load_canonical_segments
 
-    base = path / stem / stem
+    base = episode_base(path, stem)
     segments = load_canonical_segments(base)
     if not segments:
         return EpisodeSpeakersResponse(
@@ -1859,7 +1842,7 @@ def _active_task_on_episode(show_folder: str, stem: str) -> "TaskInfo | None":
       uses for the same episode
     """
     from podcodex.api.tasks import show_lock_keys, task_manager
-    from podcodex.core.delete_episode import episode_audio_files
+    from podcodex.core.source import episode_audio_files
 
     show_dir = Path(show_folder)
     ep_base = show_dir / stem
@@ -2002,9 +1985,7 @@ def set_verified_version(
 
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    # PipelineDB lives at the show level. base = <show>/<stem>/<stem>, so
-    # base.parent is the episode dir and base.parent.parent is the show dir.
-    show_dir = p.base.parent.parent
+    show_dir = p.show_dir
     db = get_pipeline_db(show_dir)
 
     if req.step is None and req.version_id is None:
@@ -2059,25 +2040,6 @@ def delete_any_version(
     if not delete_version_by_id(p.base, version_id):
         raise HTTPException(404, f"Version {version_id} not found")
     return {"status": "deleted", "version_id": version_id}
-
-
-def _scan_audio_files(show_folder: Path) -> dict[str, Path]:
-    """Quick scan of audio files at show root — single os.scandir call."""
-    import os
-    from podcodex.ingest.folder import AUDIO_EXTENSIONS
-
-    audio: dict[str, Path] = {}
-    try:
-        with os.scandir(show_folder) as it:
-            for entry in it:
-                if entry.is_file(follow_symlinks=False):
-                    name = entry.name
-                    dot = name.rfind(".")
-                    if dot > 0 and name[dot:].lower() in AUDIO_EXTENSIONS:
-                        audio[name[:dot]] = show_folder / name
-    except OSError:
-        pass
-    return audio
 
 
 _INTERESTING_EXTS = AUDIO_EXTENSIONS | {
@@ -2245,7 +2207,7 @@ def _scan_episode_files(
     # episode directories that no longer exist.
     _EPISODE_FILES_CACHE[str(show_folder)] = fresh
 
-    # Prepend root audio (already discovered by _scan_audio_files).
+    # Prepend root audio (already discovered by show_audio_files).
     for stem, audio_path in local_audio.items():
         result.setdefault(stem, []).insert(0, audio_path.name)
 

@@ -20,7 +20,7 @@ export const CSRF_HEADER = "X-PodCodex";
 export const CSRF_VALUE = "1";
 
 // Loopback auth token. Mirrors `TOKEN_HEADER`/`TOKEN_QUERY_PARAM` in
-// src/podcodex/core/api_token.py (sync-checked by
+// src/podcodex/api/api_token.py (sync-checked by
 // tests/test_frontend_constants_sync.py). In Tauri the Rust shell reads the
 // token file and hands it over via invoke; in dev the Vite proxy injects the
 // header server-side (see vite.config.ts), so the browser holds no token.

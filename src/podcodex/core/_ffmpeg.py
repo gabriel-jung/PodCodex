@@ -3,8 +3,8 @@
 PodCodex shells out to ffmpeg for clip extraction, voice-sample upload
 conversion, and through whisperx / faster-whisper which hard-code the
 bare ``"ffmpeg"`` command. Bundling GPL-built ffmpeg (libx264 / libx265)
-would contaminate the MIT release — see LICENSE_AUDIT.md — so we rely on
-a system install instead.
+would contaminate the MIT release, so we rely on a system install
+instead.
 
 Resolution order for an explicit override (highest priority first):
   1. ``$PODCODEX_FFMPEG_EXE`` env var. Tauri injects this at sidecar
@@ -176,6 +176,29 @@ def ffmpeg_exe() -> str:
     if override:
         return override
     return _which_with_fallback() or "ffmpeg"
+
+
+def run_ffmpeg(args: list[str], *, what: str, timeout: float = 120) -> None:
+    """Run ``ffmpeg <args>``, failing with a message a user can act on.
+
+    Raises:
+        RuntimeError: ffmpeg is missing, timed out, or failed; the message
+            names *what* was being done and carries the last stderr lines.
+    """
+    exe = ffmpeg_exe()
+    try:
+        subprocess.run([exe, *args], check=True, capture_output=True, timeout=timeout)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"ffmpeg not found ({exe}). Install it or set its path in Settings."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffmpeg took over {timeout:g}s to {what}") from exc
+    except subprocess.CalledProcessError as exc:
+        tail = (exc.stderr or b"").decode(errors="replace").strip().splitlines()[-3:]
+        raise RuntimeError(
+            f"ffmpeg could not {what}: {' / '.join(tail) or f'exit {exc.returncode}'}"
+        ) from exc
 
 
 def ffmpeg_available() -> bool:

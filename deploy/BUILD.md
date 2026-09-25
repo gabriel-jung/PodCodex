@@ -165,9 +165,7 @@ uv sync --extra gpu-pascal   # cu126 wheels: Pascal only (sm_60-62), see PASCAL.
 
 Mutually exclusive; never enable both.
 
-`PODCODEX_DEVICE=auto|cpu|cuda` overrides device selection at runtime.
-`cpu` skips GPU init even when CUDA is available; `cuda` raises if no
-CUDA. Default is `auto`.
+`PODCODEX_DEVICE=auto|cpu|cuda` overrides device selection at runtime. `cpu` skips GPU init even when CUDA is available; `cuda` makes model loaders that resolve a device (whisper, pyannote) raise if there is no CUDA. Default is `auto`. When the env var is unset, the choice made in the app's GPU panel (persisted as `device_override` in `<data_dir>/settings.json`) applies.
 
 ---
 

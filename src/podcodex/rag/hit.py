@@ -126,3 +126,31 @@ class Hit(BaseModel):
         if self.pub_date:
             return self.pub_date
         return normalize_pub_date(self.rss_pub_date) or ""
+
+
+def merge_display_turns(turns: list[SpeakerTurn]) -> list[dict]:
+    """Collapse consecutive same-speaker turns for search-result display.
+
+    One speaker label / one text block per contiguous speaker run —
+    unlike :func:`merge_consecutive_segments`, there are no gap caps,
+    duration caps, or break sentinels. Intended for rendering a single
+    search-result chunk (``Hit.speakers``) where readers just want a clean
+    paragraph per speaker. Output entries are plain display dicts.
+    """
+    out: list[dict] = []
+    for t in turns:
+        speaker = t.speaker or "Unknown"
+        text = t.text.strip()
+        if not text:
+            continue
+        if out and out[-1]["speaker"] == speaker:
+            out[-1]["text"] += " " + text
+            # A turn with no timing (legacy rows default end to 0.0) must not
+            # drag the merged run's end backwards.
+            if t.end:
+                out[-1]["end"] = t.end
+        else:
+            out.append(
+                {"speaker": speaker, "text": text, "start": t.start, "end": t.end}
+            )
+    return out

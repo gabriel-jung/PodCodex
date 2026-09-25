@@ -18,18 +18,16 @@ from pathlib import Path
 
 from loguru import logger
 
-from podcodex.core._utils import (
-    DEFAULT_BATCH_MINUTES,
-    AudioPaths,
+from podcodex.core._utils import DEFAULT_BATCH_MINUTES, AudioPaths, normalize_lang
+from podcodex.core.llm import (
     build_batched_manual_prompts,
     build_llm_prompt,
     format_segments,
-    normalize_lang,
-    run_llm_pipeline,
+    output_format_rules,
+    run_llm_step,
 )
-from podcodex.core.llm_failures import record_run
 from podcodex.core.pipeline_db import mark_step
-from podcodex.core.versions import PIPELINE_STEPS, _get_db, save_version
+from podcodex.core.versions import save_version, translation_steps
 
 
 # ──────────────────────────────────────────────
@@ -49,14 +47,7 @@ Your task: translation only.
 - Preserve the oral tone and style of the podcast
 - Do not translate proper nouns (people, films, places)
 - Translate the full text — never truncate or summarize""",
-        output="""\
-Output format — CRITICAL RULES:
-1. Return a JSON array with EXACTLY the same number of elements as the input, in the SAME ORDER. Never merge, split, drop, add, or reorder segments.
-2. Each element is a plain object with a single `text` field — no index, no other fields.
-3. The Nth output element corresponds to the Nth input segment. Position is the only mapping.
-4. If a segment is empty, trivial, or untranslatable, copy the original text verbatim — never omit the entry.
-5. Reply ONLY with valid JSON. No surrounding text, no markdown fences, no commentary.
-6. Format: `[{"text": "..."}, {"text": "..."}, ...]`""",
+        output=output_format_rules("untranslatable"),
         context=context,
     )
 
@@ -141,10 +132,12 @@ def translate_segments(
     system_prompt = _build_prompt(
         context, source_lang=source_lang, target_lang=target_lang
     )
-    batch_sink: list[dict] = []
-    result = run_llm_pipeline(
+    result = run_llm_step(
+        normalize_lang(target_lang),
         segments,
         system_prompt,
+        audio_path=audio_path,
+        output_dir=output_dir,
         mode=mode,
         model=model,
         api_base_url=api_base_url,
@@ -157,17 +150,14 @@ def translate_segments(
         merge=merge,
         max_gap=max_gap,
         on_batch=on_batch,
-        batch_sink=batch_sink,
+        # The length guard is for correction. A translation legitimately
+        # changes length: English to Chinese is often a third of the
+        # characters, and the guard saved those as the English source.
+        min_length_ratio=0,
+        # A small model sometimes answers a batch with the source verbatim.
+        flag_unchanged=True,
     )
-    logger.success(f"Translation done — {len(result)} segments")
-    record_run(
-        audio_path,
-        output_dir,
-        normalize_lang(target_lang),
-        model=model,
-        mode=mode,
-        records=batch_sink,
-    )
+    logger.success(f"Translation done, {len(result)} segments")
     return result
 
 
@@ -195,30 +185,10 @@ def save_translation(
     return version_id
 
 
-save_translation_raw = save_translation
-
-
 def list_translations(
     audio_path: Path | str,
     output_dir: str | Path | None = None,
 ) -> list[str]:
     """Return sorted list of available translation language names for this episode."""
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    try:
-        db = _get_db(p.base)
-        steps = db.list_steps(p.base.name)
-    except Exception:
-        logger.opt(exception=True).debug("list_translations: DB error for {}", p.base)
-        return []
-    return clean_translations(steps)
-
-
-def clean_translations(translations: list[str]) -> list[str]:
-    """Strip pipeline-step names from a `translations` list.
-
-    Legacy DBs (pre-PIPELINE_STEPS fix) leaked step names like ``segments`` or
-    ``diarization`` into the pipeline_db `translations` array. Filter on read so
-    stale rows don't surface as fake languages in the UI; new writes are
-    already clean.
-    """
-    return [t for t in translations if t not in PIPELINE_STEPS]
+    return translation_steps(p.base)

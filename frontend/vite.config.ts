@@ -7,7 +7,7 @@ import tailwindcss from "@tailwindcss/vite";
 
 // Dev-only: authenticate the browser against the loopback API by injecting
 // the auth header at the proxy, server-side. Reads the `api_token` file the
-// FastAPI server creates (path mirrors src/podcodex/core/api_token.py;
+// FastAPI server creates (path mirrors src/podcodex/api/api_token.py;
 // sync-checked by tests/test_frontend_constants_sync.py). Read-only and
 // lazy: if the backend hasn't booted yet, requests 401 until it has, then
 // the next request picks the token up. No token ever reaches the browser

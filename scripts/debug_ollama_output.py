@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import sys
 
-from podcodex.core._utils import (
+from podcodex.core.llm import (
     correction_schema,
     format_segments,
     ollama_host,

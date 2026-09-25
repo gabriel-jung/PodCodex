@@ -38,6 +38,7 @@ def run(
         assign_speakers,
         diarize_file,
         export_transcript,
+        release_decoded_audio,
         transcribe_file,
     )
 
@@ -51,6 +52,8 @@ def run(
         force=force,
         output_dir=output_dir,
     )
+    if not diarize:
+        release_decoded_audio()
 
     if diarize:
         progress_cb(0.25, "Diarizing speakers...")
@@ -115,8 +118,11 @@ def run_for_batch(
     from podcodex.core._utils import AudioPaths, default_batch_size
     from podcodex.core.transcribe import (
         assign_speakers,
+        diarization_match_params,
         diarize_file,
         export_transcript,
+        release_decoded_audio,
+        segments_match_params,
         transcribe_file,
     )
     from podcodex.core.versions import has_matching_version, has_version
@@ -125,17 +131,23 @@ def run_for_batch(
     did_work = False
     effective_batch = batch_size or default_batch_size()
 
-    transcript_params: dict[str, Any] = {"model": model_size, "diarize": diarize}
-    if language:
-        transcript_params["language"] = language
-    if not force and has_matching_version(p.base, "transcript", transcript_params):
+    # Every check is on the *current* version: each step loads the newest
+    # output of the one before, so an older match is not something to reuse.
+    transcript_params = {
+        **segments_match_params(model_size, language),
+        "diarize": diarize,
+    }
+    if not force and has_matching_version(
+        p.base, "transcript", transcript_params, current_only=True
+    ):
         return {"did_work": False}
 
-    seg_params: dict[str, Any] = {"model": model_size}
-    if language:
-        seg_params["language"] = language
-
-    new_segments = force or not has_matching_version(p.base, "segments", seg_params)
+    new_segments = force or not has_matching_version(
+        p.base,
+        "segments",
+        segments_match_params(model_size, language),
+        current_only=True,
+    )
     if new_segments:
         did_work = True
         progress_cb(0.0, "Transcribing...")
@@ -146,13 +158,19 @@ def run_for_batch(
             batch_size=effective_batch,
             force=force,
         )
+        if not diarize:
+            release_decoded_audio()
         if cancelled():
             return {"did_work": did_work}
 
     new_diarization = False
     if not cancelled() and diarize:
-        diar_match_params = {"num_speakers": num_speakers}
-        if force or not has_matching_version(p.base, "diarization", diar_match_params):
+        if force or not has_matching_version(
+            p.base,
+            "diarization",
+            diarization_match_params(num_speakers),
+            current_only=True,
+        ):
             new_diarization = True
             did_work = True
             progress_cb(0.4, "Diarizing...")

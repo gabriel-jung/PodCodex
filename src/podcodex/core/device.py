@@ -145,6 +145,41 @@ def resolve_device() -> tuple[str, str]:
     return "cuda", "int8_float32"
 
 
+def vram_bytes() -> tuple[int, int] | None:
+    """``(free, total)`` VRAM of the current CUDA device in bytes, or None.
+
+    For step workers only (the batch-size default, the pre-load check):
+    ``mem_get_info`` creates a CUDA context, which in the API process would
+    hold VRAM for the server's lifetime. The API reads
+    :func:`vram_total_bytes` instead. None on CPU or on any failure.
+    """
+    if not cuda_available():
+        return None
+    try:
+        import torch
+
+        free, total = torch.cuda.mem_get_info()
+        return int(free), int(total)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def vram_total_bytes() -> int | None:
+    """Total VRAM of CUDA device 0 from its properties, or None.
+
+    A device-property query: unlike :func:`vram_bytes` it creates no CUDA
+    context, so it is safe in the API process.
+    """
+    if not cuda_available():
+        return None
+    try:
+        import torch
+
+        return int(torch.cuda.get_device_properties(0).total_memory)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def torch_dtype() -> Any:
     """Return ``torch.bfloat16`` / ``torch.float16`` / ``torch.float32`` based on
     detected compute capability. CPU and Pascal both get float32 (Pascal lacks

@@ -14,6 +14,7 @@ Versioned outputs (all tracked in pipeline.db)::
     speaker_map/{id}.json              — {SPEAKER_00: "Claude", ...} (linked to diarization)
 """
 
+import functools
 import os
 import warnings
 from pathlib import Path
@@ -30,12 +31,14 @@ from podcodex.core._utils import (
     check_vram,
     free_vram,
 )
+from podcodex.core.constants import DEFAULT_WHISPER_MODEL, DIARIZATION_MODEL
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import (
     get_latest_provenance,
     has_matching_version,
     load_latest,
     load_latest_speaker_map,
+    load_latest_with_meta,
     save_speaker_map_version,
     save_version,
 )
@@ -52,28 +55,65 @@ warnings.filterwarnings("ignore", message=".*Lightning automatically upgraded.*"
 # ──────────────────────────────────────────────
 
 
+@functools.lru_cache(maxsize=1)
+def _decode(path: str, mtime_ns: int, size: int):
+    import whisperx
+
+    return whisperx.load_audio(path)
+
+
+def release_decoded_audio() -> None:
+    """Drop the cached waveform (about 230 MB per hour of audio).
+
+    Called once nothing later in the run needs it: after diarization, or
+    after transcription when no diarization follows.
+    """
+    _decode.cache_clear()
+
+
+def _decoded_audio(path: Path):
+    """The episode decoded by ffmpeg, once per run.
+
+    Transcribe and diarize both need the full waveform and run back to back
+    in the same worker; each used to spawn ffmpeg and hold its own copy. One
+    entry: a worker handles one episode, and the key (path, mtime, size)
+    drops it the moment the file changes.
+    """
+    st = Path(path).stat()
+    return _decode(str(path), st.st_mtime_ns, st.st_size)
+
+
+def segments_match_params(model_size: str, language: str | None) -> dict:
+    """Params a ``segments`` version must carry to be reused for a run."""
+    params: dict = {"model": model_size}
+    if language:
+        params["language"] = language
+    return params
+
+
+def diarization_match_params(num_speakers: int | None) -> dict:
+    """Params a ``diarization`` version must carry to be reused for a run."""
+    return {"num_speakers": num_speakers}
+
+
 def transcribe_file(
     audio_path: Path | str,
-    model_size: str = "large-v3",
+    model_size: str = DEFAULT_WHISPER_MODEL,
     language: str = "en",
     batch_size: int = 4,
-    compute_type: str | None = None,
-    device: str | None = None,
     force: bool = False,
     output_dir: str | Path | None = None,
 ) -> dict:
     """
     Transcribe an audio file with WhisperX + phonetic alignment.
-    Saves segments.parquet + segments.meta.json in output_dir.
+    Saves a new ``segments`` version (transcript/segments/<id>.parquet, indexed in pipeline.db).
 
     Args:
         audio_path   : source audio file
-        model_size   : Whisper model size (default "large-v3")
+        model_size   : Whisper model size (default DEFAULT_WHISPER_MODEL)
         language     : ISO language code (default "en")
         batch_size   : transcription batch size (default 4)
-        compute_type : "float16", "int8", etc. (auto-detected if None)
-        device       : "cuda" or "cpu" (auto-detected if None)
-        force        : re-run even if output files already exist
+        force        : re-run even if the current segments already match
         output_dir   : output directory (see AudioPaths.output_dir for resolution rules)
 
     Returns:
@@ -83,18 +123,16 @@ def transcribe_file(
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    match_params = {"model": model_size}
-    if language:
-        match_params["language"] = language
-    if not force and has_matching_version(p.base, "segments", match_params):
-        logger.info("[SKIP] Matching segments version already exists")
+    match_params = segments_match_params(model_size, language)
+    if not force and has_matching_version(
+        p.base, "segments", match_params, current_only=True
+    ):
+        logger.info("[SKIP] Current segments version already matches")
         return load_segments(audio_path, output_dir=output_dir)
 
     from podcodex.core.device import resolve_device
 
-    dev, ctype = resolve_device()
-    device = device or dev
-    compute_type = compute_type or ctype
+    device, compute_type = resolve_device()
 
     logger.info(f"Transcribing {p.audio_path.name} ({device}, {compute_type})")
 
@@ -103,7 +141,7 @@ def transcribe_file(
 
         check_vram(f"whisper ({model_size})", WHISPER_VRAM_MB.get(model_size, 512))
 
-    audio = whisperx.load_audio(str(p.audio_path))
+    audio = _decoded_audio(p.audio_path)
 
     from podcodex.core._hf_logging import timed_load
     from podcodex.core.cache import get_hf_cache_dir
@@ -200,52 +238,52 @@ def load_segments(audio_path: Path | str, output_dir: str | Path | None = None) 
 def diarize_file(
     audio_path: Path | str,
     hf_token: str | None = None,
-    min_speakers: int | None = None,
-    max_speakers: int | None = None,
     num_speakers: int | None = None,
-    device: str | None = None,
     force: bool = False,
     output_dir: str | Path | None = None,
 ) -> dict:
     """
     Diarize an audio file using whisperx.DiarizationPipeline (pyannote).
-    Saves diarization.parquet + diarization.meta.json in output_dir.
+    Saves a new ``diarization`` version (transcript/diarization/<id>.parquet).
 
     Args:
         audio_path   : source audio file
         hf_token     : HuggingFace token for pyannote (reads HF_TOKEN env var if None)
-        min_speakers : minimum expected speakers (optional)
-        max_speakers : maximum expected speakers (optional)
         num_speakers : exact number of speakers, if known (optional)
-        device       : "cuda" or "cpu" (auto-detected if None)
-        force        : re-run even if output files already exist
+        force        : re-run even if the current diarization already matches
         output_dir   : output directory (see AudioPaths.output_dir for resolution rules)
 
     Returns:
         dict with keys 'speakers' (list of {start, end, speaker} dicts), 'num_speakers'
     """
-    import whisperx
 
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
 
-    diar_match_params = {"num_speakers": num_speakers}
-    if not force and has_matching_version(p.base, "diarization", diar_match_params):
+    if not force and has_matching_version(
+        p.base, "diarization", diarization_match_params(num_speakers), current_only=True
+    ):
         logger.info(
-            "[SKIP] Diarization version with num_speakers={} already exists",
+            "[SKIP] Current diarization already has num_speakers={}",
             num_speakers,
         )
         return load_diarization(audio_path, output_dir=output_dir)
 
-    token = hf_token or os.environ.get("HF_TOKEN")
+    token = (hf_token or os.environ.get("HF_TOKEN") or "").strip()
     if not token:
         raise ValueError(
             "HF_TOKEN not found. Set the HF_TOKEN environment variable or pass hf_token=."
         )
+    if not token.startswith("hf_"):
+        # pyannote silently drops a token without this prefix and the load
+        # then fails as a gated-repo error, which points at the wrong fix.
+        raise ValueError(
+            "HF_TOKEN does not look like a Hugging Face access token (they "
+            "start with 'hf_'). Create one at https://huggingface.co/settings/tokens."
+        )
 
     from podcodex.core.device import resolve_device
 
-    dev, _ = resolve_device()
-    device = device or dev
+    device, _ = resolve_device()
 
     logger.info(f"Diarizing {p.audio_path.name}")
 
@@ -255,19 +293,26 @@ def diarize_file(
         check_vram("diarization", DIARIZATION_VRAM_MB)
 
     from podcodex.core._hf_logging import timed_load
-    from podcodex.core.cache import get_hf_cache_dir
+    from podcodex.core.cache import get_hf_hub_dir
     from whisperx.diarize import DiarizationPipeline
 
-    get_hf_cache_dir()  # ensure HF_HOME is set before pyannote downloads
-    audio = whisperx.load_audio(str(p.audio_path))
+    audio = _decoded_audio(p.audio_path)
     with timed_load(f"pyannote DiarizationPipeline on {device}"):
-        pipeline = DiarizationPipeline(token=token, device=device)
-    diarize_segments = pipeline(
-        audio,
-        num_speakers=num_speakers,
-        min_speakers=min_speakers,
-        max_speakers=max_speakers,
-    )
+        # Explicit model and cache: the model is the one provenance records,
+        # and the cache holds even in a process whose huggingface_hub was
+        # imported before the env vars were set.
+        try:
+            pipeline = DiarizationPipeline(
+                model_name=DIARIZATION_MODEL,
+                token=token,
+                device=device,
+                cache_dir=str(get_hf_hub_dir()),
+            )
+        except Exception as exc:
+            raise _diarization_load_error(exc) from exc
+    diarize_segments = pipeline(audio, num_speakers=num_speakers)
+    del audio
+    release_decoded_audio()
 
     del pipeline
     free_vram()
@@ -291,7 +336,7 @@ def diarize_file(
     provenance = {
         "step": "diarization",
         "type": "raw",
-        "model": "pyannote/speaker-diarization-community-1",
+        "model": DIARIZATION_MODEL,
         "params": {
             "num_speakers": num_speakers,
             "speakers_found": unique,
@@ -301,6 +346,40 @@ def diarize_file(
 
     logger.success(f"Diarization done — {len(unique)} speakers")
     return {"speakers": speakers, **meta}
+
+
+def _diarization_load_error(exc: Exception) -> Exception:
+    """A message that says what to do, for the Hub failures users hit.
+
+    huggingface_hub's own errors are accurate but read as stack-trace noise
+    in a task toast; everything else is returned unchanged.
+    """
+    try:
+        from huggingface_hub.errors import (
+            GatedRepoError,
+            HfHubHTTPError,
+            LocalEntryNotFoundError,
+        )
+    except ImportError:
+        return exc
+    url = f"https://huggingface.co/{DIARIZATION_MODEL}"
+    if isinstance(exc, GatedRepoError):
+        return RuntimeError(
+            f"Diarization model access not granted: accept its conditions at {url} "
+            "with the account that owns HF_TOKEN."
+        )
+    if isinstance(exc, LocalEntryNotFoundError):
+        return RuntimeError(
+            "Diarization model is not cached and Hugging Face could not be "
+            "reached. Check the connection (or PODCODEX_HF_OFFLINE)."
+        )
+    if isinstance(exc, HfHubHTTPError):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status == 401:
+            return RuntimeError("HF_TOKEN was rejected by Hugging Face (401).")
+        if status == 429:
+            return RuntimeError("Hugging Face rate limit hit; retry in a few minutes.")
+    return exc
 
 
 def load_diarization(
@@ -342,7 +421,7 @@ def assign_speakers(
     """
     Assign SPEAKER_XX labels to segments via whisperx.assign_word_speakers.
     Requires transcribe_file() and diarize_file() to have already run.
-    Saves diarized_segments.parquet in output_dir.
+    Saves a new ``diarized_segments`` version (transcript/diarized_segments/<id>.parquet).
 
     Args:
         audio_path : source audio file
@@ -442,12 +521,12 @@ def save_speaker_map(
 ) -> None:
     """Save SPEAKER_XX → human name mapping as a versioned entry.
 
-    The map is linked to its label source via ``input_hash`` (the latest
-    ``diarized_segments`` content_hash, or ``segments`` for subtitle-only
-    transcripts). One map is retained per source bucket: re-saving for the
-    same diarization/import replaces the prior map, but maps for older
-    diarizations/imports are preserved so re-running upstream steps never
-    destroys previously curated mappings.
+    *mapping* is composed onto the current map (see
+    ``versions.save_speaker_map_version``), so a later rename never undoes an
+    earlier one. The map is linked to its label source via ``input_hash``
+    (the latest ``diarized_segments`` content_hash, or ``segments`` for
+    subtitle-only transcripts); maps for older diarizations/imports are
+    preserved so re-running upstream steps never destroys curated mappings.
 
     Example::
 
@@ -475,8 +554,8 @@ def export_transcript(
     """
     Generate the final JSON transcript with resolved speaker names.
 
-    When *diarized* is True (default), requires diarized_segments.parquet +
-    speaker_map.json.  When False, uses raw WhisperX segments and assigns
+    When *diarized* is True (default), requires a ``diarized_segments``
+    version and a speaker map.  When False, uses raw WhisperX segments and assigns
     :data:`NARRATOR_SPEAKER` to every segment.
 
     Saves a new version via the version DB.
@@ -552,21 +631,22 @@ def export_transcript(
         f"Export done ({'diarized' if diarized else 'raw'}) — {len(resolved)} segments"
     )
 
-    # If clean, also save a filtered version
+    # If clean, also save a filtered version. It is the newer one, so it is
+    # what every reader loads, and the status provenance must describe it.
+    status_prov = raw_prov
     if clean:
         resolved = clean_transcript(resolved, remove_unknown_speakers=diarized)
-        save_version(
-            p.base,
-            "transcript",
-            resolved,
-            _make_prov(
-                _build_meta(resolved), ptype="validated", extra_params={"clean": True}
-            ),
+        status_prov = _make_prov(
+            _build_meta(resolved), ptype="validated", extra_params={"clean": True}
         )
-        logger.success(f"Clean export — {len(resolved)} segments (filtered)")
+        save_version(p.base, "transcript", resolved, status_prov)
+        logger.success(f"Clean export, {len(resolved)} segments (filtered)")
 
     mark_step(
-        p.show_dir, p.base.name, transcribed=True, provenance={"transcript": raw_prov}
+        p.show_dir,
+        p.base.name,
+        transcribed=True,
+        provenance={"transcript": status_prov},
     )
     return resolved
 
@@ -588,12 +668,11 @@ def load_transcript_full(
         ``{"meta": {}, "segments": []}`` if no transcript version exists.
     """
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
-    segments = load_latest(p.base, "transcript")
-    if segments is None:
+    found = load_latest_with_meta(p.base, "transcript")
+    if found is None:
         return {"meta": {}, "segments": []}
-    prov = get_latest_provenance(p.base, "transcript") or {}
-    meta = prov.get("params", {}).get("meta", {})
-    return {"meta": meta, "segments": segments}
+    version, segments = found
+    return {"meta": (version.get("params") or {}).get("meta", {}), "segments": segments}
 
 
 def load_transcript(
