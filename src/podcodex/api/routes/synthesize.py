@@ -73,11 +73,16 @@ def extract_selected(req: ExtractSelectedRequest) -> dict:
     if not req.selections:
         raise HTTPException(400, "No segments selected")
 
-    samples = extract_selected_samples(
-        req.audio_path,
-        [s.model_dump() for s in req.selections],
-        output_dir=req.output_dir,
-    )
+    try:
+        samples = extract_selected_samples(
+            req.audio_path,
+            [s.model_dump() for s in req.selections],
+            output_dir=req.output_dir,
+        )
+    except RuntimeError as exc:
+        # ffmpeg missing, unreadable audio, a timeout: the message says which,
+        # same mapping as the upload-sample route.
+        raise HTTPException(400, str(exc)) from exc
 
     # Convert Path objects for JSON
     result = {}

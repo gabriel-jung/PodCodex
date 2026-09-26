@@ -1,14 +1,19 @@
 import type { AudioSegment } from "@/stores";
 import type { Segment } from "./types";
 import { json } from "./client";
+import { episodeParams } from "./versions";
 
 /** Fetch the canonical source segments for playback surfaces.
  *  Honors the verified pointer (when set) then falls back through
  *  corrected and transcript. Single facility shared with backend
  *  `_resolve_source_segments(auto)` so the audio overlay and panels
  *  cannot disagree. */
-export async function getBestSegments(audioPath: string): Promise<Segment[]> {
-  const params = new URLSearchParams({ audio_path: audioPath });
+export async function getBestSegments(
+  audioPath: string | null | undefined,
+  outputDir?: string | null,
+): Promise<Segment[]> {
+  // Both refs: a subtitle-only episode has no audio path, only its folder.
+  const params = episodeParams(audioPath, outputDir);
   return json<Segment[]>(`/api/shows/best-source-segments?${params}`);
 }
 

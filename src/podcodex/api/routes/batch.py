@@ -9,10 +9,10 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.routes._helpers import (
+    TaskCancelled,
     build_provenance,
     counted_progress,
     enrich_correct_kwargs,
-    llm_prov_params,
     submit_task,
     transcribe_prov_params,
 )
@@ -121,6 +121,14 @@ def _batch_transcribe(audio_path, stem, p, req, cancelled, ep_progress, i, step_
     """
     sw = _STEP_WEIGHTS["transcribe"]
     from podcodex.api.subprocess_runner import run_in_subprocess
+    from podcodex.core.transcribe_job import transcript_is_current
+
+    # Checked here, not only in the child: a spawn bootstraps torch and the
+    # ML patches, seconds per episode, just to learn there is nothing to do.
+    if not req.force and transcript_is_current(
+        audio_path, req.model_size, req.language, req.diarize
+    ):
+        return False
 
     def on_prog(frac: float, msg: str) -> None:
         ep_progress(i, step_offset, sw, frac, msg)
@@ -253,10 +261,12 @@ def _batch_llm_step(
     # (see enrich_correct_kwargs), not the request value, so the already-done
     # check has to compare against the same thing the save writes or every
     # episode is corrected again on every run.
-    tc_kwargs = (
-        None
+    match_lang = (
+        req.source_lang
         if is_translate
-        else enrich_correct_kwargs(audio_path, None, req.source_lang, ref)
+        else enrich_correct_kwargs(audio_path, None, req.source_lang, ref)[
+            "source_lang"
+        ]
     )
 
     from podcodex.core.llm_resolver import LLMResolutionError, resolve_llm_run
@@ -278,9 +288,7 @@ def _batch_llm_step(
         "model": frozenset({llm.model, ""}) if not req.llm_model else llm.model,
         "llm_mode": req.llm_mode,
         "llm_provider_profile": req.llm_provider_profile,
-        "source_lang": req.source_lang
-        if tc_kwargs is None
-        else tc_kwargs["source_lang"],
+        "source_lang": match_lang,
     }
     if is_translate:
         match_params["target_lang"] = req.target_lang
@@ -298,60 +306,35 @@ def _batch_llm_step(
     except ValueError as exc:
         logger.warning("Batch {} skipped for {}: {}", step, p.base.name, exc)
         return False
-    segments = source.segments
 
     label = "Translating" if is_translate else "Correcting"
     ep_progress(i, step_offset, sw, 0.0, f"{label}...")
 
-    llm_kwargs = dict(
-        **llm.pipeline_kwargs(),
+    def on_batch(n: int, total: int) -> None:
+        # The cancel point inside one episode: without it a batch cancel ran
+        # (and billed) every remaining LLM batch of the current episode, then
+        # saved it. Raised after a batch, so no failures record is written;
+        # not after the last one, when everything is already paid for.
+        if n < total and cancelled():
+            raise TaskCancelled()
+
+    run_kwargs = dict(
+        audio_path=audio_path,
         context=req.context,
         source_lang=req.source_lang,
         batch_minutes=req.llm_batch_minutes,
-        original_segments=segments,
-        merge=False,
-        audio_path=audio_path,
-    )
-
-    prov_params = llm_prov_params(
-        req.llm_mode,
         provider_profile=req.llm_provider_profile,
         key_name=req.llm_key_name,
-        source_lang=req.source_lang,
-        batch_minutes=req.llm_batch_minutes,
+        on_batch=on_batch,
     )
-
     if is_translate:
-        from podcodex.core.translate import save_translation, translate_segments
+        from podcodex.core.translate import translate_and_save
 
-        llm_kwargs["target_lang"] = req.target_lang
-        prov_params["target_lang"] = req.target_lang
-        result = translate_segments(segments, **llm_kwargs)
-        provenance = build_provenance(
-            step_name,
-            model=llm.model,
-            audio_path=audio_path,
-            params=prov_params,
-            source=source,
-        )
-        save_translation(audio_path, result, req.target_lang, provenance=provenance)
+        translate_and_save(source, llm, target_lang=req.target_lang, **run_kwargs)
     else:
-        from podcodex.core.correct import correct_segments, save_corrected
+        from podcodex.core.correct import correct_and_save
 
-        assert tc_kwargs is not None  # non-translate branch computed it above
-        llm_kwargs.update(tc_kwargs)
-        prov_params["engine"] = tc_kwargs["engine"]
-        prov_params["source_lang"] = tc_kwargs["source_lang"]
-        result = correct_segments(segments, **llm_kwargs)
-        provenance = build_provenance(
-            step_name,
-            model=llm.model,
-            audio_path=audio_path,
-            params=prov_params,
-            source=source,
-        )
-        save_corrected(audio_path, result, provenance=provenance)
-
+        correct_and_save(source, llm, **run_kwargs)
     return True
 
 
@@ -361,6 +344,13 @@ def _batch_index(
     """Run index step in a spawned subprocess. Returns True if work was done."""
     sw = _STEP_WEIGHTS["index"]
     from podcodex.api.subprocess_runner import run_in_subprocess
+    from podcodex.rag.index_job import already_indexed
+
+    # Same as transcribe: skip in the parent rather than spawn to skip.
+    if not req.force and already_indexed(
+        audio_path, stem, req.show_name, req.index_model_keys, req.index_chunkings
+    ):
+        return False
 
     def on_prog(frac: float, msg: str) -> None:
         ep_progress(i, step_offset, sw, frac, msg)
@@ -444,12 +434,13 @@ def _run_batch(progress_cb, req: BatchRequest):
 
         stem = Path(audio_path).stem
 
-        if task_manager.get_active(audio_path):
+        # One locked check-and-take: a separate get_active then lock let a
+        # single-episode run that started in between be overwritten.
+        if not task_manager.lock(audio_path, batch_task_id):
             report(i, "Skipped (task running)", frac=(i + 1) / total)
             skipped += 1
             continue
 
-        task_manager.lock(audio_path, batch_task_id)
         report(i, "Starting...")
         ep_had_work = False
         ep_version_id = (req.source_version_ids or {}).get(audio_path)
@@ -543,6 +534,14 @@ def _run_batch(progress_cb, req: BatchRequest):
             else:
                 completed += 1
                 report(i, "Done", frac=(i + 1) / total)
+
+        except TaskCancelled:
+            # Same accounting as the cancel check above: a step this episode
+            # already finished (its transcript, say) is completed work.
+            if ep_had_work:
+                completed += 1
+            report(i, "Cancelled", frac=(i + 1) / total)
+            break
 
         except Exception as exc:
             logger.exception("Batch: episode {} failed", stem)

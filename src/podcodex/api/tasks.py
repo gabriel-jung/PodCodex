@@ -8,7 +8,7 @@ import re
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -30,6 +30,11 @@ class TaskInfo:
     Attributes:
         task_id: Unique identifier (``{step}_{hex8}``).
         audio_path: Filesystem path this task operates on (used for locking).
+        step: The pipeline step the task runs (``submit``'s ``step``).
+        subject: What within the step it runs on, when a step is parameterized
+            (the target language of a translate, the extra of an install).
+            With ``step`` it decides whether a second request is the same
+            run (reconnect) or another one (refused).
         status: One of ``"pending"``, ``"running"``, ``"completed"``,
             ``"failed"``, or ``"cancelled"``.
         progress: Completion fraction in ``[0.0, 1.0]``.
@@ -44,6 +49,8 @@ class TaskInfo:
 
     task_id: str
     audio_path: str = ""
+    step: str = ""
+    subject: str = ""
     status: str = "pending"  # pending | running | completed | failed | cancelled
     progress: float = 0.0
     message: str = ""
@@ -69,12 +76,30 @@ class TaskInfo:
         self.log.append(message)
 
 
+class TaskConflict(ValueError):
+    """Another live task holds the lock key; ``holder`` is that task."""
+
+    def __init__(self, holder: TaskInfo) -> None:
+        super().__init__(
+            f"Task {holder.task_id} already running on {holder.audio_path}"
+        )
+        self.holder = holder
+
+
 # Lock-key prefixes whose remainder is a show folder rather than an audio
 # path: ``batch.py`` and ``rss.py`` mint these for whole-show runs. Every
 # reader of the key space goes through these two names, because a caller
 # that re-spells a shape (``_active_task_on_episode`` used to) silently
 # stops blocking the run it was meant to wait for.
 SHOW_LOCK_PREFIXES = ("batch:", "download:")
+
+# Steps that mostly wait on the network or on uv, not on the CPU or GPU.
+# They run on their own pool: two hour-long bulk downloads (asleep in pacing
+# delays most of the time) used to take both compute slots and leave every
+# transcribe the user started "pending" with no reason given.
+IO_STEPS = frozenset(
+    {"download", "yt-download", "yt-subs", "gpu_download", "install", "remove"}
+)
 
 
 def show_lock_keys(show_folder: str) -> list[str]:
@@ -91,28 +116,46 @@ class TaskManager:
     the same file.
     """
 
-    def __init__(self, max_workers: int = 2) -> None:
+    def __init__(self, max_workers: int = 2, io_workers: int = 4) -> None:
         """Initialise the task manager.
 
         Args:
-            max_workers: Maximum concurrent background threads.
+            max_workers: Maximum concurrent compute tasks (pipeline steps).
+            io_workers: Maximum concurrent ``IO_STEPS`` tasks.
         """
         self._tasks: dict[str, TaskInfo] = {}
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._io_executor = ThreadPoolExecutor(max_workers=io_workers)
+        self._futures: dict[str, Future] = {}  # task_id → pool future
         self._ws_connections: set[WebSocket] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._audio_locks: dict[str, str] = {}  # audio_path → task_id
+        # Guards _tasks and _audio_locks. Sync route handlers run on FastAPI's
+        # threadpool, so a double-clicked Start runs two submits at once and a
+        # check-then-set without it lets both take the same episode.
+        self._state_lock = threading.RLock()
 
     # ── Public lock API ────────────────────────────
 
-    def lock(self, audio_path: str, task_id: str) -> None:
-        """Acquire a processing lock on an audio path.
+    def lock(self, audio_path: str, task_id: str) -> bool:
+        """Acquire a processing lock on an audio path, unless a live task holds it.
 
         Args:
             audio_path: Filesystem path to lock.
             task_id: Owning task identifier.
+
+        Returns:
+            True when the lock is now held by *task_id*; False when another
+            unfinished task holds it (the holder is never overwritten).
         """
-        self._audio_locks[audio_path] = task_id
+        with self._state_lock:
+            holder = self._audio_locks.get(audio_path)
+            if holder is not None and holder != task_id:
+                info = self._tasks.get(holder)
+                if info is not None and info.finished_at is None:
+                    return False
+            self._audio_locks[audio_path] = task_id
+            return True
 
     def unlock(self, audio_path: str) -> None:
         """Release the processing lock on an audio path.
@@ -120,7 +163,8 @@ class TaskManager:
         Args:
             audio_path: Filesystem path to unlock.
         """
-        self._audio_locks.pop(audio_path, None)
+        with self._state_lock:
+            self._audio_locks.pop(audio_path, None)
 
     def _unlock_if_owner(self, audio_path: str, task_id: str) -> None:
         """Release *audio_path* only if *task_id* is still the holder.
@@ -134,8 +178,9 @@ class TaskManager:
             audio_path: Filesystem path to unlock.
             task_id: Task that expects to hold the lock.
         """
-        if self._audio_locks.get(audio_path) == task_id:
-            del self._audio_locks[audio_path]
+        with self._state_lock:
+            if self._audio_locks.get(audio_path) == task_id:
+                del self._audio_locks[audio_path]
 
     def release_locks_for_task(self, task_id: str) -> None:
         """Release all locks held by a given task.
@@ -146,9 +191,10 @@ class TaskManager:
         Args:
             task_id: Task whose locks should be released.
         """
-        stale = [k for k, v in self._audio_locks.items() if v == task_id]
-        for k in stale:
-            del self._audio_locks[k]
+        with self._state_lock:
+            stale = [k for k, v in self._audio_locks.items() if v == task_id]
+            for k in stale:
+                del self._audio_locks[k]
 
     def bind_loop(self) -> None:
         """Cache the serving event loop. Called once from the app lifespan.
@@ -173,15 +219,16 @@ class TaskManager:
     def _cleanup_stale(self, max_age: float = 600.0) -> None:
         """Remove completed/failed tasks older than *max_age* seconds."""
         now = time.monotonic()
-        stale = [
-            tid
-            for tid, t in self._tasks.items()
-            if t.finished_at is not None and now - t.finished_at > max_age
-        ]
-        for tid in stale:
-            t = self._tasks.pop(tid, None)
-            if t:
-                self._unlock_if_owner(t.audio_path, tid)
+        with self._state_lock:
+            stale = [
+                tid
+                for tid, t in self._tasks.items()
+                if t.finished_at is not None and now - t.finished_at > max_age
+            ]
+            for tid in stale:
+                t = self._tasks.pop(tid, None)
+                if t:
+                    self._unlock_if_owner(t.audio_path, tid)
 
     def submit(
         self,
@@ -189,6 +236,8 @@ class TaskManager:
         audio_path: str,
         fn: Callable,
         *args: Any,
+        subject: str = "",
+        reconnect: bool = False,
     ) -> TaskInfo:
         """Submit a pipeline function for background execution.
 
@@ -210,8 +259,12 @@ class TaskManager:
         Returns:
             The newly created ``TaskInfo`` instance.
 
+        With *reconnect*, a live task of the same step and *subject* on
+        *audio_path* is returned instead (the UI re-attaching after a
+        navigation), decided under the same lock as the take.
+
         Raises:
-            ValueError: If another task is already running on *audio_path*.
+            TaskConflict: another task holds *audio_path* (a ``ValueError``).
         """
         self._cleanup_stale()
         # No loop capture here: route handlers are sync `def` and run on
@@ -222,16 +275,19 @@ class TaskManager:
         # while the child is still winding down (cancel grace, then join and
         # terminate), and the lock is what says that subprocess may still be
         # writing versions and pipeline.db rows for this stem.
-        if audio_path in self._audio_locks:
-            existing_id = self._audio_locks[audio_path]
-            existing = self._tasks.get(existing_id)
-            if existing and existing.finished_at is None:
-                raise ValueError(f"Task {existing_id} already running on {audio_path}")
-
         task_id = f"{step}_{uuid.uuid4().hex[:8]}"
-        info = TaskInfo(task_id=task_id, audio_path=audio_path)
-        self._tasks[task_id] = info
-        self._audio_locks[audio_path] = task_id
+        info = TaskInfo(
+            task_id=task_id, audio_path=audio_path, step=step, subject=subject
+        )
+        # Check and take the lock as one step, or two concurrent submits
+        # both pass the check.
+        with self._state_lock:
+            if not self.lock(audio_path, task_id):
+                holder = self._tasks[self._audio_locks[audio_path]]
+                if reconnect and (holder.step, holder.subject) == (step, subject):
+                    return holder
+                raise TaskConflict(holder)
+            self._tasks[task_id] = info
 
         def progress_cb(progress: float, message: str) -> None:
             self.update_progress(task_id, progress, message)
@@ -295,7 +351,9 @@ class TaskManager:
                     info.result = result
             except Exception as exc:
                 if not info.cancel_event.is_set():
-                    logger.exception("Task %s failed", task_id)
+                    logger.exception(
+                        "Task {} ({}) failed on {}", task_id, step, audio_path
+                    )
                     info.status = "failed"
                     info.error = str(exc)
             finally:
@@ -316,7 +374,11 @@ class TaskManager:
                 _invalidate_scan_for(audio_path)
                 self._broadcast_sync(task_id)
 
-        self._executor.submit(run)
+        pool = self._io_executor if step in IO_STEPS else self._executor
+        future = pool.submit(run)
+        with self._state_lock:
+            self._futures[task_id] = future
+        future.add_done_callback(lambda _f: self._futures.pop(task_id, None))
         return info
 
     # Patterns that represent progress ticks, not meaningful step transitions
@@ -368,10 +430,11 @@ class TaskManager:
         Returns:
             The ``TaskInfo`` if a task is currently active, otherwise ``None``.
         """
-        task_id = self._audio_locks.get(audio_path)
-        if not task_id:
-            return None
-        info = self._tasks.get(task_id)
+        with self._state_lock:
+            task_id = self._audio_locks.get(audio_path)
+            if not task_id:
+                return None
+            info = self._tasks.get(task_id)
         # Same gate as ``submit``: a cancelled task keeps its lock until
         # ``run()``'s finally releases it, because the child may still be
         # writing. Going by status here would let a move or delete proceed
@@ -394,7 +457,9 @@ class TaskManager:
         from pathlib import Path
 
         root = Path(show_folder)
-        for key in list(self._audio_locks):
+        with self._state_lock:
+            keys = list(self._audio_locks)
+        for key in keys:
             path_part = key
             for prefix in SHOW_LOCK_PREFIXES:
                 if key.startswith(prefix):
@@ -423,8 +488,8 @@ class TaskManager:
             task_id: Task to cancel.
 
         Returns:
-            ``True`` if the cancellation event was set, ``False`` if the task
-            was not found or already finished.
+            ``False`` when no such task exists; ``True`` otherwise, including
+            for a task that already finished (cancel is idempotent).
         """
         info = self._tasks.get(task_id)
         if not info:
@@ -437,19 +502,39 @@ class TaskManager:
         self._broadcast_sync(task_id)
         return True
 
+    def cancel_all(self) -> int:
+        """Cancel every unfinished task and drop queued ones. For shutdown.
+
+        The pool itself stays usable (the app object, and the tests' clients,
+        can enter the lifespan again).
+
+        The pool's worker threads are joined at interpreter exit; without
+        this they sit waiting on their children, so a sidecar whose shell
+        died lingers (GPU busy, still writing versions) until the running
+        steps finish. A cancelled child is stopped after its grace window.
+
+        Returns:
+            How many tasks were asked to stop.
+        """
+        with self._state_lock:
+            live = [t for t in self._tasks.values() if t.finished_at is None]
+        for info in live:
+            self.cancel(info.task_id)
+            future = self._futures.get(info.task_id)
+            # Still queued: run() will never execute to release its locks.
+            if future is not None and future.cancel():
+                info.message = "Cancelled"
+                info.finished_at = time.monotonic()
+                self.release_locks_for_task(info.task_id)
+        return len(live)
+
     def _broadcast_sync(self, task_id: str) -> None:
         """Schedule an async broadcast from a sync/thread context."""
         try:
             loop = self._get_loop()
             asyncio.run_coroutine_threadsafe(self._broadcast(task_id), loop)
-            logger.debug(
-                "Broadcast scheduled for %s (loop running=%s, ws_count=%d)",
-                task_id,
-                loop.is_running(),
-                len(self._ws_connections),
-            )
         except RuntimeError as exc:
-            logger.warning("WebSocket broadcast failed for %s: %s", task_id, exc)
+            logger.warning("WebSocket broadcast failed for {}: {}", task_id, exc)
 
     async def _broadcast(self, task_id: str) -> None:
         """Send a task's current state to all connected WebSocket clients."""
@@ -472,7 +557,9 @@ class TaskManager:
             msg["error"] = info.error
 
         dead: list[WebSocket] = []
-        for ws in self._ws_connections:
+        # Snapshot: a socket connecting during an await would otherwise raise
+        # "set changed size during iteration" and lose this update.
+        for ws in list(self._ws_connections):
             try:
                 await ws.send_json(msg)
             except Exception:
@@ -491,7 +578,9 @@ class TaskManager:
         """
         self._ws_connections.add(ws)
         # Send current state of all active tasks so reconnecting clients catch up
-        for info in self._tasks.values():
+        with self._state_lock:
+            tasks = list(self._tasks.values())
+        for info in tasks:
             if info.status in ("pending", "running"):
                 msg: dict[str, Any] = {
                     "task_id": info.task_id,

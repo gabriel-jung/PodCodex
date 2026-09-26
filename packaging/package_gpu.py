@@ -126,6 +126,14 @@ def write_archive(archive_path: Path, files: list[tuple[str, Path]]) -> None:
             tar.add(src, arcname=arcname)
 
 
+def _app_version() -> str:
+    """Version from pyproject.toml, the source every other version derives from."""
+    import tomllib
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    return tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
+
+
 def package(
     onedir_path: Path,
     output_dir: Path,
@@ -195,7 +203,11 @@ def package(
     # ``server_sha256`` is required by the runtime installer: server-core is
     # the archive that becomes the executed sidecar, so its digest travels in
     # the manifest rather than in an optional ``.sha256`` sidecar fetch.
+    # ``server_version``: the app release the server core was built from.
+    # The launcher only runs a GPU sidecar of its own version, so the
+    # installer refuses a manifest stamped for another release.
     manifest = {
+        "server_version": _app_version(),
         "version": cuda_libs_version,
         "torch_compat": torch_compat,
         "archive": cuda_archive.name,

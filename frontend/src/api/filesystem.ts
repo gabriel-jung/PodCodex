@@ -1,5 +1,6 @@
 import type { DirListing } from "./types";
 import { BASE, json, withToken } from "./client";
+import { episodeParams } from "./versions";
 import type { Platform } from "@/platform";
 
 export const listDirectory = (
@@ -60,29 +61,14 @@ export const deleteAudioFile = (path: string) =>
 
 // ── Export ─────────────────────────────────
 
-export const exportTextUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
-  const params = new URLSearchParams({ audio_path: audioPath, source });
-  if (outputDir) params.set("output_dir", outputDir);
-  return withToken(`${BASE}/api/export/text?${params}`);
-};
-
-export const exportSrtUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
-  const params = new URLSearchParams({ audio_path: audioPath, source });
-  if (outputDir) params.set("output_dir", outputDir);
-  return withToken(`${BASE}/api/export/srt?${params}`);
-};
-
-export const exportVttUrl = (audioPath: string, source = "transcript", outputDir?: string) => {
-  const params = new URLSearchParams({ audio_path: audioPath, source });
-  if (outputDir) params.set("output_dir", outputDir);
-  return withToken(`${BASE}/api/export/vtt?${params}`);
-};
-
-export const exportZipUrl = (audioPath: string, outputDir?: string) => {
-  const params = new URLSearchParams({ audio_path: audioPath });
-  if (outputDir) params.set("output_dir", outputDir);
-  return withToken(`${BASE}/api/export/zip?${params}`);
-};
+// One builder for every GET export URL. episodeParams leaves out an empty
+// audio path (subtitle-only episodes export by their folder).
+const exportUrl = (
+  kind: "text" | "srt" | "vtt" | "zip",
+  audioPath: string,
+  outputDir?: string,
+  extra?: { source?: string; version_id?: string },
+) => withToken(`${BASE}/api/export/${kind}?${episodeParams(audioPath, outputDir, extra)}`);
 
 export type ExportFormat = "txt" | "srt" | "vtt" | "zip" | "audio";
 
@@ -90,6 +76,8 @@ export const saveExport = (req: {
   audio_path: string;
   output_dir?: string;
   source?: string;
+  /** Export this version instead of the step's default (the one on screen). */
+  version_id?: string;
   format: ExportFormat;
   dest: string;
 }) =>
@@ -104,12 +92,14 @@ const _exportFallbackUrl = (
   audioPath: string,
   source: string,
   outputDir?: string,
+  versionId?: string,
 ): string => {
+  const extra = { source, version_id: versionId };
   switch (format) {
-    case "txt": return exportTextUrl(audioPath, source, outputDir);
-    case "srt": return exportSrtUrl(audioPath, source, outputDir);
-    case "vtt": return exportVttUrl(audioPath, source, outputDir);
-    case "zip": return exportZipUrl(audioPath, outputDir);
+    case "txt": return exportUrl("text", audioPath, outputDir, extra);
+    case "srt": return exportUrl("srt", audioPath, outputDir, extra);
+    case "vtt": return exportUrl("vtt", audioPath, outputDir, extra);
+    case "zip": return exportUrl("zip", audioPath, outputDir);
     case "audio": return audioFileUrl(audioPath);
   }
 };
@@ -126,6 +116,7 @@ export async function saveExportFile(
     format: ExportFormat;
     defaultName: string;
     source?: string;
+    versionId?: string;
   },
 ): Promise<void> {
   if (!args.audioPath && !args.outputDir) {
@@ -144,13 +135,14 @@ export async function saveExportFile(
       audio_path: args.audioPath ?? "",
       output_dir: args.outputDir,
       source: args.source,
+      version_id: args.versionId,
       format: args.format,
       dest,
     });
     return;
   }
   const a = document.createElement("a");
-  a.href = _exportFallbackUrl(args.format, args.audioPath ?? "", args.source ?? "transcript", args.outputDir);
+  a.href = _exportFallbackUrl(args.format, args.audioPath ?? "", args.source ?? "transcript", args.outputDir, args.versionId);
   a.download = args.defaultName;
   document.body.appendChild(a);
   a.click();

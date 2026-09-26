@@ -19,7 +19,7 @@ from podcodex.api.routes._helpers import (
     require_audio_or_output,
     submit_task,
 )
-from podcodex.core.llm_failures import clear_step_for, get_step
+from podcodex.core.llm_failures import clear_step_for, get_step, stamp_run_version
 from podcodex.api.routes._versions import register_version_routes
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths, normalize_lang
@@ -44,12 +44,8 @@ def get_translated_segments(
     after the translation was generated (e.g. SPEAKER_00 → Chris Fisher)
     show through. The saved translation file is untouched.
     """
-    from podcodex.api.routes._helpers import annotate_flags
-    from podcodex.core.versions import (
-        apply_speaker_map,
-        load_latest,
-        load_latest_speaker_map,
-    )
+    from podcodex.api.routes._helpers import shape_step_segments
+    from podcodex.core.versions import load_latest
 
     require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
@@ -57,7 +53,7 @@ def get_translated_segments(
     segments = load_latest(p.base, lang_norm)
     if segments is None:
         raise HTTPException(404, f"No translation found for '{lang}'")
-    return annotate_flags(apply_speaker_map(segments, load_latest_speaker_map(p.base)))
+    return shape_step_segments(p.base, lang_norm, segments)
 
 
 @router.put("/segments")
@@ -99,57 +95,35 @@ def start_translate(req: TranslateRequest) -> TaskResponse:
 
     def run_translate(progress_cb, req_data):
         """Load source segments, run translation in batches, and save the raw output."""
-        from podcodex.core.translate import save_translation, translate_segments
+        from podcodex.core.translate import translate_and_save
 
         progress_cb(0.0, "Loading source segments...")
         source = load_source(
             req_data.audio_path, req_data.output_dir, req_data.source_version_id
         )
-        segments = source.segments
-
         progress_cb(0.1, "Starting translation...")
-
-        translated = translate_segments(
-            segments,
-            **llm.pipeline_kwargs(),
+        translated, _version_id = translate_and_save(
+            source,
+            llm,
+            audio_path=req_data.audio_path,
+            output_dir=req_data.output_dir,
+            target_lang=req_data.target_lang,
             context=req_data.context,
             source_lang=req_data.source_lang,
-            target_lang=req_data.target_lang,
             batch_minutes=req_data.batch_minutes,
-            original_segments=segments,
-            merge=False,  # source segments are already merged on load/upload
+            provider_profile=req_data.provider_profile,
+            key_name=req_data.key_name,
             on_batch=batch_progress(progress_cb),
-            audio_path=req_data.audio_path,
-            output_dir=req_data.output_dir,
-        )
-
-        progress_cb(0.95, "Saving...")
-        lang_norm = normalize_lang(req_data.target_lang)
-        provenance = build_provenance(
-            lang_norm,
-            source=source,
-            model=llm.model,
-            audio_path=req_data.audio_path,
-            output_dir=req_data.output_dir,
-            params=llm_prov_params(
-                req_data.mode,
-                provider_profile=req_data.provider_profile,
-                key_name=req_data.key_name,
-                source_lang=req_data.source_lang,
-                target_lang=req_data.target_lang,
-                batch_minutes=req_data.batch_minutes,
-            ),
-        )
-        save_translation(
-            req_data.audio_path,
-            translated,
-            req_data.target_lang,
-            output_dir=req_data.output_dir,
-            provenance=provenance,
         )
         return {"count": len(translated), "lang": req_data.target_lang}
 
-    return submit_task("translate", req.audio_path, run_translate, req)
+    return submit_task(
+        "translate",
+        req.audio_path,
+        run_translate,
+        req,
+        subject=normalize_lang(req.target_lang),
+    )
 
 
 # ── Manual mode ──────────────────────────────────────────
@@ -260,12 +234,14 @@ def apply_batches_translation(req: ApplyBatchesRequest) -> dict:
         audio_path=req.audio_path,
         output_dir=req.output_dir,
     )
-    save_translation(
+    version_id = save_translation(
         req.audio_path,
         patched,
         req.lang,
         output_dir=req.output_dir,
         provenance=provenance,
     )
+    # The remaining rejected batches now live in the patched version.
+    stamp_run_version(req.audio_path, req.output_dir, lang_norm, version_id)
     rejected = resolve_batches(p.base, lang_norm, [fix.batch for fix in req.fixes])
     return {"status": "saved", "count": len(patched), "rejected": rejected}

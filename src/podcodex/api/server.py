@@ -6,8 +6,9 @@ so the frozen binary doesn't need importlib magic). Calls
 the data dir before anything imports torch or transformers, installs the
 platform monkey-patches and configures loguru.
 
-``make dev-api`` / ``podcodex-api`` use ``app.py:main()`` and never touch
-this file. The frozen binary receives ``PODCODEX_DATA_DIR`` from the Tauri
+``make dev-api`` (``app.py:create_dev_app``) and ``podcodex-api``
+(``app.py:main()``) bootstrap with ``bootstrap_for_dev`` and never run this
+file's ``main``. The frozen binary receives ``PODCODEX_DATA_DIR`` from the Tauri
 shell.
 """
 
@@ -30,7 +31,9 @@ def _redirect_stdio_to_logfile() -> None:
     Pointing Python's stdio at a real file (and dup2'ing the OS-level FDs so
     the child inherits the same file, not the broken pipe) sidesteps the
     flush failure entirely. The Tauri shell's pipe drain still works for the
-    bootloader's own output; ours just lands in ``logs/server.log`` instead.
+    bootloader's own output; ours lands in ``logs/stdio.log`` (native crash
+    output, faulthandler dumps, child tracebacks). Not ``server.log``: loguru
+    rotates that one by renaming, which raw descriptors cannot follow.
     """
     if not getattr(sys, "frozen", False):
         return  # dev path: keep tty stdio.
@@ -39,10 +42,15 @@ def _redirect_stdio_to_logfile() -> None:
     if not data_dir:
         return  # bare frozen run with no data dir: leave stdio alone.
 
-    from podcodex.core.app_paths import server_log_path
+    from podcodex.core.app_paths import stdio_log_path
 
-    log_path = server_log_path(data_dir)
+    log_path = stdio_log_path(data_dir)
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    # Truncated per launch (never rotated, so this keeps it to one run), then
+    # reopened for append: every writer (these fds, inherited by children,
+    # and _early_child_log's own handle) must be O_APPEND or one overwrites
+    # the others' lines at a stale offset.
+    log_path.write_text("", encoding="utf-8")
     log_fp = open(log_path, "a", buffering=1, encoding="utf-8")
 
     # Reassign Python-level streams so logger/print writes go to the file.

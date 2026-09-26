@@ -188,3 +188,138 @@ def test_get_active_in_show_ignores_a_sibling_folder():
 
     with active_task("/library/other/ep1.mp3"):
         assert task_manager.get_active_in_show("/library/show") is None
+
+
+def test_concurrent_submits_on_one_path_start_one_task(tm):
+    """A double-clicked Start runs two submits on the threadpool at once."""
+    release = threading.Event()
+    barrier = threading.Barrier(8)
+    accepted: list = []
+    refused: list = []
+
+    def work(_progress_cb):
+        release.wait(5.0)
+
+    def racer():
+        barrier.wait()
+        try:
+            accepted.append(tm.submit("transcribe", "/ep.mp3", work))
+        except ValueError:
+            refused.append(1)
+
+    threads = [threading.Thread(target=racer) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    release.set()
+
+    assert len(accepted) == 1
+    assert len(refused) == 7
+    _run_to_completion(tm, accepted[0])
+
+
+def test_lock_refuses_a_live_holder(tm):
+    release = threading.Event()
+    info = tm.submit("transcribe", "/ep.mp3", lambda _cb: release.wait(5.0))
+    try:
+        assert tm.lock("/ep.mp3", "batch_x") is False
+        assert tm.get_active("/ep.mp3") is info
+    finally:
+        release.set()
+        _run_to_completion(tm, info)
+    assert tm.lock("/ep.mp3", "batch_x") is True
+
+
+def test_cancel_all_stops_running_and_drops_queued_tasks():
+    manager = TaskManager(max_workers=1)
+    started = threading.Event()
+
+    def work(progress_cb):
+        started.set()
+        progress_cb.cancel_event.wait(5.0)
+
+    running = manager.submit("transcribe", "/a.mp3", work)
+    started.wait(5.0)
+    queued = manager.submit("transcribe", "/b.mp3", work)
+
+    assert manager.cancel_all() == 2
+    _run_to_completion(manager, running)
+    assert queued.finished_at is not None
+    assert manager.get_active("/b.mp3") is None
+    # The pool survives: the app can enter its lifespan again.
+    again = manager.submit("transcribe", "/b.mp3", lambda _cb: None)
+    _run_to_completion(manager, again)
+    manager._executor.shutdown(wait=True)
+
+
+def test_submit_task_refuses_a_different_step_holding_the_episode(monkeypatch):
+    """Returning the other step's task made the panel report it as its own."""
+    from fastapi import HTTPException
+
+    from podcodex.api import tasks as tasks_mod
+    from podcodex.api.routes._helpers import submit_task
+
+    manager = TaskManager(max_workers=1)
+    monkeypatch.setattr(tasks_mod, "task_manager", manager)
+    release = threading.Event()
+    running = manager.submit("transcribe", "/ep.mp3", lambda _cb: release.wait(5.0))
+    try:
+        # Same step reconnects to the running task.
+        assert submit_task("transcribe", "/ep.mp3", lambda _cb: None).task_id == (
+            running.task_id
+        )
+        with pytest.raises(HTTPException) as exc:
+            submit_task("correct", "/ep.mp3", lambda _cb: None)
+        assert exc.value.status_code == 409
+        assert "transcribe" in exc.value.detail
+    finally:
+        release.set()
+        _run_to_completion(manager, running)
+        manager._executor.shutdown(wait=True)
+
+
+def test_downloads_do_not_take_the_compute_slots():
+    """Two long downloads must not leave a transcribe pending."""
+    manager = TaskManager(max_workers=1, io_workers=2)
+    release = threading.Event()
+    started = threading.Event()
+    downloads = [
+        manager.submit("download", f"download:/show{i}", lambda _cb: release.wait(5.0))
+        for i in range(2)
+    ]
+    compute = manager.submit("transcribe", "/ep.mp3", lambda _cb: started.set())
+    try:
+        assert started.wait(2.0), "transcribe queued behind the downloads"
+    finally:
+        release.set()
+        for info in [*downloads, compute]:
+            _run_to_completion(manager, info)
+        manager._executor.shutdown(wait=True)
+        manager._io_executor.shutdown(wait=True)
+
+
+def test_submit_task_does_not_hand_one_language_to_another(monkeypatch):
+    """A Spanish translate must not follow the running French one."""
+    from fastapi import HTTPException
+
+    from podcodex.api import tasks as tasks_mod
+    from podcodex.api.routes._helpers import submit_task
+
+    manager = TaskManager(max_workers=1)
+    monkeypatch.setattr(tasks_mod, "task_manager", manager)
+    release = threading.Event()
+    french = submit_task(
+        "translate", "/ep.mp3", lambda _cb: release.wait(5.0), subject="french"
+    )
+    try:
+        again = submit_task("translate", "/ep.mp3", lambda _cb: None, subject="french")
+        assert again.task_id == french.task_id
+        with pytest.raises(HTTPException) as exc:
+            submit_task("translate", "/ep.mp3", lambda _cb: None, subject="spanish")
+        assert exc.value.status_code == 409
+        assert "french translate" in exc.value.detail
+    finally:
+        release.set()
+        _run_to_completion(manager, manager.get(french.task_id))
+        manager._executor.shutdown(wait=True)

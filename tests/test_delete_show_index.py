@@ -58,7 +58,9 @@ def test_purge_removes_collections_and_password(show_with_index):
     folder, sid, store = show_with_index
     assert store.collections_for_show(sid)
 
-    collections, password = _purge_show_from_index(sid)
+    collections, password, error = _purge_show_from_index(sid)
+
+    assert error is None
 
     assert collections == 1
     assert password is True
@@ -70,7 +72,7 @@ def test_purge_is_a_no_op_without_an_id(show_with_index):
     from podcodex.api.routes.shows import _purge_show_from_index
 
     _folder, sid, store = show_with_index
-    assert _purge_show_from_index("") == (0, False)
+    assert _purge_show_from_index("") == (0, False, None)
     assert store.collections_for_show(sid)
 
 
@@ -82,7 +84,7 @@ def test_purge_finds_collections_that_predate_the_migration(show_with_index):
     col = store.collections_for_show(sid)[0]
     store.set_collection_identity(col, show_id="", show="My Show")
 
-    collections, _password = _purge_show_from_index(sid, "My Show")
+    collections, _password, _error = _purge_show_from_index(sid, "My Show")
 
     assert collections == 1
     assert store.collections_for_show(sid, show_label="My Show") == []
@@ -119,7 +121,21 @@ def test_purge_removes_a_password_that_predates_the_migration(show_with_index):
     )
     assert "My Show" in store.get_show_password_entries()
 
-    _collections, password = _purge_show_from_index(sid, "My Show")
+    _collections, password, _error = _purge_show_from_index(sid, "My Show")
 
     assert password is True
     assert store.get_show_password_entries() == {}
+
+
+def test_purge_reports_a_failed_index(show_with_index, monkeypatch):
+    """A busy index must not read as "nothing was indexed"."""
+    from podcodex.api.routes import shows as shows_route
+
+    _folder, sid, store = show_with_index
+
+    def boom(*_a, **_k):
+        raise RuntimeError("index is locked")
+
+    monkeypatch.setattr(store, "collections_for_show", boom)
+
+    assert shows_route._purge_show_from_index(sid) == (0, False, "index is locked")

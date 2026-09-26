@@ -1067,19 +1067,25 @@ def _refresh_status_after_delete(base: Path, step: str) -> None:
         # was just deleted. Clear the pointer when the target is gone. Safe
         # to do independently: a version arriving concurrently cannot make a
         # deleted pointer target valid again.
+        remaining_ids = {v["id"] for v in db.list_versions(stem, step)}
         ptr = db.get_verified(stem)
-        if ptr and ptr["step"] == step:
-            remaining_ids = {v["id"] for v in db.list_versions(stem, step)}
-            if ptr["version_id"] not in remaining_ids:
-                db.clear_verified(stem)
+        if ptr and ptr["step"] == step and ptr["version_id"] not in remaining_ids:
+            db.clear_verified(stem)
+
+        # Same for the LLM failures section: its batch indices describe one
+        # version, and once that version is gone the batch-fix flow has
+        # nothing to patch (it would 404 on every attempt).
+        from podcodex.core.llm_failures import clear_step, load_failures
+
+        run_version = (load_failures(base).get(step) or {}).get("version_id")
+        if run_version and run_version not in remaining_ids:
+            clear_step(base, step)
 
         if not db.demote_step_if_no_versions(stem, step, STEP_FLAG.get(step)):
             return
 
-        # The step really is empty — drop any recorded LLM batch failures
+        # The step really is empty: drop any recorded LLM batch failures
         # too, which referenced the now-deleted versions.
-        from podcodex.core.llm_failures import clear_step
-
         clear_step(base, step)
     except Exception:
         logger.opt(exception=True).warning(

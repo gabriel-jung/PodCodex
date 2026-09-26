@@ -68,6 +68,25 @@ def show_id_for_label(label: str) -> str:
     return meta.id if meta else ""
 
 
+def show_id_for_folder(show_dir: Path, label: str = "", *, mint: bool = False) -> str:
+    """Stable id of the show that owns *show_dir*, from its own ``show.toml``.
+
+    For callers that have the episode path: a label lookup picks the oldest
+    same-named show when two share a label, and returns "" for a label that
+    matches nothing, which builds an id-less collection a rename orphans.
+    *mint* (writers only) mints an id when the folder has none; readers fall
+    back to the label lookup instead, so reading never writes ``show.toml``.
+    """
+    meta = load_show_meta(show_dir)
+    if meta and meta.id:
+        return meta.id
+    if mint:
+        from podcodex.ingest.show import ensure_show_id
+
+        return ensure_show_id(show_dir)
+    return show_id_for_label(label) if label else ""
+
+
 def folder_for_id(show_id: str) -> Path | None:
     """The registered folder carrying this show id, or None.
 

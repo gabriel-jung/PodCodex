@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from podcodex.api.routes._helpers import get_index_store
 from podcodex.core.source import show_audio_files
@@ -304,9 +304,11 @@ def search_query(req: SearchRequest) -> list[dict]:
             )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    except Exception:
+    except Exception as exc:
+        # Surfaced, not turned into [], so an index fault never reads as a
+        # query that matched nothing (exact and random already surface it).
         logger.opt(exception=True).warning("Search failed for show {}", req.show)
-        results = []
+        raise HTTPException(503, f"Search failed: {exc}") from exc
 
     logger.info("Search: {} result(s)", len(results))
     audio_lookup = _build_audio_lookup()
@@ -359,6 +361,9 @@ class ExactRequest(BaseModel):
     source: str | None = None
     pub_date_min: str | None = None
     pub_date_max: str | None = None
+    # Cap on returned matches (None = every match). The command palette asks
+    # each show for a few hits per keystroke.
+    top_k: int | None = Field(None, ge=1)
 
 
 @router.post("/exact", response_model=list[SearchResult])
@@ -380,6 +385,7 @@ def exact_search(req: ExactRequest) -> list[dict]:
                 source=req.source,
                 pub_date_min=req.pub_date_min,
                 pub_date_max=req.pub_date_max,
+                limit=req.top_k,
             )
     except ValueError as e:
         raise HTTPException(400, str(e))

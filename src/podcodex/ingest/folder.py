@@ -117,12 +117,13 @@ def _versions_fingerprint(store, cols) -> tuple[tuple[str, int], ...]:
     return tuple(sorted((c, store.collection_version(c)) for c in cols))
 
 
-def lance_indexed_stems(show_folder: Path) -> set[str]:
+def lance_indexed_stems(show_folder: Path) -> set[str] | None:
     """Return the set of episode stems that LanceDB has chunks for, for this show.
 
-    Authoritative source for ``indexed`` status. Returns empty set if the
-    index is unavailable or the show has no collections (treat as
-    not-indexed rather than blocking the scan).
+    Authoritative source for ``indexed`` status. An empty set means the show
+    has no indexed episode; None means the index could not be read (rag not
+    installed, locked table, LanceDB error), so callers must not write
+    "not indexed" back as if it were known.
 
     Cached against the collections' dataset versions, which bump on every
     write from any process, so a stale set can't outlive an index run.
@@ -131,7 +132,7 @@ def lance_indexed_stems(show_folder: Path) -> set[str]:
         from podcodex.ingest.show import load_show_meta
         from podcodex.rag.index_store import get_index_store
     except Exception:
-        return set()
+        return None
 
     meta = load_show_meta(show_folder)
     show_name = (meta.name if meta else None) or show_folder.name
@@ -154,7 +155,7 @@ def lance_indexed_stems(show_folder: Path) -> set[str]:
         return set(indexed)
     except Exception as exc:
         logger.warning("lance indexed-set lookup failed for {!r}: {!r}", show_name, exc)
-        return set()
+        return None
 
 
 def note_episode_indexed(show_name: str, stem: str) -> None:
@@ -312,7 +313,7 @@ def _scan_folder_uncached(
             episodes[name] = _make_episode(name, show_folder / name, existing)
 
     if indexed_stems is None:
-        indexed_stems = lance_indexed_stems(show_folder)
+        indexed_stems = lance_indexed_stems(show_folder) or set()
     for ep in episodes.values():
         ep.indexed = ep.stem in indexed_stems
 

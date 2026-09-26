@@ -71,10 +71,15 @@ def save_batch_records(
     model: str,
     mode: str,
     records: list[dict],
+    version_id: str | None = None,
 ) -> None:
-    """Replace the *step* section with the latest run's per-batch records."""
+    """Replace the *step* section with the latest run's per-batch records.
+
+    *version_id* is the saved version the batch indices describe (what the
+    batch-fix flow patches).
+    """
     data = load_failures(base)
-    data[step] = {
+    section = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model": model,
         "mode": mode,
@@ -82,6 +87,9 @@ def save_batch_records(
         "rejected": sum(1 for r in records if r.get("status") == "rejected"),
         "batches": records,
     }
+    if version_id:
+        section["version_id"] = version_id
+    data[step] = section
     write_json_atomic(failures_path(base), data)
 
 
@@ -116,6 +124,7 @@ def record_run(
     model: str,
     mode: str,
     records: list[dict],
+    version_id: str | None = None,
 ) -> None:
     """Resolve the episode and persist one auto run's per-batch records.
 
@@ -125,8 +134,35 @@ def record_run(
     if not records or not (audio_path or output_dir):
         return
     save_batch_records(
-        _base_for(audio_path, output_dir), step, model=model, mode=mode, records=records
+        _base_for(audio_path, output_dir),
+        step,
+        model=model,
+        mode=mode,
+        records=records,
+        version_id=version_id,
     )
+
+
+def stamp_run_version(
+    audio_path: str | Path | None,
+    output_dir: str | Path | None,
+    step: str,
+    version_id: str | None,
+) -> None:
+    """Record which saved version the *step* section's batch indices describe.
+
+    The batch-fix flow patches that exact version. Without it, it patched the
+    step's default pick, which puts hand-edited versions first, so fixes for
+    a later auto run landed on an older edited version.
+    """
+    if not version_id or not (audio_path or output_dir):
+        return
+    base = _base_for(audio_path, output_dir)
+    data = load_failures(base)
+    section = data.get(step)
+    if isinstance(section, dict):
+        section["version_id"] = version_id
+        _persist(failures_path(base), data)
 
 
 def get_step(audio_path: str | None, output_dir: str | None, step: str) -> dict | None:

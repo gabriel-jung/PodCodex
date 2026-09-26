@@ -44,3 +44,31 @@ def slow(
             return "cancelled"
         time.sleep(0.05)
     return "done"
+
+
+def big_result(
+    *,
+    progress_cb: Callable[[float, str], None],
+    cancelled: Callable[[], bool],
+    size: int,
+) -> str:
+    return "x" * size
+
+
+def big_boom(
+    *,
+    progress_cb: Callable[[float, str], None],
+    cancelled: Callable[[], bool],
+    size: int,
+) -> None:
+    raise ValueError("explode " + "y" * size)
+
+
+def omp_threads(
+    *,
+    progress_cb: Callable[[float, str], None],
+    cancelled: Callable[[], bool],
+) -> str | None:
+    import os
+
+    return os.environ.get("OMP_NUM_THREADS")

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import subprocess
 import sys
 from functools import lru_cache
@@ -214,11 +213,9 @@ def set_device(req: SetDeviceRequest) -> dict:
                 "(torch missing or no usable GPU).",
             )
 
-    from podcodex.core.device import device_info
-    from podcodex.core.user_settings import set_device_override
+    from podcodex.core.device import apply_override, device_info
 
-    set_device_override(req.override)
-    os.environ["PODCODEX_DEVICE"] = req.override
+    apply_override(req.override)
 
     info = device_info()
     info["persisted_override"] = req.override
@@ -286,25 +283,134 @@ def cancel_task(task_id: str) -> dict:
     raise HTTPException(404, f"No active task with id '{task_id}'")
 
 
-def _uv_sync_cmd() -> list[str]:
-    """Build the base ``uv sync`` command."""
+_TORCH_VARIANT_EXTRAS = frozenset({"cpu", "gpu", "gpu-pascal"})
+
+
+def _removal_plan(extra: str) -> tuple[list[str], list[str]]:
+    """What removing *extra* uninstalls, and which installed extras keep the rest.
+
+    Returns ``(packages, keepers)``. The packages are *extra*'s direct
+    requirements (podcodex's metadata) minus the base dependencies, minus
+    those of every other extra that is *installed* (all its direct
+    requirements present), minus the dev group's (read from pyproject in a
+    source checkout; it is not in the metadata), minus anything another
+    installed distribution depends on (``_still_required``). *keepers* names
+    the installed extras that share packages with *extra*, so an empty plan
+    can say why (removing rag while mcp, which includes it, is installed).
+    """
+    from importlib.metadata import PackageNotFoundError, distribution
+    from importlib.metadata import metadata, requires
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    reqs = [Requirement(r) for r in requires("podcodex") or []]
+    extras = set(metadata("podcodex").get_all("Provides-Extra") or [])
+
+    def names(for_extra: str) -> set[str]:
+        return {
+            canonicalize_name(r.name)
+            for r in reqs
+            if r.marker is None or r.marker.evaluate({"extra": for_extra})
+        }
+
+    def installed(name: str) -> bool:
+        try:
+            distribution(name)
+        except PackageNotFoundError:
+            return False
+        return True
+
+    base = names("")
+    own = names(extra) - base
+    keep = set(base) | _dev_group_names()
+    keepers: list[str] = []
+    for other in sorted(extras - {extra}):
+        other_names = names(other) - base
+        if other_names and all(installed(n) for n in other_names):
+            # The torch-variant extras list only torch, so they always look
+            # installed; they keep torch but are not worth naming.
+            if own & other_names and other not in _TORCH_VARIANT_EXTRAS:
+                keepers.append(other)
+            keep |= other_names
+    candidates = own - keep
+    return sorted(candidates - _still_required(candidates)), keepers
+
+
+def _dev_group_names() -> set[str]:
+    """The ``dev`` dependency group's packages, from pyproject in a checkout.
+
+    Dependency groups are not in the installed metadata, so without this a
+    remove could uninstall a dev tool (soundfile, pytest) an extra also lists.
+    Empty outside a source checkout, where there is no dev group.
+    """
+    import tomllib
+    from pathlib import Path
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    import podcodex
+
+    pyproject = Path(podcodex.__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        groups = tomllib.loads(pyproject.read_text(encoding="utf-8")).get(
+            "dependency-groups", {}
+        )
+    except (OSError, tomllib.TOMLDecodeError):
+        return set()
+    return {
+        canonicalize_name(Requirement(r).name)
+        for reqs in groups.values()
+        for r in reqs
+        if isinstance(r, str)
+    }
+
+
+def _still_required(candidates: set[str]) -> set[str]:
+    """Candidates some other installed distribution depends on.
+
+    A package only this extra lists can still be another package's
+    dependency (the pipeline extra lists httpx and pyarrow, which mcp and
+    lancedb need). Markers are ignored on purpose: any mention keeps it.
+    """
+    from importlib.metadata import distributions
+
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
+
+    needed: set[str] = set()
+    for dist in distributions():
+        dist_name = canonicalize_name(dist.metadata.get("Name") or "")
+        if dist_name in candidates or dist_name == "podcodex":
+            continue
+        for req in dist.requires or []:
+            try:
+                name = canonicalize_name(Requirement(req).name)
+            except InvalidRequirement:
+                continue
+            if name in candidates:
+                needed.add(name)
+    return needed
+
+
+def _uv_cmd(*args: str) -> list[str]:
+    """A ``uv`` command line, through ``python -m uv`` when uv is not on PATH."""
     import shutil
 
     uv_bin = shutil.which("uv")
-    return [uv_bin, "sync"] if uv_bin else [sys.executable, "-m", "uv", "sync"]
+    return [uv_bin, *args] if uv_bin else [sys.executable, "-m", "uv", *args]
 
 
-def _run_uv_sync(
-    extras: set[str],
-    progress_cb,
-    label: str,
-) -> dict:
-    """Run ``uv sync --extra ...`` for *extras* and report progress."""
+def _run_uv(cmd: list[str], progress_cb, label: str) -> dict:
+    """Run one uv command, streaming its output as progress.
+
+    Install is ``uv sync --inexact``, remove is ``uv pip uninstall`` of the
+    extra's own packages: never an exact sync, which removes every package
+    the listed extras do not name (the torch-variant extras, the dev group,
+    anything a capability probe missed).
+    """
     progress_cb(0.0, f"{label}...")
-    cmd = list(_uv_sync_cmd())
-    for ext in sorted(extras):
-        cmd.extend(["--extra", ext])
-
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -321,12 +427,24 @@ def _run_uv_sync(
 
     if proc.returncode != 0:
         raise RuntimeError(
-            f"uv sync failed (exit {proc.returncode}):\n" + "\n".join(lines[-20:])
+            f"uv failed (exit {proc.returncode}):\n" + "\n".join(lines[-20:])
         )
     progress_cb(0.95, "Verifying...")
     _invalidate_capabilities()
     progress_cb(1.0, "Done! Restart the backend to activate.")
     return {"output": "\n".join(lines)}
+
+
+# One lock key for every extras operation: two uv syncs on one venv at once
+# corrupt it, whichever extras they name. The task manager takes it with an
+# atomic check-and-lock, and the extra is the task's subject, so a re-click
+# reconnects to its own run and another extra is refused.
+_EXTRAS_LOCK_KEY = "extras:venv"
+
+
+def _submit_extras_task(step: str, extra: str, fn) -> dict:
+    """Submit an install/remove run, or answer for the one already running."""
+    return submit_task(step, _EXTRAS_LOCK_KEY, fn, extra, subject=extra).model_dump()
 
 
 class InstallExtraRequest(BaseModel):
@@ -342,11 +460,16 @@ def install_extra(req: InstallExtraRequest) -> dict:
         )
 
     def run_install(progress_cb, extra_name):
-        # Keep all currently installed extras + the new one + desktop (always needed).
-        all_extras = _installed_extras() | {extra_name, "desktop"}
-        return _run_uv_sync(all_extras, progress_cb, f"Installing '{extra_name}'")
+        # Every extra already installed, the new one, and desktop (the API).
+        extras = _installed_extras() | {extra_name, "desktop"}
+        flags = [f for e in sorted(extras) for f in ("--extra", e)]
+        return _run_uv(
+            _uv_cmd("sync", "--inexact", *flags),
+            progress_cb,
+            f"Installing '{extra_name}'",
+        )
 
-    return submit_task("install", req.extra, run_install, req.extra).model_dump()
+    return _submit_extras_task("install", req.extra, run_install)
 
 
 @router.post("/system/remove-extra")
@@ -362,8 +485,18 @@ def remove_extra(req: InstallExtraRequest) -> dict:
         )
 
     def run_remove(progress_cb, extra_name):
-        # Keep all currently installed extras minus the one being removed.
-        all_extras = (_installed_extras() | {"desktop"}) - {extra_name}
-        return _run_uv_sync(all_extras, progress_cb, f"Removing '{extra_name}'")
+        names, keepers = _removal_plan(extra_name)
+        if not names:
+            why = (
+                f"the installed {', '.join(keepers)} extra(s) use the same packages"
+                if keepers
+                else "every package is also needed by something else"
+            )
+            raise RuntimeError(f"Nothing was removed: {why}.")
+        return _run_uv(
+            _uv_cmd("pip", "uninstall", "--python", sys.executable, *names),
+            progress_cb,
+            f"Removing '{extra_name}'",
+        )
 
-    return submit_task("remove", req.extra, run_remove, req.extra).model_dump()
+    return _submit_extras_task("remove", req.extra, run_remove)

@@ -215,10 +215,7 @@ from a terminal to surface stderr:
 - macOS: `PodCodex.app/Contents/MacOS/podcodex-app 2>&1 | head -50`
 - Windows: launch from PowerShell with `& "C:\Program Files\PodCodex\PodCodex.exe"`
 
-The bundled sidecar logs to `<data_dir>/logs/server.log`
-(`~/Library/Application Support/podcodex/` on macOS,
-`%APPDATA%\podcodex\` on Windows,
-`~/.local/share/podcodex/` on Linux).
+The bundled sidecar logs to `<data_dir>/logs/server.log` (`~/Library/Application Support/podcodex/` on macOS, `%APPDATA%\podcodex\` on Windows, `~/.local/share/podcodex/` on Linux). Raw stdio of the sidecar and its step subprocesses (native crash output, faulthandler dumps, tracebacks from before logging starts) goes to `stdio.log` in the same folder, overwritten at each launch.
 
 Report build issues at <https://github.com/gabriel-jung/PodCodex/issues>. Include:
 

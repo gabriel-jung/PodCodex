@@ -266,7 +266,7 @@ class TestStepStatuses:
 
     @staticmethod
     def _step_statuses(st, provenance, effective):
-        from podcodex.api.routes.shows import _step_statuses
+        from podcodex.core.episode_status import _step_statuses
         from podcodex.core.versions import clean_translations
 
         return _step_statuses(
@@ -501,7 +501,7 @@ class TestResolveDefaults:
 
     @staticmethod
     def _resolve_defaults(app_defaults, show_meta):
-        from podcodex.api.routes.shows import _resolve_defaults
+        from podcodex.core.episode_status import _resolve_defaults
 
         return _resolve_defaults(app_defaults, show_meta)
 

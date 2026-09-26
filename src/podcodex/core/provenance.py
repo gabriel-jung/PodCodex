@@ -175,3 +175,45 @@ def enrich_correct_kwargs(
         "engine": tc_info["source"],
         "engine_model": tc_info["model"],
     }
+
+
+def save_llm_run(
+    step: str,
+    save,
+    *,
+    source,
+    llm,
+    audio_path: str,
+    output_dir: str | None,
+    records: list[dict],
+    **params: object,
+) -> str:
+    """Save an auto correct / translate run and record its batch outcomes.
+
+    The shared tail of ``correct_and_save`` and ``translate_and_save``:
+    provenance from the consumed *source* and the *llm* run, the save
+    (``save(provenance) -> version_id``), then the ``llm_failures.json``
+    section written once, carrying the id of the version its batch indices
+    describe. Returns the version id.
+    """
+    from podcodex.core.llm_failures import record_run
+
+    provenance = build_provenance(
+        step,
+        source=source,
+        model=llm.model,
+        audio_path=audio_path,
+        output_dir=output_dir,
+        params=llm_prov_params(llm.mode, **params),
+    )
+    version_id = save(provenance)
+    record_run(
+        audio_path,
+        output_dir,
+        step,
+        model=llm.model,
+        mode=llm.mode,
+        records=records,
+        version_id=version_id,
+    )
+    return version_id

@@ -164,3 +164,57 @@ def test_a_failing_warm_never_escapes(monkeypatch) -> None:
     monkeypatch.setattr(search_routes, "_resolve_req_cols", boom)
 
     search_routes._warm_show_sync("Beta")  # must not raise
+
+
+def test_a_failed_search_is_an_error_not_an_empty_result(tmp_path, monkeypatch):
+    """An index fault must not read as a query that matched nothing."""
+    from podcodex.rag.search_service import SearchCollection
+
+    monkeypatch.setattr(
+        search_routes,
+        "_resolve_req_cols",
+        lambda *_a: [SearchCollection(name="c", model="bge-m3", show="S")],
+    )
+
+    def boom(*_a, **_k):
+        raise RuntimeError("lance table is corrupt")
+
+    import podcodex.rag.search_service as svc
+
+    monkeypatch.setattr(svc, "hybrid_search", boom)
+    client = make_client(tmp_path, monkeypatch)
+    r = client.post("/api/search/query", json={"query": "hi", "show": "S"})
+    assert r.status_code == 503, r.text
+    assert "corrupt" in r.json()["detail"]
+
+
+def test_exact_search_honours_top_k(tmp_path, monkeypatch):
+    """The palette asks for three hits per show; every match used to ship."""
+    import podcodex.rag.search_service as svc
+    from podcodex.rag.search_service import SearchCollection
+
+    col = SearchCollection(name="c", model="bge-m3", show="S")
+    monkeypatch.setattr(search_routes, "_resolve_req_cols", lambda *_a: [col])
+    hit = {
+        "text": "t",
+        "episode": "e",
+        "speaker": "s",
+        "start": 0.0,
+        "end": 1.0,
+        "score": 1.0,
+        "source": "transcript",
+    }
+    monkeypatch.setattr(search_routes, "_result_to_dict", lambda h, _l=None: hit)
+    monkeypatch.setattr(search_routes, "_build_audio_lookup", lambda: {})
+    seen: dict = {}
+
+    def fake_exact(*_a, limit=None, **_k):
+        seen["limit"] = limit
+        return [(i, col) for i in range(10)][:limit]
+
+    monkeypatch.setattr(svc, "exact_search", fake_exact)
+    client = make_client(tmp_path, monkeypatch)
+    r = client.post("/api/search/exact", json={"query": "hi", "show": "S", "top_k": 3})
+    assert r.status_code == 200, r.text
+    assert len(r.json()) == 3
+    assert seen["limit"] == 3  # passed into the service, not sliced after

@@ -91,6 +91,9 @@ def gpu_uninstall() -> dict:
         gpu_backend.uninstall()
     except gpu_backend.DevModeError as exc:
         raise HTTPException(400, str(exc)) from None
+    except RuntimeError as exc:
+        # A download in progress holds the install lock.
+        raise HTTPException(409, str(exc)) from None
     except OSError as exc:
         # Windows: a concurrent /gpu/status probe can hold the sidecar binary
         # open while we delete, or files may be locked by a running sidecar.

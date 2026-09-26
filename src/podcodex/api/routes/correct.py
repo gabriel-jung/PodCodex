@@ -19,7 +19,7 @@ from podcodex.api.routes._helpers import (
     require_audio_or_output,
     submit_task,
 )
-from podcodex.core.llm_failures import clear_step_for, get_step
+from podcodex.core.llm_failures import clear_step_for, get_step, stamp_run_version
 from podcodex.api.routes._versions import register_version_routes
 from podcodex.api.schemas import Segment, TaskResponse
 from podcodex.core._utils import AudioPaths
@@ -39,7 +39,7 @@ def get_corrected_segments(
     limit: int | None = Query(None, ge=1, description="Max segments to return"),
 ) -> list[dict]:
     """Load corrected segments from the version DB."""
-    from podcodex.api.routes._helpers import annotate_flags
+    from podcodex.api.routes._helpers import shape_step_segments
     from podcodex.core.versions import load_latest
 
     require_audio_or_output(audio_path, output_dir)
@@ -49,7 +49,7 @@ def get_corrected_segments(
         raise HTTPException(404, "No corrected segments found")
     if limit is not None:
         segments = segments[:limit]
-    return annotate_flags(segments)
+    return shape_step_segments(p.base, "corrected", segments)
 
 
 @router.put("/segments")
@@ -84,7 +84,7 @@ def start_correct(req: LLMRequest) -> TaskResponse:
         raise HTTPException(400, str(exc))
 
     def run_correct(progress_cb, req_data):
-        from podcodex.core.correct import correct_segments, save_corrected
+        from podcodex.core.correct import correct_and_save
 
         progress_cb(0.0, "Loading transcript...")
         source = load_source(
@@ -93,50 +93,18 @@ def start_correct(req: LLMRequest) -> TaskResponse:
             req_data.source_version_id,
             step="transcript",
         )
-        segments = source.segments
-
-        # Auto-detect transcript source and language from its provenance
-        tc_kwargs = enrich_correct_kwargs(
-            req_data.audio_path, req_data.output_dir, req_data.source_lang, source
-        )
-
         progress_cb(0.1, "Starting correction...")
-
-        corrected = correct_segments(
-            segments,
-            **llm.pipeline_kwargs(),
+        corrected, _version_id = correct_and_save(
+            source,
+            llm,
+            audio_path=req_data.audio_path,
+            output_dir=req_data.output_dir,
             context=req_data.context,
-            source_lang=tc_kwargs["source_lang"],
+            source_lang=req_data.source_lang,
             batch_minutes=req_data.batch_minutes,
-            engine=tc_kwargs["engine"],
-            engine_model=tc_kwargs["engine_model"],
-            original_segments=segments,
-            merge=False,  # transcript is already merged on load/upload
+            provider_profile=req_data.provider_profile,
+            key_name=req_data.key_name,
             on_batch=batch_progress(progress_cb),
-            audio_path=req_data.audio_path,
-            output_dir=req_data.output_dir,
-        )
-
-        progress_cb(0.95, "Saving...")
-        provenance = build_provenance(
-            "corrected",
-            source=source,
-            model=llm.model,
-            audio_path=req_data.audio_path,
-            output_dir=req_data.output_dir,
-            params=llm_prov_params(
-                req_data.mode,
-                provider_profile=req_data.provider_profile,
-                key_name=req_data.key_name,
-                source_lang=tc_kwargs["source_lang"],
-                batch_minutes=req_data.batch_minutes,
-            ),
-        )
-        save_corrected(
-            req_data.audio_path,
-            corrected,
-            output_dir=req_data.output_dir,
-            provenance=provenance,
         )
         return {"count": len(corrected)}
 
@@ -249,8 +217,10 @@ def apply_batches_correction(req: ApplyBatchesRequest) -> dict:
         audio_path=req.audio_path,
         output_dir=req.output_dir,
     )
-    save_corrected(
+    version_id = save_corrected(
         req.audio_path, patched, output_dir=req.output_dir, provenance=provenance
     )
+    # The remaining rejected batches now live in the patched version.
+    stamp_run_version(req.audio_path, req.output_dir, "corrected", version_id)
     rejected = resolve_batches(p.base, "corrected", [fix.batch for fix in req.fixes])
     return {"status": "saved", "count": len(patched), "rejected": rejected}

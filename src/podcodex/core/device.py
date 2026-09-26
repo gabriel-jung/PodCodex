@@ -306,6 +306,22 @@ def kernel_guard_error() -> RuntimeError | None:
     return _kernel_guard_error
 
 
+def apply_override(value: str) -> None:
+    """Persist the user's device choice and apply it to this process.
+
+    The kernel guard runs once per process: when it already demoted this one
+    to CPU (a wheel without kernels for the GPU), "auto" or "cpu" must not
+    undo that for in-process CUDA users. An explicit "cuda" still passes, so
+    ``resolve_device`` raises with the guard's message instead of crashing
+    in a kernel.
+    """
+    from podcodex.core.user_settings import set_device_override
+
+    set_device_override(value)  # type: ignore[arg-type]
+    guarded = kernel_guard_error() is not None and value != "cuda"
+    os.environ["PODCODEX_DEVICE"] = "cpu" if guarded else value
+
+
 def device_info() -> dict[str, Any]:
     """Diagnostic snapshot for the health endpoint.
 

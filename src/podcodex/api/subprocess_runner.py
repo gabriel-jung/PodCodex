@@ -53,8 +53,8 @@ _CANCEL_GRACE_SEC = 5.0
 
 
 def _early_child_log(message: str) -> None:
-    """Append a line to the persistent server.log without going through
-    loguru / podcodex.
+    """Append a line to the sidecar's stdio.log without going through
+    loguru / podcodex (server.log is loguru's, which rotates it).
 
     On Windows --noconsole frozen builds, the spawned child has no usable
     stdio. If anything dies before podcodex/__init__.py runs in the child
@@ -64,14 +64,14 @@ def _early_child_log(message: str) -> None:
     Python code and how far it got.
     """
     try:
-        from pathlib import Path
+        from podcodex.core.app_paths import stdio_log_path
 
         data_dir = os.environ.get("PODCODEX_DATA_DIR")
         if not data_dir:
             return
-        log_dir = Path(data_dir) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        with open(log_dir / "server.log", "a", encoding="utf-8") as f:
+        log_path = stdio_log_path(data_dir)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             f.write(f"{ts} | CHILD    | [pid {os.getpid()}] {message}\n")
     except Exception:
@@ -107,6 +107,21 @@ def _install_log_forwarder(prog_q: Any) -> None:
         pass
 
 
+# Cap on the traceback text a child sends back: the useful part is the tail,
+# and the whole of it travels through a pipe.
+_MAX_TB_CHARS = 16_000
+
+
+def _tail(text: str, limit: int = _MAX_TB_CHARS) -> str:
+    """Last *limit* characters of *text* (a traceback's useful end)."""
+    return text if len(text) <= limit else "[...]\n" + text[-limit:]
+
+
+def _head(text: str, limit: int = _MAX_TB_CHARS) -> str:
+    """First *limit* characters of *text* (an error message's useful start)."""
+    return text if len(text) <= limit else text[:limit] + " [...]"
+
+
 def _child_entry(
     entry_path: str,
     kwargs: dict[str, Any],
@@ -116,6 +131,13 @@ def _child_entry(
 ) -> None:
     """Import and invoke the entry function inside the spawned child."""
     _early_child_log(f"_child_entry start, entry={entry_path}")
+
+    # The API process defaults OMP_NUM_THREADS=1 for its own threads (see
+    # api/app.py); a child is a whole process for one step and must not
+    # inherit it. Before any import that could load torch. A value the user
+    # set themselves is left alone.
+    if os.environ.pop("_PODCODEX_OMP_DEFAULTED", None):
+        os.environ.pop("OMP_NUM_THREADS", None)
 
     # Spawn re-execs the frozen binary and bypasses server.py:main(), so the
     # parent's bootstrap (transformers doc patch, HF symlink, Windows console)
@@ -144,7 +166,7 @@ def _child_entry(
     except Exception as exc:
         tb = traceback.format_exc()
         _early_child_log(f"import failed: {exc!r}\n{tb}")
-        result_q.put(("err", f"{type(exc).__name__}: {exc}", tb))
+        result_q.put(("err", _head(f"{type(exc).__name__}: {exc}"), _tail(tb)))
         return
 
     # Install the log forwarder *after* importing the entry module so
@@ -169,7 +191,7 @@ def _child_entry(
     except BaseException as exc:
         tb = traceback.format_exc()
         _early_child_log(f"entry function raised: {exc!r}\n{tb}")
-        result_q.put(("err", f"{type(exc).__name__}: {exc}", tb))
+        result_q.put(("err", _head(f"{type(exc).__name__}: {exc}"), _tail(tb)))
 
 
 def _check_entry_signature(entry_path: str, kwargs: dict[str, Any]) -> None:
@@ -213,15 +235,16 @@ def run_in_subprocess(
     honored. Progress messages from the child are forwarded to
     ``on_progress``; loguru log lines emitted by the child are forwarded
     to ``on_log`` (see ``_install_log_forwarder``). A set ``cancel_event``
-    is relayed to the child; if the child does not exit within 10 s of
-    the signal it is terminated. *signature_checked* skips the kwargs check
+    is relayed to the child; if the child does not exit within the cancel
+    grace (``_CANCEL_GRACE_SEC``) after the signal it is terminated. *signature_checked* skips the kwargs check
     for a caller that already ran ``_check_entry_signature``.
     """
     if not signature_checked:
         _check_entry_signature(entry_path, kwargs)
 
     # Cap progress queue so a chatty child cannot grow RSS unboundedly if
-    # the parent stalls; the child's progress_cb already swallows Full.
+    # the parent stalls: a full queue blocks the child's progress_cb (back
+    # pressure), while its log forwarder drops lines instead (put_nowait).
     prog_q = _CTX.Queue(maxsize=512)
     result_q = _CTX.Queue()
     cancel_ev = _CTX.Event()
@@ -239,6 +262,11 @@ def run_in_subprocess(
     hard_deadline = time.monotonic() + _MAX_RUNTIME_SEC
     cancel_deadline: float | None = None
     grace_expired = False
+    # Read while the child is alive, not after it exits: a child cannot exit
+    # until its queue feeder has flushed the pickled result into the pipe,
+    # so a result larger than the pipe buffer (a long traceback) would block
+    # it forever while the parent waits for the exit.
+    outcome: tuple | None = None
     try:
         while True:
             if (
@@ -281,7 +309,11 @@ def run_in_subprocess(
             try:
                 msg = prog_q.get(timeout=poll_ms / 1000.0)
             except _queue.Empty:
-                if not proc.is_alive():
+                try:
+                    outcome = result_q.get_nowait()
+                except _queue.Empty:
+                    pass
+                if outcome is not None or not proc.is_alive():
                     break
                 continue
 
@@ -325,12 +357,22 @@ def run_in_subprocess(
         # Grace expired: skip the result wait; finally block will SIGTERM.
         if grace_expired:
             raise RuntimeError("Cancelled")
-        try:
-            outcome = result_q.get(timeout=5)
-        except _queue.Empty:
-            if cancel_event is not None and cancel_event.is_set():
-                raise RuntimeError("Cancelled")
-            raise RuntimeError(f"Subprocess {proc.pid} exited without a result")
+        if outcome is not None:
+            # The result arrived while the child was still alive (it is
+            # finishing its exit); let it go rather than terminate it below.
+            proc.join(timeout=10)
+        if outcome is None:
+            try:
+                outcome = result_q.get(timeout=5)
+            except _queue.Empty:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("Cancelled")
+                proc.join(timeout=1)
+                raise RuntimeError(
+                    f"Subprocess {proc.pid} exited without a result "
+                    f"(exit code {proc.exitcode}; a negative code is the signal "
+                    "that killed it, e.g. -9 when the system ran out of memory)"
+                )
 
         if outcome[0] == "ok":
             return outcome[1]

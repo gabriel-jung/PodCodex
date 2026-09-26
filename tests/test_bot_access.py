@@ -79,7 +79,7 @@ def test_list_shows_all_unprotected_initially(client):
 
 
 def test_get_one_unknown_show_404(client):
-    r = client.get("/api/bot-access/passwords/Nope")
+    r = client.get("/api/bot-access/password?show=Nope")
     assert r.status_code == 404
 
 
@@ -87,7 +87,7 @@ def test_get_one_unknown_show_404(client):
 
 
 def test_generate_returns_plaintext_once(client):
-    r = client.post("/api/bot-access/passwords/Alpha", json={})
+    r = client.post("/api/bot-access/password?show=Alpha", json={})
     assert r.status_code == 200
     body = r.json()
     assert body["show"] == "Alpha"
@@ -96,12 +96,12 @@ def test_generate_returns_plaintext_once(client):
     assert len(body["password"]) >= 20  # 16 bytes -> 22 urlsafe chars
 
     # Status now reflects protected
-    status = client.get("/api/bot-access/passwords/Alpha").json()
+    status = client.get("/api/bot-access/password?show=Alpha").json()
     assert status["is_protected"] is True
 
 
 def test_generate_stores_sha256_hash(client):
-    r = client.post("/api/bot-access/passwords/Alpha", json={})
+    r = client.post("/api/bot-access/password?show=Alpha", json={})
     plaintext = r.json()["password"]
     expected = f"sha256:{hashlib.sha256(plaintext.encode()).hexdigest()}"
 
@@ -113,7 +113,7 @@ def test_generate_stores_sha256_hash(client):
 
 
 def test_manual_password_accepts_16_chars(client):
-    r = client.post("/api/bot-access/passwords/Alpha", json={"password": "a" * 16})
+    r = client.post("/api/bot-access/password?show=Alpha", json={"password": "a" * 16})
     assert r.status_code == 200
     body = r.json()
     assert body["generated"] is False
@@ -121,13 +121,13 @@ def test_manual_password_accepts_16_chars(client):
 
 
 def test_manual_password_rejects_too_short(client):
-    r = client.post("/api/bot-access/passwords/Alpha", json={"password": "short"})
+    r = client.post("/api/bot-access/password?show=Alpha", json={"password": "short"})
     assert r.status_code == 422
     assert "at least 16" in r.json()["detail"]
 
 
 def test_manual_password_whitespace_is_trimmed_then_rejected(client):
-    r = client.post("/api/bot-access/passwords/Alpha", json={"password": "   "})
+    r = client.post("/api/bot-access/password?show=Alpha", json={"password": "   "})
     # Trimmed to empty → treated as generate, not manual; should generate.
     # Confirm behaviour: empty-after-trim means generate.
     assert r.status_code == 200
@@ -138,8 +138,8 @@ def test_manual_password_whitespace_is_trimmed_then_rejected(client):
 
 
 def test_rotate_replaces_existing_hash(client):
-    first = client.post("/api/bot-access/passwords/Alpha", json={}).json()
-    second = client.post("/api/bot-access/passwords/Alpha", json={}).json()
+    first = client.post("/api/bot-access/password?show=Alpha", json={}).json()
+    second = client.post("/api/bot-access/password?show=Alpha", json={}).json()
     assert first["password"] != second["password"]
 
     store = rag_index_store.get_index_store()
@@ -151,14 +151,17 @@ def test_rotate_replaces_existing_hash(client):
 
 
 def test_delete_removes_protection(client):
-    client.post("/api/bot-access/passwords/Alpha", json={})
-    r = client.delete("/api/bot-access/passwords/Alpha")
+    client.post("/api/bot-access/password?show=Alpha", json={})
+    r = client.delete("/api/bot-access/password?show=Alpha")
     assert r.status_code == 204
-    assert client.get("/api/bot-access/passwords/Alpha").json()["is_protected"] is False
+    assert (
+        client.get("/api/bot-access/password?show=Alpha").json()["is_protected"]
+        is False
+    )
 
 
 def test_delete_unknown_show_404(client):
-    r = client.delete("/api/bot-access/passwords/Nope")
+    r = client.delete("/api/bot-access/password?show=Nope")
     assert r.status_code == 404
 
 
@@ -166,7 +169,7 @@ def test_delete_unknown_show_404(client):
 
 
 def test_set_unknown_show_404(client):
-    r = client.post("/api/bot-access/passwords/Nope", json={})
+    r = client.post("/api/bot-access/password?show=Nope", json={})
     assert r.status_code == 404
 
 
@@ -177,7 +180,7 @@ def test_set_password_on_replica_returns_409(client, monkeypatch):
     """A replica must not accept a password the next rsync would erase."""
     monkeypatch.setenv("PODCODEX_MACHINE_ID", "bot-host")
 
-    r = client.post("/api/bot-access/passwords/Alpha", json={})
+    r = client.post("/api/bot-access/password?show=Alpha", json={})
     assert r.status_code == 409
     assert "replica" in r.json()["detail"]
 
@@ -185,22 +188,30 @@ def test_set_password_on_replica_returns_409(client, monkeypatch):
 
 
 def test_delete_password_on_replica_returns_409(client, monkeypatch):
-    assert client.post("/api/bot-access/passwords/Alpha", json={}).status_code == 200
+    assert (
+        client.post("/api/bot-access/password?show=Alpha", json={}).status_code == 200
+    )
     monkeypatch.setenv("PODCODEX_MACHINE_ID", "bot-host")
 
-    r = client.delete("/api/bot-access/passwords/Alpha")
+    r = client.delete("/api/bot-access/password?show=Alpha")
     assert r.status_code == 409
-    assert client.get("/api/bot-access/passwords/Alpha").json()["is_protected"] is True
+    assert (
+        client.get("/api/bot-access/password?show=Alpha").json()["is_protected"] is True
+    )
 
 
 def test_claiming_the_index_restores_writes(client, monkeypatch):
     from podcodex.rag.index_origin import claim_origin
 
     monkeypatch.setenv("PODCODEX_MACHINE_ID", "bot-host")
-    assert client.post("/api/bot-access/passwords/Alpha", json={}).status_code == 409
+    assert (
+        client.post("/api/bot-access/password?show=Alpha", json={}).status_code == 409
+    )
 
     claim_origin(rag_index_store.get_index_store().path)
-    assert client.post("/api/bot-access/passwords/Alpha", json={}).status_code == 200
+    assert (
+        client.post("/api/bot-access/password?show=Alpha", json={}).status_code == 200
+    )
 
 
 def test_unstamped_index_still_accepts_writes(client, monkeypatch):
@@ -210,7 +221,9 @@ def test_unstamped_index_still_accepts_writes(client, monkeypatch):
     (rag_index_store.get_index_store().path / ORIGIN_FILENAME).unlink()
     monkeypatch.setenv("PODCODEX_MACHINE_ID", "some-other-host")
 
-    assert client.post("/api/bot-access/passwords/Alpha", json={}).status_code == 200
+    assert (
+        client.post("/api/bot-access/password?show=Alpha", json={}).status_code == 200
+    )
 
 
 # ── Guild unlock lists keyed by show id ─────────────────────────────────
@@ -686,3 +699,10 @@ class _RecordingStore:
 
     def set_show_password(self, show_id, *_a, **_kw):
         self._sink.append(show_id)
+
+
+def test_a_show_name_with_a_slash_reaches_its_routes(client):
+    """The label used to be a path segment: "AC/DC" routed as show "AC"."""
+    r = client.get("/api/bot-access/password", params={"show": "AC/DC"})
+    assert r.status_code == 404  # unknown show, reported for the whole name
+    assert "AC/DC" in r.json()["detail"]

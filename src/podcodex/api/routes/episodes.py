@@ -4,11 +4,15 @@ Distinct from search: these endpoints return per-episode metadata
 (title, pub_date, duration, description, speakers) without running a
 vector / FTS query. They power the frontend's episode card and the
 MCP ``get_episode`` / ``list_episodes`` tools.
+
+The show is a query parameter, not a path segment: it is a display label,
+and a label containing "/" (feed titles are not ours to choose) split the
+path and hit the wrong route.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from podcodex.api.routes._helpers import get_index_store, resolve_collection_for_show
@@ -43,9 +47,9 @@ def _fill_title(d: dict) -> dict:
     return d
 
 
-@router.get("/{show}", response_model=list[EpisodeListItem])
+@router.get("/list", response_model=list[EpisodeListItem])
 def list_show_episodes(
-    show: str,
+    show: str = Query(...),
     model: str = "bge-m3",
     chunking: str = "semantic",
     pub_date_min: str | None = None,
@@ -69,10 +73,10 @@ def list_show_episodes(
     return [_fill_title(dict(x)) for x in items]
 
 
-@router.get("/{show}/{episode_stem}", response_model=EpisodeMeta)
+@router.get("/one", response_model=EpisodeMeta)
 def get_show_episode(
-    show: str,
-    episode_stem: str,
+    show: str = Query(...),
+    episode_stem: str = Query(...),
     model: str = "bge-m3",
     chunking: str = "semantic",
 ) -> dict:

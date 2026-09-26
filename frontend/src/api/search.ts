@@ -1,4 +1,4 @@
-import type { BatchRequest, IndexRequest, IndexStatus, SearchRequest, SearchResult, TaskResponse, VersionEntry } from "./types";
+import type { BatchRequest, ExactRequest, IndexRequest, IndexStatus, SearchRequest, SearchResult, TaskResponse, VersionEntry } from "./types";
 import { json } from "./client";
 import { episodeParams } from "./versions";
 
@@ -174,7 +174,7 @@ export const searchQuery = (req: SearchRequest) =>
     body: JSON.stringify(req),
   });
 
-export const exactSearch = (req: SearchRequest) =>
+export const exactSearch = (req: ExactRequest) =>
   json<SearchResult[]>("/api/search/exact", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

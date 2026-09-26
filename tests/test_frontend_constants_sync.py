@@ -225,15 +225,30 @@ def test_no_frontend_api_path_triggers_a_redirect() -> None:
     from tests.fixtures.api_client import make_client
 
     paths = set()
-    for f in (FRONTEND_SRC / "api").glob("*.ts"):
-        paths.update(re.findall(r'"(/api/[a-zA-Z0-9/_-]*)"', f.read_text()))
-    assert paths, "no API paths parsed out of frontend/src/api"
+    templated = set()
+    for f in [*FRONTEND_SRC.rglob("*.ts"), *FRONTEND_SRC.rglob("*.tsx")]:
+        text = f.read_text()
+        paths.update(re.findall(r'"(/api/[a-zA-Z0-9/_-]*)"', text))
+        # Template literals too: most routes with a path parameter or a query
+        # string are called through them. Each ${...} becomes one dummy
+        # segment and the query string is dropped, which is enough to see
+        # whether the route shape redirects.
+        for literal in re.findall(r"`([^`]*)`", text):
+            m = re.search(r"/api/[^`?\s\"']*", literal)
+            if m and "${" in literal:
+                templated.add(re.sub(r"\$\{[^}]*\}", "x", m.group(0)))
+    assert paths, "no API paths parsed out of frontend/src"
+    assert templated, "no templated API paths parsed out of frontend/src"
+    paths |= templated
 
     with pytest.MonkeyPatch.context() as mp:
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
             client = make_client(Path(tmp), mp)
+            # Dummy parameters reach handlers that 500 on them; only the
+            # redirect matters here, so server errors are not raised.
+            client.raise_server_exceptions = False
             redirecting = sorted(
                 p
                 for p in paths

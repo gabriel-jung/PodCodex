@@ -710,7 +710,13 @@ def _setup_loguru_file_sink() -> None:
         # children get None for both, which crashes any library doing
         # sys.stdout.write directly (torch.hub progress, tqdm, etc.).
         if sys.stdout is None or sys.stderr is None:
-            _stdio_fp = open(log_path, "a", buffering=1, encoding="utf-8")
+            # stdio.log, not server.log: a raw handle on the file loguru
+            # rotates by renaming blocks the rotation on Windows.
+            from podcodex.core.app_paths import stdio_log_path
+
+            _stdio_path = stdio_log_path(data_dir)
+            _stdio_path.parent.mkdir(parents=True, exist_ok=True)
+            _stdio_fp = open(_stdio_path, "a", buffering=1, encoding="utf-8")
             if sys.stdout is None:
                 sys.stdout = _stdio_fp
             if sys.stderr is None:

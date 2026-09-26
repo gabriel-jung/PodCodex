@@ -184,7 +184,15 @@ def _podcodex_mcp_path() -> str:
 
 
 def _bundled_server_path() -> str:
-    """Path to the bundled ``podcodex-server`` exe — the ``--mcp`` host."""
+    """Path to the bundled CPU ``podcodex-server`` exe, the ``--mcp`` host.
+
+    The Tauri shell passes it as ``PODCODEX_CPU_SERVER``: when the GPU
+    backend is the running sidecar, ``sys.executable`` is the GPU binary
+    under the data dir, which uninstalling the GPU backend deletes.
+    """
+    cpu = os.environ.get("PODCODEX_CPU_SERVER", "").strip()
+    if cpu and Path(cpu).is_file():
+        return str(Path(cpu).resolve())
     return str(Path(sys.executable).resolve())
 
 
@@ -237,8 +245,15 @@ def _is_enabled(cfg: dict) -> bool:
     command = str(entry.get("command", ""))
     args = entry.get("args") or []
 
-    server_command_match = command.endswith("podcodex-server") or command.endswith(
-        "podcodex-server.exe"
+    # -gpu too: an entry written by the GPU sidecar before it pointed at the
+    # CPU binary is still a working entry while the GPU backend exists.
+    server_command_match = command.endswith(
+        (
+            "podcodex-server",
+            "podcodex-server.exe",
+            "podcodex-server-gpu",
+            "podcodex-server-gpu.exe",
+        )
     )
     if server_command_match and any(a == "--mcp" for a in args if isinstance(a, str)):
         return True

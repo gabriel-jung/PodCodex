@@ -86,6 +86,17 @@ def _activated_marker() -> Path:
     return gpu_install_dir() / "activated"
 
 
+def _installing_marker() -> Path:
+    """Present while archives are being extracted over the install dir.
+
+    Extraction writes into the live tree, so a kill or crash part way leaves
+    old and new files mixed. While this marker exists the install counts as
+    absent (no manifest, no server version) and the activated marker is
+    lifted, so neither the launcher nor a re-download trusts that tree.
+    """
+    return gpu_install_dir() / ".installing"
+
+
 # ── Detection ───────────────────────────────────────────────────────────
 
 
@@ -189,6 +200,8 @@ def current_torch_backend() -> str:
 
 def installed_manifest() -> dict | None:
     """Return the installed cuda-libs manifest dict, or None if not installed."""
+    if _installing_marker().exists():
+        return None
     p = _manifest_path()
     if not p.is_file():
         return None
@@ -198,12 +211,12 @@ def installed_manifest() -> dict | None:
         return None
 
 
-def _gpu_binary_path() -> Path | None:
-    """Resolve the installed GPU sidecar binary, .exe-suffixed on Windows."""
-    bare = gpu_install_dir() / "podcodex-server-gpu"
+def _gpu_binary_path(root: Path) -> Path | None:
+    """Resolve the GPU sidecar binary under *root*, .exe-suffixed on Windows."""
+    bare = root / "podcodex-server-gpu"
     if bare.is_file():
         return bare
-    exe = gpu_install_dir() / "podcodex-server-gpu.exe"
+    exe = root / "podcodex-server-gpu.exe"
     if exe.is_file():
         return exe
     return None
@@ -216,7 +229,14 @@ def installed_server_core_version() -> str | None:
     install pre-M.8), or the subprocess errors out. The launcher uses the
     same probe pattern from Rust — see ``src-tauri/src/lib.rs::probe_sidecar_version``.
     """
-    binary = _gpu_binary_path()
+    if _installing_marker().exists():
+        return None
+    return _probe_server_core_version(gpu_install_dir())
+
+
+def _probe_server_core_version(root: Path) -> str | None:
+    """``--version`` of the GPU binary under *root*, whatever the install state."""
+    binary = _gpu_binary_path(root)
     if binary is None:
         return None
     try:
@@ -225,10 +245,12 @@ def installed_server_core_version() -> str | None:
             capture_output=True,
             text=True,
             timeout=15,
-            cwd=str(gpu_install_dir()),
+            cwd=str(root),
             check=False,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired):
+        # OSError covers a binary that cannot be executed (permissions, a
+        # wrong-platform file), not just a missing one.
         return None
     if result.returncode != 0:
         return None
@@ -312,6 +334,10 @@ def _ensure_platform_supported() -> None:
         )
 
 
+_DOWNLOAD_ATTEMPTS = 4
+_DOWNLOAD_BACKOFF_CAP_S = 30.0
+
+
 def _stream_download(
     url: str,
     dest: Path,
@@ -322,15 +348,90 @@ def _stream_download(
     label: str,
 ) -> None:
     """Download *url* to *dest* with chunked progress reporting and
-    cooperative cancellation. Raises if the connection fails, the
-    transfer is cancelled, or no bytes arrive."""
+    cooperative cancellation. Raises if the connection keeps failing, the
+    transfer is cancelled, or no bytes arrive.
+
+    A dropped connection or a stalled read is retried with capped
+    exponential backoff, resuming with a ``Range`` request from what is
+    already on disk (GitHub release assets honour it), so one blip no longer
+    restarts a multi-GB download from zero.
+    """
+    import http.client
+    import urllib.error
+
     progress_cb(progress_start, f"Connecting to {label}…")
-    req = urllib.request.Request(url, headers={"User-Agent": "podcodex-gpu/1.0"})
+    dest.unlink(missing_ok=True)
+    # Consecutive attempts that moved no bytes; one that resumed and made
+    # progress resets it, so a long download on a link that drops every few
+    # hundred MB still finishes.
+    stalled = 0
+    while True:
+        before = dest.stat().st_size if dest.is_file() else 0
+        try:
+            _download_once(
+                url,
+                dest,
+                progress_cb,
+                cancel_event,
+                progress_start,
+                progress_end,
+                label,
+            )
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code == 416:  # nothing left past what we have: complete
+                break
+            if exc.code < 500:
+                raise
+            reason: object = exc
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.IncompleteRead,
+        ) as exc:
+            reason = exc
+        after = dest.stat().st_size if dest.is_file() else 0
+        stalled = 0 if after > before else stalled + 1
+        if stalled >= _DOWNLOAD_ATTEMPTS:
+            raise RuntimeError(
+                f"{label} download kept failing ({reason}); "
+                "check the connection and try again."
+            )
+        delay = min(_DOWNLOAD_BACKOFF_CAP_S, 2.0 ** max(stalled, 1))
+        logger.warning(
+            "{} download interrupted ({}), retrying in {:.0f}s", label, reason, delay
+        )
+        progress_cb(progress_start, f"{label}: connection lost, retrying…")
+        if (cancel_event or threading.Event()).wait(delay):
+            raise RuntimeError("Download cancelled")
+    if not dest.is_file() or dest.stat().st_size == 0:
+        raise RuntimeError(f"{label} download produced an empty file")
+
+
+def _download_once(
+    url: str,
+    dest: Path,
+    progress_cb: Callable[[float, str], None],
+    cancel_event: threading.Event | None,
+    progress_start: float,
+    progress_end: float,
+    label: str,
+) -> None:
+    """One transfer, resuming after whatever *dest* already holds."""
+    have = dest.stat().st_size if dest.is_file() else 0
+    headers = {"User-Agent": "podcodex-gpu/1.0"}
+    if have:
+        headers["Range"] = f"bytes={have}-"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
-        total = int(resp.headers.get("Content-Length") or 0)
+        resumed = have and resp.status == 206
+        if not resumed:
+            have = 0  # the server sent the whole file again
+        total = int(resp.headers.get("Content-Length") or 0) + have
         chunk_size = 1 << 20  # 1 MiB
-        read = 0
-        with open(dest, "wb") as f:
+        read = have
+        with open(dest, "ab" if resumed else "wb") as f:
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError("Download cancelled")
@@ -339,17 +440,20 @@ def _stream_download(
                     break
                 f.write(chunk)
                 read += len(chunk)
+                mb_done = read / 1024**2
                 if total > 0:
                     span = progress_end - progress_start
                     frac = progress_start + span * (read / total)
-                    mb_done = read / 1024**2
-                    mb_total = total / 1024**2
-                    progress_cb(frac, f"{label}: {mb_done:.0f} / {mb_total:.0f} MB")
+                    progress_cb(
+                        frac, f"{label}: {mb_done:.0f} / {total / 1024**2:.0f} MB"
+                    )
                 else:
-                    mb_done = read / 1024**2
                     progress_cb(progress_start, f"{label}: {mb_done:.0f} MB")
-    if dest.stat().st_size == 0:
-        raise RuntimeError(f"{label} download produced an empty file")
+        if total > 0 and read < total:
+            # A short body: raised as the retryable error it is.
+            import http.client
+
+            raise http.client.IncompleteRead(b"", total - read)
 
 
 def _sha256(path: Path) -> str:
@@ -432,8 +536,16 @@ def download_and_install(
         bumps.
 
     Designed to be submitted to ``task_manager`` — ``progress_cb`` carries
-    a ``cancel_event`` attribute set by ``TaskInfo``.
+    a ``cancel_event`` attribute set by ``TaskInfo``. Holds the install lock
+    for the whole run, so activate and uninstall refuse meanwhile.
     """
+    with _INSTALL_LOCK:
+        return _download_and_install_locked(progress_cb, manifest_url)
+
+
+def _download_and_install_locked(
+    progress_cb: Callable[[float, str], None], manifest_url: str
+) -> dict:
     _ensure_bundle_mode()
     _ensure_platform_supported()
     if not manifest_url:
@@ -447,7 +559,7 @@ def download_and_install(
     install_dir.mkdir(parents=True, exist_ok=True)
 
     progress_cb(0.0, "Fetching manifest…")
-    manifest = json.loads(_fetch_text(manifest_url))
+    manifest, manifest_url = _fetch_manifest(manifest_url)
     cuda_archive_name = manifest.get("archive")
     cuda_sha = manifest.get("sha256")
     cuda_libs_version = manifest.get("version")
@@ -463,6 +575,17 @@ def download_and_install(
         )
 
     target_app_version = _app_version()
+    # A manifest stamped for another app release carries a server core the
+    # launcher refuses (it only runs a GPU sidecar of its own version).
+    # Installing it anyway left the app on CPU and every retry re-downloading
+    # the same archive; say so instead.
+    manifest_server = manifest.get("server_version")
+    if manifest_server and manifest_server != target_app_version:
+        raise RuntimeError(
+            f"The GPU download available is for PodCodex {manifest_server}, "
+            f"but this app is {target_app_version}. Update the app, or wait "
+            "for this release's GPU build to be published."
+        )
     needs_server = installed_server_core_version() != target_app_version
     installed = installed_manifest()
     needs_libs = installed is None or installed.get("version") != cuda_libs_version
@@ -493,7 +616,13 @@ def download_and_install(
         server_band = None
         cuda_band = (0.02, 0.85)
 
-    with tempfile.TemporaryDirectory(prefix="podcodex-gpu-dl-") as tmp_str:
+    was_activated = _activated_marker().is_file()
+    # Beside the install dir, not in the system temp dir: the verified server
+    # core is moved in from here, which is a rename only on the same volume.
+    install_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".gpu-dl-", dir=install_dir.parent
+    ) as tmp_str:
         tmp = Path(tmp_str)
 
         if needs_server:
@@ -521,10 +650,24 @@ def download_and_install(
                 )
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("Install cancelled before extraction")
-            _purge_stale_dist_info(install_dir)
+            # Extracted and version-checked in a staging dir first: a server
+            # core of another version (the launcher will not run it) is
+            # refused before it overwrites a working install.
+            staging = tmp / "server-core"
+            staging.mkdir()
             _extract_tar_gz(
-                server_tar, install_dir, "server core", progress_cb, server_band[1]
+                server_tar, staging, "server core", progress_cb, server_band[1]
             )
+            extracted = _probe_server_core_version(staging)
+            if extracted != target_app_version:
+                raise RuntimeError(
+                    f"The downloaded server core reports version {extracted}, "
+                    f"but this app is {target_app_version}; the current GPU "
+                    "backend was left as it is."
+                )
+            _begin_extraction()
+            _purge_stale_dist_info(install_dir)
+            _merge_tree(staging, install_dir)
 
         if needs_libs:
             assert cuda_band is not None
@@ -551,11 +694,18 @@ def download_and_install(
                 )
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("Install cancelled before extraction")
+            _begin_extraction()
             _extract_tar_gz(
                 cuda_tar, install_dir, "cuda libs", progress_cb, cuda_band[1]
             )
 
-    _manifest_path().write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    # Manifest last and atomic, then the install is trusted again.
+    from podcodex.core._utils import write_json_atomic
+
+    write_json_atomic(_manifest_path(), manifest)
+    if was_activated:
+        _activated_marker().touch()
+    _installing_marker().unlink(missing_ok=True)
     progress_cb(1.0, "Installed. Activate to switch the sidecar to GPU.")
     return {
         "installed_version": cuda_libs_version,
@@ -568,9 +718,52 @@ def download_and_install(
 # ── Activation ──────────────────────────────────────────────────────────
 
 
+def _merge_tree(src: Path, dest: Path) -> None:
+    """Move every entry of *src* into *dest*, replacing what is there.
+
+    The same result as extracting the archive over *dest*, from a tree that
+    was already verified; entries *dest* has and *src* lacks (the cuda libs)
+    stay.
+    """
+    for entry in src.iterdir():
+        target = dest / entry.name
+        if entry.is_dir() and target.is_dir():
+            _merge_tree(entry, target)
+            continue
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.exists():
+            target.unlink()
+        shutil.move(str(entry), str(target))
+
+
+def _begin_extraction() -> None:
+    """Mark the tree untrusted (and not launchable) before writing into it."""
+    _installing_marker().touch()
+    _activated_marker().unlink(missing_ok=True)
+
+
+# Held by download_and_install for its whole run and taken by activate and
+# uninstall without waiting: one guard in the backend for "nothing touches
+# the install dir while it is being written", whichever caller.
+_INSTALL_LOCK = threading.Lock()
+
+
+def _refuse_while_installing() -> None:
+    if _INSTALL_LOCK.locked():
+        raise RuntimeError(
+            "The GPU backend is being downloaded; wait for it to finish."
+        )
+
+
 def activate() -> None:
     """Mark the GPU backend as the one to spawn on next sidecar restart."""
     _ensure_bundle_mode()
+    _refuse_while_installing()
+    if _installing_marker().exists():
+        raise RuntimeError(
+            "The GPU backend install did not finish. Download it again first."
+        )
     if installed_manifest() is None:
         raise RuntimeError("No GPU backend installed. Call download first.")
     _activated_marker().touch()
@@ -589,6 +782,17 @@ def deactivate() -> None:
 def uninstall() -> None:
     """Remove the on-disk install entirely. Idempotent."""
     _ensure_bundle_mode()
+    if not _INSTALL_LOCK.acquire(blocking=False):
+        raise RuntimeError(
+            "The GPU backend is being downloaded; wait for it to finish."
+        )
+    try:
+        _uninstall_locked()
+    finally:
+        _INSTALL_LOCK.release()
+
+
+def _uninstall_locked() -> None:
     install_dir = gpu_install_dir()
     if install_dir.is_dir():
         shutil.rmtree(install_dir)
@@ -597,26 +801,74 @@ def uninstall() -> None:
 
 # ── Manifest URL discovery ──────────────────────────────────────────────
 
-# GitHub release pattern: ``v<version>/cuda-libs.json``. The CI workflow
-# (``.github/workflows/release.yml``) uploads ``cuda-libs.json`` alongside
-# the MSI/DMG to the matching release tag. Override with the env var when
-# building from a fork or hosting GPU artifacts elsewhere.
-# GitHub "latest release" redirect. Resolves to the most recent non-draft
-# release tag — works for stable (v0.1.0) and pre-release (v0.1.0-rc.1)
-# tags as long as the draft has been published. Pinning to v{__version__}
-# would 404 during rc-tag iteration where pyproject says 0.1.0 but the
-# release is at v0.1.0-rc.1. The manifest's own torch_compat field is the
-# version guard for ABI mismatches, not the URL.
-_DEFAULT_LATEST_MANIFEST_URL = (
-    "https://github.com/gabriel-jung/PodCodex/releases/latest/download/cuda-libs.json"
-)
+# The CI workflow (``.github/workflows/release.yml``) uploads
+# ``cuda-libs.json`` beside the MSI/DMG on each release tag. The app's own
+# tag is tried first, because the launcher only runs a GPU server core of the
+# app's exact version and "latest" is the newest *stable* release: a beta
+# build, or an install one release behind, pulled a server core it then
+# refused. A prerelease tag (``vX.Y.Z-beta.N``) is not derivable from the
+# version, so "latest" stays as the fallback, and the manifest's
+# ``server_version`` (checked in ``download_and_install``) refuses a mismatch
+# there with a sentence instead of installing it.
+_RELEASES = "https://github.com/gabriel-jung/PodCodex/releases"
+_DEFAULT_LATEST_MANIFEST_URL = f"{_RELEASES}/latest/download/cuda-libs.json"
+
+
+def _tagged_manifest_url() -> str:
+    return f"{_RELEASES}/download/v{_app_version()}/cuda-libs.json"
 
 
 def default_manifest_url() -> str:
     """Manifest URL the GPU download button hits when no override is set.
 
     Override with ``PODCODEX_GPU_MANIFEST_URL`` for forks or to point at a
-    specific (non-latest) release.
+    specific release.
     """
     override = os.environ.get("PODCODEX_GPU_MANIFEST_URL", "").strip()
-    return override or _DEFAULT_LATEST_MANIFEST_URL
+    return override or _tagged_manifest_url()
+
+
+def _fetch_manifest(manifest_url: str) -> tuple[dict, str]:
+    """The manifest and the URL it came from (archives resolve against it).
+
+    Falls back from the app's own tag to "latest" only for the default URL,
+    and only on a 404 (no GPU build on that tag); an override is used as is.
+    """
+    import urllib.error
+
+    try:
+        return _load_manifest(manifest_url), manifest_url
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404 or manifest_url != _tagged_manifest_url():
+            raise _manifest_error(exc) from exc
+    try:
+        return _load_manifest(
+            _DEFAULT_LATEST_MANIFEST_URL
+        ), _DEFAULT_LATEST_MANIFEST_URL
+    except urllib.error.HTTPError as exc:
+        raise _manifest_error(exc) from exc
+
+
+def _manifest_error(exc) -> RuntimeError:
+    if exc.code == 404:
+        return RuntimeError("No GPU build is published for this release yet.")
+    return RuntimeError(f"Could not fetch the GPU manifest: {exc}")
+
+
+def _load_manifest(url: str) -> dict:
+    """Fetch and parse one manifest; HTTP errors propagate as they are."""
+    import urllib.error
+
+    try:
+        data = json.loads(_fetch_text(url))
+    except urllib.error.HTTPError:
+        raise
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Could not reach the GPU download server: {exc.reason}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("The GPU manifest is not valid JSON") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("The GPU manifest has an unexpected shape")
+    return data

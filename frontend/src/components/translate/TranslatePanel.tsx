@@ -84,6 +84,7 @@ export default function TranslatePanel() {
 
   const { data: referenceSegments } = useBestSourceSegments(
     audioPath,
+    outputDir,
     {
       enabled: !!episode?.transcribed,
       verified: episode?.verified ?? null,

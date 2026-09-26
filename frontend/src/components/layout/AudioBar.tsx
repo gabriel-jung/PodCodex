@@ -44,7 +44,7 @@ export default function AudioBar() {
   const stopAudio = useAudioStore((s) => s.stopAudio);
 
   const loadSegmentsMutation = useMutation({
-    mutationFn: getBestSegments,
+    mutationFn: (path: string) => getBestSegments(path),
     onSuccess: (data, path) => {
       setAudioSegments(path, toAudioSegments(data));
       setShowSegment(true);

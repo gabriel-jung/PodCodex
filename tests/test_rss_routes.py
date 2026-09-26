@@ -1,10 +1,9 @@
-"""RSS fetch route: the cached-feed fallback, and the per-episode stem scan.
+"""RSS fetch route: failure reporting, and the per-episode stem scan.
 
-Two things the route promises and used not to keep. A network failure is
-supposed to serve the cache rather than block the show page, but only
-``ValueError`` was caught, so a DNS or CDN failure escaped as a 500 with the
-cache sitting right there. And the ``downloaded`` flag is supposed to cost
-one directory listing per request, not one per episode.
+The route backs the explicit Refresh button, so a network failure is a 502
+with a sentence (not an opaque 500, and not the stale cache answered as a
+successful refresh). And the ``downloaded`` flag is supposed to cost one
+directory listing per request, not one per episode.
 """
 
 from __future__ import annotations
@@ -44,9 +43,10 @@ def _fetch_feed(client, show):
     return client.post(f"/api/shows/{show}/rss/fetch")
 
 
-def test_a_network_failure_serves_the_cached_feed(client, monkeypatch, show):
-    """httpx errors are not ValueError; they used to escape as a 500."""
+def test_a_network_failure_is_reported_even_with_a_cache(client, monkeypatch, show):
+    """Answering the stale cache made an offline Refresh read as a success."""
     import podcodex.api.routes.rss as rss_mod
+    from podcodex.ingest.rss import load_feed_cache
 
     save_feed_cache(show, _EPISODES)
 
@@ -57,8 +57,9 @@ def test_a_network_failure_serves_the_cached_feed(client, monkeypatch, show):
 
     r = _fetch_feed(client, show)
 
-    assert r.status_code == 200, r.text
-    assert [e["guid"] for e in r.json()] == ["a", "b"]
+    assert r.status_code == 502, r.text
+    assert "nodename" in r.json()["detail"]
+    assert [e.guid for e in load_feed_cache(show)] == ["a", "b"]
 
 
 def test_a_network_failure_with_no_cache_still_reports_an_error(
@@ -150,3 +151,25 @@ def test_the_feed_is_downloaded_once_even_when_artwork_is_upgraded(
     assert r.status_code == 200, r.text
     assert len(calls) == 1
     assert load_show_meta(show).artwork_url == "https://a/3000x3000.jpg"
+
+
+def test_a_feed_error_does_not_leak_the_feed_token(client, monkeypatch, show):
+    """httpx's status error embeds the full URL; private feeds put a token in it."""
+    import podcodex.api.routes.rss as rss_mod
+
+    secret = "https://host.example/feed.xml?auth=s3cret"
+    request = httpx.Request("GET", secret)
+    response = httpx.Response(403, request=request)
+
+    def _denied(_url):
+        raise httpx.HTTPStatusError(
+            f"Client error '403 Forbidden' for url '{secret}'",
+            request=request,
+            response=response,
+        )
+
+    monkeypatch.setattr(rss_mod, "fetch_feed_with_artwork", _denied)
+    r = client.post(f"/api/shows/{show}/rss/fetch", params={"rss_url": secret})
+    assert r.status_code == 502
+    assert "s3cret" not in r.json()["detail"]
+    assert "host.example/feed.xml" in r.json()["detail"]

@@ -30,7 +30,7 @@ export function useSetVerifiedVersion(
       invalidates: [
         queryKeys.episodesAll(),
         queryKeys.allVersions(sourceRefFor(audioPath, outputDir)),
-        queryKeys.bestSourceSegments(audioPath),
+        queryKeys.bestSourceSegments(sourceRefFor(audioPath, outputDir)),
         queryKeys.shows(),
         invalidateSpeakerViews,
       ],

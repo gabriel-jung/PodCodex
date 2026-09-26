@@ -233,44 +233,8 @@ class PipelineDB:
         return self._read("SELECT COUNT(*) FROM episodes").fetchone()[0]
 
     def aggregate_status(self) -> dict[str, int]:
-        """Return per-stage completion counts across all episodes.
-
-        Includes edited subset for transcribe/correct/translate. Edited mirrors
-        `core.versions.is_edited` (type='validated' or manual_edit=True on the
-        latest provenance entry for that step). Translation counts as edited
-        when at least one translation language has edited provenance.
-        """
-        total = transcribed = corrected = translated = synthesized = indexed = 0
-        transcribed_edited = corrected_edited = translated_edited = 0
-
-        for ep in self.all_episodes():
-            total += 1
-            transcribed += ep["transcribed"]
-            corrected += ep["corrected"]
-            indexed += ep["indexed"]
-            synthesized += ep["synthesized"]
-            translations = [t for t in ep["translations"] if isinstance(t, str)]
-            prov = ep["provenance"] if isinstance(ep["provenance"], dict) else {}
-            if translations:
-                translated += 1
-            if ep["transcribed"] and is_edited(prov.get("transcript")):
-                transcribed_edited += 1
-            if ep["corrected"] and is_edited(prov.get("corrected")):
-                corrected_edited += 1
-            if translations and any(is_edited(prov.get(t)) for t in translations):
-                translated_edited += 1
-
-        return {
-            "total": total,
-            "transcribed": transcribed,
-            "transcribed_edited": transcribed_edited,
-            "corrected": corrected,
-            "corrected_edited": corrected_edited,
-            "translated": translated,
-            "translated_edited": translated_edited,
-            "synthesized": synthesized,
-            "indexed": indexed,
-        }
+        """Per-stage completion counts across all episodes (see ``aggregate_rows``)."""
+        return aggregate_rows(self.all_episodes())
 
     # ── Write ─────────────────────────────────────────────
 
@@ -877,3 +841,44 @@ def mark_step(show_dir: Path, stem: str, **fields: object) -> None:
         logger.opt(exception=True).warning(
             f"pipeline_db: failed to mark {stem} in {show_dir}"
         )
+
+
+def aggregate_rows(rows) -> dict[str, int]:
+    """Per-stage completion counts over episode rows (``all_episodes`` shape).
+
+    Includes edited subset for transcribe/correct/translate. Edited mirrors
+    `core.versions.is_edited` (type='validated' or manual_edit=True on the
+    latest provenance entry for that step). Translation counts as edited
+    when at least one translation language has edited provenance.
+    """
+    total = transcribed = corrected = translated = synthesized = indexed = 0
+    transcribed_edited = corrected_edited = translated_edited = 0
+
+    for ep in rows:
+        total += 1
+        transcribed += ep["transcribed"]
+        corrected += ep["corrected"]
+        indexed += ep["indexed"]
+        synthesized += ep["synthesized"]
+        translations = [t for t in ep["translations"] if isinstance(t, str)]
+        prov = ep["provenance"] if isinstance(ep["provenance"], dict) else {}
+        if translations:
+            translated += 1
+        if ep["transcribed"] and is_edited(prov.get("transcript")):
+            transcribed_edited += 1
+        if ep["corrected"] and is_edited(prov.get("corrected")):
+            corrected_edited += 1
+        if translations and any(is_edited(prov.get(t)) for t in translations):
+            translated_edited += 1
+
+    return {
+        "total": total,
+        "transcribed": transcribed,
+        "transcribed_edited": transcribed_edited,
+        "corrected": corrected,
+        "corrected_edited": corrected_edited,
+        "translated": translated,
+        "translated_edited": translated_edited,
+        "synthesized": synthesized,
+        "indexed": indexed,
+    }

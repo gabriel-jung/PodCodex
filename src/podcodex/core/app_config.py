@@ -73,7 +73,7 @@ class PipelineAppDefaults(BaseModel):
         stay at the unset sentinel ``""`` so a show-level override remains
         the only thing that makes them count; ``llm_models_by_mode`` is an
         input to model resolution, not compared directly. Consumers are
-        ``_resolve_defaults`` + ``_step_statuses`` in ``api/routes/shows.py``.
+        ``_resolve_defaults`` + ``_step_statuses`` in ``core/episode_status.py``.
         """
         return {
             "model_size": self.transcribe.model_size,

@@ -53,6 +53,13 @@ jobs:
       - name: Run tests
         run: uv run pytest -q
 
+      # Report only: the locked tree still has advisories outside the server
+      # stack (torch, transformers, pillow, ...), so a blocking check would
+      # fail every run today. The log shows what to bump next.
+      - name: Dependency advisories (pip-audit, non-blocking)
+        continue-on-error: true
+        run: uv run --with pip-audit pip-audit --skip-editable
+
   frontend:
     name: Frontend (tsc + eslint + vitest)
     runs-on: ubuntu-latest

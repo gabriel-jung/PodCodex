@@ -58,14 +58,14 @@ def register_version_routes(
         output_dir: str | None = Query(None),
         lang: str | None = Query(None),
     ) -> list[dict]:
-        from podcodex.core.versions import load_version
+        from podcodex.api.routes._helpers import (
+            load_version_or_404,
+            shape_step_segments,
+        )
 
-        _check_version_id(version_id)
         p, s = _resolve(audio_path, output_dir, lang)
-        try:
-            return load_version(p.base, s, version_id)
-        except FileNotFoundError:
-            raise HTTPException(404, f"Version {version_id} not found")
+        segments = load_version_or_404(p.base, s, version_id)
+        return shape_step_segments(p.base, s, segments)
 
     @router.delete("/versions/{version_id}")
     def delete_step_version(

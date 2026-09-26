@@ -180,3 +180,31 @@ def test_transcribe_is_skipped_for_an_episode_with_no_audio(tmp_path, calls):
     )
 
     assert [c[0] for c in calls] == ["correct"]
+
+
+def test_an_up_to_date_episode_spawns_no_child(monkeypatch):
+    """The skip check runs in the parent; a spawn costs seconds of imports."""
+    from types import SimpleNamespace
+
+    import podcodex.api.subprocess_runner as runner
+    import podcodex.core.transcribe_job as tjob
+    import podcodex.rag.index_job as ijob
+    from podcodex.api.routes import batch
+
+    monkeypatch.setattr(
+        runner, "run_in_subprocess", lambda **_k: pytest.fail("spawned a child")
+    )
+    monkeypatch.setattr(tjob, "transcript_is_current", lambda *_a: True)
+    monkeypatch.setattr(ijob, "already_indexed", lambda *_a: True)
+    req = SimpleNamespace(
+        force=False,
+        model_size="large-v3",
+        language="en",
+        diarize=True,
+        show_name="S",
+        index_model_keys=["bge-m3"],
+        index_chunkings=["semantic"],
+    )
+    args = ("/s/ep.mp3", "ep", None, req, lambda: False, lambda *_a: None, 0, 0.0)
+    assert batch._batch_transcribe(*args) is False
+    assert batch._batch_index(*args) is False

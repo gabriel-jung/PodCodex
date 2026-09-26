@@ -166,3 +166,78 @@ def test_fresh_folder_still_mints(client, tmp_path):
     meta = load_show_meta(tmp_path / "shows" / "brand_new")
     assert meta.id
     assert meta.rss_url == FEED
+
+
+def test_readd_keeps_an_uploaded_cover_and_the_users_name(client, tmp_path):
+    from podcodex.core.constants import LOCAL_ARTWORK_MARKER
+
+    folder, _ = _seed(tmp_path, rss_url=FEED, artwork_url=LOCAL_ARTWORK_MARKER)
+
+    r = _post_rss(client, tmp_path)  # no name: the folder fallback applies
+    assert r.status_code == 200, r.text
+
+    meta = load_show_meta(folder)
+    assert meta.artwork_url == LOCAL_ARTWORK_MARKER
+    assert meta.name == "Kept Show"
+    assert r.json()["name"] == "Kept Show"
+
+
+def test_create_refuses_a_label_another_show_uses(client, tmp_path):
+    other = tmp_path / "shows" / "other"
+    other.mkdir(parents=True)
+    r = client.post("/api/shows/register", json={"path": str(other)})
+    assert r.status_code == 200, r.text
+    save_show_meta(other, ShowMeta(name="Taken"))
+
+    r = _post_rss(client, tmp_path, name="Taken")
+    assert r.status_code == 409, r.text
+    assert not (tmp_path / "shows" / "kept").exists()
+
+
+@pytest.mark.parametrize("folder_name", ["../escape", "/abs/path", "a/b"])
+def test_create_refuses_a_folder_outside_the_save_path(client, tmp_path, folder_name):
+    (tmp_path / "shows").mkdir()
+    r = _post_rss(client, tmp_path, folder_name=folder_name)
+    assert r.status_code == 400, r.text
+
+
+def test_create_refuses_an_unrelated_existing_folder(client, tmp_path):
+    unrelated = tmp_path / "shows" / "kept"
+    unrelated.mkdir(parents=True)
+    (unrelated / "notes.txt").write_text("mine")
+
+    r = _post_rss(client, tmp_path)
+    assert r.status_code == 409, r.text
+    assert not (unrelated / "show.toml").exists()
+
+
+def test_meta_round_trip_keeps_every_field(client, tmp_path):
+    """GET then PUT /meta must not drop a field of show.toml."""
+    from dataclasses import asdict
+
+    folder, sid = _seed(tmp_path, rss_url=FEED, language="fr")
+    r = client.post("/api/shows/register", json={"path": str(folder)})
+    assert r.status_code == 200, r.text
+    before = asdict(load_show_meta(folder))
+
+    got = client.get(f"/api/shows/{folder}/meta").json()
+    r = client.put(f"/api/shows/{folder}/meta", json=got)
+    assert r.status_code == 200, r.text
+
+    assert asdict(load_show_meta(folder)) == before
+
+
+def test_readd_keeps_a_name_that_collides_since(client, tmp_path):
+    """Unregistered "Kept Show", then another show took the name: re-adding
+    the feed restores the kept show instead of refusing it."""
+    folder, _ = _seed(tmp_path, rss_url=FEED)
+    other = tmp_path / "shows" / "other"
+    other.mkdir()
+    assert (
+        client.post("/api/shows/register", json={"path": str(other)}).status_code == 200
+    )
+    save_show_meta(other, ShowMeta(name="Kept Show"))
+
+    r = _post_rss(client, tmp_path)
+    assert r.status_code == 200, r.text
+    assert load_show_meta(folder).name == "Kept Show"

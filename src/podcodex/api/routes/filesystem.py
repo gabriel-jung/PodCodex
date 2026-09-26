@@ -188,22 +188,16 @@ def delete_file(
     """Delete a non-audio auxiliary file (subtitles, metadata, etc).
 
     Safety: only removes files whose suffix is in a small allow-list, and
-    only when the file lives inside a folder that looks like a show folder
-    (contains ``show.toml``) to prevent arbitrary filesystem writes.
+    only inside a registered show folder (the gate the audio delete uses).
+    Any ancestor holding a ``show.toml`` used to be enough, which an
+    unregistered or planted ``show.toml`` satisfied.
     """
-    from podcodex.ingest.show import SHOW_META_FILENAME
+    from podcodex.api.routes._helpers import resolve_inside_show_root
 
     p = Path(path).expanduser().resolve()
     if p.suffix.lower() not in _DELETABLE_EXTS:
         raise HTTPException(400, f"Refusing to delete file type: {p.suffix}")
-
-    parent = p.parent
-    while True:
-        if (parent / SHOW_META_FILENAME).exists():
-            break
-        if parent.parent == parent:
-            raise HTTPException(400, "File is not inside a known show folder")
-        parent = parent.parent
+    resolve_inside_show_root(str(p))
 
     try:
         p.unlink()

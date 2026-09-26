@@ -61,7 +61,7 @@ def run(
 
     device = device_str()
 
-    from podcodex.ingest.show_registry import show_id_for_label
+    from podcodex.ingest.show_registry import show_id_for_folder
 
     total_upserted = vectorize_batch(
         transcript,
@@ -70,7 +70,7 @@ def run(
         model_keys,
         chunkings,
         local,
-        show_id=show_id_for_label(show),
+        show_id=show_id_for_folder(p.show_dir, show, mint=True),
         chunk_size=chunk_size,
         threshold=threshold,
         overwrite=overwrite,
@@ -114,6 +114,35 @@ def run(
     return {"chunks_upserted": total_upserted, "source": source_label, "stem": episode}
 
 
+def already_indexed(
+    audio_path: str,
+    stem: str,
+    show_name: str,
+    model_keys: list[str],
+    chunkings: list[str],
+) -> bool:
+    """True when every wanted (model, chunking) already holds this episode.
+
+    Index reads only, no embedder: the batch runner asks it in the parent
+    before spawning a child that would only answer "skipped". Reads the id
+    without minting; the job itself mints when it writes.
+    """
+    from podcodex.core._utils import AudioPaths
+    from podcodex.ingest.show_registry import show_id_for_folder
+    from podcodex.rag.index_store import get_index_store
+
+    wanted = [(m, c) for m in model_keys for c in chunkings]
+    if not wanted:
+        return False
+    local = get_index_store()
+    show_id = show_id_for_folder(AudioPaths.from_audio(audio_path).show_dir, show_name)
+    return all(
+        (col := local.resolve_collection(show_id, m, c, show_label=show_name))
+        and local.episode_is_indexed(col, stem)
+        for m, c in wanted
+    )
+
+
 def run_for_batch(
     *,
     progress_cb: Callable[[float, str], None],
@@ -137,21 +166,17 @@ def run_for_batch(
     from podcodex.rag.index_store import get_index_store
     from podcodex.core._utils import AudioPaths
     from podcodex.core.pipeline_db import mark_step
-    from podcodex.ingest.show_registry import show_id_for_label
+    from podcodex.ingest.show_registry import show_id_for_folder
     from podcodex.rag.indexing import vectorize_batch
 
     p = AudioPaths.from_audio(audio_path)
     local = get_index_store()
-    show_id = show_id_for_label(show_name)
+    show_id = show_id_for_folder(p.show_dir, show_name, mint=True)
 
-    if not force:
-        wanted = [(m, c) for m in model_keys for c in chunkings]
-        if wanted and all(
-            (col := local.resolve_collection(show_id, m, c, show_label=show_name))
-            and local.episode_is_indexed(col, stem)
-            for m, c in wanted
-        ):
-            return {"upserted": 0, "indexed": False, "skipped": True}
+    if not force and already_indexed(
+        audio_path, stem, show_name, model_keys, chunkings
+    ):
+        return {"upserted": 0, "indexed": False, "skipped": True}
 
     progress_cb(0.0, "Indexing...")
     from podcodex.core.source import load_source

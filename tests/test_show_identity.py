@@ -107,3 +107,29 @@ def test_mint_preserves_existing_metadata(tmp_path):
     assert meta.rss_url == "https://example.com/f.xml"
     assert meta.speakers == ["A", "B"]
     assert meta.id
+
+
+def test_show_id_for_folder_prefers_the_folders_own_id(tmp_path, monkeypatch):
+    """Two shows sharing a label: the episode's own show.toml decides."""
+    import podcodex.ingest.show_registry as registry
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    for f in (a, b):
+        f.mkdir()
+        save_show_meta(f, ShowMeta(name="Same"))
+    monkeypatch.setattr(registry, "registered_folders", lambda: [a, b])
+
+    assert registry.show_id_for_folder(b, "Same") == load_show_meta(b).id
+    assert registry.show_id_for_folder(b, "Same") != load_show_meta(a).id
+
+
+def test_show_id_for_folder_mints_only_for_writers(tmp_path, monkeypatch):
+    import podcodex.ingest.show_registry as registry
+
+    monkeypatch.setattr(registry, "registered_folders", lambda: [])
+    folder = tmp_path / "bare"
+    folder.mkdir()
+    assert registry.show_id_for_folder(folder, "Nothing") == ""
+    assert not (folder / "show.toml").exists()
+    minted = registry.show_id_for_folder(folder, "Nothing", mint=True)
+    assert ID_RE.match(minted)

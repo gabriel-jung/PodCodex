@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -11,6 +10,8 @@ from pydantic import BaseModel
 
 from podcodex.api.routes._helpers import (
     counted_progress,
+    download_item,
+    keyed_lock,
     is_downloaded,
     list_show_stems,
     scan_show_stems,
@@ -18,7 +19,12 @@ from podcodex.api.routes._helpers import (
     rss_episode_to_out,
     submit_task,
 )
-from podcodex.api.schemas import RSSEpisodeOut, TaskResponse
+from podcodex.api.schemas import (
+    DownloadItemStatus,
+    RSSEpisodeOut,
+    SubtitleImportResult,
+    TaskResponse,
+)
 from podcodex.ingest.rss import (
     RSSEpisode,
     episode_stem,
@@ -33,16 +39,10 @@ from podcodex.ingest.show import load_show_meta, save_show_meta
 
 router = APIRouter()
 
-# Per-show locks serializing the feed-cache read-merge-write in youtube_fetch.
-# Keyed by resolved folder path; never pruned (one small Lock per show).
-_feed_cache_locks: dict[str, threading.Lock] = {}
-_feed_cache_locks_guard = threading.Lock()
 
-
-def _feed_cache_lock(path: Path) -> threading.Lock:
-    key = str(path)
-    with _feed_cache_locks_guard:
-        return _feed_cache_locks.setdefault(key, threading.Lock())
+def _feed_cache_lock(path: Path):
+    """Serializes the feed-cache read-merge-write in youtube_fetch, per show."""
+    return keyed_lock("feed-cache", path)
 
 
 # ── Request models ─────────────────────────────
@@ -207,20 +207,20 @@ def youtube_download(
             if cancel and cancel.is_set():
                 progress_cb(i / total, "Cancelled")
                 break
-            # After the cancel check but before the request, not at the loop
-            # bottom: the failure branch below `continue`s, which skipped the
-            # delay on exactly the iterations where a throttled request makes
-            # it matter. Waiting ahead of the cancel check instead would make
-            # Cancel take up to _MAX_DELAY to be acknowledged.
-            pacer.wait()
-
             stem = episode_stem(ep, show_path, existing_stems=existing_stems)
             report(i, f"Downloading: {ep.title[:40]}")
+            paced = False
 
             if not force and is_downloaded(show_path, stem):
-                results.append({"stem": stem, "status": "exists"})
+                results.append(download_item(stem, DownloadItemStatus.EXISTS))
                 consecutive_fails = 0
             else:
+                # Before the request, after the cancel check: an episode
+                # already on disk makes no request and so waits for nothing
+                # (a mostly-downloaded show used to sleep for half an hour),
+                # and the failure branch below still paces the next attempt.
+                pacer.wait()
+                paced = True
                 try:
                     audio_path = download_youtube_audio(
                         ep.guid,
@@ -234,18 +234,18 @@ def youtube_download(
                     save_episode_meta(episode_dir, ep)
 
                     results.append(
-                        {
-                            "stem": stem,
-                            "status": "downloaded",
-                            "audio_path": str(audio_path),
-                        }
+                        download_item(
+                            stem,
+                            DownloadItemStatus.DOWNLOADED,
+                            audio_path=str(audio_path),
+                        )
                     )
                     consecutive_fails = 0
                     invalidate_scan_cache(show_path)
                 except Exception as exc:
                     logger.exception("Failed to download {}", ep.guid)
                     results.append(
-                        {"stem": stem, "status": "failed", "error": str(exc)}
+                        download_item(stem, DownloadItemStatus.FAILED, error=str(exc))
                     )
                     consecutive_fails += 1
                     last_error = str(exc)
@@ -262,6 +262,11 @@ def youtube_download(
 
             # Cache subtitles if requested
             if req.import_subs:
+                # One pacer tick per episode that talks to YouTube: the
+                # backoff is count-based, so a second tick for the subtitle
+                # call reached the maximum delay at half the episodes.
+                if not paced:
+                    pacer.wait()
                 try:
                     episode_dir = show_path / stem
                     cached_subs = cache_youtube_subtitles(
@@ -333,12 +338,14 @@ def youtube_import_subs(
                     imported += 1
                     consecutive_fails = 0
                     results.append(
-                        {"stem": stem, "title": ep.title, "status": "cached"}
+                        download_item(stem, DownloadItemStatus.CACHED, title=ep.title)
                     )
                 else:
                     # Not available in this language — not a failure
                     results.append(
-                        {"stem": stem, "title": ep.title, "status": "no_subtitles"}
+                        download_item(
+                            stem, DownloadItemStatus.NO_SUBTITLES, title=ep.title
+                        )
                     )
                     consecutive_fails = 0
             except Exception as exc:
@@ -347,12 +354,9 @@ def youtube_import_subs(
                 consecutive_fails += 1
                 last_error = str(exc)
                 results.append(
-                    {
-                        "stem": stem,
-                        "title": ep.title,
-                        "status": "error",
-                        "error": str(exc),
-                    }
+                    download_item(
+                        stem, DownloadItemStatus.FAILED, title=ep.title, error=str(exc)
+                    )
                 )
 
             # Invalidate per-iteration so the episodes poll picks up new VTTs
@@ -368,12 +372,12 @@ def youtube_import_subs(
                     f"Try again later with fewer episodes.",
                 )
                 break
-        return {
-            "imported": imported,
-            "failed": failed,
-            "total": total,
-            "throttled": consecutive_fails >= _CONSECUTIVE_FAIL_LIMIT,
-            "results": results,
-        }
+        return SubtitleImportResult(
+            imported=imported,
+            failed=failed,
+            total=total,
+            throttled=consecutive_fails >= _CONSECUTIVE_FAIL_LIMIT,
+            results=results,
+        ).model_dump(mode="json", exclude_none=True)
 
     return submit_task("yt-subs", str(path), run_import)

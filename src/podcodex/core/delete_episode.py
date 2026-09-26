@@ -84,7 +84,7 @@ def delete_episode(show_dir: Path, stem: str) -> DeleteReport:
     Order is deliberate, and so is where it stops:
 
     1. LanceDB chunks. **If this fails, nothing else is touched.** Visibility
-       is derived from disk (``_load_status_context`` bootstraps its status
+       is derived from disk (``episode_status.load_status_context`` bootstraps its status
        map from a filesystem scan whenever the DB has no rows), so an episode
        whose files are gone cannot be listed no matter what the DB says.
        Deleting the files first would therefore turn a chunk failure into
@@ -164,7 +164,7 @@ def delete_episode(show_dir: Path, stem: str) -> DeleteReport:
                 "delete_episode: unlink failed for {}", audio
             )
 
-    # Before the row delete, not after: the heal pass in ``_load_status_context``
+    # Before the row delete, not after: the heal pass in ``episode_status.load_status_context``
     # rebuilds rows from ``scan_folder``, whose results are cached per show.
     from podcodex.ingest.folder import invalidate_scan_cache
 

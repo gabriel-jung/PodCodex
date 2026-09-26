@@ -196,9 +196,54 @@ def test_download_artwork_rejects_an_oversized_body(tmp_path, monkeypatch):
 def test_download_artwork_accepts_a_body_at_the_cap(tmp_path, monkeypatch):
     from podcodex.api.routes import shows as shows_routes
 
-    _patch_urlopen(monkeypatch, b"x" * shows_routes._ARTWORK_MAX_BYTES)
+    body = PNG_BYTES + b"x" * (shows_routes._ARTWORK_MAX_BYTES - len(PNG_BYTES))
+    _patch_urlopen(monkeypatch, body)
     folder = tmp_path / "show"
     folder.mkdir()
 
     dest = shows_routes._download_artwork("http://x/cover.png", folder)
     assert dest is not None and dest.exists()
+
+
+def test_download_artwork_rejects_a_page_that_is_not_an_image(tmp_path, monkeypatch):
+    """A captive portal's 200 HTML must not be stamped as the cover."""
+    from podcodex.api.routes import shows as shows_routes
+
+    _patch_urlopen(monkeypatch, b"<!doctype html><title>Login</title>")
+    folder = tmp_path / "show"
+    folder.mkdir()
+
+    assert shows_routes._download_artwork("http://x/cover.jpg", folder) is None
+    assert list(folder.iterdir()) == []
+
+
+def test_download_artwork_names_the_file_by_its_bytes(tmp_path, monkeypatch):
+    from podcodex.api.routes import shows as shows_routes
+
+    (tmp_path / "show").mkdir()
+    folder = tmp_path / "show"
+    (folder / "artwork.jpg").write_bytes(b"\xff\xd8\xffold")
+    _patch_urlopen(monkeypatch, PNG_BYTES)
+
+    dest = shows_routes._download_artwork("http://x/cover.jpg", folder)
+    assert dest == folder / "artwork.png"
+    assert not (folder / "artwork.jpg").exists()
+    assert (folder / ".artwork_url_hash").exists()
+
+
+def test_a_download_after_an_upload_leaves_the_upload_alone(tmp_path, monkeypatch):
+    """The download waited on the cover lock while the user uploaded; it must
+    not unlink the upload and serve the feed image under "local"."""
+    from podcodex.api.routes import shows as shows_routes
+    from podcodex.core.constants import LOCAL_ARTWORK_MARKER
+    from podcodex.ingest.show import ShowMeta, save_show_meta
+
+    folder = tmp_path / "show"
+    folder.mkdir()
+    save_show_meta(folder, ShowMeta(name="S", artwork_url=LOCAL_ARTWORK_MARKER))
+    (folder / "artwork.png").write_bytes(PNG_BYTES)
+    _patch_urlopen(monkeypatch, b"\xff\xd8\xfffeed")
+
+    assert shows_routes._download_artwork("http://x/feed.jpg", folder) is None
+    assert (folder / "artwork.png").read_bytes() == PNG_BYTES
+    assert not (folder / "artwork.jpg").exists()

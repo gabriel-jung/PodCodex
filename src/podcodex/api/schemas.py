@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel, Field
 
 
@@ -241,3 +243,39 @@ class CreateFromYouTubeResponse(BaseModel):
 
 class TaskResponse(BaseModel):
     task_id: str
+
+
+class DownloadItemStatus(StrEnum):
+    """Outcome of one item in a download or subtitle-import task.
+
+    The TaskBar counts successes and failures from this vocabulary; three
+    route loops used to spell their own strings, and it guessed at them.
+    """
+
+    DOWNLOADED = "downloaded"  # audio fetched
+    EXISTS = "exists"  # audio already on disk
+    CACHED = "cached"  # subtitles imported
+    NO_AUDIO = "no_audio"  # feed item without an enclosure: neither
+    NO_SUBTITLES = "no_subtitles"  # no track in that language: neither
+    FAILED = "failed"
+
+
+class DownloadItemResult(BaseModel):
+    """One item of an RSS/YouTube download or a subtitle import."""
+
+    stem: str
+    status: DownloadItemStatus
+    title: str | None = None
+    error: str | None = None
+    audio_path: str | None = None
+    subs_cached: bool | None = None
+
+
+class SubtitleImportResult(BaseModel):
+    """Result of a YouTube subtitle-import task."""
+
+    imported: int
+    failed: int
+    total: int
+    throttled: bool
+    results: list[DownloadItemResult]

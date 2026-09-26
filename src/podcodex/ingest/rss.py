@@ -27,6 +27,34 @@ _FEED_CACHE = ".feed_cache.json"
 EPISODE_META_FILE = ".episode_meta.json"
 
 
+def loggable_url(url: str) -> str:
+    """A feed URL without credentials or query string, for logs.
+
+    Private and premium feeds carry a per-subscriber secret in the query or
+    the userinfo; the host and path are enough to tell feeds apart in a log.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
+_URL_IN_TEXT = re.compile(r"https?://[^\s'\"<>]+")
+
+
+def redact_urls(text: str) -> str:
+    """*text* with every URL in it passed through ``loggable_url``.
+
+    For error messages that embed the URL they failed on (httpx's
+    ``HTTPStatusError`` does), which would otherwise carry a private feed's
+    token into the log and the UI.
+    """
+    return _URL_IN_TEXT.sub(lambda m: loggable_url(m.group(0)), text)
+
+
 def _require_http_scheme(url: str, what: str = "URL") -> None:
     """Reject non-HTTP(S) URLs to prevent SSRF and local-file reads.
 
@@ -358,7 +386,7 @@ def feed_artwork(url: str) -> str:
     try:
         content = _fetch_feed_bytes(url)
     except httpx.HTTPError as exc:
-        logger.warning("feed_artwork fetch failed for {}: {}", url, exc)
+        logger.warning("feed_artwork fetch failed for {}: {}", loggable_url(url), exc)
         return ""
     return _artwork_from_parsed(feedparser.parse(content))
 
@@ -754,7 +782,7 @@ def download_audio(
     # is_downloaded happily reported as "exists".
     part = dest.with_name(dest.name + ".part")
     _cleanup_partial(part)
-    logger.info(f"Downloading {rss_episode.audio_url} → {dest.name}")
+    logger.info(f"Downloading {loggable_url(rss_episode.audio_url)} → {dest.name}")
     for attempt in range(1, max_retries + 1):
         try:
             with httpx.stream(

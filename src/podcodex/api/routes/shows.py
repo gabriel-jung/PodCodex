@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import shutil
-from collections.abc import Container
 from dataclasses import asdict, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal
 
 import hashlib
 import urllib.request
@@ -25,6 +23,7 @@ if TYPE_CHECKING:
 from podcodex.api.routes._helpers import (
     apply_broadcast_pattern,
     bad_path_component,
+    keyed_lock,
     get_index_store,
     list_show_stems,
     require_registered_show,
@@ -32,10 +31,8 @@ from podcodex.api.routes._helpers import (
 )
 from podcodex.bundle.conflicts import rename_suffix
 from podcodex.core._utils import (
-    MTIME_SETTLE_SECONDS,
     atomic_write,
     episode_base,
-    normalize_lang,
     virtual_audio_path,
 )
 from podcodex.core.app_config import AppConfig, mutate_config
@@ -50,7 +47,6 @@ from podcodex.api.schemas import (
     EpisodeSpeakerEntry,
     EpisodeSpeakersResponse,
     EpisodeStatusOut,
-    PipelineDefaultsSchema,
     RegisterShowRequest,
     ShowMeta,
     SpeakerEpisodeEntry,
@@ -59,21 +55,19 @@ from podcodex.api.schemas import (
     UnifiedEpisodeOut,
 )
 from podcodex.core.constants import AUDIO_EXTENSIONS, LOCAL_ARTWORK_MARKER
-from podcodex.core.llm_failures import FAILURES_FILENAME, rejected_steps
-from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+from podcodex.core.episode_status import (
+    build_status_out,
+    load_status_context,
+    reconcile_show_status,
+)
+from podcodex.core.pipeline_db import aggregate_rows, close_pipeline_db, get_pipeline_db
 from podcodex.core.source import show_audio_files
 from podcodex.core.versions import (
-    PIPELINE_STEPS,
-    STEP_FLAG,
-    is_edited,
     seed_show_db,
-    step_ext,
 )
 from podcodex.ingest.folder import (
     EpisodeInfo,
-    dir_holds_episode,
     invalidate_scan_cache,
-    lance_indexed_stems,
     scan_folder,
 )
 from podcodex.ingest.rss import (
@@ -85,7 +79,6 @@ from podcodex.ingest.rss import (
     load_feed_cache,
     save_feed_cache,
 )
-from podcodex.core.versions import clean_translations
 from podcodex.ingest.show import PipelineDefaults as _PipelineDefaults
 from podcodex.ingest.show import ShowMeta as _ShowMeta
 from podcodex.ingest.show import is_feed_backed, load_show_meta, save_show_meta
@@ -168,8 +161,21 @@ def list_shows() -> list[ShowSummary]:
         verified = None
         if (child / "pipeline.db").is_file():
             try:
-                db = get_pipeline_db(child)
-                agg = db.aggregate_status()
+                # The same file reconcile the show page runs, so the card's
+                # counts agree with it; its corrected rows are what gets
+                # counted. The index is not opened per show (stored indexed
+                # flags are kept).
+                rows = list(
+                    reconcile_show_status(child, check_index=False).status_map.values()
+                )
+            except Exception as exc:
+                # A failed reconcile keeps the stored counts.
+                logger.warning("status reconcile failed for {}: {}", child, exc)
+                rows = None
+            try:
+                if rows is None:
+                    rows = get_pipeline_db(child).all_episodes()
+                agg = aggregate_rows(rows)
                 pipeline_total = agg["total"]
                 transcribed = agg["transcribed"]
                 transcribed_edited = agg["transcribed_edited"]
@@ -179,7 +185,7 @@ def list_shows() -> list[ShowSummary]:
                 translated_edited = agg["translated_edited"]
                 synthesized = agg["synthesized"]
                 indexed = agg["indexed"]
-                verified = len(db.stems_with_verified())
+                verified = sum(1 for r in rows if r.get("verified"))
             except Exception as exc:
                 logger.warning("aggregate_status failed for {}: {}", child, exc)
 
@@ -278,16 +284,10 @@ def create_local_show(req: CreateLocalShowRequest) -> CreateLocalShowResponse:
     a silent adopt: the folder might belong to an unrelated app.
     """
     name = req.name.strip()
-    if bad_path_component(name):
-        raise HTTPException(400, f"Invalid name: {name!r}")
-
     cfg = _load()
     base = Path(cfg.default_save_path or "~").expanduser()
-    folder = base / name
-    # Defence in depth behind bad_path_component: the folder must land
-    # directly inside the save path.
-    if folder.parent.resolve() != base.resolve():
-        raise HTTPException(400, f"Invalid name: {name!r}")
+    folder = _child_of_save_path(base, name)
+    _refuse_taken_label(name, folder)
     try:
         folder.mkdir(parents=True)
     except FileExistsError:
@@ -366,22 +366,62 @@ _MIME = {
 _ARTWORK_MAX_BYTES = 5 * 1024 * 1024  # shared cap: URL download and upload
 
 
+# Magic numbers of the formats the cover cache stores. A body that is none
+# of them (a captive portal's HTML, a CDN error page answered as 200) is not
+# a cover, whatever its URL says.
+_IMG_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+)
+
+
+def _sniff_image_ext(data: bytes) -> str | None:
+    """Extension for an image body, from its magic bytes, else None."""
+    for magic, ext in _IMG_MAGIC:
+        if data.startswith(magic):
+            return ext
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
 def _url_hash(url: str) -> str:
     """Short hash of a URL — used to detect when the source URL changes."""
     return hashlib.sha256(url.encode()).hexdigest()[:16]
 
 
-def _clear_cached_artwork(show_path: Path) -> None:
+def _clear_cached_artwork(show_path: Path, *, keep_ext: str | None = None) -> None:
     """Forget the cached cover: every ``artwork.*`` variant and its URL stamp.
 
     The variants go so a new cover can't coexist with a stale one under a
     different extension. The stamp goes with them because it is meaningless
     without the image it describes, and a stale one suppresses the next
-    re-download. Every caller wants both, so this owns both.
+    re-download. *keep_ext* keeps the cover just written (and the stamp,
+    which the writer sets next).
     """
     for old_ext in _IMG_EXTENSIONS:
-        (show_path / f"{_ARTWORK_STEM}{old_ext}").unlink(missing_ok=True)
-    (show_path / _ARTWORK_HASH_FILE).unlink(missing_ok=True)
+        if old_ext != keep_ext:
+            (show_path / f"{_ARTWORK_STEM}{old_ext}").unlink(missing_ok=True)
+    if keep_ext is None:
+        (show_path / _ARTWORK_HASH_FILE).unlink(missing_ok=True)
+
+
+def _fresh_cached_artwork(show_path: Path, url: str) -> Path | None:
+    """The cached cover when it is the one *url* names, else None.
+
+    A cached file with no stamp is not fresh: that state means a local upload
+    was replaced by a URL (upload unlinks the stamp), and the uploaded image
+    must not be served under the new URL.
+    """
+    cached = _find_cached_artwork(show_path)
+    stamp = show_path / _ARTWORK_HASH_FILE
+    if cached is None or not stamp.exists():
+        return None
+    if stamp.read_text(encoding="utf-8").strip() != _url_hash(url):
+        return None
+    return cached
 
 
 def _find_cached_artwork(show_path: Path) -> Path | None:
@@ -393,8 +433,33 @@ def _find_cached_artwork(show_path: Path) -> Path | None:
     return None
 
 
+def _artwork_lock(show_path: Path):
+    """The lock every writer of a show's cover files holds.
+
+    One download per show at a time: the grid, the sidebar and the page ask
+    for the same cover at once, and each miss would otherwise rewrite the
+    file another request is streaming.
+    """
+    return keyed_lock("artwork", show_path)
+
+
 def _download_artwork(url: str, show_path: Path) -> Path | None:
     """Download artwork from *url* into *show_path*, return the local path."""
+    with _artwork_lock(show_path):
+        # The cover may have changed while this request waited: an upload
+        # (artwork_url becomes "local") must not be overwritten, and its
+        # file not unlinked, by a download of the old URL.
+        meta = load_show_meta(show_path)
+        if meta is not None and meta.artwork_url != url:
+            return None
+        # A concurrent request may have fetched it while this one waited.
+        cached = _fresh_cached_artwork(show_path, url)
+        if cached is not None:
+            return cached
+        return _download_artwork_locked(url, show_path)
+
+
+def _download_artwork_locked(url: str, show_path: Path) -> Path | None:
     from podcodex.ingest.rss import _require_http_scheme
 
     try:
@@ -404,7 +469,6 @@ def _download_artwork(url: str, show_path: Path) -> Path | None:
         _require_http_scheme(url, "Artwork URL")
         req = urllib.request.Request(url, headers={"User-Agent": "PodCodex/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
-            content_type = resp.headers.get("Content-Type", "")
             # Read one byte past the cap: an over-limit body is a failed
             # download, not a file to truncate. Writing the first 5 MB of a
             # large cover stored a corrupt image and stamped the URL hash, so
@@ -422,28 +486,25 @@ def _download_artwork(url: str, show_path: Path) -> Path | None:
         )
         return None
 
-    # Determine extension from Content-Type or URL
-    ext = ".jpg"  # default
-    for e, mime in _MIME.items():
-        if mime in content_type:
-            ext = e
-            break
-    else:
-        # Try URL extension
-        url_lower = url.lower().split("?")[0]
-        for e in _IMG_EXTENSIONS:
-            if url_lower.endswith(e):
-                ext = e
-                break
+    # The bytes decide, not the Content-Type or the URL: a 200 HTML page
+    # stamped as the cover would be served until the URL changed. No hash
+    # is written on rejection, so the next request tries again.
+    ext = _sniff_image_ext(data)
+    if ext is None:
+        logger.warning("Artwork at {} is not an image, skipping", url)
+        return None
 
-    _clear_cached_artwork(show_path)
-
+    # New file in place first, then the other-extension leftovers, so a
+    # concurrent GET never finds no cover at all.
     dest = show_path / f"{_ARTWORK_STEM}{ext}"
-    dest.write_bytes(data)
+    atomic_write(dest, lambda p: p.write_bytes(data))
+    _clear_cached_artwork(show_path, keep_ext=ext)
 
     # Write URL hash so we know when to re-download
-    (show_path / _ARTWORK_HASH_FILE).write_text(_url_hash(url), encoding="utf-8")
-
+    atomic_write(
+        show_path / _ARTWORK_HASH_FILE,
+        lambda p: p.write_text(_url_hash(url), encoding="utf-8"),
+    )
     return dest
 
 
@@ -468,12 +529,17 @@ async def upload_artwork(
     if len(data) > _ARTWORK_MAX_BYTES:
         raise HTTPException(413, "Image too large (max 5 MB)")
 
-    _clear_cached_artwork(path)
-    atomic_write(path / f"{_ARTWORK_STEM}{ext}", lambda p: p.write_bytes(data))
+    def _store() -> None:
+        # Under the cover lock, off the event loop (a download may hold it
+        # for its whole fetch).
+        with _artwork_lock(path):
+            _clear_cached_artwork(path)
+            atomic_write(path / f"{_ARTWORK_STEM}{ext}", lambda p: p.write_bytes(data))
+            meta = load_show_meta(path) or _ShowMeta(name=path.name)
+            meta.artwork_url = LOCAL_ARTWORK_MARKER
+            save_show_meta(path, meta)
 
-    meta = load_show_meta(path) or _ShowMeta(name=path.name)
-    meta.artwork_url = LOCAL_ARTWORK_MARKER
-    save_show_meta(path, meta)
+    await asyncio.to_thread(_store)
     return {"status": "ok"}
 
 
@@ -493,12 +559,12 @@ def delete_artwork(show_folder: str = Query(...)) -> dict:
     # Registered-show gate: this unlinks files inside the folder.
     path = require_registered_show(show_folder)
 
-    _clear_cached_artwork(path)
-
-    meta = load_show_meta(path)
-    if meta and meta.artwork_url:
-        meta.artwork_url = ""
-        save_show_meta(path, meta)
+    with _artwork_lock(path):
+        _clear_cached_artwork(path)
+        meta = load_show_meta(path)
+        if meta and meta.artwork_url:
+            meta.artwork_url = ""
+            save_show_meta(path, meta)
     return {"status": "ok"}
 
 
@@ -524,29 +590,9 @@ async def get_artwork(show_folder: str = Query(...)):
             headers={"Cache-Control": "no-cache"},
         )
 
-    cached = _find_cached_artwork(path)
-    url_hash_file = path / _ARTWORK_HASH_FILE
-
-    # Re-download if URL changed or no cache. A cached file WITHOUT a hash
-    # file also re-downloads: that state means a local upload was replaced
-    # by a URL (upload unlinks the hash), and the stale uploaded image must
-    # not be served under the new URL.
-    need_download = cached is None
-    if cached:
-        stored_hash = (
-            url_hash_file.read_text(encoding="utf-8").strip()
-            if url_hash_file.exists()
-            else ""
-        )
-        if stored_hash != _url_hash(artwork_url):
-            need_download = True
-
-    if need_download:
-        import asyncio
-
-        cached = await asyncio.get_running_loop().run_in_executor(
-            None, _download_artwork, artwork_url, path
-        )
+    cached = _fresh_cached_artwork(path, artwork_url)
+    if cached is None:
+        cached = await asyncio.to_thread(_download_artwork, artwork_url, path)
 
     if not cached:
         raise HTTPException(502, "Failed to download artwork")
@@ -562,7 +608,9 @@ async def get_artwork(show_folder: str = Query(...)):
     )
 
 
-def _merge_into_existing_show(show_path: Path, fresh: _ShowMeta) -> _ShowMeta:
+def _merge_into_existing_show(
+    show_path: Path, fresh: _ShowMeta, explicit_name: str = ""
+) -> _ShowMeta:
     """Reconcile a feed-create request with a ``show.toml`` already on disk.
 
     Unregistering a show keeps its folder, and re-adding the feed is meant
@@ -602,13 +650,74 @@ def _merge_into_existing_show(show_path: Path, fresh: _ShowMeta) -> _ShowMeta:
         existing.rss_url = fresh.rss_url
     if fresh.youtube_url:
         existing.youtube_url = fresh.youtube_url
-    if fresh.name:
-        existing.name = fresh.name
-    if fresh.artwork_url:
+    # The user's name wins over the folder or feed fallback; only a name the
+    # request actually carried replaces it.
+    if explicit_name:
+        existing.name = explicit_name
+    # A cover the user uploaded is never replaced by the feed's artwork.
+    if fresh.artwork_url and existing.artwork_url != LOCAL_ARTWORK_MARKER:
         existing.artwork_url = fresh.artwork_url
     if fresh.language:
         existing.language = fresh.language
     return existing
+
+
+def _child_of_save_path(save_base: Path, name: str) -> Path:
+    """``save_base / name``, refused (400) unless it is a direct child.
+
+    bad_path_component plus a resolve check behind it: a show root is later
+    an rmtree target for delete-with-files and move.
+    """
+    if bad_path_component(name):
+        raise HTTPException(400, f"Invalid folder name: {name!r}")
+    folder = save_base / name
+    if folder.parent.resolve() != save_base.resolve():
+        raise HTTPException(400, f"Invalid folder name: {name!r}")
+    return folder
+
+
+def _feed_show_path(save_base: Path, folder_name: str) -> Path:
+    """Where a feed-created show lands, refusing anything but a direct child.
+
+    The same checks ``create_local_show`` applies: a name that climbs out of
+    the save path, or an existing unrelated directory, must not become a show
+    root, since delete-with-files and move later run rmtree on it.
+    """
+    show_path = _child_of_save_path(save_base, folder_name)
+    if (
+        show_path.is_dir()
+        and load_show_meta(show_path) is None
+        and any(show_path.iterdir())
+    ):
+        raise HTTPException(
+            409,
+            f"Folder {show_path} already exists and is not a show. "
+            "Pick a different folder name.",
+        )
+    return show_path
+
+
+def _refuse_taken_label(label: str, folder: Path) -> None:
+    """409 when another show already uses this display name.
+
+    The bot, bot access and search pick shows by label, so every route that
+    names a show applies the rule rename does, and like rename only to a
+    *change*: a folder whose show.toml already carries the name keeps it even
+    if it collides (the register_show policy), so a kept show can always be
+    restored.
+    """
+    from podcodex.ingest.show_registry import label_is_taken
+
+    existing = load_show_meta(folder) if folder.is_dir() else None
+    if existing is not None and (existing.name or "").strip() == label.strip():
+        return
+    if label and label_is_taken(label, excluding=folder):
+        raise HTTPException(
+            409,
+            f"Another show is already called {label!r}. Show names are "
+            "labels, but the bot picks shows by name, so two shows sharing one "
+            "would be ambiguous.",
+        )
 
 
 @router.post("/from-rss", response_model=CreateFromRSSResponse)
@@ -633,7 +742,7 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
         folder_name = re.sub(r"https?://", "", req.rss_url)
         folder_name = re.sub(r"[^a-zA-Z0-9]+", "_", folder_name).strip("_")[:40]
 
-    show_path = save_base / folder_name
+    show_path = _feed_show_path(save_base, folder_name)
     artwork = req.artwork_url or feed_art
 
     # Display name from search, falling back to the folder name. Merged
@@ -647,7 +756,9 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
             artwork_url=artwork,
             language=req.language,
         ),
+        explicit_name=req.name.strip(),
     )
+    _refuse_taken_label(meta.name, show_path)
     show_path.mkdir(parents=True, exist_ok=True)
     save_show_meta(show_path, meta)
     _ROSTER_CACHE.pop(str(show_path), None)
@@ -661,7 +772,7 @@ async def create_from_rss(req: CreateFromRSSRequest) -> CreateFromRSSResponse:
 
     return CreateFromRSSResponse(
         folder=str(show_path),
-        name=show_name,
+        name=meta.name,
         episode_count=len(episodes),
     )
 
@@ -701,7 +812,7 @@ def create_from_youtube(
             "_"
         )[:40]
 
-    show_path = save_base / folder_name
+    show_path = _feed_show_path(save_base, folder_name)
 
     # Merged before anything touches the folder so a 409 leaves it untouched.
     show_name = req.name.strip() or info.get("name", "") or folder_name
@@ -714,7 +825,9 @@ def create_from_youtube(
             artwork_url=artwork,
             language=req.language,
         ),
+        explicit_name=req.name.strip(),
     )
+    _refuse_taken_label(meta.name, show_path)
     show_path.mkdir(parents=True, exist_ok=True)
     save_show_meta(show_path, meta)
     _ROSTER_CACHE.pop(str(show_path), None)
@@ -728,7 +841,7 @@ def create_from_youtube(
 
     return CreateFromYouTubeResponse(
         folder=str(show_path),
-        name=show_name,
+        name=meta.name,
         episode_count=len(episodes),
     )
 
@@ -740,8 +853,11 @@ def register_show(req: RegisterShowRequest) -> dict:
     if not p.is_dir():
         raise HTTPException(400, f"Not a directory: {req.path}")
 
-    # Create show.toml if it doesn't exist yet
+    # Create show.toml if it doesn't exist yet. A folder that already has one
+    # keeps its name even if it collides: refusing it would leave a show on
+    # disk the user cannot add, and rename stays the way out.
     if not load_show_meta(p):
+        _refuse_taken_label(p.name, p)
         save_show_meta(p, _ShowMeta(name=p.name))
 
     cfg = _load()
@@ -786,29 +902,10 @@ def get_show_meta(show_folder: str) -> ShowMeta:
             last_feed_update=last_feed_update,
             accepts_imports=accepts_imports,
         )
+    # asdict, not a field list: a field added to the dataclass then reaches
+    # the settings panel without a second edit here.
     return ShowMeta(
-        id=meta.id,
-        name=meta.name,
-        rss_url=meta.rss_url,
-        youtube_url=meta.youtube_url,
-        language=meta.language,
-        speakers=meta.speakers,
-        artwork_url=meta.artwork_url,
-        broadcast_number_pattern=meta.broadcast_number_pattern,
-        pipeline=PipelineDefaultsSchema(
-            model_size=meta.pipeline.model_size,
-            diarize=meta.pipeline.diarize,
-            num_speakers=meta.pipeline.num_speakers,
-            llm_mode=meta.pipeline.llm_mode,
-            llm_provider_profile=meta.pipeline.llm_provider_profile,
-            llm_key_name=meta.pipeline.llm_key_name,
-            llm_models_by_mode=dict(meta.pipeline.llm_models_by_mode or {}),
-            llm_batch_minutes=meta.pipeline.llm_batch_minutes,
-            context=meta.pipeline.context,
-            target_lang=meta.pipeline.target_lang,
-            rag_model=meta.pipeline.rag_model,
-            rag_chunker=meta.pipeline.rag_chunker,
-        ),
+        **asdict(meta),
         last_feed_update=last_feed_update,
         accepts_imports=accepts_imports,
     )
@@ -822,7 +919,6 @@ def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
     path = require_registered_show(show_folder)
 
     from podcodex.ingest.show import ensure_show_id
-    from podcodex.ingest.show_registry import label_is_taken
 
     new_label = (meta.name or "").strip()
     current = load_show_meta(path)
@@ -836,52 +932,27 @@ def update_show_meta(show_folder: str, meta: ShowMeta) -> dict:
             get_index_store()
         except Exception:
             logger.opt(exception=True).debug("Index unavailable before rename")
-    # Only a *change* is checked. A show whose name already collides (two
-    # installs merged, a hand-edited show.toml) stays editable, so an
-    # unrelated edit like a language change is never blocked by it.
-    if (
-        new_label
-        and new_label != current_label
-        and label_is_taken(new_label, excluding=path)
-    ):
-        raise HTTPException(
-            409,
-            f"Another show is already called {new_label!r}. "
-            "Show names are labels, but the bot picks shows by name, so two "
-            "shows sharing one would be ambiguous.",
-        )
+    # Only a *change* is checked (the helper's rule). A show whose name
+    # already collides (two installs merged, a hand-edited show.toml) stays
+    # editable, so an unrelated edit like a language change is never blocked.
+    _refuse_taken_label(new_label, path)
 
     # Minted after the 409, so a rejected rename never writes to disk.
     # Identity never comes from the request body: the client sends a label,
     # and the id on disk is what every other store keys on.
     show_id = ensure_show_id(path)
 
-    p = meta.pipeline
+    # Built from the request's own field set so the PUT cannot silently drop
+    # a field the settings panel sends; the id always comes from disk.
+    fields_in = meta.model_dump(
+        exclude={"id", "pipeline", "last_feed_update", "accepts_imports"}
+    )
     save_show_meta(
         path,
         _ShowMeta(
             id=show_id,
-            name=meta.name,
-            rss_url=meta.rss_url,
-            youtube_url=meta.youtube_url,
-            language=meta.language,
-            speakers=meta.speakers,
-            artwork_url=meta.artwork_url,
-            broadcast_number_pattern=meta.broadcast_number_pattern,
-            pipeline=_PipelineDefaults(
-                model_size=p.model_size,
-                diarize=p.diarize,
-                num_speakers=p.num_speakers,
-                llm_mode=p.llm_mode,
-                llm_provider_profile=p.llm_provider_profile,
-                llm_key_name=p.llm_key_name,
-                llm_models_by_mode=dict(p.llm_models_by_mode or {}),
-                llm_batch_minutes=p.llm_batch_minutes,
-                context=p.context,
-                target_lang=p.target_lang,
-                rag_model=p.rag_model,
-                rag_chunker=p.rag_chunker,
-            ),
+            **fields_in,
+            pipeline=_PipelineDefaults(**meta.pipeline.model_dump()),
         ),
     )
 
@@ -1012,7 +1083,7 @@ def unified_episodes(show_folder: str) -> list[dict]:
     access the DB is populated from a filesystem scan.
     """
     path = require_show_folder(show_folder)
-    ctx = _load_status_context(path)
+    ctx = load_status_context(path)
 
     rss = load_feed_cache(path) or []
 
@@ -1049,7 +1120,7 @@ def unified_episodes(show_folder: str) -> list[dict]:
             "artwork_url": artwork_url,
             "removed": removed,
             "feed_order": feed_order,
-            **_build_status_out(
+            **build_status_out(
                 stem=stem,
                 audio_path=audio_path,
                 output_dir=output_dir,
@@ -1148,9 +1219,9 @@ def episode_statuses(show_folder: str) -> list[dict]:
     no status to report, and the client already holds their static fields.
     """
     path = require_show_folder(show_folder)
-    ctx = _load_status_context(path)
+    ctx = load_status_context(path)
     return [
-        _build_status_out(
+        build_status_out(
             stem=stem,
             audio_path=ctx.local_audio.get(stem),
             output_dir=path / stem,
@@ -1162,435 +1233,12 @@ def episode_statuses(show_folder: str) -> list[dict]:
     ]
 
 
-class _StatusContext(NamedTuple):
-    """Per-request state shared by every episode's status build."""
-
-    status_map: dict[str, dict]
-    seg_counts: dict[str, int]
-    stems_with_speaker_map: Container[str]
-    local_audio: dict[str, Path]
-    episode_files: dict[str, list[str]]
-    episode_dirs: set[str]
-    # Stems whose llm_failures.json is worth reading: the file shows in the
-    # cached listing, or the walk was incomplete and the listing can't be
-    # trusted (read directly rather than wrongly hiding failures).
-    llm_failure_stems: Container[str]
-    effective: dict
-
-
-def _load_status_context(path: Path) -> _StatusContext:
-    """Gather everything the status half of an episode payload needs.
-
-    Shared by ``/unified`` and ``/status`` so the two can never disagree about
-    a flag. Also runs the DB reconciliation passes (indexed / synthesized /
-    verified pointers), which must happen on the polled endpoint too or a
-    step finishing mid-batch would not surface until the next heavy fetch.
-    """
-    # ── Resolve effective defaults (app config → show override) ──
-    from podcodex.core.app_config import PipelineAppDefaults, load_config
-
-    app_defaults = (
-        load_config().pipeline_defaults or PipelineAppDefaults()
-    ).status_defaults()
-    show_meta = load_show_meta(path)
-    effective = _resolve_defaults(app_defaults, show_meta)
-
-    # ── Pipeline status from DB (or one-time migration) ──
-    # LanceDB is the source of truth for indexed status; query once and
-    # share between the (possible) initial scan and the reconciliation
-    # pass below.
-    lance_indexed = lance_indexed_stems(path)
-
-    db = get_pipeline_db(path)
-    if db.episode_count() == 0:
-        episodes = scan_folder(path, indexed_stems=lance_indexed)
-        if episodes:
-            seed_show_db(path, episodes)
-
-    status_map: dict[str, dict] = {row["stem"]: row for row in db.all_episodes()}
-
-    local_audio = {stem: files[0] for stem, files in show_audio_files(path).items()}
-    episode_files, episode_dirs, incomplete = _scan_episode_files(path, local_audio)
-
-    # Heal rows for episodes that appeared on disk after the initial populate
-    # (standalone-file import, bundle import, files copied in by hand). The DB
-    # only bootstraps from a scan while it is empty, so without this pass a
-    # later arrival never gets a row and /unified never lists it. Root audio
-    # always qualifies; a bare directory only counts as an episode under the
-    # scanner's own `dir_holds_episode` rule, so stray dirs can't trigger a
-    # rescan on every poll (they cost one scandir per poll and nothing more).
-    missing = set(local_audio) - status_map.keys()
-    for name in episode_dirs - status_map.keys() - missing:
-        try:
-            names = set(os.listdir(path / name))
-        except OSError:
-            continue
-        if dir_holds_episode(names):
-            missing.add(name)
-    if missing:
-        # The stale-scan guard: these stems were found by uncached scandirs,
-        # so a cached scan_folder result that misses them must be dropped.
-        invalidate_scan_cache(path)
-        new_eps = [
-            ep
-            for ep in scan_folder(path, indexed_stems=lance_indexed)
-            if ep.stem not in status_map
-        ]
-        # Same order as the bootstrap: version index first (idempotent,
-        # registers only files without rows), then the rows.
-        seed_show_db(path, new_eps)
-        if new_eps:
-            status_map = {row["stem"]: row for row in db.all_episodes()}
-
-    indexed_updates: dict[str, bool] = {}
-    for stem, row in status_map.items():
-        truth = stem in lance_indexed
-        if bool(row.get("indexed", False)) != truth:
-            indexed_updates[stem] = truth
-            row["indexed"] = truth
-    if indexed_updates:
-        db.mark_indexed_bulk(indexed_updates)
-    # Stems worth reading llm_failures.json for: the file showed up in the
-    # listing, or the walk was incomplete so the listing can't be trusted.
-    llm_failure_stems = incomplete | {
-        stem
-        for stem, files in episode_files.items()
-        if f"{stem}/{FAILURES_FILENAME}" in files
-    }
-
-    # Reconcile the per-step flags: an episode is transcribed / corrected /
-    # synthesized when a version file for that step is on disk. Both
-    # directions matter. Without the promote, the overview StageCard stays
-    # "not started" for any episode whose first sync predates our first
-    # assemble; without the demote, a flag survives content deleted out of
-    # band.
-    #
-    # Files, not rows: a DB bootstrapped from a scan has files and no rows
-    # yet, and a row whose file is gone (kept by backfill for its grace
-    # period, see versions.MISSING_ROW_GRACE_S) is a version no reader can
-    # open. Every read path already goes by the file, so the flag does too.
-    # Read from the already-cached file list, so this costs no extra syscalls.
-    # A stem whose walk failed has an untrustworthy file list: "no files" there
-    # means "could not look", so leave its status alone until a clean scan.
-    flag_updates: dict[str, dict[str, object]] = {}
-    for step, flag in STEP_FLAG.items():
-        ext = step_ext(step)
-        for stem, row in status_map.items():
-            if stem in incomplete:
-                continue
-            desired = _has_step_files(episode_files.get(stem, []), stem, step, ext)
-            if row.get(flag, False) != desired:
-                row[flag] = desired
-                flag_updates.setdefault(stem, {})[flag] = desired
-
-    # Same treatment for the translations list, which is the per-language
-    # equivalent of those flags. A rebuilt DB restores the language versions
-    # but not this list, so a translated episode would report "not started"
-    # with its translation sitting right there. Rebuilding it here also drops
-    # the pipeline-step names legacy rows leaked into it.
-    for stem, row in status_map.items():
-        if stem in incomplete:
-            continue
-        desired_langs = _episode_languages(episode_files.get(stem, []), stem)
-        if sorted(clean_translations(row.get("translations") or [])) != desired_langs:
-            row["translations"] = desired_langs
-            flag_updates.setdefault(stem, {})["translations"] = desired_langs
-    db.mark_bulk(flag_updates)
-
-    # Reconcile verified pointers: a pointer whose target version no longer
-    # exists (out-of-band file deletion, manual DB edit) is stale and must
-    # be cleared so the UI never highlights a missing version.
-    verified_pointers = db.verified_pointers()
-    if verified_pointers:
-        ids_by_step: dict[str, dict[str, set[str]]] = {}
-        for step_name in {p["step"] for p in verified_pointers.values()}:
-            ids_by_step[step_name] = db.version_ids_by_stem(step_name)
-        for stem, ptr in list(verified_pointers.items()):
-            step_ids = ids_by_step.get(ptr["step"], {}).get(stem, set())
-            if ptr["version_id"] not in step_ids:
-                db.clear_verified(stem)
-                verified_pointers.pop(stem, None)
-                row = status_map.get(stem)
-                if row:
-                    row["verified"] = None
-
-    return _StatusContext(
-        status_map=status_map,
-        seg_counts=db.latest_segment_counts("transcript"),
-        stems_with_speaker_map=db.stems_with_step("speaker_map"),
-        local_audio=local_audio,
-        episode_files=episode_files,
-        episode_dirs=episode_dirs,
-        llm_failure_stems=llm_failure_stems,
-        effective=effective,
-    )
-
-
-def _episode_languages(ep_files: list[str], stem: str) -> list[str]:
-    """Translation languages this episode has versions for, sorted.
-
-    A step directory that is not a known pipeline step is a language code
-    (`PIPELINE_STEPS` is the single source of truth for that distinction).
-    Read from files rather than the DB because a version file is always
-    written before its row, so the files are the superset, and because this
-    runs per episode where a query would not.
-    """
-    langs = set()
-    prefix = f"{stem}/"
-    for f in ep_files:
-        if not f.startswith(prefix) or not f.endswith(".json"):
-            continue
-        rest = f[len(prefix) :]
-        head, sep, tail = rest.partition("/")
-        if sep and "/" not in tail and head not in PIPELINE_STEPS:
-            langs.add(head)
-    return sorted(langs)
-
-
-def _has_step_files(ep_files: list[str], stem: str, step: str, ext: str) -> bool:
-    """True when the episode's file list holds a version file for *step*.
-
-    `ep_files` entries are paths relative to the show folder, so a version
-    file reads as ``<stem>/<step>/<id><ext>``. Matching only that one level
-    keeps this in step with `ingest/folder._step_has_versions`, which globs
-    ``<step>/*<ext>`` and feeds the very bootstrap this defends; a nested
-    sub-step that ever emits the same extension would otherwise make the two
-    disagree about the same episode.
-    """
-    prefix = f"{stem}/{step}/"
-    return any(
-        f.startswith(prefix) and f.endswith(ext) and "/" not in f[len(prefix) :]
-        for f in ep_files
-    )
-
-
-def _build_status_out(
-    *,
-    stem: str | None,
-    audio_path: Path | None,
-    output_dir: Path | None,
-    st: dict,
-    ep_files: list[str],
-    ctx: _StatusContext,
-) -> dict:
-    """Build the `EpisodeStatusOut` half of an episode payload."""
-    prov = _normalize_provenance(st.get("provenance", {}))
-    # Speaker labels resolved by user counts as editing the displayed transcript,
-    # even though raw segment text is unchanged.
-    if stem and stem in ctx.stems_with_speaker_map:
-        tprov = prov.get("transcript")
-        prov["transcript"] = {
-            **(tprov if isinstance(tprov, dict) else {}),
-            "manual_edit": True,
-        }
-    cleaned_translations = clean_translations(st.get("translations", []))
-    # The scan already listed the show folder's subdirectories; a per-episode
-    # is_dir() here would re-stat all of them on every poll.
-    out_dir_exists = bool(output_dir) and output_dir.name in ctx.episode_dirs
-    # Two deliberately different questions, do not collapse them:
-    # `subtitle_files` is what the episode panel can hand to the manual
-    # reimport (which parses .vtt and .srt alike), while `has_subtitles`
-    # gates the *batch* subtitle source — and `_batch_transcribe_from_subs`
-    # only ever reads a cached `{stem}.subtitles.{lang}.vtt`, so promising
-    # .srt there would select episodes the batch cannot process.
-    subtitle_files = [f for f in ep_files if f.lower().endswith((".vtt", ".srt"))]
-    # The batch's glob carries a language code, so a hand-uploaded
-    # `{stem}.subtitles.vtt` (no code) satisfied the flag without satisfying
-    # the run: the episode was selected as a subtitle source and then found
-    # nothing to read.
-    batch_ready_subs = any(_BATCH_SUBS_RE.search(f) for f in ep_files)
-    return {
-        "stem": stem,
-        "audio_path": str(audio_path) if audio_path else None,
-        "output_dir": str(output_dir) if out_dir_exists else None,
-        "downloaded": audio_path is not None,
-        "transcribed": st.get("transcribed", False),
-        "corrected": st.get("corrected", False),
-        "indexed": st.get("indexed", False),
-        "synthesized": st.get("synthesized", False),
-        "has_subtitles": batch_ready_subs,
-        "translations": cleaned_translations,
-        "segment_count": ctx.seg_counts.get(stem) if stem else None,
-        "subtitle_files": subtitle_files,
-        "provenance": prov,
-        "verified": st.get("verified"),
-        # Candidate set computed once per request from the cached listing:
-        # the failures file rarely exists, and rejected_steps stats + reads
-        # it per episode.
-        "llm_failed_steps": (
-            rejected_steps(output_dir)
-            if out_dir_exists and stem in ctx.llm_failure_stems
-            else []
-        ),
-        **_step_statuses(st, prov, ctx.effective, cleaned_translations),
-    }
-
-
-_PARAM_RENAMES = {"mode": "llm_mode"}
-
-
-def _normalize_provenance(prov: dict) -> dict:
-    """Rename legacy param keys (mode→llm_mode)."""
-    out = {}
-    for step_key, meta in prov.items():
-        if not isinstance(meta, dict):
-            out[step_key] = meta
-            continue
-        params = meta.get("params")
-        if isinstance(params, dict):
-            params = {_PARAM_RENAMES.get(k, k): v for k, v in params.items()}
-            meta = {**meta, "params": params}
-        out[step_key] = meta
-    return out
-
-
-def _resolve_defaults(app_defaults: dict, show_meta: _ShowMeta | None) -> dict:
-    """Merge app-level defaults with show-level overrides.
-
-    Show-level values override app defaults when explicitly set. Strings
-    use `""` as the unset sentinel; `diarize` uses `None`.
-    """
-    effective = dict(app_defaults)
-    # Merge per-mode model dicts: app first, show overrides per-mode entries.
-    app_models = dict(effective.get("llm_models_by_mode") or {})
-    effective.pop("llm_models_by_mode", None)
-    show_models: dict[str, str] = {}
-    if show_meta and show_meta.pipeline:
-        p = show_meta.pipeline
-        if p.model_size:
-            effective["model_size"] = p.model_size
-        if p.llm_mode:
-            effective["llm_mode"] = p.llm_mode
-        if p.llm_provider_profile:
-            effective["llm_provider_profile"] = p.llm_provider_profile
-        if p.llm_key_name:
-            effective["llm_key_name"] = p.llm_key_name
-        if p.target_lang:
-            effective["target_lang"] = p.target_lang
-        if p.diarize is not None:
-            effective["diarize"] = p.diarize
-        if p.llm_batch_minutes is not None and p.llm_batch_minutes > 0:
-            effective["llm_batch_minutes"] = p.llm_batch_minutes
-        show_models = {k: v for k, v in (p.llm_models_by_mode or {}).items() if v}
-    merged_models = {**app_models, **show_models}
-    mode = effective.get("llm_mode", "")
-    resolved_model = merged_models.get(mode, "") if mode else ""
-    if resolved_model:
-        effective["llm_model"] = resolved_model
-    return effective
-
-
-def _transcribe_outdated(prov: dict, effective: dict) -> bool:
-    """Check if a transcribe step's provenance is outdated relative to effective defaults."""
-    params = prov.get("params", {})
-    source = params.get("source", "whisper")
-    # Imported/uploaded transcripts are not outdated — they weren't auto-generated
-    if source not in ("whisper",):
-        return False
-    if not effective:
-        return False
-    if effective.get("model_size") and prov.get("model") != effective["model_size"]:
-        return True
-    if "diarize" in effective and params.get("diarize") != effective["diarize"]:
-        return True
-    return False
-
-
-def _llm_outdated(prov: dict, effective: dict) -> bool:
-    """Check if an LLM step's provenance is outdated relative to effective defaults."""
-    params = prov.get("params", {})
-    if effective.get("llm_mode") and params.get("llm_mode") != effective["llm_mode"]:
-        return True
-    if (
-        effective.get("llm_provider_profile")
-        and params.get("llm_provider_profile") != effective["llm_provider_profile"]
-    ):
-        return True
-    if effective.get("llm_model") and prov.get("model") != effective["llm_model"]:
-        return True
-    if (
-        effective.get("source_lang")
-        and params.get("source_lang") != effective["source_lang"]
-    ):
-        return True
-    return False
-
-
-def _step_statuses(
-    st: dict, provenance: dict, effective: dict, translations: list[str]
-) -> dict:
-    """Compute per-step status: 'none' | 'outdated' | 'done'.
-
-    Compares the episode's provenance against the effective defaults.
-    User-validated versions short-circuit to 'done': re-running would
-    discard the edits, so 'outdated' is misleading.
-
-    `translations` is the pre-cleaned languages list (see clean_translations);
-    callers pass it through so the scrub runs once per episode, not twice.
-    """
-
-    verified = st.get("verified") or {}
-    verified_step = verified.get("step") if isinstance(verified, dict) else None
-
-    def _check_transcribe() -> str:
-        if not st.get("transcribed", False):
-            return "none"
-        # Verified pointer is the user's explicit "I'm done with this step"
-        # signal; it outranks model drift just like edited content does.
-        if verified_step == "transcript":
-            return "done"
-        prov = provenance.get("transcript")
-        if not prov:
-            return "done"  # no provenance → legacy, assume done
-        if is_edited(prov):
-            return "done"
-        return "outdated" if _transcribe_outdated(prov, effective) else "done"
-
-    def _check_correct() -> str:
-        if not st.get("corrected", False):
-            return "none"
-        if verified_step == "corrected":
-            return "done"
-        prov = provenance.get("corrected")
-        if not prov or not effective:
-            return "done"
-        if is_edited(prov):
-            return "done"
-        return "outdated" if _llm_outdated(prov, effective) else "done"
-
-    def _check_translate() -> str:
-        if not translations:
-            return "none"
-        # Translations are stored under normalize_lang, which also turns
-        # spaces into underscores; a bare lower() never matches a multi-word
-        # target such as "Brazilian Portuguese".
-        target = normalize_lang(effective.get("target_lang", ""))
-        if target and target not in translations:
-            return "none"
-        lang_key = target or (translations[0] if translations else "")
-        prov = provenance.get(lang_key)
-        if not prov or not effective:
-            return "done"
-        if is_edited(prov):
-            return "done"
-        return "outdated" if _llm_outdated(prov, effective) else "done"
-
-    return {
-        "transcribe_status": _check_transcribe(),
-        "correct_status": _check_correct(),
-        "translate_status": _check_translate(),
-    }
-
-
 # Roster is expensive: it reads every episode's canonical transcript. Cache it
 # keyed on the resolved canonical refs, the known-speaker set, and the episode
 # meta mtimes (titles are baked into the response). All are recomputed from
 # two bulk DB queries plus per-stem stats, so a cache hit skips the N seglist
 # reads. Any version save/delete, verified-pointer change, show.toml speaker
 # edit, or episode-meta (title) refresh shifts the signature.
-# What ``_batch_transcribe_from_subs`` can actually consume: the cached
-# ``{stem}.subtitles.{lang}.vtt`` that ``youtube.py`` and ``batch.py`` write.
-_BATCH_SUBS_RE = re.compile(r"\.subtitles\.[^.]+\.vtt$", re.IGNORECASE)
 
 _ROSTER_CACHE: dict[str, tuple[object, SpeakerRosterResponse]] = {}
 
@@ -1934,9 +1582,11 @@ def list_all_versions(
     first call) so the "All other files" UI can show real sizes without
     forcing a re-run of each step.
     """
+    from podcodex.api.routes._helpers import require_audio_or_output
     from podcodex.core._utils import AudioPaths
     from podcodex.core.versions import backfill_version_sizes, list_all_versions
 
+    require_audio_or_output(audio_path, output_dir)
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     versions = list_all_versions(p.base)
     backfill_version_sizes(p.base, versions)
@@ -2042,178 +1692,6 @@ def delete_any_version(
     return {"status": "deleted", "version_id": version_id}
 
 
-_INTERESTING_EXTS = AUDIO_EXTENSIONS | {
-    ".vtt",
-    ".srt",  # subtitles
-    ".json",
-    ".parquet",  # transcripts / pipeline outputs
-}
-_SKIP_PREFIXES = (".", "__")
-_SKIP_NAMES = {"manifest.json"}
-
-
-def _walk_episode_dir(
-    root: Path, rel_prefix: str
-) -> tuple[list[str], list[tuple[str, int]] | None]:
-    """Recursively collect interesting files under an episode dir.
-
-    ``rel_prefix`` is the path (relative to the show folder) to prepend to
-    each file name, so we skip allocating a Path per entry just to call
-    ``relative_to``.
-
-    Returns the file list plus every directory visited paired with its mtime,
-    which is what `_scan_episode_files` caches on. The directory list is
-    ``None`` when any part of the walk hit an ``OSError``: the file list is
-    then incomplete, and caching it would pin a truncated result against
-    mtimes that will not change. Since this list also drives the status-flag
-    reconcile, a transient EACCES could otherwise demote a step and keep it
-    demoted.
-    """
-    import os
-
-    collected: list[str] = []
-    try:
-        stamp = os.stat(root).st_mtime_ns
-    except OSError:
-        return [], None
-    visited: list[tuple[str, int]] | None = [(str(root), stamp)]
-    try:
-        with os.scandir(root) as it:
-            for f in it:
-                name = f.name
-                if name.startswith(_SKIP_PREFIXES):
-                    continue
-                if f.is_dir(follow_symlinks=False):
-                    sub_files, sub_dirs = _walk_episode_dir(
-                        Path(f.path), f"{rel_prefix}/{name}"
-                    )
-                    collected.extend(sub_files)
-                    if sub_dirs is None:
-                        visited = None
-                    elif visited is not None:
-                        visited.extend(sub_dirs)
-                    continue
-                if not f.is_file(follow_symlinks=False) or name in _SKIP_NAMES:
-                    continue
-                dot = name.rfind(".")
-                if dot <= 0 or name[dot:].lower() not in _INTERESTING_EXTS:
-                    continue
-                collected.append(f"{rel_prefix}/{name}")
-    except OSError:
-        return collected, None
-    return collected, visited
-
-
-# show folder → stem → (visited dirs with their mtimes, file list). Walking a
-# show's episode dirs is the most expensive part of building the episode list
-# (~20ms for 269 episodes) and it runs on every request, including the 5s
-# status poll. Re-stat'ing the recorded directories instead costs ~0.7ms.
-_EPISODE_FILES_CACHE: dict[str, dict[str, tuple[list[tuple[str, int]], list[str]]]] = {}
-
-# A directory whose mtime is younger than this is treated as a cache miss.
-# Same reasoning (and same value) as the mtime caches in ingest/rss.py; see
-# core/_utils.MTIME_SETTLE_SECONDS.
-_MTIME_SETTLE_NS = int(MTIME_SETTLE_SECONDS * 1_000_000_000)
-
-
-def _dirs_unchanged(visited: list[tuple[str, int]]) -> bool:
-    """True when every recorded directory still has its recorded mtime."""
-    import os
-
-    for path, stamp in visited:
-        try:
-            if os.stat(path).st_mtime_ns != stamp:
-                return False
-        except OSError:
-            return False
-    return True
-
-
-def _settled(visited: list[tuple[str, int]], now_ns: int) -> bool:
-    """True when every recorded mtime was already old when we recorded it.
-
-    The settle window has to gate *storing* an entry, not trusting one: a
-    directory written twice inside one coarse timestamp bucket (FAT32 rounds
-    to 2s) keeps the same mtime, so an entry recorded between the two writes
-    matches forever and hides the second. Refusing to cache until the mtime
-    has stopped moving means anything we do cache cannot have a same-bucket
-    write after it.
-    """
-    return all(now_ns - stamp >= _MTIME_SETTLE_NS for _, stamp in visited)
-
-
-def _scan_episode_files(
-    show_folder: Path, local_audio: dict[str, Path]
-) -> tuple[dict[str, list[str]], set[str], set[str]]:
-    """Scan episode subdirectories for user-facing files.
-
-    Returns ``(files, dirs, incomplete)``: a mapping of stem → list of
-    filenames relative to show folder; the set of episode directory names
-    seen (including empty ones), so callers don't have to re-stat per
-    episode to know a directory exists; and the stems whose walk hit an
-    OSError — their file list is partial (better than none for display)
-    and must not drive status reconciliation.
-    Walks version subdirectories (``transcript/``, ``corrected/``,
-    ``speaker_map/``, language folders, etc.) so the Pipeline file list
-    surfaces version artifacts alongside legacy flat files.
-
-    Per-episode results are cached against the mtimes of every directory the
-    walk touched, so an added or removed file anywhere in the tree is caught:
-    adding a file bumps its directory's mtime, and adding a directory bumps
-    its parent's. Content edits don't bump anything, which is fine because
-    only names are reported.
-    """
-    import os
-    import time
-
-    cached = _EPISODE_FILES_CACHE.get(str(show_folder), {})
-    fresh: dict[str, tuple[list[tuple[str, int]], list[str]]] = {}
-    now_ns = time.time_ns()
-
-    result: dict[str, list[str]] = {}
-    dirs: set[str] = set()
-    incomplete: set[str] = set()
-    try:
-        with os.scandir(show_folder) as it:
-            for entry in it:
-                if not entry.is_dir(follow_symlinks=False):
-                    continue
-                stem = entry.name
-                if stem.startswith("."):
-                    continue
-                dirs.add(stem)
-                hit = cached.get(stem)
-                if hit is not None and _dirs_unchanged(hit[0]):
-                    fresh[stem] = hit
-                    files = hit[1]
-                else:
-                    files, visited = _walk_episode_dir(Path(entry.path), stem)
-                    files.sort()
-                    if visited is None:
-                        # The list is truncated, so it must not be cached and
-                        # must not drive status either: reconciling against it
-                        # would demote a step and wipe the language list from
-                        # a transient EACCES.
-                        incomplete.add(stem)
-                    elif _settled(visited, now_ns):
-                        fresh[stem] = (visited, files)
-                # Hand out a copy: the root-audio merge below prepends to these
-                # lists, which would otherwise grow the cached entry per call.
-                if files:
-                    result[stem] = list(files)
-    except OSError:
-        pass
-    # Replacing the show's map (rather than updating it) drops entries for
-    # episode directories that no longer exist.
-    _EPISODE_FILES_CACHE[str(show_folder)] = fresh
-
-    # Prepend root audio (already discovered by show_audio_files).
-    for stem, audio_path in local_audio.items():
-        result.setdefault(stem, []).insert(0, audio_path.name)
-
-    return result, dirs, incomplete
-
-
 # ── Move / rename show folder ──────────────
 
 
@@ -2230,10 +1708,17 @@ def move_show(show_folder: str, req: MoveShowRequest) -> dict:
     old_path = require_registered_show(show_folder)
     new_path = Path(req.new_path).expanduser().resolve()
 
-    if new_path == old_path.resolve():
+    old_resolved_path = old_path.resolve()
+    if new_path == old_resolved_path:
         raise HTTPException(400, "Source and destination are the same")
+    # Nested either way, shutil.move cannot do it: into its own subfolder it
+    # raises and the copy fallback then deletes the copy with the source.
+    if new_path.is_relative_to(old_resolved_path):
+        raise HTTPException(400, "Cannot move a show into one of its own folders")
+    if old_resolved_path.is_relative_to(new_path):
+        raise HTTPException(400, "Cannot move a show into one of its parent folders")
 
-    if new_path.exists() and any(new_path.iterdir()):
+    if new_path.exists() and (not new_path.is_dir() or any(new_path.iterdir())):
         raise HTTPException(
             409, f"Destination already exists and is not empty: {new_path}"
         )
@@ -2258,6 +1743,11 @@ def move_show(show_folder: str, req: MoveShowRequest) -> dict:
 
     if req.move_files:
         new_path.parent.mkdir(parents=True, exist_ok=True)
+        # shutil.move into an existing directory moves the source *inside*
+        # it, so the show would land one level down while config points at
+        # the empty folder. It was checked empty above.
+        if new_path.exists():
+            new_path.rmdir()
         try:
             shutil.move(str(old_path), str(new_path))
         except OSError as exc:
@@ -2288,7 +1778,7 @@ def move_show(show_folder: str, req: MoveShowRequest) -> dict:
         )
 
     # Update config.json: replace old path with new
-    old_resolved = str(old_path.resolve())
+    old_resolved = str(old_resolved_path)
 
     def _replace(cfg: AppConfig) -> None:
         cfg.show_folders = [
@@ -2366,28 +1856,41 @@ def delete_show(show_folder: str, req: DeleteShowRequest) -> dict:
     # collections and its password are still keyed to it.
     collections_deleted = 0
     password_removed = False
+    purge_error: str | None = None
     if deleted_files:
-        collections_deleted, password_removed = _purge_show_from_index(
+        collections_deleted, password_removed, purge_error = _purge_show_from_index(
             show_id, show_label
         )
 
-    return {
+    result: dict = {
         "status": "deleted",
         "files_deleted": deleted_files,
         "collections_deleted": collections_deleted,
         "password_removed": password_removed,
     }
+    if purge_error:
+        result["warning"] = (
+            "The show was deleted, but its search index and bot password "
+            f"could not be removed: {purge_error}"
+        )
+    return result
 
 
-def _purge_show_from_index(show_id: str, show_label: str = "") -> tuple[int, bool]:
-    """Drop a deleted show's collections and password. Returns what it removed.
+def _purge_show_from_index(
+    show_id: str, show_label: str = ""
+) -> tuple[int, bool, str | None]:
+    """Drop a deleted show's collections and password.
+
+    Returns ``(collections_deleted, password_removed, error)``; ``error`` is
+    set when the index could not be purged, so a failure is not mistaken for
+    "nothing was indexed".
 
     Without this, deleting a show orphans its index exactly as renaming one
     used to: rows nothing can reach, and a password still protecting a name
     that no longer exists.
     """
     if not show_id:
-        return 0, False
+        return 0, False, None
     try:
         store = get_index_store()
         # Label fallback included: on a partially migrated index this show's
@@ -2408,11 +1911,11 @@ def _purge_show_from_index(show_id: str, show_label: str = "") -> tuple[int, boo
                 f"Purged show {show_id!r} from the index: "
                 f"{len(names)} collection(s), password removed: {removed}"
             )
-        return len(names), removed
-    except Exception:
+        return len(names), removed, None
+    except Exception as exc:
         # Deleting the show itself already succeeded; a busy or read-only
         # index must not turn that into a failed request.
         logger.opt(exception=True).warning(
             f"Could not purge show {show_id!r} from the index"
         )
-        return 0, False
+        return 0, False, str(exc) or type(exc).__name__

@@ -29,6 +29,19 @@ import {
   STATUS_COLOR,
   type EpStatus,
 } from "@/lib/batchUtils";
+import type { DownloadItemResult, DownloadItemStatus } from "@/api/types";
+
+// How the strip counts each per-item status of a download or subtitle import
+// (DownloadItemStatus in api/schemas.py). A Record, so a status added to the
+// backend enum fails the typecheck until it is classified here.
+const DOWNLOAD_OUTCOME: Record<DownloadItemStatus, "ok" | "failed" | "no_subs" | "neither"> = {
+  downloaded: "ok",
+  exists: "ok",
+  cached: "ok",
+  failed: "failed",
+  no_subtitles: "no_subs",
+  no_audio: "neither",
+};
 
 function DownloadStrip() {
   const downloadTaskId = useTaskStore((s) => s.downloadTaskId);
@@ -47,13 +60,20 @@ function DownloadStrip() {
 
   // Derive per-status counts from result (array of {stem, status} or {results: [...]})
   const rawResult = isFinished ? progress?.result : null;
-  const results = (Array.isArray(rawResult) ? rawResult : Array.isArray(rawResult?.results) ? rawResult.results : []) as { stem: string; title?: string; status: string; error?: string }[];
+  // A download returns the item list; a subtitle import a SubtitleImportResult.
+  const results = (Array.isArray(rawResult) ? rawResult : Array.isArray(rawResult?.results) ? rawResult.results : []) as DownloadItemResult[];
   const total = results.length || 1;
-  const failedCount = results.filter(r => r.status === "failed" || r.status === "no_subtitles" || r.status === "error").length;
-  const successCount = results.filter(r => r.status === "downloaded" || r.status === "exists" || r.status === "imported").length;
+  const failed = results.filter(r => DOWNLOAD_OUTCOME[r.status] === "failed");
+  const noSubs = results.filter(r => DOWNLOAD_OUTCOME[r.status] === "no_subs");
+  const failedCount = failed.length;
+  const successCount = results.filter(r => DOWNLOAD_OUTCOME[r.status] === "ok").length;
   const successPct = Math.round((successCount / total) * 100);
   const failedPct = Math.round((failedCount / total) * 100);
   const hasFailures = failedCount > 0;
+  // Videos with no track in the requested language: not failures, but the
+  // user wants to know which, so they keep the strip open like failures do.
+  const noSubsCount = noSubs.length;
+  const hasNotices = hasFailures || noSubsCount > 0;
 
   const { current: msgCurrent, total: msgTotal } = parseProgressCount(progress?.message);
   const dlTotal = msgTotal ?? (results.length || null);
@@ -88,14 +108,19 @@ function DownloadStrip() {
   // Auto-dismiss clean completions (no failures: 2s, with failures: 30s)
   useEffect(() => {
     if (!isFinished) return;
-    const delay = hasFailures ? 30_000 : 2_000;
+    const delay = hasNotices ? 30_000 : 2_000;
     const t = setTimeout(() => setDownloadTask(null), delay);
     return () => clearTimeout(t);
-  }, [isFinished, hasFailures, setDownloadTask]);
+  }, [isFinished, hasNotices, setDownloadTask]);
 
   if (!downloadTaskId) return null;
 
-  const failedResults = results.filter(r => r.status === "failed" || r.status === "no_subtitles" || r.status === "error");
+  // Failures first, then the videos without subtitles, in one expandable list.
+  const noticeResults = [...failed, ...noSubs];
+  const noticeLabel = [
+    failedCount > 0 ? `${failedCount} failed` : null,
+    noSubsCount > 0 ? `${noSubsCount} without subtitles` : null,
+  ].filter(Boolean).join(", ");
 
   return (
     <div>
@@ -129,9 +154,12 @@ function DownloadStrip() {
             {dlCurrent ?? 0}/{dlTotal}
           </span>
         )}
-        {isFinished && failedResults.length > 0 && (
-          <button onClick={() => setShowFailed(!showFailed)} className="text-destructive hover:text-destructive/80 transition text-2xs shrink-0">
-            {failedResults.length} failed
+        {isFinished && noticeResults.length > 0 && (
+          <button
+            onClick={() => setShowFailed(!showFailed)}
+            className={`${hasFailures ? "text-destructive hover:text-destructive/80" : "text-muted-foreground hover:text-foreground"} transition text-2xs shrink-0`}
+          >
+            {noticeLabel}
           </button>
         )}
         {!isFinished ? (
@@ -156,11 +184,11 @@ function DownloadStrip() {
           </Button>
         )}
       </div>
-      {showFailed && failedResults.length > 0 && (
+      {showFailed && noticeResults.length > 0 && (
         <div className="px-4 pb-2 max-h-32 overflow-y-auto">
-          {failedResults.map((r, i) => (
+          {noticeResults.map((r, i) => (
             <div key={i} className="flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
-              <AlertTriangle className="w-3 h-3 text-destructive shrink-0" />
+              <AlertTriangle className={`w-3 h-3 shrink-0 ${r.status === "no_subtitles" ? "text-muted-foreground" : "text-destructive"}`} />
               <span className="truncate">{r.title || r.stem}</span>
               <span className="text-2xs text-muted-foreground/60 shrink-0">{r.error || (r.status === "no_subtitles" ? "no subs" : r.status)}</span>
             </div>

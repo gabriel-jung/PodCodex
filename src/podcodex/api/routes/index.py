@@ -59,7 +59,7 @@ def index_status(
     output_dir: str | None = Query(None),
 ) -> dict:
     """Check indexing status per (model, chunking) combination."""
-    from podcodex.ingest.show_registry import show_id_for_label
+    from podcodex.ingest.show_registry import show_id_for_folder
     from podcodex.rag.defaults import CHUNKING_STRATEGIES, MODELS
 
     require_audio_or_output(audio_path, output_dir)
@@ -76,7 +76,9 @@ def index_status(
     info = local.get_all_collection_info()
     owned = {
         (meta.get("model"), meta.get("chunker")): c
-        for c in local.collections_for_show(show_id_for_label(show), show_label=show)
+        for c in local.collections_for_show(
+            show_id_for_folder(p.show_dir, show), show_label=show
+        )
         # .get, not [c]: the two reads above are independent, so a collection
         # committed between them would KeyError and 500 this endpoint.
         if (meta := info.get(c))

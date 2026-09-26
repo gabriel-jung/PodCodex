@@ -188,8 +188,10 @@ export const deleteEpisode = (folder: string, stem: string) =>
     body: JSON.stringify({ stem }),
   });
 
+/** `warning` is set when the files were deleted but the show's search index
+ *  and bot password could not be purged. */
 export const deleteShow = (folder: string, deleteFiles = false) =>
-  json<{ status: string; files_deleted: boolean }>(`/api/shows/${enc(folder)}/delete`, {
+  json<{ status: string; files_deleted: boolean; warning?: string }>(`/api/shows/${enc(folder)}/delete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ delete_files: deleteFiles }),

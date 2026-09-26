@@ -95,6 +95,17 @@ def server_log_path(data_dir_str: str | os.PathLike) -> Path:
     return Path(data_dir_str) / "logs" / "server.log"
 
 
+def stdio_log_path(data_dir_str: str | os.PathLike) -> Path:
+    """Raw stdio log of the frozen sidecar and its children, beside server.log.
+
+    Separate from ``server.log`` because loguru rotates that file by renaming
+    it: file descriptors 1 and 2 (inherited by every child) kept writing into
+    the renamed file, which retention later deleted, and on Windows the open
+    handles stopped the rotation outright. Not rotated; truncated at startup.
+    """
+    return Path(data_dir_str) / "logs" / "stdio.log"
+
+
 def running_in_bundle() -> bool:
     """True when this Python process is the PyInstaller-frozen sidecar.
 

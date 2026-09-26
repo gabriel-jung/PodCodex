@@ -15,8 +15,9 @@ async def websocket_progress(ws: WebSocket) -> None:
     # Host + token checks happen in LoopbackGuardMiddleware (app.py), which
     # covers the websocket scope too.
     await ws.accept()
-    await task_manager.register_ws(ws)
     try:
+        # Inside the try: a replay that fails still unregisters the socket.
+        await task_manager.register_ws(ws)
         # Keep connection open — server pushes only
         while True:
             await ws.receive_text()

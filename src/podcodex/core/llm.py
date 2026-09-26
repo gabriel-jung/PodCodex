@@ -1265,6 +1265,7 @@ def run_llm_step(
     *,
     audio_path: str | None,
     output_dir: str | None,
+    records_out: list[dict] | None = None,
     **pipeline_kwargs,
 ) -> list[dict]:
     """Run an auto correct / translate pass and record its batch outcomes.
@@ -1274,6 +1275,10 @@ def run_llm_step(
     raises saves no version, so the section must keep describing the version
     on disk (the batch-fix flow patches it by the recorded indices). Its
     rejected batches are logged instead.
+
+    With *records_out* the batch records are handed to the caller instead of
+    written, so it can record them once, with the id of the version it then
+    saves (``provenance.save_llm_run``).
     """
     from podcodex.core.llm_failures import record_run
 
@@ -1289,6 +1294,9 @@ def run_llm_step(
                     "Batch {} rejected: {}", rec.get("batch"), rec.get("reason")
                 )
         raise
+    if records_out is not None:
+        records_out.extend(batch_sink)
+        return result
     mode = pipeline_kwargs.get("mode", "ollama")
     record_run(
         audio_path,

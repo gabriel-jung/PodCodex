@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import os
 
-# Prevent multiprocessing/OpenMP deadlocks when PyTorch DataLoaders run
-# inside ThreadPoolExecutor threads (used by the task runner).
-os.environ.setdefault("OMP_NUM_THREADS", "1")
+# For torch running inside this process's worker threads (the search
+# embedder): OpenMP in threadpool threads can deadlock. Pipeline steps run in
+# spawned children, which inherit the environment, so a value defaulted here
+# is marked and dropped again in the child (subprocess_runner._child_entry);
+# otherwise diarization, alignment, embeddings and TTS ran on one core.
+if "OMP_NUM_THREADS" not in os.environ:
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["_PODCODEX_OMP_DEFAULTED"] = "1"
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import asyncio
@@ -317,6 +322,11 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # First, so running children start winding down while the rest of
+        # teardown runs, instead of keeping the process alive for hours.
+        stopped = task_manager.cancel_all()
+        if stopped:
+            logger.info(f"Shutdown: cancelled {stopped} running task(s)")
         try:
             await recovery_task
         except Exception:
@@ -480,11 +490,19 @@ def create_app() -> FastAPI:
     # time they get the module back.
     defer_until_imported("podcodex.rag.index_store", _register_show_folder_resolver)
 
+    from podcodex.core.app_paths import running_in_bundle
+
+    # The interactive docs sit outside /api/, so the token guard does not
+    # cover them; the shipped app has no use for them.
+    bundled = running_in_bundle()
     app = FastAPI(
         title="PodCodex",
         version=__version__,
         description="Podcast processing pipeline API",
         lifespan=lifespan,
+        docs_url=None if bundled else "/docs",
+        redoc_url=None if bundled else "/redoc",
+        openapi_url=None if bundled else "/openapi.json",
     )
     app.state.mcp_available = _mcp_installed()
     if not app.state.mcp_available:
@@ -590,8 +608,8 @@ app = create_app()
 app.state.api_port = _API_PORT
 
 
-def main() -> None:
-    """Entry point for ``podcodex-api`` script."""
+def _bootstrap_dev_process() -> None:
+    """Bootstrap and native-binary wiring for a dev API process."""
     from podcodex.bootstrap import bootstrap_for_dev
 
     bootstrap_for_dev()
@@ -604,6 +622,23 @@ def main() -> None:
 
     _wire_native_binaries()
     log_ffmpeg_status()
+
+
+def create_dev_app() -> FastAPI:
+    """uvicorn ``--factory`` target for ``make dev-api``.
+
+    Pointing uvicorn at ``app`` directly served it with no bootstrap at all:
+    no model cache wiring, no ML patches, no device override, no log setup.
+    Importing this module is light (nothing ML), so bootstrapping here, after
+    the import and before the first request, is in time.
+    """
+    _bootstrap_dev_process()
+    return app
+
+
+def main() -> None:
+    """Entry point for ``podcodex-api`` script."""
+    _bootstrap_dev_process()
 
     uvicorn.run(
         "podcodex.api.app:app",

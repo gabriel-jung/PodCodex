@@ -421,3 +421,19 @@ def test_exact_chronological_word_matches_before_superstring():
     )
     # Word match ranks first despite the later episode.
     assert [c.text for c, _ in out] == ["word", "sup"]
+
+
+def test_exact_search_limit_stops_at_the_cap():
+    from podcodex.rag.search_service import SearchCollection, exact_search
+
+    searched: list[str] = []
+
+    class _Ret:
+        def exact(self, _q, name, **_k):
+            searched.append(name)
+            return [f"{name}-{i}" for i in range(3)]
+
+    cols = [SearchCollection(name=n, model="m", show="S") for n in ("a", "b", "c")]
+    out = exact_search("q", cols, limit=4, retriever_factory=lambda _m: _Ret())
+    assert [h for h, _c in out] == ["a-0", "a-1", "a-2", "b-0"]
+    assert searched == ["a", "b"]

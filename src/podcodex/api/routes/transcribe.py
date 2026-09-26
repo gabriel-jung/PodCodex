@@ -49,7 +49,7 @@ def get_segments(
     limit: int | None = Query(None, ge=1, description="Max segments to return"),
 ) -> list[dict]:
     """Load transcript segments (latest version)."""
-    from podcodex.api.routes._helpers import annotate_flags
+    from podcodex.api.routes._helpers import shape_step_segments
     from podcodex.core.versions import load_latest
 
     require_audio_or_output(audio_path, output_dir)
@@ -59,7 +59,7 @@ def get_segments(
         raise HTTPException(404, "No transcript found")
     if limit is not None:
         segments = segments[:limit]
-    return annotate_flags(segments)
+    return shape_step_segments(p.base, "transcript", segments)
 
 
 @router.put("/segments")
@@ -288,8 +288,9 @@ class TranscribeRequest(BaseModel):
 
     @field_validator("batch_size")
     @classmethod
-    def batch_size_positive(cls, v: int) -> int:
-        if v < 1:
+    def batch_size_positive(cls, v: int | None) -> int | None:
+        # None is "the device default"; comparing it raised a TypeError (500).
+        if v is not None and v < 1:
             raise ValueError("batch_size must be at least 1")
         return v
 

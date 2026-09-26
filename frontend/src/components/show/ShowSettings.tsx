@@ -365,9 +365,12 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
   });
 
   const deleteFilesRef = useRef(false);
+  // Set when the show was deleted but its index could not be purged; the
+  // user reads it before leaving the page.
+  const [deleteLeftover, setDeleteLeftover] = useState<string | null>(null);
   const deleteMutation = useMutation({
     mutationFn: (deleteFiles: boolean) => deleteShow(folder, deleteFiles),
-    onSuccess: () => {
+    onSuccess: (data) => {
       goneRef.current = true;
       // Re-adding a show at the same folder path would otherwise hit stale
       // per-folder caches (episodes, versions, roster, ...) before refetch.
@@ -379,6 +382,10 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       removeQueriesForShowName(queryClient, meta.name);
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
+      if (data.warning) {
+        setDeleteLeftover(data.warning);
+        return;
+      }
       navigate({ to: "/" });
     },
   });
@@ -834,6 +841,16 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
             <span className="text-xs text-destructive">{errorMessage(deleteMutation.error)}</span>
           )}
         </div>
+        {deleteLeftover && (
+          <ErrorAlert
+            error={deleteLeftover}
+            onDismiss={() => {
+              setDeleteLeftover(null);
+              navigate({ to: "/" });
+            }}
+            className="mt-3"
+          />
+        )}
       </SettingSection>
 
       </div>

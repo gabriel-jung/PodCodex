@@ -1,12 +1,13 @@
 """Discord bot access control — per-show password management.
 
-Replaces the ``podcodex-bot --manage-passwords`` CLI so the desktop app
-can set, rotate, and remove show passwords without a terminal. Password
-plaintext is returned exactly once in the HTTP response body (never
-logged, never stored); the IndexStore only keeps the SHA-256 hash.
+The desktop app's counterpart to the ``podcodex-bot --manage-passwords``
+CLI (which still ships, for a bot host with no app). Password plaintext is
+returned exactly once in the HTTP response body (never logged, never
+stored); the IndexStore only keeps the SHA-256 hash.
 
 The bot process (wherever it runs) reads the same IndexStore on its next
-``/admin`` refresh, so no hot-restart on the bot side either.
+``/admin-reload``, so no hot-restart on the bot side either. The show is a
+query parameter: it is a display label, and a "/" in it split the path.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 import secrets
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -137,16 +138,18 @@ def list_passwords() -> list[ShowAccess]:
     ]
 
 
-@router.get("/passwords/{show}", response_model=ShowAccess)
-def get_password_status(show: str) -> ShowAccess:
+@router.get("/password", response_model=ShowAccess)
+def get_password_status(show: str = Query(...)) -> ShowAccess:
     """Per-show protection status."""
     if show not in _all_show_names():
         raise HTTPException(404, f"Unknown show {show!r}.")
     return ShowAccess(show=show, is_protected=_key_for(show) in _protected_ids())
 
 
-@router.post("/passwords/{show}", response_model=ShowPasswordSet)
-def set_password(show: str, payload: SetPasswordRequest) -> ShowPasswordSet:
+@router.post("/password", response_model=ShowPasswordSet)
+def set_password(
+    payload: SetPasswordRequest, show: str = Query(...)
+) -> ShowPasswordSet:
     """Set or rotate the password for a show.
 
     If ``payload.password`` is empty or omitted the server generates a
@@ -181,8 +184,8 @@ def set_password(show: str, payload: SetPasswordRequest) -> ShowPasswordSet:
     return ShowPasswordSet(show=show, password=plaintext, generated=generated)
 
 
-@router.delete("/passwords/{show}", status_code=204)
-def delete_password(show: str) -> None:
+@router.delete("/password", status_code=204)
+def delete_password(show: str = Query(...)) -> None:
     """Remove password protection — the show becomes public to the bot."""
     if show not in _all_show_names():
         raise HTTPException(404, f"Unknown show {show!r}.")

@@ -14,6 +14,7 @@ Output:
 """
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 from pathlib import Path
 
 from loguru import logger
@@ -28,6 +29,10 @@ from podcodex.core.llm import (
 )
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import save_version, translation_steps
+
+if TYPE_CHECKING:
+    from podcodex.core.llm_resolver import LLMRun
+    from podcodex.core.source import SourceVersion
 
 
 # ──────────────────────────────────────────────
@@ -117,6 +122,7 @@ def translate_segments(
     max_gap: float = 10.0,
     provider: str | None = None,
     on_batch: Callable[[int, int], None] | None = None,
+    records_out: list[dict] | None = None,
     audio_path: str | None = None,
     output_dir: str | None = None,
 ) -> list[dict]:
@@ -150,6 +156,7 @@ def translate_segments(
         merge=merge,
         max_gap=max_gap,
         on_batch=on_batch,
+        records_out=records_out,
         # The length guard is for correction. A translation legitimately
         # changes length: English to Chinese is often a third of the
         # characters, and the guard saved those as the English source.
@@ -159,6 +166,61 @@ def translate_segments(
     )
     logger.success(f"Translation done, {len(result)} segments")
     return result
+
+
+def translate_and_save(
+    source: "SourceVersion",
+    llm: "LLMRun",
+    *,
+    audio_path: str,
+    output_dir: str | None = None,
+    target_lang: str,
+    context: str = "",
+    source_lang: str = "English",
+    batch_minutes: float = DEFAULT_BATCH_MINUTES,
+    provider_profile: str | None = None,
+    key_name: str | None = None,
+    on_batch: Callable[[int, int], None] | None = None,
+) -> tuple[list[dict], str]:
+    """One auto translate run: translate *source*, save it, record its failures.
+
+    The single run path for the translate route and the batch runner.
+    Returns ``(segments, version_id)``.
+    """
+    from podcodex.core.provenance import save_llm_run
+
+    records: list[dict] = []
+    translated = translate_segments(
+        source.segments,
+        **llm.pipeline_kwargs(),
+        context=context,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        batch_minutes=batch_minutes,
+        original_segments=source.segments,
+        merge=False,  # sources are already merged on load/upload
+        on_batch=on_batch,
+        audio_path=audio_path,
+        output_dir=output_dir,
+        records_out=records,
+    )
+    version_id = save_llm_run(
+        normalize_lang(target_lang),
+        lambda prov: save_translation(
+            audio_path, translated, target_lang, output_dir=output_dir, provenance=prov
+        ),
+        source=source,
+        llm=llm,
+        audio_path=audio_path,
+        output_dir=output_dir,
+        records=records,
+        provider_profile=provider_profile,
+        key_name=key_name,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        batch_minutes=batch_minutes,
+    )
+    return translated, version_id
 
 
 # ──────────────────────────────────────────────

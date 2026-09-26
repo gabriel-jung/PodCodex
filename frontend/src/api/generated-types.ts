@@ -5,6 +5,8 @@
 
 
 
+export type DownloadItemStatus = "downloaded" | "exists" | "cached" | "no_audio" | "no_subtitles" | "failed";
+
 export type Mode = "full" | "index-only";
 
 export interface PipelineDefaultsSchema {
@@ -213,6 +215,23 @@ export interface CreateFromYouTubeResponse {
 
 export interface TaskResponse {
   task_id: string;
+}
+
+export interface DownloadItemResult {
+  stem: string;
+  status: DownloadItemStatus;
+  title?: string | null;
+  error?: string | null;
+  audio_path?: string | null;
+  subs_cached?: boolean | null;
+}
+
+export interface SubtitleImportResult {
+  imported: number;
+  failed: number;
+  total: number;
+  throttled: boolean;
+  results: DownloadItemResult[];
 }
 
 export interface AppConfig {
@@ -582,6 +601,7 @@ export interface ExactRequest {
   source?: string | null;
   pub_date_min?: string | null;
   pub_date_max?: string | null;
+  top_k?: number | null;
 }
 
 export interface RandomRequest {

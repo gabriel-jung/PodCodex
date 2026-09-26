@@ -234,9 +234,15 @@ def exact_search(
     speaker: str | None = None,
     pub_date_min: str | None = None,
     pub_date_max: str | None = None,
+    limit: int | None = None,
     retriever_factory: Callable[[str], Retriever] = get_retriever,
 ) -> list[tuple[Hit, str]]:
     """Literal search across collections.
+
+    *limit* caps the hits returned. In positional order the remaining
+    collections are not searched once it is reached; inside one collection
+    the scan stays complete, because the tiers are ranked from the whole
+    candidate set (a partial scan would return the wrong best hits).
 
     ``order="positional"`` keeps each collection's retriever order (MCP,
     API). ``order="chronological"`` reproduces the bot's reading order:
@@ -265,6 +271,8 @@ def exact_search(
             logger.exception(f"search_service: exact failed for {col.name}")
             continue
         out.extend((hit, col.name) for hit in hits)
+        if limit is not None and order != "chronological" and len(out) >= limit:
+            break
     if order == "chronological":
         # `score if score is not None`, not `score or ...`: a legitimate 0.0
         # must sort as 0.0, not jump to the top as if the field were missing.
@@ -281,7 +289,7 @@ def exact_search(
             key=lambda x: -(x[0].score if x[0].score is not None else 0.6),
         )
         out = phrase + fuzzy
-    return out
+    return out[:limit] if limit is not None else out
 
 
 def random_quote(

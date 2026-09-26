@@ -13,6 +13,7 @@ Output:
 """
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 from pathlib import Path
 
 from loguru import logger
@@ -27,6 +28,10 @@ from podcodex.core.llm import (
 )
 from podcodex.core.pipeline_db import mark_step
 from podcodex.core.versions import save_version
+
+if TYPE_CHECKING:
+    from podcodex.core.llm_resolver import LLMRun
+    from podcodex.core.source import SourceVersion
 
 
 # ──────────────────────────────────────────────
@@ -173,6 +178,7 @@ def correct_segments(
     engine: str = "whisper",
     engine_model: str | None = None,
     on_batch: Callable[[int, int], None] | None = None,
+    records_out: list[dict] | None = None,
     audio_path: str | None = None,
     output_dir: str | None = None,
 ) -> list[dict]:
@@ -204,9 +210,70 @@ def correct_segments(
         merge=merge,
         max_gap=max_gap,
         on_batch=on_batch,
+        records_out=records_out,
     )
     logger.success(f"Correct done, {len(result)} segments")
     return result
+
+
+def correct_and_save(
+    source: "SourceVersion",
+    llm: "LLMRun",
+    *,
+    audio_path: str,
+    output_dir: str | None = None,
+    context: str = "",
+    source_lang: str = "English",
+    batch_minutes: float = DEFAULT_BATCH_MINUTES,
+    provider_profile: str | None = None,
+    key_name: str | None = None,
+    on_batch: Callable[[int, int], None] | None = None,
+) -> tuple[list[dict], str]:
+    """One auto correct run: correct *source*, save it, record its failures.
+
+    The single run path for the correct route and the batch runner, which
+    used to carry three copies of this sequence (and already disagreed on
+    what provenance recorded). *source_lang* is the fallback; the language,
+    engine and model recorded in the transcript's provenance win, and are
+    what the saved provenance (and so the batch "already done" check)
+    carries. Returns ``(segments, version_id)``.
+    """
+    from podcodex.core.provenance import enrich_correct_kwargs, save_llm_run
+
+    tc = enrich_correct_kwargs(audio_path, output_dir, source_lang, source)
+    records: list[dict] = []
+    corrected = correct_segments(
+        source.segments,
+        **llm.pipeline_kwargs(),
+        context=context,
+        source_lang=tc["source_lang"],
+        batch_minutes=batch_minutes,
+        engine=tc["engine"],
+        engine_model=tc["engine_model"],
+        original_segments=source.segments,
+        merge=False,  # sources are already merged on load/upload
+        on_batch=on_batch,
+        audio_path=audio_path,
+        output_dir=output_dir,
+        records_out=records,
+    )
+    version_id = save_llm_run(
+        "corrected",
+        lambda prov: save_corrected(
+            audio_path, corrected, output_dir=output_dir, provenance=prov
+        ),
+        source=source,
+        llm=llm,
+        audio_path=audio_path,
+        output_dir=output_dir,
+        records=records,
+        provider_profile=provider_profile,
+        key_name=key_name,
+        source_lang=tc["source_lang"],
+        engine=tc["engine"],
+        batch_minutes=batch_minutes,
+    )
+    return corrected, version_id
 
 
 # ──────────────────────────────────────────────

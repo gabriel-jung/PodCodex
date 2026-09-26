@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import threading
+
 from dataclasses import asdict
 from pathlib import Path
 
@@ -65,15 +68,74 @@ def get_index_store():
     return _get_index_store()
 
 
+_KEYED_LOCKS: dict[tuple[str, object], threading.Lock] = {}
+_KEYED_LOCKS_GUARD = threading.Lock()
+
+
+def keyed_lock(namespace: str, key: Path | str) -> threading.Lock:
+    """A process-wide lock for one (*namespace*, folder), e.g. one per show.
+
+    Serializes a read-modify-write on files a route owns (a show's cover, its
+    feed cache) across the threadpool. Keyed on the folder's identity
+    (device and inode) when it exists, so two spellings of one path (a
+    trailing slash, another case on macOS) share the lock. Never pruned:
+    one small lock per key.
+    """
+    try:
+        st = os.stat(key)
+        ident: tuple | str = (st.st_dev, st.st_ino)
+    except OSError:
+        ident = str(Path(key).resolve())
+    with _KEYED_LOCKS_GUARD:
+        return _KEYED_LOCKS.setdefault((namespace, ident), threading.Lock())
+
+
+class TaskCancelled(Exception):
+    """Raised inside an in-process task once the user cancelled it."""
+
+
+def raise_if_cancelled(progress_cb) -> None:
+    """Stop an in-process task whose cancel was requested.
+
+    Subprocess steps are stopped by the runner; correct and translate run in
+    the worker thread, so without a check the LLM run went on (and billed)
+    to the end and saved a version the user had called off.
+    """
+    event = getattr(progress_cb, "cancel_event", None)
+    if event is not None and event.is_set():
+        raise TaskCancelled()
+
+
 def batch_progress(progress_cb, start: float = 0.1, end: float = 0.9):
-    """Return a callback for reporting batch progress to the task manager."""
+    """Return a callback for reporting batch progress to the task manager.
+
+    Also the cancellation point of an LLM run: it fires after every batch,
+    outside the per-batch error handling, so a cancel stops the run within
+    one batch. Not after the last one: every batch is paid for by then, and
+    throwing the finished run away would waste all of it.
+    """
 
     def on_batch(batch_num: int, total: int) -> None:
         """Report progress for a single completed batch."""
+        if batch_num < total:
+            raise_if_cancelled(progress_cb)
         frac = start + (end - start) * (batch_num / total)
         progress_cb(frac, f"Batch {batch_num} of {total}")
 
     return on_batch
+
+
+def download_item(stem: str, status, **fields) -> dict:
+    """One ``DownloadItemResult`` as the task result carries it (JSON dict).
+
+    Every download and subtitle-import loop builds its per-item entries
+    through this, so the status vocabulary is the enum's and nothing else.
+    """
+    from podcodex.api.schemas import DownloadItemResult
+
+    return DownloadItemResult(stem=stem, status=status, **fields).model_dump(
+        mode="json", exclude_none=True
+    )
 
 
 def counted_progress(progress_cb, total: int):
@@ -191,26 +253,37 @@ def rss_episode_to_out(
 _GPU_STEPS = frozenset({"transcribe", "index", "batch", "generate_tts"})
 
 
-def submit_task(step: str, audio_path: str, fn, *args) -> TaskResponse:
+def submit_task(
+    step: str, audio_path: str, fn, *args, subject: str = ""
+) -> TaskResponse:
     """Submit a background task.
 
-    If a task is already running on this audio_path, return its task_id
-    instead of raising an error — lets the UI reconnect after navigation.
+    If the *same run* (same step and *subject*) is already going on this
+    lock key, return its task_id instead of raising an error, which lets the
+    UI reconnect after navigation. Anything else holding the key is a 409:
+    handing that task's id back made a panel report another run (another
+    step, another translation language, another extra) as its own.
+
+    *subject* is what a parameterized step runs on: the target language of
+    a translate, the extra of an install. The single place this rule lives.
     """
-    from podcodex.api.tasks import task_manager
+    from podcodex.api.tasks import TaskConflict, task_manager
 
     if step in _GPU_STEPS:
         from podcodex.rag.embedder import clear_embedder_cache
 
         clear_embedder_cache()
     try:
-        info = task_manager.submit(step, audio_path, fn, *args)
-    except ValueError:
-        # Return existing running task so the UI can reconnect
-        existing = task_manager.get_active(audio_path)
-        if existing:
-            return TaskResponse(task_id=existing.task_id)
-        raise HTTPException(409, "A task is already running on this file") from None
+        info = task_manager.submit(
+            step, audio_path, fn, *args, subject=subject, reconnect=True
+        )
+    except TaskConflict as exc:
+        what = " ".join(p for p in (exc.holder.subject, exc.holder.step) if p)
+        raise HTTPException(
+            409,
+            f"A {what or 'task'} run is already in progress here; "
+            "wait for it to finish or cancel it first.",
+        ) from None
     return TaskResponse(task_id=info.task_id)
 
 
@@ -275,11 +348,47 @@ def is_flagged(seg: dict) -> bool:
     return False
 
 
+def load_version_or_404(base, step: str, version_id: str) -> list[dict]:
+    """Segments of one version, validated and mapped to HTTP errors.
+
+    A version id becomes a filename, so it must be one path component (400);
+    a version gone from disk is a 404. The single place routes do this.
+    """
+    from podcodex.core.versions import load_version
+
+    if bad_path_component(version_id):
+        raise HTTPException(400, f"Invalid version id: {version_id!r}")
+    try:
+        return load_version(base, step, version_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Version {version_id} not found") from None
+
+
 def annotate_flags(segments: list[dict]) -> list[dict]:
     """Add a ``flagged`` field to each segment."""
     for seg in segments:
         seg["flagged"] = is_flagged(seg)
     return segments
+
+
+def shape_step_segments(base, step: str, segments: list[dict]) -> list[dict]:
+    """Segments as a step's read routes serve them, whichever version.
+
+    Flags always; for a translation, the current speaker map too, so renames
+    made after it was generated show through (synthesis maps the same way,
+    and the panel's segment keys are built from the mapped names). The
+    ``/segments`` routes and ``/versions/{id}`` both go through here, so a
+    version picked in a selector has the same shape as the default one.
+    """
+    from podcodex.core.versions import (
+        PIPELINE_STEPS,
+        apply_speaker_map,
+        load_latest_speaker_map,
+    )
+
+    if step not in PIPELINE_STEPS:
+        segments = apply_speaker_map(segments, load_latest_speaker_map(base))
+    return annotate_flags(segments)
 
 
 # ── Shared request models ──────────────────────
@@ -364,10 +473,12 @@ class ApplyBatchesRequest(BaseModel):
 def reconcile_batches(
     req: ApplyBatchesRequest, step: str
 ) -> tuple[AudioPaths, list[dict], dict, list[str] | None]:
-    """Patch every fix's batch into the latest version of *step*.
+    """Patch every fix's batch into the version the failures were recorded on.
 
     Looks each batch up in ``llm_failures.json``, checks its correction count,
-    loads the latest version, and applies all fixes in one pass. Returns
+    loads the version the section names (the step's default pick for a
+    section written before versions were recorded), and applies all fixes in
+    one pass. Returns
     ``(paths, patched_segments, failures_section, source_chain)``, the chain
     being the patched version's; raises HTTPException on a
     missing episode, missing batch, count mismatch, or missing version.
@@ -402,10 +513,17 @@ def reconcile_batches(
         for i, idx in enumerate(indices):
             by_index[idx] = fix.corrections[i]
 
-    found = load_latest_with_meta(p.base, step)
-    if found is None:
-        raise HTTPException(404, "No segments found for this step")
-    patched_meta, segments = found
+    run_version = section.get("version_id")
+    if run_version:
+        from podcodex.core.versions import get_version_provenance
+
+        segments = load_version_or_404(p.base, step, run_version)
+        patched_meta = get_version_provenance(p.base, run_version, step) or {}
+    else:
+        found = load_latest_with_meta(p.base, step)
+        if found is None:
+            raise HTTPException(404, "No segments found for this step")
+        patched_meta, segments = found
 
     patched = apply_corrections(segments, by_index, min_length_ratio=0)
     # The fix is the same pipeline as the version it patches: same inputs,

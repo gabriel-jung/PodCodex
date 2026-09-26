@@ -10,6 +10,7 @@ from loguru import logger
 
 from podcodex.api.routes._helpers import (
     counted_progress,
+    download_item,
     is_downloaded,
     list_show_stems,
     require_registered_show,
@@ -17,12 +18,14 @@ from podcodex.api.routes._helpers import (
     scan_show_stems,
     submit_task,
 )
-from podcodex.api.schemas import RSSEpisodeOut, TaskResponse
+from podcodex.api.schemas import DownloadItemStatus, RSSEpisodeOut, TaskResponse
 from podcodex.ingest.rss import (
     download_audio,
     episode_stem,
     fetch_feed_with_artwork,
     load_feed_cache,
+    loggable_url,
+    redact_urls,
     merge_with_cache,
     save_feed_cache,
 )
@@ -59,27 +62,16 @@ async def rss_fetch(show_folder: str, rss_url: str | None = None) -> list[dict]:
         # and no cache can stand in for it.
         raise HTTPException(400, str(exc)) from exc
     except httpx.HTTPError as exc:
-        # DNS, a captive portal, a CDN 503. The cached-feed fallback below
-        # exists for exactly this, but these are not ValueError, so they
-        # used to escape as an opaque 500 with the cache sitting right
-        # there. Fall through with no episodes to reach it.
-        logger.warning("fetch_feed failed for {}: {}", rss_url, exc)
-        episodes = []
+        # DNS, a captive portal, a CDN 503. This route backs the explicit
+        # Refresh button only (the show page reads the cache elsewhere), so
+        # the failure is reported rather than answered with the stale cache,
+        # the same way the YouTube refresh does.
+        # The error text can embed the URL (HTTPStatusError does), token
+        # and all; redacted for the log and the UI alike.
+        reason = redact_urls(str(exc))
+        logger.warning("fetch_feed failed for {}: {}", loggable_url(rss_url), reason)
+        raise HTTPException(502, f"Could not fetch the feed: {reason}") from exc
     if not episodes:
-        # Transient failures (DNS, captive portal, feedparser bozo) shouldn't
-        # block the show page when we already have a cache to serve.
-        cached = load_feed_cache(path)
-        if cached:
-            logger.warning(
-                "fetch_feed returned no episodes for {}; serving cache ({} episodes)",
-                rss_url,
-                len(cached),
-            )
-            stems, audio = scan_show_stems(path)
-            return [
-                rss_episode_to_out(ep, path, existing_stems=stems, audio_stems=audio)
-                for ep in cached
-            ]
         raise HTTPException(502, "Feed returned no episodes (parse error or empty)")
 
     # Keep episodes pulled from the feed flagged ``removed=True`` rather than
@@ -170,11 +162,11 @@ def rss_download(
             if not force_dl and is_downloaded(show_path, stem):
                 skipped += 1
                 consecutive_failures = 0
-                results.append({"stem": stem, "status": "exists"})
+                results.append(download_item(stem, DownloadItemStatus.EXISTS))
                 continue
             if not ep.audio_url:
                 skipped += 1
-                results.append({"stem": stem, "status": "no_audio"})
+                results.append(download_item(stem, DownloadItemStatus.NO_AUDIO))
                 continue
 
             audio_path, error = download_audio(ep, show_path, force=force_dl)
@@ -182,18 +174,18 @@ def rss_download(
                 downloaded += 1
                 consecutive_failures = 0
                 results.append(
-                    {
-                        "stem": stem,
-                        "status": "downloaded",
-                        "audio_path": str(audio_path),
-                    }
+                    download_item(
+                        stem, DownloadItemStatus.DOWNLOADED, audio_path=str(audio_path)
+                    )
                 )
                 invalidate_scan_cache(show_path)
             else:
                 failed += 1
                 consecutive_failures += 1
                 last_error = error
-                results.append({"stem": stem, "status": "failed", "error": error})
+                results.append(
+                    download_item(stem, DownloadItemStatus.FAILED, error=error)
+                )
                 # Stop the batch on repeated rate-limits / outages — retrying
                 # every episode past the 3rd consecutive failure just wastes
                 # time and extends the rate-limit window.

@@ -350,14 +350,14 @@ def test_srt_is_reimportable_but_not_batch_importable(tmp_path):
     cached `{stem}.subtitles.{lang}.vtt` — so reporting .srt there would
     select episodes the batch run cannot process.
     """
-    from podcodex.api.routes.shows import _build_status_out, _load_status_context
+    from podcodex.core.episode_status import build_status_out, load_status_context
 
     show = tmp_path / "show"
     (show / "ep").mkdir(parents=True)
     (show / "ep" / "ep.srt").touch()
-    ctx = _load_status_context(show)
+    ctx = load_status_context(show)
 
-    out = _build_status_out(
+    out = build_status_out(
         stem="ep",
         audio_path=None,
         output_dir=show / "ep",
@@ -402,12 +402,12 @@ def test_status_context_lists_episode_dirs_that_hold_no_files(tmp_path):
     It is what `unified_episodes` unions into the stem listing, so a suffixed
     but still-empty episode directory stays matchable.
     """
-    from podcodex.api.routes.shows import _load_status_context
+    from podcodex.core.episode_status import load_status_context
 
     show = tmp_path / "show"
     (show / "my_episode").mkdir(parents=True)
 
-    ctx = _load_status_context(show)
+    ctx = load_status_context(show)
 
     assert "my_episode" in ctx.episode_dirs
     assert "my_episode" not in ctx.episode_files
@@ -421,7 +421,7 @@ def test_status_reconcile_keeps_flags_bootstrapped_from_disk(tmp_path):
     alone would undo the bootstrap in the same call, and a DB rebuilt from
     scan would report a whole library as not started.
     """
-    from podcodex.api.routes.shows import _load_status_context
+    from podcodex.core.episode_status import load_status_context
     from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
 
     show = tmp_path / "show"
@@ -430,7 +430,7 @@ def test_status_reconcile_keeps_flags_bootstrapped_from_disk(tmp_path):
         '[{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}]'
     )
 
-    ctx = _load_status_context(show)
+    ctx = load_status_context(show)
     assert ctx.status_map["ep1"]["transcribed"] is True
     # And it must not have been persisted as False either.
     assert get_pipeline_db(show).get_episode("ep1")["transcribed"] is True
@@ -444,7 +444,7 @@ def test_status_reconcile_rebuilds_the_translations_list(tmp_path):
     episode would report "not started" with its translation on disk. The
     rebuild also drops pipeline-step names legacy rows leaked in.
     """
-    from podcodex.api.routes.shows import _load_status_context
+    from podcodex.core.episode_status import load_status_context
     from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
 
     show = tmp_path / "show"
@@ -452,21 +452,21 @@ def test_status_reconcile_rebuilds_the_translations_list(tmp_path):
     (show / "ep1" / "french" / "20260101T000000000000Z_raw.json").write_text("[]")
     get_pipeline_db(show).mark("ep1", translations=["segments", "spanish"])
 
-    ctx = _load_status_context(show)
+    ctx = load_status_context(show)
     assert ctx.status_map["ep1"]["translations"] == ["french"]
     close_pipeline_db(show)
 
 
 def test_status_reconcile_demotes_when_nothing_is_left(tmp_path):
     """The demote half still fires when neither a row nor a file remains."""
-    from podcodex.api.routes.shows import _load_status_context
+    from podcodex.core.episode_status import load_status_context
     from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
 
     show = tmp_path / "show"
     (show / "ep1").mkdir(parents=True)
     get_pipeline_db(show).mark("ep1", transcribed=True)
 
-    ctx = _load_status_context(show)
+    ctx = load_status_context(show)
     assert ctx.status_map["ep1"]["transcribed"] is False
     close_pipeline_db(show)
 
@@ -474,7 +474,7 @@ def test_status_reconcile_demotes_when_nothing_is_left(tmp_path):
 def test_status_reconcile_demotes_a_row_whose_file_is_gone(tmp_path):
     """Backfill keeps such a row through its grace period; every reader
     skips it, so the flag must not keep claiming the step is done."""
-    from podcodex.api.routes.shows import _load_status_context
+    from podcodex.core.episode_status import load_status_context
     from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
     from podcodex.core.versions import save_version, version_path
 
@@ -490,7 +490,7 @@ def test_status_reconcile_demotes_a_row_whose_file_is_gone(tmp_path):
     get_pipeline_db(show).mark("ep1", transcribed=True)
     version_path(base, "transcript", vid).unlink()
 
-    ctx = _load_status_context(show)
+    ctx = load_status_context(show)
     assert ctx.status_map["ep1"]["transcribed"] is False
     close_pipeline_db(show)
 
@@ -503,7 +503,7 @@ def test_status_reconcile_skips_stems_it_could_not_scan(tmp_path):
     """
     import os
 
-    from podcodex.api.routes.shows import _EPISODE_FILES_CACHE, _load_status_context
+    from podcodex.core.episode_status import _EPISODE_FILES_CACHE, load_status_context
     from podcodex.core.pipeline_db import close_pipeline_db
 
     show = tmp_path / "show"
@@ -512,18 +512,76 @@ def test_status_reconcile_skips_stems_it_could_not_scan(tmp_path):
     (show / "ep1" / "french").mkdir()
     (show / "ep1" / "french" / "20260101T000000000000Z_raw.json").write_text("[]")
 
-    ctx = _load_status_context(show)
+    ctx = load_status_context(show)
     assert ctx.status_map["ep1"]["transcribed"] is True
     assert ctx.status_map["ep1"]["translations"] == ["french"]
 
     _EPISODE_FILES_CACHE.clear()
     os.chmod(show / "ep1", 0o000)
     try:
-        ctx = _load_status_context(show)
+        ctx = load_status_context(show)
         assert ctx.status_map["ep1"]["transcribed"] is True
         assert ctx.status_map["ep1"]["translations"] == ["french"]
     finally:
         os.chmod(show / "ep1", 0o755)
+        close_pipeline_db(show)
+
+
+def test_status_reconcile_skips_everything_when_the_show_folder_is_unreadable(
+    tmp_path, monkeypatch
+):
+    """A failed listing of the show folder is "unknown", not "empty"."""
+    from podcodex.core import episode_status as status_mod
+    from podcodex.core.pipeline_db import close_pipeline_db
+
+    show = tmp_path / "show"
+    (show / "ep1" / "transcript").mkdir(parents=True)
+    (show / "ep1" / "transcript" / "20260101T000000000000Z_raw.json").write_text("[]")
+    (show / "ep1" / "french").mkdir()
+    (show / "ep1" / "french" / "20260101T000000000000Z_raw.json").write_text("[]")
+    ctx = status_mod.load_status_context(show)
+    assert ctx.status_map["ep1"]["transcribed"] is True
+
+    def unreadable(folder, local_audio):
+        return {}, set(), None
+
+    monkeypatch.setattr(status_mod, "_scan_episode_files", unreadable)
+    try:
+        ctx = status_mod.load_status_context(show)
+        assert ctx.status_map["ep1"]["transcribed"] is True
+        assert ctx.status_map["ep1"]["translations"] == ["french"]
+    finally:
+        close_pipeline_db(show)
+
+
+def test_episode_file_scan_reports_an_unlistable_folder(tmp_path):
+    from podcodex.core.episode_status import _scan_episode_files
+
+    not_a_dir = tmp_path / "file"
+    not_a_dir.write_text("x")
+    files, dirs, incomplete = _scan_episode_files(not_a_dir, {})
+    assert (files, dirs, incomplete) == ({}, set(), None)
+
+
+def test_status_reconcile_keeps_indexed_flags_when_the_index_is_unreadable(
+    tmp_path, monkeypatch
+):
+    from podcodex.core import episode_status as status_mod
+    from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+
+    show = tmp_path / "show"
+    (show / "ep1" / "transcript").mkdir(parents=True)
+    (show / "ep1" / "transcript" / "20260101T000000000000Z_raw.json").write_text("[]")
+    monkeypatch.setattr(status_mod, "lance_indexed_stems", lambda _p: {"ep1"})
+    assert status_mod.load_status_context(show).status_map["ep1"]["indexed"]
+
+    monkeypatch.setattr(status_mod, "lance_indexed_stems", lambda _p: None)
+    try:
+        ctx = status_mod.load_status_context(show)
+        assert ctx.status_map["ep1"]["indexed"]
+        rows = {r["stem"]: r for r in get_pipeline_db(show).all_episodes()}
+        assert rows["ep1"]["indexed"]
+    finally:
         close_pipeline_db(show)
 
 
@@ -533,7 +591,7 @@ def test_episode_file_scan_sees_nested_writes(tmp_path):
     A version landing in `ep/transcript/` leaves `ep/`'s own mtime untouched,
     so validating only the episode directory would serve a stale file list.
     """
-    from podcodex.api.routes.shows import _scan_episode_files
+    from podcodex.core.episode_status import _scan_episode_files
 
     show = _make_episode_tree(tmp_path)
     _age_dirs(show, 60)
@@ -571,7 +629,7 @@ def test_episode_file_scan_lists_the_llm_failures_file(tmp_path):
     """The walk must keep listing llm_failures.json: the llm_failed_steps
     gate reads the cached listing before touching disk, so a future trim of
     the walk's filters would silently blank the failure markers."""
-    from podcodex.api.routes.shows import _scan_episode_files
+    from podcodex.core.episode_status import _scan_episode_files
     from podcodex.core.llm_failures import FAILURES_FILENAME
 
     show = _make_episode_tree(tmp_path)
@@ -583,17 +641,17 @@ def test_episode_file_scan_lists_the_llm_failures_file(tmp_path):
 
 def test_episode_file_scan_reuses_settled_results(tmp_path, monkeypatch):
     """An untouched, settled tree is served from cache instead of re-walked."""
-    from podcodex.api.routes import shows as shows_routes
+    from podcodex.core import episode_status as status_mod
 
     show = _make_episode_tree(tmp_path)
     _age_dirs(show, 60)
-    shows_routes._scan_episode_files(show, {})  # records settled mtimes
+    status_mod._scan_episode_files(show, {})  # records settled mtimes
 
     def _fail(*args):
         raise AssertionError("settled directories should not be re-walked")
 
-    monkeypatch.setattr(shows_routes, "_walk_episode_dir", _fail)
-    assert shows_routes._scan_episode_files(show, {})[0]["ep"] == [
+    monkeypatch.setattr(status_mod, "_walk_episode_dir", _fail)
+    assert status_mod._scan_episode_files(show, {})[0]["ep"] == [
         "ep/ep.vtt",
         "ep/transcript/v1.json",
     ]
@@ -605,7 +663,7 @@ def test_episode_file_scan_rewalks_recent_changes(tmp_path):
     FAT32 rounds mtimes to 2s, so a write can land in the same tick as the
     scan that recorded the mtime and leave it looking unchanged.
     """
-    from podcodex.api.routes.shows import _scan_episode_files
+    from podcodex.core.episode_status import _scan_episode_files
 
     show = _make_episode_tree(tmp_path)
     _scan_episode_files(show, {})
@@ -900,6 +958,195 @@ def test_export_missing_source_returns_404(client, tmp_path):
         params={"audio_path": audio, "source": "transcript"},
     )
     assert r.status_code == 404
+
+
+def test_a_loaded_version_has_the_shape_of_the_default_one(
+    client, tmp_path, monkeypatch
+):
+    """A version picked in a selector must match /segments: flags always, and
+    the speaker map for translations (the synth panel keys on mapped names)."""
+    import podcodex.core.versions as versions_mod
+
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    base = Path(ep_dir) / "ep"
+    segs = [{"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "salut"}]
+    fr = save_version(base, "french", segs, {"step": "french", "type": "raw"})
+    tr = save_version(base, "transcript", segs, {"step": "transcript", "type": "raw"})
+    monkeypatch.setattr(
+        versions_mod, "load_latest_speaker_map", lambda _b: {"SPEAKER_00": "Ann"}
+    )
+
+    r = client.get(
+        f"/api/translate/versions/{fr}", params={"audio_path": audio, "lang": "French"}
+    )
+    assert r.status_code == 200, r.text
+    default = client.get(
+        "/api/translate/segments", params={"audio_path": audio, "lang": "French"}
+    ).json()
+    assert r.json() == default
+    assert r.json()[0]["speaker"] == "Ann"
+    assert "flagged" in r.json()[0]
+
+    r = client.get(f"/api/transcribe/versions/{tr}", params={"audio_path": audio})
+    assert r.json()[0]["speaker"] == "SPEAKER_00"
+    assert "flagged" in r.json()[0]
+
+
+def test_batch_fixes_patch_the_run_that_recorded_them(client, tmp_path):
+    """An older hand-edited version outranks the auto run in the default
+    pick; the fixes must still land on the auto run's own version."""
+    from podcodex.core.llm_failures import save_batch_records, stamp_run_version
+    from podcodex.core.versions import load_latest, load_version
+
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    base = Path(ep_dir) / "ep"
+    seg = {"speaker": "A", "start": 0.0, "end": 1.0}
+    save_version(
+        base,
+        "corrected",
+        [{**seg, "text": "edited zero"}, {**seg, "text": "edited one"}],
+        {"step": "corrected", "type": "validated", "manual_edit": True},
+    )
+    run = save_version(
+        base,
+        "corrected",
+        [{**seg, "text": "auto zero"}, {**seg, "text": "auto one"}],
+        {"step": "corrected", "type": "raw", "model": "m"},
+    )
+    save_batch_records(
+        base,
+        "corrected",
+        model="m",
+        mode="ollama",
+        records=[
+            {"batch": 1, "status": "ok", "input": [{"index": 0}]},
+            {"batch": 2, "status": "rejected", "input": [{"index": 1}]},
+        ],
+    )
+    stamp_run_version(audio, None, "corrected", run)
+    assert load_latest(base, "corrected")[0]["text"] == "edited zero"
+
+    r = client.post(
+        "/api/correct/apply-batches",
+        json={
+            "audio_path": audio,
+            "fixes": [{"batch": 2, "corrections": [{"text": "fixed one"}]}],
+        },
+    )
+    assert r.status_code == 200, r.text
+    from podcodex.core.versions import list_versions
+
+    newest = list_versions(base, "corrected")[0]
+    texts = [s["text"] for s in load_version(base, "corrected", newest["id"])]
+    assert texts == ["auto zero", "fixed one"]
+
+
+def test_export_an_episode_without_audio(client, tmp_path):
+    """YouTube subtitle-only episodes send audio_path "" and an output_dir."""
+    show = tmp_path / "show"
+    ep_dir = show / "vid1"
+    ep_dir.mkdir(parents=True)
+    from podcodex.core._utils import episode_base
+    from podcodex.core.app_config import AppConfig, save_config
+
+    save_config(AppConfig(show_folders=[str(show)]))
+    segs = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "sub only"}]
+    save_version(episode_base(show, "vid1"), "transcript", segs, {"step": "transcript"})
+
+    params = {"audio_path": "", "output_dir": str(ep_dir), "source": "transcript"}
+    for fmt in ("text", "srt", "vtt"):
+        r = client.get(f"/api/export/{fmt}", params=params)
+        assert r.status_code == 200, (fmt, r.text)
+        assert "vid1" in r.headers["content-disposition"]
+    r = client.get(
+        "/api/export/zip", params={"audio_path": "", "output_dir": str(ep_dir)}
+    )
+    assert r.status_code == 200, r.text
+
+    dest = tmp_path / "out.txt"
+    r = client.post(
+        "/api/export/save",
+        json={
+            "audio_path": "",
+            "output_dir": str(ep_dir),
+            "format": "txt",
+            "dest": str(dest),
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert "sub only" in dest.read_text()
+
+
+def test_export_takes_the_version_on_screen(client, tmp_path):
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    _register_show_folder(ep_dir)
+    base = Path(ep_dir) / "ep"
+    old = save_version(
+        base,
+        "transcript",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "old"}],
+        {"step": "transcript", "type": "raw"},
+    )
+    save_version(
+        base,
+        "transcript",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "new"}],
+        {"step": "transcript", "type": "raw"},
+    )
+    params = {"audio_path": audio, "source": "transcript"}
+    assert "new" in client.get("/api/export/text", params=params).text
+    r = client.get("/api/export/text", params={**params, "version_id": old})
+    assert r.status_code == 200
+    assert "old" in r.text and "new" not in r.text
+    r = client.get("/api/export/text", params={**params, "version_id": "../x"})
+    assert r.status_code == 400
+
+
+def test_export_filename_outside_latin1(client, tmp_path):
+    show = tmp_path / "show"
+    show.mkdir()
+    audio = show / "Épisode 東京.mp3"
+    audio.write_bytes(b"")
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.app_config import AppConfig, save_config
+
+    save_config(AppConfig(show_folders=[str(show)]))
+    base = AudioPaths.from_audio(str(audio)).base
+    save_version(
+        base,
+        "transcript",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "x"}],
+        {"step": "transcript"},
+    )
+    r = client.get(
+        "/api/export/srt", params={"audio_path": str(audio), "source": "transcript"}
+    )
+    assert r.status_code == 200, r.text
+    assert "filename*=UTF-8''" in r.headers["content-disposition"]
+
+
+def test_export_save_audio_is_confined_to_shows(client, tmp_path):
+    """The source file must be inside a show, like every other export branch."""
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    _register_show_folder(ep_dir)
+    outside = tmp_path / "secret.mp3"
+    outside.write_bytes(b"secret")
+    not_audio = Path(ep_dir).parent / "notes.txt"
+    not_audio.write_text("x")
+
+    def save(src):
+        return client.post(
+            "/api/export/save",
+            json={
+                "audio_path": str(src),
+                "format": "audio",
+                "dest": str(tmp_path / "copy"),
+            },
+        )
+
+    assert save(outside).status_code == 403
+    assert save(not_audio).status_code == 400
+    assert not (tmp_path / "copy").exists()
 
 
 # ──────────────────────────────────────────────
@@ -1265,13 +1512,31 @@ def test_translate_apply_manual_is_not_marked_edited(client, tmp_path):
 # ──────────────────────────────────────────────
 
 
-def test_batch_correct_skips_a_transcript_language_match(tmp_path):
+@pytest.mark.parametrize("model, reruns", [("qwen3:4b", False), ("other:1b", True)])
+def test_batch_correct_skips_a_transcript_language_match(
+    tmp_path, monkeypatch, model, reruns
+):
     """Correct's provenance records the transcript-derived source language, so
     the already-done check has to compare against that, not the request value.
     Otherwise every episode whose transcribe language differs from the LLM
-    source-language setting is corrected again on every batch run."""
+    source-language setting is corrected again on every batch run.
+
+    The LLM resolver is stubbed: against a live Ollama with the model not
+    pulled, resolution failed first and the test passed without ever reaching
+    the check. The twin (another model) proves the check is what decides."""
+    import podcodex.core.correct as core_correct
     from podcodex.api.routes.batch import BatchRequest, _batch_llm_step
     from podcodex.core._utils import AudioPaths
+    from tests.fixtures.llm import stub_llm_resolver
+
+    stub_llm_resolver(monkeypatch)
+    ran: list[int] = []
+
+    def fake_correct(segments, **_k):
+        ran.append(1)
+        return segments
+
+    monkeypatch.setattr(core_correct, "correct_segments", fake_correct)
 
     show = tmp_path / "show"
     (show / "ep").mkdir(parents=True)
@@ -1307,7 +1572,7 @@ def test_batch_correct_skips_a_transcript_language_match(tmp_path):
         show_folder=str(show),
         audio_paths=[str(audio)],
         llm_mode="ollama",
-        llm_model="qwen3:4b",
+        llm_model=model,
         source_lang="English",
     )
     p = AudioPaths.from_audio(str(audio))
@@ -1321,13 +1586,66 @@ def test_batch_correct_skips_a_transcript_language_match(tmp_path):
         0.0,
         step="correct",
     )
-    assert did_work is False
+    assert did_work is reruns
+    assert bool(ran) is reruns
+
+
+def test_batch_cancel_stops_inside_the_episode(tmp_path, monkeypatch):
+    """Cancel during a batch LLM step stops after the current LLM batch and
+    saves nothing, instead of running the episode to the end."""
+    import podcodex.core.correct as core_correct
+    from podcodex.api.routes._helpers import TaskCancelled
+    from podcodex.api.routes.batch import BatchRequest, _batch_llm_step
+    from podcodex.core._utils import AudioPaths
+    from tests.fixtures.llm import stub_llm_resolver
+    from podcodex.core.versions import list_versions
+
+    stub_llm_resolver(monkeypatch)
+    ran: list[int] = []
+
+    def fake_correct(segments, *, on_batch, **_k):
+        for n in (1, 2, 3):
+            ran.append(n)
+            on_batch(n, 3)
+        return segments
+
+    monkeypatch.setattr(core_correct, "correct_segments", fake_correct)
+    show = tmp_path / "show"
+    (show / "ep").mkdir(parents=True)
+    audio = show / "ep.mp3"
+    audio.touch()
+    base = show / "ep" / "ep"
+    save_version(
+        base,
+        "transcript",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}],
+        {"step": "transcript", "type": "raw", "params": {"language": "en"}},
+    )
+    req = BatchRequest(
+        show_folder=str(show),
+        audio_paths=[str(audio)],
+        llm_mode="ollama",
+        llm_model="m",
+    )
+    with pytest.raises(TaskCancelled):
+        _batch_llm_step(
+            str(audio),
+            AudioPaths.from_audio(str(audio)),
+            req,
+            lambda: True,
+            lambda *a, **k: None,
+            0,
+            0.0,
+            step="correct",
+        )
+    assert ran == [1]
+    assert list_versions(base, "corrected") == []
 
 
 def test_has_subtitles_only_counts_what_the_batch_can_read(tmp_path, monkeypatch):
     """A hand-uploaded `{stem}.subtitles.vtt` has no language code, so the
     batch's glob never finds it; the flag must not promise otherwise."""
-    from podcodex.api.routes.shows import _BATCH_SUBS_RE
+    from podcodex.core.episode_status import _BATCH_SUBS_RE
 
     assert _BATCH_SUBS_RE.search("ep1.subtitles.en.vtt")
     assert _BATCH_SUBS_RE.search("ep1.subtitles.pt-BR.VTT")
@@ -1335,3 +1653,100 @@ def test_has_subtitles_only_counts_what_the_batch_can_read(tmp_path, monkeypatch
     assert not _BATCH_SUBS_RE.search("ep1.subtitles.vtt")
     assert not _BATCH_SUBS_RE.search("ep1.subtitles.srt")
     assert not _BATCH_SUBS_RE.search("ep1.vtt")
+
+
+def test_shows_list_counts_go_through_the_reconcile(tmp_path, monkeypatch):
+    """The home card must not report a flag the show page would demote."""
+    from podcodex.core.app_config import AppConfig
+    from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+    from tests.fixtures.api_client import make_client
+
+    show = tmp_path / "show"
+    (show / "ep1").mkdir(parents=True)
+    client = make_client(
+        tmp_path, monkeypatch, config=AppConfig(show_folders=[str(show)])
+    )
+    get_pipeline_db(show).mark("ep1", transcribed=True)  # no version file on disk
+    try:
+        (card,) = client.get("/api/shows/").json()
+        assert card["transcribed_count"] == 0
+    finally:
+        close_pipeline_db(show)
+
+
+def test_shows_list_does_not_open_the_index_and_survives_a_failed_reconcile(
+    tmp_path, monkeypatch
+):
+    import podcodex.core.episode_status as status_mod
+    from podcodex.api.routes import shows as shows_routes
+    from podcodex.core.app_config import AppConfig
+    from podcodex.core.pipeline_db import close_pipeline_db, get_pipeline_db
+    from tests.fixtures.api_client import make_client
+
+    show = tmp_path / "show"
+    (show / "ep1" / "transcript").mkdir(parents=True)
+    (show / "ep1" / "transcript" / "20260101T000000000000Z_raw.json").write_text("[]")
+    client = make_client(
+        tmp_path, monkeypatch, config=AppConfig(show_folders=[str(show)])
+    )
+    get_pipeline_db(show).mark("ep1", transcribed=True)
+    monkeypatch.setattr(
+        status_mod, "lance_indexed_stems", lambda _p: pytest.fail("opened the index")
+    )
+    try:
+        assert client.get("/api/shows/").json()[0]["transcribed_count"] == 1
+
+        def boom(*_a, **_k):
+            raise OSError("share unmounted")
+
+        monkeypatch.setattr(shows_routes, "reconcile_show_status", boom)
+        assert client.get("/api/shows/").json()[0]["transcribed_count"] == 1
+    finally:
+        close_pipeline_db(show)
+
+
+def test_deleting_the_run_a_failures_record_describes_clears_it(tmp_path):
+    """Otherwise every batch fix 404s on the deleted version, forever."""
+    from podcodex.core.llm_failures import load_failures, save_batch_records
+    from podcodex.core.versions import delete_version
+
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    base = Path(ep_dir) / "ep"
+    seg = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "x"}]
+    keep = save_version(
+        base, "corrected", seg, {"step": "corrected", "manual_edit": True}
+    )
+    run = save_version(base, "corrected", seg, {"step": "corrected", "type": "raw"})
+    save_batch_records(
+        base,
+        "corrected",
+        model="m",
+        mode="ollama",
+        records=[{"batch": 1, "status": "rejected", "input": []}],
+        version_id=run,
+    )
+    assert delete_version(base, "corrected", run)
+    assert "corrected" not in load_failures(base)
+    assert keep  # another version remains, so this is not the empty-step path
+
+
+def test_a_translation_exports_with_the_current_speaker_names(
+    client, tmp_path, monkeypatch
+):
+    """The viewer shows the speaker map applied; the export must match it."""
+    import podcodex.core.versions as versions_mod
+
+    audio, ep_dir = _make_audio_dir(tmp_path)
+    _register_show_folder(ep_dir)
+    base = Path(ep_dir) / "ep"
+    segs = [{"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "salut"}]
+    vid = save_version(base, "french", segs, {"step": "french", "type": "raw"})
+    monkeypatch.setattr(
+        versions_mod, "load_latest_speaker_map", lambda _b: {"SPEAKER_00": "Ann"}
+    )
+    for extra in ({}, {"version_id": vid}):
+        r = client.get(
+            "/api/export/srt", params={"audio_path": audio, "source": "french", **extra}
+        )
+        assert r.status_code == 200, r.text
+        assert "Ann" in r.text and "SPEAKER_00" not in r.text

@@ -34,7 +34,7 @@ REPRESENTATIVE_PATHS = [
     "/api/bundle/preview",  # bundle
     "/api/config",  # config
     "/api/correct/start",  # correct
-    "/api/episodes/{show}",  # episodes
+    "/api/episodes/list",  # episodes
     "/api/export/srt",  # export
     "/api/fs/list",  # filesystem
     "/api/gpu/status",  # gpu

@@ -50,11 +50,18 @@ import { Download, Save, CheckCheck } from "lucide-react";
 
 function ExportDropdown({
   audioPath,
+  outputDir,
   source,
+  versionId,
   filename,
 }: {
-  audioPath: string;
+  audioPath?: string;
+  /** Episode folder, for episodes with no audio file (subtitle imports). */
+  outputDir?: string;
   source: string;
+  /** The version picked in the selector (the default view sends none,
+   *  which is what the backend's default export loads). */
+  versionId?: string;
   filename?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -80,7 +87,9 @@ function ExportDropdown({
     setOpen(false);
     return saveExportFile(platform, {
       audioPath,
+      outputDir,
       source,
+      versionId,
       format: ext,
       defaultName: `${filename || "export"}.${ext}`,
     });
@@ -949,8 +958,16 @@ export default function TranscriptViewer({
         followMode={followMode}
         canUndo={editor.canUndo}
         undo={editor.undo}
-        exportSlot={exportSource && audioPath
-          ? <ExportDropdown audioPath={audioPath} source={exportSource} filename={exportFilename} />
+        exportSlot={exportSource && (audioPath || sourceRef)
+          ? (
+            <ExportDropdown
+              audioPath={audioPath}
+              outputDir={audioPath ? undefined : sourceRef}
+              source={exportSource}
+              versionId={selectedVersionId ?? undefined}
+              filename={exportFilename}
+            />
+          )
           : null}
         isDirty={isDirty}
         canMarkReviewed={canMarkReviewed}

@@ -330,6 +330,12 @@ fn spawn_backend_if_needed(app: &tauri::AppHandle) -> Result<(), Box<dyn std::er
     // libs relative to cwd. Without current_dir the binary may fail to find
     // its support files. Both backends are --onedir now, so both get it.
     cmd.current_dir(&server_dir);
+    // The bundled CPU sidecar's path, for config the sidecar writes that must
+    // outlive the GPU backend (the Claude Desktop MCP entry): pointing it at
+    // the GPU binary breaks it when the GPU backend is uninstalled.
+    if let Some((cpu_exe, _)) = locate_bundled_server(app) {
+        cmd.env("PODCODEX_CPU_SERVER", cpu_exe);
+    }
     cmd.env("PODCODEX_DATA_DIR", &data_dir)
         .env("PODCODEX_API_PORT", API_PORT.to_string())
         // Sidecar polls this PID and self-terminates if the shell dies

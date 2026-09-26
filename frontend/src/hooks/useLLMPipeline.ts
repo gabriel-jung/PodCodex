@@ -185,6 +185,7 @@ export function useInputVersions(
  */
 export function useBestSourceSegments(
   audioPath: string | null | undefined,
+  outputDir: string | null | undefined,
   opts: {
     enabled?: boolean;
     verified?: { step: string; version_id: string } | null;
@@ -193,9 +194,12 @@ export function useBestSourceSegments(
   const verifiedKey = opts.verified
     ? `${opts.verified.step}:${opts.verified.version_id}`
     : null;
+  // Keyed on the source ref, like every other episode query, so the
+  // invalidations (which key on it) reach subtitle-only episodes too.
+  const sourceRef = sourceRefFor(audioPath, outputDir);
   return useQuery<Segment[]>({
-    queryKey: [...queryKeys.bestSourceSegments(audioPath), verifiedKey],
-    queryFn: () => (audioPath ? getBestSegments(audioPath) : Promise.resolve([])),
-    enabled: !!audioPath && (opts.enabled ?? true),
+    queryKey: [...queryKeys.bestSourceSegments(sourceRef), verifiedKey],
+    queryFn: () => getBestSegments(audioPath, outputDir),
+    enabled: !!sourceRef && (opts.enabled ?? true),
   });
 }

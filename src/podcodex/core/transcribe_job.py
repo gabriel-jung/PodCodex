@@ -93,6 +93,26 @@ def run(
     return {"count": len(segments)}
 
 
+def transcript_is_current(
+    audio_path: str, model_size: str, language: str, diarize: bool
+) -> bool:
+    """True when the current transcript already matches these settings.
+
+    Cheap (a DB query, no ML import), so the batch runner asks it in the
+    parent before spawning a child that would only answer "nothing to do".
+    The check is on the *current* version: each step loads the newest
+    output of the one before, so an older match is not something to reuse.
+    """
+    from podcodex.core._utils import AudioPaths
+    from podcodex.core.transcribe import segments_match_params
+    from podcodex.core.versions import has_matching_version
+
+    params = {**segments_match_params(model_size, language), "diarize": diarize}
+    return has_matching_version(
+        AudioPaths.from_audio(audio_path).base, "transcript", params, current_only=True
+    )
+
+
 def run_for_batch(
     *,
     progress_cb: Callable[[float, str], None],
@@ -131,15 +151,7 @@ def run_for_batch(
     did_work = False
     effective_batch = batch_size or default_batch_size()
 
-    # Every check is on the *current* version: each step loads the newest
-    # output of the one before, so an older match is not something to reuse.
-    transcript_params = {
-        **segments_match_params(model_size, language),
-        "diarize": diarize,
-    }
-    if not force and has_matching_version(
-        p.base, "transcript", transcript_params, current_only=True
-    ):
+    if not force and transcript_is_current(audio_path, model_size, language, diarize):
         return {"did_work": False}
 
     new_segments = force or not has_matching_version(

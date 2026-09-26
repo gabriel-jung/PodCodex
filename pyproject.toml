@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     "certifi>=2024.7.4",  # bootstrap._wire_ssl_certs: frozen bundle has no system CA path
     "feedparser>=6.0",
+    "httpx>=0.27",        # base layer: ingest.rss streams feeds and audio with it
     "loguru>=0.7.3",
     "pydantic>=2",        # base layer: core.app_config and friends import it at module scope
     "python-dotenv>=1.2.1",
@@ -30,7 +31,9 @@ bot = [
     "discord.py>=2.5.0",
 ]
 mcp = [
-    "mcp>=1.2.0",        # stdio server for Claude Desktop / Claude Code
+    # Floors at the fixes for published advisories; <2 because mcp 2 is a
+    # breaking release the server has not been ported to.
+    "mcp>=1.28.1,<2",    # stdio server for Claude Desktop / Claude Code
     # The server reads the index, so it needs the retrieval stack too:
     # `podcodex.mcp.server` imports it at module scope, and `--extra mcp`
     # alone produced a binary that died on `ModuleNotFoundError: numpy`
@@ -39,9 +42,11 @@ mcp = [
 ]
 desktop = [
     "fastapi>=0.115.0",
+    # starlette is fastapi's; the floor pins the advisory fixes.
+    "starlette>=1.3.1",
     "uvicorn[standard]>=0.34.0",
-    "python-multipart>=0.0.20",
-    "mcp>=1.2.0",
+    "python-multipart>=0.0.31",
+    "mcp>=1.28.1,<2",
 ]
 rag = [
     "chonkie>=0.5.0",
@@ -55,7 +60,7 @@ rag = [
     "transformers>=4.40,<5",
 ]
 youtube = [
-    "yt-dlp>=2024.0",
+    "yt-dlp>=2026.7.4",
 ]
 pipeline = [
     "accelerate>=1.12.0",
