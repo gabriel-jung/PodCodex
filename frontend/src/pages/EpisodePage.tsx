@@ -878,7 +878,6 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
   const [inspectTarget, setInspectTarget] = useState<{ model: string; chunking: string } | null>(null);
   const queryClient = useQueryClient();
 
-  const showName = meta?.name ?? "";
   const {
     speakerMap,
     episodeSpeakers,
@@ -887,7 +886,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
     allVersions,
     indexEntries,
     invalidateAll,
-  } = useEpisodeOverview(episode, folder, showName);
+  } = useEpisodeOverview(episode, folder);
 
   const translations = episode.translations ?? EMPTY_LANGS;
 
@@ -934,7 +933,7 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
 
   const deleteCollectionMutation = useMutation({
     mutationFn: (collection: string) =>
-      deleteEpisodeCollection(audioPath, showName, collection, outputDir),
+      deleteEpisodeCollection(audioPath, collection, outputDir),
     meta: { invalidates: [invalidateAll] },
   });
 
@@ -1321,7 +1320,6 @@ function OverviewTab({ episode, folder, meta, isYouTube, onDownloadAudio, onImpo
             onClose={() => setInspectTarget(null)}
             audioPath={audioPath ?? undefined}
             outputDir={outputDir ?? undefined}
-            show={meta?.name ?? ""}
             model={inspectTarget.model}
             chunking={inspectTarget.chunking}
           />

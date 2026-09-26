@@ -1059,15 +1059,26 @@ class IndexStore:
         return (meta.get("show_id") or "").strip() or (meta.get("show") or "")
 
     @staticmethod
-    def _row_is_show(meta: dict, show_id: str, show_label: str) -> bool:
+    def row_is_show(
+        meta: dict, show_id: str, show_label: str, *, strict: bool = False
+    ) -> bool:
         """Whether a ``_collections`` row belongs to the given show.
 
         Matching by label is case-insensitive, matching every other
         label-to-show resolver in the codebase.
+
+        An empty *show_id* means two things depending on the caller. The bot
+        does not know ids (it reads an rsynced index with no show folders), so
+        by default it matches any row by label. With *strict*, it means "this
+        show has no id" (an app folder never minted one), which can own only
+        rows that have none either: a row with an id belongs to the show that
+        has it, whatever it is called.
         """
         row_id = (meta.get("show_id") or "").strip()
         label = (show_label or "").strip().lower()
         row_label = (meta.get("show") or "").strip().lower()
+        if strict and not show_id and row_id:
+            return False
         if show_id:
             # A legacy row has no id, so its label is the only way back to it
             # until the migration stamps one on.
@@ -1077,7 +1088,13 @@ class IndexStore:
         return bool(label) and row_label == label
 
     def resolve_collection(
-        self, show_id: str, model: str, chunker: str, show_label: str = ""
+        self,
+        show_id: str,
+        model: str,
+        chunker: str,
+        show_label: str = "",
+        *,
+        strict: bool = False,
     ) -> str | None:
         """Return the collection name for a show, or None when not indexed.
 
@@ -1093,20 +1110,35 @@ class IndexStore:
             chunker: Chunking strategy key.
             show_label: Display name, used to find collections written before
                 ids existed, and as the bot's only handle on a show.
+            strict: See ``row_is_show``; the app passes it for a show folder.
         """
         for name, meta in self.get_all_collection_info().items():
             if meta.get("model") != model or meta.get("chunker") != chunker:
                 continue
-            if self._row_is_show(meta, show_id, show_label):
+            if self.row_is_show(meta, show_id, show_label, strict=strict):
                 return name
         return None
 
-    def collections_for_show(self, show_id: str, show_label: str = "") -> list[str]:
-        """Every collection belonging to a show, across models and chunkers."""
+    def collections_for_show(
+        self,
+        show_id: str,
+        show_label: str = "",
+        *,
+        strict: bool = False,
+        info: dict[str, dict] | None = None,
+    ) -> list[str]:
+        """Every collection belonging to a show, across models and chunkers.
+
+        Args:
+            strict: See ``row_is_show``; the app passes it for a show folder.
+            info: ``get_all_collection_info()`` when the caller already holds
+                it, to spare another index scan.
+        """
+        info = self.get_all_collection_info() if info is None else info
         return sorted(
             name
-            for name, meta in self.get_all_collection_info().items()
-            if self._row_is_show(meta, show_id, show_label)
+            for name, meta in info.items()
+            if self.row_is_show(meta, show_id, show_label, strict=strict)
         )
 
     def show_id_for_label(self, label: str) -> str:
@@ -1160,7 +1192,7 @@ class IndexStore:
         names = [
             name
             for name, meta in self.get_all_collection_info().items()
-            if self._row_is_show(meta, show_id, previous_label)
+            if self.row_is_show(meta, show_id, previous_label)
             and (meta.get("show") != label or not (meta.get("show_id") or "").strip())
         ]
         if not names:

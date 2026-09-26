@@ -71,3 +71,78 @@ def test_a_queued_cancel_does_not_block_a_show_delete():
     assert _wait_until(lambda: first.finished_at is not None)
     assert _wait_until(lambda: second.finished_at is not None)
     assert mgr.get_active_in_show("/shows/MyShow") is None
+
+
+def test_a_cancelled_task_keeps_the_summary_it_reported():
+    """A download loop reports what it finished before stopping; replacing
+    that with a bare "Cancelled" hid it from the user."""
+    mgr = TaskManager(max_workers=1)
+    started = threading.Event()
+
+    def loop(progress_cb):
+        from podcodex.api.tasks import TaskCancelled
+
+        started.set()
+        progress_cb.cancel_event.wait(timeout=5.0)
+        raise TaskCancelled("2 downloaded")
+
+    info = mgr.submit("download", "/tmp/show", loop)
+    assert _wait_until(started.is_set)
+    mgr.cancel(info.task_id)
+    assert _wait_until(lambda: info.finished_at is not None)
+
+    assert info.status == "cancelled"
+    assert info.message == "Cancelled: 2 downloaded"
+
+
+def test_a_cancelled_task_without_a_summary_reads_cancelled():
+    mgr = TaskManager(max_workers=1)
+    started = threading.Event()
+
+    def quiet(progress_cb):
+        started.set()
+        progress_cb.cancel_event.wait(timeout=5.0)
+
+    info = mgr.submit("download", "/tmp/show2", quiet)
+    assert _wait_until(started.is_set)
+    mgr.cancel(info.task_id)
+    assert _wait_until(lambda: info.finished_at is not None)
+
+    assert info.message == "Cancelled"
+
+
+def test_cancelling_an_extras_install_stops_uv():
+    """uv used to run to the end whatever the user clicked."""
+    import sys
+
+    import pytest
+
+    from podcodex.api.routes._helpers import TaskCancelled
+    from podcodex.api.routes.health import _run_uv
+
+    cancel = threading.Event()
+
+    def progress_cb(_frac, msg):
+        if msg == "working":
+            cancel.set()  # cancelled while uv is mid-run
+
+    progress_cb.cancel_event = cancel
+    slow = [
+        sys.executable,
+        "-c",
+        "import time; print('working', flush=True); time.sleep(30)",
+    ]
+    import podcodex.api.routes.health as health
+
+    refreshed: list[bool] = []
+    real = health._invalidate_capabilities
+    health._invalidate_capabilities = lambda: refreshed.append(True)
+    try:
+        start = time.monotonic()
+        with pytest.raises(TaskCancelled):
+            _run_uv(slow, progress_cb, "Installing")
+    finally:
+        health._invalidate_capabilities = real
+    assert time.monotonic() - start < 10
+    # uv may have changed packages before it stopped.
+    assert refreshed

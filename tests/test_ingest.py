@@ -118,7 +118,7 @@ def test_scan_folder_indexed_false(tmp_path, monkeypatch):
     assert result[0].indexed is False
 
 
-def test_note_episode_indexed_updates_cache(monkeypatch):
+def test_note_episode_indexed_updates_cache(tmp_path, monkeypatch):
     from podcodex.ingest import folder as folder_mod
 
     class FakeStore:
@@ -132,34 +132,36 @@ def test_note_episode_indexed_updates_cache(monkeypatch):
     monkeypatch.setattr(folder_mod, "_INDEXED_STEMS_CACHE", {})
 
     # Cold cache: nothing to keep warm, next request scans anyway.
-    folder_mod.note_episode_indexed("MyShow", "ep01")
+    folder_mod.note_episode_indexed(tmp_path, "ep01")
     assert folder_mod._INDEXED_STEMS_CACHE == {}
 
-    folder_mod._INDEXED_STEMS_CACHE["MyShow"] = ((("show_bge", 3),), {"ep00"})
-    folder_mod.note_episode_indexed("MyShow", "ep01")
-    versions, stems = folder_mod._INDEXED_STEMS_CACHE["MyShow"]
+    key = folder_mod._stems_cache_key(tmp_path)
+    folder_mod._INDEXED_STEMS_CACHE[key] = ((("show_bge", 3),), {"ep00"})
+    folder_mod.note_episode_indexed(tmp_path, "ep01")
+    versions, stems = folder_mod._INDEXED_STEMS_CACHE[key]
     assert stems == {"ep00", "ep01"}
     assert versions == (("show_bge", 7),)
 
 
-def test_note_episode_indexed_drops_entry_on_error(monkeypatch):
+def test_note_episode_indexed_drops_entry_on_error(tmp_path, monkeypatch):
     from podcodex.ingest import folder as folder_mod
 
     def _boom():
         raise RuntimeError("index store unavailable")
 
     monkeypatch.setattr("podcodex.rag.index_store.get_index_store", _boom)
+    key = folder_mod._stems_cache_key(tmp_path)
     monkeypatch.setattr(
         folder_mod,
         "_INDEXED_STEMS_CACHE",
-        {"MyShow": ((("show_bge", 3),), {"ep00"})},
+        {key: ((("show_bge", 3),), {"ep00"})},
     )
 
-    folder_mod.note_episode_indexed("MyShow", "ep01")
+    folder_mod.note_episode_indexed(tmp_path, "ep01")
 
     # A fingerprint we can't refresh must not survive: the next request
     # rebuilds from a real scan instead of serving a stale set.
-    assert "MyShow" not in folder_mod._INDEXED_STEMS_CACHE
+    assert key not in folder_mod._INDEXED_STEMS_CACHE
 
 
 # ──────────────────────────────────────────────

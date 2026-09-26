@@ -177,7 +177,7 @@ function DiscordOverview() {
               </tr>
             )}
             {accessList?.map((a) => (
-              <tr key={a.show} className="border-t border-border">
+              <tr key={a.show_id} className="border-t border-border">
                 <td className="px-3 py-2">{a.show}</td>
                 <td className="px-3 py-2">
                   <span className="inline-flex items-center gap-1.5 text-xs">

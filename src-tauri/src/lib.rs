@@ -102,6 +102,10 @@ const SERVER_SIDECAR: &str = "podcodex-server";
 const GPU_BACKEND_SUBDIR: &str = "backends/gpu";
 const GPU_SIDECAR_NAME: &str = "podcodex-server-gpu";
 const GPU_ACTIVATED_MARKER: &str = "activated";
+/// Names the install folder to run, under ``backends/gpu/``. Absent on the
+/// legacy flat layout, where the install is ``backends/gpu/`` itself.
+const GPU_CURRENT_POINTER: &str = "current";
+const GPU_INSTALL_PREFIX: &str = "v-";
 const GPU_MANIFEST_FILE: &str = "cuda-libs.json";
 
 struct BackendProcess(Mutex<Option<GroupChild>>);
@@ -487,9 +491,35 @@ fn ensure_executable(path: &std::path::Path) {
 #[cfg(not(unix))]
 fn ensure_executable(_path: &std::path::Path) {}
 
-/// Look for an installed + activated GPU sidecar at
-/// ``<data_dir>/backends/gpu/podcodex-server-gpu``. Returns ``None`` (fall
-/// back to CPU) on any of:
+/// Same rule as ``_valid_install_name`` in ``src/podcodex/api/gpu_backend.py``:
+/// a folder name under ``backends/gpu/``, never a path.
+fn valid_install_name(name: &str) -> bool {
+    name.starts_with(GPU_INSTALL_PREFIX)
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains("..")
+}
+
+/// The GPU install folder to run: the one ``current`` names, else the root
+/// itself (the legacy flat layout). Mirrors ``active_install_dir`` in
+/// ``gpu_backend.py``, which builds each install beside the live one and
+/// switches by rewriting ``current``.
+fn active_gpu_install_dir(root: &std::path::Path) -> PathBuf {
+    if let Ok(raw) = std::fs::read_to_string(root.join(GPU_CURRENT_POINTER)) {
+        let name = raw.trim();
+        if valid_install_name(name) && root.join(name).is_dir() {
+            return root.join(name);
+        }
+        log::warn!(
+            "GPU install pointer {name:?} is not a usable folder, trying the root"
+        );
+    }
+    root.to_path_buf()
+}
+
+/// Look for an installed + activated GPU sidecar in the active install
+/// folder under ``<data_dir>/backends/gpu/``. Returns ``None`` (fall back to
+/// CPU) on any of:
 ///   - activation marker missing
 ///   - manifest missing (broken/interrupted install)
 ///   - binary not present
@@ -502,10 +532,11 @@ fn locate_gpu_sidecar(
     data_dir: &std::path::Path,
     app_version: &str,
 ) -> Option<(PathBuf, PathBuf)> {
-    let install_dir = data_dir.join(GPU_BACKEND_SUBDIR);
-    if !install_dir.join(GPU_ACTIVATED_MARKER).is_file() {
+    let root = data_dir.join(GPU_BACKEND_SUBDIR);
+    if !root.join(GPU_ACTIVATED_MARKER).is_file() {
         return None;
     }
+    let install_dir = active_gpu_install_dir(&root);
     if !install_dir.join(GPU_MANIFEST_FILE).is_file() {
         log::warn!(
             "GPU activated marker present but manifest missing — \
@@ -666,4 +697,40 @@ fn schedule_window_show(app: tauri::AppHandle) {
 
         let _ = window.show();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_names_are_folders_never_paths() {
+        assert!(valid_install_name("v-0.2.14-1a2b3c4d"));
+        assert!(!valid_install_name("0.2.14"));
+        assert!(!valid_install_name("v-../evil"));
+        assert!(!valid_install_name("v-a/b"));
+        assert!(!valid_install_name("v-a\\b"));
+    }
+
+    #[test]
+    fn the_pointer_selects_the_install_folder() {
+        let root = std::env::temp_dir()
+            .join(format!("podcodex-gpu-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("v-1-abc")).unwrap();
+
+        // No pointer: the legacy flat layout.
+        assert_eq!(active_gpu_install_dir(&root), root);
+
+        std::fs::write(root.join(GPU_CURRENT_POINTER), "v-1-abc\n").unwrap();
+        assert_eq!(active_gpu_install_dir(&root), root.join("v-1-abc"));
+
+        // A pointer at a missing or unsafe folder falls back to the root.
+        std::fs::write(root.join(GPU_CURRENT_POINTER), "v-missing").unwrap();
+        assert_eq!(active_gpu_install_dir(&root), root);
+        std::fs::write(root.join(GPU_CURRENT_POINTER), "../outside").unwrap();
+        assert_eq!(active_gpu_install_dir(&root), root);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

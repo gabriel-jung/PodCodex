@@ -81,7 +81,7 @@ bundle-server: setup-pyinstaller  ## Freeze the CPU Python backend as a sidecar 
 bundle-server-gpu: setup-pyinstaller  ## Freeze the GPU sidecar (--onedir, includes CUDA libs)
 	.venv/bin/python packaging/build_server.py --gpu
 
-package-gpu:  ## Split the GPU --onedir build into server-core + cuda-libs release archives
+package-gpu:  ## Split the GPU --onedir build into server-core, torch-runtime and cuda-libs release archives
 	.venv/bin/python packaging/package_gpu.py
 
 bundle-gpu: bundle-server-gpu package-gpu  ## Build GPU sidecar and package release archives + manifest

@@ -752,19 +752,22 @@ export default function ShowPage({ folder, initialTab }: { folder: string; initi
       )}
       </>)}
 
-      {tab === "search" && (
+      {/* Mounted once the meta is in, like the speakers and settings panes:
+          search keys on the show id it carries. */}
+      {tab === "search" && meta && (
         <SearchPanel
           scope="show"
+          showId={meta.id}
           showName={showName}
           folder={folder}
-          artwork={metaLoaded ? showArtworkSrc(meta?.artwork_url, folder, artworkEpoch) : undefined}
+          artwork={showArtworkSrc(meta.artwork_url, folder, artworkEpoch)}
         />
       )}
 
-      {/* Both panes need the meta; a failed request must say so rather than
-          leave the tab blank with the header quietly falling back to the
-          folder name. */}
-      {(tab === "speakers" || tab === "settings") && !meta && metaFailed && (
+      {/* These panes need the meta (search keys on its show id); a failed
+          request must say so rather than leave the tab blank with the header
+          quietly falling back to the folder name. */}
+      {(tab === "speakers" || tab === "settings" || tab === "search") && !meta && metaFailed && (
         <div className="p-6">
           <ErrorAlert error={metaError} onRetry={() => void refetchMeta()} />
         </div>

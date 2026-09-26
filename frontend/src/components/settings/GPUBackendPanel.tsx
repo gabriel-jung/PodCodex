@@ -193,7 +193,11 @@ function StatusCard({ status }: { status: import("@/api/gpu").GPUStatus }) {
     ? "CPU only"
     : "CPU only";
   const sub = isGPU
-    ? `Active · ${status.installed_version}`
+    // installed_version is the cuda-libs content tag, a hash: say which
+    // PodCodex build is installed instead.
+    ? status.installed_server_version
+      ? `Active · v${status.installed_server_version}`
+      : "Active"
     : status.gpu_detected
     ? `${status.gpu_name} (${status.vram_mb} MB) detected, not yet activated`
     : "No NVIDIA GPU detected";
@@ -251,8 +255,8 @@ function UpdateAvailableBanner({
         but the app is at{" "}
         <code className="font-mono text-2xs">{appVersion}</code>. Hardware
         acceleration is currently disabled, and the app fell back to the CPU
-        sidecar. Re-download to restore GPU acceleration; only the small
-        server-core archive is fetched if the CUDA libs already match.
+        sidecar. Update to restore GPU acceleration: only the parts that
+        changed are downloaded, usually just the PodCodex server core.
       </p>
       <Button onClick={onUpdate} disabled={downloading || mutating} size="sm">
         {downloading || mutating ? (
@@ -309,10 +313,11 @@ function ActionBlock({
         <div className="rounded-lg border border-border p-4 space-y-2">
           <div className="text-sm font-medium">Download CUDA backend</div>
           <p className="text-xs text-muted-foreground">
-            ~2.4 GB download. Installs into{" "}
+            About 3 GB the first time. Installs into{" "}
             <code className="font-mono text-2xs">{status.install_dir}</code>.
-            Pinned to a specific torch major version, only re-downloaded
-            on toolkit upgrades.
+            App updates then download only what changed, usually just the
+            PodCodex server core; torch and the CUDA libraries are fetched
+            again only when they change.
           </p>
           <Button onClick={onDownload} disabled={mutating} className="mt-2">
             {mutating ? (

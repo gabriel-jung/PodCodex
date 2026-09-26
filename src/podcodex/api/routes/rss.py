@@ -18,6 +18,7 @@ from podcodex.api.routes._helpers import (
     scan_show_stems,
     submit_task,
 )
+from podcodex.api.tasks import TaskCancelled
 from podcodex.api.schemas import DownloadItemStatus, RSSEpisodeOut, TaskResponse
 from podcodex.ingest.rss import (
     download_audio,
@@ -153,8 +154,7 @@ def rss_download(
         existing_stems = list_show_stems(show_path)
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
-                progress_cb(i / total, f"Cancelled — {_summary()}")
-                break
+                raise TaskCancelled(_summary())
 
             stem = episode_stem(ep, show_path, existing_stems=existing_stems)
             report(i, "Downloading…")

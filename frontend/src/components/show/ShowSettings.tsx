@@ -7,7 +7,7 @@ import type { ShowMetaUpdate } from "@/api/shows";
 import { updateShowMeta, moveShow, deleteShow, previewBroadcastNumber, uploadShowArtwork, deleteShowArtwork } from "@/api/client";
 import { artworkUrl as showArtworkEndpoint } from "@/api/filesystem";
 import { LOCAL_ARTWORK_MARKER } from "@/lib/showArtwork";
-import { removeQueriesForShowName, removeQueriesUnderPath } from "@/api/cacheInvalidation";
+import { removeQueriesForShowId, removeQueriesUnderPath } from "@/api/cacheInvalidation";
 import { queryKeys } from "@/api/queryKeys";
 import { useIndexConfig } from "@/hooks/useIndexConfig";
 import { useLLMProviders } from "@/hooks/useLLMProviders";
@@ -278,15 +278,10 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       invalidates: [
         queryKeys.showMeta(folder),
         queryKeys.shows(),
-        // Showname is the cache key for search/index/bot-access namespaces, so
-        // a rename strands every entry under the old name. Those have to be
-        // *removed*: invalidating refetches them, and the backend no longer
-        // knows that name, so each one 404s (visible as
-        // "Unknown show '<old name>'" right after a rename). The namespace
-        // invalidations then refill them under the new name.
+        // Those namespaces key on the show id, which a rename keeps; they are
+        // refetched only because their responses carry the display name.
         (qc) => {
           if (name === meta.name) return;
-          removeQueriesForShowName(qc, meta.name);
           qc.invalidateQueries({ queryKey: ["search"] });
           qc.invalidateQueries({ queryKey: ["index"] });
           qc.invalidateQueries({ queryKey: ["bot-access"] });
@@ -375,11 +370,10 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       // Re-adding a show at the same folder path would otherwise hit stale
       // per-folder caches (episodes, versions, roster, ...) before refetch.
       removeQueriesUnderPath(queryClient, folder);
-      // And the same for everything keyed by the show *name* rather than its
-      // path (search, index, bot-access). Left behind, those entries answer a
-      // later namespace invalidation by refetching a show the backend no
-      // longer has, which 404s exactly like a rename did.
-      removeQueriesForShowName(queryClient, meta.name);
+      // And the same for everything keyed by the show's id rather than its
+      // path (search, bot-access). Left behind, those entries answer a later
+      // namespace invalidation by refetching a show the backend no longer has.
+      removeQueriesForShowId(queryClient, meta.id);
       queryClient.invalidateQueries({ queryKey: queryKeys.shows() });
       queryClient.invalidateQueries({ queryKey: queryKeys.episodesAll() });
       if (data.warning) {
@@ -819,7 +813,9 @@ export default function ShowSettings({ folder, meta }: ShowSettingsProps) {
       </SettingSection>
 
       {/* ── Discord bot access ── */}
-      <ShowAccessSection show={meta.name} />
+      {/* A folder never minted an id is keyed by its name until the first
+          password write mints one (the section then refetches this meta). */}
+      <ShowAccessSection showId={meta.id || meta.name} showName={meta.name} folder={folder} />
 
       {/* ── Sharing ── */}
       <BundleExportSection folder={folder} showName={meta.name} />

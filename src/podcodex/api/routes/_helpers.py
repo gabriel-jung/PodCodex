@@ -14,6 +14,7 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from podcodex.api.schemas import TaskResponse
+from podcodex.api.tasks import TaskCancelled
 from podcodex.core._utils import bad_path_component  # noqa: F401
 from podcodex.core._utils import (
     BREAK_SPEAKER,
@@ -88,10 +89,6 @@ def keyed_lock(namespace: str, key: Path | str) -> threading.Lock:
         ident = str(Path(key).resolve())
     with _KEYED_LOCKS_GUARD:
         return _KEYED_LOCKS.setdefault((namespace, ident), threading.Lock())
-
-
-class TaskCancelled(Exception):
-    """Raised inside an in-process task once the user cancelled it."""
 
 
 def raise_if_cancelled(progress_cb) -> None:
@@ -209,7 +206,14 @@ def require_audio_or_output(audio_path: str | None, output_dir: str | None) -> N
 
 def resolve_inside_show_root(path: str) -> Path:
     """Defend ``?path=`` query params against arbitrary-file read/delete by
-    requiring the resolved path to live under a registered show folder."""
+    requiring the resolved path to live under a registered show folder.
+
+    Defense in depth, not the boundary: the loopback token is (see
+    ARCHITECTURE.md, "The token is the API's security boundary"). This and
+    ``require_registered_show`` guard only routes that delete, move, stream
+    or export files or rewrite ``show.toml``; pipeline routes take their
+    paths as given.
+    """
     from podcodex.api.routes.config import _load as _load_cfg
 
     p = Path(path).expanduser().resolve()
@@ -551,45 +555,57 @@ def format_prompt_batches(batches: list) -> list[dict]:
     ]
 
 
-def resolve_collection_for_show(
-    show: str, model: str, chunking: str, store=None
-) -> str | None:
-    """Collection for a show given its display name, or None when not indexed.
+def show_by_id(show_id: str, store=None) -> tuple[Path | None, str]:
+    """``(registered folder, display name)`` of the show with this id.
 
-    The API receives display names (from the frontend, MCP, and the bot), so
-    this is the one place that goes label -> id -> collection. Nothing
-    reconstructs a collection name from a show name any more: that is what a
-    rename used to orphan.
+    One walk of the registered folders. The label is for collections written
+    before ids existed, which carry only a label until the migration stamps
+    one on. It comes from the folder when there is one (``show.toml`` is the
+    truth), else from the index, which is all an index-only show has.
+    """
+    from podcodex.ingest.show import show_display
+    from podcodex.ingest.show_registry import folder_for_id
+
+    if not (show_id or "").strip():
+        return None, ""
+    folder = folder_for_id(show_id)
+    if folder is not None:
+        return folder, show_display(folder)
+    store = store if store is not None else get_index_store()
+    return None, store.label_for_show_id(show_id)
+
+
+def resolve_collection_for_show_id(
+    show_id: str, model: str, chunking: str, store=None
+) -> str | None:
+    """Collection for a show given its id, or None when not indexed.
+
+    The app's routes receive the ``show.toml`` id, never a display name: two
+    shows may share a name, and a rename would race a request in flight.
+    Nothing reconstructs a collection name from a show: that is what a rename
+    used to orphan.
 
     Args:
         store: The store to query. Pass the one the caller already resolved,
             so a route that swaps its store (tests do) is not bypassed by a
             second lookup in here.
     """
-    from podcodex.ingest.show_registry import show_id_for_label
-
     store = store if store is not None else get_index_store()
-    return store.resolve_collection(
-        show_id_for_label(show), model, chunking, show_label=show
-    )
+    if not (show_id or "").strip():
+        return None
+    label = show_by_id(show_id, store)[1]
+    return store.resolve_collection(show_id, model, chunking, show_label=label)
 
 
-def collections_for_show_name(show: str, store=None) -> list[str]:
-    """Every collection of the show with this display name.
+def collections_for_show_id(show_id: str, store=None) -> list[str]:
+    """Every collection of the show with this id, across models and chunkers.
 
-    Companion to ``resolve_collection_for_show`` for callers that want all of
-    a show's collections rather than one specific combination.
-
-    An empty *show* means "no filter" and returns every collection, matching
-    the ``list_collections(show="")`` behaviour these call sites had before
-    identity moved off the display name.
+    An empty *show_id* means "no filter" and returns every collection.
 
     Args:
-        store: The store to query; see ``resolve_collection_for_show``.
+        store: The store to query; see ``resolve_collection_for_show_id``.
     """
-    from podcodex.ingest.show_registry import show_id_for_label
-
     store = store if store is not None else get_index_store()
-    if not (show or "").strip():
+    if not (show_id or "").strip():
         return store.list_collections()
-    return store.collections_for_show(show_id_for_label(show), show_label=show)
+    return store.collections_for_show(show_id, show_label=show_by_id(show_id, store)[1])

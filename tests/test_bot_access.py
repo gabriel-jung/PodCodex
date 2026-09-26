@@ -79,7 +79,7 @@ def test_list_shows_all_unprotected_initially(client):
 
 
 def test_get_one_unknown_show_404(client):
-    r = client.get("/api/bot-access/password?show=Nope")
+    r = client.get("/api/bot-access/password?show_id=Nope")
     assert r.status_code == 404
 
 
@@ -87,7 +87,7 @@ def test_get_one_unknown_show_404(client):
 
 
 def test_generate_returns_plaintext_once(client):
-    r = client.post("/api/bot-access/password?show=Alpha", json={})
+    r = client.post("/api/bot-access/password?show_id=Alpha", json={})
     assert r.status_code == 200
     body = r.json()
     assert body["show"] == "Alpha"
@@ -96,12 +96,12 @@ def test_generate_returns_plaintext_once(client):
     assert len(body["password"]) >= 20  # 16 bytes -> 22 urlsafe chars
 
     # Status now reflects protected
-    status = client.get("/api/bot-access/password?show=Alpha").json()
+    status = client.get("/api/bot-access/password?show_id=Alpha").json()
     assert status["is_protected"] is True
 
 
 def test_generate_stores_sha256_hash(client):
-    r = client.post("/api/bot-access/password?show=Alpha", json={})
+    r = client.post("/api/bot-access/password?show_id=Alpha", json={})
     plaintext = r.json()["password"]
     expected = f"sha256:{hashlib.sha256(plaintext.encode()).hexdigest()}"
 
@@ -113,7 +113,9 @@ def test_generate_stores_sha256_hash(client):
 
 
 def test_manual_password_accepts_16_chars(client):
-    r = client.post("/api/bot-access/password?show=Alpha", json={"password": "a" * 16})
+    r = client.post(
+        "/api/bot-access/password?show_id=Alpha", json={"password": "a" * 16}
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["generated"] is False
@@ -121,13 +123,15 @@ def test_manual_password_accepts_16_chars(client):
 
 
 def test_manual_password_rejects_too_short(client):
-    r = client.post("/api/bot-access/password?show=Alpha", json={"password": "short"})
+    r = client.post(
+        "/api/bot-access/password?show_id=Alpha", json={"password": "short"}
+    )
     assert r.status_code == 422
     assert "at least 16" in r.json()["detail"]
 
 
 def test_manual_password_whitespace_is_trimmed_then_rejected(client):
-    r = client.post("/api/bot-access/password?show=Alpha", json={"password": "   "})
+    r = client.post("/api/bot-access/password?show_id=Alpha", json={"password": "   "})
     # Trimmed to empty → treated as generate, not manual; should generate.
     # Confirm behaviour: empty-after-trim means generate.
     assert r.status_code == 200
@@ -138,8 +142,8 @@ def test_manual_password_whitespace_is_trimmed_then_rejected(client):
 
 
 def test_rotate_replaces_existing_hash(client):
-    first = client.post("/api/bot-access/password?show=Alpha", json={}).json()
-    second = client.post("/api/bot-access/password?show=Alpha", json={}).json()
+    first = client.post("/api/bot-access/password?show_id=Alpha", json={}).json()
+    second = client.post("/api/bot-access/password?show_id=Alpha", json={}).json()
     assert first["password"] != second["password"]
 
     store = rag_index_store.get_index_store()
@@ -151,17 +155,17 @@ def test_rotate_replaces_existing_hash(client):
 
 
 def test_delete_removes_protection(client):
-    client.post("/api/bot-access/password?show=Alpha", json={})
-    r = client.delete("/api/bot-access/password?show=Alpha")
+    client.post("/api/bot-access/password?show_id=Alpha", json={})
+    r = client.delete("/api/bot-access/password?show_id=Alpha")
     assert r.status_code == 204
     assert (
-        client.get("/api/bot-access/password?show=Alpha").json()["is_protected"]
+        client.get("/api/bot-access/password?show_id=Alpha").json()["is_protected"]
         is False
     )
 
 
 def test_delete_unknown_show_404(client):
-    r = client.delete("/api/bot-access/password?show=Nope")
+    r = client.delete("/api/bot-access/password?show_id=Nope")
     assert r.status_code == 404
 
 
@@ -169,7 +173,7 @@ def test_delete_unknown_show_404(client):
 
 
 def test_set_unknown_show_404(client):
-    r = client.post("/api/bot-access/password?show=Nope", json={})
+    r = client.post("/api/bot-access/password?show_id=Nope", json={})
     assert r.status_code == 404
 
 
@@ -180,7 +184,7 @@ def test_set_password_on_replica_returns_409(client, monkeypatch):
     """A replica must not accept a password the next rsync would erase."""
     monkeypatch.setenv("PODCODEX_MACHINE_ID", "bot-host")
 
-    r = client.post("/api/bot-access/password?show=Alpha", json={})
+    r = client.post("/api/bot-access/password?show_id=Alpha", json={})
     assert r.status_code == 409
     assert "replica" in r.json()["detail"]
 
@@ -189,14 +193,16 @@ def test_set_password_on_replica_returns_409(client, monkeypatch):
 
 def test_delete_password_on_replica_returns_409(client, monkeypatch):
     assert (
-        client.post("/api/bot-access/password?show=Alpha", json={}).status_code == 200
+        client.post("/api/bot-access/password?show_id=Alpha", json={}).status_code
+        == 200
     )
     monkeypatch.setenv("PODCODEX_MACHINE_ID", "bot-host")
 
-    r = client.delete("/api/bot-access/password?show=Alpha")
+    r = client.delete("/api/bot-access/password?show_id=Alpha")
     assert r.status_code == 409
     assert (
-        client.get("/api/bot-access/password?show=Alpha").json()["is_protected"] is True
+        client.get("/api/bot-access/password?show_id=Alpha").json()["is_protected"]
+        is True
     )
 
 
@@ -205,12 +211,14 @@ def test_claiming_the_index_restores_writes(client, monkeypatch):
 
     monkeypatch.setenv("PODCODEX_MACHINE_ID", "bot-host")
     assert (
-        client.post("/api/bot-access/password?show=Alpha", json={}).status_code == 409
+        client.post("/api/bot-access/password?show_id=Alpha", json={}).status_code
+        == 409
     )
 
     claim_origin(rag_index_store.get_index_store().path)
     assert (
-        client.post("/api/bot-access/password?show=Alpha", json={}).status_code == 200
+        client.post("/api/bot-access/password?show_id=Alpha", json={}).status_code
+        == 200
     )
 
 
@@ -222,7 +230,8 @@ def test_unstamped_index_still_accepts_writes(client, monkeypatch):
     monkeypatch.setenv("PODCODEX_MACHINE_ID", "some-other-host")
 
     assert (
-        client.post("/api/bot-access/password?show=Alpha", json={}).status_code == 200
+        client.post("/api/bot-access/password?show_id=Alpha", json={}).status_code
+        == 200
     )
 
 
@@ -701,8 +710,80 @@ class _RecordingStore:
         self._sink.append(show_id)
 
 
-def test_a_show_name_with_a_slash_reaches_its_routes(client):
-    """The label used to be a path segment: "AC/DC" routed as show "AC"."""
-    r = client.get("/api/bot-access/password", params={"show": "AC/DC"})
+def test_a_show_key_with_a_slash_reaches_its_routes(client):
+    """A legacy key is a label, and "AC/DC" once routed as show "AC"."""
+    r = client.get("/api/bot-access/password", params={"show_id": "AC/DC"})
     assert r.status_code == 404  # unknown show, reported for the whole name
     assert "AC/DC" in r.json()["detail"]
+
+
+# ── Keyed by show id, not display name ──────────────────────────────────
+
+
+def _register(monkeypatch, *folders):
+    import podcodex.core.app_config as app_config
+
+    cfg = app_config.AppConfig()
+    cfg.show_folders = [str(f) for f in folders]
+    monkeypatch.setattr(app_config, "load_config", lambda: cfg)
+
+
+def _show_folder(path: Path, name: str, show_id: str) -> Path:
+    path.mkdir(parents=True)
+    (path / "show.toml").write_text(
+        f'id = "{show_id}"\nname = "{name}"\n', encoding="utf-8"
+    )
+    return path
+
+
+def test_two_shows_sharing_a_name_are_two_rows_with_their_own_status(
+    client, tmp_path, monkeypatch
+):
+    one = _show_folder(tmp_path / "one", "Twin", "twin_11111111")
+    two = _show_folder(tmp_path / "two", "Twin", "twin_22222222")
+    _register(monkeypatch, one, two)
+
+    assert (
+        client.post(
+            "/api/bot-access/password", params={"show_id": "twin_22222222"}, json={}
+        ).status_code
+        == 200
+    )
+
+    rows = {
+        r["show_id"]: r
+        for r in client.get("/api/bot-access/passwords").json()
+        if r["show"] == "Twin"
+    }
+    assert set(rows) == {"twin_11111111", "twin_22222222"}
+    assert rows["twin_11111111"]["is_protected"] is False
+    assert rows["twin_22222222"]["is_protected"] is True
+
+
+def test_a_registered_show_hides_its_own_unmigrated_index_row(
+    client, tmp_path, monkeypatch
+):
+    """Seeded "Alpha" collections carry no id; the registered Alpha owns them."""
+    _register(monkeypatch, _show_folder(tmp_path / "alpha", "Alpha", "alpha_1234abcd"))
+
+    rows = client.get("/api/bot-access/passwords").json()
+
+    assert [r["show_id"] for r in rows if r["show"] == "Alpha"] == ["alpha_1234abcd"]
+
+
+def test_setting_a_password_mints_an_id_for_an_unminted_folder(
+    client, tmp_path, monkeypatch
+):
+    from podcodex.ingest.show import load_show_meta
+
+    folder = tmp_path / "gamma"
+    folder.mkdir()
+    (folder / "show.toml").write_text('name = "Gamma"\n', encoding="utf-8")
+    _register(monkeypatch, folder)
+
+    r = client.post("/api/bot-access/password", params={"show_id": "Gamma"}, json={})
+
+    minted = load_show_meta(folder).id
+    assert minted and r.json()["show_id"] == minted
+    status = client.get("/api/bot-access/password", params={"show_id": minted})
+    assert status.json()["is_protected"] is True

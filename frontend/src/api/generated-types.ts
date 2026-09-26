@@ -275,6 +275,7 @@ export interface PipelineLLMDefaults {
 }
 
 export interface ShowSummary {
+  id: string;
   name: string;
   path: string;
   episode_count: number;
@@ -357,11 +358,13 @@ export interface PodcastSearchResultOut {
 }
 
 export interface ShowAccess {
+  show_id: string;
   show: string;
   is_protected: boolean;
 }
 
 export interface ShowPasswordSet {
+  show_id: string;
   show: string;
   password: string;
   generated: boolean;
@@ -549,7 +552,7 @@ export interface BatchRequest {
 
 export interface SearchRequest {
   query: string;
-  show: string;
+  show_id: string;
   model?: string;
   chunking?: string;
   top_k?: number;
@@ -592,7 +595,7 @@ export interface SearchResultSchema {
 
 export interface ExactRequest {
   query: string;
-  show: string;
+  show_id: string;
   model?: string;
   chunking?: string;
   episode?: string | null;
@@ -605,7 +608,7 @@ export interface ExactRequest {
 }
 
 export interface RandomRequest {
-  show: string;
+  show_id: string;
   model?: string;
   chunking?: string;
   episode?: string | null;

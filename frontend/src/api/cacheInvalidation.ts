@@ -30,22 +30,16 @@ export function removeQueriesUnderPath(qc: QueryClient, path: string): void {
 }
 
 /**
- * Remove every cached query keyed by `showName`.
+ * Remove every cached query keyed by a show's id (`search`, `bot-access`).
  *
- * For a *rename*, dropping is the only correct move: several namespaces
- * (`search`, `index`, `bot-access`) key on the show's display name, so after
- * a rename those entries reference a name the backend no longer knows.
- * Invalidating them refetches, and every refetch 404s. Removing them lets the
- * components mount fresh queries under the new name instead.
- *
- * Exact segment equality, not the substring/prefix match `removeQueriesUnderPath`
- * uses: show names are free text, so a prefix rule would let one show's rename
- * wipe another's cache.
+ * For a deleted show: invalidating those entries would refetch a show the
+ * backend no longer has. A rename needs nothing here, since the id does not
+ * change. Exact segment equality, like the keys themselves.
  */
-export function removeQueriesForShowName(qc: QueryClient, showName: string): void {
-  if (!showName) return;
+export function removeQueriesForShowId(qc: QueryClient, showId: string): void {
+  if (!showId) return;
   qc.removeQueries({
-    predicate: (q) => q.queryKey.some((k) => k === showName),
+    predicate: (q) => q.queryKey.some((k) => k === showId),
   });
 }
 
@@ -79,7 +73,10 @@ const STEP_INVALIDATIONS: Record<
     translations: true,
   },
   synthesize: { namespaces: ["synthesize", "versions"] },
-  index: { namespaces: ["index", "search"] },
+  // Plus the show metas and list: the first index run on a show that was
+  // never minted an id mints one, and search keys on that id. Left stale,
+  // search kept sending "" and found nothing.
+  index: { namespaces: ["index", "search", "showMeta", "shows"] },
 };
 
 /** Every namespace above, for an unrecognized step. */

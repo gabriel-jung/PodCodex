@@ -8,6 +8,8 @@ import { Play } from "lucide-react";
 import SegmentContextDialog from "./SegmentContextDialog";
 
 interface ShowContext {
+  /** show.toml id, for the episode-meta lookup; `name` is display only. */
+  id?: string;
   name?: string;
   folder?: string;
   artwork?: string;
@@ -140,7 +142,7 @@ function SearchResultCardInner({ result, show, query = "" }: SearchResultCardPro
           start={result.start}
           end={result.end}
           episodeTitle={result.episode}
-          showName={show?.name}
+          showId={show?.id}
           episodeStem={result.episode_stem || undefined}
           model={show?.model}
           chunking={show?.chunking}

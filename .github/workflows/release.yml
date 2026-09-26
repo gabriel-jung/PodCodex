@@ -256,6 +256,8 @@ jobs:
           files: |
             packaging/release-assets/server-core.tar.gz
             packaging/release-assets/server-core.tar.gz.sha256
+            packaging/release-assets/torch-runtime-*.tar.gz
+            packaging/release-assets/torch-runtime-*.tar.gz.sha256
             packaging/release-assets/cuda-libs-*.tar.gz
             packaging/release-assets/cuda-libs-*.tar.gz.sha256
             packaging/release-assets/cuda-libs.json

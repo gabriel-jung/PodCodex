@@ -380,7 +380,7 @@ def _batch_index(
     # it with a full chunk scan after every episode of the batch.
     from podcodex.ingest.folder import note_episode_indexed
 
-    note_episode_indexed(req.show_name, stem)
+    note_episode_indexed(req.show_folder, stem)
     return True
 
 
@@ -559,6 +559,17 @@ def _run_batch(progress_cb, req: BatchRequest):
                 "Failed to invalidate scan cache for {}", audio_path
             )
 
+    if _cancelled():
+        done = [
+            f"{n} {label}"
+            for n, label in (
+                (completed, "completed"),
+                (skipped, "skipped"),
+                (failed, "failed"),
+            )
+            if n
+        ]
+        raise TaskCancelled(", ".join(done))
     return {
         "total": total,
         "completed": completed,

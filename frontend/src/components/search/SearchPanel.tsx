@@ -25,6 +25,10 @@ interface EpisodeSearchProps {
 /** Show-wide search (from ShowPage). */
 interface ShowSearchProps {
   scope: "show";
+  /** show.toml id: what the search routes key on (`showName` is display
+   *  only). `""` for a folder never minted one, which cannot be indexed
+   *  (indexing mints it). */
+  showId: string;
   showName: string;
   folder: string;
   artwork?: string;
@@ -38,6 +42,7 @@ export default function SearchPanel(props: SearchPanelProps) {
   const storeShowMeta = useEpisodeStore((s) => s.showMeta);
   const storeFolder = useEpisodeStore((s) => s.folder);
   const showName = isShowScope ? props.showName : getShowName(storeShowMeta, storeEpisode?.audio_path ?? null);
+  const showId = isShowScope ? props.showId : (storeShowMeta?.id ?? "");
   const episode = isShowScope ? undefined : storeEpisode;
   const showFolder = isShowScope ? props.folder : (storeFolder ?? undefined);
   // Memoize: showArtworkSrc() is not referentially stable, would break the
@@ -84,9 +89,9 @@ export default function SearchPanel(props: SearchPanelProps) {
     error: statsError,
     refetch: refetchStats,
   } = useQuery({
-    queryKey: queryKeys.searchStats(showName),
-    queryFn: () => getIndexStats(showName),
-    enabled: !!showName && isShowScope,
+    queryKey: queryKeys.searchStats(showId),
+    queryFn: () => getIndexStats(showId),
+    enabled: !!showId && isShowScope,
   });
 
   const availableModels = useMemo(
@@ -103,9 +108,9 @@ export default function SearchPanel(props: SearchPanelProps) {
   );
 
   const { data: indexedEpisodes = [] } = useQuery({
-    queryKey: queryKeys.indexedEpisodes(showName, model, chunking),
-    queryFn: () => listIndexedEpisodes({ show: showName, model, chunking }),
-    enabled: !!showName && isShowScope,
+    queryKey: queryKeys.indexedEpisodes(showId, model, chunking),
+    queryFn: () => listIndexedEpisodes({ showId, model, chunking }),
+    enabled: !!showId && isShowScope,
   });
 
   const sortedEpisodes = useMemo(() => {
@@ -132,9 +137,9 @@ export default function SearchPanel(props: SearchPanelProps) {
   const selectedEpisodeSet = useMemo(() => new Set(selectedEpisodes), [selectedEpisodes]);
 
   const { data: indexedSpeakers = [] } = useQuery({
-    queryKey: queryKeys.indexedSpeakers(showName, model, chunking),
-    queryFn: () => listIndexedSpeakers(showName, { model, chunking }),
-    enabled: !!showName,
+    queryKey: queryKeys.indexedSpeakers(showId, model, chunking),
+    queryFn: () => listIndexedSpeakers(showId, { model, chunking }),
+    enabled: !!showId,
   });
 
   useEffect(() => {
@@ -170,7 +175,7 @@ export default function SearchPanel(props: SearchPanelProps) {
       const t0 = performance.now();
       const base = {
         query,
-        show: showName,
+        show_id: showId,
         model,
         chunking,
         source: source || null,
@@ -188,7 +193,7 @@ export default function SearchPanel(props: SearchPanelProps) {
     mutationFn: () => {
       const t0 = performance.now();
       return randomQuote({
-        show: showName,
+        show_id: showId,
         model,
         chunking,
         source: source || null,
@@ -221,8 +226,8 @@ export default function SearchPanel(props: SearchPanelProps) {
   }, [results, mode]);
 
   const showContext = useMemo(
-    () => ({ name: showName, folder: showFolder, artwork: showArtwork, model, chunking }),
-    [showName, showFolder, showArtwork, model, chunking],
+    () => ({ id: showId, name: showName, folder: showFolder, artwork: showArtwork, model, chunking }),
+    [showId, showName, showFolder, showArtwork, model, chunking],
   );
 
   const isPending = searchMutation.isPending || randomMutation.isPending;
@@ -236,8 +241,10 @@ export default function SearchPanel(props: SearchPanelProps) {
   // Prerequisite checks. Show scope waits for the stats request to settle:
   // a pending or failed request must not read as "nothing indexed", which
   // would send the user off to re-index episodes they already indexed.
+  // A show with no id was never indexed, and its stats query never runs, so
+  // statsPending alone would hold the panel blank forever.
   const prereq = isShowScope
-    ? !statsPending && !statsFailed && (stats?.total_chunks ?? 0) === 0
+    ? !showId || (!statsPending && !statsFailed && (stats?.total_chunks ?? 0) === 0)
       ? "No indexed episodes yet. Index episodes first from the episode page."
       : undefined
     : !episode?.indexed
@@ -286,7 +293,7 @@ export default function SearchPanel(props: SearchPanelProps) {
         <div className="p-12">
           <ErrorAlert error={statsError} onRetry={() => void refetchStats()} />
         </div>
-      ) : isShowScope && statsPending ? (
+      ) : isShowScope && statsPending && !!showId ? (
         // Neutral placeholder, same reasoning as the capabilities gate above.
         <div className="flex-1" />
       ) : prereq ? (

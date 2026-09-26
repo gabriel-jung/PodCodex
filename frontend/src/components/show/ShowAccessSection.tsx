@@ -24,10 +24,15 @@ import { SettingRow, SettingSection } from "@/components/ui/setting-row";
 
 
 interface Props {
-  show: string;
+  /** Password-table key (ShowAccess.show_id): the show id, else its name. */
+  showId: string;
+  /** Display name, for the confirm dialog only. */
+  showName: string;
+  /** Show folder, to refetch its meta when setting a password mints an id. */
+  folder: string;
 }
 
-export default function ShowAccessSection({ show }: Props) {
+export default function ShowAccessSection({ showId, showName, folder }: Props) {
   const qc = useQueryClient();
   const {
     data: access,
@@ -36,8 +41,8 @@ export default function ShowAccessSection({ show }: Props) {
     error: accessError,
     refetch: refetchAccess,
   } = useQuery<ShowAccess>({
-    queryKey: queryKeys.showAccess(show),
-    queryFn: () => getShowAccess(show),
+    queryKey: queryKeys.showAccess(showId),
+    queryFn: () => getShowAccess(showId),
     retry: false,
   });
 
@@ -46,12 +51,13 @@ export default function ShowAccessSection({ show }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   function invalidate() {
-    qc.invalidateQueries({ queryKey: queryKeys.showAccess(show) });
+    qc.invalidateQueries({ queryKey: queryKeys.showAccess(showId) });
     qc.invalidateQueries({ queryKey: queryKeys.showAccessList() });
+    qc.invalidateQueries({ queryKey: queryKeys.showMeta(folder) });
   }
 
   const generateMut = useMutation({
-    mutationFn: () => setShowPassword(show),
+    mutationFn: () => setShowPassword(showId),
     onSuccess: (r) => {
       invalidate();
       setReveal(r);
@@ -60,13 +66,13 @@ export default function ShowAccessSection({ show }: Props) {
   });
 
   const removeMut = useMutation({
-    mutationFn: () => deleteShowPassword(show),
+    mutationFn: () => deleteShowPassword(showId),
     onSuccess: invalidate,
     onError: (e: Error) => setError(e.message),
   });
 
   const setManualMut = useMutation({
-    mutationFn: (password: string) => setShowPassword(show, password),
+    mutationFn: (password: string) => setShowPassword(showId, password),
     onSuccess: (r) => {
       invalidate();
       setReveal(r);
@@ -145,7 +151,7 @@ export default function ShowAccessSection({ show }: Props) {
               disabled={busy}
               onClick={() => {
                 confirmDialog.open({
-                  title: `Remove password protection for "${show}"?`,
+                  title: `Remove password protection for "${showName}"?`,
                   description: "It will become publicly searchable via the bot.",
                   confirmLabel: "Remove",
                   variant: "destructive",

@@ -38,10 +38,9 @@ export default function IndexPanel() {
   const { data: config } = useIndexConfig();
 
   const { data: status } = useQuery({
-    queryKey: queryKeys.indexStatus(sourceRef, showName),
-    queryFn: () => getIndexStatus(audioPath, showName, outputDir ?? undefined),
-    // `show` is a required query param; an empty one is a 422, not a miss.
-    enabled: !!sourceRef && !!showName,
+    queryKey: queryKeys.indexStatus(sourceRef),
+    queryFn: () => getIndexStatus(audioPath, outputDir ?? undefined),
+    enabled: !!sourceRef,
   });
 
   const expanded = task.expanded || !episode?.indexed;
@@ -230,7 +229,6 @@ export default function IndexPanel() {
           onClose={() => setInspectTarget(null)}
           audioPath={audioPath ?? undefined}
           outputDir={outputDir ?? undefined}
-          show={showName}
           model={inspectTarget.model}
           modelLabel={models?.[inspectTarget.model]?.label ?? inspectTarget.model}
           chunking={inspectTarget.chunking}

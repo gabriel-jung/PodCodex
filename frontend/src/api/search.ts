@@ -1,4 +1,4 @@
-import type { BatchRequest, ExactRequest, IndexRequest, IndexStatus, SearchRequest, SearchResult, TaskResponse, VersionEntry } from "./types";
+import type { BatchRequest, ExactRequest, IndexRequest, IndexStatus, RandomRequest, SearchRequest, SearchResult, TaskResponse, VersionEntry } from "./types";
 import { json } from "./client";
 import { episodeParams } from "./versions";
 
@@ -20,12 +20,12 @@ export const getIndexConfig = () =>
     defaults: { model: string; chunking: string; chunk_size: number; threshold: number };
   }>("/api/index/config");
 
+// The index routes read the show from the episode's own folder.
 export const getIndexStatus = (
   audioPath: string | null | undefined,
-  show: string,
   outputDir?: string | null,
 ) => {
-  const params = episodeParams(audioPath, outputDir, { show });
+  const params = episodeParams(audioPath, outputDir);
   return json<{ combinations: IndexStatus[]; db_exists: boolean }>(
     `/api/index/status?${params}`,
   );
@@ -79,20 +79,18 @@ export interface EpisodeCollection {
 /** Index entries this episode currently lives in (one per collection). */
 export const getEpisodeCollections = (
   audioPath: string | null | undefined,
-  show: string,
   outputDir?: string | null,
 ) => {
-  const params = episodeParams(audioPath, outputDir, { show });
+  const params = episodeParams(audioPath, outputDir);
   return json<EpisodeCollection[]>(`/api/index/episode-collections?${params}`);
 };
 
 export const deleteEpisodeCollection = (
   audioPath: string | null | undefined,
-  show: string,
   collection: string,
   outputDir?: string | null,
 ) => {
-  const params = episodeParams(audioPath, outputDir, { show, collection });
+  const params = episodeParams(audioPath, outputDir, { collection });
   return json<{ status: string; still_indexed: boolean }>(
     `/api/index/episode?${params}`,
     { method: "DELETE" },
@@ -142,12 +140,11 @@ export interface InspectResponse {
 
 export const getIndexInspect = (
   audioPath: string | null | undefined,
-  show: string,
   model: string,
   chunking: string,
   outputDir?: string | null,
 ) => {
-  const params = episodeParams(audioPath, outputDir, { show, model, chunking });
+  const params = episodeParams(audioPath, outputDir, { model, chunking });
   return json<InspectResponse>(`/api/index/inspect?${params}`);
 };
 
@@ -181,17 +178,7 @@ export const exactSearch = (req: ExactRequest) =>
     body: JSON.stringify(req),
   });
 
-export const randomQuote = (req: {
-  show: string;
-  model?: string;
-  chunking?: string;
-  episode?: string | null;
-  episodes?: string[] | null;
-  speaker?: string | null;
-  source?: string | null;
-  pub_date_min?: string | null;
-  pub_date_max?: string | null;
-}) =>
+export const randomQuote = (req: RandomRequest) =>
   json<SearchResult | null>("/api/search/random", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -199,18 +186,18 @@ export const randomQuote = (req: {
   });
 
 export const listIndexedSpeakers = (
-  show: string,
+  showId: string,
   opts: { model?: string; chunking?: string } = {},
 ) => {
-  const qs = new URLSearchParams({ show });
+  const qs = new URLSearchParams({ show_id: showId });
   if (opts.model) qs.set("model", opts.model);
   if (opts.chunking) qs.set("chunking", opts.chunking);
   return json<string[]>(`/api/search/speakers?${qs}`);
 };
 
-export const getIndexStats = (show: string = "") =>
+export const getIndexStats = (showId: string = "") =>
   json<{
     collections: { collection: string; model: string; chunking: string; episodes: number; chunks: number; sources: string[] }[];
     total_episodes: number;
     total_chunks: number;
-  }>(`/api/search/stats?show=${encodeURIComponent(show)}`);
+  }>(`/api/search/stats?${new URLSearchParams({ show_id: showId })}`);

@@ -6,14 +6,18 @@ returned exactly once in the HTTP response body (never logged, never
 stored); the IndexStore only keeps the SHA-256 hash.
 
 The bot process (wherever it runs) reads the same IndexStore on its next
-``/admin-reload``, so no hot-restart on the bot side either. The show is a
-query parameter: it is a display label, and a "/" in it split the path.
+``/admin-reload``, so no hot-restart on the bot side either. The show is
+addressed by its password-table key (``show_id``), never its display name:
+two shows may share a name. The key is the ``show.toml`` id, or the display
+name for a show that has none yet (an index-only show, or a folder that was
+never minted one), which is how the password table keys such a show too.
 """
 
 from __future__ import annotations
 
 import secrets
 from pathlib import Path
+from typing import NamedTuple
 
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
@@ -33,11 +37,13 @@ _GENERATED_BYTES = 16  # secrets.token_urlsafe(16) → 22 chars
 
 
 class ShowAccess(BaseModel):
-    show: str
+    show_id: str  # password-table key: the show id, else its display name
+    show: str  # display name
     is_protected: bool
 
 
 class ShowPasswordSet(BaseModel):
+    show_id: str
     show: str
     password: str  # plaintext, returned once only
     generated: bool
@@ -55,58 +61,67 @@ def _protected_ids() -> set[str]:
     return set(get_index_store().get_show_password_entries().keys())
 
 
-def _key_for(show: str, *, mint: bool = False) -> str:
-    """Password-table key for a show named *show*.
+class _KnownShow(NamedTuple):
+    label: str
+    folder: Path | None  # None for a show known only to the index
 
-    Its stable id when the show is a registered folder, falling back to the
-    display name for a show that exists only inside the index (nothing to
-    mint an id into), which is also how a legacy row is keyed.
 
-    Args:
-        show: Display name.
-        mint: Whether to create an id when the show has none. Only the write
-            handlers pass this: a GET must not rewrite ``show.toml``, which
-            would turn a status poll into a 500 on a read-only folder.
+def _known_shows() -> dict[str, _KnownShow]:
+    """Every show access can be configured for, by password-table key.
+
+    Registered folders (so access can be set before a show is indexed) plus
+    shows known only to the index. A registered folder names its own show:
+    its label comes from ``show.toml``, and an index row carrying the same id
+    adds nothing. A pre-id index row, keyed by label, is dropped when a
+    registered show already goes by that label: it is that show's
+    unmigrated collection, not another show.
     """
-    from podcodex.ingest.show import load_show_meta
-    from podcodex.ingest.show_registry import folder_for_label
+    from podcodex.ingest.show import load_show_meta, show_display
+    from podcodex.ingest.show_registry import registered_folders
+    from podcodex.rag.index_store import IndexStore
 
-    folder = folder_for_label(show)
-    if folder is None:
-        return show
-    meta = load_show_meta(folder)
-    if meta and meta.id:
-        return meta.id
-    if not mint:
-        return show
-    from podcodex.ingest.show import ensure_show_id
-
-    return ensure_show_id(folder)
-
-
-def _all_show_names() -> set[str]:
-    """Every known show name: registered show folders plus indexed collections.
-
-    Registered (but not-yet-indexed) shows are included so access can be
-    configured before a show is indexed.
-    """
-    names: set[str] = set()
+    out: dict[str, _KnownShow] = {}
     try:
-        from podcodex.core.app_config import load_config
-        from podcodex.ingest.show import load_show_meta
-
-        for folder_path in load_config().show_folders:
-            folder = Path(folder_path)
-            if not folder.is_dir():
-                continue
+        for folder in registered_folders():
             meta = load_show_meta(folder)
-            names.add((meta.name if meta else None) or folder.name)
+            label = show_display(folder)
+            out[(meta.id if meta else "") or label] = _KnownShow(label, folder)
     except Exception:
         logger.opt(exception=True).warning("Failed to read registered show folders")
-    info = get_index_store().get_all_collection_info()
-    names.update(meta.get("show", "") for meta in info.values())
-    names.discard("")
-    return names
+    registered_labels = {k.label.strip().lower() for k in out.values()}
+    for meta in get_index_store().get_all_collection_info().values():
+        key = IndexStore.show_key(meta)
+        label = (meta.get("show") or "").strip() or key
+        if not key or key in out:
+            continue
+        if not (meta.get("show_id") or "").strip() and (
+            label.lower() in registered_labels
+        ):
+            continue
+        out[key] = _KnownShow(label, None)
+    return out
+
+
+def _require_known(show_id: str) -> _KnownShow:
+    known = _known_shows().get(show_id)
+    if known is None:
+        raise HTTPException(404, f"Unknown show {show_id!r}.")
+    return known
+
+
+def _write_key(show_id: str, known: _KnownShow) -> str:
+    """The key a password is stored under.
+
+    Mints an id for a registered folder that has none, so the password
+    follows the show through a rename. Only ``set_password`` calls this: a
+    GET must not rewrite ``show.toml``, which would turn a status poll into a
+    500 on a read-only folder.
+    """
+    if known.folder is None:
+        return show_id
+    from podcodex.ingest.show import ensure_show_id
+
+    return ensure_show_id(known.folder)
 
 
 # ── Routes ──────────────────────────────────────────────────────────────
@@ -114,41 +129,32 @@ def _all_show_names() -> set[str]:
 
 @router.get("/passwords", response_model=list[ShowAccess])
 def list_passwords() -> list[ShowAccess]:
-    """Return every indexed show with its password-protection status."""
-    protected = _protected_ids()
-    # One pass over the registered folders, rather than one per show: _key_for
-    # walks them all, so calling it in the comprehension is quadratic.
-    from podcodex.ingest.show import load_show_meta, show_display
-    from podcodex.ingest.show_registry import registered_folders
+    """Return every known show with its password-protection status.
 
-    by_label: dict[str, set[str]] = {}
-    for folder in registered_folders():
-        meta = load_show_meta(folder)
-        # A set, not one id: two shows may share a display name, and reading
-        # the second one's status off the first one's id would be wrong.
-        by_label.setdefault(show_display(folder), set()).add(
-            (meta.id if meta else "") or show_display(folder)
-        )
+    One row per show, not per display name: two shows sharing a name are two
+    rows, each with its own status.
+    """
+    protected = _protected_ids()
     return [
-        ShowAccess(
-            show=name,
-            is_protected=bool(by_label.get(name, {name}) & protected),
+        ShowAccess(show_id=key, show=known.label, is_protected=key in protected)
+        for key, known in sorted(
+            _known_shows().items(), key=lambda kv: (kv[1].label.lower(), kv[0])
         )
-        for name in sorted(_all_show_names())
     ]
 
 
 @router.get("/password", response_model=ShowAccess)
-def get_password_status(show: str = Query(...)) -> ShowAccess:
+def get_password_status(show_id: str = Query(...)) -> ShowAccess:
     """Per-show protection status."""
-    if show not in _all_show_names():
-        raise HTTPException(404, f"Unknown show {show!r}.")
-    return ShowAccess(show=show, is_protected=_key_for(show) in _protected_ids())
+    known = _require_known(show_id)
+    return ShowAccess(
+        show_id=show_id, show=known.label, is_protected=show_id in _protected_ids()
+    )
 
 
 @router.post("/password", response_model=ShowPasswordSet)
 def set_password(
-    payload: SetPasswordRequest, show: str = Query(...)
+    payload: SetPasswordRequest, show_id: str = Query(...)
 ) -> ShowPasswordSet:
     """Set or rotate the password for a show.
 
@@ -157,8 +163,7 @@ def set_password(
     used after a minimum-length check (prevents accidentally weak
     passwords; use the generator for something robust).
     """
-    if show not in _all_show_names():
-        raise HTTPException(404, f"Unknown show {show!r}.")
+    known = _require_known(show_id)
 
     supplied = (payload.password or "").strip()
     generated = not supplied
@@ -175,23 +180,27 @@ def set_password(
 
     from podcodex.rag.index_origin import IndexOwnershipError
 
+    key = _write_key(show_id, known)
     try:
         get_index_store().set_show_password(
-            _key_for(show, mint=True), hash_show_password(plaintext), show_label=show
+            key, hash_show_password(plaintext), show_label=known.label
         )
     except IndexOwnershipError as exc:
         raise HTTPException(409, str(exc)) from exc
-    return ShowPasswordSet(show=show, password=plaintext, generated=generated)
+    return ShowPasswordSet(
+        show_id=key, show=known.label, password=plaintext, generated=generated
+    )
 
 
 @router.delete("/password", status_code=204)
-def delete_password(show: str = Query(...)) -> None:
+def delete_password(show_id: str = Query(...)) -> None:
     """Remove password protection — the show becomes public to the bot."""
-    if show not in _all_show_names():
-        raise HTTPException(404, f"Unknown show {show!r}.")
+    _require_known(show_id)
     from podcodex.rag.index_origin import IndexOwnershipError
 
+    # By the key as given, no minting: a show without an id cannot have an
+    # id-keyed row to remove.
     try:
-        get_index_store().delete_show_password(_key_for(show, mint=True))
+        get_index_store().delete_show_password(show_id)
     except IndexOwnershipError as exc:
         raise HTTPException(409, str(exc)) from exc

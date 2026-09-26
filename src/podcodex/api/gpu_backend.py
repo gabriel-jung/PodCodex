@@ -1,22 +1,35 @@
 """GPU backend service — detect NVIDIA, download/install/activate the
 optional CUDA bundle on hosts that have a supported GPU.
 
-Bundle layout (mirrors VoiceBox's split, see ``packaging/package_gpu.py``):
+Layout (archives from ``packaging/package_gpu.py``):
 
     <data_dir>/backends/gpu/
-        podcodex-server-gpu     — the GPU sidecar binary
-        _internal/              — PyInstaller onedir tree (torch lib, etc.)
-            torch/lib/libcudnn.so.9    ← from cuda-libs.tar.gz
-            torch/lib/libtorch_cpu.so  ← from server-core.tar.gz
-        cuda-libs.json          — manifest copied from the download
-        activated               — empty marker; presence = use this backend
+        activated               : empty marker; presence = use this backend
+        current                 : name of the install folder to run
+        v-<app>-<id>/           : one complete install
+            podcodex-server-gpu : the GPU sidecar binary
+            _internal/          : PyInstaller onedir tree
+                torch/lib/torch_cuda.dll   <- torch-runtime part
+                torch/lib/cudnn64_9.dll    <- cuda-libs part
+            cuda-libs.json      : the release manifest it was installed from,
+                                  plus the files each part laid down
 
-Both archives extract to the SAME install dir so the binary's RPATH
-(``$ORIGIN/_internal/torch/lib`` etc.) reunites with its libs. Splitting
-into subdirs would break runtime resolution.
+All parts extract into ONE folder so the binary's RPATH
+(``$ORIGIN/_internal/torch/lib`` etc.) reunites with its libs.
 
-The Tauri shell (M.5) reads the ``activated`` marker on startup to decide
-which sidecar to spawn — bundled CPU sidecar or the extracted GPU server.
+An install is built in a staging folder beside the live one and switched to
+by rewriting ``current``, so a failed, cancelled or killed install leaves the
+working one untouched, and an update never writes over files a running GPU
+sidecar has loaded (Windows refuses that). Parts whose tag did not change are
+hard-linked from the live install instead of downloaded. The switch takes
+effect on the next launch, the only time backends switch anyway.
+
+Before ``current`` existed the install lived flat in ``backends/gpu/``
+itself; that layout is still read (no ``current`` file) until the next
+install replaces it.
+
+The Tauri shell reads ``activated`` and ``current`` on startup to decide
+which sidecar to spawn (``locate_gpu_sidecar`` in ``src-tauri/src/lib.rs``).
 
 Dev mode (uvicorn from .venv): the backend is whatever's in the venv.
 This module's status report still works (so the UI can render correctly),
@@ -38,6 +51,7 @@ import tarfile
 import tempfile
 import threading
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -75,26 +89,56 @@ class GPUInfo:
 
 
 def gpu_install_dir() -> Path:
+    """Root of the GPU backend: install folders, ``current``, ``activated``."""
     return data_dir() / "backends" / "gpu"
 
 
+_MANIFEST_NAME = "cuda-libs.json"
+_POINTER_NAME = "current"
+_ACTIVATED_NAME = "activated"
+_INSTALL_PREFIX = "v-"
+
+
+def _valid_install_name(name: str) -> bool:
+    """Same rule as ``valid_install_name`` in ``src-tauri/src/lib.rs``."""
+    return (
+        name.startswith(_INSTALL_PREFIX)
+        and "/" not in name
+        and "\\" not in name
+        and ".." not in name
+    )
+
+
+def active_install_dir() -> Path:
+    """The folder the launcher runs: the one ``current`` names, else the root
+    (the legacy flat layout)."""
+    root = gpu_install_dir()
+    try:
+        name = (root / _POINTER_NAME).read_text(encoding="utf-8").strip()
+    except OSError:
+        return root
+    if _valid_install_name(name) and (root / name).is_dir():
+        return root / name
+    return root
+
+
 def _manifest_path() -> Path:
-    return gpu_install_dir() / "cuda-libs.json"
+    return active_install_dir() / _MANIFEST_NAME
 
 
 def _activated_marker() -> Path:
-    return gpu_install_dir() / "activated"
+    return gpu_install_dir() / _ACTIVATED_NAME
 
 
 def _installing_marker() -> Path:
-    """Present while archives are being extracted over the install dir.
-
-    Extraction writes into the live tree, so a kill or crash part way leaves
-    old and new files mixed. While this marker exists the install counts as
-    absent (no manifest, no server version) and the activated marker is
-    lifted, so neither the launcher nor a re-download trusts that tree.
-    """
+    """Legacy flat layout only: present while archives were being extracted
+    over the live tree, which a kill part way left mixed. Such a tree counts
+    as absent. Current installs never write into the live folder."""
     return gpu_install_dir() / ".installing"
+
+
+def _legacy_install_interrupted() -> bool:
+    return active_install_dir() == gpu_install_dir() and _installing_marker().exists()
 
 
 # ── Detection ───────────────────────────────────────────────────────────
@@ -199,8 +243,8 @@ def current_torch_backend() -> str:
 
 
 def installed_manifest() -> dict | None:
-    """Return the installed cuda-libs manifest dict, or None if not installed."""
-    if _installing_marker().exists():
+    """Return the active install's manifest dict, or None if not installed."""
+    if _legacy_install_interrupted():
         return None
     p = _manifest_path()
     if not p.is_file():
@@ -229,9 +273,15 @@ def installed_server_core_version() -> str | None:
     install pre-M.8), or the subprocess errors out. The launcher uses the
     same probe pattern from Rust — see ``src-tauri/src/lib.rs::probe_sidecar_version``.
     """
-    if _installing_marker().exists():
+    if _legacy_install_interrupted():
         return None
-    return _probe_server_core_version(gpu_install_dir())
+    installed = installed_manifest()
+    if _recorded_files(installed, "server-core") is not None:
+        # Built by this installer, which probed the extracted core before
+        # switching to it, so its recorded tag is that version. Spawning the
+        # binary costs 2-4 s on Windows, on every GPU panel status call.
+        return _installed_part_tags(installed).get("server-core") or None
+    return _probe_server_core_version(active_install_dir())
 
 
 def _probe_server_core_version(root: Path) -> str | None:
@@ -306,7 +356,7 @@ def status() -> dict[str, Any]:
         "installed_server_version": server_version,
         "app_version": _app_version(),
         "activated": is_gpu_activated(),
-        "install_dir": str(gpu_install_dir()),
+        "install_dir": str(active_install_dir()),
         "platform_supported": gpu_supported_on_platform(),
         "needs_update": _needs_update(server_version),
     }
@@ -466,43 +516,13 @@ def _sha256(path: Path) -> str:
 
 def _extract_tar_gz(
     archive: Path, dest: Path, label: str, progress_cb, frac: float
-) -> None:
-    """Extract *archive* into *dest* (which must already exist). Does not
-    wipe the dest — both archives extract into the same install root."""
+) -> list[str]:
+    """Extract *archive* into *dest* (which must already exist) and return
+    the relative paths of the files it laid down."""
     progress_cb(frac, f"Extracting {label}…")
     with tarfile.open(archive, "r:gz") as tar:
         tar.extractall(dest, filter="data")  # filter=data avoids tar exploits
-
-
-def _purge_stale_dist_info(install_dir: Path) -> None:
-    """Remove orphan ``podcodex-*.dist-info/`` directories before re-extracting
-    server-core.
-
-    PyInstaller --copy-metadata bakes ``_internal/podcodex-X.Y.Z.dist-info/``
-    into the bundle, with the *version* embedded in the directory name. A
-    plain tar.extractall over an existing install lays down the new
-    dist-info alongside the old one — both survive, since they have
-    different names. ``importlib.metadata.version("podcodex")`` then
-    iterates ``_internal`` and returns whichever it finds first (in
-    practice, the alphabetically earlier — i.e. older — version), so
-    ``podcodex-server --version`` keeps reporting the pre-update value
-    and the Settings UI loops on "out of date".
-
-    Sweep them out before the new tar lands. Other dist-info dirs (torch,
-    transformers, …) don't have the same effect — none of those package
-    versions are read back through ``--version`` — so we limit the
-    cleanup to the one that actually breaks UX.
-    """
-    internal = install_dir / "_internal"
-    if not internal.is_dir():
-        return
-    for entry in internal.glob("podcodex-*.dist-info"):
-        if entry.is_dir():
-            try:
-                shutil.rmtree(entry)
-                logger.info("Removed stale podcodex dist-info: {}", entry.name)
-            except OSError as exc:  # noqa: PERF203 — log per-entry errors
-                logger.warning("Could not remove {}: {!r}", entry, exc)
+        return sorted(m.name for m in tar.getmembers() if m.isfile())
 
 
 def _resolve_artifact_url(manifest_url: str, archive_name: str) -> str:
@@ -522,21 +542,108 @@ def _fetch_text(url: str, *, timeout: int = 15) -> str:
         return resp.read().decode("utf-8")
 
 
+@dataclass(frozen=True)
+class _Part:
+    """One release archive: ``server-core``, ``torch-runtime`` or ``cuda-libs``."""
+
+    name: str
+    tag: str
+    archive: str
+    sha256: str
+
+
+# Rough download sizes, to split the progress bar before sizes are known.
+_PART_WEIGHT = {"server-core": 1, "torch-runtime": 5, "cuda-libs": 12}
+
+
+def _manifest_parts(manifest: dict) -> list[_Part]:
+    """The parts a release manifest ships.
+
+    Schema 2 lists them. The two-archive schema before it is read as a
+    server core plus cuda libs, so an install from an older manifest still
+    knows what it holds.
+    """
+    raw = manifest.get("parts")
+    if raw is None:
+        cuda_archive = manifest.get("archive")
+        cuda_sha = manifest.get("sha256")
+        cuda_tag = manifest.get("version")
+        # server-core.tar.gz becomes the executed sidecar, so its digest is
+        # required, not optional.
+        server_sha = manifest.get("server_sha256")
+        if not cuda_archive or not cuda_sha or not cuda_tag or not server_sha:
+            raise RuntimeError(
+                "Manifest missing required fields "
+                f"(archive, sha256, server_sha256, version): {manifest}"
+            )
+        return _checked_names(
+            [
+                _Part(
+                    "server-core",
+                    manifest.get("server_version") or "",
+                    "server-core.tar.gz",
+                    server_sha,
+                ),
+                _Part("cuda-libs", cuda_tag, cuda_archive, cuda_sha),
+            ]
+        )
+    if not isinstance(raw, list) or not raw:
+        raise RuntimeError(f"Manifest has no parts: {manifest}")
+    parts: list[_Part] = []
+    for entry in raw:
+        fields = ("name", "tag", "archive", "sha256")
+        if not isinstance(entry, dict) or not all(
+            isinstance(entry.get(k), str) and entry.get(k) for k in fields
+        ):
+            raise RuntimeError(
+                f"Manifest part missing a field (name, tag, archive, sha256): {entry}"
+            )
+        parts.append(_Part(*(entry[k] for k in fields)))
+    if "server-core" not in {p.name for p in parts}:
+        raise RuntimeError("Manifest has no server-core part")
+    return _checked_names(parts)
+
+
+def _checked_names(parts: list[_Part]) -> list[_Part]:
+    """Refuse a part whose name or archive is not a plain file name.
+
+    Both are joined onto the download folder (and the archive onto the
+    release URL) before any hash is checked, and the manifest can come from
+    an overridden URL or a mirror.
+    """
+    from podcodex.core._utils import bad_path_component
+
+    for part in parts:
+        for value in (part.name, part.archive):
+            if bad_path_component(value):
+                raise RuntimeError(f"Unsafe name in manifest: {value!r}")
+    return parts
+
+
+def _installed_part_tags(manifest: dict | None) -> dict[str, str]:
+    """Tag of each part the active install holds, from its recorded manifest."""
+    if manifest is None:
+        return {}
+    try:
+        return {p.name: p.tag for p in _manifest_parts(manifest)}
+    except RuntimeError:
+        return {}
+
+
 def download_and_install(
     progress_cb: Callable[[float, str], None],
     manifest_url: str,
 ) -> dict:
-    """Download manifest + archives, sha256-verify, extract, write marker.
+    """Download the parts that changed, build a new install beside the live
+    one, then switch ``current`` to it.
 
-    Selectively re-downloads only what's stale:
-      - Server core: checked against the running app's __version__ via
-        ``<binary> --version``. Re-downloaded on every app release.
-      - Cuda-libs: checked against the manifest's ``version`` field
-        (e.g. ``cu128-v1``). Re-downloaded only on toolkit / torch major
-        bumps.
+    A part is reused (hard-linked from the live install) when its tag
+    matches: the server core by ``<binary> --version`` against the app
+    version, torch runtime and cuda libs by the content tag in the manifest.
+    A typical app update therefore downloads only the server core.
 
-    Designed to be submitted to ``task_manager`` — ``progress_cb`` carries
-    a ``cancel_event`` attribute set by ``TaskInfo``. Holds the install lock
+    Designed to be submitted to ``task_manager``: ``progress_cb`` carries a
+    ``cancel_event`` attribute set by ``TaskInfo``. Holds the install lock
     for the whole run, so activate and uninstall refuse meanwhile.
     """
     with _INSTALL_LOCK:
@@ -555,24 +662,12 @@ def _download_and_install_locked(
         )
 
     cancel_event: threading.Event | None = getattr(progress_cb, "cancel_event", None)
-    install_dir = gpu_install_dir()
-    install_dir.mkdir(parents=True, exist_ok=True)
+    root = gpu_install_dir()
+    root.mkdir(parents=True, exist_ok=True)
 
     progress_cb(0.0, "Fetching manifest…")
     manifest, manifest_url = _fetch_manifest(manifest_url)
-    cuda_archive_name = manifest.get("archive")
-    cuda_sha = manifest.get("sha256")
-    cuda_libs_version = manifest.get("version")
-    # server-core.tar.gz is the archive that becomes the executed sidecar, so
-    # its digest is required, not optional: the hash used to come from a
-    # ``.sha256`` sidecar fetch whose 404 (stale mirror, network blip) silently
-    # downgraded the check on the one archive that carries code.
-    server_sha = manifest.get("server_sha256")
-    if not cuda_archive_name or not cuda_sha or not cuda_libs_version or not server_sha:
-        raise RuntimeError(
-            "Manifest missing required fields "
-            f"(archive, sha256, server_sha256, version): {manifest}"
-        )
+    parts = _manifest_parts(manifest)
 
     target_app_version = _app_version()
     # A manifest stamped for another app release carries a server core the
@@ -586,144 +681,290 @@ def _download_and_install_locked(
             f"but this app is {target_app_version}. Update the app, or wait "
             "for this release's GPU build to be published."
         )
-    needs_server = installed_server_core_version() != target_app_version
-    installed = installed_manifest()
-    needs_libs = installed is None or installed.get("version") != cuda_libs_version
 
-    if not needs_server and not needs_libs:
+    current = active_install_dir()
+    installed = installed_manifest()
+    installed_tags = _installed_part_tags(installed)
+    server_current = installed_server_core_version() == target_app_version
+
+    def _reusable(part: _Part) -> bool:
+        same = (
+            server_current
+            if part.name == "server-core"
+            else installed_tags.get(part.name) == part.tag
+        )
+        # Still whole on disk too: a file quarantined by an antivirus or
+        # deleted by hand would otherwise fail every later update.
+        return same and _part_intact(current, installed, part)
+
+    reused = [p for p in parts if _reusable(p)]
+    needed = [p for p in parts if p not in reused]
+    if not needed:
         progress_cb(1.0, "Already up to date.")
         return {
-            "installed_version": cuda_libs_version,
+            "installed_version": manifest.get("version"),
             "server_version": target_app_version,
             "skipped": True,
         }
 
-    # The server-core archive name is stable across releases (only its
-    # *contents* change with each app version). The cuda-libs archive name
-    # carries the version tag so the URL is unique per toolkit bump.
-    server_archive_name = "server-core.tar.gz"
-    server_url = _resolve_artifact_url(manifest_url, server_archive_name)
-    cuda_url = _resolve_artifact_url(manifest_url, cuda_archive_name)
-
-    # Allocate progress budget proportionally to what we're actually pulling.
-    if needs_server and needs_libs:
-        server_band = (0.02, 0.15)
-        cuda_band = (0.15, 0.85)
-    elif needs_server:
-        server_band = (0.02, 0.85)
-        cuda_band = None
-    else:
-        server_band = None
-        cuda_band = (0.02, 0.85)
-
-    was_activated = _activated_marker().is_file()
-    # Beside the install dir, not in the system temp dir: the verified server
-    # core is moved in from here, which is a rename only on the same volume.
-    install_dir.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".gpu-dl-", dir=install_dir.parent
-    ) as tmp_str:
-        tmp = Path(tmp_str)
-
-        if needs_server:
-            assert server_band is not None
+    bands = _progress_bands(needed)
+    final = root / f"{_INSTALL_PREFIX}{target_app_version}-{uuid.uuid4().hex[:8]}"
+    # Beside the live install (same volume), so hard links work and the
+    # finished tree moves into place with a rename.
+    staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=root))
+    scratch = Path(tempfile.mkdtemp(prefix=".dl-", dir=root))
+    try:
+        # Downloaded parts go in first and reused files only fill the gaps, so
+        # nothing is ever moved over a hard link: removing a link to a DLL a
+        # running GPU sidecar has loaded fails on Windows.
+        files: dict[str, list[str]] = {}
+        for part in needed:
+            start, end = bands[part.name]
+            label = part.name.replace("-", " ")
             logger.info(
-                "GPU server-core: installed={}, target={} → downloading",
-                installed_server_core_version(),
-                target_app_version,
+                "GPU {}: installed={}, target={} → downloading",
+                part.name,
+                installed_tags.get(part.name, "<none>"),
+                part.tag,
             )
-            server_tar = tmp / server_archive_name
+            archive = scratch / part.archive
             _stream_download(
-                server_url,
-                server_tar,
+                _resolve_artifact_url(manifest_url, part.archive),
+                archive,
                 progress_cb,
                 cancel_event,
-                progress_start=server_band[0],
-                progress_end=server_band[1] - 0.02,
-                label="server core",
+                progress_start=start,
+                progress_end=end - 0.02,
+                label=label,
             )
-            progress_cb(server_band[1] - 0.01, "Verifying server core hash…")
-            actual = _sha256(server_tar)
-            if actual != server_sha:
+            progress_cb(end - 0.01, f"Verifying {label} hash…")
+            actual = _sha256(archive)
+            if actual != part.sha256:
                 raise RuntimeError(
-                    f"server-core sha256 mismatch: expected {server_sha[:16]}…, got {actual[:16]}…"
+                    f"{part.name} sha256 mismatch: expected "
+                    f"{part.sha256[:16]}…, got {actual[:16]}…"
                 )
-            if cancel_event is not None and cancel_event.is_set():
-                raise RuntimeError("Install cancelled before extraction")
-            # Extracted and version-checked in a staging dir first: a server
-            # core of another version (the launcher will not run it) is
-            # refused before it overwrites a working install.
-            staging = tmp / "server-core"
-            staging.mkdir()
-            _extract_tar_gz(
-                server_tar, staging, "server core", progress_cb, server_band[1]
+            _raise_if_cancelled(cancel_event)
+            # Extracted on its own, then moved in: tarfile overwrites in
+            # place, which would write through a hard link into the live
+            # install. Moving replaces the link instead.
+            unpacked = scratch / f"{part.name}-files"
+            unpacked.mkdir()
+            extracted_files = _extract_tar_gz(
+                archive, unpacked, label, progress_cb, end - 0.01
             )
-            extracted = _probe_server_core_version(staging)
-            if extracted != target_app_version:
-                raise RuntimeError(
-                    f"The downloaded server core reports version {extracted}, "
-                    f"but this app is {target_app_version}; the current GPU "
-                    "backend was left as it is."
-                )
-            _begin_extraction()
-            _purge_stale_dist_info(install_dir)
-            _merge_tree(staging, install_dir)
+            archive.unlink()
+            if part.name == "server-core":
+                # A server core of another version (the launcher will not run
+                # it) is refused before it becomes an install.
+                extracted = _probe_server_core_version(unpacked)
+                if extracted != target_app_version:
+                    raise RuntimeError(
+                        f"The downloaded server core reports version {extracted}, "
+                        f"but this app is {target_app_version}; the current GPU "
+                        "backend was left as it is."
+                    )
+            files[part.name] = extracted_files
+            _merge_tree(unpacked, staging)
 
-        if needs_libs:
-            assert cuda_band is not None
-            logger.info(
-                "GPU cuda-libs: installed={}, target={} → downloading",
-                installed.get("version") if installed else "<none>",
-                cuda_libs_version,
-            )
-            cuda_tar = tmp / cuda_archive_name
-            _stream_download(
-                cuda_url,
-                cuda_tar,
-                progress_cb,
-                cancel_event,
-                progress_start=cuda_band[0],
-                progress_end=cuda_band[1] - 0.02,
-                label="cuda libs",
-            )
-            progress_cb(cuda_band[1] - 0.01, "Verifying cuda-libs hash…")
-            actual = _sha256(cuda_tar)
-            if actual != cuda_sha:
-                raise RuntimeError(
-                    f"cuda-libs sha256 mismatch: expected {cuda_sha[:16]}…, got {actual[:16]}…"
+        if reused:
+            progress_cb(0.9, "Reusing the parts that did not change…")
+            files.update(
+                _carry_over(
+                    current,
+                    staging,
+                    reused,
+                    installed,
+                    server_replaced=any(p.name == "server-core" for p in needed),
                 )
-            if cancel_event is not None and cancel_event.is_set():
-                raise RuntimeError("Install cancelled before extraction")
-            _begin_extraction()
-            _extract_tar_gz(
-                cuda_tar, install_dir, "cuda libs", progress_cb, cuda_band[1]
             )
 
-    # Manifest last and atomic, then the install is trusted again.
-    from podcodex.core._utils import write_json_atomic
+        from podcodex.core._utils import write_json_atomic
 
-    write_json_atomic(_manifest_path(), manifest)
-    if was_activated:
-        _activated_marker().touch()
-    _installing_marker().unlink(missing_ok=True)
-    progress_cb(1.0, "Installed. Activate to switch the sidecar to GPU.")
+        write_json_atomic(
+            staging / _MANIFEST_NAME, {**manifest, "installed_files": files}
+        )
+        _raise_if_cancelled(cancel_event)
+        progress_cb(0.95, "Switching to the new install…")
+        os.replace(staging, final)
+        _write_pointer(final.name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    _prune_old_installs(keep=final.name)
+    progress_cb(1.0, "Installed. Activate (or restart) to run on the GPU.")
     return {
-        "installed_version": cuda_libs_version,
+        "installed_version": manifest.get("version"),
         "server_version": target_app_version,
-        "downloaded_server": needs_server,
-        "downloaded_libs": needs_libs,
+        "downloaded": [p.name for p in needed],
+        "reused": [p.name for p in reused],
     }
 
 
-# ── Activation ──────────────────────────────────────────────────────────
+def _progress_bands(needed: list[_Part]) -> dict[str, tuple[float, float]]:
+    """Split 0.02..0.90 of the bar across the parts, by rough download size."""
+    total = sum(_PART_WEIGHT.get(p.name, 1) for p in needed)
+    bands: dict[str, tuple[float, float]] = {}
+    pos = 0.02
+    for part in needed:
+        width = 0.88 * _PART_WEIGHT.get(part.name, 1) / total
+        bands[part.name] = (pos, pos + width)
+        pos += width
+    return bands
+
+
+def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        from podcodex.api.tasks import TaskCancelled
+
+        raise TaskCancelled("the current GPU backend is unchanged")
+
+
+# Entries of the root that belong to the layout, never to an install.
+def _is_layout_entry(name: str) -> bool:
+    return (
+        name in (_POINTER_NAME, _ACTIVATED_NAME)
+        or name.startswith(".")
+        or name.startswith(_INSTALL_PREFIX)
+    )
+
+
+def _carry_over(
+    current: Path,
+    staging: Path,
+    reused: list[_Part],
+    installed: dict | None,
+    *,
+    server_replaced: bool,
+) -> dict[str, list[str]]:
+    """Hard-link the reused parts' files from the live install into *staging*,
+    which already holds the downloaded parts.
+
+    Returns the file list of each carried part. An install from before file
+    lists were recorded (the legacy flat layout, or a two-archive manifest)
+    has no per-part split on disk, so its whole tree is carried, minus what
+    the downloaded parts already laid down. Minus, too, its
+    ``_internal/podcodex-X.Y.Z.dist-info`` when a new server core came in:
+    the version is in the directory name, so the old one would sit beside
+    the new, and ``importlib.metadata`` would report whichever it found
+    first (in practice the older), looping the panel on "out of date".
+    """
+    listed = {p.name: _recorded_files(installed, p.name) for p in reused}
+    if all(rels is not None for rels in listed.values()):
+        for rels in listed.values():
+            for rel in rels:
+                _link_file(current / rel, staging / rel)
+        return listed
+
+    legacy_root = current == gpu_install_dir()
+    for entry in current.iterdir():
+        if entry.name == _MANIFEST_NAME or (
+            legacy_root and _is_layout_entry(entry.name)
+        ):
+            continue
+        for f in entry.rglob("*") if entry.is_dir() else [entry]:
+            if not f.is_file():
+                continue
+            rel = f.relative_to(current)
+            if (staging / rel).exists() or (
+                server_replaced
+                and rel.parts[:1] == ("_internal",)
+                and len(rel.parts) > 1
+                and rel.parts[1].startswith("podcodex-")
+                and rel.parts[1].endswith(".dist-info")
+            ):
+                continue
+            _link_file(f, staging / rel)
+    return {}
+
+
+def _recorded_files(installed: dict | None, part: str) -> list[str] | None:
+    """The files the active install recorded for *part*, or None when it
+    recorded none (an install older than file lists)."""
+    listed = ((installed or {}).get("installed_files") or {}).get(part)
+    if not isinstance(listed, list):
+        return None
+    return [r for r in listed if isinstance(r, str) and ".." not in r]
+
+
+def _part_intact(current: Path, installed: dict | None, part: _Part) -> bool:
+    """Whether every file the install recorded for *part* is still there.
+
+    True when no file list was recorded (a legacy install): its carry-over
+    walks whatever is on disk and cannot miss a file.
+    """
+    listed = _recorded_files(installed, part.name)
+    return listed is None or all((current / r).is_file() for r in listed)
+
+
+def _link_file(src: Path, dest: Path) -> None:
+    """Hard link *src* at *dest*, copying when the volume refuses links."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copy2(src, dest)
+
+
+def _write_pointer(name: str) -> None:
+    """Point ``current`` at *name*, atomically: the launcher reads it at startup."""
+    from podcodex.core._utils import atomic_write
+
+    atomic_write(
+        gpu_install_dir() / _POINTER_NAME,
+        lambda tmp: tmp.write_text(name, encoding="utf-8"),
+        tag="current",
+    )
+
+
+def _running_from(path: Path) -> bool:
+    """Whether this process's executable lives under *path* (a GPU sidecar
+    running out of that install, whose unloaded files must not be deleted)."""
+    try:
+        exe_dir = Path(sys.executable).resolve().parent
+        return exe_dir == path.resolve() or exe_dir.is_relative_to(path.resolve())
+    except OSError:
+        return False
+
+
+def _prune_old_installs(keep: str) -> None:
+    """Delete every install but *keep*, except one this process runs from.
+
+    The running GPU sidecar has loaded some of its files and will import
+    others later, so its install is only removed by the next install after a
+    restart. Anything Windows still refuses (another process holding a file)
+    is left for next time too.
+    """
+    root = gpu_install_dir()
+    legacy_running = _running_from(root) and not any(
+        _running_from(root / e.name)
+        for e in root.iterdir()
+        if e.name.startswith(_INSTALL_PREFIX)
+    )
+    for entry in root.iterdir():
+        if entry.name in (keep, _POINTER_NAME, _ACTIVATED_NAME):
+            continue
+        if entry.name.startswith(_INSTALL_PREFIX):
+            if _running_from(entry):
+                continue
+        elif legacy_running:
+            continue  # the flat legacy install is the one running
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except OSError as exc:
+            logger.info("Could not remove old GPU install entry {}: {!r}", entry, exc)
 
 
 def _merge_tree(src: Path, dest: Path) -> None:
     """Move every entry of *src* into *dest*, replacing what is there.
 
-    The same result as extracting the archive over *dest*, from a tree that
-    was already verified; entries *dest* has and *src* lacks (the cuda libs)
-    stay.
+    Replacing unlinks the target before the move, so a hard-linked file
+    shared with the live install is detached rather than overwritten.
+    Entries *dest* has and *src* lacks (the other parts) stay.
     """
     for entry in src.iterdir():
         target = dest / entry.name
@@ -737,10 +978,7 @@ def _merge_tree(src: Path, dest: Path) -> None:
         shutil.move(str(entry), str(target))
 
 
-def _begin_extraction() -> None:
-    """Mark the tree untrusted (and not launchable) before writing into it."""
-    _installing_marker().touch()
-    _activated_marker().unlink(missing_ok=True)
+# ── Activation ──────────────────────────────────────────────────────────
 
 
 # Held by download_and_install for its whole run and taken by activate and
@@ -760,14 +998,14 @@ def activate() -> None:
     """Mark the GPU backend as the one to spawn on next sidecar restart."""
     _ensure_bundle_mode()
     _refuse_while_installing()
-    if _installing_marker().exists():
+    if _legacy_install_interrupted():
         raise RuntimeError(
             "The GPU backend install did not finish. Download it again first."
         )
     if installed_manifest() is None:
         raise RuntimeError("No GPU backend installed. Call download first.")
     _activated_marker().touch()
-    logger.info("GPU backend activated at {}", gpu_install_dir())
+    logger.info("GPU backend activated at {}", active_install_dir())
 
 
 def deactivate() -> None:

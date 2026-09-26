@@ -80,10 +80,11 @@ export default function CommandPalette() {
       queryFn: () =>
         exactSearch({
           query: debouncedQuery,
-          show: show.name || show.path,
+          show_id: show.id,
           top_k: 3,
         }),
-      enabled: canSearchTranscripts,
+      // A show with no id was never indexed (indexing mints one).
+      enabled: canSearchTranscripts && !!show.id,
       staleTime: 30_000,
       retry: false,
     })),

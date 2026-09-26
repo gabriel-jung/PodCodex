@@ -39,7 +39,6 @@ export interface EpisodeOverviewData {
 export function useEpisodeOverview(
   episode: Episode,
   folder: string | undefined,
-  showName: string,
 ): EpisodeOverviewData {
   const queryClient = useQueryClient();
   const { audioPath, outputDir, sourceRef, hasSourceRef } = getEpisodeSourceRef(episode);
@@ -75,9 +74,9 @@ export function useEpisodeOverview(
   });
 
   const { data: indexEntries } = useQuery({
-    queryKey: queryKeys.episodeCollections(sourceRef, showName),
-    queryFn: () => getEpisodeCollections(audioPath, showName, outputDir),
-    enabled: hasSourceRef && !!showName && !!episode.indexed,
+    queryKey: queryKeys.episodeCollections(sourceRef),
+    queryFn: () => getEpisodeCollections(audioPath, outputDir),
+    enabled: hasSourceRef && !!episode.indexed,
   });
 
   const invalidateAll = useCallback(() => {

@@ -41,6 +41,7 @@ class _FakeStore:
     _INFO = {
         "beta__e5-small__semantic": {
             "show": "beta",
+            "show_id": "beta_1234abcd",
             "model": "e5-small",
             "chunker": "semantic",
         },
@@ -54,8 +55,10 @@ class _FakeStore:
         return [n for n, i in self._INFO.items() if not slug or i["show"] == slug]
 
     def collections_for_show(self, show_id: str, show_label: str = "") -> list[str]:
-        label = (show_label or "").strip().lower()
-        return [n for n, i in self._INFO.items() if not label or i["show"] == label]
+        return [n for n, i in self._INFO.items() if i["show_id"] == show_id]
+
+    def label_for_show_id(self, show_id: str) -> str:
+        return "beta"
 
     def get_collection_info(self, collection: str) -> dict | None:
         return self._INFO.get(collection)
@@ -79,11 +82,11 @@ def warmed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 def test_fetching_stats_warms_that_show(client, warmed) -> None:
-    response = client.get("/api/search/stats", params={"show": "Beta"})
+    response = client.get("/api/search/stats", params={"show_id": "beta_1234abcd"})
     _join_warm_threads()
 
     assert response.status_code == 200
-    assert warmed == ["Beta"]
+    assert warmed == ["beta_1234abcd"]
 
 
 def test_fetching_search_config_warms_nothing(client, warmed) -> None:
@@ -98,10 +101,10 @@ def test_warming_happens_once_per_process(client, warmed) -> None:
     """The expensive half is the shared import; repeating it would only
     reload models the retriever cache already bounds."""
     for _ in range(3):
-        client.get("/api/search/stats", params={"show": "Beta"})
+        client.get("/api/search/stats", params={"show_id": "beta_1234abcd"})
     _join_warm_threads()
 
-    assert warmed == ["Beta"]
+    assert warmed == ["beta_1234abcd"]
 
 
 def test_the_all_shows_scope_warms_nothing(client, warmed) -> None:
@@ -134,7 +137,9 @@ def test_warm_resolves_the_model_the_way_a_search_does(monkeypatch) -> None:
             loaded.append("e5-large")
             return object()
 
-    monkeypatch.setattr(search_routes, "_resolve_req_cols", lambda *a: [_Col()])
+    monkeypatch.setattr(
+        search_routes, "_resolve_req_cols", lambda *a, **_k: ([_Col()], None)
+    )
     monkeypatch.setattr(retriever_mod, "get_retriever", lambda m: _Retriever())
 
     search_routes._warm_show_sync("Beta")
@@ -146,7 +151,7 @@ def test_an_unindexed_show_loads_nothing(monkeypatch) -> None:
     loaded: list[str] = []
     import podcodex.rag.retriever as retriever_mod
 
-    monkeypatch.setattr(search_routes, "_resolve_req_cols", lambda *a: [])
+    monkeypatch.setattr(search_routes, "_resolve_req_cols", lambda *a, **_k: ([], None))
     monkeypatch.setattr(retriever_mod, "get_retriever", lambda m: loaded.append(m))
 
     search_routes._warm_show_sync("Beta")
@@ -173,7 +178,10 @@ def test_a_failed_search_is_an_error_not_an_empty_result(tmp_path, monkeypatch):
     monkeypatch.setattr(
         search_routes,
         "_resolve_req_cols",
-        lambda *_a: [SearchCollection(name="c", model="bge-m3", show="S")],
+        lambda *_a, **_k: (
+            [SearchCollection(name="c", model="bge-m3", show="S")],
+            None,
+        ),
     )
 
     def boom(*_a, **_k):
@@ -183,7 +191,7 @@ def test_a_failed_search_is_an_error_not_an_empty_result(tmp_path, monkeypatch):
 
     monkeypatch.setattr(svc, "hybrid_search", boom)
     client = make_client(tmp_path, monkeypatch)
-    r = client.post("/api/search/query", json={"query": "hi", "show": "S"})
+    r = client.post("/api/search/query", json={"query": "hi", "show_id": "s_1234abcd"})
     assert r.status_code == 503, r.text
     assert "corrupt" in r.json()["detail"]
 
@@ -194,7 +202,9 @@ def test_exact_search_honours_top_k(tmp_path, monkeypatch):
     from podcodex.rag.search_service import SearchCollection
 
     col = SearchCollection(name="c", model="bge-m3", show="S")
-    monkeypatch.setattr(search_routes, "_resolve_req_cols", lambda *_a: [col])
+    monkeypatch.setattr(
+        search_routes, "_resolve_req_cols", lambda *_a, **_k: ([col], None)
+    )
     hit = {
         "text": "t",
         "episode": "e",
@@ -205,7 +215,7 @@ def test_exact_search_honours_top_k(tmp_path, monkeypatch):
         "source": "transcript",
     }
     monkeypatch.setattr(search_routes, "_result_to_dict", lambda h, _l=None: hit)
-    monkeypatch.setattr(search_routes, "_build_audio_lookup", lambda: {})
+    monkeypatch.setattr(search_routes, "_audio_lookup", lambda _id: ("", {}))
     seen: dict = {}
 
     def fake_exact(*_a, limit=None, **_k):
@@ -214,7 +224,9 @@ def test_exact_search_honours_top_k(tmp_path, monkeypatch):
 
     monkeypatch.setattr(svc, "exact_search", fake_exact)
     client = make_client(tmp_path, monkeypatch)
-    r = client.post("/api/search/exact", json={"query": "hi", "show": "S", "top_k": 3})
+    r = client.post(
+        "/api/search/exact", json={"query": "hi", "show_id": "s_1234abcd", "top_k": 3}
+    )
     assert r.status_code == 200, r.text
     assert len(r.json()) == 3
     assert seen["limit"] == 3  # passed into the service, not sliced after

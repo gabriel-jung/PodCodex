@@ -29,19 +29,18 @@ interface Props {
    *  and play buttons are hidden. */
   audioPath?: string;
   outputDir?: string;
-  show: string;
   model: string;
   modelLabel?: string;
   chunking: string;
 }
 
 export default function IndexInspectorModal({
-  open, onClose, audioPath, outputDir, show, model, modelLabel, chunking,
+  open, onClose, audioPath, outputDir, model, modelLabel, chunking,
 }: Props) {
   const sourceKey = sourceRefFor(audioPath, outputDir);
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: queryKeys.indexInspect(sourceKey, show, model, chunking),
-    queryFn: () => getIndexInspect(audioPath, show, model, chunking, outputDir),
+    queryKey: queryKeys.indexInspect(sourceKey, model, chunking),
+    queryFn: () => getIndexInspect(audioPath, model, chunking, outputDir),
     enabled: open && (!!audioPath || !!outputDir),
     staleTime: 30_000,
   });

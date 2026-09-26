@@ -8,18 +8,20 @@ const jsonHeaders = { "Content-Type": "application/json" };
 export const getShowAccessList = () =>
   json<ShowAccess[]>("/api/bot-access/passwords");
 
-export const getShowAccess = (show: string) =>
-  json<ShowAccess>(`/api/bot-access/password?${new URLSearchParams({ show })}`);
+// `showId` is the password-table key: the show's id, or its display name for
+// a show that has none yet (see ShowAccess.show_id).
+export const getShowAccess = (showId: string) =>
+  json<ShowAccess>(`/api/bot-access/password?${new URLSearchParams({ show_id: showId })}`);
 
-export const setShowPassword = (show: string, password?: string) =>
-  json<ShowPasswordSet>(`/api/bot-access/password?${new URLSearchParams({ show })}`, {
+export const setShowPassword = (showId: string, password?: string) =>
+  json<ShowPasswordSet>(`/api/bot-access/password?${new URLSearchParams({ show_id: showId })}`, {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify(password ? { password } : {}),
   });
 
-export async function deleteShowPassword(show: string): Promise<void> {
-  await rawFetch(`/api/bot-access/password?${new URLSearchParams({ show })}`, {
+export async function deleteShowPassword(showId: string): Promise<void> {
+  await rawFetch(`/api/bot-access/password?${new URLSearchParams({ show_id: showId })}`, {
     method: "DELETE",
   });
 }

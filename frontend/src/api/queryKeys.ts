@@ -107,34 +107,29 @@ export const queryKeys = {
 
   // ── Index & search ─────────────────────────────────────
   searchConfig: () => ["search", "config"] as const,
-  searchStats: (showName: string) => ["search", "stats", showName] as const,
-  indexedEpisodes: (showName: string, model: string, chunking: string) =>
-    ["search", "indexed-episodes", showName, model, chunking] as const,
-  indexedSpeakers: (showName: string, model: string, chunking: string) =>
-    ["search", "indexed-speakers", showName, model, chunking] as const,
-  indexedEpisode: (showName: string, stem: string, model: string, chunking: string) =>
-    ["search", "indexed-episode", showName, stem, model, chunking] as const,
+  // Keyed by show id, like the routes: two shows may share a display name.
+  searchStats: (showId: string) => ["search", "stats", showId] as const,
+  indexedEpisodes: (showId: string, model: string, chunking: string) =>
+    ["search", "indexed-episodes", showId, model, chunking] as const,
+  indexedSpeakers: (showId: string, model: string, chunking: string) =>
+    ["search", "indexed-speakers", showId, model, chunking] as const,
+  indexedEpisode: (showId: string, stem: string, model: string, chunking: string) =>
+    ["search", "indexed-episode", showId, stem, model, chunking] as const,
 
   indexConfig: () => ["index", "config"] as const,
-  indexStatus: (audioPath: AudioPath, showName: string) =>
-    ["index", "status", audioPath, showName] as const,
+  indexStatus: (audioPath: AudioPath) => ["index", "status", audioPath] as const,
   /** Collections this episode currently lives in (one row per entry). */
-  episodeCollections: (audioPath: AudioPath, showName: string) =>
-    ["index", "episode-collections", audioPath, showName] as const,
-  indexInspect: (
-    audioPath: AudioPath,
-    showName: string,
-    model: string,
-    chunking: string,
-  ) => ["index", "inspect", audioPath, showName, model, chunking] as const,
+  episodeCollections: (audioPath: AudioPath) =>
+    ["index", "episode-collections", audioPath] as const,
+  indexInspect: (audioPath: AudioPath, model: string, chunking: string) =>
+    ["index", "inspect", audioPath, model, chunking] as const,
 
   // ── Integrations & MCP ────────────────────────────────
   claudeDesktop: () => ["integrations", "claude-desktop"] as const,
   mcpPrompts: () => ["mcp", "prompts"] as const,
 
   // ── Bot access ────────────────────────────────────────
-  showAccess: (showName: string) =>
-    ["bot-access", "show", showName] as const,
+  showAccess: (showId: string) => ["bot-access", "show", showId] as const,
   showAccessList: () => ["bot-access", "list"] as const,
 
   // ── Step-scoped (TranscriptViewer editor key: "transcribe" | "correct" | "translate-xxx") ──

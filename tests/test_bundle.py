@@ -790,6 +790,119 @@ def test_legacy_archive_import_mints_an_id(tmp_path, isolated_index):
         os.environ["PODCODEX_INDEX"] = str(isolated_index)
 
 
+@pytest.fixture
+def registered(monkeypatch):
+    """Register show folders the way the app's config does; returns the list."""
+    import podcodex.core.app_config as app_config
+
+    cfg = app_config.AppConfig()
+    monkeypatch.setattr(app_config, "load_config", lambda: cfg)
+    return cfg.show_folders
+
+
+def test_reimport_under_rename_gets_a_new_label_and_id(
+    tmp_path, isolated_index, registered
+):
+    """A second copy of a show still present must not share its name or id."""
+    from podcodex.ingest.show import load_show_meta, show_id
+
+    show = _make_show(tmp_path / "test_show")
+    registered.append(str(show))
+    store = rag_index_store.get_index_store()
+    _seed_collection(store)
+    out = tmp_path / "out.podcodex"
+    export_show(show, out, with_audio=False)
+    original_id = show_id(show)
+
+    result = import_archive(out, shows_dir=tmp_path / "shows2")
+
+    copy = load_show_meta(tmp_path / "shows2" / "test_show")
+    assert copy.name == "Test Show (imported)"
+    assert copy.id and copy.id != original_id
+    assert result.conflicts_resolved["label:Test Show"] == (
+        "renamed:Test Show (imported)"
+    )
+    assert result.conflicts_resolved[f"id:{original_id}"] == "reminted"
+    # The copy imports no collections: they would have replaced the index of
+    # the show that owns the id, which keeps its own.
+    col = collection_name("Test Show", "bge-m3", "semantic")
+    assert result.conflicts_resolved[f"collection:{col}"] == "skipped"
+    assert (
+        store.resolve_collection(
+            original_id, "bge-m3", "semantic", show_label="Test Show"
+        )
+        == col
+    )
+    assert store.resolve_collection(copy.id, "bge-m3", "semantic") is None
+
+
+def test_rename_import_keeps_the_id_when_only_the_label_is_taken(
+    tmp_path, isolated_index, registered
+):
+    from podcodex.ingest.show import load_show_meta, show_id
+
+    other = _make_show(tmp_path / "other")
+    show_id(other)  # a different show, minted its own id
+    registered.append(str(other))
+    show = _make_show(tmp_path / "test_show")
+    store = rag_index_store.get_index_store()
+    col = _seed_collection(store)
+    out = tmp_path / "out.podcodex"
+    export_show(show, out, with_audio=False)
+    carried = show_id(show)
+
+    import_archive(out, shows_dir=tmp_path / "shows2")
+
+    meta = load_show_meta(tmp_path / "shows2" / "test_show")
+    assert meta.name == "Test Show (imported)"
+    assert meta.id == carried
+    assert store.collection_label(col) == "Test Show (imported)"
+
+
+def test_free_label_skips_taken_suffixes_case_insensitively():
+    from podcodex.bundle.import_show import _free_label
+
+    taken = {"show", "show (imported)"}
+    assert _free_label("Show", taken) == "Show (imported 2)"
+
+
+@pytest.mark.parametrize("policy", [ConflictPolicy.REPLACE, ConflictPolicy.ABORT])
+def test_label_owned_by_another_show_refuses_before_writing(
+    tmp_path, isolated_index, registered, policy
+):
+    other = _make_show(tmp_path / "other")
+    registered.append(str(other))
+    show = _make_show(tmp_path / "test_show")
+    out = tmp_path / "out.podcodex"
+    export_show(show, out, with_audio=False)
+
+    with pytest.raises(ConflictError, match="already called 'Test Show'"):
+        import_archive(out, shows_dir=tmp_path / "shows2", on_conflict=policy)
+    assert not (tmp_path / "shows2" / "test_show").exists()
+
+
+def test_replace_onto_the_same_show_is_not_a_collision(
+    tmp_path, isolated_index, registered
+):
+    """The folder being replaced never counts against itself."""
+    from podcodex.ingest.show import load_show_meta, show_id
+
+    show = _make_show(tmp_path / "shows" / "test_show")
+    registered.append(str(show))
+    _seed_collection(rag_index_store.get_index_store())
+    out = tmp_path / "out.podcodex"
+    export_show(show, out, with_audio=False)
+    original_id = show_id(show)
+
+    result = import_archive(
+        out, shows_dir=tmp_path / "shows", on_conflict=ConflictPolicy.REPLACE
+    )
+
+    meta = load_show_meta(show)
+    assert (meta.name, meta.id) == ("Test Show", original_id)
+    assert not any(k.startswith(("label:", "id:")) for k in result.conflicts_resolved)
+
+
 # ── Episode metadata dotfiles ──────────────────────────────────────────
 
 
@@ -823,3 +936,44 @@ def test_export_import_carries_episode_metadata(tmp_path, isolated_index):
     assert "Episode One" in meta.read_text(encoding="utf-8")
     assert not (imported / ".DS_Store").exists()
     assert not (imported / ".versions").exists()
+
+
+def test_rename_import_refuses_to_take_over_another_shows_table(
+    tmp_path, isolated_index, registered
+):
+    """Legacy collection names derive from the label, so a different show of
+    the same name collides on them; replacing handed its index to the copy."""
+    store = rag_index_store.get_index_store()
+    col = _seed_collection(store)
+    source = _make_show(tmp_path / "elsewhere" / "test_show")
+    archive = tmp_path / "out.podcodex"
+    export_show(source, archive, with_audio=False)
+
+    # On this machine the same-named table belongs to another registered show.
+    other = _make_show(tmp_path / "other")
+    registered.append(str(other))
+    store.set_collection_identity(col, show_id="other_12345678", show="Test Show")
+
+    with pytest.raises(ConflictError, match="belongs to another show"):
+        import_archive(archive, shows_dir=tmp_path / "shows2")
+    assert not (tmp_path / "shows2" / "test_show").exists()
+    assert store.get_all_collection_info()[col]["show_id"] == "other_12345678"
+
+
+def test_two_same_named_shows_in_one_bundle_are_named_as_such(tmp_path, registered):
+    """The refusal used to blame an existing show that did not exist."""
+    from podcodex.bundle.import_show import _plan_show_identities
+
+    manifest = Manifest(
+        podcodex_version="0",
+        exported_at="2026-01-01T00:00:00Z",
+        mode=Mode.FULL,
+        shows=[
+            ShowEntry(id="a_1", name="Foo", folder="a"),
+            ShowEntry(id="b_2", name="Foo", folder="b"),
+        ],
+    )
+    with pytest.raises(ConflictError, match="bundle holds two shows"):
+        _plan_show_identities(
+            manifest, tmp_path, {"a": "a", "b": "b"}, ConflictPolicy.REPLACE, {}
+        )

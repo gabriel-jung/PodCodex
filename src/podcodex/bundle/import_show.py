@@ -6,7 +6,7 @@ Pure functions — no argparse, no prompts. CLI/API map their own UX onto
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import shutil
 import tarfile
@@ -126,18 +126,105 @@ def _plan_folder_targets(
     return out
 
 
+class _ShowIdentity(NamedTuple):
+    """How an imported show's ``show.toml`` must change on the way in."""
+
+    label: str | None  # new display name, None to keep the archive's
+    keep_id: bool  # False: the carried id is taken, mint a fresh one
+
+
+def _free_label(label: str, taken: set[str]) -> str:
+    """First of ``label (imported)``, ``label (imported 2)``, ... not in *taken*
+    (lowercased, the registry's rule: ``show_registry.folders_for_label``)."""
+    candidate = f"{label} (imported)"
+    i = 2
+    while candidate.strip().lower() in taken:
+        candidate = f"{label} (imported {i})"
+        i += 1
+    return candidate
+
+
+def _plan_show_identities(
+    manifest: Manifest,
+    shows_dir: Path,
+    folder_map: dict[str, str],
+    on_conflict: ConflictPolicy,
+    resolved: dict[str, str],
+) -> dict[str, _ShowIdentity]:
+    """Map archive folder → how its label and id land, refusing collisions early.
+
+    The folder policy only moves the folder; ``show.toml`` keeps the archive's
+    display name and id. Left alone, an import could add a second show under
+    a name already in use (the bot and search pick shows by name) or, when
+    re-importing a show still present, a second folder under the same id, so
+    an id lookup found whichever folder came first.
+
+    ``RENAME`` suffixes the label and gives the copy a fresh id. The archive's
+    collections stay with the show that already owns the id: they share its
+    collection names and replace its tables anyway. ``REPLACE`` and ``ABORT``
+    refuse. A folder being replaced never counts against itself.
+    """
+    from podcodex.ingest.show import load_show_meta, show_display
+    from podcodex.ingest.show_registry import registered_folders
+
+    targets = {(shows_dir / final).resolve() for final in folder_map.values()}
+    taken_labels: set[str] = set()
+    taken_ids: set[str] = set()
+    for folder in registered_folders():
+        if folder.resolve() in targets:
+            continue
+        taken_labels.add(show_display(folder).strip().lower())
+        meta = load_show_meta(folder)
+        if meta and meta.id:
+            taken_ids.add(meta.id)
+
+    in_bundle: set[str] = set()  # labels of the archive's own earlier shows
+    out: dict[str, _ShowIdentity] = {}
+    for show in manifest.shows:
+        label = (show.name or folder_map[show.folder]).strip()
+        label_taken = label.lower() in taken_labels
+        id_taken = bool(show.id) and show.id in taken_ids
+        if (label_taken or id_taken) and on_conflict != ConflictPolicy.RENAME:
+            if label.lower() in in_bundle:
+                raise ConflictError(f"the bundle holds two shows called {label!r}")
+            if label_taken:
+                raise ConflictError(f"another show is already called {label!r}")
+            raise ConflictError(f"show id {show.id!r} already belongs to another show")
+
+        new_label = None
+        if label_taken:
+            new_label = _free_label(label, taken_labels)
+            resolved[f"label:{label}"] = f"renamed:{new_label}"
+            label = new_label
+        if id_taken:
+            resolved[f"id:{show.id}"] = "reminted"
+        elif show.id:
+            taken_ids.add(show.id)
+        taken_labels.add(label.lower())
+        in_bundle.add((show.name or "").strip().lower())
+        out[show.folder] = _ShowIdentity(label=new_label, keep_id=not id_taken)
+    return out
+
+
 def _plan_collections(
     manifest: Manifest,
     on_conflict: ConflictPolicy,
     store: IndexStore,
     resolved: dict[str, str],
+    identities: dict[str, _ShowIdentity],
 ) -> list[tuple[str, str, str, str, int, str]]:
     """Validate collisions, return ``(name, show, model, chunker, dim, show_id)`` tuples.
 
     ``RENAME`` falls back to REPLACE for collection collisions: collection
     names embed the original show normalization, so renaming would break
-    addressing. The pragmatic case is re-importing the same archive — the
-    new extraction is the same data, so overwriting is safe.
+    addressing. The pragmatic case is re-importing the same archive, whose
+    extraction is the same data, so it replaces only a table that stays with
+    the show that owns it; a table owned by another show (by id, or by label
+    for rows written before ids) is refused rather than taken over.
+
+    A show whose carried id is taken (*identities*: ``keep_id`` False) is a
+    copy of a show still present: its collections are skipped, since they
+    would replace the original show's index with the archive's.
     """
     from podcodex.rag.index_store import reserved_index_names
 
@@ -147,6 +234,11 @@ def _plan_collections(
     reserved = reserved_index_names()
     out: list[tuple[str, str, str, str, int, str]] = []
     for show in manifest.shows:
+        ident = identities.get(show.folder)
+        if ident is not None and not ident.keep_id:
+            for c in show.collections:
+                resolved[f"collection:{c.name}"] = "skipped"
+            continue
         for c in show.collections:
             # Manifest data is attacker-controlled; reject a hostile name
             # here, before extraction, instead of failing mid-import when
@@ -158,28 +250,47 @@ def _plan_collections(
             if c.name in existing:
                 if on_conflict == ConflictPolicy.ABORT:
                     raise ConflictError(f"collection '{c.name}' already exists")
+                if on_conflict == ConflictPolicy.RENAME:
+                    _refuse_foreign_collection(c.name, show, store)
                 resolved[f"collection:{c.name}"] = "replaced"
             out.append((c.name, show.name, c.model, c.chunker, c.dim, show.id))
     return out
 
 
-def _mint_ids_for_legacy_shows(
+def _refuse_foreign_collection(name: str, show, store: IndexStore) -> None:
+    """Refuse replacing a collection that belongs to a different show.
+
+    Ownership is ``IndexStore.row_is_show`` in its strict form: an archive
+    show with no id cannot claim a row that carries one.
+    """
+    row = store.get_all_collection_info().get(name) or {}
+    if not store.row_is_show(row, show.id, show.name, strict=True):
+        owner = (row.get("show") or "").strip() or row.get("show_id") or ""
+        raise ConflictError(
+            f"collection '{name}' belongs to another show ({owner!r}); "
+            "importing would replace its index"
+        )
+
+
+def _settle_show_identities(
     manifest: Manifest,
     folder_map: dict[str, str],
+    identities: dict[str, _ShowIdentity],
     shows_dir: Path | None,
     store: IndexStore,
 ) -> None:
-    """Give a v1 archive's shows an identity on the way in.
+    """Write each imported show's planned label and id, then stamp its collections.
 
-    Archives written before ``ShowEntry.id`` existed carry collections keyed
-    only by display name. Left alone they would import as orphans: no id to
-    resolve them by, and a later rename would lose them exactly as before.
+    A carried id wins, so re-importing a show onto another machine lands on
+    the same collections it left with. Archives written before
+    ``ShowEntry.id`` existed carry none and get one minted here; left alone
+    their collections would import as orphans, lost to the next rename.
 
-    An index-only import of a legacy archive has no show folder to mint into,
-    so its collections stay unidentified until the show is registered and the
-    ordinary migration picks them up.
+    An index-only import has no show folder to write into, so a legacy
+    archive's collections stay unidentified until the show is registered and
+    the ordinary migration picks them up.
     """
-    from podcodex.ingest.show import ensure_show_id, load_show_meta, save_show_meta
+    from podcodex.ingest.show import ShowMeta, load_show_meta, save_show_meta
 
     for show in manifest.shows:
         if not shows_dir:
@@ -191,20 +302,26 @@ def _mint_ids_for_legacy_shows(
         if not folder.is_dir():
             continue
 
-        if show.id:
-            # Carried identity wins, so re-importing a show onto another
-            # machine lands on the same collections it left with.
-            meta = load_show_meta(folder)
-            if meta is not None and meta.id != show.id:
-                meta.id = show.id
-                save_show_meta(folder, meta)
-            sid = show.id
-        else:
-            sid = ensure_show_id(folder)
+        ident = identities[show.folder]
+        meta = load_show_meta(folder) or ShowMeta(name=folder.name)
+        before = (meta.name, meta.id)
+        if ident.label is not None:
+            meta.name = ident.label
+        if not ident.keep_id:
+            meta.id = ""  # save_show_meta mints a fresh one
+        elif show.id:
+            meta.id = show.id
+        if (meta.name, meta.id) != before or not meta.id:
+            save_show_meta(folder, meta)
+        if not ident.keep_id:
+            # The collections belong to the show that already had this id.
+            continue
 
         for c in show.collections:
             try:
-                store.set_collection_identity(c.name, show_id=sid, show=show.name)
+                store.set_collection_identity(
+                    c.name, show_id=meta.id, show=meta.name or folder.name
+                )
             except Exception:
                 logger.opt(exception=True).warning(
                     f"could not stamp identity on imported collection {c.name!r}"
@@ -361,9 +478,12 @@ def import_archive(
             single-show bundles.
         on_conflict: Resolution for folder/collection collisions.
 
-            * ``RENAME`` — auto-suffix folder. Collection collisions raise.
-            * ``REPLACE`` — overwrite existing folder + collections.
-            * ``ABORT`` — raise on first collision.
+            * ``RENAME``: auto-suffix folder, and the display name when
+              another show uses it; mint a fresh id when another show owns
+              the carried one. Collection collisions replace.
+            * ``REPLACE``: overwrite existing folder + collections. A name
+              or id owned by a different show raises.
+            * ``ABORT``: raise on first collision.
 
         progress: Optional ``(message, fraction)`` callback.
         manifest: Pre-parsed manifest. Pass it in when the caller already
@@ -419,7 +539,14 @@ def import_archive(
         if is_full
         else {}
     )
-    collection_plan = _plan_collections(manifest, on_conflict, store, resolved)
+    identities = (
+        _plan_show_identities(manifest, shows_dir, folder_map, on_conflict, resolved)
+        if is_full
+        else {}
+    )
+    collection_plan = _plan_collections(
+        manifest, on_conflict, store, resolved, identities
+    )
 
     if is_full:
         for _original, final in folder_map.items():
@@ -458,7 +585,7 @@ def import_archive(
             show_id=entry_id,
         )
 
-    _mint_ids_for_legacy_shows(manifest, folder_map, shows_dir, store)
+    _settle_show_identities(manifest, folder_map, identities, shows_dir, store)
 
     return ImportResult(
         shows_dir=str(shows_dir) if shows_dir else "",

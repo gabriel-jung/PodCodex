@@ -42,10 +42,10 @@ interface Props {
   start?: number;
   end?: number;
   episodeTitle: string;
-  /** Show name + episode stem enable the episode-meta lookup that adds date/
+  /** Show id + episode stem enable the episode-meta lookup that adds date/
    *  duration/speakers to the dialog subtitle. Model+chunking disambiguate
    *  multi-collection indices. */
-  showName?: string;
+  showId?: string;
   episodeStem?: string;
   model?: string;
   chunking?: string;
@@ -73,7 +73,7 @@ export default function SegmentContextDialog({
   start,
   end,
   episodeTitle,
-  showName,
+  showId,
   episodeStem,
   model,
   chunking,
@@ -105,9 +105,9 @@ export default function SegmentContextDialog({
   // Require model+chunking on the key so two open dialogs on the same show/stem
   // but different collections don't share a cache entry and surface wrong meta.
   const { data: episodeMeta } = useQuery({
-    queryKey: queryKeys.indexedEpisode(showName ?? "", episodeStem ?? "", model ?? "", chunking ?? ""),
-    queryFn: () => getIndexedEpisode(showName!, episodeStem!, { model, chunking }),
-    enabled: open && !!showName && !!episodeStem && !!model && !!chunking,
+    queryKey: queryKeys.indexedEpisode(showId ?? "", episodeStem ?? "", model ?? "", chunking ?? ""),
+    queryFn: () => getIndexedEpisode(showId!, episodeStem!, { model, chunking }),
+    enabled: open && !!showId && !!episodeStem && !!model && !!chunking,
     staleTime: 5 * 60_000,
   });
   const metaDate = episodeMeta?.pub_date ? formatDate(episodeMeta.pub_date) : "";

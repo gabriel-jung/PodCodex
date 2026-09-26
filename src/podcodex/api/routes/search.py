@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
-from podcodex.api.routes._helpers import get_index_store
+from podcodex.api.routes._helpers import get_index_store, show_by_id
 from podcodex.core.source import show_audio_files
 from podcodex.rag.hit import Hit, SpeakerTurn
 
@@ -33,77 +33,66 @@ router = APIRouter()
 _retrieval_lock = threading.Lock()
 
 
-def _resolve_req_cols(show: str, model: str, chunking: str) -> list[SearchCollection]:
-    """Resolve a request's show to its collections via the shared resolver.
+def _resolve_req_cols(
+    show_id: str, model: str, chunking: str
+) -> tuple[list[SearchCollection], Path | None]:
+    """The show's collection to search, and its registered folder.
 
-    Shared by ``search_query``, ``exact_search``, and ``random_quote``: all
-    three pick collections the same way, override-first then falling back
-    through show prefs and defaults so a show indexed only under a
-    non-default model stays reachable.
+    Shared by every retrieval route: all pick the collection the same way,
+    override-first then falling back through show prefs and defaults so a
+    show indexed only under a non-default model stays reachable. The show's
+    rows are picked by id here, and only then handed to the resolver, whose
+    own show filter is by display name (all a Discord user or MCP client
+    has): two shows sharing a name would otherwise search each other's
+    collections. The folder maps hits back to files (``_audio_lookup``).
     """
     from podcodex.rag.search_service import (
         load_show_rag_prefs,
         resolve_collections,
     )
 
-    return resolve_collections(
-        get_index_store().get_all_collection_info(),
-        shows=[show],
+    if not (show_id or "").strip():
+        return [], None
+    folder, label = show_by_id(show_id)
+    store = get_index_store()
+    info = store.get_all_collection_info()
+    owned = store.collections_for_show(show_id, show_label=label, info=info)
+    cols = resolve_collections(
+        {name: info[name] for name in owned},
         show_prefs=load_show_rag_prefs(),
         override=(model, chunking),
     )
+    return cols, folder
 
 
-# Cache key combines folder mtime + show.toml mtime so that renaming a show
-# (which only touches show.toml) invalidates the cached display name.
-# Cached value: (key, show_name, folder_path, {stem: audio_path}).
-_AUDIO_LOOKUP_CACHE: dict[
-    str, tuple[tuple[float, float], str, str, dict[str, str]]
-] = {}
+# Keyed by folder path; the folder's mtime invalidates an entry when episodes
+# are added or removed. Cached value: (mtime, {stem: audio_path}).
+_AUDIO_LOOKUP_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
 
 
-def _build_audio_lookup() -> dict[str, dict]:
-    """Per-request map: show name → {"folder": str, "audio": {stem: audio_path}}.
+def _audio_lookup(p: Path | None) -> tuple[str, dict[str, str]]:
+    """``(folder, {stem: audio_path})`` for the show a search ran over.
 
-    ``folder`` is the show folder path; combined with an episode stem it
-    yields ``output_dir`` for episodes that have no audio file (e.g. YouTube
-    flat-extraction or subtitle-only imports).
+    Every search covers one show, so its hits map back to files through that
+    show's folder alone. ``folder`` plus a stem also yields ``output_dir`` for
+    episodes with no audio file (YouTube flat-extraction or subtitle-only
+    imports). *p* is the show's folder from ``show_by_id``; ``("", {})`` when
+    it has none, as for an index-only import.
     """
-    from podcodex.api.routes.config import _load
-    from podcodex.ingest.show import SHOW_META_FILENAME, load_show_meta
+    if p is None:
+        return "", {}
+    folder_path = str(p)
+    try:
+        key = p.stat().st_mtime
+    except OSError:
+        return "", {}
 
-    cfg = _load()
-    active_folders = set(cfg.show_folders)
-    # Drop entries for folders no longer in config (folder unregistered).
-    for stale in [k for k in _AUDIO_LOOKUP_CACHE if k not in active_folders]:
-        _AUDIO_LOOKUP_CACHE.pop(stale, None)
-
-    out: dict[str, dict] = {}
-    for folder_path in cfg.show_folders:
-        p = Path(folder_path)
-        try:
-            folder_m = p.stat().st_mtime
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        if not p.is_dir():
-            continue
-        try:
-            meta_m = (p / SHOW_META_FILENAME).stat().st_mtime
-        except (FileNotFoundError, OSError):
-            meta_m = 0.0
-        key = (folder_m, meta_m)
-
-        cached = _AUDIO_LOOKUP_CACHE.get(folder_path)
-        if cached is not None and cached[0] == key:
-            out[cached[1]] = {"folder": cached[2], "audio": cached[3]}
-            continue
-
-        meta = load_show_meta(p)
-        name = (meta.name if meta else None) or p.name
-        stems = {stem: str(files[0]) for stem, files in show_audio_files(p).items()}
-        _AUDIO_LOOKUP_CACHE[folder_path] = (key, name, folder_path, stems)
-        out[name] = {"folder": folder_path, "audio": stems}
-    return out
+    cached = _AUDIO_LOOKUP_CACHE.get(folder_path)
+    if cached is not None and cached[0] == key:
+        return folder_path, cached[1]
+    stems = {stem: str(files[0]) for stem, files in show_audio_files(p).items()}
+    _AUDIO_LOOKUP_CACHE[folder_path] = (key, stems)
+    return folder_path, stems
 
 
 # ── Embedder warm-up ─────────────────────────────────────
@@ -113,7 +102,7 @@ _warm_started = False
 _warm_lock = threading.Lock()
 
 
-def _warm_show_sync(show: str) -> None:
+def _warm_show_sync(show_id: str) -> None:
     """Resolve the show the way a search does, then load that embedder.
 
     Runs on a worker thread, which is what lets it call ``_resolve_req_cols``
@@ -126,7 +115,7 @@ def _warm_show_sync(show: str) -> None:
     try:
         from podcodex.rag.defaults import DEFAULT_CHUNKING, DEFAULT_MODEL
 
-        cols = _resolve_req_cols(show, DEFAULT_MODEL, DEFAULT_CHUNKING)
+        cols, _folder = _resolve_req_cols(show_id, DEFAULT_MODEL, DEFAULT_CHUNKING)
         if not cols:
             # Nothing indexed for this show, so there is no model to load and
             # a search would return nothing either. Release the latch: on a
@@ -152,7 +141,7 @@ def _release_warm_latch() -> None:
         _warm_started = False
 
 
-def _warm_show_async(show: str) -> None:
+def _warm_show_async(show_id: str) -> None:
     """Load the show's embedder in the background, once per process.
 
     A cold first search costs ~6 s: torch and sentence_transformers import
@@ -168,14 +157,14 @@ def _warm_show_async(show: str) -> None:
     attempt loaded nothing, so a no-op does not spend it.
     """
     global _warm_started
-    if not show:
+    if not show_id:
         return
     with _warm_lock:
         if _warm_started:
             return
         _warm_started = True
     threading.Thread(
-        target=_warm_show_sync, args=(show,), name="search-warm", daemon=True
+        target=_warm_show_sync, args=(show_id,), name="search-warm", daemon=True
     ).start()
 
 
@@ -222,7 +211,7 @@ def search_config() -> dict:
 
 class SearchRequest(BaseModel):
     query: str
-    show: str
+    show_id: str
     model: str = "bge-m3"
     chunking: str = "semantic"
     top_k: int = 5
@@ -279,10 +268,10 @@ def search_query(req: SearchRequest) -> list[dict]:
     if req.model not in MODELS:
         raise HTTPException(400, f"Unknown model: {req.model}")
 
-    cols = _resolve_req_cols(req.show, req.model, req.chunking)
+    cols, folder = _resolve_req_cols(req.show_id, req.model, req.chunking)
     logger.info(
-        "Search: show={!r} cols={!r} episode={!r}",
-        req.show,
+        "Search: show_id={!r} cols={!r} episode={!r}",
+        req.show_id,
         [c.name for c in cols],
         req.episode,
     )
@@ -307,23 +296,18 @@ def search_query(req: SearchRequest) -> list[dict]:
     except Exception as exc:
         # Surfaced, not turned into [], so an index fault never reads as a
         # query that matched nothing (exact and random already surface it).
-        logger.opt(exception=True).warning("Search failed for show {}", req.show)
+        logger.opt(exception=True).warning("Search failed for show {}", req.show_id)
         raise HTTPException(503, f"Search failed: {exc}") from exc
 
     logger.info("Search: {} result(s)", len(results))
-    audio_lookup = _build_audio_lookup()
+    audio_lookup = _audio_lookup(folder)
     return [_result_to_dict(r, audio_lookup) for r, _col in results]
 
 
-def _result_to_dict(r: Hit, audio_lookup: dict[str, dict] | None = None) -> dict:
+def _result_to_dict(r: Hit, audio_lookup: tuple[str, dict[str, str]]) -> dict:
     stem = r.episode
-    show_entry = (
-        audio_lookup.get(r.show)
-        if audio_lookup is not None and stem and r.show
-        else None
-    ) or {}
-    audio_path = (show_entry.get("audio") or {}).get(stem, "")
-    folder = show_entry.get("folder", "")
+    folder, audio = audio_lookup
+    audio_path = audio.get(stem, "") if stem else ""
     output_dir = str(Path(folder) / stem) if folder and stem else ""
     return {
         "text": r.text,
@@ -352,7 +336,7 @@ def _result_to_dict(r: Hit, audio_lookup: dict[str, dict] | None = None) -> dict
 
 class ExactRequest(BaseModel):
     query: str
-    show: str
+    show_id: str
     model: str = "bge-m3"
     chunking: str = "semantic"
     episode: str | None = None
@@ -371,7 +355,7 @@ def exact_search(req: ExactRequest) -> list[dict]:
     """Phrase search: returns all exact, accent-variant, and near-typo matches."""
     from podcodex.rag.search_service import exact_search as svc_exact_search
 
-    cols = _resolve_req_cols(req.show, req.model, req.chunking)
+    cols, folder = _resolve_req_cols(req.show_id, req.model, req.chunking)
     if not cols:
         return []
     try:
@@ -389,7 +373,7 @@ def exact_search(req: ExactRequest) -> list[dict]:
             )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    audio_lookup = _build_audio_lookup()
+    audio_lookup = _audio_lookup(folder)
     return [_result_to_dict(h, audio_lookup) for h, _col in hits]
 
 
@@ -397,7 +381,7 @@ def exact_search(req: ExactRequest) -> list[dict]:
 
 
 class RandomRequest(BaseModel):
-    show: str
+    show_id: str
     model: str = "bge-m3"
     chunking: str = "semantic"
     episode: str | None = None
@@ -413,7 +397,7 @@ def random_quote(req: RandomRequest) -> dict | None:
     """Pick a random indexed chunk (optionally filtered)."""
     from podcodex.rag.search_service import random_quote as svc_random_quote
 
-    cols = _resolve_req_cols(req.show, req.model, req.chunking)
+    cols, folder = _resolve_req_cols(req.show_id, req.model, req.chunking)
     if not cols:
         return None
     try:
@@ -433,7 +417,7 @@ def random_quote(req: RandomRequest) -> dict | None:
         return None
     chunk, _col = picked
     return _result_to_dict(
-        chunk.model_copy(update={"score": 1.0}), _build_audio_lookup()
+        chunk.model_copy(update={"score": 1.0}), _audio_lookup(folder)
     )
 
 
@@ -442,7 +426,7 @@ def random_quote(req: RandomRequest) -> dict | None:
 
 @router.get("/speakers")
 def list_indexed_speakers(
-    show: str,
+    show_id: str,
     model: str = "bge-m3",
     chunking: str = "semantic",
 ) -> list[str]:
@@ -452,7 +436,7 @@ def list_indexed_speakers(
     show indexed only under a non-default model still returns its speakers
     instead of silently missing.
     """
-    cols = _resolve_req_cols(show, model, chunking)
+    cols, _folder = _resolve_req_cols(show_id, model, chunking)
     if not cols:
         return []
     return get_index_store().list_speakers(cols[0].name)
@@ -462,7 +446,7 @@ def list_indexed_speakers(
 
 
 @router.get("/stats")
-def index_stats(show: str = "") -> dict:
+def index_stats(show_id: str = "") -> dict:
     """Return index statistics, optionally scoped to one show.
 
     Also the embedder warm signal: ``SearchPanel`` fetches this when it
@@ -470,12 +454,12 @@ def index_stats(show: str = "") -> dict:
     ``/config`` it knows the show — so the warm can resolve the model that
     show will actually search with.
     """
-    _warm_show_async(show)
+    _warm_show_async(show_id)
 
     local = get_index_store()
-    from podcodex.api.routes._helpers import collections_for_show_name
+    from podcodex.api.routes._helpers import collections_for_show_id
 
-    collections = collections_for_show_name(show, store=local)
+    collections = collections_for_show_id(show_id, store=local)
 
     stats: list[dict] = []
     total_episodes = 0

@@ -154,11 +154,14 @@ def test_cancelling_stops_the_loop_before_the_next_episode(tmp_path, monkeypatch
     monkeypatch.setattr(batch_mod, "_batch_llm_step", llm)
     progress = _Progress(cancel_event=cancel)
 
-    out = batch_mod._run_batch(progress, _req(tmp_path, eps))
+    from podcodex.api.tasks import TaskCancelled
+
+    with pytest.raises(TaskCancelled) as stopped:
+        batch_mod._run_batch(progress, _req(tmp_path, eps))
 
     assert seen == [str(eps[0])]
-    assert out["total"] == 3
-    assert out["completed"] == 1
+    # What finished before the stop becomes the task's final message.
+    assert stopped.value.summary == "1 completed"
     assert any("Cancel" in m for _f, m in progress.messages)
 
 

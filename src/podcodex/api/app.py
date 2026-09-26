@@ -245,7 +245,18 @@ def _warmup_caches_sync() -> None:
     inside the request, making the user's first show open feel sluggish
     (~10s on cold OS cache). Both are process-wide singletons, so warming
     them once at startup eliminates that delay.
+
+    First, every registered show without an id gets one, so the rest of the
+    app (search, bot access, index routes) always has an id to key on.
     """
+    try:
+        from podcodex.ingest.show_registry import mint_missing_show_ids
+
+        if minted := mint_missing_show_ids():
+            logger.info(f"Gave {minted} show(s) an id")
+    except Exception:
+        logger.opt(exception=True).debug("warmup: minting show ids failed")
+
     try:
         from podcodex.rag.index_store import get_index_store
 

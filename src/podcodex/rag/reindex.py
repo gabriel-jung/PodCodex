@@ -52,12 +52,20 @@ def _reindex_show(
     store = get_index_store()
 
     # 1. Drop every target collection so stale rows can't linger.
-    from podcodex.ingest.show_registry import show_id_for_label
+    from podcodex.ingest.show_registry import show_id_for_folder
 
-    sid = show_id_for_label(show_name)
+    # From the folder being reindexed, never by display name: with two shows
+    # of one name, the name picked the oldest one, whose tables were dropped
+    # and then rebuilt from this folder's episodes. Minted when writing, so
+    # the rebuilt collections carry the id.
+    sid = show_id_for_folder(folder, mint=not dry_run)
     for model in model_keys:
         for chunker in chunkers:
-            col = store.resolve_collection(sid, model, chunker, show_label=show_name)
+            # Strict: a show with no id owns only id-less rows. Loose, this
+            # matched a same-named show that has an id, and dropped its table.
+            col = store.resolve_collection(
+                sid, model, chunker, show_label=show_name, strict=True
+            )
             if not col:
                 continue
             if dry_run:
@@ -140,16 +148,16 @@ def _reindex_show(
     return True
 
 
-def _list_collections(show_name: str) -> None:
+def _list_collections(folder: Path, show_name: str) -> None:
     """Print collections currently in LanceDB that belong to this show."""
-    from podcodex.ingest.show_registry import show_id_for_label
+    from podcodex.ingest.show_registry import show_id_for_folder
 
     store = get_index_store()
     # Resolved, not reconstructed from the name: a collection's table name is
     # internal to the store, and after a rename it no longer resembles the
     # show's current name at all.
     names = store.collections_for_show(
-        show_id_for_label(show_name), show_label=show_name
+        show_id_for_folder(folder), show_label=show_name, strict=True
     )
     if not names:
         print(f"(no collections for {show_name!r})")
@@ -205,7 +213,7 @@ def main() -> None:
     folder, name = resolve_show_folder(args.show)
 
     if args.list:
-        _list_collections(name)
+        _list_collections(folder, name)
         return
 
     # Like every entry point that loads models: cache env vars and the ML

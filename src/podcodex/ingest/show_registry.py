@@ -113,3 +113,31 @@ def label_is_taken(label: str, *, excluding: Path) -> bool:
     """
     target = excluding.resolve()
     return any(f.resolve() != target for f in folders_for_label(label))
+
+
+def mint_missing_show_ids() -> int:
+    """Give every registered show that has none a ``show.toml`` id.
+
+    Shows created since ids exist got one on their first save; only older
+    shows that were never indexed or protected (the migration mints only
+    for those) went without, and every "show with no id" special case in
+    the app exists for them. Run once per app start, off the boot path.
+    A folder that cannot be written (read-only, say) is logged and skipped;
+    the app's strict ownership checks still cover it.
+
+    Returns:
+        The number of shows given an id.
+    """
+    from podcodex.ingest.show import ensure_show_id
+
+    minted = 0
+    for folder in registered_folders():
+        meta = load_show_meta(folder)
+        if meta is not None and meta.id:
+            continue
+        try:
+            ensure_show_id(folder)
+            minted += 1
+        except OSError as exc:
+            logger.warning(f"show registry: cannot give {folder} an id: {exc!r}")
+    return minted

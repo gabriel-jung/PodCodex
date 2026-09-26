@@ -62,6 +62,10 @@ def wiring(monkeypatch):
     import podcodex.ingest.show_registry as registry
 
     monkeypatch.setattr(registry, "show_id_for_label", lambda _n: "show_1111aaaa")
+    # The id comes from the reindexed folder itself, not from its name.
+    monkeypatch.setattr(
+        registry, "show_id_for_folder", lambda *_a, **_k: "show_1111aaaa"
+    )
 
     seen: list[dict] = []
     import podcodex.rag.indexing as indexing
@@ -219,6 +223,10 @@ def test_a_failed_episode_fails_the_run(store, monkeypatch, tmp_path):
     import podcodex.rag.indexing as indexing
 
     monkeypatch.setattr(registry, "show_id_for_label", lambda _n: "show_1111aaaa")
+    # The id comes from the reindexed folder itself, not from its name.
+    monkeypatch.setattr(
+        registry, "show_id_for_folder", lambda *_a, **_k: "show_1111aaaa"
+    )
 
     def _fail(*_a, **_kw):
         raise indexing.IndexingError("embedder failed to load")

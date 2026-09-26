@@ -1,30 +1,34 @@
-"""Split a GPU PyInstaller --onedir build into two release archives.
+"""Split a GPU PyInstaller --onedir build into three release archives.
 
 Takes ``packaging/dist/podcodex-server-gpu/`` (produced by
-``build_server.py --gpu``) and splits it into:
+``build_server.py --gpu``) and splits it into parts that change at
+different rates, so an app update downloads only what changed:
 
-  1. ``server-core.tar.gz``     — server code + non-NVIDIA deps (~300 MB).
-                                   Versioned with the app, redownloaded on
-                                   every release.
-  2. ``cuda-libs-<ver>.tar.gz`` — NVIDIA runtime libraries (~2 GB).
-                                   Versioned independently; only redownloaded
-                                   when the CUDA toolkit / torch major
-                                   version changes.
-  3. ``cuda-libs.json``         : manifest with version, both archive
-                                   sha256s and the torch compatibility
-                                   range, consumed by the runtime
-                                   downloader (Phase M.4).
+  1. ``server-core.tar.gz``            : PodCodex and its pure-Python
+                                         dependencies. Changes every release.
+  2. ``torch-runtime-<tag>.tar.gz``    : torch's own binaries
+                                         (``torch/lib``: torch_cuda, torch_cpu,
+                                         ...). Changes with the torch version.
+  3. ``cuda-libs-<tag>.tar.gz``        : NVIDIA runtime libraries (cuDNN,
+                                         cuBLAS, ...). Changes with the CUDA
+                                         toolkit.
+  4. ``cuda-libs.json``                : manifest listing the parts with their
+                                         sha256 and tag, consumed by the
+                                         runtime installer
+                                         (``src/podcodex/api/gpu_backend.py``).
+
+Each tag is a hash of the part's file contents, never a hand-set label: a
+torch bump that brings a new cuDNN changes the cuda-libs tag by itself, and
+a release that changes nothing in a part keeps its tag, so installs reuse it.
 
 Usage:
     .venv/bin/python packaging/package_gpu.py
     .venv/bin/python packaging/package_gpu.py --output release-assets/
-    .venv/bin/python packaging/package_gpu.py --cuda-libs-version cu128-v1
 
-The split is by file: anything matching an NVIDIA library prefix goes
-into the cuda-libs archive; everything else into server-core. PyInstaller
-places NVIDIA libs in different locations depending on the torch version
-(``nvidia/`` subdirectories on older torch, ``_internal/torch/lib/`` on
-torch 2.10+, sometimes top-level), so we classify by name rather than path.
+NVIDIA libs are classified by name rather than path: PyInstaller places
+them differently depending on the torch version (``nvidia/`` subdirectories
+on older torch, ``_internal/torch/lib/`` on torch 2.10+, sometimes top-level).
+Everything else under ``torch/lib/`` is the torch runtime.
 """
 
 from __future__ import annotations
@@ -108,22 +112,40 @@ def is_nvidia_file(rel_path: str) -> bool:
     return False
 
 
+def is_torch_runtime_file(rel_path: str) -> bool:
+    """True for torch's own binaries (not NVIDIA's), under ``torch/lib/``."""
+    rel_lower = "/" + rel_path.lower().replace("\\", "/")
+    return "/torch/lib/" in rel_lower and not is_nvidia_file(rel_path)
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
-        while chunk := f.read(1024 * 1024):
+        while chunk := f.read(1 << 20):
             h.update(chunk)
     return h.hexdigest()
 
 
+def content_tag(files: list[tuple[str, Path]]) -> str:
+    """Hash of a part's relative paths and file contents (12 hex chars).
+
+    From the files, not the archive: gzip output is not reproducible, and an
+    unchanged part must keep its tag so installs reuse it.
+    """
+    h = hashlib.sha256()
+    for rel, src in sorted(files, key=lambda f: f[0].replace("\\", "/")):
+        h.update(rel.replace("\\", "/").encode("utf-8") + b"\0")
+        h.update(sha256_file(src).encode("ascii") + b"\n")
+    return h.hexdigest()[:12]
+
+
 def write_archive(archive_path: Path, files: list[tuple[str, Path]]) -> None:
-    """Write a gzipped tar of (arcname, source_path) pairs. Files inside the
-    archive are stored relative to the archive root so extraction to
-    `<app_data>/backends/gpu/` puts them at the right level."""
+    """Write *files* into a gzipped tar, stored relative to the archive root
+    so extraction into the install dir reunites the onedir tree."""
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive_path, "w:gz") as tar:
-        for arcname, src in files:
-            tar.add(src, arcname=arcname)
+        for rel, src in files:
+            tar.add(src, arcname=rel)
 
 
 def _app_version() -> str:
@@ -134,12 +156,7 @@ def _app_version() -> str:
     return tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
 
 
-def package(
-    onedir_path: Path,
-    output_dir: Path,
-    cuda_libs_version: str,
-    torch_compat: str,
-) -> None:
+def package(onedir_path: Path, output_dir: Path, torch_compat: str) -> dict:
     if not onedir_path.is_dir():
         print(f"Error: input is not a directory: {onedir_path}", file=sys.stderr)
         print(
@@ -150,79 +167,81 @@ def package(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    core_files: list[tuple[str, Path]] = []
-    nvidia_files: list[tuple[str, Path]] = []
+    buckets: dict[str, list[tuple[str, Path]]] = {
+        "server-core": [],
+        "torch-runtime": [],
+        "cuda-libs": [],
+    }
     for item in sorted(onedir_path.rglob("*")):
         if item.is_dir():
             continue
-        rel = item.relative_to(onedir_path)
-        rel_str = str(rel)
-        bucket = nvidia_files if is_nvidia_file(rel_str) else core_files
-        bucket.append((rel_str, item))
+        rel = str(item.relative_to(onedir_path))
+        if is_nvidia_file(rel):
+            buckets["cuda-libs"].append((rel, item))
+        elif is_torch_runtime_file(rel):
+            buckets["torch-runtime"].append((rel, item))
+        else:
+            buckets["server-core"].append((rel, item))
 
-    if not nvidia_files:
-        print(
-            f"Error: no NVIDIA files found in {onedir_path}.\n"
-            "Refusing to write an empty cuda-libs archive. Did you build with --gpu?",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    for part in ("cuda-libs", "torch-runtime"):
+        if not buckets[part]:
+            print(
+                f"Error: no {part} files found in {onedir_path}.\n"
+                "Refusing to write an empty archive. Did you build with --gpu?",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
-    core_size = sum(src.stat().st_size for _, src in core_files)
-    nvidia_size = sum(src.stat().st_size for _, src in nvidia_files)
-
+    app_version = _app_version()
     print(f"Input:        {onedir_path}")
     print(f"Output:       {output_dir}")
-    print(f"Core files:   {len(core_files):>5} ({core_size / 1024**2:>7.1f} MB)")
-    print(f"NVIDIA files: {len(nvidia_files):>5} ({nvidia_size / 1024**2:>7.1f} MB)")
 
-    # Server core
-    core_archive = output_dir / "server-core.tar.gz"
-    print(f"\nWriting {core_archive.name} ...")
-    write_archive(core_archive, core_files)
-    core_sha = sha256_file(core_archive)
-    (output_dir / f"{core_archive.name}.sha256").write_text(
-        f"{core_sha}  {core_archive.name}\n"
-    )
-    print(f"  size:    {core_archive.stat().st_size / 1024**2:.1f} MB")
-    print(f"  sha256:  {core_sha[:16]}...")
+    by_name: dict[str, dict] = {}
+    for name, files in buckets.items():
+        # The server core's tag is the app version: the launcher and the
+        # installer both key it on ``--version``, not on content.
+        tag = app_version if name == "server-core" else content_tag(files)
+        archive = output_dir / (
+            "server-core.tar.gz" if name == "server-core" else f"{name}-{tag}.tar.gz"
+        )
+        size = sum(src.stat().st_size for _, src in files)
+        print(
+            f"\nWriting {archive.name} ({len(files)} files, {size / 1024**2:.1f} MB) ..."
+        )
+        write_archive(archive, files)
+        sha = sha256_file(archive)
+        (output_dir / f"{archive.name}.sha256").write_text(f"{sha}  {archive.name}\n")
+        print(f"  size:    {archive.stat().st_size / 1024**2:.1f} MB")
+        print(f"  tag:     {tag}")
+        by_name[name] = {
+            "name": name,
+            "tag": tag,
+            "archive": archive.name,
+            "sha256": sha,
+        }
 
-    # CUDA libs
-    cuda_archive = output_dir / f"cuda-libs-{cuda_libs_version}.tar.gz"
-    print(f"\nWriting {cuda_archive.name} ...")
-    write_archive(cuda_archive, nvidia_files)
-    cuda_sha = sha256_file(cuda_archive)
-    (output_dir / f"{cuda_archive.name}.sha256").write_text(
-        f"{cuda_sha}  {cuda_archive.name}\n"
-    )
-    print(f"  size:    {cuda_archive.stat().st_size / 1024**2:.1f} MB")
-    print(f"  sha256:  {cuda_sha[:16]}...")
-
-    # Manifest — the runtime downloader fetches this first to know which
-    # archive to pull, verify, and extract.
-    # ``server_sha256`` is required by the runtime installer: server-core is
-    # the archive that becomes the executed sidecar, so its digest travels in
-    # the manifest rather than in an optional ``.sha256`` sidecar fetch.
-    # ``server_version``: the app release the server core was built from.
-    # The launcher only runs a GPU sidecar of its own version, so the
-    # installer refuses a manifest stamped for another release.
+    # ``server_version``: the app release the server core was built from. The
+    # launcher only runs a GPU sidecar of its own version, so the installer
+    # refuses a manifest stamped for another release. Every archive's sha256
+    # travels here, the server core's included, since it becomes the executed
+    # sidecar. The flat fields mirror the two-archive schema, so an older
+    # installer that falls back to this manifest reaches its "made for another
+    # release" refusal instead of a missing-field error.
     manifest = {
-        "server_version": _app_version(),
-        "version": cuda_libs_version,
+        "schema": 2,
+        "server_version": app_version,
         "torch_compat": torch_compat,
-        "archive": cuda_archive.name,
-        "sha256": cuda_sha,
-        "server_sha256": core_sha,
+        "parts": list(by_name.values()),
+        "version": by_name["cuda-libs"]["tag"],
+        "archive": by_name["cuda-libs"]["archive"],
+        "sha256": by_name["cuda-libs"]["sha256"],
+        "server_sha256": by_name["server-core"]["sha256"],
     }
     manifest_path = output_dir / "cuda-libs.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"\nManifest: {manifest_path}")
     print(json.dumps(manifest, indent=2))
-
-    total_in = core_size + nvidia_size
-    total_out = core_archive.stat().st_size + cuda_archive.stat().st_size
-    print(f"\nUncompressed input: {total_in / 1024**3:.2f} GB")
-    print(f"Compressed total:   {total_out / 1024**3:.2f} GB")
+    return manifest
 
 
 def main() -> None:
@@ -241,18 +260,13 @@ def main() -> None:
         help=f"Where to write archives + manifest (default: {DEFAULT_OUTPUT.relative_to(REPO_ROOT)})",
     )
     parser.add_argument(
-        "--cuda-libs-version",
-        default="cu128-v1",
-        help="Version tag for the cuda-libs archive (default: cu128-v1). Bump only when the CUDA toolkit changes.",
-    )
-    parser.add_argument(
         "--torch-compat",
         default=">=2.7.0,<2.11.0",
         help="Torch version range this cuda-libs archive supports (default: >=2.7.0,<2.11.0).",
     )
     args = parser.parse_args()
 
-    package(args.input, args.output, args.cuda_libs_version, args.torch_compat)
+    package(args.input, args.output, args.torch_compat)
 
 
 if __name__ == "__main__":

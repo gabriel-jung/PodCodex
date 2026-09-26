@@ -81,7 +81,12 @@ from podcodex.ingest.rss import (
 )
 from podcodex.ingest.show import PipelineDefaults as _PipelineDefaults
 from podcodex.ingest.show import ShowMeta as _ShowMeta
-from podcodex.ingest.show import is_feed_backed, load_show_meta, save_show_meta
+from podcodex.ingest.show import (
+    ensure_show_id,
+    is_feed_backed,
+    load_show_meta,
+    save_show_meta,
+)
 
 router = APIRouter()
 
@@ -90,6 +95,8 @@ router = APIRouter()
 
 
 class ShowSummary(BaseModel):
+    # The show.toml id; "" for a folder never minted one (listing never mints).
+    id: str = ""
     name: str
     path: str
     episode_count: int = 0  # downloaded audio files on disk
@@ -191,6 +198,7 @@ def list_shows() -> list[ShowSummary]:
 
         shows.append(
             ShowSummary(
+                id=(meta.id if meta else ""),
                 name=name,
                 path=str(child),
                 episode_count=audio_count,
@@ -858,7 +866,10 @@ def register_show(req: RegisterShowRequest) -> dict:
     # disk the user cannot add, and rename stays the way out.
     if not load_show_meta(p):
         _refuse_taken_label(p.name, p)
-        save_show_meta(p, _ShowMeta(name=p.name))
+        save_show_meta(p, _ShowMeta(name=p.name))  # mints the id
+    else:
+        # A show.toml from before ids: search and bot access key on the id.
+        ensure_show_id(p)
 
     cfg = _load()
     _register_folder(cfg, str(p))

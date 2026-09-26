@@ -2,12 +2,12 @@
 
 Distinct from search: these endpoints return per-episode metadata
 (title, pub_date, duration, description, speakers) without running a
-vector / FTS query. They power the frontend's episode card and the
-MCP ``get_episode`` / ``list_episodes`` tools.
+vector / FTS query. They power the frontend's episode card and episode
+filter. (The MCP ``get_episode`` / ``list_episodes`` tools read the index
+directly, by show name.)
 
-The show is a query parameter, not a path segment: it is a display label,
-and a label containing "/" (feed titles are not ours to choose) split the
-path and hit the wrong route.
+The show is its ``show.toml`` id, never the display name: two shows may
+share a name, and a rename would race a request in flight.
 """
 
 from __future__ import annotations
@@ -15,7 +15,10 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from podcodex.api.routes._helpers import get_index_store, resolve_collection_for_show
+from podcodex.api.routes._helpers import (
+    get_index_store,
+    resolve_collection_for_show_id,
+)
 from podcodex.core._utils import episode_display
 
 router = APIRouter()
@@ -49,7 +52,7 @@ def _fill_title(d: dict) -> dict:
 
 @router.get("/list", response_model=list[EpisodeListItem])
 def list_show_episodes(
-    show: str = Query(...),
+    show_id: str = Query(...),
     model: str = "bge-m3",
     chunking: str = "semantic",
     pub_date_min: str | None = None,
@@ -58,7 +61,7 @@ def list_show_episodes(
 ) -> list[dict]:
     """List episodes in a collection, optionally filtered by date / title."""
     local = get_index_store()
-    col = resolve_collection_for_show(show, model, chunking, store=local)
+    col = resolve_collection_for_show_id(show_id, model, chunking, store=local)
     if not col:
         return []
     try:
@@ -75,14 +78,14 @@ def list_show_episodes(
 
 @router.get("/one", response_model=EpisodeMeta)
 def get_show_episode(
-    show: str = Query(...),
+    show_id: str = Query(...),
     episode_stem: str = Query(...),
     model: str = "bge-m3",
     chunking: str = "semantic",
 ) -> dict:
     """Return metadata for a single episode in a collection."""
     local = get_index_store()
-    col = resolve_collection_for_show(show, model, chunking, store=local)
+    col = resolve_collection_for_show_id(show_id, model, chunking, store=local)
     meta = local.get_episode(col, episode_stem) if col else None
     if meta is None:
         raise HTTPException(404, f"Episode not found: {episode_stem}")

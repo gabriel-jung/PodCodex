@@ -34,6 +34,7 @@ export type {
   RSSEpisodeOut,
   SearchRequest,
   ExactRequest,
+  RandomRequest,
   SearchResultSchema as SearchResult,
   Segment,
   ShowMeta,

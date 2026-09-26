@@ -2,7 +2,7 @@ import type { EpisodeListItem, EpisodeMeta } from "./generated-types";
 import { json } from "./client";
 
 export interface ListEpisodesParams {
-  show: string;
+  showId: string;
   model?: string;
   chunking?: string;
   pub_date_min?: string | null;
@@ -10,10 +10,9 @@ export interface ListEpisodesParams {
   title_contains?: string | null;
 }
 
-// The show label rides in the query string, never the path: a label with a
-// "/" in it (feed titles) split the path and hit the wrong route.
+// Keyed by the show id, never the display name: two shows may share a name.
 export const listIndexedEpisodes = (p: ListEpisodesParams) => {
-  const qs = new URLSearchParams({ show: p.show });
+  const qs = new URLSearchParams({ show_id: p.showId });
   if (p.model) qs.set("model", p.model);
   if (p.chunking) qs.set("chunking", p.chunking);
   if (p.pub_date_min) qs.set("pub_date_min", p.pub_date_min);
@@ -23,11 +22,11 @@ export const listIndexedEpisodes = (p: ListEpisodesParams) => {
 };
 
 export const getIndexedEpisode = (
-  show: string,
+  showId: string,
   stem: string,
   opts: { model?: string; chunking?: string } = {},
 ) => {
-  const qs = new URLSearchParams({ show, episode_stem: stem });
+  const qs = new URLSearchParams({ show_id: showId, episode_stem: stem });
   if (opts.model) qs.set("model", opts.model);
   if (opts.chunking) qs.set("chunking", opts.chunking);
   return json<EpisodeMeta>(`/api/episodes/one?${qs}`);

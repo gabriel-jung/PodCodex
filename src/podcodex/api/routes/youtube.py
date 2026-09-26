@@ -19,6 +19,7 @@ from podcodex.api.routes._helpers import (
     rss_episode_to_out,
     submit_task,
 )
+from podcodex.api.tasks import TaskCancelled
 from podcodex.api.schemas import (
     DownloadItemStatus,
     RSSEpisodeOut,
@@ -205,8 +206,7 @@ def youtube_download(
         pacer = Pacer()
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
-                progress_cb(i / total, "Cancelled")
-                break
+                raise TaskCancelled(f"{len(results)} of {total} processed")
             stem = episode_stem(ep, show_path, existing_stems=existing_stems)
             report(i, f"Downloading: {ep.title[:40]}")
             paced = False
@@ -324,8 +324,7 @@ def youtube_import_subs(
         pacer = Pacer()
         for i, ep in enumerate(episodes):
             if cancel and cancel.is_set():
-                progress_cb(i / total, "Cancelled")
-                break
+                raise TaskCancelled(f"{imported} of {total} imported")
 
             stem = episode_stem(ep, show_path, existing_stems=existing_stems)
             report(i, f"Downloading subs: {ep.title[:40]}")

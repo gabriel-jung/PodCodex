@@ -76,6 +76,19 @@ class TaskInfo:
         self.log.append(message)
 
 
+class TaskCancelled(Exception):
+    """Raised at one of a task's own cancel points once the user cancelled it.
+
+    *summary* says what the task finished before it stopped ("3 downloaded");
+    ``TaskManager`` shows it after "Cancelled" as the final message. Not a
+    failure: nothing is logged as an error.
+    """
+
+    def __init__(self, summary: str = "") -> None:
+        super().__init__(summary or "Cancelled")
+        self.summary = summary
+
+
 class TaskConflict(ValueError):
     """Another live task holds the lock key; ``holder`` is that task."""
 
@@ -249,6 +262,16 @@ class TaskManager:
         task's progress and broadcasts to WebSocket clients.  The callback
         also carries a ``cancel_event`` attribute for cooperative cancellation.
 
+        ``progress_cb`` never raises, cancelled or not: it is also called from
+        inside code that is not written to be interrupted (yt-dlp's per-chunk
+        hook, uv's output loop, archive extraction), where an exception would
+        leave partial files and skip the cleanup after the loop. A task stops
+        at its own cancel points instead, between units of work where stopping
+        is safe, by raising ``TaskCancelled`` (``routes._helpers.
+        raise_if_cancelled`` does it from the callback's ``cancel_event``);
+        its summary of what was finished becomes the final message.
+        Subprocess steps are stopped by the runner.
+
         Args:
             step: Short label for the pipeline step (e.g. ``"transcribe"``).
             audio_path: Filesystem path being processed (used for locking).
@@ -337,6 +360,7 @@ class TaskManager:
             root.addHandler(log_handler)
             # Also capture loguru output (used by core pipeline modules)
             loguru_sink_id = _add_loguru_sink(info, self, thread_id=thread_id)
+            cancel_summary = ""
             try:
                 result = fn(progress_cb, *args)
                 if not info.cancel_event.is_set():
@@ -349,6 +373,12 @@ class TaskManager:
                     info.progress = 1.0
                     info.message = "Done"
                     info.result = result
+            except TaskCancelled as exc:
+                # A cancel point, not a failure. Also settles a task that
+                # stopped on its own terms, with no cancel request behind it.
+                cancel_summary = exc.summary
+                info.cancel_event.set()
+                info.status = "cancelled"
             except Exception as exc:
                 if not info.cancel_event.is_set():
                     logger.exception(
@@ -358,9 +388,14 @@ class TaskManager:
                     info.error = str(exc)
             finally:
                 # Overwrite the "Cancelling..." placeholder set by
-                # TaskManager.cancel once the subprocess actually exits.
+                # TaskManager.cancel once the work actually stops, with what
+                # the task finished first when it said.
                 if info.cancel_event.is_set():
-                    info.message = "Cancelled"
+                    info.message = (
+                        f"Cancelled: {cancel_summary}"
+                        if cancel_summary
+                        else "Cancelled"
+                    )
                 root.removeHandler(log_handler)
                 _remove_loguru_sink(loguru_sink_id)
                 if info.finished_at is None:

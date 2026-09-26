@@ -9,14 +9,37 @@ from pydantic import BaseModel, field_validator
 from podcodex.api.routes._helpers import (
     get_index_store,
     require_audio_or_output,
-    collections_for_show_name,
-    resolve_collection_for_show,
     submit_subprocess_task,
 )
 from podcodex.api.schemas import TaskResponse
 from podcodex.core._utils import AudioPaths
 
 router = APIRouter()
+
+
+def _episode_show(p: AudioPaths) -> tuple[str, str]:
+    """``(show_id, label)`` of the show that owns this episode.
+
+    Read from the episode's own folder, so these routes need no show
+    parameter: a display name sent by the client would pick the wrong show
+    when two share it. The label only reaches collections written before
+    ids existed. Read-only: never mints an id.
+    """
+    from podcodex.ingest.show import show_display
+    from podcodex.ingest.show_registry import show_id_for_folder
+
+    # Two reads of one mtime-cached show.toml.
+    return show_id_for_folder(p.show_dir), show_display(p.show_dir)
+
+
+def _episode_collections(local, p: AudioPaths, info: dict | None = None) -> list[str]:
+    """Every collection of the show that owns this episode.
+
+    Strict ownership (``IndexStore.row_is_show``): a folder with no id owns
+    only rows with none either, never a same-named show's.
+    """
+    show_id, label = _episode_show(p)
+    return local.collections_for_show(show_id, show_label=label, strict=True, info=info)
 
 
 # ── Config (available models + strategies) ───────────────
@@ -54,12 +77,10 @@ def index_config() -> dict:
 
 @router.get("/status")
 def index_status(
-    show: str = Query(...),
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> dict:
     """Check indexing status per (model, chunking) combination."""
-    from podcodex.ingest.show_registry import show_id_for_folder
     from podcodex.rag.defaults import CHUNKING_STRATEGIES, MODELS
 
     require_audio_or_output(audio_path, output_dir)
@@ -76,11 +97,7 @@ def index_status(
     info = local.get_all_collection_info()
     owned = {
         (meta.get("model"), meta.get("chunker")): c
-        for c in local.collections_for_show(
-            show_id_for_folder(p.show_dir, show), show_label=show
-        )
-        # .get, not [c]: the two reads above are independent, so a collection
-        # committed between them would KeyError and 500 this endpoint.
+        for c in _episode_collections(local, p, info)
         if (meta := info.get(c))
     }
     combinations = []
@@ -106,7 +123,6 @@ def index_status(
 
 @router.get("/episode-collections")
 def episode_collections(
-    show: str = Query(...),
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
 ) -> list[dict]:
@@ -125,7 +141,7 @@ def episode_collections(
 
     local = get_index_store()
     out: list[dict] = []
-    for col_name in collections_for_show_name(show, store=local):
+    for col_name in _episode_collections(local, p):
         summary = local.episode_collection_summary(col_name, episode)
         if not summary:
             continue
@@ -144,7 +160,6 @@ def episode_collections(
 
 @router.delete("/episode")
 def delete_episode_from_index(
-    show: str = Query(...),
     collection: str = Query(...),
     audio_path: str | None = Query(None),
     output_dir: str | None = Query(None),
@@ -165,8 +180,7 @@ def delete_episode_from_index(
 
     # If this episode is no longer in any collection of this show, clear flag.
     still_indexed = any(
-        local.episode_is_indexed(c, episode)
-        for c in collections_for_show_name(show, store=local)
+        local.episode_is_indexed(c, episode) for c in _episode_collections(local, p)
     )
     if not still_indexed:
         mark_step(p.show_dir, episode, indexed=False)
@@ -179,7 +193,6 @@ def delete_episode_from_index(
 
 @router.get("/inspect")
 def inspect_index(
-    show: str = Query(...),
     model: str = Query(...),
     chunking: str = Query(...),
     audio_path: str | None = Query(None),
@@ -195,10 +208,13 @@ def inspect_index(
     p = AudioPaths.from_audio(audio_path, output_dir=output_dir)
     episode = p.audio_path.stem
     local = get_index_store()
-    col = resolve_collection_for_show(show, model, chunking, store=local)
+    show_id, label = _episode_show(p)
+    col = local.resolve_collection(
+        show_id, model, chunking, show_label=label, strict=True
+    )
     if not col:
         raise HTTPException(
-            404, f"Show {show!r} is not indexed for {model}/{chunking}."
+            404, f"Show {label!r} is not indexed for {model}/{chunking}."
         )
 
     chunks = local.load_chunks_with_vector_stats(col, episode)
@@ -276,7 +292,10 @@ def start_index(req: IndexRequest) -> TaskResponse:
         # forcing a full chunk rescan; the job reports which stem landed.
         stem = result.get("stem")
         if stem:
-            note_episode_indexed(req.show, stem)
+            show_dir = AudioPaths.from_audio(
+                req.audio_path, output_dir=req.output_dir
+            ).show_dir
+            note_episode_indexed(show_dir, stem)
 
     return submit_subprocess_task(
         "index",

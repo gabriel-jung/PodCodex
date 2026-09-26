@@ -135,9 +135,16 @@ def already_indexed(
     if not wanted:
         return False
     local = get_index_store()
-    show_id = show_id_for_folder(AudioPaths.from_audio(audio_path).show_dir, show_name)
+    # From this folder's own show.toml, with no fallback to a lookup by name,
+    # and strict: a folder with no id cannot own a same-named show's table,
+    # which used to make this skip an episode that was never indexed.
+    show_id = show_id_for_folder(AudioPaths.from_audio(audio_path).show_dir)
     return all(
-        (col := local.resolve_collection(show_id, m, c, show_label=show_name))
+        (
+            col := local.resolve_collection(
+                show_id, m, c, show_label=show_name, strict=True
+            )
+        )
         and local.episode_is_indexed(col, stem)
         for m, c in wanted
     )

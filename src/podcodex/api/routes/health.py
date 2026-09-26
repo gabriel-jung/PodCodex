@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import threading
 from functools import lru_cache
 from typing import Literal
 
@@ -409,7 +410,12 @@ def _run_uv(cmd: list[str], progress_cb, label: str) -> dict:
     extra's own packages: never an exact sync, which removes every package
     the listed extras do not name (the torch-variant extras, the dev group,
     anything a capability probe missed).
+
+    Cancel terminates uv, which is what it is built to survive: the next
+    install or remove finishes or undoes what it left half done.
     """
+    from podcodex.api.routes._helpers import TaskCancelled
+
     progress_cb(0.0, f"{label}...")
     proc = subprocess.Popen(
         cmd,
@@ -417,6 +423,17 @@ def _run_uv(cmd: list[str], progress_cb, label: str) -> dict:
         stderr=subprocess.STDOUT,
         text=True,
     )
+    cancel = getattr(progress_cb, "cancel_event", None)
+    if cancel is not None:
+        # A watcher, not a check in the loop below: that loop blocks on uv's
+        # next output line, which can be minutes apart during a big download.
+        def _stop_on_cancel() -> None:
+            while proc.poll() is None:
+                if cancel.wait(0.5):
+                    proc.terminate()
+                    return
+
+        threading.Thread(target=_stop_on_cancel, name="uv-cancel", daemon=True).start()
     lines: list[str] = []
     for line in proc.stdout:  # type: ignore[union-attr]
         line = line.rstrip()
@@ -425,6 +442,11 @@ def _run_uv(cmd: list[str], progress_cb, label: str) -> dict:
             progress_cb(0.1, line[:120])
     proc.wait()
 
+    if cancel is not None and cancel.is_set():
+        # uv may have finished, or changed some packages before it stopped:
+        # the cached probe must not keep answering for the old package set.
+        _invalidate_capabilities()
+        raise TaskCancelled()
     if proc.returncode != 0:
         raise RuntimeError(
             f"uv failed (exit {proc.returncode}):\n" + "\n".join(lines[-20:])

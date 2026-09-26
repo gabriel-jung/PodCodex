@@ -100,11 +100,17 @@ def _episode_status(
     }
 
 
-# Indexed-stem sets by show name, guarded by the collections' dataset
-# versions. Listing the episodes means scanning every chunk row (tens of ms on
-# a large show) and the episode list route asks for it on every request,
-# including the 5s status poll.
+# Indexed-stem sets by show folder (resolved path), guarded by the
+# collections' dataset versions. Not by display name: two shows may share
+# one, and a stem indexed in either used to show up as indexed in both.
+# Listing the episodes means scanning every chunk row (tens of ms on a large
+# show) and the episode list route asks for it on every request, including
+# the 5s status poll.
 _INDEXED_STEMS_CACHE: dict[str, tuple[tuple[tuple[str, int], ...], set[str]]] = {}
+
+
+def _stems_cache_key(show_folder: Path | str) -> str:
+    return str(Path(show_folder).resolve())
 
 
 def _versions_fingerprint(store, cols) -> tuple[tuple[str, int], ...]:
@@ -143,22 +149,25 @@ def lance_indexed_stems(show_folder: Path) -> set[str] | None:
         # would rescan every call.
         # meta is already loaded above, so the id costs nothing here; resolving
         # it by name would re-stat every registered show folder per request.
-        cols = store.collections_for_show(meta.id if meta else "", show_label=show_name)
+        cols = store.collections_for_show(
+            meta.id if meta else "", show_label=show_name, strict=True
+        )
         versions = _versions_fingerprint(store, cols)
-        cached = _INDEXED_STEMS_CACHE.get(show_name)
+        key = _stems_cache_key(show_folder)
+        cached = _INDEXED_STEMS_CACHE.get(key)
         if cached is not None and cached[0] == versions:
             return set(cached[1])
         indexed: set[str] = set()
         for col in cols:
             indexed.update(store.list_episodes(col))
-        _INDEXED_STEMS_CACHE[show_name] = (versions, indexed)
+        _INDEXED_STEMS_CACHE[key] = (versions, indexed)
         return set(indexed)
     except Exception as exc:
         logger.warning("lance indexed-set lookup failed for {!r}: {!r}", show_name, exc)
         return None
 
 
-def note_episode_indexed(show_name: str, stem: str) -> None:
+def note_episode_indexed(show_folder: Path | str, stem: str) -> None:
     """Incrementally add *stem* to the cached indexed set after an index write.
 
     Every LanceDB write bumps the dataset version, so during an index batch
@@ -172,7 +181,8 @@ def note_episode_indexed(show_name: str, stem: str) -> None:
     Cross-process writers (bot rsync) also take the rescan path; a cold
     cache just waits for the next request's scan.
     """
-    cached = _INDEXED_STEMS_CACHE.get(show_name)
+    key = _stems_cache_key(show_folder)
+    cached = _INDEXED_STEMS_CACHE.get(key)
     if cached is None:
         return
     try:
@@ -184,12 +194,12 @@ def note_episode_indexed(show_name: str, stem: str) -> None:
     except Exception as exc:
         # Can't trust the fingerprint: drop the entry so the next request
         # rebuilds from a real scan instead of serving a stale set.
-        _INDEXED_STEMS_CACHE.pop(show_name, None)
-        logger.warning("indexed-set refresh failed for {!r}: {!r}", show_name, exc)
+        _INDEXED_STEMS_CACHE.pop(key, None)
+        logger.warning("indexed-set refresh failed for {}: {!r}", key, exc)
         return
     stems = set(cached[1])
     stems.add(stem)
-    _INDEXED_STEMS_CACHE[show_name] = (versions, stems)
+    _INDEXED_STEMS_CACHE[key] = (versions, stems)
 
 
 def dir_holds_episode(names: set[str] | frozenset[str]) -> bool:

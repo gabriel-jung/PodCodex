@@ -1156,6 +1156,9 @@ def test_export_save_audio_is_confined_to_shows(client, tmp_path):
 SEARCH_DIM = 8
 
 
+ALPHA_ID = "alpha_0000abcd"
+
+
 @pytest.fixture
 def seeded_index(tmp_path, monkeypatch):
     """IndexStore with show "Alpha" indexed only under e5-small/semantic.
@@ -1173,7 +1176,12 @@ def seeded_index(tmp_path, monkeypatch):
     store = IndexStore(index_path)
     col = "alpha__e5-small__semantic"
     store.ensure_collection(
-        col, show="Alpha", model="e5-small", chunker="semantic", dim=SEARCH_DIM
+        col,
+        show="Alpha",
+        model="e5-small",
+        chunker="semantic",
+        dim=SEARCH_DIM,
+        show_id=ALPHA_ID,
     )
     chunks = [
         {
@@ -1209,7 +1217,7 @@ def test_search_falls_back_when_requested_combo_missing(client, seeded_index):
     return the show's actual results, not an empty/404-ish response."""
     resp = client.post(
         "/api/search/query",
-        json={"query": "hello", "show": "Alpha", "model": "bge-m3"},
+        json={"query": "hello", "show_id": ALPHA_ID, "model": "bge-m3"},
         headers={"X-PodCodex": "1"},
     )
     assert resp.status_code == 200
@@ -1221,7 +1229,7 @@ def test_exact_endpoint_falls_back_when_requested_combo_missing(client, seeded_i
     show indexed only under a non-default model must still be searchable."""
     resp = client.post(
         "/api/search/exact",
-        json={"query": "hello world chunk 1", "show": "Alpha", "model": "bge-m3"},
+        json={"query": "hello world chunk 1", "show_id": ALPHA_ID, "model": "bge-m3"},
         headers={"X-PodCodex": "1"},
     )
     assert resp.status_code == 200
@@ -1240,7 +1248,7 @@ def test_random_endpoint_falls_back_when_requested_combo_missing(client, seeded_
     search routes instead of silently returning None for an indexed show."""
     resp = client.post(
         "/api/search/random",
-        json={"show": "Alpha", "model": "bge-m3"},
+        json={"show_id": ALPHA_ID, "model": "bge-m3"},
         headers={"X-PodCodex": "1"},
     )
     assert resp.status_code == 200
@@ -1255,7 +1263,7 @@ def test_speakers_falls_back_when_requested_combo_missing(client, seeded_index):
     search routes: a wrong model param must not silently return []."""
     resp = client.get(
         "/api/search/speakers",
-        params={"show": "Alpha", "model": "bge-m3"},
+        params={"show_id": ALPHA_ID, "model": "bge-m3"},
         headers={"X-PodCodex": "1"},
     )
     assert resp.status_code == 200
@@ -1381,16 +1389,12 @@ def test_inspect_unindexed_show_is_a_clean_404(tmp_path, monkeypatch):
     from podcodex.api.routes import index as index_routes
 
     monkeypatch.setenv("PODCODEX_INDEX", str(tmp_path / "index"))
-    monkeypatch.setattr(
-        index_routes, "resolve_collection_for_show", lambda *a, **k: None
-    )
     monkeypatch.setattr(index_routes, "require_audio_or_output", lambda *a: None)
 
     audio = tmp_path / "ep1.mp3"
     audio.write_bytes(b"x")
     with pytest.raises(HTTPException) as exc:
         index_routes.inspect_index(
-            show="Nope",
             model="bge-m3",
             chunking="semantic",
             audio_path=str(audio),
