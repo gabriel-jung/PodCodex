@@ -152,7 +152,7 @@ def _rolling_overlap(prev: str, cur: str) -> int:
     return 0
 
 
-def _merge_parsed_cues(cues: list[dict]) -> list[dict]:
+def merge_parsed_cues(cues: list[dict]) -> list[dict]:
     """Deduplicate subtitle cues, preserving original timing.
 
     YouTube auto-generated subtitles often produce overlapping cues with
@@ -283,7 +283,7 @@ def srt_to_segments(srt_text: str) -> list[dict]:
             }
         )
 
-    return _merge_parsed_cues(cues)
+    return merge_parsed_cues(cues)
 
 
 _SRT_LABEL_RE = re.compile(r"^[^\s.,!?:;\"'()][^.,!?:;\"()]{0,38}$")
@@ -372,4 +372,4 @@ def vtt_to_segments(vtt_text: str) -> list[dict]:
                 }
             )
 
-    return _merge_parsed_cues(cues)
+    return merge_parsed_cues(cues)

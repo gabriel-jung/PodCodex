@@ -128,22 +128,6 @@ def test_map_offsets_to_metadata_no_overlap_returns_none():
     assert _map_offsets_to_metadata(0, 50, offset_map) is None
 
 
-def test_map_offsets_to_metadata_no_speaker_uses_unknown():
-    """Overlapping turns with no speaker key should use 'UNKNOWN' as speaker."""
-    offset_map = [
-        {
-            "start_char": 0,
-            "end_char": 10,
-            "start": 0.0,
-            "end": 5.0,
-            "text": "hello",
-        },
-    ]
-    result = _map_offsets_to_metadata(0, 10, offset_map)
-    assert result is not None
-    assert result["dominant_speaker"] == "UNKNOWN"
-
-
 # ──────────────────────────────────────────────
 # semantic_chunks — mocked (no model loading)
 # ──────────────────────────────────────────────
@@ -246,22 +230,6 @@ def test_speaker_chunks_all_noise_filtered():
     assert speaker_chunks(t, min_chars=30) == []
 
 
-def test_speaker_chunks_missing_meta_defaults_empty_strings():
-    t = {
-        "segments": [
-            {
-                "start": 0.0,
-                "end": 5.0,
-                "speaker": "A",
-                "text": "Hello world this is fine",
-            }
-        ]
-    }
-    chunks = speaker_chunks(t, min_chars=5)
-    assert chunks[0]["show"] == ""
-    assert chunks[0]["episode"] == ""
-
-
 # ──────────────────────────────────────────────
 # semantic_chunks — mocked (no model loading)
 # ──────────────────────────────────────────────
@@ -298,22 +266,6 @@ def test_speaker_chunks_include_source_field():
     chunks = speaker_chunks(t, min_chars=5)
     assert len(chunks) == 1
     assert chunks[0]["source"] == "corrected"
-
-
-def test_speaker_chunks_source_defaults_empty():
-    t = {
-        "meta": {"show": "S", "episode": "E"},
-        "segments": [
-            {
-                "start": 0.0,
-                "end": 5.0,
-                "speaker": "A",
-                "text": "Hello world this is fine enough.",
-            },
-        ],
-    }
-    chunks = speaker_chunks(t, min_chars=5)
-    assert chunks[0]["source"] == ""
 
 
 def test_semantic_chunks_include_source_field():

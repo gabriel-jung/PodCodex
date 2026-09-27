@@ -1,14 +1,14 @@
 """Tests for the deferred torch / transformers patch hook.
 
-``bootstrap_for_bundled_sidecar`` no longer imports torch (~4 s) and
-transformers (~3 s) at startup — nothing in the API needs them until a
+``bootstrap_for_bundled_sidecar`` does not import torch (~4 s) or
+transformers (~3 s) at startup: nothing in the API needs them until a
 search or a pipeline step runs. A ``sys.meta_path`` finder installs the
 patches the moment either module actually executes.
 
-The regression these tests exist for: transformers detects torch with a
-bare ``importlib.util.find_spec("torch")`` and discards the spec. A hook
-that consumed its callback at resolution time armed a trigger that never
-fired, and torch stayed unpatched.
+The case these tests exist for: transformers detects torch with a bare
+``importlib.util.find_spec("torch")`` and discards the spec. A hook that
+consumes its callback at resolution time arms a trigger that never fires,
+and torch stays unpatched.
 """
 
 from __future__ import annotations

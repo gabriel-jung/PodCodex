@@ -26,6 +26,7 @@ def _reset_prefs_cache():
 COL_INFO = {
     "alpha__bge-m3__semantic": {
         "show": "Alpha",
+        "show_id": "alpha_1",
         "model": "bge-m3",
         "chunker": "semantic",
         "dim": 1024,
@@ -33,6 +34,7 @@ COL_INFO = {
     },
     "alpha__e5-small__speaker": {
         "show": "Alpha",
+        "show_id": "alpha_1",
         "model": "e5-small",
         "chunker": "speaker",
         "dim": 384,
@@ -40,6 +42,7 @@ COL_INFO = {
     },
     "beta__e5-small__semantic": {
         "show": "Beta",
+        "show_id": "beta_2",
         "model": "e5-small",
         "chunker": "semantic",
         "dim": 384,
@@ -73,13 +76,13 @@ def test_resolve_show_filter_strips_whitespace():
 
 
 def test_resolve_show_pref_beats_default():
-    prefs = {"alpha": ("e5-small", "speaker")}
+    prefs = {"alpha_1": ("e5-small", "speaker")}
     cols = resolve_collections(COL_INFO, show_prefs=prefs)
     assert cols[0].name == "alpha__e5-small__speaker"
 
 
 def test_resolve_override_beats_show_pref():
-    prefs = {"alpha": ("e5-small", "speaker")}
+    prefs = {"alpha_1": ("e5-small", "speaker")}
     cols = resolve_collections(
         COL_INFO, show_prefs=prefs, override=("bge-m3", "semantic")
     )
@@ -122,10 +125,16 @@ def test_resolve_empty_index():
     assert resolve_collections({}) == []
 
 
-def _write_show(tmp_path, folder, name=None, rag_model="", rag_chunker=""):
+def _write_show(
+    tmp_path, folder, name=None, rag_model="", rag_chunker="", show_id=None
+):
+    """A show.toml with id ``<folder>_1234abcd`` unless *show_id* says otherwise
+    (``""`` is a show from before ids)."""
     d = tmp_path / folder
     d.mkdir()
-    lines = [f'name = "{name}"'] if name is not None else []
+    sid = f"{folder}_1234abcd" if show_id is None else show_id
+    lines = [f'id = "{sid}"'] if sid else []
+    lines += [f'name = "{name}"'] if name is not None else []
     if rag_model or rag_chunker:
         lines += ["", "[pipeline]"]
         if rag_model:
@@ -145,12 +154,13 @@ def test_rag_prefs_only_shows_with_prefs(tmp_path, monkeypatch):
 
     monkeypatch.setattr("podcodex.rag.search_service.load_config", lambda: Cfg())
     prefs = load_show_rag_prefs()
-    assert prefs == {"alpha": ("e5-small", "semantic")}  # blank half filled
+    assert prefs == {"a_1234abcd": ("e5-small", "semantic")}  # blank half filled
 
 
+@pytest.mark.legacy("show-id")
 def test_rag_prefs_nameless_show_keyed_by_folder(tmp_path, monkeypatch):
     # show.toml with prefs but no name line: key falls back to folder basename
-    d = _write_show(tmp_path, "MyFolder", rag_model="e5-small")
+    d = _write_show(tmp_path, "MyFolder", rag_model="e5-small", show_id="")
 
     class Cfg:
         show_folders = [str(d)]
@@ -184,7 +194,7 @@ def test_rag_prefs_cached_within_ttl(tmp_path, monkeypatch):
 
     first = load_show_rag_prefs()
     second = load_show_rag_prefs()
-    assert first == second == {"alpha": ("e5-small", "semantic")}
+    assert first == second == {"a_1234abcd": ("e5-small", "semantic")}
     assert calls["n"] == 1  # second call served from cache, no reload
 
     monkeypatch.setattr(search_service, "_prefs_cache", None)
@@ -192,7 +202,7 @@ def test_rag_prefs_cached_within_ttl(tmp_path, monkeypatch):
     assert calls["n"] == 2  # cache invalidated: recomputes
 
 
-# Test orchestration functions (Task 3)
+# Orchestration functions
 
 ALPHA_COL = SearchCollection("alpha__bge-m3__semantic", "bge-m3", "Alpha")
 BETA_COL = SearchCollection("beta__e5-small__semantic", "e5-small", "Beta")

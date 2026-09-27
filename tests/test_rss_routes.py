@@ -44,7 +44,8 @@ def _fetch_feed(client, show):
 
 
 def test_a_network_failure_is_reported_even_with_a_cache(client, monkeypatch, show):
-    """Answering the stale cache made an offline Refresh read as a success."""
+    """Answering the stale cache would make an offline Refresh read as a
+    success."""
     import podcodex.api.routes.rss as rss_mod
     from podcodex.ingest.rss import load_feed_cache
 
@@ -128,7 +129,8 @@ def test_downloaded_costs_one_listing_for_the_whole_feed(client, monkeypatch, sh
 def test_the_feed_is_downloaded_once_even_when_artwork_is_upgraded(
     client, monkeypatch, show
 ):
-    """The artwork upgrade used to re-download and re-parse the same XML."""
+    """The artwork upgrade reuses the fetched feed instead of re-downloading
+    and re-parsing the same XML."""
     import podcodex.api.routes.rss as rss_mod
     from podcodex.ingest.show import ShowMeta, load_show_meta, save_show_meta
 
@@ -173,3 +175,19 @@ def test_a_feed_error_does_not_leak_the_feed_token(client, monkeypatch, show):
     assert r.status_code == 502
     assert "s3cret" not in r.json()["detail"]
     assert "host.example/feed.xml" in r.json()["detail"]
+
+
+def test_rss_fetch_unregistered_show_forbidden(client, tmp_path):
+    """rss_fetch writes .feed_cache.json; refuse an unregistered dir."""
+    victim = tmp_path / "not_a_show"
+    victim.mkdir()
+    r = client.post(f"/api/shows/{victim}/rss/fetch", params={"rss_url": "http://x/f"})
+    assert r.status_code == 403
+
+
+def test_rss_download_unregistered_show_forbidden(client, tmp_path):
+    """rss_download writes episode audio; refuse an unregistered dir."""
+    victim = tmp_path / "not_a_show"
+    victim.mkdir()
+    r = client.post(f"/api/shows/{victim}/rss/download")
+    assert r.status_code == 403

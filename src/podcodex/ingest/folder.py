@@ -46,11 +46,6 @@ class EpisodeInfo:
     has_subtitles: bool = False
     translations: list[str] = field(default_factory=list)
 
-    @property
-    def path(self) -> Path | None:
-        """Back-compat alias for ``audio_path``."""
-        return self.audio_path
-
 
 def _step_has_versions(output_dir: Path | None, step: str, ext: str) -> bool:
     """Return True if ``output_dir/step/`` exists and holds any ``*{ext}`` file.

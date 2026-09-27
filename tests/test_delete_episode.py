@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import pytest
 
-from tests.fixtures.api_client import make_client
+from tests.fixtures.api_client import library_client, registered_show
 from tests.fixtures.tasks import active_task
 
 
@@ -66,23 +66,12 @@ def store(monkeypatch):
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    from podcodex.core.app_config import AppConfig
-
-    return make_client(
-        tmp_path,
-        monkeypatch,
-        config=AppConfig(default_save_path=str(tmp_path / "library")),
-    )
+    return library_client(tmp_path, monkeypatch)
 
 
 @pytest.fixture
 def show(client, tmp_path):
-    """A registered local show folder."""
-    path = tmp_path / "MyShow"
-    path.mkdir()
-    r = client.post("/api/shows/register", json={"path": str(path)})
-    assert r.status_code == 200, r.text
-    return path
+    return registered_show(client, tmp_path / "MyShow")
 
 
 def _add_episode(show: Path, stem: str, *, audio: bool = True) -> Path:
@@ -173,9 +162,10 @@ def test_second_delete_is_a_no_op(client, show):
 
 
 def test_output_dir_is_not_recreated(client, show):
-    """Regression pin for ``AudioPaths.from_audio``'s mkdir side effect.
+    """Deleting an episode does not recreate its output dir.
 
-    Resolving episode paths through it (``core/_utils.py``) would recreate
+    ``AudioPaths.from_audio`` (``core/_utils.py``) has a mkdir side effect:
+    resolving episode paths through it would recreate
     ``{show}/{stem}/`` while deleting it, leaving an empty directory that the
     scanner then keeps healing back into a row.
     """
@@ -591,10 +581,9 @@ def test_without_the_rag_extra_a_delete_still_runs(tmp_path, monkeypatch):
 
 
 def test_a_symlinked_audio_file_is_one_episode_everywhere(tmp_path):
-    """The scanner, the status route, `is_downloaded` and the delete each
-    listed audio with their own copy of the rule, and disagreed on symlinks:
-    an episode symlinked in from another disk was downloaded to one and
-    missing to another."""
+    """The scanner, the status route, `is_downloaded` and the delete share
+    one rule for listing audio, so an episode symlinked in from another disk
+    is present to all of them, not downloaded to one and missing to another."""
     from podcodex.core.source import is_downloaded, scan_show_stems, show_audio_files
     from podcodex.ingest.folder import scan_folder
 

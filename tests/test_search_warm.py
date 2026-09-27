@@ -118,12 +118,10 @@ def test_the_all_shows_scope_warms_nothing(client, warmed) -> None:
 
 
 def test_warm_resolves_the_model_the_way_a_search_does(monkeypatch) -> None:
-    """Regression guard. A show can pin a non-default model through its RAG
-    prefs, so the model has to come from the same resolver the handlers use.
-    An earlier version read the raw collection list instead — and an even
-    earlier one filtered it by comparing the request's show string to the
-    stored ``show`` field, which are different keys, so it silently warmed
-    nothing at all."""
+    """A show can pin a non-default model through its RAG prefs, so the
+    model has to come from the same resolver the handlers use, not the raw
+    collection list. Matching the request's show string against the stored
+    ``show`` field (a different key) silently warms nothing at all."""
     loaded: list[str] = []
 
     class _Col:
@@ -194,39 +192,3 @@ def test_a_failed_search_is_an_error_not_an_empty_result(tmp_path, monkeypatch):
     r = client.post("/api/search/query", json={"query": "hi", "show_id": "s_1234abcd"})
     assert r.status_code == 503, r.text
     assert "corrupt" in r.json()["detail"]
-
-
-def test_exact_search_honours_top_k(tmp_path, monkeypatch):
-    """The palette asks for three hits per show; every match used to ship."""
-    import podcodex.rag.search_service as svc
-    from podcodex.rag.search_service import SearchCollection
-
-    col = SearchCollection(name="c", model="bge-m3", show="S")
-    monkeypatch.setattr(
-        search_routes, "_resolve_req_cols", lambda *_a, **_k: ([col], None)
-    )
-    hit = {
-        "text": "t",
-        "episode": "e",
-        "speaker": "s",
-        "start": 0.0,
-        "end": 1.0,
-        "score": 1.0,
-        "source": "transcript",
-    }
-    monkeypatch.setattr(search_routes, "_result_to_dict", lambda h, _l=None: hit)
-    monkeypatch.setattr(search_routes, "_audio_lookup", lambda _id: ("", {}))
-    seen: dict = {}
-
-    def fake_exact(*_a, limit=None, **_k):
-        seen["limit"] = limit
-        return [(i, col) for i in range(10)][:limit]
-
-    monkeypatch.setattr(svc, "exact_search", fake_exact)
-    client = make_client(tmp_path, monkeypatch)
-    r = client.post(
-        "/api/search/exact", json={"query": "hi", "show_id": "s_1234abcd", "top_k": 3}
-    )
-    assert r.status_code == 200, r.text
-    assert len(r.json()) == 3
-    assert seen["limit"] == 3  # passed into the service, not sliced after

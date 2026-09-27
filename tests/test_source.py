@@ -85,8 +85,8 @@ def test_scan_show_stems_separates_dirs_from_downloaded_audio(tmp_path):
 
 
 def test_a_correction_pin_must_be_a_transcript(tmp_path):
-    """A stale picker value naming a translation used to be corrected as if
-    it were the transcript."""
+    """A stale picker value naming a translation is not corrected as if it
+    were the transcript."""
     import pytest
 
     from podcodex.core.source import load_source, resolve_source_ref

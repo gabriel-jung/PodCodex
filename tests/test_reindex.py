@@ -2,55 +2,39 @@
 
 `_reindex_show` drops the show's collections and only then scans for
 episodes, so a folder that resolves wrong or holds nothing logs its warning
-after the data is already gone. Dropping is what the user asked for — the
-tables are derived state — but the dry run must not touch anything, and the
+after the data is already gone. Dropping is what the user asked for (the
+tables are derived state), but the dry run must not touch anything, and the
 audio-less episodes a subtitle-driven show is made of must be rebuilt rather
-than skipped, which is what used to empty such a show on every rebuild.
+than skipped, since skipping them empties such a show on every rebuild.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 pytest.importorskip("fastapi")
 
 from podcodex.rag import index_store as rag_index_store  # noqa: E402
 from podcodex.rag import reindex as reindex_mod  # noqa: E402
+from tests.fixtures.index import add_show, chunk  # noqa: E402
 
 DIM = 8
 COLLECTION = "show_1111aaaa__bge-m3__semantic"
 
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
-    monkeypatch.setenv("PODCODEX_INDEX", str(tmp_path / "index"))
-    rag_index_store.get_index_store.cache_clear()
+def store(isolated_index):
     st = rag_index_store.get_index_store()
-    st.ensure_collection(
-        COLLECTION, show="Show", model="bge-m3", chunker="semantic", dim=DIM
+    add_show(
+        st,
+        "Show",
+        {"old-ep": [chunk("stale", episode="old-ep", show="Show")]},
+        show_id="show_1111aaaa",
+        collection=COLLECTION,
     )
-    st.set_collection_identity(COLLECTION, show_id="show_1111aaaa", show="Show")
-    st.save_chunks(
-        COLLECTION,
-        "old-ep",
-        [
-            {
-                "text": "stale",
-                "episode": "old-ep",
-                "show": "Show",
-                "source": "transcript",
-                "dominant_speaker": "sp",
-                "start": 0.0,
-                "end": 1.0,
-            }
-        ],
-        np.zeros((1, DIM), dtype=np.float32),
-    )
-    yield st
-    rag_index_store.get_index_store.cache_clear()
+    return st
 
 
 @pytest.fixture
@@ -128,8 +112,8 @@ def test_an_audio_less_episode_is_indexed_through_its_output_dir(
     store, wiring, monkeypatch, tmp_path
 ):
     """Subtitle imports and flat YouTube extraction have no audio file;
-    skipping them emptied a subtitle-driven show on every rebuild while the
-    command still reported success."""
+    skipping them would empty a subtitle-driven show on every rebuild while
+    the command still reports success."""
     calls: list[dict] = []
     _seed_scan(monkeypatch, [_Episode("subs-ep", tmp_path / "subs-ep")])
     _seed_transcript(monkeypatch, calls)
@@ -185,8 +169,9 @@ def test_an_unreadable_episode_is_skipped_not_fatal(
 
 
 def test_cli_rejects_an_unknown_model_and_chunker():
-    """A typo used to reach the indexing loop as a bare KeyError, and an
-    unknown chunker built a collection nothing else can resolve."""
+    """Unknown names are refused up front: a model typo would reach the
+    indexing loop as a bare KeyError, and an unknown chunker would build a
+    collection nothing else can resolve."""
     import subprocess
     import sys
 

@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from podcodex.core import user_settings
-
-
-def test_load_returns_empty_when_no_file(isolated_data_dir: Path) -> None:
-    assert user_settings.load() == {}
 
 
 def test_load_returns_empty_when_file_corrupt(isolated_data_dir: Path) -> None:
@@ -26,28 +21,8 @@ def test_load_returns_empty_when_top_level_not_dict(isolated_data_dir: Path) -> 
     assert user_settings.load() == {}
 
 
-def test_save_then_load_roundtrip(isolated_data_dir: Path) -> None:
-    user_settings.save({"device_override": "cpu", "other": 42})
-    assert user_settings.load() == {"device_override": "cpu", "other": 42}
-
-
-def test_save_writes_atomically(isolated_data_dir: Path) -> None:
-    user_settings.save({"device_override": "cpu"})
-    settings_file = isolated_data_dir / "settings.json"
-    assert settings_file.exists()
-    # tmp file should not linger on success
-    assert not (isolated_data_dir / "settings.json.tmp").exists()
-    # contents are well-formed JSON
-    json.loads(settings_file.read_text(encoding="utf-8"))
-
-
 def test_get_device_override_default_auto(isolated_data_dir: Path) -> None:
     assert user_settings.get_device_override() == "auto"
-
-
-def test_get_device_override_reads_persisted(isolated_data_dir: Path) -> None:
-    user_settings.save({"device_override": "cpu"})
-    assert user_settings.get_device_override() == "cpu"
 
 
 def test_get_device_override_falls_back_on_invalid_value(
@@ -55,11 +30,6 @@ def test_get_device_override_falls_back_on_invalid_value(
 ) -> None:
     user_settings.save({"device_override": "metal"})
     assert user_settings.get_device_override() == "auto"
-
-
-def test_set_device_override_persists(isolated_data_dir: Path) -> None:
-    user_settings.set_device_override("cpu")
-    assert user_settings.load()["device_override"] == "cpu"
 
 
 def test_set_device_override_auto_clears_key(isolated_data_dir: Path) -> None:

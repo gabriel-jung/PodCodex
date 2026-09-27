@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import time
 
 import pytest
 
 from podcodex.ingest.rss import RSSEpisode, save_feed_cache
 from tests.fixtures.api_client import make_client
+from tests.fixtures.tasks import wait_task
 
 
 @pytest.fixture
@@ -24,20 +24,9 @@ def show(client, tmp_path):
     return path
 
 
-def _wait(task_id, timeout=10.0):
-    from podcodex.api.tasks import task_manager
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        info = task_manager.get(task_id)
-        if info is not None and info.finished_at is not None:
-            return info
-        time.sleep(0.02)
-    raise AssertionError("task never finished")
-
-
 def test_episodes_already_on_disk_are_not_paced(client, show, monkeypatch):
-    """A mostly-downloaded show used to sleep the pacer delay per skipped video."""
+    """A mostly-downloaded show does not sleep the pacer delay per skipped
+    video."""
     import podcodex.api.routes.youtube as yt_route
     import podcodex.ingest.youtube as yt
 
@@ -55,7 +44,7 @@ def test_episodes_already_on_disk_are_not_paced(client, show, monkeypatch):
 
     r = client.post(f"/api/shows/{show}/youtube/download", json={})
     assert r.status_code == 200, r.text
-    info = _wait(r.json()["task_id"])
+    info = wait_task(r.json()["task_id"], timeout=10.0)
     assert info.status == "completed", info.error
     assert waits == []
     assert {e["status"] for e in info.result} == {"exists"}
@@ -84,7 +73,7 @@ def _subs_run(client, show, monkeypatch, outcomes):
         json={"video_ids": [e.guid for e in eps]},
     )
     assert r.status_code == 200, r.text
-    info = _wait(r.json()["task_id"])
+    info = wait_task(r.json()["task_id"], timeout=10.0)
     assert info.status == "completed", info.error
     return info
 
@@ -135,5 +124,13 @@ def test_one_pacer_tick_per_episode_with_subtitles(client, show, monkeypatch):
     monkeypatch.setattr(yt, "download_youtube_audio", lambda *_a, **_k: show / "x.mp3")
     monkeypatch.setattr(yt, "cache_youtube_subtitles", lambda *_a, **_k: True)
     r = client.post(f"/api/shows/{show}/youtube/download", json={"import_subs": True})
-    assert _wait(r.json()["task_id"]).status == "completed"
+    assert wait_task(r.json()["task_id"], timeout=10.0).status == "completed"
     assert len(waits) == 3
+
+
+def test_youtube_fetch_unregistered_show_forbidden(client, tmp_path):
+    """youtube_fetch writes into the folder; refuse an unregistered dir."""
+    victim = tmp_path / "not_a_show"
+    victim.mkdir()
+    r = client.post(f"/api/shows/{victim}/youtube/fetch")
+    assert r.status_code == 403

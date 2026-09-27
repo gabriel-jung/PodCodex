@@ -7,7 +7,7 @@ launch — only Claude Desktop or Claude Code connecting does — so paying it
 at startup delayed every launch for a surface most sessions never touch.
 
 That ``podcodex.api.app`` does not pull mcp in is asserted once, with the
-rest of the deferred stack, in ``tests/test_startup_offloading.py``.
+rest of the deferred stack, in ``tests/rules/test_startup_offloading.py``.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def client(tmp_path, monkeypatch):
     lifespan owns. A TestClient that never starts up has no such stack. An
     ASGI server never routes a request before startup completes, so this is
     the harness matching production, not a workaround."""
-    with make_client(tmp_path, monkeypatch) as c:
+    with make_client(tmp_path, monkeypatch, fresh=True) as c:
         yield c
 
 

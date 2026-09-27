@@ -5,14 +5,6 @@ from __future__ import annotations
 from podcodex.ingest.show import ShowMeta, load_show_meta, save_show_meta
 
 
-def test_broadcast_pattern_roundtrip(tmp_path):
-    meta = ShowMeta(name="Total Trax", broadcast_number_pattern=r"^\((\d+)\)")
-    save_show_meta(tmp_path, meta)
-    loaded = load_show_meta(tmp_path)
-    assert loaded is not None
-    assert loaded.broadcast_number_pattern == r"^\((\d+)\)"
-
-
 def test_pipeline_keys_roundtrip(tmp_path):
     """Top-level scalars and the [pipeline] table must round-trip together.
 

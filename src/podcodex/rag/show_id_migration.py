@@ -20,7 +20,7 @@ so a legacy collection keeps its name-derived name forever and simply gains a
 on a large index, idempotent, and with no half-copied table to reconcile.
 
 The migration never runs on the boot path: ``IndexStore`` pulls lancedb and
-pyarrow, which ``tests/test_startup_offloading.py`` keeps out of
+pyarrow, which ``tests/rules/test_startup_offloading.py`` keeps out of
 ``podcodex.api.app``. It hangs off the first store open instead.
 """
 

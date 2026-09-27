@@ -890,12 +890,6 @@ def list_all_versions_by_stem(show_dir: Path) -> dict[str, list[dict]]:
     return get_pipeline_db(show_dir).list_all_versions_by_stem()
 
 
-def version_count(base: Path, step: str) -> int:
-    """Return the number of versions for a step."""
-    db = _get_db(base)
-    return db.version_count(base.name, step)
-
-
 def has_version(base: Path, step: str) -> bool:
     """Return True if at least one readable version exists for the step.
 

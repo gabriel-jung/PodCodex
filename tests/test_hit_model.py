@@ -15,7 +15,7 @@ import pytest
 
 from podcodex.rag.chunker import semantic_chunks, speaker_chunks
 from tests.fixtures.chunker_mocks import make_mock_chunk, mock_chonkie
-from podcodex.rag.hit import Hit, SpeakerTurn
+from podcodex.rag.hit import Hit, SpeakerTurn, merge_display_turns
 
 _FULL_META = {
     "show": "My Show",
@@ -134,18 +134,16 @@ def test_legacy_row_with_unknown_meta_keys_loads():
     assert turn.start_char is None
 
 
+@pytest.mark.legacy("pub-date-column")
 def test_effective_pub_date_normalizes_legacy_rss_date():
     hit = Hit(rss_pub_date="Mon, 15 Jan 2024 12:00:00 GMT")
     assert hit.effective_pub_date == "2024-01-15"
 
 
+@pytest.mark.legacy("pub-date-column")
 def test_effective_pub_date_prefers_normalized_column():
     hit = Hit(pub_date="2024-02-01", rss_pub_date="Mon, 15 Jan 2024 12:00:00 GMT")
     assert hit.effective_pub_date == "2024-02-01"
-
-
-def test_effective_pub_date_empty_when_unset():
-    assert Hit().effective_pub_date == ""
 
 
 # ──────────────────────────────────────────────
@@ -261,3 +259,69 @@ def test_to_chunk_dict_keeps_write_keys_at_default_values():
     # embedder subscripts chunk["text"]; exclude_defaults must not drop it.
     d = Hit(text="", episode="", show="").to_chunk_dict()
     assert d["text"] == "" and d["episode"] == "" and d["show"] == ""
+
+
+# ── merge_display_turns ──────────────────────────────────────────────────
+
+
+def test_merge_display_turns_collapses_same_speaker_runs():
+    """Consecutive turns from the same speaker merge into a single block
+    with concatenated text and the last turn's ``end`` timestamp."""
+    turns = [
+        SpeakerTurn(speaker="Alice", text="Hello there.", start=0.0, end=1.0),
+        SpeakerTurn(speaker="Alice", text="How are you?", start=1.0, end=2.5),
+        SpeakerTurn(speaker="Bob", text="Good, you?", start=2.5, end=3.5),
+        SpeakerTurn(speaker="Bob", text="And yourself?", start=3.5, end=4.0),
+    ]
+    merged = merge_display_turns(turns)
+    assert len(merged) == 2
+    assert merged[0]["speaker"] == "Alice"
+    assert merged[0]["text"] == "Hello there. How are you?"
+    assert merged[0]["start"] == 0.0
+    assert merged[0]["end"] == 2.5
+    assert merged[1]["speaker"] == "Bob"
+    assert merged[1]["text"] == "Good, you? And yourself?"
+    assert merged[1]["end"] == 4.0
+
+
+def test_merge_display_turns_preserves_alternation():
+    """Alternating speakers produce one block per turn (no collapsing)."""
+    turns = [
+        SpeakerTurn(speaker="Alice", text="A1", start=0.0, end=1.0),
+        SpeakerTurn(speaker="Bob", text="B1", start=1.0, end=2.0),
+        SpeakerTurn(speaker="Alice", text="A2", start=2.0, end=3.0),
+    ]
+    merged = merge_display_turns(turns)
+    assert [(m["speaker"], m["text"]) for m in merged] == [
+        ("Alice", "A1"),
+        ("Bob", "B1"),
+        ("Alice", "A2"),
+    ]
+
+
+def test_merge_display_turns_skips_empty_and_unknown_speaker():
+    """Empty text is dropped; blank speaker labels default to ``Unknown``."""
+    turns = [
+        SpeakerTurn(speaker="Alice", text="   ", start=0.0, end=1.0),
+        SpeakerTurn(speaker="", text="ghost line", start=1.0, end=2.0),
+        SpeakerTurn(speaker="", text="another ghost", start=2.0, end=3.0),
+        SpeakerTurn(speaker="Alice", text="real line", start=3.0, end=4.0),
+    ]
+    merged = merge_display_turns(turns)
+    # Whitespace-only turn dropped; ghost turns collapse under "Unknown"; Alice
+    # closes as a separate block.
+    assert [m["speaker"] for m in merged] == ["Unknown", "Alice"]
+    assert merged[0]["text"] == "ghost line another ghost"
+    assert merged[1]["text"] == "real line"
+
+
+def test_merge_display_turns_absent_end_does_not_rewind_run():
+    """A turn with no timing (end defaults to 0.0) must not drag the merged
+    run's end backwards below its start."""
+    turns = [
+        SpeakerTurn(speaker="Alice", text="one", start=1.0, end=9.0),
+        SpeakerTurn(speaker="Alice", text="two"),  # legacy turn, no timing
+    ]
+    merged = merge_display_turns(turns)
+    assert len(merged) == 1
+    assert merged[0]["end"] == 9.0

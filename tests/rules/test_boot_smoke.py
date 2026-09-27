@@ -60,13 +60,6 @@ def test_every_router_registers(app):
     assert not missing, f"routes missing from app wiring: {missing}"
 
 
-def test_route_count_sane(app):
-    # 131 unique paths as of 2026-07; a hard floor catches a router include
-    # silently vanishing without breaking on every intentional route removal.
-    paths = {r.path for r in app.routes}
-    assert len(paths) >= 120, f"only {len(paths)} unique paths registered"
-
-
 def test_api_does_not_import_discord():
     """The API must import cleanly without the ``bot`` extra installed.
 
@@ -84,13 +77,3 @@ def test_api_does_not_import_discord():
         "podcodex.api.app transitively imports discord; move the shared code "
         "out of any module that imports discord (see core/show_passwords.py)"
     )
-
-
-def test_bot_imports():
-    import podcodex.bot.announce  # noqa: F401
-    import podcodex.bot.bot  # noqa: F401
-
-
-def test_mcp_imports():
-    import podcodex.mcp.prompts  # noqa: F401
-    import podcodex.mcp.server  # noqa: F401

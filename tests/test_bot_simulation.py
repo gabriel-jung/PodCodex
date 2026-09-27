@@ -3,8 +3,8 @@
 Replicates discord.py's dynamic-item dispatch (match custom_id -> from_custom_id
 -> callback) against a fake Interaction, so the persistent-button click paths are
 exercised end to end without a gateway: paging, jump, expand, transcript nav, and
-crucially the two cases that motivated the rewrite -- clicking after a restart
-(RAM tier dropped, reload from SQLite) and after eviction (expired message).
+crucially clicking after a restart (RAM tier dropped, reload from SQLite) and
+after eviction (expired message).
 """
 
 import asyncio
@@ -22,6 +22,8 @@ from podcodex.rag.hit import Hit  # noqa: E402
 from podcodex.bot import ui  # noqa: E402
 from podcodex.bot.search_commands import _chunk_to_ref  # noqa: E402
 from podcodex.bot.result_store import CachedSearch, SearchCacheStore  # noqa: E402
+from podcodex.bot.access import AccessMixin, ShowEntry  # noqa: E402
+from podcodex.bot.config import ServerSettings  # noqa: E402
 
 # ── Fake index (LanceDB stand-in) ──────────────
 
@@ -285,25 +287,19 @@ def test_random_expand_opens_at_its_chunk():
 # ── Locking a show revokes the buttons already on screen ────────────────
 
 
-class _ServerSettings:
-    def __init__(self, unlocked_shows=()):
-        self.unlocked_shows = list(unlocked_shows)
-
-
-class _LockingBot(_FakeBot):
-    """A bot where "alpha_1234" is password-protected, unlocked only in guild 7."""
+class _LockingBot(AccessMixin):
+    """The real access rule over a fake index: "alpha_1234" is
+    password-protected and unlocked only in guild 7."""
 
     def __init__(self, store):
-        super().__init__(store)
-        self._locked_show_ids = {"alpha_1234"}
+        self.results = store
+        self.local = _FakeLocal()
+        self._shows = {
+            "alpha_1234": ShowEntry("alpha_1234", "Alpha Show", password_hash="")
+        }
 
     def _server_settings(self, guild_id):
-        return _ServerSettings(["alpha_1234"] if guild_id == 7 else [])
-
-    def _show_allowed(self, show_id, settings):
-        return (
-            show_id not in self._locked_show_ids or show_id in settings.unlocked_shows
-        )
+        return ServerSettings(unlocked_shows=["alpha_1234"] if guild_id == 7 else [])
 
 
 def _locking_bot():
@@ -319,7 +315,7 @@ def test_persistent_buttons_recheck_show_access():
 
     The views are persistent for the cache's whole life (30 days), so the
     access check has to run on every rebuild; without it 'Show context' and
-    the transcript pager kept serving a show the guild no longer has.
+    the transcript pager would keep serving a show the guild no longer has.
     """
     bot, sid = _locking_bot()
 

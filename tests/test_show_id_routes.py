@@ -1,15 +1,14 @@
 """The app's search, episode and index routes resolve a show by its id.
 
-Two registered shows share one display name here, which is exactly what a
-name-keyed route could not tell apart: it resolved the oldest folder and
-answered from that show's collections for both.
+Two registered shows share one display name here, which a name-keyed route
+cannot tell apart: it would resolve the oldest folder and answer from that
+show's collections for both.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 pytest.importorskip("fastapi")
@@ -19,6 +18,7 @@ from podcodex.rag import index_store as rag_index_store  # noqa: E402
 from podcodex.rag import retriever as rag_retriever  # noqa: E402
 from podcodex.rag.index_store import IndexStore  # noqa: E402
 from tests.fixtures.api_client import make_client  # noqa: E402
+from tests.fixtures.index import add_show, chunk  # noqa: E402
 
 DIM = 8
 ID_A = "twin_aaaaaaaa"
@@ -36,25 +36,13 @@ def _show(root: Path, folder: str, show_id: str, name: str, stem: str) -> Path:
 
 
 def _index(store: IndexStore, col: str, show_id: str, stem: str, text: str) -> None:
-    store.ensure_collection(
-        col,
-        show="Twin",
-        model="bge-m3",
-        chunker="semantic",
-        dim=DIM,
+    add_show(
+        store,
+        "Twin",
+        {stem: [chunk(text, episode=stem, show="Twin")]},
         show_id=show_id,
+        collection=col,
     )
-    chunk = {
-        "text": text,
-        "episode": stem,
-        "show": "Twin",
-        "source": "transcript",
-        "dominant_speaker": "Alice",
-        "start": 0.0,
-        "end": 1.0,
-    }
-    rng = np.random.default_rng(0)
-    store.save_chunks(col, stem, [chunk], rng.random((1, DIM), dtype=np.float32))
 
 
 @pytest.fixture
@@ -138,33 +126,16 @@ def test_index_routes_take_the_show_from_the_episode_folder(twins):
     assert [c["collection"] for c in r.json()] == ["twin_a__bge-m3__semantic"]
 
 
+@pytest.mark.legacy("show-id")
 def test_a_collection_without_an_id_is_reached_through_its_label(tmp_path, monkeypatch):
     """Rows written before ids existed carry only the display name."""
     folder = _show(tmp_path / "shows", "legacy", "legacy_11111111", "Legacy", "ep1")
     index_path = tmp_path / "index"
-    store = IndexStore(index_path)
-    store.ensure_collection(
-        "legacy__bge-m3__semantic",
-        show="Legacy",
-        model="bge-m3",
-        chunker="semantic",
-        dim=DIM,
-    )
-    chunk = {
-        "text": "old recipe",
-        "episode": "ep1",
-        "show": "Legacy",
-        "source": "transcript",
-        "dominant_speaker": "Alice",
-        "start": 0.0,
-        "end": 1.0,
-    }
-    rng = np.random.default_rng(0)
-    store.save_chunks(
-        "legacy__bge-m3__semantic",
-        "ep1",
-        [chunk],
-        rng.random((1, DIM), dtype=np.float32),
+    add_show(
+        IndexStore(index_path),
+        "Legacy",
+        {"ep1": [chunk("old recipe", show="Legacy")]},
+        show_id="",
     )
     monkeypatch.setenv("PODCODEX_INDEX", str(index_path))
     client = make_client(
@@ -174,6 +145,7 @@ def test_a_collection_without_an_id_is_reached_through_its_label(tmp_path, monke
     assert [h["text"] for h in _exact(client, "legacy_11111111")] == ["old recipe"]
 
 
+@pytest.mark.legacy("show-id")
 def test_a_folder_without_an_id_does_not_claim_a_same_named_show(twins, tmp_path):
     """An id-less folder matches rows by label, but a row with an id belongs
     to the show that has that id, whatever it is called."""
@@ -191,9 +163,10 @@ def test_a_folder_without_an_id_does_not_claim_a_same_named_show(twins, tmp_path
     assert r.json() == []
 
 
+@pytest.mark.legacy("show-id")
 def test_startup_gives_every_registered_show_an_id(tmp_path, monkeypatch):
-    """Old shows that were never indexed had no id, and each "no id" case
-    needed its own handling in search and bot access."""
+    """A show that was never indexed still gets an id at startup, so search
+    and bot access need no "no id" case."""
     import podcodex.core.app_config as app_config
     import podcodex.ingest.show as show_mod
     from podcodex.ingest.show import load_show_meta

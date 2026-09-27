@@ -4,102 +4,78 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from podcodex.rag.hit import Hit
-
 
 # ──────────────────────────────────────────────
-# vectorize_episode — incremental / upgrade / overwrite
+# vectorize_episode: skip / upgrade / overwrite, against a real tmp index
 # ──────────────────────────────────────────────
 
 
-def test_vectorize_episode_skips_when_locally_cached(tmp_path):
-    """When episode is already in LocalStore, skip embedding."""
+def _vectorize(store, text, source, *, overwrite=False):
+    """Index one chunk of episode E1 with a stub embedder; return the count."""
     from podcodex.rag.indexing import vectorize_episode
 
-    transcript = {
-        "meta": {"show": "S", "episode": "E1", "source": "transcript"},
-        "segments": [{"start": 0.0, "end": 5.0, "speaker": "A", "text": "hello world"}],
+    embedder = MagicMock()
+    embedder.encode_passages.side_effect = lambda chunks: np.zeros(
+        (len(chunks), 384), dtype=np.float32
+    )
+    chunk = {
+        "text": text,
+        "episode": "E1",
+        "show": "S",
+        "source": source,
+        "start": 0.0,
+        "end": 1.0,
     }
-    mock_local = MagicMock()
-    mock_local.episode_is_indexed.return_value = True
-    mock_local.episode_chunk_count.return_value = 2
-    mock_local.load_chunks_no_embeddings.return_value = [
-        Hit(text="a", source="transcript"),
-        Hit(text="b", source="transcript"),
-    ]
-
-    _, n = vectorize_episode(transcript, "S", "E1", "bge-m3", "semantic", mock_local)
-
-    assert n == 0
-
-
-def test_vectorize_episode_upgrades_on_source_change(tmp_path):
-    """When source changed, delete local and re-embed."""
-    from podcodex.rag.indexing import vectorize_episode
-
-    transcript = {
-        "meta": {"show": "S", "episode": "E1", "source": "corrected"},
-        "segments": [{"start": 0.0, "end": 5.0, "speaker": "A", "text": "hello world"}],
-    }
-    mock_local = MagicMock()
-    mock_local.episode_is_indexed.side_effect = [True, False]
-    mock_local.load_chunks_no_embeddings.return_value = [
-        Hit(text="a", source="transcript"),  # old source
-    ]
-
-    mock_embedder = MagicMock()
-    mock_embedder.encode_passages.return_value = np.zeros((1, 1024), dtype=np.float32)
-
-    with patch("podcodex.rag.indexing.get_embedder", return_value=mock_embedder):
+    transcript = {"meta": {"show": "S", "episode": "E1", "source": source}}
+    with patch("podcodex.rag.indexing.get_embedder", return_value=embedder):
         _, n = vectorize_episode(
             transcript,
             "S",
             "E1",
-            "bge-m3",
+            "e5-small",
             "semantic",
-            mock_local,
-            chunks=[{"text": "t"}],
+            store,
+            show_id="s_1",
+            chunks=[chunk],
+            overwrite=overwrite,
         )
-
-    mock_local.save_chunks.assert_called_once()
-    mock_embedder.encode_passages.assert_called_once()
-    assert n == 1
+    return n
 
 
-def test_vectorize_overwrite_always_deletes(tmp_path):
-    """overwrite=True deletes the local episode and re-embeds."""
-    from podcodex.rag.indexing import vectorize_episode
+def _stored(store):
+    col = store.resolve_collection("s_1", "e5-small", "semantic")
+    return [(h.text, h.source) for h in store.load_chunks_no_embeddings(col, "E1")]
 
-    transcript = {
-        "meta": {"show": "S", "episode": "E1"},
-        "segments": [
-            {
-                "start": 0.0,
-                "end": 5.0,
-                "speaker": "A",
-                "text": "Hello world this is a valid segment that is long enough.",
-            }
-        ],
-    }
-    mock_local = MagicMock()
-    mock_local.episode_is_indexed.return_value = True
 
-    mock_embedder = MagicMock()
-    mock_embedder.encode_passages.return_value = np.zeros((1, 1024), dtype=np.float32)
+def test_an_episode_indexed_from_the_same_source_is_skipped(tmp_path):
+    from podcodex.rag.index_store import IndexStore
 
-    with patch("podcodex.rag.indexing.get_embedder", return_value=mock_embedder):
-        vectorize_episode(
-            transcript,
-            "S",
-            "E1",
-            "bge-m3",
-            "semantic",
-            mock_local,
-            chunks=[{"text": "t"}],
-            overwrite=True,
-        )
+    store = IndexStore(tmp_path / "index")
+    assert _vectorize(store, "first", "transcript") == 1
 
-    mock_local.save_chunks.assert_called_once()
+    assert _vectorize(store, "second", "transcript") == 0
+    assert _stored(store) == [("first", "transcript")]
+
+
+def test_a_better_source_replaces_the_stored_rows(tmp_path):
+    """A corrected transcript supersedes the raw one it was indexed from."""
+    from podcodex.rag.index_store import IndexStore
+
+    store = IndexStore(tmp_path / "index")
+    _vectorize(store, "first", "transcript")
+
+    assert _vectorize(store, "second", "corrected") == 1
+    assert _stored(store) == [("second", "corrected")]
+
+
+def test_overwrite_reindexes_even_the_same_source(tmp_path):
+    from podcodex.rag.index_store import IndexStore
+
+    store = IndexStore(tmp_path / "index")
+    _vectorize(store, "first", "transcript")
+
+    assert _vectorize(store, "second", "transcript", overwrite=True) == 1
+    assert _stored(store) == [("second", "transcript")]
 
 
 # ──────────────────────────────────────────────

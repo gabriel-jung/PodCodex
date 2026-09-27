@@ -13,8 +13,6 @@ from podcodex.core.api_keys import (
     APIKey,
     APIKeysFile,
     discover_env_keys,
-    load_keys,
-    merge_discovered,
     parse_env_var_name,
     save_keys,
 )
@@ -76,37 +74,7 @@ def test_discover_env_keys_skips_empty_values():
 # ── merge_discovered ─────────────────────────────────────────────────
 
 
-def test_merge_discovered_appends_only_new():
-    file = APIKeysFile(keys=[APIKey(name="existing", value="old", source="ui")])
-    discovered = [
-        APIKey(name="existing", value="env-version", source="env"),
-        APIKey(name="newone", value="fresh", source="env"),
-    ]
-    file, added = merge_discovered(file, discovered)
-    assert added == ["newone"]
-    by_name = {k.name: k for k in file.keys}
-    assert by_name["existing"].value == "old"  # unchanged
-    assert by_name["existing"].source == "ui"
-    assert by_name["newone"].value == "fresh"
-
-
 # ── persistence ──────────────────────────────────────────────────────
-
-
-def test_save_load_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setattr(keys_mod, "api_keys_path", lambda: tmp_path / "api_keys.json")
-    file = APIKeysFile(
-        keys=[
-            APIKey(name="a", value="va", suggested_provider="openai", source="ui"),
-            APIKey(name="b", value="vb", source="env"),
-        ]
-    )
-    save_keys(file)
-    loaded = load_keys()
-    assert len(loaded.keys) == 2
-    assert loaded.keys[0].name == "a"
-    assert loaded.keys[0].value == "va"
-    assert loaded.keys[0].suggested_provider == "openai"
 
 
 def test_save_keys_writes_mode_0600(tmp_path, monkeypatch):
@@ -116,14 +84,6 @@ def test_save_keys_writes_mode_0600(tmp_path, monkeypatch):
     if os.name != "nt":  # chmod meaningful on POSIX only
         mode = stat.S_IMODE(path.stat().st_mode)
         assert mode == 0o600
-
-
-def test_load_returns_empty_for_corrupt_file(tmp_path, monkeypatch):
-    path = tmp_path / "api_keys.json"
-    path.write_text("{not json", encoding="utf-8")
-    monkeypatch.setattr(keys_mod, "api_keys_path", lambda: path)
-    loaded = load_keys()
-    assert loaded.keys == []
 
 
 # ── route tests ──────────────────────────────────────────────────────
@@ -257,8 +217,8 @@ def test_scan_env_reads_secrets_file(client, tmp_path):
 
 
 def test_an_unreadable_pool_is_moved_aside_not_overwritten(client, tmp_path):
-    """An unreadable file used to load as an empty pool and the next save
-    wrote that empty pool over every stored key."""
+    """An unreadable key file is moved aside before the next save, so that
+    save cannot write an empty pool over every stored key."""
     from podcodex.core.api_keys import api_keys_path
 
     path = api_keys_path()

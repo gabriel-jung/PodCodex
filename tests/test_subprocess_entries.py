@@ -1,8 +1,8 @@
 """Every route's subprocess entry point accepts the kwargs the route sends.
 
 Entry functions are keyword-only and the routes build their kwargs dicts by
-hand, so a renamed field used to fail only inside the spawned child, after
-the task was accepted. `run_in_subprocess` now binds before spawning; this
+hand, so a renamed field would fail only inside the spawned child, after
+the task was accepted. `run_in_subprocess` binds before spawning; this
 checks every call site statically, since the pipeline extra (and so the
 jobs themselves) never runs in CI.
 """

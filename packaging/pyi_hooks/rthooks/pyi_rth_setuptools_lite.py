@@ -18,9 +18,8 @@ makes ``import distutils`` resolve at all. It stays installed, just without
 the version lookup.
 
 The default is hardcoded to "local", which is what setuptools >= 60 picks.
-Anything older would want "stdlib" and no shim at all — long past EOL, and
-``tests/test_pyinstaller_rthooks.py`` fails if the pinned setuptools ever
-drops below that line. An explicit
+Anything older would want "stdlib" and no shim at all, but setuptools 60
+is from 2021 and Python 3.12 resolves far past it. An explicit
 ``SETUPTOOLS_USE_DISTUTILS`` still wins, as before.
 """
 

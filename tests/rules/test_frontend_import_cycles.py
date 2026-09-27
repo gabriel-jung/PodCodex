@@ -10,18 +10,19 @@ at **module scope**. ESM evaluates a module's dependencies before its own body,
 so entering through the barrel evaluates the feature module first, and the
 binding it reads is still in its temporal dead zone.
 
-``health.ts`` did exactly that with ``BOOT_PATIENT_RETRY`` (spread into
-``healthQueryOptions`` at module scope). It never surfaced in CI or in the
-packaged app because Rollup hoists and reorders during the production build;
-Vite serves native per-module ESM in dev, so it threw there and only there:
+The failure shows only in dev. Rollup hoists and reorders during the
+production build, so CI and the packaged app never see it; Vite serves native
+per-module ESM in dev, so it throws there, e.g. for ``BOOT_PATIENT_RETRY``
+spread into ``healthQueryOptions`` at module scope:
 
     Uncaught ReferenceError: can't access lexical declaration
     'BOOT_PATIENT_RETRY' before initialization
 
-which rendered as a blank page under ``make dev-no-tauri``.
+which renders as a blank page under ``make dev-no-tauri``.
 
-The fix was to move the retry policies into ``api/connection.ts``, a leaf that
-imports nothing. These tests pin both halves of that arrangement.
+So values read at module scope (the retry policies) live in
+``api/connection.ts``, a leaf that imports nothing. These tests pin both
+halves of that arrangement.
 """
 
 from __future__ import annotations
@@ -29,9 +30,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
 
-FRONTEND_API = Path(__file__).resolve().parents[1] / "frontend" / "src" / "api"
+FRONTEND_API = Path(__file__).resolve().parents[2] / "frontend" / "src" / "api"
 CLIENT = FRONTEND_API / "client.ts"
 CONNECTION = FRONTEND_API / "connection.ts"
 
@@ -62,19 +62,23 @@ def test_connection_module_is_a_leaf():
     )
 
 
-@pytest.mark.parametrize("module", _barrel_modules(), ids=lambda p: p.name)
-def test_barrel_modules_do_not_take_init_time_values_from_the_barrel(module: Path):
+def test_barrel_modules_do_not_take_init_time_values_from_the_barrel():
     """A cycle member must import these from the leaf, never from ``./client``."""
-    if not module.exists():  # a re-export of a module that lives elsewhere
-        pytest.skip(f"{module.name} not found next to client.ts")
-    for match in re.finditer(
-        r'import\s*\{([^}]*)\}\s*from\s*"\./client";', _src(module)
-    ):
-        names = {n.strip() for n in match.group(1).split(",") if n.strip()}
-        clashes = names.intersection(INIT_TIME_EXPORTS)
-        assert not clashes, (
-            f"{module.name} imports {sorted(clashes)} from the barrel it is itself "
-            'part of. Import from "./connection" instead: if the value is read at '
-            "module scope, going through client.ts is a temporal-dead-zone error "
-            "under native ESM (dev only, invisible in the Rollup build)."
-        )
+    offenders = []
+    for module in _barrel_modules():
+        if not module.exists():  # a re-export of a module that lives elsewhere
+            continue
+        for match in re.finditer(
+            r'import\s*\{([^}]*)\}\s*from\s*"\./client";', _src(module)
+        ):
+            names = {n.strip() for n in match.group(1).split(",") if n.strip()}
+            clashes = names.intersection(INIT_TIME_EXPORTS)
+            if clashes:
+                offenders.append(f"{module.name}: {sorted(clashes)}")
+    assert not offenders, (
+        "these barrel members import init-time values from the barrel they are "
+        'part of. Import from "./connection" instead: if the value is read at '
+        "module scope, going through client.ts is a temporal-dead-zone error "
+        "under native ESM (dev only, invisible in the Rollup build).\n"
+        + "\n".join(offenders)
+    )

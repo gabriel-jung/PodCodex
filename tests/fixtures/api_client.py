@@ -28,12 +28,14 @@ def client_for(app) -> TestClient:
     )
 
 
-def make_client(tmp_path, monkeypatch, config=None) -> TestClient:
-    """TestClient over a fresh app whose config lives under ``tmp_path``.
+def make_client(tmp_path, monkeypatch, config=None, *, fresh=False) -> TestClient:
+    """TestClient whose config lives under ``tmp_path``.
 
-    ``config``: optional AppConfig persisted before the app is created.
+    ``config``: optional AppConfig persisted before the client is built.
+    ``fresh``: build a new app instead of sharing the session's. Needed by a
+    test that enters the lifespan (``with make_client(...)``: MCP mount,
+    recovery, the task loop) or that patches something ``create_app`` reads.
     """
-    from podcodex.api.app import create_app
     from podcodex.core import app_config as app_config_mod
     from podcodex.core.app_config import save_config
 
@@ -58,8 +60,68 @@ def make_client(tmp_path, monkeypatch, config=None) -> TestClient:
 
     # base_url sets the Host header to a loopback name so the app's
     # host-guard middleware (anti DNS-rebinding) accepts the request.
-    return TestClient(
-        create_app(),
+    if fresh:
+        from podcodex.api.app import create_app
+
+        client_cls, app = TestClient, create_app()
+    else:
+        client_cls, app = _SharedAppClient, _shared_app()
+    return client_cls(
+        app,
         base_url="http://127.0.0.1:18811",
         headers={"X-PodCodex": "1", "X-PodCodex-Token": "test-token"},
     )
+
+
+class _SharedAppClient(TestClient):
+    """A client over the session's shared app, which must never run its
+    lifespan: the MCP session manager starts once per app, so a second
+    ``with`` would hang, and startup work would leak into later tests."""
+
+    def __enter__(self):
+        raise RuntimeError(
+            "entering the lifespan needs an app of its own: "
+            "make_client(..., fresh=True)"
+        )
+
+
+def library_client(tmp_path, monkeypatch) -> TestClient:
+    """``make_client`` whose default save path is ``tmp_path / "library"``."""
+    from podcodex.core.app_config import AppConfig
+
+    return make_client(
+        tmp_path,
+        monkeypatch,
+        config=AppConfig(default_save_path=str(Path(tmp_path) / "library")),
+    )
+
+
+def registered_show(client: TestClient, folder: Path, name: str = "") -> Path:
+    """Create *folder* (with a ``show.toml`` when *name* is given) and
+    register it through the API, as the app's "add show" does."""
+    folder.mkdir(parents=True)
+    if name:
+        from podcodex.ingest.show import ShowMeta, save_show_meta
+
+        save_show_meta(folder, ShowMeta(name=name))
+    r = client.post("/api/shows/register", json={"path": str(folder)})
+    assert r.status_code == 200, r.text
+    return folder
+
+
+_APP = None
+
+
+def _shared_app():
+    """One app per session. Building it costs ~40 ms (route registration)
+    and config, index and data dir are all read per request through the paths
+    ``make_client`` points at tmp. What ``create_app`` does read at build time
+    (``running_in_bundle``, whether MCP is installed, the token) is fixed by
+    whichever test builds it first, so a test that patches one of those needs
+    ``fresh=True``."""
+    global _APP
+    if _APP is None:
+        from podcodex.api.app import create_app
+
+        _APP = create_app()
+    return _APP

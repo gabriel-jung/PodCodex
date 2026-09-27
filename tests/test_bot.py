@@ -6,7 +6,7 @@ from podcodex.rag.hit import Hit
 
 pytest.importorskip("discord")
 
-from podcodex.bot.bot import BotConfig, ResolvedShows, ServerSettings, ShowAccess
+from podcodex.bot.bot import BotConfig, ResolvedShows, ShowAccess
 from podcodex.bot.ui import (
     build_details_embed,
     build_episodes_embeds,
@@ -26,40 +26,6 @@ from podcodex.bot.formatting import (
     speaker as _speaker,
     score_bar as _score_bar,
 )
-
-
-# ──────────────────────────────────────────────
-# BotConfig
-# ──────────────────────────────────────────────
-
-
-def test_botconfig_defaults():
-    cfg = BotConfig()
-    assert cfg.top_k == 5
-    assert cfg.index_path is None
-    assert cfg.chunker == "semantic"
-
-
-def test_botconfig_custom():
-    cfg = BotConfig(top_k=3, index_path="/tmp/lance-index", chunker="speaker")
-    assert cfg.top_k == 3
-    assert cfg.index_path == "/tmp/lance-index"
-    assert cfg.chunker == "speaker"
-
-
-# ──────────────────────────────────────────────
-# ServerSettings
-# ──────────────────────────────────────────────
-
-
-def test_guild_settings_defaults():
-    g = ServerSettings()
-    assert g.top_k == 5
-
-
-def test_guild_settings_custom():
-    g = ServerSettings(top_k=3)
-    assert g.top_k == 3
 
 
 # ──────────────────────────────────────────────
@@ -113,14 +79,6 @@ def test_pub_day(pub_date, expected):
 # ──────────────────────────────────────────────
 
 
-def test_speaker_uses_speaker_field():
-    assert _speaker(Hit(speaker="Alice")) == "Alice"
-
-
-def test_speaker_falls_back_to_dominant():
-    assert _speaker(Hit(dominant_speaker="Bob")) == "Bob"
-
-
 def test_speaker_prefers_speaker_over_dominant():
     assert _speaker(Hit(speaker="Alice", dominant_speaker="Bob")) == "Alice"
 
@@ -128,9 +86,6 @@ def test_speaker_prefers_speaker_over_dominant():
 def test_speaker_blank_when_missing():
     """No label means no attribution: callers drop the speaker entirely."""
     assert _speaker(Hit()) == ""
-
-
-def test_speaker_blank_when_none():
     assert _speaker(Hit(speaker=None, dominant_speaker="")) == ""
 
 
@@ -141,8 +96,11 @@ def test_speaker_blank_for_narrator_placeholder():
     assert _speaker(Hit(dominant_speaker=NARRATOR_SPEAKER)) == ""
 
 
-def test_resolve_show_collections_precedence(monkeypatch):
-    from podcodex.bot.bot import PodCodexBot, ServerSettings
+def test_resolve_show_collections_precedence(monkeypatch, tmp_path, isolated_index):
+    """The bot hands search_service its three inputs: the guild default, the
+    show.toml prefs and the user's explicit pick."""
+    from podcodex.bot.bot import ServerSettings
+    from tests.fixtures.bot import make_bot
 
     col_info = {
         "s__aardvark__semantic": {
@@ -157,15 +115,16 @@ def test_resolve_show_collections_precedence(monkeypatch):
             "chunker": "speaker",
         },
     }
-    bot = PodCodexBot.__new__(PodCodexBot)  # no Discord login needed
-    bot._shows = {}  # nothing protected: _show_allowed always True
+    bot, _ = make_bot(tmp_path)  # nothing protected: every show allowed
 
-    def resolve(settings, prefs, explicit=None, cols=col_info):
+    def resolve(settings, prefs, explicit=None):
         monkeypatch.setattr(
             "podcodex.bot.resolution.load_show_rag_prefs", lambda: prefs
         )
         shows = ResolvedShows(ShowAccess.ALL)
-        return bot._resolve_show_collections(shows, settings, cols, explicit=explicit)
+        return bot._resolve_show_collections(
+            shows, settings, col_info, explicit=explicit
+        )
 
     # guild default wins over global default
     got = resolve(ServerSettings(model="e5-small", chunker="speaker"), {})
@@ -183,28 +142,8 @@ def test_resolve_show_collections_precedence(monkeypatch):
         explicit=("bge-m3", "semantic"),
     )
     assert [(c.name, c.model) for c in got] == [("s__bge-m3__semantic", "bge-m3")]
-    # guild default mismatch falls to the global default rung,
-    # not to alphabetical-first (aardvark)
-    got = resolve(ServerSettings(model="nope", chunker="nope"), {})
-    assert [(c.name, c.model) for c in got] == [("s__bge-m3__semantic", "bge-m3")]
-    # no tier matches at all (no global-default collection either):
-    # first by name keeps the show reachable
-    no_default_cols = {
-        "s__aardvark__semantic": {
-            "show": "S",
-            "model": "aardvark",
-            "chunker": "semantic",
-        },
-        "s__e5-small__speaker": {
-            "show": "S",
-            "model": "e5-small",
-            "chunker": "speaker",
-        },
-    }
-    got = resolve(
-        ServerSettings(model="nope", chunker="nope"), {}, cols=no_default_cols
-    )
-    assert [(c.name, c.model) for c in got] == [("s__aardvark__semantic", "aardvark")]
+    # The rungs below the guild default are search_service's own, pinned in
+    # test_search_service.py.
 
 
 def test_display_speaker_maps_raw_diarization_labels():
@@ -261,7 +200,7 @@ def test_result_embed_show_as_author_episode_as_title():
         label="α=0.50",
         text="film music",
     )
-    # Show moved to the author line; the episode title no longer repeats it.
+    # The show sits on the author line; the episode title does not repeat it.
     assert embed.author.name == "My Podcast"
     assert "Ep01" in embed.title
     assert "My Podcast" not in embed.title
@@ -342,13 +281,6 @@ def test_episodes_embeds_show_full_date_with_day():
     assert "8 Jan 2026" in embeds[0].fields[0].value
 
 
-def test_episodes_embeds_omit_description():
-    eps = _ep_stats(1)
-    eps[0]["description"] = "A long summary that used to weigh the list down."
-    embeds = build_episodes_embeds("My Show", eps, footer="1 episodes")
-    assert "summary" not in embeds[0].fields[0].value
-
-
 def test_episodes_embeds_use_show_artwork():
     embeds = build_episodes_embeds(
         "My Show",
@@ -385,11 +317,6 @@ def test_result_embed_footer_carries_match_total_when_given():
         _CHUNK, rank=3, total=1473, label="", footer_extra="40 exact · 176 partial"
     )
     assert embed.footer.text == "3 of 1473 · 40 exact · 176 partial"
-
-
-def test_result_embed_footer_plain_without_extra():
-    embed = build_result_embed(_CHUNK, rank=1, total=5, label="")
-    assert embed.footer.text == "1 of 5"
 
 
 def test_result_embed_sets_thumbnail_from_artwork():
@@ -498,53 +425,6 @@ def test_cooldown_zero_seconds_never_blocks():
 
 
 # ──────────────────────────────────────────────
-# ServerSettings — new fields + backwards compat
-# ──────────────────────────────────────────────
-
-
-def test_server_settings_new_fields_default():
-    s = ServerSettings()
-    assert s.unlocked_shows == []
-    assert s.pinned_shows == []
-    assert s.allowed_shows == []
-    assert s.default_source == ""
-    assert s.compact is False
-
-
-def test_server_settings_with_new_fields():
-    s = ServerSettings(
-        unlocked_shows=["show_a"],
-        pinned_shows=["show_b"],
-        default_source="corrected",
-        compact=True,
-    )
-    assert s.unlocked_shows == ["show_a"]
-    assert s.pinned_shows == ["show_b"]
-    assert s.default_source == "corrected"
-    assert s.compact is True
-
-
-def test_server_settings_backwards_compat_ignores_unknown_keys():
-    """Old config files may have extra keys; construction should not crash."""
-    raw = {"model": "bge-m3", "chunker": "semantic", "top_k": 5, "unknown_field": 42}
-    import dataclasses
-
-    valid_keys = {f.name for f in dataclasses.fields(ServerSettings)}
-    s = ServerSettings(**{k: v for k, v in raw.items() if k in valid_keys})
-    assert s.model == "bge-m3"
-
-
-def test_server_settings_backwards_compat_missing_new_keys():
-    """Old config files won't have new fields; defaults should fill in."""
-    raw = {"model": "bge-m3", "chunker": "semantic", "top_k": 5}
-    s = ServerSettings(**raw)
-    assert s.unlocked_shows == []
-    assert s.pinned_shows == []
-    assert s.default_source == ""
-    assert s.compact is False
-
-
-# ──────────────────────────────────────────────
 # build_compact_embed
 # ──────────────────────────────────────────────
 
@@ -606,9 +486,9 @@ def test_compact_embed_max_25_fields():
 
 
 def test_compact_embed_stays_under_discord_total_limit():
-    # 25 realistic long-text results burst Discord's 6000-char total embed
-    # cap (observed: 7637 chars for a 1473-hit /exact); Discord then rejects
-    # the message with HTTP 400 and the interaction hangs on "thinking".
+    # 25 realistic long-text results can burst Discord's 6000-char total
+    # embed cap; Discord then rejects the message with HTTP 400 and the
+    # interaction hangs on "thinking".
     long_chunk = Hit(
         show="Total Trax",
         episode="21_249_isabelle_durin_un_violon_au_cinema",
@@ -734,34 +614,12 @@ def test_autocomplete_cache_stale_after_ttl():
 
 def _seed_multimodel_index(tmp_path):
     """Two shows: Alpha under the default model, Beta only under e5-small."""
-    import numpy as np
-
     from podcodex.rag.index_store import IndexStore
+    from tests.fixtures.index import add_show
 
-    dim = 8
     store = IndexStore(tmp_path / "index")
-    for show, model in (("Alpha", "bge-m3"), ("Beta", "e5-small")):
-        col = f"{show.lower()}__{model}__semantic"
-        store.ensure_collection(
-            col, show=show, model=model, chunker="semantic", dim=dim
-        )
-        chunks = [
-            {
-                "text": "x",
-                "episode": "ep1",
-                "show": show,
-                "source": "transcript",
-                "dominant_speaker": "sp",
-                "start": 0.0,
-                "end": 1.0,
-            }
-        ]
-        store.save_chunks(
-            col,
-            "ep1",
-            chunks,
-            np.random.default_rng(0).random((1, dim), dtype=np.float32),
-        )
+    add_show(store, "Alpha")
+    add_show(store, "Beta", model="e5-small")
     return store
 
 
@@ -799,7 +657,9 @@ def test_resolve_show_collections_excludes_locked_show(tmp_path):
 
     store = _seed_multimodel_index(tmp_path)
     bot = _bot_for(tmp_path, store)
-    store.set_show_password("Beta", "sha256:" + "0" * 64)
+    from tests.fixtures.index import show_id_of
+
+    store.set_show_password(show_id_of(store, "Beta"), "sha256:" + "0" * 64)
     bot._reload_shows()
     settings = bot._server_settings(None)
     col_info = bot.local.get_all_collection_info()

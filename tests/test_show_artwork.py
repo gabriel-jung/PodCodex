@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.api_client import make_client
+from tests.fixtures.api_client import library_client, registered_show
 
 # Smallest valid PNG (1x1, from the PNG spec examples).
 PNG_BYTES = bytes.fromhex(
@@ -15,22 +15,12 @@ PNG_BYTES = bytes.fromhex(
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    from podcodex.core.app_config import AppConfig
-
-    return make_client(
-        tmp_path,
-        monkeypatch,
-        config=AppConfig(default_save_path=str(tmp_path / "library")),
-    )
+    return library_client(tmp_path, monkeypatch)
 
 
 @pytest.fixture
 def show(client, tmp_path) -> Path:
-    folder = tmp_path / "MyShow"
-    folder.mkdir()
-    r = client.post("/api/shows/register", json={"path": str(folder)})
-    assert r.status_code == 200
-    return folder
+    return registered_show(client, tmp_path / "MyShow")
 
 
 def _upload(client, folder, filename="cover.png", data=PNG_BYTES):
@@ -181,8 +171,9 @@ def _patch_urlopen(monkeypatch, body: bytes) -> None:
 
 
 def test_download_artwork_rejects_an_oversized_body(tmp_path, monkeypatch):
-    """An over-limit cover used to be truncated to the cap, written, and its
-    URL hash stamped, so the corrupt file was served forever."""
+    """An over-limit cover is rejected, not truncated to the cap, written
+    and stamped with its URL hash, which would serve the corrupt file
+    forever."""
     from podcodex.api.routes import shows as shows_routes
 
     _patch_urlopen(monkeypatch, b"x" * (shows_routes._ARTWORK_MAX_BYTES + 1))
@@ -247,3 +238,16 @@ def test_a_download_after_an_upload_leaves_the_upload_alone(tmp_path, monkeypatc
     assert shows_routes._download_artwork("http://x/feed.jpg", folder) is None
     assert (folder / "artwork.png").read_bytes() == PNG_BYTES
     assert not (folder / "artwork.jpg").exists()
+
+
+def test_download_artwork_refuses_file_scheme(tmp_path):
+    """A feed-controlled artwork URL must not read a local file."""
+    from podcodex.api.routes.shows import _download_artwork
+
+    secret = tmp_path / "secret.jpg"
+    secret.write_bytes(b"\xff\xd8\xffnot-yours")
+    show = tmp_path / "show"
+    show.mkdir()
+
+    assert _download_artwork(secret.as_uri(), show) is None
+    assert not list(show.iterdir())

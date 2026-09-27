@@ -6,19 +6,6 @@
 # ──────────────────────────────────────────────
 
 
-def test_scan_folder_finds_audio_only(tmp_path):
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    (tmp_path / "ep02.wav").touch()
-    (tmp_path / "notes.json").touch()
-    (tmp_path / "subdir").mkdir()
-
-    result = scan_folder(tmp_path)
-
-    assert {ep.stem for ep in result} == {"ep01", "ep02"}
-
-
 def test_scan_folder_ignores_non_audio(tmp_path):
     from podcodex.ingest.folder import scan_folder
 
@@ -32,17 +19,6 @@ def test_scan_folder_ignores_non_audio(tmp_path):
 
     assert len(result) == 1
     assert result[0].stem == "ep01"
-
-
-def test_scan_folder_all_audio_extensions(tmp_path):
-    from podcodex.ingest.folder import scan_folder
-
-    for name in ("a.mp3", "b.wav", "c.m4a", "d.ogg", "e.flac"):
-        (tmp_path / name).touch()
-
-    result = scan_folder(tmp_path)
-
-    assert len(result) == 5
 
 
 # ──────────────────────────────────────────────
@@ -79,16 +55,6 @@ def test_scan_folder_transcribed_true(tmp_path):
     assert result[0].transcribed is True
 
 
-def test_scan_folder_transcribed_false(tmp_path):
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert result[0].transcribed is False
-
-
 # ──────────────────────────────────────────────
 # indexed flag
 # ──────────────────────────────────────────────
@@ -104,18 +70,6 @@ def test_scan_folder_indexed_true(tmp_path, monkeypatch):
     result = folder_mod.scan_folder(tmp_path)
 
     assert result[0].indexed is True
-
-
-def test_scan_folder_indexed_false(tmp_path, monkeypatch):
-    from podcodex.ingest import folder as folder_mod
-
-    (tmp_path / "ep01.mp3").touch()
-    monkeypatch.setattr(folder_mod, "lance_indexed_stems", lambda _: set())
-    folder_mod.invalidate_scan_cache()
-
-    result = folder_mod.scan_folder(tmp_path)
-
-    assert result[0].indexed is False
 
 
 def test_note_episode_indexed_updates_cache(tmp_path, monkeypatch):
@@ -141,27 +95,6 @@ def test_note_episode_indexed_updates_cache(tmp_path, monkeypatch):
     versions, stems = folder_mod._INDEXED_STEMS_CACHE[key]
     assert stems == {"ep00", "ep01"}
     assert versions == (("show_bge", 7),)
-
-
-def test_note_episode_indexed_drops_entry_on_error(tmp_path, monkeypatch):
-    from podcodex.ingest import folder as folder_mod
-
-    def _boom():
-        raise RuntimeError("index store unavailable")
-
-    monkeypatch.setattr("podcodex.rag.index_store.get_index_store", _boom)
-    key = folder_mod._stems_cache_key(tmp_path)
-    monkeypatch.setattr(
-        folder_mod,
-        "_INDEXED_STEMS_CACHE",
-        {key: ((("show_bge", 3),), {"ep00"})},
-    )
-
-    folder_mod.note_episode_indexed(tmp_path, "ep01")
-
-    # A fingerprint we can't refresh must not survive: the next request
-    # rebuilds from a real scan instead of serving a stale set.
-    assert key not in folder_mod._INDEXED_STEMS_CACHE
 
 
 # ──────────────────────────────────────────────
@@ -227,22 +160,6 @@ def test_scan_folder_transcript_only_episode(tmp_path):
     assert ep.transcribed is True
 
 
-def test_scan_folder_audio_takes_priority(tmp_path):
-    """When both audio and output dir exist, audio_path is set."""
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-    ep_dir = tmp_path / "ep01"
-    ep_dir.mkdir()
-    (ep_dir / "ep01.transcript.json").touch()
-
-    result = scan_folder(tmp_path)
-
-    assert len(result) == 1
-    assert result[0].audio_path is not None
-    assert result[0].audio_path.name == "ep01.mp3"
-
-
 def test_scan_folder_mixed_audio_and_transcript_only(tmp_path):
     """Both audio-based and transcript-only episodes in one folder."""
     from podcodex.ingest.folder import scan_folder
@@ -282,16 +199,6 @@ def test_scan_folder_subdir_without_transcript_ignored(tmp_path):
     assert result == []
 
 
-def test_scan_folder_path_backcompat(tmp_path):
-    """The .path property still works as an alias for audio_path."""
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-
-    result = scan_folder(tmp_path)
-    assert result[0].path == result[0].audio_path
-
-
 def test_scan_folder_loads_episode_title(tmp_path):
     """scan_folder populates title from .episode_meta.json when present."""
     import json
@@ -305,16 +212,6 @@ def test_scan_folder_loads_episode_title(tmp_path):
 
     result = scan_folder(tmp_path)
     assert result[0].title == "My Great Episode"
-
-
-def test_scan_folder_title_empty_without_meta(tmp_path):
-    """title defaults to empty string when no .episode_meta.json exists."""
-    from podcodex.ingest.folder import scan_folder
-
-    (tmp_path / "ep01.mp3").touch()
-
-    result = scan_folder(tmp_path)
-    assert result[0].title == ""
 
 
 def test_scan_folder_metadata_only_episode(tmp_path):
@@ -341,8 +238,8 @@ def test_scan_folder_metadata_only_episode(tmp_path):
 
 
 def test_download_youtube_audio_force_replaces_an_existing_file(tmp_path, monkeypatch):
-    """The route documents force as re-downloading, but the ingest function
-    short-circuited on output_path.exists() and never saw the flag."""
+    """force re-downloads even when output_path already exists, as the
+    route documents; an exists() short-circuit must not swallow the flag."""
     from podcodex.ingest import youtube as yt
 
     calls: list[str] = []

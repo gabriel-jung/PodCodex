@@ -1,11 +1,13 @@
-"""Structural guards for two documented single-facility rules (CLAUDE.md).
+"""Structural guards for documented single-facility rules (CLAUDE.md).
 
 * GPU detection and dtypes go through ``core/device.py``: no direct
   ``torch.cuda.is_available()`` or hard-coded half-precision dtypes elsewhere.
 * ``PipelineDB`` shares one SQLite connection across FastAPI's threadpool, so
   every statement runs under ``self._lock`` (reads through ``_read``). A read
-  outside the lock intermittently returned nothing when another thread
-  committed mid-statement.
+  outside the lock can return nothing when another thread commits
+  mid-statement.
+* A collection name is never rebuilt outside ``IndexStore``: a caller that
+  derives it from a show again orphans the collections on a rename.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "src" / "podcodex"
+SRC = Path(__file__).resolve().parents[2] / "src" / "podcodex"
 
 
 def _dotted(node: ast.AST) -> str:
@@ -88,4 +90,27 @@ def test_every_pipeline_db_statement_holds_the_lock():
             visit(item, [], item.name)
     assert offenders == [], (
         "run these under `with self._lock` or via _read:\n" + "\n".join(offenders)
+    )
+
+
+def test_only_the_index_store_builds_collection_names():
+    """An import guard: it cannot see a hand-rolled f-string rebuild, only
+    the helper being reached for again."""
+    allowed = {"rag/index_store.py", "rag/store.py"}
+    offenders = []
+    for path in SRC.rglob("*.py"):
+        rel = path.relative_to(SRC).as_posix()
+        if rel in allowed:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and any(
+                a.name == "collection_name" for a in node.names
+            ):
+                offenders.append(f"{rel}:{node.lineno}")
+            if isinstance(node, ast.Attribute) and node.attr == "collection_name":
+                offenders.append(f"{rel}:{node.lineno}")
+    assert offenders == [], (
+        "resolve through IndexStore (resolve_collection / "
+        "ensure_collection_for_show) instead:\n" + "\n".join(offenders)
     )

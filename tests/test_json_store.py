@@ -28,7 +28,8 @@ def test_missing_file_loads_defaults(store):
 
 
 def test_a_value_that_fails_validation_loads_defaults(store):
-    """A mistyped field used to raise out of every load_config caller."""
+    """A mistyped field loads defaults instead of raising out of every
+    load_config caller."""
     s, path = store
     path.write_text(json.dumps({"count": "many"}), encoding="utf-8")
     assert s.load() == _Cfg()
@@ -53,8 +54,8 @@ def test_load_returns_a_copy(store):
 
 
 def test_a_failed_save_leaves_nothing_applied(store, monkeypatch):
-    """mutate used to edit the cached object in place, so a failed save left
-    the change visible to every reader until restart."""
+    """mutate does not edit the cached object in place, so a failed save
+    leaves no change visible to readers until restart."""
     s, _path = store
     s.save(_Cfg(folders=["a"]))
 

@@ -1,20 +1,20 @@
 """Cancelling an AI correct or translate run stops it and saves nothing.
 
 Both run in the task worker thread, not a subprocess, so nothing but the
-batch callback can stop them: before it checked the cancel event, Cancel
-only relabelled the task while every remaining batch ran (and billed) and
-the result was saved as a new version.
+batch callback can stop them. If it ignores the cancel event, Cancel only
+relabels the task while every remaining batch runs (and bills) and the result
+is saved as a new version.
 """
 
 from __future__ import annotations
 
-import time
 
 import pytest
 
 from podcodex.core.source import SourceVersion
 from tests.fixtures.api_client import make_client
 from tests.fixtures.llm import stub_llm_resolver
+from tests.fixtures.tasks import wait_task
 
 SEGS = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}]
 
@@ -23,18 +23,6 @@ SEGS = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}]
 def client(tmp_path, monkeypatch):
     stub_llm_resolver(monkeypatch)
     return make_client(tmp_path, monkeypatch)
-
-
-def _wait(task_id, timeout=5.0):
-    from podcodex.api.tasks import task_manager
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        info = task_manager.get(task_id)
-        if info is not None and info.finished_at is not None:
-            return info
-        time.sleep(0.02)
-    raise AssertionError("task never finished")
 
 
 @pytest.mark.parametrize("step", ["correct", "translate"])
@@ -67,7 +55,7 @@ def test_cancel_stops_the_run_before_it_saves(client, tmp_path, monkeypatch, ste
 
     def fake_run(segments, *, on_batch, **_k):
         # The user cancels during the first batch.
-        info = next(t for t in task_manager._tasks.values() if t.finished_at is None)
+        info = task_manager.get_active(str(audio))
         task_manager.cancel(info.task_id)
         for n in (1, 2, 3):
             batches_run.append(n)
@@ -89,7 +77,7 @@ def test_cancel_stops_the_run_before_it_saves(client, tmp_path, monkeypatch, ste
 
     r = client.post(f"/api/{step}/start", json=body)
     assert r.status_code == 200, r.text
-    info = _wait(r.json()["task_id"])
+    info = wait_task(r.json()["task_id"])
 
     assert info.status == "cancelled"
     assert batches_run == [1]
@@ -113,7 +101,7 @@ def test_a_cancel_during_the_last_batch_keeps_the_paid_for_run(
 
     def fake_run(segments, *, on_batch, **_k):
         on_batch(1, 2)
-        info = next(t for t in task_manager._tasks.values() if t.finished_at is None)
+        info = task_manager.get_active(str(audio))
         task_manager.cancel(info.task_id)  # lands while the last batch runs
         on_batch(2, 2)
         return segments
@@ -125,5 +113,5 @@ def test_a_cancel_during_the_last_batch_keeps_the_paid_for_run(
     r = client.post(
         "/api/correct/start", json={"audio_path": str(audio), "mode": "ollama"}
     )
-    _wait(r.json()["task_id"])
+    wait_task(r.json()["task_id"])
     assert len(saved) == 1

@@ -7,58 +7,38 @@ the show-level guard has to answer for all of them.
 
 from __future__ import annotations
 
-
 import pytest
 
-from podcodex.core.app_config import AppConfig
-from tests.fixtures.api_client import make_client
+from tests.fixtures.api_client import library_client, registered_show
 from tests.fixtures.tasks import active_task
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    return make_client(
-        tmp_path,
-        monkeypatch,
-        config=AppConfig(default_save_path=str(tmp_path / "library")),
-    )
+    return library_client(tmp_path, monkeypatch)
 
 
 @pytest.fixture
 def show(client, tmp_path):
-    path = tmp_path / "MyShow"
-    path.mkdir()
-    r = client.post("/api/shows/register", json={"path": str(path)})
-    assert r.status_code == 200, r.text
-    return path
+    return registered_show(client, tmp_path / "MyShow")
 
 
-def _keys(show):
-    return [
-        str(show),
-        f"batch:{show}",
-        f"download:{show}",
-        str(show / "ep1.mp3"),
-        str(show / "ep1.virtual"),
-    ]
+# Every lock shape is matched by task_manager.get_active_in_show, pinned in
+# test_task_manager.py; one shape per route proves each route asks it.
 
 
-@pytest.mark.parametrize("key_index", range(5))
-def test_delete_blocks_on_every_lock_shape(client, show, key_index):
-    key = _keys(show)[key_index]
-    with active_task(key):
+def test_delete_blocks_on_a_task_inside_the_show(client, show):
+    with active_task(f"batch:{show}"):
         r = client.post(f"/api/shows/{show}/delete", json={"delete_files": True})
-    assert r.status_code == 409, (key, r.text)
+    assert r.status_code == 409, r.text
     assert show.exists()
 
 
-@pytest.mark.parametrize("key_index", range(5))
-def test_move_blocks_on_every_lock_shape(client, show, tmp_path, key_index):
-    key = _keys(show)[key_index]
+def test_move_blocks_on_a_task_inside_the_show(client, show, tmp_path):
     dest = tmp_path / "Elsewhere"
-    with active_task(key):
+    with active_task(str(show / "ep1.mp3")):
         r = client.post(f"/api/shows/{show}/move", json={"new_path": str(dest)})
-    assert r.status_code == 409, (key, r.text)
+    assert r.status_code == 409, r.text
     assert show.exists()
     assert not dest.exists()
 
@@ -72,21 +52,10 @@ def test_sibling_show_lock_does_not_block(client, show, tmp_path):
 
 
 def test_finished_task_does_not_block(client, show):
-    from podcodex.api.tasks import TaskInfo, task_manager
-
-    import time
-
-    info = TaskInfo(task_id="done", audio_path=f"batch:{show}")
-    info.status = "completed"
-    # run()'s finally stamps this; it is the gate, not the status.
-    info.finished_at = time.monotonic()
-    task_manager._tasks["done"] = info
-    task_manager.lock(f"batch:{show}", "done")
-    try:
+    """``finished_at`` is the gate, not the status: a task winding down still
+    holds its lock but no longer blocks."""
+    with active_task(f"batch:{show}", "done", finished=True):
         r = client.post(f"/api/shows/{show}/delete", json={"delete_files": False})
-    finally:
-        task_manager.unlock(f"batch:{show}")
-        task_manager._tasks.pop("done", None)
     assert r.status_code == 200, r.text
 
 

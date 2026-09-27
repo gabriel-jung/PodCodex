@@ -87,20 +87,6 @@ def test_simplify_falls_back_to_unknown_speaker():
     assert result[0]["speaker"] == "UNKNOWN"
 
 
-def test_simplify_prefers_speaker_name_over_id():
-    segments = [
-        {
-            "speaker": "SPEAKER_00",
-            "speaker_name": "Alice",
-            "start": 0.0,
-            "end": 2.0,
-            "text": "Hi",
-        }
-    ]
-    result = merge_consecutive_segments(segments)
-    assert result[0]["speaker"] == "Alice"
-
-
 def test_simplify_strips_whitespace_from_text():
     segments = [{"speaker": "Alice", "start": 0.0, "end": 2.0, "text": "  Hello  "}]
     result = merge_consecutive_segments(segments)
@@ -198,28 +184,11 @@ def test_export_transcript_meta(tmp_path):
     # File is in new format
     full = load_transcript_full(audio)
     assert full["meta"]["show"] == "My Show"
+    assert full["meta"]["diarized"] is True
     assert full["meta"]["episode"] == "Episode 1"
     assert full["meta"]["speakers"] == ["Alice", "Bob"]
     assert full["meta"]["duration"] == pytest.approx(12.0, abs=0.01)
     assert full["meta"]["word_count"] == 7
-
-
-def test_export_transcript_defaults_empty_show_episode(tmp_path):
-    from podcodex.core.transcribe import export_transcript, save_speaker_map
-
-    audio = tmp_path / "ep.mp3"
-    diarized = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_00", "text": "Hello"}]
-    ep_dir = tmp_path / "ep"
-    ep_dir.mkdir()
-    base = ep_dir / "ep"
-    _save_parquet_version(base, "diarized_segments", diarized)
-    save_speaker_map(audio, {"SPEAKER_00": "Alice"})
-
-    export_transcript(audio)
-
-    full = load_transcript_full(audio)
-    assert full["meta"]["show"] == ""
-    assert full["meta"]["episode"] == ""
 
 
 # ──────────────────────────────────────────────
@@ -259,32 +228,15 @@ def test_export_transcript_no_diarization(tmp_path):
     assert full["meta"]["show"] == "S"
 
 
-def test_export_transcript_diarized_has_diarized_true(tmp_path):
-    """export_transcript(diarized=True) includes diarized=True in meta."""
-    from podcodex.core.transcribe import export_transcript, save_speaker_map
-
-    audio = tmp_path / "ep.mp3"
-    diarized = [
-        {"start": 0.0, "end": 5.0, "speaker": "SPEAKER_00", "text": "Hello"},
-    ]
-    ep_dir = tmp_path / "ep"
-    ep_dir.mkdir()
-    base = ep_dir / "ep"
-    _save_parquet_version(base, "diarized_segments", diarized)
-    save_speaker_map(audio, {"SPEAKER_00": "Alice"})
-
-    export_transcript(audio)
-    full = load_transcript_full(audio)
-    assert full["meta"]["diarized"] is True
-
-
 # ──────────────────────────────────────────────
 # clean_transcript integration with export
 # ──────────────────────────────────────────────
 
 
-def test_export_transcript_clean_removes_flagged(tmp_path):
-    """export_transcript(clean=True) removes unknown speakers and low-density segments."""
+@pytest.mark.parametrize("clean, speakers", [(True, ["Alice"]), (False, None)])
+def test_export_transcript_clean_drops_flagged_segments(tmp_path, clean, speakers):
+    """clean=True removes unknown speakers and low-density segments; clean=False
+    keeps every segment."""
     from podcodex.core.transcribe import export_transcript, save_speaker_map
 
     audio = tmp_path / "ep.mp3"
@@ -295,12 +247,8 @@ def test_export_transcript_clean_removes_flagged(tmp_path):
             "speaker": "SPEAKER_00",
             "text": "Hello world this is a good segment",
         },
-        {
-            "start": 5.5,
-            "end": 12.0,
-            "speaker": "SPEAKER_01",
-            "text": "Hi",
-        },  # low density (3 chars / 6.5s < 2)
+        # Low density: 2 chars over 6.5s, under the threshold of 2 chars/s.
+        {"start": 5.5, "end": 12.0, "speaker": "SPEAKER_01", "text": "Hi"},
         {
             "start": 13.0,
             "end": 18.0,
@@ -310,49 +258,15 @@ def test_export_transcript_clean_removes_flagged(tmp_path):
     ]
     ep_dir = tmp_path / "ep"
     ep_dir.mkdir()
-    base = ep_dir / "ep"
-    _save_parquet_version(base, "diarized_segments", diarized)
+    _save_parquet_version(ep_dir / "ep", "diarized_segments", diarized)
     save_speaker_map(audio, {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"})
 
-    segments = export_transcript(audio, clean=True)
-    # Only Alice's good segment should survive
-    assert len(segments) == 1
-    assert segments[0]["speaker"] == "Alice"
+    segments = export_transcript(audio, clean=clean)
 
-
-def test_export_transcript_no_clean_preserves_all(tmp_path):
-    """export_transcript(clean=False) preserves all segments including flagged ones."""
-    from podcodex.core.transcribe import export_transcript, save_speaker_map
-
-    audio = tmp_path / "ep.mp3"
-    diarized = [
-        {
-            "start": 0.0,
-            "end": 5.0,
-            "speaker": "SPEAKER_00",
-            "text": "Hello world this is a good segment",
-        },
-        {
-            "start": 5.5,
-            "end": 12.0,
-            "speaker": "SPEAKER_01",
-            "text": "Hi",
-        },  # low density
-        {
-            "start": 13.0,
-            "end": 18.0,
-            "speaker": "UNKNOWN",
-            "text": "Unknown speaker segment here",
-        },
-    ]
-    ep_dir = tmp_path / "ep"
-    ep_dir.mkdir()
-    base = ep_dir / "ep"
-    _save_parquet_version(base, "diarized_segments", diarized)
-    save_speaker_map(audio, {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"})
-
-    segments = export_transcript(audio, clean=False)
-    assert len(segments) == 3
+    if speakers is None:
+        assert len(segments) == 3
+    else:
+        assert [s["speaker"] for s in segments] == speakers
 
 
 def test_export_transcript_clean_nodiarize_only_density(tmp_path):
@@ -378,12 +292,3 @@ def test_export_transcript_clean_nodiarize_only_density(tmp_path):
     # Low-density segment removed; good segment + BREAK remain
     texts = [s["text"] for s in segments if s["speaker"] != "[BREAK]"]
     assert texts == ["Hello world this is a good segment"]
-
-
-def test_audio_paths_naming():
-    """AudioPaths produces consistent file paths for synth dirs."""
-    from podcodex.core._utils import AudioPaths
-
-    p = AudioPaths(audio_path=Path("/tmp/ep.mp3"), base=Path("/tmp/ep/ep"))
-    assert p.voice_samples_dir.name == "voice_samples"
-    assert p.tts_segments_dir.name == "tts_segments"

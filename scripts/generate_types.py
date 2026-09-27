@@ -363,8 +363,8 @@ def _collect_enum_defs(model: type[BaseModel]) -> dict[str, list[str]]:
     return out
 
 
-def main() -> None:
-    """Generate TypeScript interfaces and write to the output file."""
+def build() -> tuple[str, int]:
+    """Return the generated TypeScript and the number of names it declares."""
     blocks: list[str] = [HEADER]
     seen_names: set[str] = set()
 
@@ -403,10 +403,15 @@ def main() -> None:
         f"export const LOCAL_ARTWORK_MARKER = {json.dumps(LOCAL_ARTWORK_MARKER)};"
     )
 
-    content = "\n\n".join(blocks) + "\n"
+    return "\n\n".join(blocks) + "\n", len(seen_names)
+
+
+def main() -> None:
+    """Generate TypeScript interfaces and write to the output file."""
+    content, count = build()
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(content, encoding="utf-8")
-    print(f"Generated {len(seen_names)} interfaces → {OUTPUT.relative_to(Path.cwd())}")
+    print(f"Generated {count} interfaces → {OUTPUT.relative_to(Path.cwd())}")
 
 
 if __name__ == "__main__":

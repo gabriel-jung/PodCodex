@@ -555,7 +555,7 @@ def build_clone_prompts(
     return clone_prompts
 
 
-def _split_text(text: str, max_parts: int) -> list[str]:
+def split_text(text: str, max_parts: int) -> list[str]:
     """Split text into at most *max_parts*, breaking at natural boundaries.
 
     Strategy:
@@ -672,7 +672,7 @@ def generate_segment(
         if duration <= max_chunk_duration
         else math.ceil(duration / max_chunk_duration)
     )
-    chunks = _split_text(text, n_chunks)
+    chunks = split_text(text, n_chunks)
     n_chunks = len(chunks)  # actual count after splitting (may be < requested)
     if n_chunks > 1:
         logger.info(

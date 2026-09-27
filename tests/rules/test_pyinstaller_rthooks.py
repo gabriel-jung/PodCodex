@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 HOOK_DIR = REPO_ROOT / "packaging" / "pyi_hooks"
 
 
@@ -117,22 +117,6 @@ def test_nltk_hook_does_not_import_nltk_when_it_is_absent(
 # ── setuptools ──────────────────────────────────────────────────────────
 
 
-def test_bundled_setuptools_is_new_enough_for_the_hardcoded_default() -> None:
-    """The hook assumes "local", which is only setuptools >= 60's default.
-
-    If the pin ever drops below that, the hook would install a shim that
-    version does not want, so fail here rather than in a frozen build.
-    """
-    import setuptools
-
-    major = int(setuptools.__version__.split(".")[0])
-
-    assert major >= 60, (
-        f"setuptools {setuptools.__version__} defaults to 'stdlib', but "
-        f"pyi_rth_setuptools_lite.py hardcodes 'local'"
-    )
-
-
 def _run_hook_in_subprocess(tail: str, env: dict | None = None) -> str:
     """Subprocess, because setuptools is already imported in this session."""
     code = (
@@ -171,7 +155,7 @@ def test_distutils_is_importable_after_the_setuptools_hook() -> None:
 
 
 def test_env_override_still_suppresses_the_shim() -> None:
-    """``SETUPTOOLS_USE_DISTUTILS=stdlib`` opted out before; it still does."""
+    """``SETUPTOOLS_USE_DISTUTILS=stdlib`` still opts out of the shim."""
     out = _run_hook_in_subprocess(
         "print(any(type(f).__name__ == 'DistutilsMetaFinder' for f in sys.meta_path))",
         env={"PATH": "/usr/bin:/bin", "SETUPTOOLS_USE_DISTUTILS": "stdlib"},

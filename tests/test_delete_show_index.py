@@ -12,10 +12,8 @@ DIM = 8
 
 
 @pytest.fixture
-def show_with_index(tmp_path, monkeypatch):
+def show_with_index(tmp_path, monkeypatch, isolated_index):
     monkeypatch.setenv("PODCODEX_MACHINE_ID", "desktop")
-    monkeypatch.setenv("PODCODEX_INDEX", str(tmp_path / "index"))
-    rag_index_store.get_index_store.cache_clear()
 
     folder = tmp_path / "shows" / "My Show"
     folder.mkdir(parents=True)
@@ -48,26 +46,32 @@ def show_with_index(tmp_path, monkeypatch):
     cfg.show_folders = [str(folder)]
     monkeypatch.setattr(app_config, "load_config", lambda: cfg)
 
-    yield folder, sid, store
-    rag_index_store.get_index_store.cache_clear()
+    return folder, sid, store
 
 
-def test_purge_removes_collections_and_password(show_with_index):
-    from podcodex.api.routes.shows import _purge_show_from_index
+def test_deleting_a_show_with_its_files_purges_its_index(
+    show_with_index, tmp_path, monkeypatch
+):
+    from tests.fixtures.api_client import make_client
 
     folder, sid, store = show_with_index
     assert store.collections_for_show(sid)
+    client = make_client(tmp_path, monkeypatch)
+    assert client.post("/api/shows/register", json={"path": str(folder)}).is_success
 
-    collections, password, error = _purge_show_from_index(sid)
+    r = client.post(f"/api/shows/{folder}/delete", json={"delete_files": True})
 
-    assert error is None
-
-    assert collections == 1
-    assert password is True
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["collections_deleted"] == 1
+    assert body["password_removed"] is True
+    assert "warning" not in body
+    assert not folder.exists()
     assert store.collections_for_show(sid) == []
     assert sid not in store.get_show_password_entries()
 
 
+@pytest.mark.legacy("show-id")
 def test_purge_is_a_no_op_without_an_id(show_with_index):
     from podcodex.api.routes.shows import _purge_show_from_index
 
@@ -76,6 +80,7 @@ def test_purge_is_a_no_op_without_an_id(show_with_index):
     assert store.collections_for_show(sid)
 
 
+@pytest.mark.legacy("show-id")
 def test_purge_finds_collections_that_predate_the_migration(show_with_index):
     """A show deleted before its rows were stamped must still be cleaned up."""
     from podcodex.api.routes.shows import _purge_show_from_index
@@ -103,6 +108,7 @@ def test_purge_leaves_other_shows_alone(show_with_index):
     assert store.collections_for_show("other_9999abcd")
 
 
+@pytest.mark.legacy("name-keyed-passwords")
 def test_purge_removes_a_password_that_predates_the_migration(show_with_index):
     """A name-keyed password row must not outlive the show it protected."""
     from podcodex.api.routes.shows import _purge_show_from_index

@@ -124,3 +124,26 @@ def test_resolving_the_last_rejected_batch_drops_the_section(tmp_path):
     assert "french" not in load_failures(base)
     assert "corrected" in load_failures(base)
     assert resolve_batches(base, "missing", [1]) == 0
+
+
+def test_deleting_the_run_a_failures_record_describes_clears_it(tmp_path):
+    """Otherwise every batch fix 404s on the deleted version, forever."""
+    from podcodex.core.versions import delete_version, save_version
+
+    base = _base(tmp_path)
+    seg = [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "x"}]
+    keep = save_version(
+        base, "corrected", seg, {"step": "corrected", "manual_edit": True}
+    )
+    run = save_version(base, "corrected", seg, {"step": "corrected", "type": "raw"})
+    save_batch_records(
+        base,
+        "corrected",
+        model="m",
+        mode="ollama",
+        records=[{"batch": 1, "status": "rejected", "input": []}],
+        version_id=run,
+    )
+    assert delete_version(base, "corrected", run)
+    assert "corrected" not in load_failures(base)
+    assert keep  # another version remains, so this is not the empty-step path

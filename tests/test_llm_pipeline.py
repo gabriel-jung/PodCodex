@@ -18,6 +18,7 @@ import pytest
 
 from podcodex.core import _utils
 from podcodex.core import llm
+from podcodex.core.llm import batch_segments_by_duration, call_and_parse
 
 
 def _seg(text: str, start: float) -> dict:
@@ -110,6 +111,9 @@ def test_two_batches_apply_by_position_and_keep_breaks(ollama):
     # Absolute indices in the prompt and in the record, across batches.
     assert "[2] three" in fake.chats[1]["messages"][1]["content"]
     assert sink[1]["input"] == [{"index": 2, "text": "three"}]
+    # The [BREAK] never reaches the model, and costs no call of its own.
+    assert len(fake.chats) == 2
+    assert all("[BREAK]" not in c["messages"][1]["content"] for c in fake.chats)
 
 
 def test_a_dense_batch_is_split_by_item_count(ollama):
@@ -177,8 +181,9 @@ def test_a_truncated_correction_keeps_the_original_and_flags_the_batch(ollama):
 
 
 def test_translation_to_a_compact_script_is_kept(ollama, monkeypatch):
-    """English to Chinese is often a third of the characters; the correction
-    guard used to save such translations as the English source."""
+    """English to Chinese is often a third of the characters; translation is
+    exempt from the correction length guard, which would save it as the
+    English source."""
     from podcodex.core import translate
 
     recorded: dict = {}
@@ -205,7 +210,8 @@ def test_translation_to_a_compact_script_is_kept(ollama, monkeypatch):
 
 def test_a_batch_answered_with_its_source_is_flagged_not_reverted(ollama, monkeypatch):
     """A small model sometimes returns the source verbatim; count and length
-    checks both pass, so it used to save as a finished translation."""
+    checks both pass, so it must be flagged, not saved as a finished
+    translation."""
     from podcodex.core import translate
 
     recorded: dict = {}
@@ -324,8 +330,8 @@ def test_effective_model_resolves_empty_picks():
 
 
 def test_a_single_object_answer_is_one_item():
-    """Enumerating a dict yielded its keys: a one-segment batch was saved
-    with the literal text "text"."""
+    """A lone object is one item, not enumerated: iterating a dict yields
+    its keys, and a one-segment batch would save the literal text "text"."""
     assert llm.parse_llm_response('{"text": "Oui."}') == {0: {"text": "Oui."}}
 
 
@@ -359,7 +365,7 @@ def test_an_untagged_model_counts_as_latest():
 
 def test_probe_tells_a_taken_port_from_a_stopped_daemon(monkeypatch):
     """Another program on 11434 answers 404 to the Ollama API; the settings
-    status used to call that "not running" while Ollama was open."""
+    status must not call that "not running" while Ollama is open."""
     from ollama import ResponseError
 
     def taken(_host=None):
@@ -379,3 +385,160 @@ def test_probe_tells_a_taken_port_from_a_stopped_daemon(monkeypatch):
         "problem": None,
         "error": None,
     }
+
+
+# ── call_and_parse: one batch's answer, parsed or refused ────────────────
+
+
+def make_call_fn(response: str):
+    return lambda messages: response
+
+
+def make_segments(*texts, speaker: str = "Alice", seg_duration: float = 10.0):
+    return [
+        {
+            "speaker": speaker,
+            "start": i * seg_duration,
+            "end": (i + 1) * seg_duration,
+            "text": t,
+        }
+        for i, t in enumerate(texts)
+    ]
+
+
+def test_call_and_parse_bad_json_keeps_original():
+    batch = make_segments("Bonjour le monde")
+    result = call_and_parse(batch, "sys", make_call_fn("not json at all"))
+    assert len(result) == 1
+    assert result[0]["text"] == "Bonjour le monde"
+
+
+def test_call_and_parse_count_mismatch_rejects_whole_batch():
+    """LLM returning fewer items than the batch = index-drift risk; reject everything."""
+    batch = make_segments("Premier", "Deuxieme")
+    response = json.dumps([{"index": 0, "text": "First"}])
+    result = call_and_parse(batch, "sys", make_call_fn(response), min_length_ratio=0)
+    assert result[0]["text"] == "Premier"
+    assert result[1]["text"] == "Deuxieme"
+
+
+def test_call_and_parse_strips_think_tags():
+    batch = make_segments("Bonjour")
+    inner = json.dumps([{"index": 0, "text": "Hello"}])
+    response = f"<think>some reasoning</think>\n{inner}"
+    result = call_and_parse(batch, "sys", make_call_fn(response), min_length_ratio=0)
+    assert result[0]["text"] == "Hello"
+
+
+def test_call_and_parse_strips_markdown_fences():
+    batch = make_segments("Bonjour")
+    inner = json.dumps([{"index": 0, "text": "Hello"}])
+    response = f"```json\n{inner}\n```"
+    result = call_and_parse(batch, "sys", make_call_fn(response), min_length_ratio=0)
+    assert result[0]["text"] == "Hello"
+
+
+def test_call_and_parse_truncation_guard_disabled():
+    """min_length_ratio=0 disables the guard."""
+    batch = make_segments("This is a very long sentence that should not be truncated")
+    response = json.dumps([{"index": 0, "text": "Short"}])
+    result = call_and_parse(batch, "sys", make_call_fn(response), min_length_ratio=0)
+    assert result[0]["text"] == "Short"
+
+
+def test_call_and_parse_all_breaks_no_llm_call():
+    batch = [
+        {"speaker": "[BREAK]", "start": 0.0, "end": 5.0, "text": ""},
+        {"speaker": "[BREAK]", "start": 10.0, "end": 15.0, "text": ""},
+    ]
+
+    def should_not_be_called(messages):
+        raise AssertionError("LLM should not be called for all-break batches")
+
+    result = call_and_parse(batch, "sys", should_not_be_called)
+    assert len(result) == 2
+    assert all(seg["speaker"] == "[BREAK]" for seg in result)
+
+
+# ── batch_segments_by_duration ───────────────────────────────────────────
+
+
+def test_batch_single_batch_when_under_limit():
+    segments = make_segments("Short")
+    batches = batch_segments_by_duration(segments, batch_minutes=15)
+    assert len(batches) == 1
+
+
+def test_batch_splits_by_duration():
+    # Segments start every ~17 min → each falls in its own 15-min window.
+    segments = [
+        {"speaker": "A", "start": i * 1000, "end": i * 1000 + 300, "text": f"s{i}"}
+        for i in range(3)
+    ]
+    batches = batch_segments_by_duration(segments, batch_minutes=15)
+    assert len(batches) == 3
+
+
+def test_batch_merges_tiny_overshoot_tail():
+    # Segments run 5 s past the second 15-min cutoff. Expect 2 batches,
+    # not 3 — the tiny tail is absorbed into the previous batch.
+    segments = [
+        {"speaker": "A", "start": float(s), "end": float(s) + 0.5, "text": f"s{s}"}
+        for s in range(0, 1906, 100)
+    ]
+    batches = batch_segments_by_duration(segments, batch_minutes=15)
+    assert len(batches) == 2
+    assert sum(len(b) for b in batches) == len(segments)
+
+
+def test_batch_groups_short_segments():
+    # 4 × 5-minute segments → 15-minute limit fits 3 per batch, leaving 1.
+    segments = [
+        {"speaker": "A", "start": i * 300, "end": (i + 1) * 300, "text": f"s{i}"}
+        for i in range(4)
+    ]
+    batches = batch_segments_by_duration(segments, batch_minutes=15)
+    assert len(batches) == 2
+    assert sum(len(b) for b in batches) == 4
+
+
+def test_batch_empty():
+    assert batch_segments_by_duration([], batch_minutes=15) == []
+
+
+def test_batch_count_produces_exact_count():
+    # 100 segments spanning ~50 min. Request 4 batches → exactly 4, even
+    # though batch_minutes is left at the default. No spurious extra batch.
+    segments = [
+        {
+            "speaker": "A",
+            "start": float(i * 30),
+            "end": float(i * 30) + 1,
+            "text": f"s{i}",
+        }
+        for i in range(100)
+    ]
+    batches = batch_segments_by_duration(segments, batch_count=4)
+    assert len(batches) == 4
+    assert sum(len(b) for b in batches) == 100
+
+
+def test_batch_count_overrides_minutes():
+    # batch_minutes alone would split these into 10 batches; batch_count wins.
+    segments = [
+        {
+            "speaker": "A",
+            "start": float(i * 600),
+            "end": float(i * 600) + 1,
+            "text": f"s{i}",
+        }
+        for i in range(10)
+    ]
+    batches = batch_segments_by_duration(segments, batch_minutes=15, batch_count=2)
+    assert len(batches) == 2
+    assert sum(len(b) for b in batches) == 10
+
+
+def test_batch_count_one_is_single_batch():
+    segments = make_segments("a", "b", "c")
+    assert len(batch_segments_by_duration(segments, batch_count=1)) == 1

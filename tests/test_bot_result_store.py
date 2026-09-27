@@ -45,27 +45,11 @@ _REFS = [
 # ── encode / decode ───────────────────────────
 
 
-def test_refs_roundtrip_preserves_all_fields():
-    refs, embeds, _cols = _decode(_encode(CachedSearch("search", "l", "q", _REFS)))
-    assert embeds == []
-    assert refs == _REFS
-
-
 def test_flags_bitpack():
     ref = ResultRef("c", "e", 0, fuzzy_match=True, accent_match=True)
     assert ref.flags == 3
     refs, _, _cols = _decode(_encode(CachedSearch("exact", "l", "q", [ref])))
     assert refs[0].fuzzy_match and refs[0].accent_match
-
-
-def test_episode_titles_are_deduped():
-    # Two refs share an episode; the title list interns one entry per episode.
-    import json
-
-    payload = _encode(CachedSearch("search", "l", "q", _REFS))
-    data = json.loads(payload)
-    assert data["eps"] == ["ep_042", "ep_009"]
-    assert data["ept"] == ["The Big One", "Pilot"]
 
 
 def test_embeds_payload_roundtrip():

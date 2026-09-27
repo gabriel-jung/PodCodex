@@ -86,8 +86,9 @@ def _run(audio, model, *, keys=None, force=False, cancelled=lambda: False, monke
 
 def test_speakers_renamed_after_translation_are_synthesized(episode, monkeypatch):
     """The panel keys its selection on the renamed speakers (the translate
-    read route applies the map); the job used to load the raw labels, miss
-    every key and fail with "Selection dropped every segment"."""
+    read route applies the map), so the job loads them too; with the raw
+    labels it misses every key and fails with "Selection dropped every
+    segment"."""
     base, audio = episode
     save_speaker_map_version(base, {"SPEAKER_00": "Alice"})
     keys = [
@@ -101,8 +102,8 @@ def test_speakers_renamed_after_translation_are_synthesized(episode, monkeypatch
 
 
 def test_a_crash_mid_run_keeps_the_segments_already_made(episode, monkeypatch):
-    """The manifest used to be written once, after the loop; a crash (or the
-    runner's SIGTERM after a cancel) orphaned every finished WAV."""
+    """The manifest is written as segments finish, not once after the loop,
+    so a crash (or the runner's SIGTERM after a cancel) orphans no WAV."""
     _base, audio = episode
     with pytest.raises(RuntimeError, match="model crashed"):
         _run(audio, _FakeTTS(fail_on=3), monkeypatch=monkeypatch)
@@ -115,8 +116,9 @@ def test_a_crash_mid_run_keeps_the_segments_already_made(episode, monkeypatch):
 
 
 def test_segments_from_another_model_are_not_reused(episode, monkeypatch):
-    """A cancelled run stamped its model on the whole manifest, so segments
-    left from the previous model later passed as current."""
+    """Each segment keeps the model that made it: a run stamping its model
+    on the whole manifest lets segments from the previous model pass as
+    current."""
     _base, audio = episode
     _run(audio, _FakeTTS(), monkeypatch=monkeypatch)
     manifest = synthesize.load_manifest(audio.parent / "ep" / _utils.TTS_SEGMENTS_DIR)
@@ -167,7 +169,8 @@ def test_unsupported_tts_language_names_the_supported_ones():
 
 def test_a_second_rename_does_not_undo_the_first(episode):
     """The editor sends only the pending renames, keyed by the label on
-    screen. Replacing the map dropped every earlier entry."""
+    screen, so they merge into the map; replacing it drops every earlier
+    entry."""
     base, _audio = episode
     save_speaker_map_version(base, {"SPEAKER_00": "Alice"})
     save_speaker_map_version(base, {"SPEAKER_01": "Bob"})
@@ -202,8 +205,8 @@ def test_swapping_two_names_follows_both():
 
 
 def test_assemble_and_listings_read_the_translation_generate_used(episode):
-    """Assemble and the listings used to rebuild segments from the canonical
-    original-language source while generate synthesized the translation."""
+    """Assemble and the listings read the translation generate synthesized,
+    not the canonical original-language source."""
     from podcodex.core.source import load_synth_source
 
     base, audio = episode
@@ -229,9 +232,9 @@ def test_assemble_and_listings_read_the_translation_generate_used(episode):
 def test_assembled_audio_records_its_source_and_real_durations(
     episode, tmp_path, monkeypatch
 ):
-    """The assembled version used to record only the pin (usually null), so
-    nothing said it spoke the French translation; and the listing reported
-    each segment's source span as the generated audio's length."""
+    """The assembled version records its source (the French translation),
+    not only the pin (usually null), and the listing reports each segment's
+    generated audio length, not its source span."""
     from podcodex.core.versions import list_versions
     from tests.fixtures.api_client import make_client
 
@@ -256,9 +259,10 @@ def test_assembled_audio_records_its_source_and_real_durations(
     assert version["params"]["source_version_id"] == french["id"]
 
 
+@pytest.mark.legacy("synth-manifest-v1")
 def test_a_legacy_manifest_keeps_its_model_per_entry(tmp_path):
-    """Entries from before per-segment models used to fall back to the
-    run-level model, which the next partial run overwrote."""
+    """Entries from before per-segment models keep their own model, not the
+    run-level one, which the next partial run overwrites."""
     import json
 
     (tmp_path / "manifest.json").write_text(

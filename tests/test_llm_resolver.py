@@ -78,8 +78,8 @@ def test_resolve_unknown_key_raises(isolated_storage):
 
 
 def test_a_run_resolves_the_effective_model_once(isolated_storage, monkeypatch):
-    """Routes used to recompute the model for provenance in several places;
-    the run carries the model that will actually be called."""
+    """The model is resolved once, and the run carries the model that will
+    actually be called, for provenance to record."""
     from podcodex.core.constants import DEFAULT_OLLAMA_MODEL, LLM_PROVIDER_DEFAULT_MODEL
     from podcodex.core.llm_resolver import resolve_llm_run
 
@@ -111,7 +111,8 @@ def test_a_run_resolves_the_effective_model_once(isolated_storage, monkeypatch):
 
 
 def test_an_ollama_model_that_is_not_pulled_is_refused_up_front(monkeypatch):
-    """Used to start the task and fail on the first batch with a bare 404."""
+    """Refused before the task starts, not on its first batch with a bare
+    404."""
     from podcodex.core.llm_resolver import resolve_llm_run
 
     monkeypatch.setattr(

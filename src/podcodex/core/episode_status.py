@@ -104,7 +104,7 @@ def load_status_context(path: Path, *, check_index: bool = True) -> StatusContex
         episode_files=rec.episode_files,
         episode_dirs=rec.episode_dirs,
         llm_failure_stems=rec.llm_failure_stems,
-        effective=_resolve_defaults(app_defaults, load_show_meta(path)),
+        effective=resolve_defaults(app_defaults, load_show_meta(path)),
     )
 
 
@@ -346,7 +346,7 @@ def build_status_out(
             if out_dir_exists and stem in ctx.llm_failure_stems
             else []
         ),
-        **_step_statuses(st, prov, ctx.effective, cleaned_translations),
+        **step_statuses(st, prov, ctx.effective, cleaned_translations),
     }
 
 
@@ -368,7 +368,7 @@ def _normalize_provenance(prov: dict) -> dict:
     return out
 
 
-def _resolve_defaults(app_defaults: dict, show_meta: _ShowMeta | None) -> dict:
+def resolve_defaults(app_defaults: dict, show_meta: _ShowMeta | None) -> dict:
     """Merge app-level defaults with show-level overrides.
 
     Show-level values override app defaults when explicitly set. Strings
@@ -440,7 +440,7 @@ def _llm_outdated(prov: dict, effective: dict) -> bool:
     return False
 
 
-def _step_statuses(
+def step_statuses(
     st: dict, provenance: dict, effective: dict, translations: list[str]
 ) -> dict:
     """Compute per-step status: 'none' | 'outdated' | 'done'.

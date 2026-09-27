@@ -151,8 +151,8 @@ class StatsCommandsMixin:
             )
             name = display_speaker(r["speaker"])
             if not name:
-                # Unattributed time has no one to rank; speaker_stats does not
-                # filter the placeholder the way speaker_airtime does.
+                # A legacy "Narrator" row names nobody here: the bot has no
+                # show.toml to tell a declared narrator from the placeholder.
                 continue
             lines.append(
                 f"`{i:>2}.` **{name}** — `{fmt_time(r['total_duration'])}` "

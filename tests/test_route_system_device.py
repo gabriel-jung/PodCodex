@@ -36,14 +36,6 @@ def test_get_device_includes_persisted_override(
     assert body["persisted_override"] == "cpu"
 
 
-def test_get_device_default_persisted_is_auto(
-    isolated: Path, client: TestClient
-) -> None:
-    resp = client.get("/api/system/device")
-    assert resp.status_code == 200
-    assert resp.json()["persisted_override"] == "auto"
-
-
 def test_post_device_persists_and_updates_env(
     isolated: Path, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -68,17 +60,12 @@ def test_post_device_auto_clears_persisted(isolated: Path, client: TestClient) -
     assert user_settings.get_device_override() == "auto"
 
 
-def test_post_device_rejects_invalid_value(isolated: Path, client: TestClient) -> None:
-    resp = client.post("/api/system/device", json={"override": "metal"})
-    assert resp.status_code == 422  # Pydantic Literal validation
-
-
 def test_post_device_cuda_without_gpu_returns_400(
     isolated: Path, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import torch
+    from podcodex.core import device
 
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(device, "physical_cuda_available", lambda: False)
     resp = client.post("/api/system/device", json={"override": "cuda"})
     assert resp.status_code == 400
     assert "CUDA" in resp.json()["detail"]

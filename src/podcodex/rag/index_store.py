@@ -229,7 +229,7 @@ def _norm_label(label: str) -> str:
     return (label or "").strip().lower()
 
 
-def _approx_substring(
+def approx_substring(
     pattern: str, text: str, max_dist: int
 ) -> tuple[int, int, int] | None:
     """Best substring of *text* within ``max_dist`` edits of *pattern*.
@@ -1846,7 +1846,7 @@ class IndexStore:
         if not self.collection_exists(collection):
             return 0
         t = self._table(collection)
-        clause = _build_where(
+        clause = build_where(
             episode=episode,
             episodes=episodes,
             source=source,
@@ -1879,7 +1879,7 @@ class IndexStore:
             return None
         t = self._table(collection)
         q = t.search()
-        clause = _build_where(
+        clause = build_where(
             episode=episode,
             episodes=episodes,
             source=source,
@@ -1946,7 +1946,7 @@ class IndexStore:
             query_type="vector",
             vector_column_name="vector",
         ).metric("cosine")
-        clause = _build_where(
+        clause = build_where(
             episode=episode,
             episodes=episodes,
             source=source,
@@ -2097,7 +2097,7 @@ class IndexStore:
         else:
             search_input = query
         q = t.search(search_input, query_type="fts")
-        clause = _build_where(**filters)
+        clause = build_where(**filters)
         return q.where(clause) if clause else q
 
     def search_literal(
@@ -2286,7 +2286,7 @@ class IndexStore:
                             c.score, c.match_text = result
                             fuzzy_only.append(c)
                     else:
-                        hit = _approx_substring(folded_q, folded_t, phrase_max)
+                        hit = approx_substring(folded_q, folded_t, phrase_max)
                         if hit is not None:
                             d, fs, fe = hit
                             span = _original_slice(text, fs, fe) or folded_t[fs:fe]
@@ -2437,8 +2437,8 @@ class IndexStore:
         One pass over the collection — no per-speaker search required.
         Each record: ``{speaker, chunk_count, total_duration, episodes}``
         sorted by ``chunk_count`` descending. Chunks with no
-        ``dominant_speaker`` are skipped (they'd tell us nothing about
-        who is speaking).
+        ``dominant_speaker``, or the current no-diarization placeholder, are
+        skipped: they'd tell us nothing about who is speaking.
 
         ``total_duration`` is a rough proxy for airtime — it sums each
         chunk's ``(end - start)`` attributed to its dominant speaker.
@@ -2452,10 +2452,14 @@ class IndexStore:
             .limit(1_000_000)
             .to_list()
         )
+        from podcodex.core._utils import NARRATOR_SPEAKER
+
         groups: dict[str, dict] = {}
         for r in rows:
             sp = r.get("dominant_speaker")
-            if not sp:
+            # The legacy "Narrator" placeholder stays: a show may declare a
+            # real speaker by that name, and the index cannot tell which.
+            if not sp or sp == NARRATOR_SPEAKER:
                 continue
             g = groups.setdefault(
                 sp, {"chunk_count": 0, "total_duration": 0.0, "episodes": set()}
@@ -2537,7 +2541,7 @@ class IndexStore:
         callers that need a browseable catalogue without an extra
         :meth:`get_episode` round-trip per stem (MCP ``list_episodes``).
         """
-        clause = _build_where(pub_date_min=pub_date_min, pub_date_max=pub_date_max)
+        clause = build_where(pub_date_min=pub_date_min, pub_date_max=pub_date_max)
         fields = (
             ("episode_title", "episode_number", "broadcast_number", "description")
             if with_detail
@@ -2731,7 +2735,7 @@ def _episode_group_to_dict(episode: str, g: dict) -> dict:
     }
 
 
-def _build_where(
+def build_where(
     *,
     episode: str | None = None,
     episodes: list[str] | None = None,

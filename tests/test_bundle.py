@@ -10,7 +10,6 @@ import io
 import tarfile
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from podcodex.bundle import (
@@ -27,7 +26,6 @@ from podcodex.bundle import (
 )
 from podcodex.bundle.conflicts import rename_suffix
 from podcodex.bundle.manifest import (
-    SCHEMA_VERSION,
     ArchiveCorruptError,
     CollectionEntry,
     manifest_from_json,
@@ -35,13 +33,21 @@ from podcodex.bundle.manifest import (
 )
 from podcodex.rag import index_store as rag_index_store
 from podcodex.rag.store import collection_name
+from tests.fixtures.index import add_show, default_show_id
 
 DIM = 8
 
 
-def _make_show(folder: Path, name: str = "Test Show", *, audio: bool = True) -> Path:
+def _make_show(
+    folder: Path, name: str = "Test Show", *, audio: bool = True, show_id: str = ""
+) -> Path:
+    """A show folder whose id matches what ``_seed_collection`` indexes under,
+    unless *show_id* makes it a different show of the same name."""
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / "show.toml").write_text(f'name = "{name}"\n', encoding="utf-8")
+    sid = show_id or default_show_id(name)
+    (folder / "show.toml").write_text(
+        f'id = "{sid}"\nname = "{name}"\n', encoding="utf-8"
+    )
     ep = folder / "ep1"
     ep.mkdir()
     (ep / "transcript.txt").write_text("hello world", encoding="utf-8")
@@ -51,33 +57,7 @@ def _make_show(folder: Path, name: str = "Test Show", *, audio: bool = True) -> 
 
 
 def _seed_collection(store, show_name: str = "Test Show") -> str:
-    col = collection_name(show_name, "bge-m3", "semantic")
-    store.ensure_collection(
-        col, show=show_name, model="bge-m3", chunker="semantic", dim=DIM
-    )
-    chunks = [
-        {
-            "text": "hello",
-            "episode": "ep1",
-            "show": show_name,
-            "source": "transcript",
-            "dominant_speaker": "s0",
-            "start": 0.0,
-            "end": 1.0,
-        }
-    ]
-    rng = np.random.default_rng(0)
-    store.save_chunks(col, "ep1", chunks, rng.random((1, DIM), dtype=np.float32))
-    return col
-
-
-@pytest.fixture
-def isolated_index(tmp_path, monkeypatch):
-    """Point IndexStore at an isolated tmp directory for the test."""
-    monkeypatch.setenv("PODCODEX_INDEX", str(tmp_path / "index"))
-    rag_index_store.get_index_store.cache_clear()
-    yield tmp_path / "index"
-    rag_index_store.get_index_store.cache_clear()
+    return add_show(store, show_name, {"ep1": ["hello"]})
 
 
 # ── Manifest ───────────────────────────────────────────────────────────
@@ -119,11 +99,6 @@ def test_manifest_version_reject():
 def test_manifest_corrupt_raises():
     with pytest.raises(ArchiveCorruptError):
         manifest_from_json("{not json")
-
-
-def test_schema_version_constant():
-    # v2 added ShowEntry.id.
-    assert SCHEMA_VERSION == 2
 
 
 # ── rename_suffix ──────────────────────────────────────────────────────
@@ -368,28 +343,6 @@ def test_import_full_requires_shows_dir(tmp_path, isolated_index):
 # ── Conflict policies ──────────────────────────────────────────────────
 
 
-def test_import_folder_conflict_rename(tmp_path, isolated_index):
-    show = _make_show(tmp_path / "test_show")
-    store = rag_index_store.get_index_store()
-    _seed_collection(store)
-    archive = tmp_path / "out.podcodex"
-    export_show(show, archive, index_only=True)  # avoid collection collision
-
-    target = tmp_path / "imported"
-    target.mkdir()
-    (target / "test_show").mkdir()  # pre-existing folder
-
-    # Switch to full mode: re-export with full
-    archive2 = tmp_path / "full.podcodex"
-    export_show(show, archive2, with_audio=False)
-
-    result = import_archive(
-        archive2, shows_dir=target, on_conflict=ConflictPolicy.REPLACE
-    )
-    # REPLACE used because collection conflict is unavoidable post-export
-    assert result.shows_imported == ["test_show"]
-
-
 def test_import_folder_rename_auto_suffix(tmp_path, isolated_index):
     show = _make_show(tmp_path / "test_show")
     store = rag_index_store.get_index_store()
@@ -428,15 +381,18 @@ def test_import_folder_conflict_abort(tmp_path, isolated_index):
         import_archive(archive, shows_dir=target, on_conflict=ConflictPolicy.ABORT)
 
 
-def test_import_collection_conflict_replace(tmp_path, isolated_index):
+@pytest.mark.parametrize("policy", [ConflictPolicy.REPLACE, ConflictPolicy.RENAME])
+def test_import_collection_conflict_replaces(tmp_path, isolated_index, policy):
+    """RENAME can't rename a collection (its name embeds the show), so on a
+    collision it overwrites too: pragmatic for re-importing one archive."""
     show = _make_show(tmp_path / "test_show")
     store = rag_index_store.get_index_store()
     col = _seed_collection(store)
     archive = tmp_path / "out.podcodex"
     export_show(show, archive, index_only=True)
 
-    # Don't delete: existing collection still in store, will conflict
-    result = import_archive(archive, on_conflict=ConflictPolicy.REPLACE)
+    # Don't delete: the existing collection is still in the store.
+    result = import_archive(archive, on_conflict=policy)
 
     assert result.collections_imported == [col]
     assert result.conflicts_resolved.get(f"collection:{col}") == "replaced"
@@ -445,9 +401,9 @@ def test_import_collection_conflict_replace(tmp_path, isolated_index):
 def test_import_into_a_replica_index_is_refused(tmp_path, monkeypatch, isolated_index):
     """Half-succeeding is worse than not starting.
 
-    REPLACE used to catch the refused ``delete_collection``, log a warning,
-    purge the table directory anyway and then leave the stale ``_collections``
-    row in place, so the collection stayed registered with the old dim/model.
+    On a replica, REPLACE refuses before touching anything. Purging the table
+    directory after a refused ``delete_collection`` would leave the stale
+    ``_collections`` row registered with the old dim/model.
     """
     from podcodex.rag.index_origin import IndexOwnershipError
 
@@ -465,23 +421,6 @@ def test_import_into_a_replica_index_is_refused(tmp_path, monkeypatch, isolated_
     # Nothing was touched on the way to the refusal.
     assert col in store.list_collections()
     assert (isolated_index / f"{col}.lance").exists()
-
-
-def test_import_collection_conflict_rename_falls_back_to_replace(
-    tmp_path, isolated_index
-):
-    """RENAME policy can't rename collections (name embeds show), so on collision
-    it overwrites — pragmatic for re-imports of the same archive."""
-    show = _make_show(tmp_path / "test_show")
-    store = rag_index_store.get_index_store()
-    col = _seed_collection(store)
-    archive = tmp_path / "out.podcodex"
-    export_show(show, archive, index_only=True)
-
-    result = import_archive(archive, on_conflict=ConflictPolicy.RENAME)
-
-    assert result.collections_imported == [col]
-    assert result.conflicts_resolved.get(f"collection:{col}") == "replaced"
 
 
 def test_import_collection_conflict_abort_raises(tmp_path, isolated_index):
@@ -523,22 +462,6 @@ def test_import_name_override_rejected_for_multi_show(tmp_path, isolated_index):
         import_archive(archive, name="x")
 
 
-def test_import_atomic_temp_cleanup_on_failure(tmp_path, isolated_index, monkeypatch):
-    """If extraction crashes, no half-written show folder is left behind."""
-    show = _make_show(tmp_path / "test_show")
-    store = rag_index_store.get_index_store()
-    col = _seed_collection(store)
-    archive = tmp_path / "out.podcodex"
-    export_show(show, archive, with_audio=False)
-    store.delete_collection(col)
-
-    # Verify no stray temp tarballs remain in the archive's parent
-    temp_artifacts = [
-        p for p in archive.parent.iterdir() if p.name.startswith(".out.podcodex.")
-    ]
-    assert temp_artifacts == []
-
-
 # ── Zip-Slip hardening ─────────────────────────────────────────────────
 
 
@@ -567,55 +490,6 @@ def _manifest(mode: Mode, folder: str = "showa") -> Manifest:
     )
 
 
-def test_resolve_target_rejects_traversal(tmp_path):
-    from podcodex.bundle.import_show import _resolve_target
-
-    shows = tmp_path / "shows"
-    shows.mkdir()
-    idx = tmp_path / "index"
-    idx.mkdir()
-    roots = {"showa": (shows / "showa").resolve()}
-    cols = frozenset({"c"})
-    assert _resolve_target("lancedb/../evil.txt", roots, idx, cols) is None
-    assert _resolve_target("shows/showa/../../evil.txt", roots, idx, cols) is None
-    assert (
-        _resolve_target("lancedb/c.lance/data.bin", roots, idx, cols)
-        == idx / "c.lance" / "data.bin"
-    )
-    assert _resolve_target("lancedb/c.txn", roots, idx, cols) == idx / "c.txn"
-    assert (
-        _resolve_target("shows/showa/ep1/t.txt", roots, idx, cols)
-        == shows / "showa" / "ep1" / "t.txt"
-    )
-
-
-def test_resolve_target_confines_show_members_to_their_own_folder(tmp_path):
-    """Inside shows_dir is not enough: a sibling show must be untouchable."""
-    from podcodex.bundle.import_show import _resolve_target
-
-    shows = tmp_path / "shows"
-    roots = {"showa": (shows / "showa").resolve()}
-    assert (
-        _resolve_target("shows/showa/../showb/show.toml", roots, tmp_path, ()) is None
-    )
-    assert _resolve_target("shows/showb/show.toml", roots, tmp_path, ()) is None
-
-
-def test_resolve_target_accepts_only_planned_collections(tmp_path):
-    from podcodex.bundle.import_show import _resolve_target
-
-    idx = tmp_path / "index"
-    cols = frozenset({"c"})
-    for member in (
-        "lancedb/_show_passwords.lance/data.bin",
-        "lancedb/_collections.lance/data.bin",
-        "lancedb/index_origin.json",
-        "lancedb/other.lance/data.bin",
-        "lancedb/cc.lance/data.bin",
-    ):
-        assert _resolve_target(member, None, idx, cols) is None, member
-
-
 def test_import_skips_traversal_members(tmp_path, isolated_index):
     target = tmp_path / "target"
     sibling = target / "showb"
@@ -630,7 +504,12 @@ def test_import_skips_traversal_members(tmp_path, isolated_index):
             "shows/showa/../showb/show.toml": b"pwned",
             "lancedb/../escaped2.txt": b"pwned",
             "lancedb/_show_passwords.lance/data.bin": b"pwned",
+            "lancedb/_collections.lance/data.bin": b"pwned",
             "lancedb/index_origin.json": b"pwned",
+            # Collections the manifest never planned, "cc" included (a
+            # prefix match on a planned "c" must not let it through).
+            "lancedb/other.lance/data.bin": b"pwned",
+            "lancedb/cc.lance/data.bin": b"pwned",
         },
     )
     import_archive(archive, shows_dir=target)
@@ -639,7 +518,8 @@ def test_import_skips_traversal_members(tmp_path, isolated_index):
     assert not (target.parent / "escaped.txt").exists()
     assert (sibling / "show.toml").read_text(encoding="utf-8") == 'name = "Sibling"\n'
     assert not (index_root.parent / "escaped2.txt").exists()
-    assert not (index_root / "_show_passwords.lance" / "data.bin").exists()
+    for reserved in ("_show_passwords", "_collections", "other", "cc"):
+        assert not (index_root / f"{reserved}.lance" / "data.bin").exists()
     assert (index_root / "index_origin.json").read_bytes() != b"pwned"
 
 
@@ -719,7 +599,9 @@ def test_export_records_the_show_id(tmp_path, isolated_index):
     assert manifest.shows[0].id == show_id(show)
 
 
-def test_import_carries_the_id_onto_the_new_machine(tmp_path, isolated_index):
+def test_import_carries_the_id_onto_the_new_machine(
+    tmp_path, isolated_index, monkeypatch
+):
     """A re-imported show must land on its own collections, not orphans."""
     from podcodex.ingest.show import show_id
 
@@ -730,25 +612,18 @@ def test_import_carries_the_id_onto_the_new_machine(tmp_path, isolated_index):
     original_id = show_id(show)
 
     # A different machine: fresh index, fresh shows dir.
-    target_index = tmp_path / "index2"
+    monkeypatch.setenv("PODCODEX_INDEX", str(tmp_path / "index2"))
     rag_index_store.get_index_store.cache_clear()
-    import os
-
-    os.environ["PODCODEX_INDEX"] = str(target_index)
-    try:
-        store = rag_index_store.get_index_store()
-        import_archive(out, shows_dir=tmp_path / "shows2")
-        assert show_id(tmp_path / "shows2" / "test_show") == original_id
-        assert store.resolve_collection(original_id, "bge-m3", "semantic") is not None
-    finally:
-        rag_index_store.get_index_store.cache_clear()
-        os.environ["PODCODEX_INDEX"] = str(isolated_index)
+    store = rag_index_store.get_index_store()
+    import_archive(out, shows_dir=tmp_path / "shows2")
+    assert show_id(tmp_path / "shows2" / "test_show") == original_id
+    assert store.resolve_collection(original_id, "bge-m3", "semantic") is not None
 
 
-def test_legacy_archive_import_mints_an_id(tmp_path, isolated_index):
+@pytest.mark.legacy("bundle-v1")
+def test_legacy_archive_import_mints_an_id(tmp_path, isolated_index, monkeypatch):
     """A v1 archive has no id; its collections must not import as orphans."""
     import json
-    import os
     import tarfile as tf_mod
 
     from podcodex.ingest.show import show_id
@@ -776,18 +651,13 @@ def test_legacy_archive_import_mints_an_id(tmp_path, isolated_index):
         for child in sorted(extract.iterdir()):
             tf.add(child, arcname=child.name)
 
-    target_index = tmp_path / "index3"
+    monkeypatch.setenv("PODCODEX_INDEX", str(tmp_path / "index3"))
     rag_index_store.get_index_store.cache_clear()
-    os.environ["PODCODEX_INDEX"] = str(target_index)
-    try:
-        store = rag_index_store.get_index_store()
-        import_archive(legacy, shows_dir=tmp_path / "shows3")
-        minted = show_id(tmp_path / "shows3" / "test_show")
-        assert minted
-        assert store.resolve_collection(minted, "bge-m3", "semantic") is not None
-    finally:
-        rag_index_store.get_index_store.cache_clear()
-        os.environ["PODCODEX_INDEX"] = str(isolated_index)
+    store = rag_index_store.get_index_store()
+    import_archive(legacy, shows_dir=tmp_path / "shows3")
+    minted = show_id(tmp_path / "shows3" / "test_show")
+    assert minted
+    assert store.resolve_collection(minted, "bge-m3", "semantic") is not None
 
 
 @pytest.fixture
@@ -841,8 +711,7 @@ def test_rename_import_keeps_the_id_when_only_the_label_is_taken(
 ):
     from podcodex.ingest.show import load_show_meta, show_id
 
-    other = _make_show(tmp_path / "other")
-    show_id(other)  # a different show, minted its own id
+    other = _make_show(tmp_path / "other", show_id="other_12345678")
     registered.append(str(other))
     show = _make_show(tmp_path / "test_show")
     store = rag_index_store.get_index_store()
@@ -909,8 +778,9 @@ def test_replace_onto_the_same_show_is_not_a_collision(
 def test_export_import_carries_episode_metadata(tmp_path, isolated_index):
     """`.feed_cache.json` and `.episode_meta.json` must survive the round trip.
 
-    The dot rule used to reject file names too, so an imported show came back
-    with no titles, dates or descriptions and no feed cache to refresh from.
+    Other dotfiles and dot directories stay out, but losing these would bring
+    an imported show back with no titles, dates or descriptions and no feed
+    cache to refresh from.
     """
     show = _make_show(tmp_path / "test_show", audio=False)
     (show / ".feed_cache.json").write_text('{"episodes": []}', encoding="utf-8")
@@ -942,7 +812,8 @@ def test_rename_import_refuses_to_take_over_another_shows_table(
     tmp_path, isolated_index, registered
 ):
     """Legacy collection names derive from the label, so a different show of
-    the same name collides on them; replacing handed its index to the copy."""
+    the same name collides on them; importing must not hand its index to
+    the copy."""
     store = rag_index_store.get_index_store()
     col = _seed_collection(store)
     source = _make_show(tmp_path / "elsewhere" / "test_show")
@@ -950,7 +821,7 @@ def test_rename_import_refuses_to_take_over_another_shows_table(
     export_show(source, archive, with_audio=False)
 
     # On this machine the same-named table belongs to another registered show.
-    other = _make_show(tmp_path / "other")
+    other = _make_show(tmp_path / "other", show_id="other_12345678")
     registered.append(str(other))
     store.set_collection_identity(col, show_id="other_12345678", show="Test Show")
 
@@ -961,7 +832,8 @@ def test_rename_import_refuses_to_take_over_another_shows_table(
 
 
 def test_two_same_named_shows_in_one_bundle_are_named_as_such(tmp_path, registered):
-    """The refusal used to blame an existing show that did not exist."""
+    """Two shows of one name inside the bundle are reported as such, not
+    blamed on an existing show that does not exist."""
     from podcodex.bundle.import_show import _plan_show_identities
 
     manifest = Manifest(
@@ -977,3 +849,61 @@ def test_two_same_named_shows_in_one_bundle_are_named_as_such(tmp_path, register
         _plan_show_identities(
             manifest, tmp_path, {"a": "a", "b": "b"}, ConflictPolicy.REPLACE, {}
         )
+
+
+# ── Reserved index names in an imported manifest ─────────────────────────
+
+
+def test_reserved_collection_names_are_refused_by_the_member_filter():
+    """`bad_path_component` passes these, so the allowlist has to refuse them itself."""
+    from podcodex.bundle.import_show import _collection_member
+    from podcodex.core._utils import bad_path_component
+    from podcodex.rag.index_store import reserved_index_names
+
+    for name in reserved_index_names():
+        # Not a traversal, so the path check alone would let it through.
+        assert not bad_path_component(name)
+        for member in (f"{name}.lance", f"{name}.json", f"{name}.txn"):
+            assert not _collection_member(member, {name}), member
+    # A real collection is still admitted.
+    assert _collection_member("myshow.lance", {"myshow"})
+    assert _collection_member("myshow.txn", {"myshow"})
+
+
+def test_import_refuses_a_manifest_declaring_a_reserved_collection(
+    tmp_path, monkeypatch
+):
+    """A crafted bundle must not overwrite the ownership marker or the sidecar tables."""
+    import pytest
+
+    from podcodex.bundle.import_show import _plan_collections
+    from podcodex.bundle.manifest import ArchiveCorruptError, CollectionEntry, Manifest
+    from podcodex.bundle.manifest import Mode, ShowEntry
+
+    class _Store:
+        def list_collections(self):
+            return []
+
+    for reserved in ("index_origin", "_show_passwords", "_collections"):
+        manifest = Manifest(
+            mode=Mode.INDEX_ONLY,
+            podcodex_version="0.0.0",
+            exported_at="2026-01-01T00:00:00Z",
+            shows=[
+                ShowEntry(
+                    name="Evil",
+                    folder="evil",
+                    collections=[
+                        CollectionEntry(
+                            name=reserved,
+                            model="bge-m3",
+                            chunker="semantic",
+                            dim=8,
+                            rows=0,
+                        )
+                    ],
+                )
+            ],
+        )
+        with pytest.raises(ArchiveCorruptError):
+            _plan_collections(manifest, None, _Store(), {}, {})

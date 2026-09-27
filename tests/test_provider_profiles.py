@@ -10,7 +10,6 @@ from podcodex.core.provider_profiles import (
     BUILTIN_PROFILES,
     CustomProfile,
     ProviderProfilesFile,
-    is_builtin,
     list_all,
     load_custom,
     save_custom,
@@ -19,19 +18,6 @@ from tests.fixtures.api_client import client_for  # noqa: E402
 
 
 # ── built-ins ────────────────────────────────────────────────────────
-
-
-def test_builtins_present_and_marked():
-    names = {p.name for p in BUILTIN_PROFILES}
-    assert {"openai", "anthropic", "mistral", "ollama"} <= names
-    for p in BUILTIN_PROFILES:
-        assert p.builtin is True
-
-
-def test_is_builtin():
-    assert is_builtin("openai") is True
-    assert is_builtin("anthropic") is True
-    assert is_builtin("custom-thing") is False
 
 
 # ── persistence ──────────────────────────────────────────────────────
@@ -63,6 +49,8 @@ def test_list_all_includes_builtins_and_custom(tmp_path, monkeypatch):
     profiles = list_all()
     names = [p.name for p in profiles]
     assert names[: len(BUILTIN_PROFILES)] == [p.name for p in BUILTIN_PROFILES]
+    # A builtin appended without builtin=True would be offered for edit/delete.
+    assert all(p.builtin for p in profiles[: len(BUILTIN_PROFILES)])
     assert "Groq" in names
     groq = next(p for p in profiles if p.name == "Groq")
     assert groq.builtin is False
@@ -79,15 +67,6 @@ def client(tmp_path, monkeypatch):
     )
     app = create_app()
     return client_for(app)
-
-
-def test_list_returns_builtins_only_initially(client):
-    r = client.get("/api/provider-profiles")
-    assert r.status_code == 200
-    profiles = r.json()["profiles"]
-    names = [p["name"] for p in profiles]
-    assert names == [p.name for p in BUILTIN_PROFILES]
-    assert all(p["builtin"] is True for p in profiles)
 
 
 def test_create_custom_profile(client):

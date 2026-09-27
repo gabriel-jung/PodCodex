@@ -26,10 +26,6 @@ def patched(monkeypatch):
     return original, mu._vmap_for_bhqkv
 
 
-def test_the_patch_target_exists():
-    assert callable(getattr(mu, "_vmap_for_bhqkv", None))
-
-
 def _aranges(b=2, h=3, q=5, kv=5):
     return torch.arange(b), torch.arange(h), torch.arange(q), torch.arange(kv)
 

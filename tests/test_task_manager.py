@@ -18,10 +18,18 @@ from podcodex.api.tasks import TaskManager
 from tests.fixtures.tasks import active_task
 
 
+def _manager(**kwargs) -> TaskManager:
+    """A manager with no WebSocket clients to tell: outside the app there is
+    no event loop to broadcast on, and every progress tick would log so."""
+    manager = TaskManager(**kwargs)
+    manager._broadcast_sync = lambda _task_id: None
+    return manager
+
+
 @pytest.fixture
 def tm():
     """A manager with its own worker pool, torn down after the test."""
-    manager = TaskManager(max_workers=2)
+    manager = _manager(max_workers=2)
     yield manager
     manager._executor.shutdown(wait=True)
 
@@ -117,8 +125,8 @@ def test_cancel_is_idempotent_and_unknown_ids_are_false(tm):
 def test_cleanup_stale_does_not_steal_a_lock_held_by_a_newer_task(tm):
     """`run()` already releases a task's own lock, so by the time a task is
     stale the lock on that path belongs to whoever is running now. Popping
-    by path evicted it, and the next submit on that path was accepted while
-    a subprocess was still writing."""
+    by path would evict it, and the next submit on that path would be
+    accepted while a subprocess is still writing."""
     old = tm.submit("transcribe", "/ep.mp3", lambda _cb: None)
     _run_to_completion(tm, old)
 
@@ -232,7 +240,7 @@ def test_lock_refuses_a_live_holder(tm):
 
 
 def test_cancel_all_stops_running_and_drops_queued_tasks():
-    manager = TaskManager(max_workers=1)
+    manager = _manager(max_workers=1)
     started = threading.Event()
 
     def work(progress_cb):
@@ -253,6 +261,68 @@ def test_cancel_all_stops_running_and_drops_queued_tasks():
     manager._executor.shutdown(wait=True)
 
 
+@pytest.fixture
+def solo():
+    """One worker, so a second submit sits queued behind the first."""
+    manager = _manager(max_workers=1)
+    yield manager
+    manager._executor.shutdown(wait=True)
+
+
+def test_cancel_while_queued_skips_the_work_and_frees_the_lock(solo):
+    """The pool is bounded, so a task can be cancelled before a worker picks
+    it up. Starting it anyway would run work the user called off, and a
+    lock left behind would block the show's delete (get_active_in_show gates
+    on finished_at)."""
+    started = threading.Event()
+    release = threading.Event()
+    ran_second = threading.Event()
+
+    def blocker(_progress_cb):
+        started.set()
+        release.wait(timeout=5.0)
+
+    first = solo.submit("batch", "batch:/shows/A", blocker)
+    assert started.wait(5.0)
+    second = solo.submit("transcribe", "/shows/B/ep.mp3", lambda _cb: ran_second.set())
+    assert solo.cancel(second.task_id)
+
+    release.set()
+    _run_to_completion(solo, second)
+    _run_to_completion(solo, first)
+
+    assert not ran_second.is_set(), "cancelled task ran its work anyway"
+    assert second.status == "cancelled"
+    assert solo.get_active("/shows/B/ep.mp3") is None
+    assert solo.get_active_in_show("/shows/B") is None
+
+
+@pytest.mark.parametrize(
+    "summary, message",
+    [("2 downloaded", "Cancelled: 2 downloaded"), (None, "Cancelled")],
+)
+def test_a_cancelled_task_keeps_the_summary_it_reported(solo, summary, message):
+    """A download loop reports what it finished before stopping; replacing
+    that with a bare "Cancelled" hid it from the user."""
+    from podcodex.api.tasks import TaskCancelled
+
+    started = threading.Event()
+
+    def loop(progress_cb):
+        started.set()
+        progress_cb.cancel_event.wait(timeout=5.0)
+        if summary:
+            raise TaskCancelled(summary)
+
+    info = solo.submit("download", "/tmp/show", loop)
+    assert started.wait(5.0)
+    solo.cancel(info.task_id)
+    _run_to_completion(solo, info)
+
+    assert info.status == "cancelled"
+    assert info.message == message
+
+
 def test_submit_task_refuses_a_different_step_holding_the_episode(monkeypatch):
     """Returning the other step's task made the panel report it as its own."""
     from fastapi import HTTPException
@@ -260,7 +330,7 @@ def test_submit_task_refuses_a_different_step_holding_the_episode(monkeypatch):
     from podcodex.api import tasks as tasks_mod
     from podcodex.api.routes._helpers import submit_task
 
-    manager = TaskManager(max_workers=1)
+    manager = _manager(max_workers=1)
     monkeypatch.setattr(tasks_mod, "task_manager", manager)
     release = threading.Event()
     running = manager.submit("transcribe", "/ep.mp3", lambda _cb: release.wait(5.0))
@@ -281,7 +351,7 @@ def test_submit_task_refuses_a_different_step_holding_the_episode(monkeypatch):
 
 def test_downloads_do_not_take_the_compute_slots():
     """Two long downloads must not leave a transcribe pending."""
-    manager = TaskManager(max_workers=1, io_workers=2)
+    manager = _manager(max_workers=1, io_workers=2)
     release = threading.Event()
     started = threading.Event()
     downloads = [
@@ -306,7 +376,7 @@ def test_submit_task_does_not_hand_one_language_to_another(monkeypatch):
     from podcodex.api import tasks as tasks_mod
     from podcodex.api.routes._helpers import submit_task
 
-    manager = TaskManager(max_workers=1)
+    manager = _manager(max_workers=1)
     monkeypatch.setattr(tasks_mod, "task_manager", manager)
     release = threading.Event()
     french = submit_task(

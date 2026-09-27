@@ -152,8 +152,9 @@ testpaths = ["tests"]
 # session scratch dir. Opening the real index is not passive (it stamps
 # ownership, heals collection metadata and runs the show-id migration), and a
 # missing isolation once rewrote real show.toml files during a test run.
-# data_dir provides the shared `isolated_data_dir` fixture to every module.
-addopts = "-p tests.fixtures.realindex_guard -p tests.fixtures.data_dir"
+# data_dir provides the shared `isolated_data_dir` fixture to every module;
+# legacy registers the `legacy(migration)` marker and checks its names.
+addopts = "-p tests.fixtures.realindex_guard -p tests.fixtures.data_dir -p tests.fixtures.legacy"
 # The plugin above is imported before pytest puts rootdir on sys.path, so a
 # bare `pytest` (what CI runs) cannot find the `tests` package without this.
 # `python -m pytest` happens to work either way, which is how it got missed.

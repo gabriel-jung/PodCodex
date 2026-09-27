@@ -14,6 +14,7 @@ import pytest
 pytest.importorskip("fastapi")
 
 import podcodex.api.routes.batch as batch_mod  # noqa: E402
+from podcodex.core.versions import save_version  # noqa: E402
 from tests.fixtures.tasks import active_task  # noqa: E402
 
 
@@ -165,6 +166,39 @@ def test_cancelling_stops_the_loop_before_the_next_episode(tmp_path, monkeypatch
     assert any("Cancel" in m for _f, m in progress.messages)
 
 
+def test_each_episode_runs_on_the_version_picked_for_it(tmp_path, monkeypatch):
+    """``source_version_ids`` is keyed like ``audio_paths``, virtual keys
+    included; a loop that drops it silently runs every episode on a version
+    the user did not pick."""
+    from podcodex.core._utils import virtual_audio_path
+
+    seen: dict[tuple[str, str], str | None] = {}
+
+    def llm(audio_path, *_a, step="correct", version_id=None, **_kw):
+        seen[(step, audio_path)] = version_id
+        return True
+
+    def index(audio_path, *_a, version_id=None, **_kw):
+        seen[("index", audio_path)] = version_id
+        return True
+
+    monkeypatch.setattr(batch_mod, "_batch_llm_step", llm)
+    monkeypatch.setattr(batch_mod, "_batch_index", index)
+    audio = str(_episode(tmp_path, "a"))
+    virtual = virtual_audio_path(tmp_path / "b")
+    req = _req(tmp_path, [audio, virtual], index=True)
+    req.source_version_ids = {audio: "v-a", virtual: "v-b"}
+
+    batch_mod._run_batch(_Progress(), req)
+
+    assert seen == {
+        ("correct", audio): "v-a",
+        ("index", audio): "v-a",
+        ("correct", virtual): "v-b",
+        ("index", virtual): "v-b",
+    }
+
+
 def test_disabled_steps_are_not_run(tmp_path, calls):
     eps = [_episode(tmp_path, "a")]
 
@@ -211,3 +245,133 @@ def test_an_up_to_date_episode_spawns_no_child(monkeypatch):
     args = ("/s/ep.mp3", "ep", None, req, lambda: False, lambda *_a: None, 0, 0.0)
     assert batch._batch_transcribe(*args) is False
     assert batch._batch_index(*args) is False
+
+
+@pytest.mark.parametrize("model, reruns", [("qwen3:4b", False), ("other:1b", True)])
+def test_batch_correct_skips_a_transcript_language_match(
+    tmp_path, monkeypatch, model, reruns
+):
+    """Correct's provenance records the transcript-derived source language, so
+    the already-done check has to compare against that, not the request value.
+    Otherwise every episode whose transcribe language differs from the LLM
+    source-language setting is corrected again on every batch run.
+
+    The LLM resolver is stubbed: against a live Ollama with the model not
+    pulled, resolution would fail first and the test would pass without ever
+    reaching the check. The twin (another model) proves the check is what decides."""
+    import podcodex.core.correct as core_correct
+    from podcodex.api.routes.batch import BatchRequest, _batch_llm_step
+    from podcodex.core._utils import AudioPaths
+    from tests.fixtures.llm import stub_llm_resolver
+
+    stub_llm_resolver(monkeypatch)
+    ran: list[int] = []
+
+    def fake_correct(segments, **_k):
+        ran.append(1)
+        return segments
+
+    monkeypatch.setattr(core_correct, "correct_segments", fake_correct)
+
+    show = tmp_path / "show"
+    (show / "ep").mkdir(parents=True)
+    audio = show / "ep.mp3"
+    audio.touch()
+    base = show / "ep" / "ep"
+
+    save_version(
+        base,
+        "transcript",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "bonjour"}],
+        {"step": "transcript", "type": "raw", "params": {"language": "fr"}},
+    )
+    save_version(
+        base,
+        "corrected",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "Bonjour"}],
+        {
+            "step": "corrected",
+            "type": "raw",
+            "model": "qwen3:4b",
+            # What the save path writes: iso_to_language("fr").
+            "params": {
+                "llm_mode": "ollama",
+                "llm_provider_profile": None,
+                "source_lang": "French",
+            },
+        },
+    )
+
+    # The request still carries the default source language.
+    req = BatchRequest(
+        show_folder=str(show),
+        audio_paths=[str(audio)],
+        llm_mode="ollama",
+        llm_model=model,
+        source_lang="English",
+    )
+    p = AudioPaths.from_audio(str(audio))
+    did_work = _batch_llm_step(
+        str(audio),
+        p,
+        req,
+        lambda: False,
+        lambda *a, **k: None,
+        0,
+        0.0,
+        step="correct",
+    )
+    assert did_work is reruns
+    assert bool(ran) is reruns
+
+
+def test_batch_cancel_stops_inside_the_episode(tmp_path, monkeypatch):
+    """Cancel during a batch LLM step stops after the current LLM batch and
+    saves nothing, instead of running the episode to the end."""
+    import podcodex.core.correct as core_correct
+    from podcodex.api.routes._helpers import TaskCancelled
+    from podcodex.api.routes.batch import BatchRequest, _batch_llm_step
+    from podcodex.core._utils import AudioPaths
+    from tests.fixtures.llm import stub_llm_resolver
+    from podcodex.core.versions import list_versions
+
+    stub_llm_resolver(monkeypatch)
+    ran: list[int] = []
+
+    def fake_correct(segments, *, on_batch, **_k):
+        for n in (1, 2, 3):
+            ran.append(n)
+            on_batch(n, 3)
+        return segments
+
+    monkeypatch.setattr(core_correct, "correct_segments", fake_correct)
+    show = tmp_path / "show"
+    (show / "ep").mkdir(parents=True)
+    audio = show / "ep.mp3"
+    audio.touch()
+    base = show / "ep" / "ep"
+    save_version(
+        base,
+        "transcript",
+        [{"speaker": "A", "start": 0.0, "end": 1.0, "text": "hi"}],
+        {"step": "transcript", "type": "raw", "params": {"language": "en"}},
+    )
+    req = BatchRequest(
+        show_folder=str(show),
+        audio_paths=[str(audio)],
+        llm_mode="ollama",
+        llm_model="m",
+    )
+    with pytest.raises(TaskCancelled):
+        _batch_llm_step(
+            str(audio),
+            AudioPaths.from_audio(str(audio)),
+            req,
+            lambda: True,
+            lambda *a, **k: None,
+            0,
+            0.0,
+            step="correct",
+        )
+    assert ran == [1]
+    assert list_versions(base, "corrected") == []

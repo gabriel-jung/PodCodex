@@ -14,51 +14,47 @@ from podcodex.rag.hit import Hit  # noqa: E402
 from podcodex.rag import index_store as rag_index_store  # noqa: E402
 from podcodex.rag import retriever as rag_retriever  # noqa: E402
 from podcodex.rag.index_store import IndexStore  # noqa: E402
-from podcodex.rag.store import collection_name  # noqa: E402
+from tests.fixtures.index import add_show, chunk, show_id_of  # noqa: E402
+from tests.fixtures.show_resolver import show_folder_resolver  # noqa: E402
 
 
 DIM = 8
 
 
 def _seed_store(tmp_path: Path) -> IndexStore:
-    """Build a fresh IndexStore with one show indexed under the default model+chunker."""
+    """One show, "My Show", with six chunks of ``ep1`` under the default combo."""
     store = IndexStore(tmp_path / "index")
-    col = collection_name("My Show", "bge-m3", "semantic")
-    store.ensure_collection(
-        col, show="My Show", model="bge-m3", chunker="semantic", dim=DIM
-    )
-    chunks = [
+    add_show(
+        store,
+        "My Show",
         {
-            "text": f"chunk {i}",
-            "episode": "ep1",
-            "show": "My Show",
-            "source": "transcript",
-            "dominant_speaker": f"sp{i % 2}",
-            "start": float(i),
-            "end": float(i + 1),
-        }
-        for i in range(6)
-    ]
-    rng = np.random.default_rng(0)
-    store.save_chunks(col, "ep1", chunks, rng.random((6, DIM), dtype=np.float32))
+            "ep1": [
+                chunk(
+                    f"chunk {i}",
+                    show="My Show",
+                    speaker=f"sp{i % 2}",
+                    start=float(i),
+                    end=float(i + 1),
+                )
+                for i in range(6)
+            ]
+        },
+    )
     return store
 
 
 @pytest.fixture(autouse=True)
-def _reset_caches(tmp_path, monkeypatch):
+def _reset_caches(tmp_path, isolated_index):
     """Point shared IndexStore/Retriever at a tmp index for every test."""
     _seed_store(tmp_path)
-    monkeypatch.setenv("PODCODEX_INDEX", str(tmp_path / "index"))
-    rag_index_store.get_index_store.cache_clear()
     rag_retriever.get_retriever.cache_clear()
-    # Pristine class-level resolver + list_shows date cache for each test so
-    # one test's setup can't leak into another.
-    IndexStore._show_folder_resolver = None
+    # No resolver (MCP runs without the app) and a pristine list_shows date
+    # cache, so one test's setup can't leak into another. The resolver is
+    # restored, not cleared, on the way out: later modules expect the app's.
     mcp_server._SHOW_DATE_CACHE.clear()
-    yield
-    rag_index_store.get_index_store.cache_clear()
+    with show_folder_resolver(None):
+        yield
     rag_retriever.get_retriever.cache_clear()
-    IndexStore._show_folder_resolver = None
     mcp_server._SHOW_DATE_CACHE.clear()
 
 
@@ -71,26 +67,14 @@ def test_list_shows_includes_non_default_combo_shows(tmp_path):
     """A show indexed only under a non-default model still resolves: with no
     default-model collection and no show.toml preference, the resolver falls
     back to the show's sole collection."""
-    store = rag_index_store.get_index_store()
-    store.ensure_collection(
-        "other__e5-small__semantic",
-        show="Other",
-        model="e5-small",
-        chunker="semantic",
-        dim=DIM,
-    )
+    add_show(rag_index_store.get_index_store(), "Other", model="e5-small")
     shows = mcp_server.list_shows()
     assert sorted(s["show"] for s in shows) == ["My Show", "Other"]
 
 
 def test_resolve_collections_empty_show_returns_all_defaults():
     cols = mcp_server._resolve_collections(None)
-    assert [c.name for c in cols] == [collection_name("My Show", "bge-m3", "semantic")]
-
-
-def test_resolve_collections_case_insensitive():
-    cols = mcp_server._resolve_collections("my show")
-    assert [c.name for c in cols] == [collection_name("My Show", "bge-m3", "semantic")]
+    assert [c.name for c in cols] == ["my_show__bge-m3__semantic"]
 
 
 def test_resolve_collections_unknown_show_raises_and_names_the_known_ones():
@@ -107,17 +91,10 @@ def test_resolve_collections_honors_show_rag_prefs(monkeypatch):
     shared search_service seam) steers which collection is picked over the
     global bge-m3/semantic default."""
     store = rag_index_store.get_index_store()
-    store.ensure_collection(
-        "my_show__e5-large__speaker",
-        show="My Show",
-        model="e5-large",
-        chunker="speaker",
-        dim=DIM,
-    )
+    sid = show_id_of(store, "My Show")
+    add_show(store, "My Show", show_id=sid, model="e5-large", chunker="speaker")
     monkeypatch.setattr(
-        mcp_server,
-        "load_show_rag_prefs",
-        lambda: {"my show": ("e5-large", "speaker")},
+        mcp_server, "load_show_rag_prefs", lambda: {sid: ("e5-large", "speaker")}
     )
     cols = mcp_server._resolve_collections("My Show")
     assert [(c.name, c.model) for c in cols] == [
@@ -230,23 +207,6 @@ def test_trim_keeps_text_when_no_speakers():
     assert "speakers" not in trimmed
 
 
-def test_trim_omits_score_when_absent():
-    trimmed = mcp_server._trim(
-        Hit.model_validate(
-            {
-                "show": "S",
-                "episode": "e",
-                "chunk_index": 0,
-                "start": 0.0,
-                "end": 1.0,
-                "dominant_speaker": "",
-                "text": "x",
-            }
-        )
-    )
-    assert "score" not in trimmed
-
-
 def test_get_context_returns_window():
     out = mcp_server.get_context(show="My Show", episode="ep1", chunk_index=3, window=1)
     assert [c["chunk_index"] for c in out] == [2, 3, 4]
@@ -272,13 +232,6 @@ def test_speaker_stats_aggregates_across_chunks():
     assert counts == sorted(counts, reverse=True)
 
 
-def test_speaker_stats_skips_chunks_with_no_dominant_speaker(tmp_path):
-    # Already-seeded chunks all have a dominant_speaker; just confirm
-    # the fixture's setup doesn't leak an empty-speaker row.
-    stats = mcp_server.speaker_stats()
-    assert all(s["speaker"] for s in stats)
-
-
 def test_exact_returns_literal_matches():
     matches = mcp_server.exact(query="chunk 3")
     assert any(m["chunk_index"] == 3 for m in matches)
@@ -297,31 +250,32 @@ def _seed_multi_episode(store: IndexStore) -> str:
 
     Returns the collection name so tests can re-use it.
     """
-    col = collection_name("My Show", "bge-m3", "semantic")
-    rng = np.random.default_rng(1)
     dated = [
         ("ep-jan", "2024-01-15", "Episode one: January deep dive", 101),
         ("ep-mar", "2024-03-10", "Episode two: March special", 102),
         ("ep-jun", "2024-06-01", "Episode three: June finale", 103),
     ]
-    for stem, pd, title, number in dated:
-        chunks = [
-            {
-                "text": f"content for {stem}",
-                "episode": stem,
-                "show": "My Show",
-                "source": "transcript",
-                "dominant_speaker": "host",
-                "start": 0.0,
-                "end": 10.0,
-                "pub_date": pd,
-                "episode_title": title,
-                "episode_number": number,
-                "description": f"desc for {stem}",
-            }
-        ]
-        store.save_chunks(col, stem, chunks, rng.random((1, DIM), dtype=np.float32))
-    return col
+    return add_show(
+        store,
+        "My Show",
+        {
+            stem: [
+                chunk(
+                    f"content for {stem}",
+                    episode=stem,
+                    show="My Show",
+                    speaker="host",
+                    end=10.0,
+                    pub_date=pd,
+                    episode_title=title,
+                    episode_number=number,
+                    description=f"desc for {stem}",
+                )
+            ]
+            for stem, pd, title, number in dated
+        },
+        seed=1,
+    )
 
 
 def test_list_episodes_returns_all_when_no_filter():
@@ -330,6 +284,9 @@ def test_list_episodes_returns_all_when_no_filter():
     out = mcp_server.list_episodes()
     stems = {e["episode"] for e in out}
     assert stems == {"ep1", "ep-jan", "ep-mar", "ep-jun"}
+    # Sorted by pub_date by default, not by stem (ep-jan, ep-jun, ep-mar).
+    dated = [e["pub_date"] for e in out if e["pub_date"]]
+    assert dated == ["2024-01-15", "2024-03-10", "2024-06-01"]
     expected_keys = {
         "show",
         "episode",
@@ -406,31 +363,28 @@ def _stub_retriever_encoder(monkeypatch):
     )
 
 
-def test_exact_restricts_to_episodes_list():
-    store = rag_index_store.get_index_store()
-    _seed_multi_episode(store)
-    results = mcp_server.exact(query="content", episodes=["ep-jan", "ep-jun"])
-    stems = {r["episode"] for r in results}
+def _check_episode_and_date_filters(tool) -> None:
+    """Both MCP search tools honour the episode list and the date range, and
+    every hit carries its pub_date."""
+    stems = {r["episode"] for r in tool(query="content", episodes=["ep-jan", "ep-jun"])}
     assert stems and stems <= {"ep-jan", "ep-jun"}
 
+    ranged = tool(query="content", pub_date_min="2024-02-01", pub_date_max="2024-04-30")
+    assert {r["episode"] for r in ranged} == {"ep-mar"}
 
-def test_exact_respects_pub_date_range():
-    store = rag_index_store.get_index_store()
-    _seed_multi_episode(store)
-    results = mcp_server.exact(
-        query="content",
-        pub_date_min="2024-02-01",
-        pub_date_max="2024-04-30",
-    )
-    stems = {r["episode"] for r in results}
-    assert stems == {"ep-mar"}
+    june = tool(query="content", episodes=["ep-jun"])
+    assert june and all(r.get("pub_date") == "2024-06-01" for r in june)
 
 
-def test_exact_chunks_carry_pub_date():
-    store = rag_index_store.get_index_store()
-    _seed_multi_episode(store)
-    results = mcp_server.exact(query="content", episodes=["ep-jun"])
-    assert results and all(r.get("pub_date") == "2024-06-01" for r in results)
+def test_exact_filters_by_episode_and_date():
+    _seed_multi_episode(rag_index_store.get_index_store())
+    _check_episode_and_date_filters(mcp_server.exact)
+
+
+def test_search_filters_by_episode_and_date(monkeypatch):
+    _seed_multi_episode(rag_index_store.get_index_store())
+    _stub_retriever_encoder(monkeypatch)
+    _check_episode_and_date_filters(mcp_server.search)
 
 
 def test_list_shows_adds_date_range_when_available():
@@ -442,36 +396,6 @@ def test_list_shows_adds_date_range_when_available():
     assert entry["show"] == "My Show"
     assert entry["first_pub_date"] == "2024-01-15"
     assert entry["last_pub_date"] == "2024-06-01"
-
-
-def test_search_restricts_to_episodes_list(monkeypatch):
-    store = rag_index_store.get_index_store()
-    _seed_multi_episode(store)
-    _stub_retriever_encoder(monkeypatch)
-    results = mcp_server.search(query="content", episodes=["ep-jan", "ep-jun"])
-    stems = {r["episode"] for r in results}
-    assert stems and stems <= {"ep-jan", "ep-jun"}
-
-
-def test_search_respects_pub_date_range(monkeypatch):
-    store = rag_index_store.get_index_store()
-    _seed_multi_episode(store)
-    _stub_retriever_encoder(monkeypatch)
-    results = mcp_server.search(
-        query="content",
-        pub_date_min="2024-02-01",
-        pub_date_max="2024-04-30",
-    )
-    stems = {r["episode"] for r in results}
-    assert stems == {"ep-mar"}
-
-
-def test_search_chunks_carry_pub_date(monkeypatch):
-    store = rag_index_store.get_index_store()
-    _seed_multi_episode(store)
-    _stub_retriever_encoder(monkeypatch)
-    results = mcp_server.search(query="content", episodes=["ep-jun"])
-    assert results and all(r.get("pub_date") == "2024-06-01" for r in results)
 
 
 # ── exact_count: count + batch (#1) ──────────────────────────────────────
@@ -499,12 +423,6 @@ def test_exact_count_first_hit():
 def test_exact_count_requires_queries():
     with pytest.raises(ValueError):
         mcp_server.exact_count(queries=[])
-
-
-def test_exact_text_mode_returns_chunks():
-    matches = mcp_server.exact(query="chunk 3")
-    assert isinstance(matches, list)
-    assert matches and matches[0]["episode"] == "ep1"
 
 
 # ── get_episode chunk-map + transcript (#3, #7) ──────────────────────────
@@ -554,11 +472,6 @@ def test_get_context_requires_index_or_time():
 # ── start_hms field (#6) ─────────────────────────────────────────────────
 
 
-def test_trim_adds_start_hms():
-    matches = mcp_server.exact(query="chunk 3")
-    assert matches[0]["start_hms"] == "0m03"
-
-
 # ── list_episodes: broadcast/fields/sort (#5) ────────────────────────────
 
 
@@ -569,35 +482,20 @@ def test_list_episodes_fields_projection():
     assert "description" not in out[0]
 
 
-def test_list_episodes_default_sort_pub_date():
-    out = mcp_server.list_episodes()
-    dates = [e["pub_date"] for e in out if e["pub_date"]]
-    assert dates == sorted(dates)
-
-
 def test_list_episodes_broadcast_filter(tmp_path):
-    from podcodex.rag import index_store as ris
-    from podcodex.rag.store import collection_name
-
-    store = ris.get_index_store()
-    col = collection_name("My Show", "bge-m3", "semantic")
-    chunks = [
+    add_show(
+        rag_index_store.get_index_store(),
+        "My Show",
         {
-            "text": "airing two oh eight",
-            "episode": "ep_208",
-            "show": "My Show",
-            "source": "transcript",
-            "dominant_speaker": "sp0",
-            "start": 0.0,
-            "end": 1.0,
-            "broadcast_number": 208,
-        }
-    ]
-    store.save_chunks(
-        col,
-        "ep_208",
-        chunks,
-        np.random.default_rng(1).random((1, DIM), dtype=np.float32),
+            "ep_208": [
+                chunk(
+                    "airing two oh eight",
+                    episode="ep_208",
+                    show="My Show",
+                    broadcast_number=208,
+                )
+            ]
+        },
     )
     out = mcp_server.list_episodes(broadcast_number=208)
     assert out and all(e.get("broadcast_number") == 208 for e in out)

@@ -55,9 +55,13 @@ def test_reap_walks_nested_dirs(tmp_path: Path):
 
 
 def test_tagged_temp_files_are_still_reapable(tmp_path: Path):
-    """Callers tag their temp files ("prompts_", "claude_cfg_"); every temp
-    name still starts with TEMP_PREFIX, the reaper's single pattern."""
-    from podcodex.core._utils import TEMP_PREFIX, atomic_write
+    """Callers tag their temp files ("prompts_", "claude_cfg_"); a process
+    killed mid-write leaves one behind, and the startup reaper must find it."""
+    import os
+    import time
+
+    from podcodex.core._utils import atomic_write
+    from podcodex.core.recovery import reap_stale_temp_files
 
     seen: list[str] = []
 
@@ -69,7 +73,14 @@ def test_tagged_temp_files_are_still_reapable(tmp_path: Path):
         atomic_write(tmp_path / "prompts.json", crash, tag="prompts_")
     except RuntimeError:
         pass
-    assert seen[0].startswith(f"{TEMP_PREFIX}prompts_")
+    # What a kill (rather than an exception) leaves: the temp file itself.
+    orphan = tmp_path / seen[0]
+    orphan.write_text("partial")
+    old = time.time() - 7 * 86400
+    os.utime(orphan, (old, old))
+
+    assert reap_stale_temp_files([tmp_path]) == 1
+    assert not orphan.exists()
 
 
 def test_atomic_write_keeps_normal_permissions(tmp_path):

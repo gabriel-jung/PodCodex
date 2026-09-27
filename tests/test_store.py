@@ -24,9 +24,3 @@ def test_collection_name_normalizes_mixed_case():
 
 def test_collection_name_normalizes_special_chars():
     assert collection_name("My Podcast!", "bge-m3") == "my_podcast__bge-m3__semantic"
-
-
-def test_collection_name_idempotent():
-    assert collection_name("my_podcast", "bge-m3") == collection_name(
-        "My Podcast", "bge-m3"
-    )

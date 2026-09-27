@@ -396,7 +396,7 @@ class Retriever:
             pub_date_min=pub_date_min,
             pub_date_max=pub_date_max,
         )
-        return _rank_normalize([h for h in hits if h.score > 1e-6])
+        return rank_normalize([h for h in hits if h.score > 1e-6])
 
     def _weighted(
         self,
@@ -414,7 +414,7 @@ class Retriever:
     ) -> list[Hit]:
         """Linear blend of rank-normalized dense and FTS scores."""
         k = top_k * 4
-        dense_hits = _rank_normalize(
+        dense_hits = rank_normalize(
             self._dense(
                 query,
                 collection,
@@ -469,7 +469,7 @@ def _chunk_key(chunk: Hit) -> str:
     return f"{chunk.show}|{chunk_row_key(chunk.episode, chunk.chunk_index)}"
 
 
-def _rank_normalize(results: list[Hit]) -> list[Hit]:
+def rank_normalize(results: list[Hit]) -> list[Hit]:
     """Assign each hit a rank-based score in ``[1/n, 1]`` (top = 1.0).
 
     Mutates in place: every caller passes freshly built, unshared hits.

@@ -389,13 +389,6 @@ class PipelineDB:
             return None
         return {"step": row["verified_step"], "version_id": row["verified_version_id"]}
 
-    def stems_with_verified(self) -> set[str]:
-        """Return the set of stems that have a verified pointer set."""
-        rows = self._read(
-            "SELECT stem FROM episodes WHERE verified_version_id IS NOT NULL"
-        ).fetchall()
-        return {r[0] for r in rows}
-
     def verified_pointers(self) -> dict[str, dict]:
         """Bulk: ``{stem: {step, version_id}}`` for every episode with a pointer."""
         rows = self._read(
@@ -650,13 +643,6 @@ class PipelineDB:
             (stem,),
         ).fetchall()
         return [r[0] for r in rows]
-
-    def version_count(self, stem: str, step: str) -> int:
-        """Return the number of versions for a step."""
-        return self._read(
-            "SELECT COUNT(*) FROM versions WHERE stem = ? AND step = ?",
-            (stem, step),
-        ).fetchone()[0]
 
     def delete_versions(self, stem: str, step: str, ids: list[str]) -> int:
         """Delete specific versions by ID. Returns count deleted."""

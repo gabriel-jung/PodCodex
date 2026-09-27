@@ -23,9 +23,9 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_the_guard_is_held_across_the_check_not_just_the_flag(monkeypatch) -> None:
-    """Regression: the done-flag used to be set before the check ran, so a
-    second threadpool thread returned early, read an override this had not
-    demoted yet, and proceeded onto a kernel the wheel does not have."""
+    """The done-flag is set only once the check has run. Set earlier, a
+    second threadpool thread returns early, reads an override this has not
+    demoted yet, and proceeds onto a kernel the wheel does not have."""
     seen: list[bool] = []
 
     def slow_check() -> None:
@@ -52,7 +52,7 @@ def _fake_torch(
     fake.cuda.get_device_capability.return_value = capability
     fake.cuda.get_device_name.return_value = device_name
     # The default arch list must contain the requested capability, or the
-    # kernel guard (which resolve_device/cuda_available now run before
+    # kernel guard (which resolve_device/cuda_available run before
     # reading the override) correctly degrades to CPU and the test ends up
     # measuring the guard instead of the capability mapping. Tests that
     # want a mismatch pass arch_list explicitly.
@@ -108,14 +108,10 @@ def test_auto_with_no_gpu_falls_back_to_cpu(monkeypatch):
 @pytest.mark.parametrize(
     "capability,expected",
     [
-        ((8, 0), ("cuda", "float16")),  # Ampere
-        ((8, 9), ("cuda", "float16")),  # Ada
-        ((9, 0), ("cuda", "float16")),  # Hopper
+        # The boundary is Volta / Pascal; anything newer is float16.
         ((10, 0), ("cuda", "float16")),  # Blackwell
-        ((7, 5), ("cuda", "float16")),  # Turing
         ((7, 0), ("cuda", "float16")),  # Volta
         ((6, 1), ("cuda", "int8_float32")),  # Pascal GTX 1080
-        ((6, 0), ("cuda", "int8_float32")),  # Pascal P100
     ],
 )
 def test_resolve_device_per_capability(capability, expected):
@@ -132,13 +128,12 @@ def test_resolve_device_per_capability(capability, expected):
 @pytest.mark.parametrize(
     "capability,dtype_name",
     [
-        ((8, 0), "bfloat16"),
-        ((8, 9), "bfloat16"),
+        # Two boundaries: bfloat16 from Ampere, float32 below Volta.
         ((10, 0), "bfloat16"),
+        ((8, 0), "bfloat16"),
         ((7, 5), "float16"),
         ((7, 0), "float16"),
         ((6, 1), "float32"),
-        ((6, 0), "float32"),
     ],
 )
 def test_torch_dtype_per_capability(capability, dtype_name):
@@ -211,17 +206,6 @@ def test_assert_kernels_available_noop_with_no_gpu():
 # ──────────────────────────────────────────────
 
 
-def test_device_info_reports_override(monkeypatch):
-    monkeypatch.setenv("PODCODEX_DEVICE", "cpu")
-    fake = _fake_torch(cuda_available=True, capability=(8, 0))
-    with patch.dict("sys.modules", {"torch": fake}):
-        info = device.device_info()
-    assert info["override"] == "cpu"
-    assert info["device"] == "cpu"
-    assert info["compute_type"] == "int8"
-    assert info["available"] is False
-
-
 def test_device_info_reports_pascal_capability():
     fake = _fake_torch(
         cuda_available=True,
@@ -254,13 +238,13 @@ def _pascal_on_cu128() -> MagicMock:
 
 
 def test_first_resolve_device_call_already_sees_the_degrade(monkeypatch):
-    """Regression: the guard must run before the override is read.
+    """The guard must run before the override is read.
 
-    When the guard lived in bootstrap and fired on first ``import torch``,
-    ``cuda_available`` had already read ``user_override()`` as "auto" and
-    returned True from the probe, so the *first* resolve_device returned
-    ("cuda", "float16") on a GPU with no kernels — the exact failure the
-    guard exists to prevent. Only the second call was correct.
+    A guard that fires on first ``import torch`` lands after
+    ``cuda_available`` has read ``user_override()`` as "auto" and returned
+    True from the probe, so the *first* resolve_device returns ("cuda",
+    "float16") on a GPU with no kernels: the exact failure the guard exists
+    to prevent.
     """
     with patch.dict("sys.modules", {"torch": _pascal_on_cu128()}):
         assert device.resolve_device() == ("cpu", "int8")

@@ -130,13 +130,6 @@ def test_deleted_builtin_is_reseeded_on_reload(_isolated_store):
 # ── CRUD API ────────────────────────────────────────────────────────────
 
 
-def test_list_returns_builtins(client):
-    r = client.get("/api/mcp/prompts")
-    assert r.status_code == 200
-    ids = {p["id"] for p in r.json()}
-    assert {"brief", "speaker", "quote", "compare", "timeline"} <= ids
-
-
 def test_create_persists_and_registers(client):
     payload = {
         "id": "my_tool",
@@ -228,6 +221,8 @@ def test_delete_user_prompt(client):
         "/api/mcp/prompts",
         json={"id": "temp_p", "name": "t", "title": "T", "template": "hi"},
     )
+    listed = {p["id"] for p in client.get("/api/mcp/prompts").json()}
+    assert {"temp_p", "brief"} <= listed  # user prompts beside the builtins
     r = client.delete("/api/mcp/prompts/temp_p")
     assert r.status_code == 204
     # Gone
@@ -302,9 +297,9 @@ def test_disabled_prompt_is_not_registered(client):
 def test_reserved_prompt_ids_cover_every_registered_tool():
     """Prompt ids must not collide with a tool name.
 
-    The set used to be four names typed by hand while eight tools were
-    registered, so a prompt called `list_episodes` or `speaker_stats` gave
-    the client two entries under one name. Derived now; this pins both the
+    A prompt named like a tool (`list_episodes`, `speaker_stats`) gives the
+    client two entries under one name. The set is derived from the registered
+    tools, since a hand-typed list falls behind them; this pins both the
     derivation and the fallback list beside it.
     """
     from podcodex.mcp import prompts as prompts_mod

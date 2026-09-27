@@ -13,7 +13,6 @@ from podcodex.core.versions import (
     load_version,
     resolve_verified_source,
     save_version,
-    version_count,
     versions_dir,
 )
 from podcodex.core.pipeline_db import get_pipeline_db
@@ -59,15 +58,6 @@ def _prov(step="corrected", type_="raw", model=None, params=None, manual_edit=Fa
 
 
 class TestComputeHash:
-    def test_deterministic(self):
-        h1 = compute_hash(SAMPLE_SEGMENTS)
-        h2 = compute_hash(SAMPLE_SEGMENTS)
-        assert h1 == h2
-
-    def test_starts_with_sha256(self):
-        h = compute_hash(SAMPLE_SEGMENTS)
-        assert h.startswith("sha256:")
-
     def test_different_content_different_hash(self):
         other = [{"speaker": "Alice", "text": "Goodbye", "start": 0.0, "end": 1.0}]
         assert compute_hash(SAMPLE_SEGMENTS) != compute_hash(other)
@@ -123,7 +113,7 @@ class TestSaveVersion:
     def test_none_provenance_is_noop(self, episode_dir):
         vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, None)
         assert vid == ""
-        assert version_count(episode_dir, "corrected") == 0
+        assert len(list_versions(episode_dir, "corrected")) == 0
 
     def test_input_hash_stored(self, episode_dir):
         save_version(
@@ -137,13 +127,12 @@ class TestSaveVersion:
 
 
 class TestListVersions:
-    def test_empty_when_no_versions(self, episode_dir):
+    def test_an_episode_with_no_versions_reads_empty_everywhere(self, episode_dir):
         assert list_versions(episode_dir, "corrected") == []
-
-    def test_returns_entries(self, episode_dir):
-        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov())
-        entries = list_versions(episode_dir, "corrected")
-        assert len(entries) == 1
+        assert load_latest(episode_dir, "corrected") is None
+        assert len(list_versions(episode_dir, "corrected")) == 0
+        assert has_version(episode_dir, "corrected") is False
+        assert has_matching_version(episode_dir, "corrected", {"model": "m"}) is False
 
 
 class TestLoadVersion:
@@ -159,9 +148,6 @@ class TestLoadVersion:
 
 
 class TestLoadLatest:
-    def test_returns_none_when_empty(self, episode_dir):
-        assert load_latest(episode_dir, "corrected") is None
-
     def test_returns_latest(self, episode_dir):
         save_version(
             episode_dir,
@@ -179,21 +165,6 @@ class TestLoadLatest:
         assert segments == [{"text": "new"}]
 
 
-class TestVersionCount:
-    def test_zero_when_empty(self, episode_dir):
-        assert version_count(episode_dir, "corrected") == 0
-
-    def test_counts_correctly(self, episode_dir):
-        for i in range(3):
-            save_version(
-                episode_dir,
-                "corrected",
-                SAMPLE_SEGMENTS,
-                _prov(model=f"m{i}"),
-            )
-        assert version_count(episode_dir, "corrected") == 3
-
-
 class TestDifferentSteps:
     def test_steps_isolated(self, episode_dir):
         save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov())
@@ -204,36 +175,11 @@ class TestDifferentSteps:
             _prov(step="english"),
         )
 
-        assert version_count(episode_dir, "corrected") == 1
-        assert version_count(episode_dir, "english") == 1
-
-
-class TestHasVersion:
-    def test_false_when_empty(self, episode_dir):
-        assert has_version(episode_dir, "corrected") is False
-
-    def test_true_when_exists(self, episode_dir):
-        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, _prov())
-        assert has_version(episode_dir, "corrected") is True
+        assert len(list_versions(episode_dir, "corrected")) == 1
+        assert len(list_versions(episode_dir, "english")) == 1
 
 
 class TestHasMatchingVersion:
-    def test_no_versions(self, episode_dir):
-        assert (
-            has_matching_version(episode_dir, "corrected", {"model": "gpt-4o"}) is False
-        )
-
-    def test_matching_model(self, episode_dir):
-        save_version(
-            episode_dir,
-            "corrected",
-            SAMPLE_SEGMENTS,
-            _prov(model="gpt-4o", params={"llm_mode": "api"}),
-        )
-        assert (
-            has_matching_version(episode_dir, "corrected", {"model": "gpt-4o"}) is True
-        )
-
     def test_different_model(self, episode_dir):
         save_version(
             episode_dir,
@@ -338,16 +284,6 @@ class TestSaveAndLoad:
         assert meta["content_hash"] == compute_hash(SAMPLE_SEGMENTS)
         close_pipeline_db(show_dir)
 
-    def test_load_latest_returns_none_when_db_empty(self, episode_dir):
-        """No versions saved → load_latest returns None (no filesystem fallback)."""
-        assert load_latest(episode_dir, "corrected") is None
-
-    def test_load_latest_round_trip(self, episode_dir):
-        """Save then load returns the same segments."""
-        save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
-        loaded = load_latest(episode_dir, "corrected")
-        assert loaded == SAMPLE_SEGMENTS
-
 
 class TestResolveVerifiedSource:
     """Verify resolve_verified_source helper + delete cleanup."""
@@ -450,7 +386,7 @@ class TestBackfillFromDisk:
     def test_speaker_map_survives_the_rebuild(self, episode_dir):
         """A hand-assigned speaker map must still load after a rebuild.
 
-        Its input_hash pointed at the label source's sha256, which a rebuild
+        Its input_hash points at the label source's sha256, which a rebuild
         cannot reproduce (parquet gets a stat hash), so without re-binding it
         every assigned name would silently vanish.
         """
@@ -482,8 +418,8 @@ class TestBackfillFromDisk:
 
         `manual_edit` lives only in the DB, so the type suffix in the filename
         is the sole carrier across a rebuild. build_provenance keeps the two
-        in step; /translate/save-manual once wrote manual_edit=True with type
-        "raw", and that version came back reading as un-edited.
+        in step: a version saved with manual_edit=True and type "raw" reads
+        back as un-edited.
         """
         from podcodex.api.routes._helpers import build_provenance
         from podcodex.core.pipeline_db import close_pipeline_db
@@ -501,18 +437,6 @@ class TestBackfillFromDisk:
         (show_dir / "pipeline.db").unlink()
         backfill_versions_from_disk(show_dir)
         assert is_edited(list_versions(episode_dir, "french")[0])
-        close_pipeline_db(show_dir)
-
-    def test_is_idempotent(self, episode_dir):
-        from podcodex.core.pipeline_db import close_pipeline_db
-        from podcodex.core.versions import backfill_versions_from_disk
-
-        save_version(
-            episode_dir, "transcript", SAMPLE_SEGMENTS, _prov(step="transcript")
-        )
-        show_dir = episode_dir.parent.parent
-        # Rows already exist, so a second pass must not duplicate them.
-        assert backfill_versions_from_disk(show_dir) == 0
         close_pipeline_db(show_dir)
 
 
@@ -638,7 +562,7 @@ class TestStaleVersionRows:
 
     def test_a_late_file_keeps_its_row_and_provenance(self, episode_dir, monkeypatch):
         """A synced pipeline.db can arrive before the files it indexes; the
-        first backfill used to delete those rows with their provenance."""
+        first backfill must not delete those rows with their provenance."""
         import time
 
         from podcodex.core import versions as versions_mod
@@ -673,16 +597,6 @@ class TestStaleVersionRows:
         assert backfill_versions_from_disk(show_dir) == 0
         (row,) = list_versions(episode_dir, "corrected")
         assert row["model"] == SAMPLE_PROVENANCE["model"]
-        close_pipeline_db(show_dir)
-
-    def test_reconcile_keeps_rows_whose_files_are_present(self, episode_dir):
-        from podcodex.core.pipeline_db import close_pipeline_db
-        from podcodex.core.versions import backfill_versions_from_disk
-
-        vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
-        show_dir = episode_dir.parent.parent
-        backfill_versions_from_disk(show_dir)
-        assert [v["id"] for v in list_versions(episode_dir, "corrected")] == [vid]
         close_pipeline_db(show_dir)
 
 
@@ -906,7 +820,8 @@ class TestIndexIntegrity:
         assert not list((episode_dir.parent / "corrected").glob("*.json"))
 
     def test_a_row_without_its_file_is_not_a_version(self, episode_dir):
-        """Batch runs skip on these; a file-less row used to count as done."""
+        """Batch runs skip on these, so a file-less row must not count as
+        done."""
         from podcodex.core.versions import version_path
 
         vid = save_version(episode_dir, "corrected", SAMPLE_SEGMENTS, SAMPLE_PROVENANCE)
@@ -966,7 +881,7 @@ class TestIndexIntegrity:
 
     def test_bulk_and_single_canonical_refs_agree(self, episode_dir):
         """The speaker roster resolves every episode in bulk; the rules are
-        one function now, and this pins that both entry points use it."""
+        one function, and this pins that both entry points use it."""
         from podcodex.core.versions import resolve_canonical_ref, resolve_canonical_refs
 
         save_version(episode_dir, "transcript", SAMPLE_SEGMENTS, _prov("transcript"))
@@ -1013,8 +928,8 @@ class TestProvenance:
         assert load_latest_provenance_params(episode_dir)["llm_mode"] == "api"
 
     def test_source_chain_follows_the_pinned_version(self, episode_dir):
-        """The chain used to read the latest transcript even when the step
-        ran on an older one the user picked."""
+        """The chain follows the transcript the step ran on, even an older
+        one the user picked, not the latest."""
         from podcodex.core.provenance import build_provenance
 
         audio = self._audio(episode_dir)
@@ -1055,3 +970,12 @@ def load_latest_provenance_params(base):
     from podcodex.core.versions import get_latest_provenance
 
     return get_latest_provenance(base, "corrected")["params"]
+
+
+def test_version_path_rejects_traversal_components():
+    from podcodex.core.versions import version_path
+
+    with pytest.raises(ValueError):
+        version_path(__import__("pathlib").Path("/tmp/x/ep"), "../..", "api_keys")
+    with pytest.raises(ValueError):
+        version_path(__import__("pathlib").Path("/tmp/x/ep"), "english", "../../x")

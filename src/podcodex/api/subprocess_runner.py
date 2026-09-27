@@ -122,6 +122,17 @@ def _head(text: str, limit: int = _MAX_TB_CHARS) -> str:
     return text if len(text) <= limit else text[:limit] + " [...]"
 
 
+def _drop_inherited_thread_cap(env: Any) -> None:
+    """Undo the API's own ``OMP_NUM_THREADS=1`` default in a child's *env*.
+
+    The API process defaults it for its own threads (see api/app.py); a child
+    is a whole process for one step and must not inherit it. A value the user
+    set themselves is left alone.
+    """
+    if env.pop("_PODCODEX_OMP_DEFAULTED", None):
+        env.pop("OMP_NUM_THREADS", None)
+
+
 def _child_entry(
     entry_path: str,
     kwargs: dict[str, Any],
@@ -132,12 +143,8 @@ def _child_entry(
     """Import and invoke the entry function inside the spawned child."""
     _early_child_log(f"_child_entry start, entry={entry_path}")
 
-    # The API process defaults OMP_NUM_THREADS=1 for its own threads (see
-    # api/app.py); a child is a whole process for one step and must not
-    # inherit it. Before any import that could load torch. A value the user
-    # set themselves is left alone.
-    if os.environ.pop("_PODCODEX_OMP_DEFAULTED", None):
-        os.environ.pop("OMP_NUM_THREADS", None)
+    # Before any import that could load torch.
+    _drop_inherited_thread_cap(os.environ)
 
     # Spawn re-execs the frozen binary and bypasses server.py:main(), so the
     # parent's bootstrap (transformers doc patch, HF symlink, Windows console)

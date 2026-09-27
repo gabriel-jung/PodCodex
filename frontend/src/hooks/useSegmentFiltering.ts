@@ -6,7 +6,7 @@ import { BREAK_SPEAKER, REMOVE_SPEAKER, UNKNOWN_SPEAKERS } from "@/lib/speakers"
 const HAS_WORD_CHAR = /[\p{L}\p{N}]/u;
 
 /** Speech density thresholds (chars/s), must match backend MIN_DENSITY / MAX_DENSITY.
- *  Drift guarded by tests/test_frontend_constants_sync.py. */
+ *  Drift guarded by tests/rules/test_frontend_constants_sync.py. */
 export const MIN_DENSITY = 2;
 export const MAX_DENSITY = 75;
 

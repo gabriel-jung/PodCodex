@@ -4,62 +4,49 @@ import numpy as np
 import pytest
 import soundfile as sf
 from pathlib import Path
-from podcodex.core.synthesize import _split_text, assemble_episode
+from podcodex.core.synthesize import split_text, assemble_episode
 
 
 # ──────────────────────────────────────────────
-# _split_text
+# split_text
 # ──────────────────────────────────────────────
 
 
 def test_split_empty_string():
-    assert _split_text("", 3) == []
+    assert split_text("", 3) == []
 
 
 def test_split_single_chunk():
-    assert _split_text("Hello world.", 1) == ["Hello world."]
+    assert split_text("Hello world.", 1) == ["Hello world."]
 
 
-def test_split_at_sentence_boundaries():
-    text = "First sentence. Second sentence. Third sentence."
-    result = _split_text(text, 3)
-    assert len(result) == 3
-    assert all(len(c) > 0 for c in result)
-
-
-def test_split_preserves_all_content():
-    text = "First sentence. Second sentence. Third sentence."
-    result = _split_text(text, 3)
-    # Reassembled content should match original words
-    reassembled = " ".join(result)
-    for word in text.replace(".", "").split():
-        assert word in reassembled
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        (
+            "First sentence. Second sentence. Third sentence.",
+            ["First sentence.", "Second sentence.", "Third sentence."],
+        ),
+        ("Really? Yes! Absolutely.", ["Really?", "Yes!", "Absolutely."]),
+        # No sentence ends to split on: commas are the fallback.
+        ("One, two, three, four, five", ["One, two,", "three, four,", "five"]),
+    ],
+)
+def test_split_into_three_chunks(text, expected):
+    assert split_text(text, 3) == expected
 
 
 def test_split_fewer_sentences_than_chunks():
     """Should return what's available without crashing."""
     text = "Only one sentence."
-    result = _split_text(text, 5)
+    result = split_text(text, 5)
     assert 1 <= len(result) <= 5
     assert result[0] == "Only one sentence."
 
 
-def test_split_falls_back_to_commas():
-    text = "One, two, three, four, five"
-    result = _split_text(text, 3)
-    assert len(result) >= 2
-    assert all(len(c) > 0 for c in result)
-
-
-def test_split_exclamation_and_question_marks():
-    text = "Really? Yes! Absolutely."
-    result = _split_text(text, 3)
-    assert len(result) == 3
-
-
 def test_split_no_breakpoints_returns_single_chunk():
     text = "A sentence with no punctuation at all"
-    result = _split_text(text, 3)
+    result = split_text(text, 3)
     assert len(result) == 1
     assert result[0] == text
 
@@ -125,16 +112,6 @@ def test_assemble_silence_strategy_cross_speaker(tmp_path):
     assert abs(len(audio) / sr - 4.5) < 0.1
 
 
-def test_assemble_original_timing_strategy(tmp_path):
-    generated = make_generated(tmp_path, [(0, 2), (5, 7)])
-    out_path = tmp_path / "out.wav"
-    out = assemble_episode(generated, out_path, strategy="original_timing")
-    assert out.exists()
-    audio, sr = sf.read(str(out))
-    # Should be at least as long as the last segment's generated audio end
-    assert len(audio) / sr > 0
-
-
 def test_assemble_original_timing_no_blank_lead_in_for_narrowed_selection(tmp_path):
     # First segment starts at t=12s but selection is narrow. Output should
     # anchor at 12s, not pad 12s of silence at the front. Two segments at
@@ -157,9 +134,53 @@ def test_assemble_unknown_strategy_raises(tmp_path):
         assemble_episode(generated, tmp_path / "out.wav", strategy="invalid")
 
 
-def test_assemble_writes_to_output_path(tmp_path):
-    generated = make_generated(tmp_path, [(0, 2)])
-    out_path = tmp_path / "custom_name.wav"
-    out = assemble_episode(generated, out_path, strategy="silence")
-    assert out == out_path
-    assert out.is_file()
+# ── Voice-sample filenames are confined to voice_samples/ ────────────────
+
+
+def test_speaker_file_slug_neutralizes_paths_and_globs():
+    from podcodex.core._utils import speaker_file_slug
+
+    assert speaker_file_slug("../../x") == ".._.._x"
+    assert speaker_file_slug("/tmp/x") == "_tmp_x"
+    assert speaker_file_slug(r"..\..\x") == ".._.._x"
+    assert speaker_file_slug("*") == "_"
+    assert speaker_file_slug("[a-z]") == "_a-z_"
+    # Ordinary labels keep the filenames they already have on disk.
+    assert speaker_file_slug("Dr. Smith") == "Dr. Smith"
+    assert speaker_file_slug("SPEAKER_00") == "SPEAKER_00"
+    assert speaker_file_slug("") == ""
+
+
+def test_extract_selected_samples_keeps_hostile_speaker_inside_dir(
+    tmp_path, monkeypatch
+):
+    """A subtitle-supplied "../../x" speaker must not write outside the dir."""
+    from podcodex.core import synthesize as synth
+
+    show = tmp_path / "show"
+    (show / "ep").mkdir(parents=True)
+    audio = show / "ep.mp3"
+    audio.touch()
+
+    written: list = []
+    monkeypatch.setattr(
+        synth,
+        "_extract_clip",
+        lambda src, seg, out: (
+            written.append(out),
+            out.write_bytes(b""),
+            {"file": out, "duration": 1.0, "text": ""},
+        )[-1],
+    )
+    # samples_dir.glob("../../x_*.wav") resolves to <show>/x_*.wav: pathlib
+    # follows ".." segments, so an unslugged label would unlink this file.
+    victim = show / "x_00.wav"
+    victim.write_bytes(b"keep")
+
+    synth.extract_selected_samples(
+        audio,
+        [{"speaker": "../../x", "start": 0.0, "end": 1.0, "text": "hi"}],
+    )
+    samples_dir = show / "ep" / "voice_samples"
+    assert written and all(p.parent == samples_dir for p in written)
+    assert victim.exists()

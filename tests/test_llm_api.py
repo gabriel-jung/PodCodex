@@ -4,8 +4,8 @@ A long episode is split into many batches and every one already completed is
 lost when a call raises out of the loop, so the two things pinned here are
 that a transient provider failure is retried rather than fatal, and that an
 unusable response (empty `choices`, `content: null`) is recorded as one
-rejected batch rather than an exception. The ollama sibling has had both for
-a while; this is the paid path catching up.
+rejected batch rather than an exception. The ollama path holds to the same
+two rules.
 """
 
 from __future__ import annotations
@@ -178,7 +178,7 @@ def test_a_bad_key_stops_the_run_on_the_first_attempt(api):
 
 def test_a_content_400_rejects_only_its_batch(api):
     """Context length or a content filter is about one batch; stopping the
-    run there threw away every batch already paid for."""
+    run there would throw away every batch already paid for."""
     import json
 
     import openai
@@ -229,7 +229,8 @@ def test_a_failed_batch_keeps_the_batches_around_it(api):
 
 
 def test_the_sdk_does_not_retry_underneath_our_ladder(api):
-    """SDK retries inside our attempts multiplied requests (3 x 3)."""
+    """The SDK does not retry inside our attempts, which would multiply
+    requests (3 x 3)."""
     kwargs: dict = {}
     api([_good_response(_segments())], client_kwargs=kwargs)
     assert kwargs["max_retries"] == 0

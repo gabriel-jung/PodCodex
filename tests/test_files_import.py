@@ -6,19 +6,12 @@ from urllib.parse import quote
 
 import pytest
 
-from tests.fixtures.api_client import make_client
+from tests.fixtures.api_client import library_client, registered_show
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    """TestClient with isolated config whose default_save_path is tmp."""
-    from podcodex.core.app_config import AppConfig
-
-    return make_client(
-        tmp_path,
-        monkeypatch,
-        config=AppConfig(default_save_path=str(tmp_path / "library")),
-    )
+    return library_client(tmp_path, monkeypatch)
 
 
 @pytest.fixture
@@ -36,12 +29,7 @@ def _import(client, src, name=None, folder=None):
 
 
 def _make_local_show(client, tmp_path, name: str) -> Path:
-    """Create + register a plain local show folder."""
-    show = tmp_path / name
-    show.mkdir()
-    r = client.post("/api/shows/register", json={"path": str(show)})
-    assert r.status_code == 200, r.text
-    return show
+    return registered_show(client, tmp_path / name)
 
 
 def test_first_import_creates_and_registers_bucket(client, tmp_path, audio_file):
@@ -146,12 +134,6 @@ def test_create_local_show_then_import_into_it(client, tmp_path, audio_file):
     assert "New Recording" in _unified_stems(client, folder)
 
 
-def test_create_local_show_existing_dir_409(client, tmp_path):
-    (tmp_path / "library" / "Taken").mkdir(parents=True)
-    r = client.post("/api/shows/create-local", json={"name": "Taken"})
-    assert r.status_code == 409
-
-
 def test_create_local_show_409_suggests_a_free_name(client, tmp_path):
     """Same shape as the import 409, so the picker can offer a name instead
     of making the user guess which ones are free."""
@@ -201,16 +183,6 @@ def _set_meta(client, folder, **fields):
     assert r.status_code == 200, r.text
 
 
-def test_import_into_rss_url_show_400(client, tmp_path, audio_file):
-    """A show with a feed URL but no cache yet is still feed-backed: its
-    episodes come from the feed, so loose audio must not land there."""
-    show = _make_local_show(client, tmp_path, "Podcast")
-    _set_meta(client, show, rss_url="https://feed.example/x.xml")
-    assert not (show / ".feed_cache.json").exists()
-    r = _import(client, audio_file, folder=show)
-    assert r.status_code == 400
-
-
 def test_import_into_youtube_show_400(client, tmp_path, audio_file):
     show = _make_local_show(client, tmp_path, "Channel")
     _set_meta(client, show, youtube_url="https://youtube.com/@chan")
@@ -219,7 +191,8 @@ def test_import_into_youtube_show_400(client, tmp_path, audio_file):
 
 def test_accepts_imports_flag_matches_the_import_gate(client, tmp_path, audio_file):
     """The flag the pickers gate on must agree with what the endpoint does,
-    or the UI offers destinations the server rejects."""
+    or the UI offers destinations the server rejects. The feed show has a URL
+    but no cache yet: it is still feed-backed, so loose audio must not land."""
     local = _make_local_show(client, tmp_path, "Voice Memos")
     feed = _make_local_show(client, tmp_path, "Podcast")
     _set_meta(client, feed, rss_url="https://feed.example/x.xml")
@@ -243,30 +216,16 @@ def test_import_into_chosen_show_collision_409(client, tmp_path, audio_file):
     assert r.json()["detail"]["suggested"] == "New Recording-2"
 
 
-def test_import_into_chosen_show_visible_in_unified(client, tmp_path, audio_file):
-    show = _make_local_show(client, tmp_path, "Voice Memos")
-    # Populate the DB first so the import exercises the heal path too.
-    assert _unified_stems(client, str(show)) == set()
-    assert _import(client, audio_file, folder=show).status_code == 200
-    assert "New Recording" in _unified_stems(client, str(show))
-
-
 def _unified_stems(client, folder: str) -> set:
     r = client.get(f"/api/shows/{quote(folder, safe='')}/unified")
     assert r.status_code == 200, r.text
     return {e.get("stem") for e in r.json()}
 
 
-def test_first_import_visible_in_unified(client, tmp_path, audio_file):
-    r = _import(client, audio_file)
-    assert r.status_code == 200
-    assert "New Recording" in _unified_stems(client, r.json()["folder"])
-
-
 def test_import_after_db_populated_visible_in_unified(client, tmp_path, audio_file):
-    """Regression: pipeline.db only bootstraps from a scan while empty, so a
-    file imported after the first /unified fetch never got a DB row and the
-    episode list never showed it."""
+    """A file imported after the first /unified fetch shows in the episode
+    list. pipeline.db only bootstraps from a scan while empty, so the import
+    itself has to get the file a DB row."""
     r1 = _import(client, audio_file)
     assert r1.status_code == 200
     folder = r1.json()["folder"]

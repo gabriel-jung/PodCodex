@@ -1,9 +1,9 @@
 """Where the bot keeps its per-guild state.
 
 ``server_config.json`` (each server's /setup defaults, unlocked shows and
-announce channel) plus ``search_cache.db`` and ``announce_state.db`` used to
-default to the working directory, which under Docker is the discarded
-container layer: every ``docker compose up -d --build`` wiped them.
+announce channel) plus ``search_cache.db`` and ``announce_state.db`` default
+to the data dir, not the working directory, which under Docker is the
+discarded container layer that every ``docker compose up -d --build`` wipes.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ def test_explicit_override_wins(isolated_data_dir: Path, tmp_path: Path) -> None
     assert _resolve_state_path(str(override)) == override
 
 
+@pytest.mark.legacy("bot-state-cwd")
 def test_legacy_working_directory_state_is_migrated_once(
     isolated_data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

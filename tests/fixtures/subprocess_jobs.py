@@ -9,23 +9,6 @@ import time
 from collections.abc import Callable
 
 
-def add(
-    *,
-    progress_cb: Callable[[float, str], None],
-    cancelled: Callable[[], bool],
-    a: int,
-    b: int,
-) -> int:
-    progress_cb(0.0, "start")
-    for i in range(3):
-        if cancelled():
-            return -1
-        progress_cb((i + 1) / 3, f"tick {i}")
-        time.sleep(0.02)
-    progress_cb(1.0, "done")
-    return a + b
-
-
 def boom(
     *,
     progress_cb: Callable[[float, str], None],
@@ -52,6 +35,7 @@ def big_result(
     cancelled: Callable[[], bool],
     size: int,
 ) -> str:
+    progress_cb(0.5, "halfway")
     return "x" * size
 
 

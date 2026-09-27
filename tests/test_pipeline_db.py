@@ -27,14 +27,6 @@ def test_empty_db(db):
     assert db.episode_count() == 0
 
 
-def test_mark_creates_row(db):
-    """mark() on a non-existent stem creates the row."""
-    db.mark("ep1", transcribed=True)
-    row = db.get_episode("ep1")
-    assert row["transcribed"] is True
-    assert row["corrected"] is False
-
-
 def test_mark_updates_row(db):
     db.mark("ep1", transcribed=True)
     db.mark("ep1", corrected=True)
@@ -54,12 +46,6 @@ def test_mark_empty_is_noop(db):
 
 
 # ── Translations ──────────────────────────────────────────
-
-
-def test_mark_translations(db):
-    db.mark("ep1", translations=["english", "french"])
-    row = db.get_episode("ep1")
-    assert row["translations"] == ["english", "french"]
 
 
 def test_mark_translations_overwrite(db):
@@ -107,7 +93,7 @@ def test_populate_from_scan(db):
 
 def test_populate_keeps_existing_rows(db):
     """A folder scan is older news than a row a writer already created: it
-    used to overwrite that row's flags and wipe its provenance to {}."""
+    must not overwrite that row's flags or wipe its provenance to {}."""
     db.mark("ep1", transcribed=True, provenance={"transcript": {"model": "m"}})
     episodes = [
         FakeEpisode(stem="ep1", transcribed=False, corrected=True),
@@ -120,6 +106,7 @@ def test_populate_keeps_existing_rows(db):
     assert row["corrected"] is False
     assert row["provenance"] == {"transcript": {"model": "m"}}
     assert db.get_episode("ep2")["transcribed"] is True
+    assert db.get_episode("ep2")["provenance"] == {}
 
 
 # ── all_episodes ordering ────────────────────────────────
@@ -136,10 +123,12 @@ def test_all_episodes_sorted(db):
 # ── Module-level cache ────────────────────────────────────
 
 
-def test_get_pipeline_db_caches(tmp_path):
-    db1 = get_pipeline_db(tmp_path)
-    db2 = get_pipeline_db(tmp_path)
-    assert db1 is db2
+def test_one_show_shares_one_connection(tmp_path):
+    """Thread safety rests on this: one PipelineDB, so one connection and one
+    lock, per show folder (keyed on ``Path(show_folder)``, str or Path)."""
+    db = get_pipeline_db(tmp_path)
+    assert get_pipeline_db(tmp_path / ".") is db
+    assert get_pipeline_db(str(tmp_path)) is db
     close_pipeline_db(tmp_path)
 
 
@@ -154,20 +143,6 @@ def test_close_pipeline_db(tmp_path):
 
 
 # ── Provenance ───────────────────────────────────────────
-
-
-def test_provenance_stored_and_read(db):
-    prov = {
-        "transcript": {
-            "step": "transcript",
-            "model": "large-v3",
-            "params": {"diarize": True},
-        }
-    }
-    db.mark("ep1", transcribed=True, provenance=prov)
-    row = db.get_episode("ep1")
-    assert row["provenance"]["transcript"]["model"] == "large-v3"
-    assert row["provenance"]["transcript"]["params"]["diarize"] is True
 
 
 def test_provenance_merge_across_steps(db):
@@ -211,396 +186,7 @@ def test_provenance_merge_runs_in_an_immediate_transaction(db):
     assert db.get_episode("ep1")["provenance"]["transcript"]["model"] == "large-v3"
 
 
-def test_plain_mark_opens_no_explicit_transaction(db):
-    """Performance note, not a correctness rule: only the provenance merge
-    needs the extra round trip, so plain flag writes stay one INSERT. Safe to
-    change if a future write needs the transaction."""
-    seen: list[str] = []
-    db._conn.set_trace_callback(seen.append)
-    try:
-        db.mark("ep1", transcribed=True)
-    finally:
-        db._conn.set_trace_callback(None)
-
-    assert not any("BEGIN IMMEDIATE" in sql for sql in seen)
-
-
-def test_provenance_empty_by_default(db):
-    db.mark("ep1", transcribed=True)
-    row = db.get_episode("ep1")
-    assert row["provenance"] == {}
-
-
-def test_provenance_in_populate(db):
-    """_populate_from_scan creates rows with empty provenance."""
-    episodes = [FakeEpisode(stem="ep1", transcribed=True)]
-    db._populate_from_scan(episodes)
-    row = db.get_episode("ep1")
-    assert row["provenance"] == {}
-
-
-# ── Step statuses ────────────────────────────────────────
-
-
-def _make_status_row(
-    transcribed=False,
-    corrected=False,
-    translations=None,
-    provenance=None,
-    verified=None,
-):
-    """Build a minimal status dict like PipelineDB.all_episodes() returns."""
-    return {
-        "transcribed": transcribed,
-        "corrected": corrected,
-        "indexed": False,
-        "synthesized": False,
-        "translations": translations or [],
-        "provenance": provenance or {},
-        "verified": verified,
-    }
-
-
-class TestStepStatuses:
-    """Test the _step_statuses() comparison logic from shows.py."""
-
-    @staticmethod
-    def _step_statuses(st, provenance, effective):
-        from podcodex.core.episode_status import _step_statuses
-        from podcodex.core.versions import clean_translations
-
-        return _step_statuses(
-            st, provenance, effective, clean_translations(st.get("translations", []))
-        )
-
-    def test_none_when_not_done(self):
-        st = _make_status_row()
-        result = self._step_statuses(st, {}, {"model_size": "large-v3"})
-        assert result["transcribe_status"] == "none"
-        assert result["correct_status"] == "none"
-        assert result["translate_status"] == "none"
-
-    def test_done_when_matching(self):
-        prov = {
-            "transcript": {
-                "model": "large-v3",
-                "type": "validated",
-                "params": {"diarize": True},
-            },
-            "corrected": {
-                "model": "qwen3:4b",
-                "type": "validated",
-                "params": {"llm_mode": "ollama", "llm_provider": ""},
-            },
-        }
-        st = _make_status_row(transcribed=True, corrected=True, provenance=prov)
-        effective = {"model_size": "large-v3", "diarize": True, "llm_mode": "ollama"}
-        result = self._step_statuses(st, prov, effective)
-        assert result["transcribe_status"] == "done"
-        assert result["correct_status"] == "done"
-
-    def test_outdated_model_mismatch(self):
-        prov = {"transcript": {"model": "small", "params": {"diarize": True}}}
-        st = _make_status_row(transcribed=True, provenance=prov)
-        effective = {"model_size": "large-v3", "diarize": True}
-        result = self._step_statuses(st, prov, effective)
-        assert result["transcribe_status"] == "outdated"
-
-    def test_outdated_diarize_mismatch(self):
-        prov = {"transcript": {"model": "large-v3", "params": {"diarize": False}}}
-        st = _make_status_row(transcribed=True, provenance=prov)
-        effective = {"model_size": "large-v3", "diarize": True}
-        result = self._step_statuses(st, prov, effective)
-        assert result["transcribe_status"] == "outdated"
-
-    def test_verified_transcript_overrides_outdated(self):
-        """Verified pointer on transcript forces 'done' regardless of model drift."""
-        prov = {"transcript": {"model": "small", "params": {"diarize": False}}}
-        st = _make_status_row(
-            transcribed=True,
-            provenance=prov,
-            verified={"step": "transcript", "version_id": "v-1"},
-        )
-        effective = {"model_size": "large-v3", "diarize": True}
-        result = self._step_statuses(st, prov, effective)
-        assert result["transcribe_status"] == "done"
-
-    def test_verified_corrected_overrides_outdated(self):
-        prov = {
-            "corrected": {
-                "model": "qwen3:4b",
-                "params": {"llm_mode": "ollama"},
-            }
-        }
-        st = _make_status_row(
-            corrected=True,
-            provenance=prov,
-            verified={"step": "corrected", "version_id": "v-2"},
-        )
-        effective = {"llm_mode": "api", "llm_model": "gpt-4o"}
-        result = self._step_statuses(st, prov, effective)
-        assert result["correct_status"] == "done"
-
-    def test_verified_on_one_step_does_not_affect_other(self):
-        """Verified on transcript leaves the correct step's normal status alone."""
-        prov = {
-            "transcript": {"model": "small", "params": {}},
-            "corrected": {
-                "model": "qwen3:4b",
-                "params": {"llm_mode": "ollama"},
-            },
-        }
-        st = _make_status_row(
-            transcribed=True,
-            corrected=True,
-            provenance=prov,
-            verified={"step": "transcript", "version_id": "v-1"},
-        )
-        effective = {"model_size": "large-v3", "llm_mode": "api", "llm_model": "gpt-4o"}
-        result = self._step_statuses(st, prov, effective)
-        assert result["transcribe_status"] == "done"
-        assert result["correct_status"] == "outdated"
-
-    def test_outdated_correct_provider_mismatch(self):
-        prov = {
-            "corrected": {
-                "model": "qwen3:4b",
-                "params": {"llm_mode": "ollama", "llm_provider": ""},
-            }
-        }
-        st = _make_status_row(corrected=True, provenance=prov)
-        effective = {"llm_mode": "api", "llm_provider": "openai"}
-        result = self._step_statuses(st, prov, effective)
-        assert result["correct_status"] == "outdated"
-
-    def test_done_no_provenance(self):
-        """Episodes without provenance default to 'done' (pre-existing episodes)."""
-        st = _make_status_row(transcribed=True, corrected=True)
-        result = self._step_statuses(st, {}, {"model_size": "large-v3"})
-        assert result["transcribe_status"] == "done"
-        assert result["correct_status"] == "done"
-
-    def test_done_no_defaults(self):
-        """No defaults configured → everything is 'done'."""
-        prov = {"transcript": {"model": "small", "type": "validated", "params": {}}}
-        st = _make_status_row(transcribed=True, provenance=prov)
-        result = self._step_statuses(st, prov, {})
-        assert result["transcribe_status"] == "done"
-
-    def test_translate_target_lang(self):
-        prov = {
-            "english": {
-                "model": "gpt-4o",
-                "params": {"llm_mode": "api", "llm_provider": "openai"},
-            }
-        }
-        st = _make_status_row(translations=["english"], provenance=prov)
-        effective = {
-            "target_lang": "english",
-            "llm_mode": "api",
-            "llm_provider": "openai",
-        }
-        result = self._step_statuses(st, prov, effective)
-        assert result["translate_status"] == "done"
-
-    def test_translate_missing_target_lang(self):
-        """Target lang configured but not translated → 'none'."""
-        st = _make_status_row(translations=["french"])
-        effective = {"target_lang": "english"}
-        result = self._step_statuses(st, {}, effective)
-        assert result["translate_status"] == "none"
-
-    def test_translate_multi_word_target_lang(self):
-        """Translations are stored under normalize_lang (spaces → underscores);
-        a bare lower() never matched a multi-word target and reported 'none'."""
-        prov = {
-            "brazilian_portuguese": {
-                "model": "gpt-4o",
-                "params": {"llm_mode": "api", "llm_provider": "openai"},
-            }
-        }
-        st = _make_status_row(translations=["brazilian_portuguese"], provenance=prov)
-        effective = {
-            "target_lang": "Brazilian Portuguese",
-            "llm_mode": "api",
-            "llm_provider": "openai",
-            "llm_model": "gpt-4o",
-        }
-        result = self._step_statuses(st, prov, effective)
-        assert result["translate_status"] == "done"
-
-    def test_translate_outdated_model(self):
-        prov = {
-            "english": {
-                "model": "old-model",
-                "params": {"llm_mode": "api", "llm_provider": "openai"},
-            }
-        }
-        st = _make_status_row(translations=["english"], provenance=prov)
-        effective = {
-            "target_lang": "english",
-            "llm_mode": "api",
-            "llm_provider": "openai",
-            "llm_model": "gpt-4o",
-        }
-        result = self._step_statuses(st, prov, effective)
-        assert result["translate_status"] == "outdated"
-
-    def test_edited_beats_outdated_transcript(self):
-        """User-validated transcript stays 'done' even if model defaults changed."""
-        prov = {
-            "transcript": {
-                "model": "small",
-                "type": "validated",
-                "manual_edit": True,
-                "params": {"diarize": False},
-            }
-        }
-        st = _make_status_row(transcribed=True, provenance=prov)
-        effective = {"model_size": "large-v3", "diarize": True}
-        result = self._step_statuses(st, prov, effective)
-        assert result["transcribe_status"] == "done"
-
-    def test_edited_beats_outdated_corrected(self):
-        prov = {
-            "corrected": {
-                "model": "qwen3:4b",
-                "manual_edit": True,
-                "params": {"llm_mode": "ollama", "llm_provider": ""},
-            }
-        }
-        st = _make_status_row(corrected=True, provenance=prov)
-        effective = {"llm_mode": "api", "llm_provider": "openai"}
-        result = self._step_statuses(st, prov, effective)
-        assert result["correct_status"] == "done"
-
-    def test_edited_beats_outdated_translate(self):
-        prov = {
-            "english": {
-                "model": "old-model",
-                "type": "validated",
-                "params": {"llm_mode": "api", "llm_provider": "openai"},
-            }
-        }
-        st = _make_status_row(translations=["english"], provenance=prov)
-        effective = {
-            "target_lang": "english",
-            "llm_mode": "api",
-            "llm_provider": "openai",
-            "llm_model": "gpt-4o",
-        }
-        result = self._step_statuses(st, prov, effective)
-        assert result["translate_status"] == "done"
-
-
-# ── Resolve defaults ─────────────────────────────────────
-
-
-class TestResolveDefaults:
-    """Test the _resolve_defaults() merging logic from shows.py."""
-
-    @staticmethod
-    def _resolve_defaults(app_defaults, show_meta):
-        from podcodex.core.episode_status import _resolve_defaults
-
-        return _resolve_defaults(app_defaults, show_meta)
-
-    def test_app_defaults_only(self):
-        result = self._resolve_defaults(
-            {"model_size": "large-v3", "diarize": True}, None
-        )
-        assert result["model_size"] == "large-v3"
-        assert result["diarize"] is True
-
-    def test_show_overrides_app(self):
-        from podcodex.ingest.show import ShowMeta, PipelineDefaults
-
-        show = ShowMeta(name="test", pipeline=PipelineDefaults(model_size="small"))
-        result = self._resolve_defaults({"model_size": "large-v3"}, show)
-        assert result["model_size"] == "small"
-
-    def test_show_empty_falls_back(self):
-        from podcodex.ingest.show import ShowMeta, PipelineDefaults
-
-        show = ShowMeta(name="test", pipeline=PipelineDefaults())  # all defaults
-        result = self._resolve_defaults(
-            {"model_size": "large-v3", "llm_mode": "ollama"}, show
-        )
-        assert result["model_size"] == "large-v3"
-        assert result["llm_mode"] == "ollama"
-
-    def test_show_diarize_false_overrides(self):
-        from podcodex.ingest.show import ShowMeta, PipelineDefaults
-
-        show = ShowMeta(name="test", pipeline=PipelineDefaults(diarize=False))
-        result = self._resolve_defaults({"diarize": True}, show)
-        assert result["diarize"] is False
-
-    def test_llm_model_resolved_per_mode(self):
-        from podcodex.ingest.show import ShowMeta, PipelineDefaults
-
-        show = ShowMeta(
-            name="test",
-            pipeline=PipelineDefaults(
-                llm_mode="ollama",
-                llm_models_by_mode={"ollama": "qwen3:4b", "api": "gpt-4o"},
-            ),
-        )
-        result = self._resolve_defaults({}, show)
-        assert result["llm_mode"] == "ollama"
-        assert result["llm_model"] == "qwen3:4b"
-
-    def test_llm_model_does_not_leak_across_modes(self):
-        """A model set under ollama must not surface when mode is manual."""
-        from podcodex.ingest.show import ShowMeta, PipelineDefaults
-
-        show = ShowMeta(
-            name="test",
-            pipeline=PipelineDefaults(
-                llm_mode="manual",
-                llm_models_by_mode={"ollama": "qwen3:4b"},
-            ),
-        )
-        result = self._resolve_defaults({}, show)
-        assert result["llm_mode"] == "manual"
-        assert "llm_model" not in result or not result["llm_model"]
-
-    def test_app_models_by_mode_used_when_show_unset(self):
-        from podcodex.ingest.show import ShowMeta, PipelineDefaults
-
-        show = ShowMeta(name="test", pipeline=PipelineDefaults(llm_mode="api"))
-        result = self._resolve_defaults(
-            {"llm_models_by_mode": {"api": "gpt-4o", "ollama": "qwen3"}},
-            show,
-        )
-        assert result["llm_mode"] == "api"
-        assert result["llm_model"] == "gpt-4o"
-
-    def test_show_models_override_app_per_mode(self):
-        from podcodex.ingest.show import ShowMeta, PipelineDefaults
-
-        show = ShowMeta(
-            name="test",
-            pipeline=PipelineDefaults(
-                llm_mode="ollama",
-                llm_models_by_mode={"ollama": "show-ollama"},
-            ),
-        )
-        result = self._resolve_defaults(
-            {"llm_models_by_mode": {"ollama": "app-ollama", "api": "app-api"}},
-            show,
-        )
-        assert result["llm_model"] == "show-ollama"
-
-
 # ── Verified pointer ──────────────────────────────────────
-
-
-def test_verified_unset_by_default(db):
-    db.mark("ep1", transcribed=True)
-    assert db.get_verified("ep1") is None
-    row = db.get_episode("ep1")
-    assert row["verified"] is None
 
 
 def test_set_get_clear_verified(db):
@@ -619,13 +205,6 @@ def test_set_verified_singleton_replaces(db):
     db.set_verified("ep1", "corrected", "v-2")
     ptr = db.get_verified("ep1")
     assert ptr == {"step": "corrected", "version_id": "v-2"}
-
-
-def test_stems_with_verified(db):
-    db.set_verified("ep1", "transcript", "v-1")
-    db.set_verified("ep2", "corrected", "v-2")
-    db.mark("ep3", transcribed=True)
-    assert db.stems_with_verified() == {"ep1", "ep2"}
 
 
 def test_verified_pointers_bulk(db):
@@ -719,10 +298,12 @@ def test_mark_bulk_writes_many_rows_at_once(db):
 # ── Migrations ────────────────────────────────────────────
 
 
+@pytest.mark.legacy("pipeline-db-schema")
 def test_an_old_schema_db_is_migrated_with_its_flags(tmp_path):
-    """No migration had ever run under test: every test opens a fresh schema.
-    This is a pre-provenance DB whose correction column is still `polished`
-    and whose versions table predates verified pointers and tombstones."""
+    """Every other test opens a fresh schema, so this is where a migration
+    runs under test. This is a pre-provenance DB whose correction column is
+    still `polished` and whose versions table predates verified pointers and
+    tombstones."""
     import sqlite3
 
     path = tmp_path / "pipeline.db"

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+import platform
+
 import pytest
 
 from tests.fixtures.api_client import make_client
@@ -81,3 +83,17 @@ def test_list_hides_dotfiles_and_filters_by_extension(client, tmp_path):
         params={"path": str(root), "show_files": True, "extensions": "txt"},
     )
     assert [f["name"] for f in r.json()["files"]] == ["b.txt"]
+
+
+@pytest.mark.skipif(
+    platform.system() != "Darwin",
+    reason="the bundle refusal is macOS-only: `open` launches .app dirs there",
+)
+def test_fs_open_rejects_app_bundle(client, tmp_path):
+    """`open <bundle>` would launch the app; the route must refuse .app dirs."""
+    bundle = tmp_path / "Evil.app"
+    bundle.mkdir()
+
+    r = client.post("/api/fs/open", params={"path": str(bundle)})
+    assert r.status_code == 200
+    assert "bundle" in (r.json().get("error") or "").lower()

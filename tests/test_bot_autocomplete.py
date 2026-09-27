@@ -10,70 +10,39 @@ from __future__ import annotations
 
 import asyncio
 
-import numpy as np
 import pytest
 
 pytest.importorskip("fastapi")
 
 from podcodex.core.show_passwords import hash_show_password  # noqa: E402
 from podcodex.rag import index_store as rag_index_store  # noqa: E402
+from tests.fixtures.bot import make_bot  # noqa: E402
+from tests.fixtures.index import add_show, chunk  # noqa: E402
 
 DIM = 8
 
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
+def store(isolated_index):
     """Two shows indexed under the default combo; "Locked" has a password."""
-    monkeypatch.setenv("PODCODEX_INDEX", str(tmp_path / "index"))
-    rag_index_store.get_index_store.cache_clear()
     st = rag_index_store.get_index_store()
     for show, show_id in (("Public", "public_1111aaaa"), ("Locked", "locked_2222bbbb")):
-        col = f"{show.lower()}__bge-m3__semantic"
-        st.ensure_collection(
-            col, show=show, model="bge-m3", chunker="semantic", dim=DIM
-        )
-        st.set_collection_identity(col, show_id=show_id, show=show)
-        st.save_chunks(
-            col,
-            f"{show.lower()}-ep1",
-            [
-                {
-                    "text": "hello",
-                    "episode": f"{show.lower()}-ep1",
-                    "show": show,
-                    "source": "transcript",
-                    "dominant_speaker": f"{show} Speaker",
-                    "start": 0.0,
-                    "end": 1.0,
-                }
-            ],
-            np.zeros((1, DIM), dtype=np.float32),
+        stem = f"{show.lower()}-ep1"
+        add_show(
+            st,
+            show,
+            {stem: [chunk(episode=stem, show=show, speaker=f"{show} Speaker")]},
+            show_id=show_id,
         )
     st.set_show_password(
         "locked_2222bbbb", hash_show_password("x" * 16), show_label="Locked"
     )
-    yield st
-    rag_index_store.get_index_store.cache_clear()
+    return st
 
 
 def _bot(store):
-    from podcodex.bot.bot import BotConfig, PodCodexBot
-    from podcodex.bot.autocomplete import _AutocompleteCache
-
-    bot = PodCodexBot.__new__(PodCodexBot)
-    bot.config = BotConfig()
-    bot._local = store
-    bot._server_cfg = {}
-    bot._shows = {}
-    bot._ac_cache = _AutocompleteCache()
-    bot._save_server_config = lambda: None
-    bot._reload_shows()  # populates _shows from the password table
-
-    async def _noop():
-        return None
-
-    bot._refresh_if_stale = _noop
-    return bot
+    """The real bot over the seeded store (they share the isolated index)."""
+    return make_bot(store.path.parent)[0]
 
 
 class _Namespace:

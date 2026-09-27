@@ -1,9 +1,9 @@
 """Tests for podcodex.core.cache directory resolution.
 
 The model cache must sit under the one definition of the data dir
-(``app_paths.data_dir()``). A second definition here is what used to send the
-bot's HF cache to ``~/.podcodex/models`` inside the container, a path on no
-compose volume, so BGE-M3 was re-downloaded on every recreate.
+(``app_paths.data_dir()``). A second definition sends the bot's HF cache to
+``~/.podcodex/models`` inside the container, a path on no compose volume, so
+BGE-M3 is re-downloaded on every recreate.
 """
 
 from __future__ import annotations
@@ -198,8 +198,8 @@ def test_delete_cached_model_refuses_a_traversing_id(isolated_data_dir: Path) ->
 def test_delete_cached_model_refuses_anything_but_one_model_dir(
     isolated_data_dir: Path, model_id: str
 ) -> None:
-    """``hub / ".."`` passed the old parent check and would have removed the
-    whole HuggingFace cache."""
+    """``hub / ".."`` passes a naive parent check, and deleting it removes
+    the whole HuggingFace cache."""
     hf_root = cache.get_hf_cache_dir()
     (hf_root / "hub" / "models--x--y").mkdir(parents=True)
 

@@ -15,7 +15,7 @@ HOST = {"host": "127.0.0.1:18811"}
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     # Entered, so the lifespan binds the broadcast loop.
-    with make_client(tmp_path, monkeypatch) as c:
+    with make_client(tmp_path, monkeypatch, fresh=True) as c:
         yield c
 
 

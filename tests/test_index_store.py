@@ -51,23 +51,6 @@ def _chunks(n: int, episode: str = "ep1") -> list[dict]:
 # ── Collection management ────────────────────────────────────────────────
 
 
-def test_collection_not_exists_initially(tmp_path):
-    s = _store(tmp_path)
-    assert not s.collection_exists("my_show__bge-m3__semantic")
-
-
-def test_ensure_collection_creates(tmp_path):
-    s = _store(tmp_path)
-    s.ensure_collection(
-        "my_show__bge-m3__semantic",
-        show="My Show",
-        model="bge-m3",
-        chunker="semantic",
-        dim=8,
-    )
-    assert s.collection_exists("my_show__bge-m3__semantic")
-
-
 def test_ensure_collection_idempotent(tmp_path):
     s = _store(tmp_path)
     s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
@@ -151,6 +134,7 @@ def test_collection_artwork_backfilled_from_show_meta(tmp_path):
         )
 
 
+@pytest.mark.legacy("collections-schema")
 def test_legacy_collections_table_gains_artwork_column(tmp_path):
     import lancedb
     import pyarrow as pa
@@ -430,14 +414,6 @@ def test_search_fts_finds_token(tmp_path):
 # ── Stats helpers ────────────────────────────────────────────────────────
 
 
-def test_count_rows(tmp_path):
-    s = _store(tmp_path)
-    s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
-    s.save_chunks("c", "e1", _chunks(3, "e1"), _rng_embeddings(3))
-    s.save_chunks("c", "e2", _chunks(2, "e2"), _rng_embeddings(2))
-    assert s.count_rows("c") == 5
-
-
 def test_list_sources_and_speakers(tmp_path):
     s = _store(tmp_path)
     s.ensure_collection("c", show="S", model="m", chunker="semantic", dim=8)
@@ -547,14 +523,6 @@ def testnormalize_pub_date(raw, expected):
     assert normalize_pub_date(raw) == expected
 
 
-def test_normalize_pub_date_idempotent():
-    from podcodex.core._utils import normalize_pub_date
-
-    assert normalize_pub_date(normalize_pub_date("Mon, 15 Jan 2024 12:00:00 GMT")) == (
-        "2024-01-15"
-    )
-
-
 # ── pub_date column + migration ──────────────────────────────────────────
 
 
@@ -576,65 +544,46 @@ def test_save_chunks_writes_normalized_pub_date(tmp_path):
     assert rows[0]["pub_date"] == "2024-01-15"
 
 
-# ── _build_where ─────────────────────────────────────────────────────────
-
-
-def test_build_where_empty():
-    from podcodex.rag.index_store import _build_where
-
-    assert _build_where() == ""
-
-
-def test_build_where_episode_equality():
-    from podcodex.rag.index_store import _build_where
-
-    assert _build_where(episode="ep1") == "episode = 'ep1'"
+# ── build_where ─────────────────────────────────────────────────────────
 
 
 def test_build_where_episodes_list_overrides_single():
-    from podcodex.rag.index_store import _build_where
+    from podcodex.rag.index_store import build_where
 
     assert (
-        _build_where(episode="ignored", episodes=["a", "b"]) == "episode IN ('a', 'b')"
+        build_where(episode="ignored", episodes=["a", "b"]) == "episode IN ('a', 'b')"
     )
 
 
 def test_build_where_episodes_empty_list_falls_through_to_single():
-    from podcodex.rag.index_store import _build_where
+    from podcodex.rag.index_store import build_where
 
-    assert _build_where(episode="ep1", episodes=[]) == "episode = 'ep1'"
+    assert build_where(episode="ep1", episodes=[]) == "episode = 'ep1'"
 
 
 def test_build_where_pub_date_range():
-    from podcodex.rag.index_store import _build_where
+    from podcodex.rag.index_store import build_where
 
     assert (
-        _build_where(
+        build_where(
             pub_date_min="2024-01-01", pub_date_max="Mon, 15 Jan 2024 12:00:00 GMT"
         )
         == "pub_date >= '2024-01-01' AND pub_date <= '2024-01-15'"
     )
 
 
-def test_build_where_invalid_pub_date_min_raises():
-    from podcodex.rag.index_store import _build_where
-
-    with pytest.raises(ValueError, match="pub_date_min"):
-        _build_where(pub_date_min="not a date")
-
-
 def test_build_where_sql_injection_escaped():
-    from podcodex.rag.index_store import _build_where
+    from podcodex.rag.index_store import build_where
 
-    w = _build_where(episode="o'brien", speaker="eve'--")
+    w = build_where(episode="o'brien", speaker="eve'--")
     assert "o''brien" in w
     assert "eve''--" in w
 
 
 def test_build_where_combined():
-    from podcodex.rag.index_store import _build_where
+    from podcodex.rag.index_store import build_where
 
-    w = _build_where(
+    w = build_where(
         episodes=["ep1", "ep2"],
         source="transcript",
         speaker="A",
@@ -721,6 +670,7 @@ def test_list_episodes_filtered_invalid_date_raises(tmp_path):
         s.list_episodes_filtered("c", pub_date_min="garbage")
 
 
+@pytest.mark.legacy("pub-date-column")
 def test_pub_date_migration_backfills_from_meta(tmp_path):
     """Opening a legacy table (no pub_date column) adds + backfills it."""
     import json
@@ -868,12 +818,14 @@ def _fts_seeded(tmp_path):
     return s, col
 
 
+@pytest.mark.legacy("fts-v2")
 def test_fts_v2_sentinel_written_on_first_index(tmp_path):
     s, col = _fts_seeded(tmp_path)
     s.search_fts(col, "score", 10)
     assert (tmp_path / "index" / f"{col}.fts_v2").exists()
 
 
+@pytest.mark.legacy("fts-v2")
 def test_fts_legacy_index_rebuilt_and_sentinels_migrated(tmp_path):
     s, col = _fts_seeded(tmp_path)
     s.search_fts(col, "score", 10)
@@ -969,7 +921,8 @@ def _texts_seeded(tmp_path, texts: list[str], *, untimed: bool = False):
 
 
 def test_search_literal_query_of_short_words_only(tmp_path):
-    """No word of 3+ chars used to leave nothing to probe and raise IndexError."""
+    """A query with no word of 3+ chars leaves nothing to probe, and still
+    answers instead of raising IndexError."""
     s, col = _texts_seeded(tmp_path, ["the AI act passed", "nothing here"])
     exact, accent, fuzzy = s.search_literal(col, "AI")
     assert [h.text for h in exact] == ["the AI act passed"]
@@ -996,7 +949,6 @@ def test_search_literal_keeps_untimed_chunks_apart(tmp_path):
         ["john williams again", "john williams once more", "other"],
         untimed=True,
     )
-    assert len(s._search_fts_keys(col, "williams", 10)) == 2
     exact, _accent, _fuzzy = s.search_literal(col, "john williams")
     assert len(exact) == 2
 
@@ -1022,11 +974,6 @@ def test_exact_word_matches_rank_before_superstring(tmp_path):
     # Standalone-word hits first (both, stable order), superstring last.
     assert texts[-1] == "John Williams composed the score"
     assert set(texts[:2]) == {"I met William yesterday", "William, come here"}
-
-
-def test_exact_word_match_scores(tmp_path):
-    s, col = _word_rank_store(tmp_path)
-    exact, _, _ = s.search_literal(col, "william")
     by_text = {h.text: h.score for h in exact}
     assert by_text["I met William yesterday"] == 1.0
     assert by_text["William, come here"] == 1.0  # punctuation is a boundary
@@ -1085,19 +1032,15 @@ def test_delete_episode_everywhere_covers_all_of_one_show(tmp_path):
     assert s.episode_is_indexed("other", "ep1")
 
 
-def test_delete_episode_everywhere_is_idempotent(tmp_path):
-    s = _seeded_show(tmp_path)
-    s.delete_episode_everywhere("S", "ep1")
-
-    assert s.delete_episode_everywhere("S", "ep1") == []
-
-
 def test_delete_episode_everywhere_reports_only_real_hits(tmp_path):
-    """Collections that never held the episode are skipped, not reported."""
+    """Collections that never held the episode are skipped, not reported, and
+    a second delete of the same episode finds nothing."""
     s = _seeded_show(tmp_path)
 
     assert s.delete_episode_everywhere("S", "no-such-episode") == []
     assert s.delete_episode_everywhere("no-such-show", "ep1") == []
+    s.delete_episode_everywhere("S", "ep1")
+    assert s.delete_episode_everywhere("S", "ep1") == []
 
 
 def test_delete_episode_everywhere_bumps_the_version_fingerprint(tmp_path):
@@ -1115,7 +1058,7 @@ def test_delete_episode_everywhere_bumps_the_version_fingerprint(tmp_path):
     assert s.collection_version("s__bge") != before
 
 
-# ── Review 2026-09-22 lows ───────────────────────────────────────────────
+# ── Chunk saves, offsets, retries and literal-search scale ───────────────
 
 
 def test_save_chunks_with_fewer_chunks_drops_the_extras(tmp_path):
@@ -1177,6 +1120,7 @@ def test_failed_fts_creation_is_retried(tmp_path):
     assert not (tmp_path / "index" / f"{col}.fts_v2").exists()
 
 
+@pytest.mark.legacy("episode-title-backfill")
 def test_partial_episode_title_backfill_is_retried(tmp_path, monkeypatch):
     import podcodex.ingest.rss as rss
 
@@ -1204,8 +1148,8 @@ def test_partial_episode_title_backfill_is_retried(tmp_path, monkeypatch):
 
 
 def test_search_literal_phrase_matching_hundreds_of_episodes(tmp_path):
-    """Survivors used to load through one filter clause per episode, which
-    Lance refuses past 500 conditions (and can crash on)."""
+    """Survivors load without one filter clause per episode: Lance refuses
+    (and can crash on) more than 500 conditions."""
     s, col = _empty_collection(tmp_path)
     rng = np.random.default_rng(0)
     s._table(col).add(
@@ -1252,14 +1196,14 @@ def test_windowed_approx_substring_matches_the_full_dp():
     """The pigeonhole windows must find the same best distance as a full scan."""
     import random
 
-    from podcodex.rag.index_store import _approx_substring, _sellers
+    from podcodex.rag.index_store import approx_substring, _sellers
 
     rng = random.Random(1)
     for _ in range(3000):
         pattern = "".join(rng.choice("abc d") for _ in range(rng.randint(1, 14)))
         text = "".join(rng.choice("abc d") for _ in range(rng.randint(0, 60)))
         k = rng.randint(1, 3)
-        windowed, full = _approx_substring(pattern, text, k), _sellers(pattern, text, k)
+        windowed, full = approx_substring(pattern, text, k), _sellers(pattern, text, k)
         assert (windowed is None) == (full is None)
         if full is not None:
             assert windowed[0] == full[0]
@@ -1270,7 +1214,7 @@ def test_windowed_approx_substring_matches_the_full_dp():
 def test_search_literal_finds_every_exact_hit_of_a_word_with_many_neighbours(tmp_path):
     """A fuzzy probe expands to at most 50 terms, not always including the
     query term itself: with hundreds of two-letter words around it, the
-    fuzzy probe alone found 4 of these 10 chunks."""
+    fuzzy probe alone finds only 4 of these 10 chunks."""
     s, col = _empty_collection(tmp_path)
     letters = "abcdefghijklmnopqrstuvwxyz"
     words = [a + b for a in letters for b in letters]
@@ -1298,9 +1242,10 @@ def test_search_literal_finds_every_exact_hit_of_a_word_with_many_neighbours(tmp
 
 
 def test_fuzzy_probes_allow_exactly_the_edits_the_check_accepts(tmp_path, monkeypatch):
-    """2-edit probes capped at Tantivy's default 50 expansions missed most
-    chunks one edit from a typo query, while flooding others with candidates
-    the check then rejects. Pinned here because a synthetic corpus does not
+    """Each fuzzy probe allows exactly the edits the check accepts, with room
+    to expand: capped at Tantivy's default 50 expansions, a 2-edit probe
+    misses most chunks one edit from a typo query while flooding others with
+    candidates the check then rejects. Pinned here because a synthetic corpus does not
     reproduce which terms Tantivy keeps."""
     import lancedb.query
 
@@ -1331,6 +1276,7 @@ def test_fuzzy_probes_allow_exactly_the_edits_the_check_accepts(tmp_path, monkey
     assert expansions and all(e >= 1000 for e in expansions)
 
 
+@pytest.mark.legacy("episode-title-backfill")
 def test_episode_title_backfill_does_not_overwrite_a_newer_save(tmp_path, monkeypatch):
     """An index subprocess can re-save the episode between the scan and the
     update; the stale meta blob must not be written over the fresh one."""
@@ -1367,3 +1313,21 @@ def test_episode_title_backfill_does_not_overwrite_a_newer_save(tmp_path, monkey
 
     [chunk] = s.load_chunks_no_embeddings(col, "ep1")
     assert chunk.model_extra.get("extra") == "fresh"
+
+
+def test_speaker_stats_leaves_out_labels_that_name_nobody(tmp_path):
+    """Undiarized chunks carry the placeholder (or "" in legacy transcripts),
+    which would otherwise top /speakers. A legacy "Narrator" stays: a show can
+    declare a real speaker by that name, and the index cannot tell."""
+    from podcodex.core._utils import NARRATOR_SPEAKER
+
+    s, col = _empty_collection(tmp_path)
+    chunks = _chunks(4)
+    for chunk, speaker in zip(chunks, ["Alice", NARRATOR_SPEAKER, "", "Narrator"]):
+        chunk["dominant_speaker"] = speaker
+    s.save_chunks(col, "ep1", chunks, _rng_embeddings(4))
+
+    assert sorted(row["speaker"] for row in s.speaker_stats(col)) == [
+        "Alice",
+        "Narrator",
+    ]

@@ -754,7 +754,7 @@ def merge_consecutive_segments(
     n_input = len(segments)
     result = []
     for seg in segments:
-        speaker = seg.get("speaker_name") or seg.get("speaker") or "UNKNOWN"
+        speaker = seg.get("speaker") or "UNKNOWN"
         raw_start = seg.get("start")
         raw_end = seg.get("end")
         has_times = raw_start is not None and raw_end is not None

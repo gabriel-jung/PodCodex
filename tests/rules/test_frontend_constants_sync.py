@@ -2,8 +2,9 @@
 
 Backend constants mirrored by hand in the frontend:
 
-- Speaker labels: ``podcodex.core._utils`` (NARRATOR_SPEAKER / BREAK_SPEAKER /
-  REMOVE_SPEAKER / UNKNOWN_SPEAKERS) mirrored in ``frontend/src/lib/speakers.ts``.
+- Speaker labels: ``podcodex.core._utils`` (NARRATOR_SPEAKER /
+  LEGACY_NARRATOR_SPEAKER / BREAK_SPEAKER / REMOVE_SPEAKER / UNKNOWN_SPEAKERS)
+  mirrored in ``frontend/src/lib/speakers.ts``.
 - Speech density thresholds: ``podcodex.core.transcribe`` (MIN_DENSITY /
   MAX_DENSITY) mirrored in ``frontend/src/hooks/useSegmentFiltering.ts``.
 
@@ -22,13 +23,14 @@ import pytest
 
 from podcodex.core._utils import (
     BREAK_SPEAKER,
+    LEGACY_NARRATOR_SPEAKER,
     NARRATOR_SPEAKER,
     REMOVE_SPEAKER,
     UNKNOWN_SPEAKERS,
 )
 from podcodex.core.transcribe import MAX_DENSITY, MIN_DENSITY
 
-FRONTEND_SRC = Path(__file__).resolve().parents[1] / "frontend" / "src"
+FRONTEND_SRC = Path(__file__).resolve().parents[2] / "frontend" / "src"
 SPEAKERS_FILE = FRONTEND_SRC / "lib" / "speakers.ts"
 FILTERING_FILE = FRONTEND_SRC / "hooks" / "useSegmentFiltering.ts"
 
@@ -67,6 +69,7 @@ def _number_const(name: str) -> float:
     "name,expected",
     [
         ("NARRATOR_SPEAKER", NARRATOR_SPEAKER),
+        ("LEGACY_NARRATOR_SPEAKER", LEGACY_NARRATOR_SPEAKER),
         ("BREAK_SPEAKER", BREAK_SPEAKER),
         ("REMOVE_SPEAKER", REMOVE_SPEAKER),
     ],
@@ -258,4 +261,26 @@ def test_no_frontend_api_path_triggers_a_redirect() -> None:
     assert not redirecting, (
         "these frontend paths redirect (usually a missing trailing slash); "
         f"they break `make dev-no-tauri`: {redirecting}"
+    )
+
+
+# ── Generated API types ─────────────────────────────────────────────────
+
+
+def test_generated_types_match_the_pydantic_models() -> None:
+    """``generated-types.ts`` is checked in; a model edited without
+    ``make types`` leaves the frontend typechecking against old shapes, and
+    the drift only shows up as a missing field at runtime."""
+    import importlib.util
+
+    script = FRONTEND_SRC.parents[1] / "scripts" / "generate_types.py"
+    spec = importlib.util.spec_from_file_location("_generate_types", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    content, _count = module.build()
+
+    assert content == _ts_src(FRONTEND_SRC / "api" / "generated-types.ts"), (
+        "generated-types.ts is stale: run `make types`"
     )

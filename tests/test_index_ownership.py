@@ -50,8 +50,8 @@ def test_machine_id_blank_env_falls_through(monkeypatch, tmp_path):
 
 
 def test_a_concurrent_first_run_adopts_the_id_already_written(monkeypatch, tmp_path):
-    """Two processes minting on a fresh install used to each keep their own
-    id; the one that lost the race now reads the winner's."""
+    """Two processes minting on a fresh install end up with one id: the one
+    that loses the race reads the winner's."""
     from podcodex.core import machine_id as mod
 
     monkeypatch.delenv("PODCODEX_MACHINE_ID", raising=False)
@@ -86,13 +86,6 @@ def _unowned(monkeypatch, tmp_path, machine="machine-a"):
     idx = tmp_path / "index"
     idx.mkdir()
     return idx
-
-
-def test_read_origin_empty_when_unstamped(monkeypatch, tmp_path):
-    from podcodex.rag import index_origin as mod
-
-    idx = _unowned(monkeypatch, tmp_path)
-    assert mod.read_origin(idx) == ""
 
 
 def test_unstamped_index_is_not_a_replica(monkeypatch, tmp_path):
@@ -189,41 +182,22 @@ def test_existing_unstamped_index_stays_unowned(monkeypatch, tmp_path):
     assert store.get_show_passwords() == {"S": "sha256:abc"}
 
 
-def test_owner_may_write_passwords(monkeypatch, tmp_path):
-    from podcodex.rag.index_store import IndexStore
-
-    monkeypatch.setenv("PODCODEX_MACHINE_ID", "desktop")
-    store = IndexStore(tmp_path / "index")
-    store.set_show_password("S", "sha256:abc")
-    assert store.get_show_passwords() == {"S": "sha256:abc"}
-
-
-def test_replica_refuses_password_write(monkeypatch, tmp_path):
+def test_replica_refuses_password_writes_but_still_reads_them(monkeypatch, tmp_path):
+    """Refusal is write-only: the bot must keep serving access control."""
     from podcodex.rag.index_origin import IndexOwnershipError, is_replica
     from podcodex.rag.index_store import IndexStore
 
     monkeypatch.setenv("PODCODEX_MACHINE_ID", "desktop")
-    IndexStore(tmp_path / "index")  # creates and stamps
+    owner = IndexStore(tmp_path / "index")  # creates and stamps
+    owner.set_show_password("S", "sha256:abc")
 
     monkeypatch.setenv("PODCODEX_MACHINE_ID", "bot-host")
     replica = IndexStore(tmp_path / "index")
     assert is_replica(replica.path) is True
     with pytest.raises(IndexOwnershipError):
-        replica.set_show_password("S", "sha256:abc")
+        replica.set_show_password("S", "sha256:new")
     with pytest.raises(IndexOwnershipError):
         replica.delete_show_password("S")
-
-
-def test_replica_still_reads_passwords(monkeypatch, tmp_path):
-    """Refusal is write-only. The bot must keep serving access control."""
-    from podcodex.rag.index_store import IndexStore
-
-    monkeypatch.setenv("PODCODEX_MACHINE_ID", "desktop")
-    owner = IndexStore(tmp_path / "index")
-    owner.set_show_password("S", "sha256:abc")
-
-    monkeypatch.setenv("PODCODEX_MACHINE_ID", "bot-host")
-    replica = IndexStore(tmp_path / "index")
     assert replica.get_show_passwords() == {"S": "sha256:abc"}
 
 
@@ -292,12 +266,15 @@ def test_manage_passwords_cli_keys_on_show_id(monkeypatch, tmp_path, capsys):
         dim=8,
         show_id="my_show_abcd1234",
     )
-    monkeypatch.setattr("builtins.input", lambda *_a: "")
+    # Name the show, generate a password, then quit.
+    answers = iter(["My Show", "g", ""])
+    monkeypatch.setattr("builtins.input", lambda *_a: next(answers))
     botmod._manage_passwords_cli(str(tmp_path / "index"))
     assert "My Show" in capsys.readouterr().out
 
-    store.set_show_password("my_show_abcd1234", "sha256:abc", show_label="My Show")
-    assert list(store.get_show_password_entries()) == ["my_show_abcd1234"]
+    entries = store.get_show_password_entries()
+    assert list(entries) == ["my_show_abcd1234"]
+    assert entries["my_show_abcd1234"]["label"] == "My Show"
 
 
 # ── Which writes the guard covers ────────────────────────────────────────
@@ -347,7 +324,7 @@ def test_replica_still_serves_reads(monkeypatch, tmp_path):
 
 
 def test_an_empty_id_file_is_replaced_once(monkeypatch, tmp_path):
-    """A truncated file used to make every call mint a new id."""
+    """A truncated id file is replaced once, not re-minted on every call."""
     from podcodex.core import machine_id as mod
 
     monkeypatch.delenv("PODCODEX_MACHINE_ID", raising=False)

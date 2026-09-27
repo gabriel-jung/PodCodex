@@ -168,8 +168,12 @@ def test_changelog_section_empty_for_an_unknown_version():
 
 
 def test_bot_revision_reports_the_running_version():
+    """An empty version silently turns off update announcements
+    (_announce_version_if_changed returns early on it)."""
+    import podcodex
+
     version, sha = bot_revision()
-    assert version
+    assert version == podcodex.__version__
     # sha is "" wherever the checkout is unavailable; here it is a real repo.
     assert sha == "" or len(sha) >= 7
 
@@ -214,35 +218,28 @@ def test_git_refuses_foreign_root(tmp_path, monkeypatch):
 
 
 def _seed(tmp_path, shows):
-    import numpy as np
     from podcodex.rag.index_store import IndexStore
+    from tests.fixtures.index import add_show, chunk
 
     store = IndexStore(tmp_path / "index")
     for show, stems in shows.items():
-        col = f"{show.lower()}__bge-m3__semantic"
-        store.ensure_collection(
-            col, show=show, model="bge-m3", chunker="semantic", dim=8
+        add_show(
+            store,
+            show,
+            {
+                stem: [
+                    chunk(
+                        "long enough sentence to survive the chunker minimum "
+                        "length filter here",
+                        episode=stem,
+                        show=show,
+                        episode_title=stem.upper(),
+                        pub_date="2026-04-21",
+                    )
+                ]
+                for stem in stems
+            },
         )
-        for stem in stems:
-            chunks = [
-                {
-                    "text": "long enough sentence to survive the chunker minimum length filter here",
-                    "episode": stem,
-                    "show": show,
-                    "source": "transcript",
-                    "dominant_speaker": "sp",
-                    "start": 0.0,
-                    "end": 1.0,
-                    "episode_title": stem.upper(),
-                    "pub_date": "2026-04-21",
-                }
-            ]
-            store.save_chunks(
-                col,
-                stem,
-                chunks,
-                np.random.default_rng(0).random((1, 8), dtype=np.float32),
-            )
     return store
 
 
@@ -294,7 +291,9 @@ def test_tick_respects_locked_show_access(tmp_path):
 
     store = _seed(tmp_path, {"Pub": ["p1"], "Secret": ["s1"]})
     bot = _bot(tmp_path)
-    store.set_show_password("Secret", "sha256:" + "0" * 64)
+    from tests.fixtures.index import show_id_of
+
+    store.set_show_password(show_id_of(store, "Secret"), "sha256:" + "0" * 64)
     bot._reload_shows()
     fake = _FakeChannel()
     bot.get_channel = lambda cid: fake  # type: ignore[assignment]

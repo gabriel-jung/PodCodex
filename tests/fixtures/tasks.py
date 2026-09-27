@@ -37,3 +37,18 @@ def active_task(key: str, task_id: str = "t1", *, finished: bool = False):
     finally:
         task_manager.unlock(key)
         task_manager._tasks.pop(task_id, None)
+
+
+def wait_task(task_id: str, timeout: float = 5.0):
+    """Poll ``task_manager`` until *task_id* finishes; return its ``TaskInfo``."""
+    import time
+
+    from podcodex.api.tasks import task_manager
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        info = task_manager.get(task_id)
+        if info is not None and info.finished_at is not None:
+            return info
+        time.sleep(0.02)
+    raise AssertionError(f"task {task_id} never finished")

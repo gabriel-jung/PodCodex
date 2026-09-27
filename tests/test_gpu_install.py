@@ -275,6 +275,7 @@ def _legacy_install(root: Path, version="1.2.3") -> None:
     (root / "activated").touch()
 
 
+@pytest.mark.legacy("gpu-flat-layout")
 def test_a_legacy_flat_install_is_still_read(release):
     root, _build, _app = release
     _legacy_install(root)
@@ -284,6 +285,7 @@ def test_a_legacy_flat_install_is_still_read(release):
     assert gpu_backend.is_gpu_activated()
 
 
+@pytest.mark.legacy("gpu-flat-layout")
 def test_installing_over_a_legacy_install_moves_to_a_folder(release):
     root, build, app = release
     _legacy_install(root)
@@ -301,6 +303,7 @@ def test_installing_over_a_legacy_install_moves_to_a_folder(release):
     )
 
 
+@pytest.mark.legacy("gpu-flat-layout")
 def test_an_interrupted_legacy_install_is_never_trusted(release):
     root, _build, _app = release
     _legacy_install(root)
@@ -383,7 +386,7 @@ def test_activate_and_uninstall_refuse_while_a_download_runs(release):
 
 
 def test_a_damaged_part_is_downloaded_again_instead_of_failing(release):
-    """A file quarantined by an antivirus used to fail every later update."""
+    """A file quarantined by an antivirus must not fail every later update."""
     root, build, app = release
     gpu_backend.download_and_install(_cb, manifest_url=build())
     (_active(root) / "_internal/torch/lib/libcudnn.so").unlink()
@@ -407,10 +410,11 @@ def test_a_drive_relative_archive_name_is_refused(release):
         gpu_backend.download_and_install(_cb, manifest_url=url)
 
 
+@pytest.mark.legacy("gpu-flat-layout")
 def test_a_legacy_carry_over_drops_the_old_server_dist_info(release):
     """A two-archive release whose cuda tag matches carries the whole legacy
     tree. Its dist-info has the version in the directory name; the old one
-    beside the new made --version report the older release."""
+    left beside the new makes --version report the older release."""
     root, build, app = release
     _legacy_install(root)
     (root / "_internal/podcodex-1.2.3.dist-info").mkdir()
@@ -439,3 +443,78 @@ def test_a_legacy_carry_over_drops_the_old_server_dist_info(release):
     assert not (active / "_internal/podcodex-1.2.3.dist-info").exists()
     # The reused legacy files came along.
     assert (active / "_internal/torch/lib/libcudnn.so").read_bytes() == b"old-cuda"
+
+
+# ── The sidecar archive is verified, never best-effort ──────────────────
+
+
+def test_gpu_install_refuses_manifest_without_server_hash(tmp_path, monkeypatch):
+    """server-core.tar.gz becomes the executed sidecar, so its hash is required.
+
+    It comes from the manifest, not an optional ``<archive>.sha256`` sidecar
+    fetch, where a 404 or a network blip would downgrade the integrity check
+    on the one archive that carries code to a log warning.
+    """
+    import json
+
+    from podcodex.api import gpu_backend
+
+    monkeypatch.setattr(gpu_backend, "_ensure_bundle_mode", lambda: None)
+    monkeypatch.setattr(gpu_backend, "_ensure_platform_supported", lambda: None)
+    monkeypatch.setattr(gpu_backend, "gpu_install_dir", lambda: tmp_path / "gpu")
+    monkeypatch.setattr(
+        gpu_backend,
+        "_fetch_text",
+        lambda url, **kw: json.dumps(
+            {
+                "version": "cu128-v1",
+                "archive": "cuda-libs-cu128-v1.tar.gz",
+                "sha256": "a" * 64,
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="server_sha256"):
+        gpu_backend.download_and_install(lambda *a: None, "https://x/cuda-libs.json")
+
+
+def test_gpu_packager_publishes_every_part_hash(tmp_path):
+    """The packager must emit what the installer requires: every part with its
+    sha256 (the server core's included) and content tags that only move when
+    the part's files do."""
+    import importlib.util
+    import tarfile
+    from pathlib import Path
+
+    from podcodex.api.gpu_backend import _manifest_parts
+
+    spec = importlib.util.spec_from_file_location(
+        "package_gpu", Path("packaging/package_gpu.py")
+    )
+    package_gpu = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(package_gpu)
+
+    build = tmp_path / "onedir"
+    for rel, data in {
+        "podcodex-server-gpu.exe": b"exe",
+        "_internal/podcodex/app.py": b"code",
+        "_internal/torch/lib/torch_cuda.dll": b"torch",
+        "_internal/torch/lib/cudnn64_9.dll": b"cudnn",
+    }.items():
+        (build / rel).parent.mkdir(parents=True, exist_ok=True)
+        (build / rel).write_bytes(data)
+
+    first = package_gpu.package(build, tmp_path / "out1", ">=2.7")
+    parts = {p.name: p for p in _manifest_parts(first)}
+    assert set(parts) == {"server-core", "torch-runtime", "cuda-libs"}
+    assert first["server_sha256"] == parts["server-core"].sha256
+    with tarfile.open(tmp_path / "out1" / parts["torch-runtime"].archive) as tar:
+        assert tar.getnames() == ["_internal/torch/lib/torch_cuda.dll"]
+
+    (build / "_internal/podcodex/app.py").write_bytes(b"new code")
+    second = {
+        p.name: p
+        for p in _manifest_parts(package_gpu.package(build, tmp_path / "out2", ">=2.7"))
+    }
+    assert second["cuda-libs"].tag == parts["cuda-libs"].tag
+    assert second["torch-runtime"].tag == parts["torch-runtime"].tag

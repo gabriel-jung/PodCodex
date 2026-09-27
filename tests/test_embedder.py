@@ -41,21 +41,6 @@ def _make_pplx_mocks():
     return transformers_mock, st_mock
 
 
-def test_pplx_encode_passages_shape():
-    transformers_mock, st_mock = _make_pplx_mocks()
-    with _mock_modules("transformers", "sentence_transformers"):
-        sys.modules["transformers"] = transformers_mock
-        sys.modules["sentence_transformers"] = st_mock
-        from importlib import reload
-        import podcodex.rag.embedder as emb_mod
-
-        reload(emb_mod)
-        embedder = emb_mod.PplxEmbedder()
-        result = embedder.encode_passages(_chunks(["Hello", "World", "Foo"]))
-    assert result.shape == (3, 1024)
-    assert result.dtype == np.float32
-
-
 def test_pplx_encode_passages_episode_grouping():
     """Chunks from different episodes are encoded separately; output order preserved."""
     transformers_mock, st_mock = _make_pplx_mocks()
@@ -86,24 +71,12 @@ def test_pplx_encode_passages_episode_grouping():
         embedder = emb_mod.PplxEmbedder()
         result = embedder.encode_passages(chunks)
 
-    assert len(call_log) == 2
-    assert sorted(call_log) == [1, 2]
-    assert result.shape == (3, 1024)
-
-
-def test_pplx_encode_query_shape():
-    transformers_mock, st_mock = _make_pplx_mocks()
-    with _mock_modules("transformers", "sentence_transformers"):
-        sys.modules["transformers"] = transformers_mock
-        sys.modules["sentence_transformers"] = st_mock
-        from importlib import reload
-        import podcodex.rag.embedder as emb_mod
-
-        reload(emb_mod)
-        embedder = emb_mod.PplxEmbedder()
-        result = embedder.encode_query("test query")
-    assert result.shape == (1024,)
+    # One forward pass per episode, E1's two chunks together...
+    assert call_log == [2, 1]
+    # ...and each row lands back at its chunk's position (the mock fills a
+    # pass's rows with the pass number).
     assert result.dtype == np.float32
+    assert [row[0] for row in result] == [1.0, 2.0, 1.0]
 
 
 # ──────────────────────────────────────────────
@@ -120,20 +93,6 @@ def _make_e5_mock():
 
     st_mock.SentenceTransformer.return_value.encode.side_effect = encode
     return st_mock
-
-
-def test_e5_encode_passages_shape():
-    st_mock = _make_e5_mock()
-    with _mock_modules("sentence_transformers"):
-        sys.modules["sentence_transformers"] = st_mock
-        from importlib import reload
-        import podcodex.rag.embedder as emb_mod
-
-        reload(emb_mod)
-        embedder = emb_mod.E5Embedder(model_key="e5-small")
-        result = embedder.encode_passages(_chunks(["a", "b"]))
-    assert result.shape == (2, 384)
-    assert result.dtype == np.float32
 
 
 def test_e5_encode_passages_uses_passage_prefix():
@@ -166,20 +125,6 @@ def test_e5_encode_query_uses_query_prefix():
     assert text_passed.startswith("query: ")
 
 
-def test_e5_encode_query_shape():
-    st_mock = _make_e5_mock()
-    with _mock_modules("sentence_transformers"):
-        sys.modules["sentence_transformers"] = st_mock
-        from importlib import reload
-        import podcodex.rag.embedder as emb_mod
-
-        reload(emb_mod)
-        embedder = emb_mod.E5Embedder(model_key="e5-small")
-        result = embedder.encode_query("test")
-    assert result.shape == (384,)
-    assert result.dtype == np.float32
-
-
 # ──────────────────────────────────────────────
 # BGEEmbedder
 # ──────────────────────────────────────────────
@@ -194,20 +139,6 @@ def _make_bge_mock():
 
     flag_mock.BGEM3FlagModel.return_value.encode.side_effect = bge_encode
     return flag_mock
-
-
-def test_bge_encode_passages_shape():
-    flag_mock = _make_bge_mock()
-    with _mock_modules("FlagEmbedding"):
-        sys.modules["FlagEmbedding"] = flag_mock
-        from importlib import reload
-        import podcodex.rag.embedder as emb_mod
-
-        reload(emb_mod)
-        embedder = emb_mod.BGEEmbedder()
-        result = embedder.encode_passages(_chunks(["a", "b", "c"]))
-    assert result.shape == (3, 1024)
-    assert result.dtype == np.float32
 
 
 def test_bge_encode_query_shape():

@@ -12,6 +12,9 @@ Declarations:
 - ``src-tauri/Cargo.toml``      ``version = "X.Y.Z"``
 - ``src-tauri/Cargo.lock``      the ``podcodex-app`` package entry
 - ``uv.lock``                   the ``podcodex`` package entry
+
+Plus what makes the bundled app read its version at all: ``podcodex`` in
+PyInstaller's ``COPY_METADATA``, and no second version in ``tauri.conf.json``.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 PYPROJECT = ROOT / "pyproject.toml"
 CARGO_TOML = ROOT / "src-tauri" / "Cargo.toml"
@@ -83,3 +86,25 @@ def test_installed_metadata_matches_pyproject(declared_versions):
     except PackageNotFoundError:  # pragma: no cover - not an editable install
         pytest.skip("podcodex is not installed in this environment")
     assert installed == declared_versions["pyproject.toml"]
+
+
+def test_the_frozen_bundle_can_read_its_own_version():
+    """``__version__`` reads package metadata, which PyInstaller only ships
+    for names in ``COPY_METADATA``. Without ``podcodex`` there the bundle
+    reports ``0.0.0+unknown`` everywhere and nothing fails at build time.
+    ``tauri.conf.json`` must not declare a version of its own either: the
+    shell takes Cargo's, and a second declaration drifts."""
+    import ast
+    import json
+
+    tree = ast.parse((ROOT / "packaging" / "build_server.py").read_text("utf-8"))
+    copied = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "COPY_METADATA" for t in node.targets)
+    )
+    assert "podcodex" in copied
+
+    tauri = json.loads((ROOT / "src-tauri" / "tauri.conf.json").read_text("utf-8"))
+    assert "version" not in tauri

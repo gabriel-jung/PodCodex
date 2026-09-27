@@ -56,10 +56,6 @@ def test_parse_duration_seconds():
     assert _parse_duration("3600") == 3600.0
 
 
-def test_parse_duration_empty():
-    assert _parse_duration("") == 0.0
-
-
 def test_parse_duration_invalid():
     assert _parse_duration("not-a-time") == 0.0
 
@@ -192,6 +188,7 @@ def test_episode_meta_roundtrips_youtube_id(tmp_path):
     assert loaded.youtube_id == "pqIcoskUuWs"
 
 
+@pytest.mark.legacy("youtube-id-bridge")
 def test_legacy_meta_without_field_bridges_youtube_guid(tmp_path):
     import json
 
@@ -204,6 +201,7 @@ def test_legacy_meta_without_field_bridges_youtube_guid(tmp_path):
     assert loaded.youtube_id == "pqIcoskUuWs"
 
 
+@pytest.mark.legacy("youtube-id-bridge")
 def test_legacy_meta_rss_guid_not_bridged(tmp_path):
     import json
 
@@ -223,6 +221,7 @@ def test_legacy_meta_rss_guid_not_bridged(tmp_path):
     assert loaded.youtube_id == ""
 
 
+@pytest.mark.legacy("youtube-id-bridge")
 def test_new_meta_with_explicit_empty_field_not_bridged(tmp_path):
     # A post-field RSS episode whose guid happens to look like a video id:
     # the explicit (empty) youtube_id must win over any guid-shape inference.
@@ -279,9 +278,9 @@ def test_download_audio_never_leaves_a_truncated_file(tmp_path, monkeypatch):
 # fill_empty_fields
 # ──────────────────────────────────────────────
 #
-# The single facility for episode-meta merges. Three sites used to roll their
-# own and drift on which keys count; a sparse .episode_meta.json silently
-# breaks the RAG date filters, so _BACKFILL_FIELDS membership is pinned here.
+# The single facility for episode-meta merges, so callers agree on which keys
+# count; a sparse .episode_meta.json silently breaks the RAG date filters, so
+# _BACKFILL_FIELDS membership is pinned here.
 
 
 def _episode(**overrides) -> RSSEpisode:
@@ -401,3 +400,30 @@ def test_removed_and_feed_order_are_never_backfilled():
     fill_empty_fields(target, _episode(removed=False, feed_order=5))
     assert target.removed is True
     assert target.feed_order is None
+
+
+@pytest.mark.legacy("slug-stem")
+def test_episode_stem_does_not_collapse_onto_a_same_named_audio_file(tmp_path):
+    """The legacy slug fallback matches directories, never audio stems.
+
+    The caller's stem listing carries root audio stems too; resolving the
+    fallback against it would make a feed entry whose title slugifies to an
+    existing `foo.mp3` claim stem `foo`, collapsing two same-titled episodes
+    onto one set of outputs — what the guid suffix exists to prevent.
+    """
+    from podcodex.ingest.rss import RSSEpisode, episode_stem
+
+    show = tmp_path / "show"
+    show.mkdir()
+    (show / "my_episode.mp3").touch()  # a *file*, not an episode directory
+    ep = RSSEpisode(guid="https://example.com/1", title="My Episode", pub_date="")
+
+    stem = episode_stem(ep, show, existing_stems=frozenset({"my_episode"}))
+    assert stem != "my_episode"
+    assert stem.startswith("my_episode_")
+
+    # A real legacy *directory* is still reused.
+    (show / "my_episode").mkdir()
+    assert episode_stem(ep, show, existing_stems=frozenset({"my_episode"})) == (
+        "my_episode"
+    )

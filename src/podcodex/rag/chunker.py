@@ -197,7 +197,7 @@ def _map_offsets_to_metadata(
         clip_start = max(t["start_char"], chunk_start) - t["start_char"]
         clip_end = min(t["end_char"], chunk_end) - t["start_char"]
         clipped = t["text"][clip_start:clip_end].strip()
-        spk = t.get("speaker") or "UNKNOWN"
+        spk = t["speaker"]
         if clipped:
             speakers.append({**t, "text": clipped})
             speaker_chars[spk] = speaker_chars.get(spk, 0) + len(clipped)

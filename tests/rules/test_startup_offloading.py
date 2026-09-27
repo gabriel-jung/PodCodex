@@ -1,7 +1,7 @@
-"""Work that used to block the uvicorn bind now runs after it.
+"""Startup work that no request needs runs after the uvicorn bind.
 
-Two pieces moved out of ``create_app`` (which executes at module import) and
-into the lifespan, on worker threads:
+Two pieces run in the lifespan, on worker threads, not in ``create_app``
+(which executes at module import):
 
   run_startup_recovery            190 ms — walks the show tree for
                                   atomic-write temp orphans left by a prior
@@ -9,9 +9,9 @@ into the lifespan, on worker threads:
   _register_show_folder_resolver  reaches IndexStore, which pulls pyarrow and
                                   numpy onto the import path
 
-Neither is needed to answer a request, and together they were a third of the
-sidecar's startup. The risk of moving them is that they quietly stop running
-at all, which nothing else would notice.
+Neither is needed to answer a request, and together they cost a third of the
+sidecar's startup. These tests check that they still run at all: nothing else
+would notice if they quietly stopped.
 """
 
 from __future__ import annotations
@@ -30,28 +30,20 @@ def test_constructing_the_app_does_not_run_the_recovery_sweep(
 
     monkeypatch.setattr(recovery, "run_startup_recovery", lambda: calls.append("ran"))
 
-    make_client(tmp_path, monkeypatch)
+    make_client(tmp_path, monkeypatch, fresh=True)
 
     assert calls == [], "recovery ran during construction, delaying the bind"
 
 
-def test_recovery_and_resolver_both_run_once_the_app_starts(
-    tmp_path, monkeypatch
-) -> None:
+def test_recovery_runs_once_the_app_starts(tmp_path, monkeypatch) -> None:
     calls: list[str] = []
-    import podcodex.api.app as app_module
     import podcodex.core.recovery as recovery
 
     monkeypatch.setattr(
         recovery, "run_startup_recovery", lambda: calls.append("recovery")
     )
-    monkeypatch.setattr(
-        app_module,
-        "_register_show_folder_resolver",
-        lambda: calls.append("resolver"),
-    )
 
-    with make_client(tmp_path, monkeypatch):
+    with make_client(tmp_path, monkeypatch, fresh=True):
         pass
 
     assert "recovery" in calls, "moved off the critical path and never runs"

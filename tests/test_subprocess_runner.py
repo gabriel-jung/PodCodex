@@ -10,24 +10,6 @@ import pytest
 from podcodex.api.subprocess_runner import run_in_subprocess
 
 
-def test_basic_run_and_progress():
-    events: list[tuple[float, str]] = []
-    result = run_in_subprocess(
-        "tests.fixtures.subprocess_jobs:add",
-        {"a": 7, "b": 3},
-        on_progress=lambda f, m: events.append((f, m)),
-    )
-    assert result == 10
-    assert events, "expected at least one progress event"
-    assert any(m == "done" for _, m in events)
-
-
-def test_error_is_propagated():
-    with pytest.raises(RuntimeError) as exc_info:
-        run_in_subprocess("tests.fixtures.subprocess_jobs:boom", {})
-    assert "explode" in str(exc_info.value)
-
-
 def test_cancel_event_stops_child():
     cancel_ev = threading.Event()
 
@@ -60,13 +42,13 @@ def test_bad_entry_path_returns_error():
     assert "ModuleNotFoundError" in msg or "AttributeError" in msg
 
 
-def _run_bounded(entry: str, kwargs: dict, timeout: float = 60.0):
+def _run_bounded(entry: str, kwargs: dict, timeout: float = 60.0, on_progress=None):
     """Run in a thread so a deadlock fails the test instead of hanging it."""
     box: dict = {}
 
     def target():
         try:
-            box["value"] = run_in_subprocess(entry, kwargs)
+            box["value"] = run_in_subprocess(entry, kwargs, on_progress=on_progress)
         except BaseException as exc:  # noqa: BLE001
             box["error"] = exc
 
@@ -77,11 +59,17 @@ def _run_bounded(entry: str, kwargs: dict, timeout: float = 60.0):
     return box
 
 
-def test_a_result_larger_than_the_pipe_buffer_is_returned():
+def test_kwargs_progress_and_a_result_larger_than_the_pipe_buffer_come_back():
     """The child cannot exit until its result is flushed; reading only after
-    the exit deadlocked any payload over the pipe buffer."""
-    box = _run_bounded("tests.fixtures.subprocess_jobs:big_result", {"size": 1_000_000})
+    the exit would deadlock on any payload over the pipe buffer."""
+    events: list[tuple[float, str]] = []
+    box = _run_bounded(
+        "tests.fixtures.subprocess_jobs:big_result",
+        {"size": 1_000_000},
+        on_progress=lambda f, m: events.append((f, m)),
+    )
     assert box.get("value") == "x" * 1_000_000, box.get("error")
+    assert (0.5, "halfway") in events
 
 
 def test_a_long_error_is_reported_and_truncated():
@@ -94,13 +82,20 @@ def test_a_long_error_is_reported_and_truncated():
 
 def test_a_child_does_not_inherit_the_api_thread_cap(monkeypatch):
     """The API defaults OMP_NUM_THREADS=1 for its own threads; a step child
-    running on one core made diarization and TTS several times slower."""
+    running on one core makes diarization and TTS several times slower."""
     monkeypatch.setenv("OMP_NUM_THREADS", "1")
     monkeypatch.setenv("_PODCODEX_OMP_DEFAULTED", "1")
     assert run_in_subprocess("tests.fixtures.subprocess_jobs:omp_threads", {}) is None
 
 
-def test_a_user_set_thread_cap_reaches_the_child(monkeypatch):
-    monkeypatch.setenv("OMP_NUM_THREADS", "3")
-    monkeypatch.delenv("_PODCODEX_OMP_DEFAULTED", raising=False)
-    assert run_in_subprocess("tests.fixtures.subprocess_jobs:omp_threads", {}) == "3"
+def test_only_the_api_default_thread_cap_is_dropped():
+    """A cap the user set themselves reaches the child untouched."""
+    from podcodex.api.subprocess_runner import _drop_inherited_thread_cap
+
+    defaulted = {"OMP_NUM_THREADS": "1", "_PODCODEX_OMP_DEFAULTED": "1"}
+    _drop_inherited_thread_cap(defaulted)
+    user_set = {"OMP_NUM_THREADS": "3"}
+    _drop_inherited_thread_cap(user_set)
+
+    assert defaulted == {}
+    assert user_set == {"OMP_NUM_THREADS": "3"}
